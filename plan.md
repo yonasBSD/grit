@@ -1,5 +1,20 @@
 # PLAN.md — Current execution queue
 
+## Active task — t5 family 100% pass
+
+- [~] Make all in-scope `t5` family tests fully pass. Work one dependency group at a time:
+  pack/unpack foundation (t530x–t535x), archive (t500x), send/receive pack (t540x), remote/fetch/push
+  (t550x–t557x), clone (t560x), protocol (t570x–t581x). Pick the non-green row with the largest
+  `failing` count within the current group, fix Rust behavior, re-run until `failing=0`, then advance.
+  - Starting point: 102 in-scope non-green rows; 68 fully passing (from `data/test-files.csv`).
+  - Completed: `t5300-unpack-objects.sh` (23/23) — materialize empty tree during unpack via
+    `write_local` / `write_raw_local` using `exists_materialized_in_objects_dir` instead of
+    `exists_local`.
+  - In progress: pack/unpack foundation (`t5302-show-index`, `t5300-pack-object`, bitmap/MIDX rows).
+  - Execution log: `logs/2026-06-03_t5-family-grouping.md`.
+
+---
+
 ## Active task — t6 family 100% pass
 
 - [~] Make current in-scope `t6` family tests fully pass. Work one dependency group at a time,

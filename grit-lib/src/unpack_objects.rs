@@ -1259,6 +1259,13 @@ mod tests {
         );
         let oid = Odb::hash_object_data(ObjectKind::Tree, b"");
         assert!(odb.exists(&oid));
+        let loose = objects_dir
+            .join(oid.loose_prefix())
+            .join(oid.loose_suffix());
+        assert!(
+            loose.is_file(),
+            "empty tree must be materialized as a loose object during unpack"
+        );
     }
 
     #[test]

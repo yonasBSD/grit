@@ -592,6 +592,9 @@ impl Odb {
     /// repository even when the same OID is already reachable via alternates
     /// (see `t5519-push-alternates`).
     ///
+    /// The well-known empty tree is still written when no loose file exists yet,
+    /// even though [`Self::exists_local`] treats it as virtually present.
+    ///
     /// # Errors
     ///
     /// Same as [`Self::write`].
@@ -604,7 +607,7 @@ impl Odb {
             let _ = self.freshen_object(&oid);
             return Ok(oid);
         }
-        if self.exists_local(&oid) {
+        if exists_materialized_in_objects_dir(&self.objects_dir, &oid) {
             let _ = self.freshen_object(&oid);
             return Ok(oid);
         }
@@ -736,7 +739,7 @@ impl Odb {
             let _ = self.freshen_object(&oid);
             return Ok(oid);
         }
-        if self.exists_local(&oid) {
+        if exists_materialized_in_objects_dir(&self.objects_dir, &oid) {
             let _ = self.freshen_object(&oid);
             return Ok(oid);
         }
