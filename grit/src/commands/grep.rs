@@ -2280,13 +2280,6 @@ fn build_compiled_grep(
     atom_strings: &[String],
     args: &Args,
 ) -> Result<CompiledGrep> {
-    if args.perl_regexp {
-        return Err(anyhow::Error::new(ExplicitExit {
-            code: 128,
-            message: "fatal: cannot use Perl-compatible regexes when not compiled with USE_LIBPCRE"
-                .to_string(),
-        }));
-    }
     let mut atoms = Vec::with_capacity(atom_strings.len());
     for pat in atom_strings {
         atoms.push(Some(build_one_regex(pat, args)?));
@@ -2505,16 +2498,10 @@ fn fmt_col(n: usize, color: bool) -> String {
     }
 }
 
-fn content_satisfies_all_match(compiled: &CompiledGrep, content: &str) -> bool {
-    for re_opt in &compiled.atoms {
-        let Some(re) = re_opt.as_ref() else {
-            continue;
-        };
-        if !content.lines().any(|line| re.is_match(line)) {
-            return false;
-        }
-    }
-    true
+fn line_matches_all_atoms(line: &str, atoms: &[Option<Regex>]) -> bool {
+    atoms
+        .iter()
+        .all(|re_opt| re_opt.as_ref().is_some_and(|re| re.is_match(line)))
 }
 
 /// 1-based column of first match (Git semantics) for a line.
@@ -2638,19 +2625,20 @@ fn grep_content(
     let use_context = args.has_context();
     let col_mode = args.column;
 
+    let all_atoms_on_line = args.all_match && compiled.atoms.len() > 1;
     let mut match_indices: Vec<usize> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        let mut hit = line_matches_expr(&compiled.expr, line, &compiled.atoms, col_mode);
+        let mut hit = if all_atoms_on_line {
+            line_matches_all_atoms(line, &compiled.atoms)
+        } else {
+            line_matches_expr(&compiled.expr, line, &compiled.atoms, col_mode)
+        };
         if args.invert_match {
             hit = !hit;
         }
         if hit {
             match_indices.push(i);
         }
-    }
-
-    if args.all_match && !content_satisfies_all_match(compiled, content) {
-        match_indices.clear();
     }
 
     if let Some(max) = args.max_count {

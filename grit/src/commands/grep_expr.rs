@@ -206,14 +206,48 @@ fn compile_or_expr(
     Ok(left)
 }
 
+/// Leading `--and` before the first `-e` means all following atoms are ANDed (t7818).
+fn normalize_leading_and(tokens: &[PatternToken]) -> Vec<PatternToken> {
+    if !matches!(tokens.first(), Some(PatternToken::And)) {
+        return tokens.to_vec();
+    }
+    let mut atoms = Vec::new();
+    let mut rest = Vec::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        match &tokens[i] {
+            PatternToken::And => i += 1,
+            PatternToken::Atom(s) => {
+                atoms.push(s.clone());
+                i += 1;
+            }
+            other => {
+                rest = tokens[i..].to_vec();
+                break;
+            }
+        }
+    }
+    if atoms.len() < 2 {
+        return tokens.to_vec();
+    }
+    let mut out = vec![PatternToken::Atom(atoms[0].clone())];
+    for a in atoms.iter().skip(1) {
+        out.push(PatternToken::And);
+        out.push(PatternToken::Atom(a.clone()));
+    }
+    out.extend(rest);
+    out
+}
+
 /// Parse pattern tokens into an expression and raw atom strings (one per compiled regex slot).
 pub(crate) fn parse_pattern_tokens(tokens: &[PatternToken]) -> Result<(GrepExpr, Vec<String>)> {
+    let tokens = normalize_leading_and(tokens);
     if tokens.is_empty() {
         return Ok((GrepExpr::True, Vec::new()));
     }
     let mut atoms = Vec::new();
     let mut i = 0usize;
-    let expr = compile_or_expr(tokens, &mut i, &mut atoms)?;
+    let expr = compile_or_expr(&tokens, &mut i, &mut atoms)?;
     if i != tokens.len() {
         bail!("incomplete pattern expression group");
     }

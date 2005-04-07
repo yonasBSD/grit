@@ -3995,6 +3995,20 @@ pub(crate) fn checkout_gitlink_worktree_entry(
 ) -> Result<()> {
     let sm_dir = work_tree.join(rel);
     let modules_git = submodule_modules_git_dir_for_checkout(repo, work_tree, rel)?;
+    let submodule_name =
+        crate::commands::submodule::parse_gitmodules_with_repo(work_tree, Some(repo))
+            .ok()
+            .and_then(|mods| mods.into_iter().find(|m| m.path == rel).map(|m| m.name))
+            .unwrap_or_else(|| rel.to_string());
+    if let Some(outer) =
+        grit_lib::submodule_gitdir::submodule_gitdir_outer_conflict(&modules_git, &submodule_name)
+    {
+        bail!(
+            "fatal: submodule git dir '{}' is inside git dir '{}'",
+            modules_git.display(),
+            outer.display()
+        );
+    }
     let has_local_module = modules_git.join("HEAD").exists();
     // Thousands of gitlinks in one tree (e.g. synthetic submodule fixtures) are usually
     // uninitialized: no `.git/modules/<path>/HEAD`. Skip all filesystem work in that case so

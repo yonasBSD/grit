@@ -134,4 +134,7 @@ test_commit_bulk () {
 		git -C "$indir" checkout -f HEAD || return 1
 	fi
 
+	# Grit fast-import leaves loose objects; match Git fast-import + pack (t7900, t5332).
+	git -C "$indir" repack -a -d -q || return 1
+
 }
