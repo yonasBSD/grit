@@ -111,6 +111,8 @@
     for inner `.git`, bare repos, and `.git` suffix fallback.
   - Completed `t5618-alternate-refs.sh` (6/6) by honoring alternate ref prefixes and
     aligning fixture cwd scoping with upstream.
+  - Completed `t5617-clone-submodules-remote.sh` (9/9) by forwarding remote/filter/
+    single-branch semantics to recursive submodule clones and updates.
   - Completed `t5503-tagfollow.sh` (12/12) by adding `init-db`, upload-pack want traces,
     and Git-compatible tag-follow want/materialization behavior.
   - Completed `t5540-fetch-push-edge-cases.sh` (12/12) by allowing its local non-bare

@@ -178,6 +178,10 @@ pub struct Args {
     #[arg(long = "remote-submodules")]
     pub remote_submodules: bool,
 
+    /// Use recorded superproject gitlinks for submodules.
+    #[arg(long = "no-remote-submodules")]
+    pub no_remote_submodules: bool,
+
     /// Use shallow submodule clones.
     #[arg(long = "shallow-submodules")]
     pub shallow_submodules: bool,
@@ -189,6 +193,10 @@ pub struct Args {
     /// Apply the partial clone filter to submodules when recursing.
     #[arg(long = "also-filter-submodules")]
     pub also_filter_submodules: bool,
+
+    /// Do not apply the partial clone filter to submodules.
+    #[arg(long = "no-also-filter-submodules")]
+    pub no_also_filter_submodules: bool,
 
     /// Use a custom upload-pack command on the remote side.
     #[arg(short = 'u', long = "upload-pack", value_name = "UPLOAD_PACK")]
@@ -3557,6 +3565,8 @@ fn clone_with_optional_superproject_refs(
     no_checkout: bool,
     depth: Option<usize>,
     ref_storage: Option<&str>,
+    filter_spec: Option<&str>,
+    single_branch: bool,
 ) -> Result<std::process::ExitStatus> {
     let run = |with_refs: bool| -> Result<std::process::ExitStatus> {
         let mut cmd = std::process::Command::new(grit_bin);
@@ -3572,6 +3582,12 @@ fn clone_with_optional_superproject_refs(
         }
         if let Some(format) = ref_storage {
             cmd.arg(format!("--ref-format={format}"));
+        }
+        if let Some(spec) = filter_spec {
+            cmd.arg("--filter").arg(spec);
+        }
+        if single_branch {
+            cmd.arg("--single-branch");
         }
         if no_checkout {
             cmd.arg("--no-checkout");
@@ -3612,6 +3628,8 @@ struct SubmoduleCloneJob {
     depth: Option<usize>,
     overlay_existing: bool,
     ref_storage: Option<String>,
+    filter_spec: Option<String>,
+    single_branch: bool,
 }
 
 fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> Result<()> {
@@ -3754,6 +3772,10 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
             depth,
             overlay_existing,
             ref_storage: submodule_ref_storage.clone(),
+            filter_spec: submodule_filter_enabled(clone_args)
+                .then(|| clone_filter_spec(clone_args))
+                .flatten(),
+            single_branch: clone_args.single_branch,
         });
     }
 
@@ -3784,6 +3806,8 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                 true,
                 j.depth,
                 j.ref_storage.as_deref(),
+                j.filter_spec.as_deref(),
+                j.single_branch,
             )?;
             if !status.success() {
                 anyhow::bail!(
@@ -3834,6 +3858,8 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                         true,
                         j.depth,
                         j.ref_storage.as_deref(),
+                        j.filter_spec.as_deref(),
+                        j.single_branch,
                     );
                     match st {
                         Ok(s) if s.success() => {
@@ -3890,6 +3916,14 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
     if let Some(n) = clone_args.jobs {
         upd.arg("--jobs").arg(n.to_string());
     }
+    if clone_args.remote_submodules && !clone_args.no_remote_submodules {
+        upd.arg("--remote");
+    }
+    if submodule_filter_enabled(clone_args) {
+        if let Some(spec) = clone_filter_spec(clone_args) {
+            upd.arg("--filter").arg(spec);
+        }
+    }
     if clone_args.shallow_submodules {
         upd.env(
             crate::commands::submodule::CLONE_SHALLOW_SUBMODULES_ENV,
@@ -3912,6 +3946,23 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
     }
 
     Ok(())
+}
+
+fn submodule_filter_enabled(clone_args: &Args) -> bool {
+    if clone_args.no_also_filter_submodules {
+        return false;
+    }
+    if clone_args.also_filter_submodules {
+        return true;
+    }
+    ConfigSet::load(None, true)
+        .ok()
+        .and_then(|cfg| {
+            cfg.get_bool("clone.filtersubmodules")
+                .or_else(|| cfg.get_bool("clone.filterSubmodules"))
+                .and_then(Result::ok)
+        })
+        .unwrap_or(false)
 }
 
 fn overlay_clone_submodule_contents(
@@ -3941,6 +3992,8 @@ fn overlay_clone_submodule_contents(
         false,
         depth,
         None,
+        None,
+        false,
     )?;
     if !status.success() {
         let _ = fs::remove_dir_all(&tmp);

@@ -1,4 +1,10 @@
 
+## 2026-06-04 — t5617-clone-submodules-remote
+
+- Focus harness: `./scripts/run-tests.sh t5617-clone-submodules-remote.sh --verbose` passes 9/9.
+- Regression harness: `./scripts/run-tests.sh t5617-clone-submodules-remote.sh t5614-clone-submodules-shallow.sh t5619-clone-local-ambiguous-transport.sh --verbose` passes all covered rows.
+
+
 ## 2026-06-04 — t5537-fetch-shallow progress
 
 - Focus harness: `./scripts/run-tests.sh t5537-fetch-shallow.sh --verbose` now reports 14/16 after update-shallow submodule recursion handling.
