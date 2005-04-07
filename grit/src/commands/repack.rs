@@ -771,7 +771,6 @@ pub fn run(args: Args) -> Result<()> {
             // the union-based remover that retains old packs holding objects missing from the new
             // pack.
             let grafts_or_replace_in_effect = repo.git_dir.join("info/grafts").is_file()
-                || repo.git_dir.join("shallow").is_file()
                 || repo
                     .git_dir
                     .join("refs/replace")
@@ -845,6 +844,7 @@ pub fn run(args: Args) -> Result<()> {
         update_server_info::refresh_server_info(&repo)?;
     }
 
+    prune_hidden_loose_objects_for_shallow_repo(&repo)?;
     let _ = grit_lib::shared_repo::refresh_repository_shared_tree(&repo.git_dir);
 
     Ok(())

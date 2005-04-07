@@ -333,6 +333,7 @@ pub fn run(mut args: Args) -> Result<()> {
     if Repository::open(&git_dir, None)
         .map(|repo| repo.is_bare())
         .unwrap_or(false)
+        || args.update_shallow
     {
         recurse_mode = None;
     }

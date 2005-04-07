@@ -1,4 +1,10 @@
 
+## 2026-06-04 — t5537-fetch-shallow progress
+
+- Focus harness: `./scripts/run-tests.sh t5537-fetch-shallow.sh --verbose` now reports 14/16 after update-shallow submodule recursion handling.
+- Regression harness: `./scripts/run-tests.sh t5537-fetch-shallow.sh t5311-pack-bitmaps-shallow.sh t5312-prune-corruption.sh --verbose` keeps t5311/t5312 passing.
+
+
 ## 2026-06-04 — t5312-prune-corruption
 
 - Focus harness: `./scripts/run-tests.sh t5312-prune-corruption.sh --verbose` passes 11/11.
