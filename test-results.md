@@ -1,4 +1,10 @@
 
+## 2026-06-04 — t5618-alternate-refs
+
+- Focus harness: `./scripts/run-tests.sh t5618-alternate-refs.sh --verbose` passes 6/6.
+- Regression harness: `./scripts/run-tests.sh t5618-alternate-refs.sh t5410-receive-pack.sh t5900-repo-selection.sh --verbose` passes all covered rows.
+
+
 ## 2026-06-04 — t5900-repo-selection
 
 - Focus harness: `./scripts/run-tests.sh t5900-repo-selection.sh --verbose` passes 8/8.

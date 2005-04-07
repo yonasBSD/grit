@@ -706,46 +706,8 @@ pub fn run(args: Args) -> Result<()> {
                     ref_exclude_patterns.clear();
                 }
                 "--alternate-refs" => {
-                    // List refs from alternate object directories
-                    let objects_dir = repo.git_dir.join("objects");
-                    if let Ok(alts) = grit_lib::pack::read_alternates_recursive(&objects_dir) {
-                        for alt_dir in alts {
-                            // alt_dir is an objects dir; the git_dir is its parent
-                            if let Some(alt_git_dir) = alt_dir.parent() {
-                                if let Ok(alt_refs) =
-                                    grit_lib::refs::list_refs(alt_git_dir, "refs/")
-                                {
-                                    push_ref_oids_as_specs(
-                                        &mut revision_specs,
-                                        not_mode,
-                                        alt_refs.into_iter().map(|(_, oid)| oid),
-                                    );
-                                }
-                                // Also include HEAD
-                                let head_path = alt_git_dir.join("HEAD");
-                                if let Ok(content) = std::fs::read_to_string(&head_path) {
-                                    let content = content.trim();
-                                    if let Some(ref_target) = content.strip_prefix("ref: ") {
-                                        let ref_path = alt_git_dir.join(ref_target);
-                                        if let Ok(oid_hex) = std::fs::read_to_string(&ref_path) {
-                                            let hex = oid_hex.trim().to_string();
-                                            if not_mode {
-                                                revision_specs.push(format!("^{hex}"));
-                                            } else {
-                                                revision_specs.push(hex);
-                                            }
-                                        }
-                                    } else if content.len() == 40 {
-                                        if not_mode {
-                                            revision_specs.push(format!("^{content}"));
-                                        } else {
-                                            revision_specs.push(content.to_string());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    let tips = grit_lib::refs::collect_alternate_ref_oids(&repo.git_dir)?;
+                    push_ref_oids_as_specs(&mut revision_specs, not_mode, tips.into_iter());
                 }
                 _ if arg.starts_with("--min-parents=") => {
                     let value = arg.trim_start_matches("--min-parents=");

@@ -1373,8 +1373,17 @@ pub fn collect_alternate_ref_oids(receiving_git_dir: &Path) -> Result<Vec<Object
         if !alt_git_dir.join("refs").is_dir() {
             continue;
         }
-        if let Some(prefixes) = config.get("core.alternateRefsPrefixes") {
+        if let Some(prefixes) = config
+            .get("core.alternaterefsprefixes")
+            .or_else(|| config.get("core.alternateRefsPrefixes"))
+        {
             for part in prefixes.split_whitespace() {
+                if let Ok(oid) = resolve_ref(&alt_git_dir, part) {
+                    if seen.insert(oid) {
+                        out.push(oid);
+                    }
+                    continue;
+                }
                 for (_, oid) in list_refs(&alt_git_dir, part)? {
                     if seen.insert(oid) {
                         out.push(oid);

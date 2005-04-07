@@ -109,6 +109,8 @@
     fetches configured with the skipping negotiator.
   - Completed `t5900-repo-selection.sh` (8/8) by matching Git local path selection
     for inner `.git`, bare repos, and `.git` suffix fallback.
+  - Completed `t5618-alternate-refs.sh` (6/6) by honoring alternate ref prefixes and
+    aligning fixture cwd scoping with upstream.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---
