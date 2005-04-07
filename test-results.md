@@ -1,4 +1,10 @@
 
+## 2026-06-04 — t5312-prune-corruption
+
+- Focus harness: `./scripts/run-tests.sh t5312-prune-corruption.sh --verbose` passes 11/11.
+- Regression harness: `./scripts/run-tests.sh t5312-prune-corruption.sh t5304-prune-packed.sh t5311-pack-bitmaps-shallow.sh --verbose` passes t5312/t5311; t5304 remains partially failing.
+
+
 ## 2026-06-04 — t5540-fetch-push-edge-cases
 
 - Focus harness: `./scripts/run-tests.sh t5540-fetch-push-edge-cases.sh --verbose` passes 12/12.

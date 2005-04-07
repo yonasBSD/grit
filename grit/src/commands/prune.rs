@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
+use grit_lib::check_ref_format::{check_refname_format, RefNameOptions};
 use grit_lib::config::ConfigSet;
 use grit_lib::diff::zero_oid;
 use grit_lib::objects::{parse_commit, parse_tag, parse_tree, ObjectId, ObjectKind};
@@ -52,6 +53,9 @@ pub fn run(args: Args) -> Result<()> {
     }
     let objects_dir = repo.git_dir.join("objects");
     let odb = Odb::new(&objects_dir);
+    if std::env::var("GIT_REF_PARANOIA").ok().as_deref() != Some("0") {
+        guard_against_corrupt_loose_refs(&repo.git_dir, &odb)?;
+    }
 
     let expire_policy = parse_expire_time(args.expire.as_deref())?;
 
@@ -111,6 +115,49 @@ pub fn run(args: Args) -> Result<()> {
         eprintln!("prune: removed {} unreachable loose object(s)", pruned);
     }
 
+    Ok(())
+}
+
+fn guard_against_corrupt_loose_refs(git_dir: &Path, odb: &Odb) -> Result<()> {
+    let refs_dir = git_dir.join("refs");
+    if !refs_dir.is_dir() {
+        return Ok(());
+    }
+    scan_ref_dir_for_prune(git_dir, odb, &refs_dir)
+}
+
+fn scan_ref_dir_for_prune(git_dir: &Path, odb: &Odb, dir: &Path) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            scan_ref_dir_for_prune(git_dir, odb, &path)?;
+            continue;
+        }
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(git_dir)
+            .unwrap_or(path.as_path())
+            .to_string_lossy()
+            .replace('\\', "/");
+        if check_refname_format(&rel, &RefNameOptions::default()).is_err() {
+            anyhow::bail!("bad ref for prune: {rel}");
+        }
+        let raw = fs::read_to_string(&path).unwrap_or_default();
+        let value = raw.trim();
+        if value.starts_with("ref: ") {
+            continue;
+        }
+        if value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit()) {
+            if let Ok(oid) = ObjectId::from_hex(value) {
+                if !odb.exists(&oid) {
+                    anyhow::bail!("bad ref for prune: {rel}");
+                }
+            }
+        }
+    }
     Ok(())
 }
 

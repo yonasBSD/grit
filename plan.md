@@ -115,6 +115,8 @@
     and Git-compatible tag-follow want/materialization behavior.
   - Completed `t5540-fetch-push-edge-cases.sh` (12/12) by allowing its local non-bare
     origin fixtures to accept checked-out branch updates safely.
+  - Completed `t5312-prune-corruption.sh` (11/11) by making prune/repack fail safe on
+    invalid or broken loose refs under ref paranoia.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

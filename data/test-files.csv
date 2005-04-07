@@ -871,7 +871,7 @@ t5302-show-index	t5	yes	17	17	0	true	ok	0
 t5303-pack-corruption	t5	yes	25	25	0	true	ok	0
 t5303-pack-corruption-resilience	t5	yes	36	36	0	true	ok	0
 t5304-prune	t5	yes	32	9	23	false	ok	0
-t5304-prune-packed	t5	yes	20	7	13	false	ok	0
+t5304-prune-packed	t5	yes	20	8	12	false	ok	0
 t5305-include-tag	t5	yes	15	15	0	true	ok	0
 t5306-pack-nobase	t5	yes	4	4	0	true	ok	0
 t5307-pack-missing-commit	t5	yes	5	5	0	true	ok	0
@@ -879,7 +879,7 @@ t5308-pack-detect-duplicates	t5	yes	6	6	0	true	ok	0
 t5309-pack-delta-cycles	t5	yes	7	7	0	true	ok	0
 t5310-pack-bitmaps	t5	yes	236	139	97	false	ok	0
 t5311-pack-bitmaps-shallow	t5	yes	6	6	0	true	ok	0
-t5312-prune-corruption	t5	yes	11	7	4	false	ok	0
+t5312-prune-corruption	t5	yes	11	11	0	true	ok	0
 t5313-pack-bounds-checks	t5	yes	9	9	0	true	ok	0
 t5314-pack-cycle-detection	t5	yes	2	2	0	true	ok	0
 t5315-pack-objects-compression	t5	yes	9	9	0	true	ok	0

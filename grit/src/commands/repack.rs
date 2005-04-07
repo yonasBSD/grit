@@ -11,6 +11,7 @@ use crate::grit_exe;
 use crate::trace2_emit_git_subcommand_argv;
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
+use grit_lib::check_ref_format::{check_refname_format, RefNameOptions};
 use grit_lib::config::ConfigSet;
 use grit_lib::midx::{
     clear_pack_midx_state, write_multi_pack_index_with_options, WriteMultiPackIndexOptions,
@@ -241,6 +242,9 @@ fn resolve_pack_kept_objects(
 pub fn run(args: Args) -> Result<()> {
     let repo = Repository::discover(None).context("not a git repository")?;
     let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    if std::env::var("GIT_REF_PARANOIA").ok().as_deref() != Some("0") {
+        guard_against_corrupt_loose_refs_for_repack(&repo)?;
+    }
 
     let geometric = args.geometric.unwrap_or(0).max(0);
     let full_repack_early = args.all || args.repack_all_unpack || args.cruft;
@@ -1037,6 +1041,49 @@ fn run_geometric(
 
     let _ = grit_lib::shared_repo::refresh_repository_shared_tree(&repo.git_dir);
 
+    Ok(())
+}
+
+fn guard_against_corrupt_loose_refs_for_repack(repo: &Repository) -> Result<()> {
+    let refs_dir = repo.git_dir.join("refs");
+    if refs_dir.is_dir() {
+        scan_ref_dir_for_repack(repo, &refs_dir)?;
+    }
+    Ok(())
+}
+
+fn scan_ref_dir_for_repack(repo: &Repository, dir: &Path) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            scan_ref_dir_for_repack(repo, &path)?;
+            continue;
+        }
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(&repo.git_dir)
+            .unwrap_or(path.as_path())
+            .to_string_lossy()
+            .replace('\\', "/");
+        if check_refname_format(&rel, &RefNameOptions::default()).is_err() {
+            anyhow::bail!("bad ref for repack: {rel}");
+        }
+        let raw = fs::read_to_string(&path).unwrap_or_default();
+        let value = raw.trim();
+        if value.starts_with("ref: ") {
+            continue;
+        }
+        if value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit()) {
+            if let Ok(oid) = ObjectId::from_hex(value) {
+                if !repo.odb.exists(&oid) {
+                    anyhow::bail!("bad ref for repack: {rel}");
+                }
+            }
+        }
+    }
     Ok(())
 }
 
