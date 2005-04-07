@@ -630,7 +630,7 @@ pub fn run(mut args: Args) -> Result<()> {
     let mut exit_for_sparse_advice = false;
     let mut sparse_advice_paths: Vec<String> = Vec::new();
 
-    let resolved_specs = resolved_pathspecs_for_add(&args.pathspec, work_tree, prefix.as_deref());
+    let resolved_specs = resolved_pathspecs_for_add(&args.pathspec, work_tree, prefix.as_deref())?;
     let is_root_pathspec = args.pathspec.iter().any(|p| p == ":/");
     let mut silent_exit_after_write: Option<i32> = None;
     let mut deferred_chmod: Option<anyhow::Error> = None;
@@ -1257,7 +1257,15 @@ pub(crate) fn stage_pathspecs_for_commit(
     }
 
     for spec in pathspecs {
-        let resolved = crate::pathspec::resolve_pathspec(spec, work_tree, prefix.as_deref());
+        let resolved = match crate::pathspec::resolve_pathspec_in_worktree(
+            spec,
+            spec,
+            work_tree,
+            prefix.as_deref(),
+        ) {
+            Ok(r) => r,
+            Err(e) => bail!("{e}"),
+        };
 
         if !grit_lib::pathspec::has_glob_chars(&resolved) {
             reject_skip_worktree(&index, resolved.as_bytes())?;
@@ -1636,10 +1644,13 @@ fn resolved_pathspecs_for_add(
     pathspecs: &[String],
     work_tree: &Path,
     prefix: Option<&str>,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
     pathspecs
         .iter()
-        .map(|s| crate::pathspec::resolve_pathspec(s, work_tree, prefix))
+        .map(|s| {
+            crate::pathspec::resolve_pathspec_in_worktree(s, s, work_tree, prefix)
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        })
         .collect()
 }
 

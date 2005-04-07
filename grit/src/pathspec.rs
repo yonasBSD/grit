@@ -2,6 +2,29 @@
 
 use std::path::{Path, PathBuf};
 
+/// Resolved path lies outside the repository work tree (Git `prefix_path_gently` failure).
+#[derive(Debug, Clone)]
+pub struct PathOutsideRepository {
+    /// User-facing pathspec token (argv element).
+    pub elt: String,
+    /// Resolved absolute path outside the work tree.
+    pub path: String,
+    /// Canonical work tree root.
+    pub work_tree: PathBuf,
+}
+
+impl std::fmt::Display for PathOutsideRepository {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "fatal: {}: '{}' is outside repository at '{}'",
+            self.elt,
+            self.path,
+            self.work_tree.display()
+        )
+    }
+}
+
 /// Resolve a magic pathspec relative to a current-directory prefix.
 ///
 /// This keeps the `cwd` prefix case-sensitive (via an internal `prefix:` magic
@@ -264,5 +287,46 @@ pub fn resolve_pathspec(pathspec: &str, work_tree: &Path, prefix: Option<&str>) 
             .to_string_lossy()
             .to_string(),
         _ => pathspec.to_owned(),
+    }
+}
+
+/// Resolve a pathspec and ensure it lies inside `work_tree` (used by `git add`, etc.).
+///
+/// Returns [`PathOutsideRepository`] when resolution stays absolute, matching Git's
+/// `'%s' is outside repository at '%s'` fatal (t7010).
+pub fn resolve_pathspec_in_worktree(
+    elt: &str,
+    pathspec: &str,
+    work_tree: &Path,
+    prefix: Option<&str>,
+) -> Result<String, PathOutsideRepository> {
+    let resolved = resolve_pathspec(pathspec, work_tree, prefix);
+    if Path::new(&resolved).is_absolute() {
+        let wt = work_tree
+            .canonicalize()
+            .unwrap_or_else(|_| work_tree.to_path_buf());
+        return Err(PathOutsideRepository {
+            elt: elt.to_string(),
+            path: resolved,
+            work_tree: wt,
+        });
+    }
+    Ok(resolved)
+}
+
+/// Normalize a worktree file path for porcelain commands (`blame`, `log`, …).
+///
+/// Accepts repo-relative or absolute paths under `work_tree`.
+#[must_use]
+pub fn normalize_worktree_file_path(
+    file_path: &str,
+    work_tree: &Path,
+    prefix: Option<&str>,
+) -> String {
+    let resolved = resolve_pathspec(file_path, work_tree, prefix);
+    if Path::new(&resolved).is_absolute() {
+        file_path.to_string()
+    } else {
+        resolved
     }
 }

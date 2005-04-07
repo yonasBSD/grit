@@ -1154,7 +1154,7 @@ t7006-pager	t7	yes	109	109	0	true	ok	1
 t7007-show	t7	yes	18	18	0	true	ok	0
 t7008-filter-branch-null-sha1	t7	yes	6	6	0	true	ok	0
 t7008-show-stat-raw-name	t7	yes	21	21	0	true	ok	0
-t7010-setup	t7	yes	16	12	4	false	ok	0
+t7010-setup	t7	yes	16	16	0	true	ok	0
 t7011-skip-worktree-reading	t7	yes	15	15	0	true	ok	0
 t7012-skip-worktree-writing	t7	yes	11	11	0	true	ok	6
 t7020-commit-encoding	t7	yes	26	26	0	true	ok	0
@@ -1189,7 +1189,7 @@ t7106-reset-unborn-branch	t7	yes	7	7	0	true	ok	0
 t7107-reset-pathspec-file	t7	yes	11	1	10	false	ok	0
 t7110-reset-merge	t7	yes	21	21	0	true	ok	0
 t7110-reset-modes	t7	yes	20	20	0	true	ok	0
-t7111-reset-table	t7	yes	42	41	1	false	ok	0
+t7111-reset-table	t7	yes	42	42	0	true	ok	0
 t7112-reset-submodule	t7	yes	78	54	24	false	ok	0
 t7113-post-index-change-hook	t7	yes	4	1	3	false	ok	0
 t7201-co	t7	yes	46	46	0	true	ok	0
@@ -1217,7 +1217,7 @@ t7422-submodule-output	t7	yes	18	9	9	false	ok	0
 t7423-submodule-symlinks	t7	yes	6	4	2	false	ok	0
 t7424-submodule-mixed-ref-formats	t7	skip	14	3	11	false	ok	0
 t7425-submodule-gitdir-path-extension	t7	yes	23	18	5	false	ok	0
-t7426-submodule-get-default-remote	t7	yes	15	14	1	false	ok	0
+t7426-submodule-get-default-remote	t7	yes	15	15	0	true	ok	0
 t7450-bad-git-dotfiles	t7	yes	50	50	0	true	ok	0
 t7500-commit-template-squash-signoff	t7	yes	57	42	15	false	ok	0
 t7501-commit-basic	t7	yes	146	146	0	true	ok	0

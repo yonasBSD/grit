@@ -1790,10 +1790,6 @@ fn check_merge_reset_worktree(
         None => return Ok(()),
     };
 
-    if head_oid == *target_oid {
-        return Ok(());
-    }
-
     let target_tree_oid = commit_to_tree(repo, target_oid)?;
     let target_entries = tree_to_flat_entries(repo, &target_tree_oid, "")?;
     let target_map: HashMap<Vec<u8>, &IndexEntry> =

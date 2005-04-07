@@ -2319,7 +2319,13 @@ pub fn run(mut args: Args) -> Result<()> {
     normalize_detection_args(&args.move_detection, &mut normalized_positional);
     normalized_positional.extend(args.args.iter().cloned());
 
-    let (rev, file_path) = parse_blame_args(&odb, &repo, &normalized_positional)?;
+    let (rev, mut file_path) = parse_blame_args(&odb, &repo, &normalized_positional)?;
+    if let Some(work_tree) = repo.work_tree.as_deref() {
+        let cwd = std::env::current_dir().context("getting current directory")?;
+        let prefix = crate::pathspec::pathdiff(&cwd, work_tree);
+        file_path =
+            crate::pathspec::normalize_worktree_file_path(&file_path, work_tree, prefix.as_deref());
+    }
 
     // Working-copy blame (no revision, no --contents) blames the file on disk; git lstat's
     // it first and aborts when it is absent (e.g. a skip-worktree out-of-cone path that is

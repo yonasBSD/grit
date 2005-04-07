@@ -3,7 +3,7 @@
 ## Active task — t7 family toward 100% pass
 
 - [x] Group non-passing in-scope `t7` rows by subsystem (see `logs/2026-06-02_t7-family-grouping.md`).
-- [x] Group A quick wins: `t7005-editor` (12/12), `t7008-filter-branch-null-sha1` (6/6), `t7450-bad-git-dotfiles` (50/50), `t7818-grep-extended` (11/11), `t7900-maintenance` (72/72).
+- [x] Group A quick wins: `t7005-editor`, `t7008-filter-branch-null-sha1`, `t7450-bad-git-dotfiles`, `t7818-grep-extended`, `t7900-maintenance`, `t7010-setup`, `t7426-submodule-get-default-remote`, `t7111-reset-table`.
 - [x] Group A: `t7508-status` — global `--no-optional-locks` (126/126).
 - [ ] Group B–J: worktree status, reset, commit porcelain, grep (t7810), submodules (largest blockers).
 

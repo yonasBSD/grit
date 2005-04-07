@@ -1008,9 +1008,17 @@ fn get_default_remote_for_path_in_super(path: &str, super_work_tree: &Path) -> R
     let path_buf = Path::new(path);
     let abs_sub = if path_buf.is_absolute() {
         path_buf.to_path_buf()
+    } else if path_buf
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path_buf))
+            .unwrap_or_else(|_| super_work_tree.join(path_buf))
     } else {
         super_work_tree.join(path_buf)
     };
+    let abs_sub = abs_sub.canonicalize().unwrap_or(abs_sub);
     let work_tree = repo.work_tree.as_ref().context("bare repository")?;
     let sub_rel = match worktree_relative_posix(work_tree, &abs_sub) {
         Ok(s) => s,
