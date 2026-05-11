@@ -4,6 +4,16 @@
 test_description='grit ref store operations (update-ref, symbolic-ref, show-ref)'
 
 cd "$(dirname "$0")" || exit 1
+
+GIT_TEST_DEFAULT_REF_FORMAT=reftable
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_REF_FORMAT GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
+# This local regression test re-enters the same repository in each block. Ask
+# the harness to reset cwd to the trash root around top-level test bodies.
+TEST_OUTPUT_DIRECTORY_OVERRIDE=${TEST_OUTPUT_DIRECTORY_OVERRIDE:-$(pwd)}
+export TEST_OUTPUT_DIRECTORY_OVERRIDE
+
 . ./test-lib.sh
 
 ###########################################################################
