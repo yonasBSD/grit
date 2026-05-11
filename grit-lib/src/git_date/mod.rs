@@ -43,7 +43,11 @@ pub fn test_tool_date(args: &[String]) -> Result<TestToolDateResult, String> {
             Ok(TestToolDateResult::Exit(code))
         }
         "time_t-is64bit" => {
-            let code = if size_of::<compat::time_t>() == 8 { 0 } else { 1 };
+            let code = if size_of::<compat::time_t>() == 8 {
+                0
+            } else {
+                1
+            };
             Ok(TestToolDateResult::Exit(code))
         }
         "relative" => {

@@ -1,10 +1,10 @@
 //! Git-compatible date parsing (`parse_date_basic`, `parse_date`) — ported from Git `date.c`.
 
+use super::compat::{self, time_t, tm};
 use super::tm::{
     get_time_sec, init_tm_unknown, is_date_known, match_string, maybeiso8601, nodate,
     parse_timestamp_prefix, skip_alpha, tm_to_time_t, TIMESTAMP_MAX,
 };
-use super::compat::{self, time_t, tm};
 use std::mem::MaybeUninit;
 
 struct TzName {
