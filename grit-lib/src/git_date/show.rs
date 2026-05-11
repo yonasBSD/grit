@@ -1,10 +1,10 @@
 //! Git-compatible date display (`show_date`, `show_date_relative`, strftime handling).
 
+use super::compat::{self, time_t, tm};
 use super::tm::{
     empty_tm, get_time_sec, init_tm_unknown, local_time_tzoffset, local_tzoffset, time_to_tm,
     time_to_tm_local, tm_to_time_t, TzHhmm,
 };
-use super::compat::{self, time_t, tm};
 use std::ffi::CString;
 use std::io::IsTerminal;
 

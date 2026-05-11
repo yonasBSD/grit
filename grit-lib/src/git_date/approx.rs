@@ -1,8 +1,8 @@
 //! Git `approxidate` (ported from `date.c`).
 
+use super::compat::{self, time_t, tm};
 use super::parse::{match_multi_number, MONTH_NAMES, WEEKDAY_NAMES};
 use super::tm::{get_time_sec, match_string, parse_timestamp_prefix};
-use super::compat::{self, time_t, tm};
 use std::mem::MaybeUninit;
 
 fn update_tm(tm: &mut tm, now: &tm, sec: i64) -> time_t {

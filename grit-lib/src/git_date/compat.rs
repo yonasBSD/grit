@@ -96,12 +96,7 @@ pub unsafe fn strftime(
 }
 
 #[cfg(not(unix))]
-pub unsafe fn strftime(
-    buf: *mut i8,
-    max: usize,
-    fmt: *const i8,
-    tm: *const tm,
-) -> usize {
+pub unsafe fn strftime(buf: *mut i8, max: usize, fmt: *const i8, tm: *const tm) -> usize {
     unsafe extern "C" {
         fn strftime(buf: *mut i8, max: usize, fmt: *const i8, tm: *const tm) -> usize;
     }
