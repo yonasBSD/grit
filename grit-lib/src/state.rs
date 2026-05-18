@@ -185,10 +185,18 @@ pub fn resolve_head(git_dir: &Path) -> Result<HeadState> {
             .to_owned();
 
         // Resolve the branch tip via the shared refs backend (worktrees, packed-refs).
-        // Missing ref => unborn branch (`None`); propagate I/O and other errors.
+        // Missing `refs/heads/*` => unborn branch (`None`). A symref to a non-branch
+        // target that cannot be resolved (e.g. HEAD -> `.broken`) is invalid, matching
+        // Git `refs_resolve_ref_unsafe` returning no target for `worktree list`.
         let oid = match crate::refs::resolve_ref(git_dir, &refname) {
             Ok(oid) => Some(oid),
-            Err(Error::InvalidRef(msg)) if msg.starts_with("ref not found:") => None,
+            Err(Error::InvalidRef(msg)) if msg.starts_with("ref not found:") => {
+                if refname.starts_with("refs/heads/") {
+                    None
+                } else {
+                    return Ok(HeadState::Invalid);
+                }
+            }
             Err(e) => return Err(e),
         };
 

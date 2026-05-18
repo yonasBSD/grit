@@ -83,9 +83,9 @@ tests. Most logic belongs in a new **`grit-lib/src/worktree.rs`** (and friends).
 
 ### 1.1 Core worktree filesystem model
 
-- [ ] Create `worktrees/` registry under common git dir (`worktrees/<id>/gitdir`,
+- [~] Create `worktrees/` registry under common git dir (`worktrees/<id>/gitdir`,
   `commondir`, `locked`, `prunable`, `HEAD`, private refs).
-- [ ] Resolve `git_dir` vs `common_dir` vs per-worktree refs (`refs/worktree/*`).
+- [~] Resolve `git_dir` vs `common_dir` vs per-worktree refs (`refs/worktree/*`).
 - [ ] `config.worktree` overlay and `extensions.worktreeConfig` behavior.
 
 ### 1.2 Worktree lifecycle API
@@ -104,7 +104,8 @@ tests. Most logic belongs in a new **`grit-lib/src/worktree.rs`** (and friends).
 ### 1.4 Harness targets (worktrees)
 
 - [ ] `t2400-worktree-add`
-- [ ] `t2402-worktree-list`, `t2401-worktree-prune`, `t2406-worktree-repair`
+- [x] `t2402-worktree-list`
+- [ ] `t2401-worktree-prune`, `t2406-worktree-repair`
 - [ ] `t2404-worktree-config`, `t2407-worktree-heads`
 - [ ] `t3908-stash-in-worktree`, `t2205-add-worktree-config` (non-interactive paths)
 - [ ] `t1415-worktree-refs`, `t1407-worktree-ref-store` (plumbing)
