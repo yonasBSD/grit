@@ -11,6 +11,7 @@ use grit_lib::objects::ObjectId;
 use grit_lib::refs;
 use grit_lib::repo::Repository;
 use grit_lib::state::{resolve_head, HeadState};
+use grit_lib::worktree::{self, WorktreeEntry};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -218,23 +219,9 @@ pub fn run(args: Args) -> Result<()> {
     }
 }
 
-/// Helper: find the "common dir" (the main `.git` directory).
-/// For the main worktree this is just git_dir; for a linked worktree
-/// we follow the `commondir` file.
+/// Shared git directory (main `.git` for linked worktrees).
 fn common_dir(git_dir: &Path) -> Result<PathBuf> {
-    let commondir_file = git_dir.join("commondir");
-    if commondir_file.exists() {
-        let raw = fs::read_to_string(&commondir_file).context("reading commondir")?;
-        let rel = raw.trim();
-        let p = if Path::new(rel).is_absolute() {
-            PathBuf::from(rel)
-        } else {
-            git_dir.join(rel)
-        };
-        Ok(p.canonicalize().context("canonicalizing common dir")?)
-    } else {
-        Ok(git_dir.to_path_buf())
-    }
+    Ok(worktree::common_git_dir(git_dir))
 }
 
 /// Resolve a commit-ish string to an ObjectId within the given repo.
@@ -1095,128 +1082,8 @@ fn add_worktree_tree_to_index(
 // worktree list
 // ---------------------------------------------------------------------------
 
-/// Information about a single worktree entry.
-struct WorktreeInfo {
-    path: PathBuf,
-    head: HeadState,
-    is_bare: bool,
-    is_locked: bool,
-    lock_reason: Option<String>,
-}
-
-/// Resolve HEAD for a linked worktree admin dir.
-/// The HEAD file is in the admin dir, but branch refs live in the common dir.
-fn resolve_linked_head(admin: &Path, common: &Path) -> HeadState {
-    let head_path = admin.join("HEAD");
-    let content = match fs::read_to_string(&head_path) {
-        Ok(c) => c,
-        Err(_) => return HeadState::Invalid,
-    };
-    let trimmed = content.trim();
-    if let Some(refname) = trimmed.strip_prefix("ref: ") {
-        let refname = refname.to_owned();
-        let short_name = refname
-            .strip_prefix("refs/heads/")
-            .unwrap_or(&refname)
-            .to_owned();
-        // Resolve the ref against the common dir where refs actually live
-        let oid = refs::resolve_ref(common, &refname).ok();
-        HeadState::Branch {
-            refname,
-            short_name,
-            oid,
-        }
-    } else {
-        match ObjectId::from_hex(trimmed) {
-            Ok(oid) => HeadState::Detached { oid },
-            Err(_) => HeadState::Invalid,
-        }
-    }
-}
-
-fn collect_worktrees(repo: &Repository) -> Result<Vec<WorktreeInfo>> {
-    let common = common_dir(&repo.git_dir)?;
-    let mut entries = Vec::new();
-
-    // Main worktree (or bare repo)
-    let main_head = resolve_head(&common).unwrap_or(HeadState::Invalid);
-    // Determine if the repo is bare based on the common dir
-    let common_is_bare = !common.ends_with(".git") && common.join("config").exists() && {
-        // Check core.bare in config
-        if let Ok(content) = std::fs::read_to_string(common.join("config")) {
-            content.contains("bare = true")
-        } else {
-            false
-        }
-    };
-    // The main worktree path: for non-bare repos, it's common.parent() (i.e. /repo for /repo/.git)
-    // For bare repos, it's the common dir itself
-    let main_path = if common_is_bare {
-        common.clone()
-    } else {
-        common.parent().unwrap_or(&common).to_path_buf()
-    };
-    let is_bare = common_is_bare;
-    entries.push(WorktreeInfo {
-        path: main_path,
-        head: main_head,
-        is_bare,
-        is_locked: false,
-        lock_reason: None,
-    });
-
-    // Linked worktrees
-    let worktrees_dir = common.join("worktrees");
-    if worktrees_dir.is_dir() {
-        let mut names: Vec<_> = fs::read_dir(&worktrees_dir)?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect();
-        names.sort();
-
-        for name in names {
-            let admin = worktrees_dir.join(&name);
-            let wt_head = resolve_linked_head(&admin, &common);
-
-            // Read the gitdir file to find the worktree path
-            let gitdir_path = admin.join("gitdir");
-            let wt_path = if gitdir_path.exists() {
-                let raw = fs::read_to_string(&gitdir_path).unwrap_or_default();
-                let p = PathBuf::from(raw.trim());
-                // gitdir points to <worktree>/.git, so parent is the worktree
-                let parent = p.parent().unwrap_or(&p).to_path_buf();
-                // Canonicalize to resolve relative paths like '../there'
-                parent.canonicalize().unwrap_or(parent)
-            } else {
-                admin.clone()
-            };
-
-            let locked_file = admin.join("locked");
-            let is_locked = locked_file.exists();
-            let lock_reason = if is_locked {
-                let content = fs::read_to_string(&locked_file).unwrap_or_default();
-                let reason = content.trim().to_string();
-                if reason.is_empty() {
-                    None
-                } else {
-                    Some(reason)
-                }
-            } else {
-                None
-            };
-
-            entries.push(WorktreeInfo {
-                path: wt_path,
-                head: wt_head,
-                is_bare: false,
-                is_locked,
-                lock_reason,
-            });
-        }
-    }
-
-    Ok(entries)
+fn collect_worktrees(repo: &Repository) -> Result<Vec<WorktreeEntry>> {
+    worktree::list_worktrees(repo).map_err(Into::into)
 }
 
 /// C-quote a path string when it contains non-ASCII characters (core.quotepath behavior).

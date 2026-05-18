@@ -990,6 +990,30 @@ fn run_test_tool_ref_store(rest: &[String]) -> Result<()> {
             }
             Ok(())
         }
+        "create-symref" => {
+            if rest.len() < 5 {
+                bail!(
+                    "usage: test-tool ref-store main create-symref <refname> <target> [logmsg]"
+                );
+            }
+            let refname = &rest[3];
+            let target = &rest[4];
+            let common = grit_lib::worktree::common_git_dir(&git_dir);
+            let base = if refname.starts_with("refs/worktree/") {
+                &git_dir
+            } else {
+                &common
+            };
+            let path = base.join(refname);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let lock_path = grit_lib::refs::lock_path_for_ref(&path);
+            std::fs::write(&lock_path, format!("ref: {target}\n"))?;
+            std::fs::rename(lock_path, path)?;
+            Ok(())
+        }
+        "resolve-ref" => commands::test_tool_ref_store::run(&rest[2..]),
         other => bail!("test-tool ref-store: unsupported subcommand '{other}'"),
     }
 }

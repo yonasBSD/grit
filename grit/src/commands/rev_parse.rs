@@ -59,8 +59,10 @@ enum PathDefaultMode {
     Unmodified,
     /// Realpath / canonical absolute (default for `--git-dir` inside a work tree).
     Canonical,
-    /// `relative_path(realpath(path), realpath(cwd))` (Git `DEFAULT_RELATIVE_IF_SHARED`).
+    /// `relative_path(realpath(path), realpath(cwd))` (Git `DEFAULT_RELATIVE`).
     RelativeToCwd,
+    /// Git `DEFAULT_RELATIVE_IF_SHARED` (`--git-path` default).
+    RelativeIfShared,
 }
 
 fn print_rev_parse_path(
@@ -92,7 +94,36 @@ fn print_rev_parse_path(
             PathDefaultMode::RelativeToCwd => {
                 println!("{}", to_relative_path(&path_abs, &cwd_abs));
             }
+            PathDefaultMode::RelativeIfShared => {
+                let prefix = cli_prefix.filter(|p| !p.as_os_str().is_empty());
+                match prefix {
+                    None => {
+                        println!("{}", path_abs.display());
+                    }
+                    Some(base) => {
+                        let base_abs = realpath_forgiving(base);
+                        if paths_share_root(&path_abs, &base_abs) {
+                            println!("{}", to_relative_path(&path_abs, &base_abs));
+                        } else {
+                            println!("{}", path_abs.display());
+                        }
+                    }
+                }
+            }
         },
+    }
+}
+
+/// True when `a` and `b` are under the same filesystem root (Git `have_same_root`).
+fn paths_share_root(a: &Path, b: &Path) -> bool {
+    use std::path::Component;
+    let mut ac = a.components().filter(|c| !matches!(c, Component::CurDir));
+    let mut bc = b.components().filter(|c| !matches!(c, Component::CurDir));
+    match (ac.next(), bc.next()) {
+        (Some(Component::RootDir), Some(Component::RootDir)) => true,
+        (Some(Component::Prefix(pa)), Some(Component::Prefix(pb))) => pa == pb,
+        (Some(Component::Normal(a0)), Some(Component::Normal(b0))) => a0 == b0,
+        _ => false,
     }
 }
 
@@ -1155,7 +1186,7 @@ pub fn run(args: Args) -> Result<()> {
                         &cwd,
                         cli_prefix_path.as_deref(),
                         *fmt,
-                        PathDefaultMode::RelativeToCwd,
+                        PathDefaultMode::RelativeIfShared,
                     );
                 } else {
                     bail!("not a git repository");
