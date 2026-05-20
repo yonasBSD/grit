@@ -5,7 +5,7 @@
 
 use crate::config::{parse_path, ConfigSet};
 use crate::objects::ObjectId;
-use crate::repo::Repository;
+use crate::repo::{common_git_dir_for_config, Repository};
 use crate::state::HeadState;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -240,7 +240,7 @@ fn resolve_hooks_dir_for_config(git_dir: Option<&Path>, config: Option<&ConfigSe
         }
     }
     git_dir
-        .map(|gd| gd.join("hooks"))
+        .map(|gd| crate::repo::common_git_dir_for_config(gd).join("hooks"))
         .unwrap_or_else(|| PathBuf::from("hooks"))
 }
 

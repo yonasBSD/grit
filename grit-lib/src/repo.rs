@@ -584,54 +584,12 @@ impl Repository {
     /// Whether this is a bare repository (no working tree).
     #[must_use]
     pub fn is_bare(&self) -> bool {
-        // Check core.bare first - it overrides work_tree detection
-        let config_path = self.git_dir.join("config");
-        if let Ok(content) = std::fs::read_to_string(&config_path) {
-            let mut in_core = false;
-            for line in content.lines() {
-                let t = line.trim();
-                if t.starts_with('[') {
-                    in_core = t.eq_ignore_ascii_case("[core]");
-                    continue;
-                }
-                if in_core {
-                    if let Some((k, v)) = t.split_once('=') {
-                        if k.trim().eq_ignore_ascii_case("bare") {
-                            if v.trim().eq_ignore_ascii_case("true") {
-                                return true;
-                            } else if v.trim().eq_ignore_ascii_case("false") {
-                                return false;
-                            }
-                        }
-                    }
-                }
+        if let Ok(cfg) = ConfigSet::load(Some(&self.git_dir), true) {
+            if let Some(Ok(bare)) = cfg.get_bool("core.bare") {
+                return bare;
             }
         }
-        if self.work_tree.is_some() {
-            return false;
-        }
-        // Check core.bare in the repo config.  A .git directory of a
-        // non-bare repo has objects/ and HEAD but core.bare=false.
-        let config_path = self.git_dir.join("config");
-        if let Ok(content) = std::fs::read_to_string(&config_path) {
-            let mut in_core = false;
-            for line in content.lines() {
-                let t = line.trim();
-                if t.starts_with('[') {
-                    in_core = t.eq_ignore_ascii_case("[core]");
-                    continue;
-                }
-                if in_core {
-                    if let Some((k, v)) = t.split_once('=') {
-                        if k.trim().eq_ignore_ascii_case("bare") {
-                            return v.trim().eq_ignore_ascii_case("true");
-                        }
-                    }
-                }
-            }
-        }
-        // No core.bare setting — if work_tree is None, assume bare
-        true
+        self.work_tree.is_none()
     }
 
     /// Read an object, transparently following replace refs.
@@ -1376,6 +1334,7 @@ fn validate_repository_format(git_dir: &Path) -> Result<()> {
                 | "objectformat"
                 | "compatobjectformat"
                 | "refstorage"
+                | "relativeworktrees"
                 | "submodulepathconfig"
         ) {
             continue;
@@ -2248,6 +2207,27 @@ fn pathdiff_relative_gitfile(from: &Path, to: &Path) -> String {
 /// # Errors
 ///
 /// Returns [`Error::Io`] on filesystem failures.
+/// Ensure `core.bare = true` in the repository `config` (used after `git clone --bare`).
+pub fn ensure_core_bare(git_dir: &Path) -> Result<()> {
+    let path = git_dir.join("config");
+    let text = fs::read_to_string(&path).unwrap_or_default();
+    if text.lines().any(|l| {
+        let t = l.trim();
+        t == "bare = true" || t == "bare=true"
+    }) {
+        return Ok(());
+    }
+    let mut out = text;
+    if !out.ends_with('\n') && !out.is_empty() {
+        out.push('\n');
+    }
+    if !out.contains("[core]") {
+        out.push_str("[core]\n");
+    }
+    out.push_str("\tbare = true\n");
+    fs::write(path, out).map_err(Error::Io)
+}
+
 pub fn init_bare_clone_minimal(
     git_dir: &Path,
     initial_branch: &str,

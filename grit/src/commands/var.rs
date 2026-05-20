@@ -7,11 +7,11 @@
 
 use anyhow::{bail, Result};
 use clap::Args as ClapArgs;
-use grit_lib::config::ConfigSet;
+use grit_lib::config::{global_config_paths_pub, ConfigSet};
 use std::io::{self, Write};
 use time::OffsetDateTime;
 
-use crate::ident::{peek_name, resolve_email_lenient, IdentRole};
+use crate::ident::{peek_name, resolve_email_lenient, resolve_name, IdentRole};
 
 /// Arguments for `grit var`.
 #[derive(Debug, ClapArgs)]
@@ -124,32 +124,81 @@ fn read_var(name: &str, config: &ConfigSet, strict: bool) -> Result<Option<Strin
 
 /// Build the author identity string from env/config.
 fn author_ident(config: &ConfigSet, strict: bool) -> Result<Option<String>> {
+    if strict {
+        return strict_role_ident(config, IdentRole::Author, "GIT_AUTHOR_DATE");
+    }
     let name = peek_name(config, IdentRole::Author);
-    let email = if strict {
-        crate::ident::resolve_email(config, IdentRole::Author)?
-    } else {
-        resolve_email_lenient(config, IdentRole::Author)
-    };
+    let email = resolve_email_lenient(config, IdentRole::Author);
     let date = std::env::var("GIT_AUTHOR_DATE")
         .ok()
         .unwrap_or_else(|| format_git_timestamp(OffsetDateTime::now_utc()));
-
-    build_ident(name, email, date, strict, "author")
+    build_ident(name, email, date, false, "author")
 }
 
 /// Build the committer identity string from env/config.
 fn committer_ident(config: &ConfigSet, strict: bool) -> Result<Option<String>> {
+    if strict {
+        return strict_role_ident(config, IdentRole::Committer, "GIT_COMMITTER_DATE");
+    }
     let name = peek_name(config, IdentRole::Committer);
-    let email = if strict {
-        crate::ident::resolve_email(config, IdentRole::Committer)?
-    } else {
-        resolve_email_lenient(config, IdentRole::Committer)
-    };
+    let email = resolve_email_lenient(config, IdentRole::Committer);
     let date = std::env::var("GIT_COMMITTER_DATE")
         .ok()
         .unwrap_or_else(|| format_git_timestamp(OffsetDateTime::now_utc()));
+    build_ident(name, email, date, false, "committer")
+}
 
-    build_ident(name, email, date, strict, "committer")
+/// Email for `git var` with `IDENT_STRICT`: no passwd/synthetic auto-detection (t0007).
+fn resolve_email_for_var_strict(config: &ConfigSet, role: IdentRole) -> Option<String> {
+    let env_key = match role {
+        IdentRole::Author => "GIT_AUTHOR_EMAIL",
+        IdentRole::Committer => "GIT_COMMITTER_EMAIL",
+    };
+    let config_key = match role {
+        IdentRole::Author => "author.email",
+        IdentRole::Committer => "committer.email",
+    };
+    if std::env::var(env_key)
+        .ok()
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        return crate::ident::resolve_email(config, role).ok();
+    }
+    if config
+        .get(config_key)
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        return crate::ident::resolve_email(config, role).ok();
+    }
+    if config.get("user.email").is_some_and(|v| !v.trim().is_empty()) {
+        return crate::ident::resolve_email(config, role).ok();
+    }
+    if std::env::var("EMAIL")
+        .ok()
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        return crate::ident::resolve_email(config, role).ok();
+    }
+    None
+}
+
+/// `git var <IDENT>` uses `IDENT_STRICT` (see upstream `builtin/var.c`).
+fn strict_role_ident(
+    config: &ConfigSet,
+    role: IdentRole,
+    date_env: &str,
+) -> Result<Option<String>> {
+    let name = match resolve_name(config, role) {
+        Ok(n) => n,
+        Err(_) => return Ok(None),
+    };
+    let Some(email) = resolve_email_for_var_strict(config, role) else {
+        return Ok(None);
+    };
+    let date = std::env::var(date_env)
+        .ok()
+        .unwrap_or_else(|| format_git_timestamp(OffsetDateTime::now_utc()));
+    Ok(Some(format!("{name} <{email}> {date}")))
 }
 
 /// Assemble `Name <email> timestamp tz` or error if `strict` and name missing.
@@ -214,11 +263,17 @@ fn git_pager(config: &ConfigSet) -> String {
 
 // ── Misc variables ───────────────────────────────────────────────────────────
 
-/// Resolve the default branch name: init.defaultbranch config → "master".
+/// Resolve the default branch name (matches `repo_default_branch_name` / `git init`).
 fn git_default_branch(config: &ConfigSet) -> String {
+    if let Ok(b) = std::env::var("GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME") {
+        if !b.is_empty() {
+            return b;
+        }
+    }
     config
         .get("init.defaultbranch")
-        .unwrap_or_else(|| "master".to_owned())
+        .or_else(|| config.get("init.defaultBranch"))
+        .unwrap_or_else(|| "main".to_owned())
 }
 
 /// Return the path to a POSIX-compatible shell.
@@ -273,41 +328,17 @@ fn git_config_system() -> Option<String> {
 }
 
 /// Return the global gitconfig path(s) as a newline-joined string (multivalued).
-///
-/// When `GIT_CONFIG_GLOBAL` env is set → just that path.
-/// Otherwise → `$XDG/git/config` (if XDG set) then `$HOME/.gitconfig`.
 fn git_config_global() -> Option<String> {
-    // Explicit override takes the whole value.
-    if let Ok(path) = std::env::var("GIT_CONFIG_GLOBAL") {
-        return Some(path);
-    }
-
-    let home = std::env::var("HOME").ok();
-    let xdg = std::env::var("XDG_CONFIG_HOME")
-        .ok()
-        .filter(|s| !s.is_empty());
-
-    let mut paths: Vec<String> = Vec::new();
-
-    let xdg_base = if let Some(xdg) = xdg {
-        xdg
-    } else if let Some(ref h) = home {
-        format!("{h}/.config")
-    } else {
-        String::new()
-    };
-
-    if !xdg_base.is_empty() {
-        paths.push(format!("{xdg_base}/git/config"));
-    }
-
-    if let Some(h) = home {
-        paths.push(format!("{h}/.gitconfig"));
-    }
-
+    let paths = global_config_paths_pub();
     if paths.is_empty() {
         None
     } else {
-        Some(paths.join("\n"))
+        Some(
+            paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
     }
 }

@@ -580,8 +580,8 @@ fn parse_branch_tracking(config: &str, branch: &str) -> Option<(String, String)>
 /// Load commit parent overrides from `.git/info/grafts` (same format as Git).
 ///
 /// Used for `^N` / `^@` / `^!` / `^-` resolution and for `rev-list` traversal.
-pub(crate) fn load_graft_parents(git_dir: &Path) -> HashMap<ObjectId, Vec<ObjectId>> {
-    let graft_path = git_dir.join("info/grafts");
+pub fn load_graft_parents(git_dir: &Path) -> HashMap<ObjectId, Vec<ObjectId>> {
+    let graft_path = crate::repo::common_git_dir_for_config(git_dir).join("info/grafts");
     let mut grafts = HashMap::new();
     let Ok(contents) = fs::read_to_string(&graft_path) else {
         return grafts;
@@ -2199,7 +2199,11 @@ fn resolve_base(
         }
     }
 
-    if let Ok(oid) = refs::resolve_ref(&repo.git_dir, spec) {
+    let (dwim_count, dwim_oid) = refs::resolve_ref_dwim(&repo.git_dir, spec);
+    if dwim_count > 1 {
+        eprintln!("warning: refname '{spec}' is ambiguous.");
+    }
+    if let Some(oid) = dwim_oid {
         return Ok(oid);
     }
     // `remotes/<remote>/<ref>` is a common shorthand for `refs/remotes/<remote>/<ref>` (t2024).

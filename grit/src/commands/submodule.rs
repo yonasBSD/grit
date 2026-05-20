@@ -316,7 +316,7 @@ fn super_index_has_unmerged_stage(repo: &Repository, rel_path: &str) -> bool {
 }
 
 fn parse_local_config(git_dir: &Path) -> Result<ConfigFile> {
-    let config_path = git_dir.join("config");
+    let config_path = grit_lib::repo::common_git_dir_for_config(git_dir).join("config");
     if config_path.exists() {
         let content = fs::read_to_string(&config_path)?;
         Ok(ConfigFile::parse(
@@ -339,13 +339,16 @@ pub(crate) fn submodule_separate_git_dir(
     submodule_name: &str,
     _submodule_path: &str,
 ) -> Result<PathBuf> {
-    let store = refs::common_dir(&repo.git_dir).unwrap_or_else(|| repo.git_dir.clone());
-    if submodule_path_config_enabled(&store) {
-        let cfg = parse_local_config(&repo.git_dir)?;
-        submodule_gitdir_filesystem_path(work_tree, &store, &cfg, submodule_name)
-            .or_else(|_| Ok(submodule_modules_git_dir(&store, submodule_name)))
+    // Git's `submodule_name_to_gitdir` uses per-worktree `$GIT_DIR/modules/…`, not
+    // `$GIT_COMMON_DIR` (linked worktrees use `.git/worktrees/<id>/modules/…`, t2405).
+    let git_dir = repo.git_dir.clone();
+    let common = refs::common_dir(&repo.git_dir).unwrap_or_else(|| git_dir.clone());
+    if submodule_path_config_enabled(&common) {
+        let cfg = parse_local_config(&git_dir)?;
+        submodule_gitdir_filesystem_path(work_tree, &git_dir, &cfg, submodule_name)
+            .or_else(|_| Ok(submodule_modules_git_dir(&git_dir, submodule_name)))
     } else {
-        Ok(submodule_modules_git_dir(&store, submodule_name))
+        Ok(submodule_modules_git_dir(&git_dir, submodule_name))
     }
 }
 
@@ -1945,7 +1948,7 @@ fn init_in_repo(repo: &Repository, args: &InitArgs, quiet: bool) -> Result<()> {
                 }
             }
 
-            let resolved_url = submodule_clone_argument(work_tree, &m.url)?;
+            let resolved_url = resolve_submodule_super_url(work_tree, &repo.git_dir, &m.url)?;
             config.set(&url_key, &resolved_url)?;
             let reg_path = submodule_display_path_from_cwd(&work_tree.join(&m.path));
             if !quiet {
@@ -2086,7 +2089,64 @@ fn write_submodule_object_alternates(
     Ok(())
 }
 
-fn set_submodule_core_worktree(grit_bin: &Path, modules_dir: &Path, sub_path: &Path) {
+/// Remove `core.worktree` from a separate submodule git dir (Git `submodule_unset_core_worktree`).
+pub(crate) fn unset_submodule_core_worktree_config(modules_dir: &Path) -> Result<()> {
+    let config_path = modules_dir.join("config");
+    if !config_path.is_file() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(&config_path)?;
+    let mut cfg = ConfigFile::parse(&config_path, &content, ConfigScope::Local)?;
+    if cfg.unset("core.worktree")? > 0 {
+        cfg.write()?;
+        return Ok(());
+    }
+    // Linked worktree module configs may keep `worktree` only in raw `[core]` lines that
+    // `ConfigFile` does not round-trip into entries (t2405).
+    let mut out_lines = Vec::new();
+    let mut removed = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("worktree =") || trimmed.starts_with("worktree=") {
+            removed = true;
+            continue;
+        }
+        out_lines.push(line);
+    }
+    if removed {
+        let mut rebuilt = out_lines.join("\n");
+        if !rebuilt.ends_with('\n') {
+            rebuilt.push('\n');
+        }
+        fs::write(&config_path, rebuilt)?;
+    }
+    Ok(())
+}
+
+/// After `checkout --recurse-submodules` in a linked worktree, drop `core.worktree` from per-worktree
+/// module configs (t2405).
+pub(crate) fn unset_linked_worktree_submodule_core_worktrees(repo: &Repository) -> Result<()> {
+    if !repo
+        .git_dir
+        .components()
+        .any(|c| c.as_os_str() == std::ffi::OsStr::new("worktrees"))
+    {
+        return Ok(());
+    }
+    let modules_root = repo.git_dir.join("modules");
+    let Ok(entries) = fs::read_dir(&modules_root) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let modules_dir = entry.path();
+        if modules_dir.join("HEAD").is_file() {
+            unset_submodule_core_worktree_config(&modules_dir)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn set_submodule_core_worktree(grit_bin: &Path, modules_dir: &Path, sub_path: &Path) {
     // Match Git: store a path relative to the module git dir so `test_git_directory_is_unchanged`
     // can compare `.git/modules/<name>` with a copied `<path>/.git` (t4137).
     let wt = pathdiff_relative(modules_dir, sub_path);
@@ -2132,8 +2192,7 @@ fn attach_existing_submodule_worktree(
     if !sub_path.exists() {
         fs::create_dir_all(sub_path)?;
     }
-    let gitfile = sub_path.join(".git");
-    fs::write(&gitfile, format!("gitdir: {}\n", modules_dir.display()))?;
+    write_submodule_gitfile(sub_path, modules_dir).map_err(|e| anyhow::anyhow!("{e}"))?;
     set_submodule_core_worktree(grit_bin, modules_dir, sub_path);
     Ok(())
 }

@@ -7,7 +7,7 @@ t0003-attributes	t0	yes	55	55	0	true	ok	0
 t0004-unwritable	t0	yes	9	9	0	true	ok	0
 t0005-signals	t0	yes	5	3	2	false	ok	0
 t0006-date	t0	yes	129	129	0	true	ok	0
-t0007-git-var	t0	yes	27	24	3	false	ok	0
+t0007-git-var	t0	yes	27	27	0	true	ok	0
 t0008-ignores	t0	yes	398	397	1	false	ok	0
 t0009-git-dir-validation	t0	yes	6	6	0	true	ok	0
 t0010-racy-git	t0	yes	10	10	0	true	ok	0
@@ -445,7 +445,7 @@ t1506-rev-parse-diagnosis	t1	yes	30	30	0	true	ok	0
 t1507-rev-parse-upstream	t1	yes	29	29	0	true	ok	0
 t1508-at-combinations	t1	yes	35	35	0	true	ok	0
 t1509-root-work-tree	t1	yes	0	0	0	false	ok	0
-t1510-repo-setup	t1	yes	109	109	0	true	ok	0
+t1510-repo-setup	t1	yes	109	73	36	false	ok	0
 t1511-rev-parse-caret	t1	yes	17	11	6	false	ok	0
 t1512-rev-parse-disambiguation	t1	yes	38	32	6	false	ok	0
 t1513-rev-parse-prefix	t1	yes	11	11	0	true	ok	0
@@ -517,15 +517,17 @@ t2201-add-update-typechange	t2	yes	6	2	4	false	ok	0
 t2202-add-addremove	t2	yes	3	3	0	true	ok	0
 t2203-add-intent	t2	yes	19	16	3	false	ok	0
 t2204-add-ignored	t2	yes	47	47	0	true	ok	0
-t2205-add-worktree-config	t2	skip	13	5	8	false	ok	0
+t2205-add-worktree-config	t2	yes	13	13	0	true	ok	0
 t2206-add-submodule-ignored	t2	yes	8	3	5	false	ok	0
 t2300-cd-to-toplevel	t2	yes	5	0	5	false	ok	0
+t2400-through-22	t2	yes	22	0	0	false		0
+t2400-through-23	t2	yes	23	0	0	false		0
 t2400-worktree-add	t2	skip	89	0	0	false	ok	0
 t2401-worktree-prune	t2	skip	13	12	1	false	ok	0
 t2402-worktree-list	t2	yes	27	27	0	true	ok	0
-t2403-worktree-move	t2	skip	33	26	7	false	ok	0
-t2404-worktree-config	t2	skip	12	0	0	false	ok	0
-t2405-worktree-submodule	t2	skip	11	3	8	false	ok	1
+t2403-worktree-move	t2	yes	33	33	0	true	ok	0
+t2404-worktree-config	t2	yes	12	12	0	true	ok	0
+t2405-worktree-submodule	t2	yes	10	10	0	true	ok	1
 t2406-worktree-repair	t2	skip	24	0	0	false	ok	0
 t2407-worktree-heads	t2	skip	12	7	5	false	ok	0
 t2500-untracked-overwriting	t2	yes	8	2	6	false	ok	2

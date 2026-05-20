@@ -125,7 +125,7 @@ fn notes_merge_state_ref(refname: &str) -> bool {
 /// checked first for HEAD and per-worktree refs.
 fn resolve_ref_depth(
     git_dir: &Path,
-    common: Option<&Path>,
+    _common: Option<&Path>,
     refname: &str,
     depth: usize,
 ) -> Result<ObjectId> {
@@ -135,50 +135,31 @@ fn resolve_ref_depth(
         )));
     }
 
-    let storage_owned = crate::ref_namespace::storage_ref_name(refname);
-    let try_names: Vec<&str> =
-        if refname == "HEAD" && crate::ref_namespace::ref_storage_prefix().is_some() {
-            vec![storage_owned.as_str()]
-        } else if storage_owned != refname {
-            vec![storage_owned.as_str(), refname]
-        } else {
-            vec![refname]
-        };
+    let (store, stor_name) = crate::worktree_ref::resolve_ref_storage(git_dir, refname);
+    let storage_owned = crate::ref_namespace::storage_ref_name(&stor_name);
+    let try_names: Vec<&str> = if stor_name == "HEAD"
+        && crate::ref_namespace::ref_storage_prefix().is_some()
+    {
+        vec![storage_owned.as_str()]
+    } else if storage_owned != stor_name {
+        vec![storage_owned.as_str(), stor_name.as_str()]
+    } else {
+        vec![stor_name.as_str()]
+    };
 
     for name in try_names {
-        let path = git_dir.join(name);
+        let path = store.join(name);
         match read_ref_file(&path) {
             Ok(Ref::Direct(oid)) => return Ok(oid),
             Ok(Ref::Symbolic(target)) => {
-                return resolve_ref_depth(git_dir, common, &target, depth + 1);
+                return resolve_ref_depth(git_dir, None, &target, depth + 1);
             }
             Err(Error::Io(ref e)) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
 
-        if let Some(cdir) = common {
-            if notes_merge_state_ref(name) {
-            } else if cdir != git_dir {
-                let cpath = cdir.join(name);
-                match read_ref_file(&cpath) {
-                    Ok(Ref::Direct(oid)) => return Ok(oid),
-                    Ok(Ref::Symbolic(target)) => {
-                        return resolve_ref_depth(git_dir, common, &target, depth + 1);
-                    }
-                    Err(Error::Io(ref e)) if e.kind() == io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e),
-                }
-            }
-        }
-
-        let packed_dir = common.unwrap_or(git_dir);
-        if let Some(oid) = lookup_packed_ref(packed_dir, name)? {
+        if let Some(oid) = lookup_packed_ref(&store, name)? {
             return Ok(oid);
-        }
-        if common.is_some() && common != Some(git_dir) {
-            if let Some(oid) = lookup_packed_ref(git_dir, name)? {
-                return Ok(oid);
-            }
         }
     }
 
@@ -223,35 +204,20 @@ pub fn read_raw_ref(git_dir: &Path, refname: &str) -> Result<RawRefLookup> {
 }
 
 fn read_raw_ref_files(git_dir: &Path, refname: &str) -> Result<RawRefLookup> {
-    let common = common_dir(git_dir);
-    let storage_owned = crate::ref_namespace::storage_ref_name(refname);
-    let (names, n): ([&str; 2], usize) = if storage_owned != refname {
-        ([storage_owned.as_str(), refname], 2)
+    let (store, stor_name) = crate::worktree_ref::resolve_ref_storage(git_dir, refname);
+    let storage_owned = crate::ref_namespace::storage_ref_name(&stor_name);
+    let (names, n): ([&str; 2], usize) = if storage_owned != stor_name {
+        ([storage_owned.as_str(), stor_name.as_str()], 2)
     } else {
-        ([refname, refname], 1)
+        ([stor_name.as_str(), stor_name.as_str()], 1)
     };
 
     for name in names.iter().take(n) {
-        if let Some(lookup) = read_raw_ref_at(git_dir.join(name))? {
+        if let Some(lookup) = read_raw_ref_at(store.join(name))? {
             return Ok(lookup);
         }
 
-        if let Some(cdir) = common.as_ref() {
-            if *cdir != git_dir && !notes_merge_state_ref(name) {
-                if let Some(lookup) = read_raw_ref_at(cdir.join(name))? {
-                    return Ok(lookup);
-                }
-            }
-        }
-
-        let packed_dir = common.as_deref().unwrap_or(git_dir);
-        if packed_ref_name_exists(packed_dir, name)? {
-            return Ok(RawRefLookup::Exists);
-        }
-        if common.is_some()
-            && common.as_deref() != Some(git_dir)
-            && packed_ref_name_exists(git_dir, name)?
-        {
+        if packed_ref_name_exists(&store, name)? {
             return Ok(RawRefLookup::Exists);
         }
     }
@@ -849,18 +815,20 @@ pub fn read_symbolic_ref(git_dir: &Path, refname: &str) -> Result<Option<String>
     if crate::reftable::is_reftable_repo(git_dir) {
         return crate::reftable::reftable_read_symbolic_ref(git_dir, refname);
     }
-    let storage_owned = crate::ref_namespace::storage_ref_name(refname);
-    let try_names: Vec<&str> =
-        if refname == "HEAD" && crate::ref_namespace::ref_storage_prefix().is_some() {
-            vec![storage_owned.as_str()]
-        } else if storage_owned != refname {
-            vec![storage_owned.as_str(), refname]
-        } else {
-            vec![refname]
-        };
+    let (store, stor_name) = crate::worktree_ref::resolve_ref_storage(git_dir, refname);
+    let storage_owned = crate::ref_namespace::storage_ref_name(&stor_name);
+    let try_names: Vec<&str> = if stor_name == "HEAD"
+        && crate::ref_namespace::ref_storage_prefix().is_some()
+    {
+        vec![storage_owned.as_str()]
+    } else if storage_owned != stor_name {
+        vec![storage_owned.as_str(), stor_name.as_str()]
+    } else {
+        vec![stor_name.as_str()]
+    };
 
     for name in try_names {
-        let path = git_dir.join(name);
+        let path = store.join(name);
         match read_ref_file(&path) {
             Ok(Ref::Symbolic(target)) => return Ok(Some(target)),
             Ok(Ref::Direct(_)) => return Ok(None),
@@ -869,22 +837,6 @@ pub fn read_symbolic_ref(git_dir: &Path, refname: &str) -> Result<Option<String>
                     || e.kind() == io::ErrorKind::NotADirectory
                     || e.kind() == io::ErrorKind::IsADirectory => {}
             Err(e) => return Err(e),
-        }
-
-        if !notes_merge_state_ref(name) {
-            if let Some(common) = common_dir(git_dir) {
-                if common != git_dir {
-                    let cpath = common.join(name);
-                    match read_ref_file(&cpath) {
-                        Ok(Ref::Symbolic(target)) => return Ok(Some(target)),
-                        Ok(Ref::Direct(_)) => return Ok(None),
-                        Err(Error::Io(ref e)) if e.kind() == io::ErrorKind::NotFound => {}
-                        Err(Error::Io(ref e)) if e.kind() == io::ErrorKind::NotADirectory => {}
-                        Err(Error::Io(ref e)) if e.kind() == io::ErrorKind::IsADirectory => {}
-                        Err(e) => return Err(e),
-                    }
-                }
-            }
         }
     }
 
@@ -1074,21 +1026,12 @@ pub fn append_reflog(
 /// `git_dir`.
 #[must_use]
 pub fn reflog_file_path(git_dir: &Path, refname: &str) -> PathBuf {
-    ref_storage_dir(git_dir, refname).join("logs").join(refname)
+    let (store, stor_name) = crate::worktree_ref::resolve_ref_storage(git_dir, refname);
+    store.join("logs").join(stor_name)
 }
 
 fn ref_storage_dir(git_dir: &Path, refname: &str) -> PathBuf {
-    // Per-worktree refs live under this worktree's git dir; shared refs (including
-    // `refs/bisect/*`) live in the common repository directory so all worktrees
-    // see the same bisection state.
-    if refname == "HEAD" || refname == "NOTES_MERGE_PARTIAL" || refname == "NOTES_MERGE_REF" {
-        return git_dir.to_path_buf();
-    }
-    // `refs/worktree/*` is private to each linked checkout (Git: `files_ref_store` per worktree).
-    if refname.starts_with("refs/worktree/") {
-        return git_dir.to_path_buf();
-    }
-    common_dir(git_dir).unwrap_or_else(|| git_dir.to_path_buf())
+    crate::worktree_ref::resolve_ref_storage(git_dir, refname).0
 }
 
 /// Normalize a ref prefix for filesystem traversal and packed-ref filtering.
@@ -1162,8 +1105,19 @@ pub fn list_refs(git_dir: &Path, prefix: &str) -> Result<Vec<(String, ObjectId)>
     }
 
     let mut results: Vec<(String, ObjectId)> = by_name.into_iter().collect();
+    if crate::worktree_ref::is_linked_worktree_git_dir(git_dir) {
+        results.retain(|(name, _)| crate::worktree_ref::ref_visible_from_worktree(git_dir, name));
+    }
     results.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(results)
+}
+
+/// Resolve a ref using Git DWIM rules (`expand_ref` / `repo_dwim_ref`).
+pub fn resolve_ref_dwim(git_dir: &Path, spec: &str) -> (usize, Option<ObjectId>) {
+    crate::worktree_ref::resolve_ref_dwim(
+        |candidate| resolve_ref(git_dir, candidate).ok(),
+        spec,
+    )
 }
 
 /// List refs under `prefix` using **literal** on-disk paths (ignores `GIT_NAMESPACE`).

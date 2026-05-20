@@ -461,30 +461,46 @@ fn branch_has_merge_config_for_remote(
 }
 
 fn default_fetch_remote_name(git_dir: &Path, config: &ConfigSet) -> String {
+    let remotes = collect_remote_names(config);
+    if remotes.len() == 1 {
+        return remotes[0].clone();
+    }
+
     let Ok(head_raw) = fs::read_to_string(git_dir.join("HEAD")) else {
-        return "origin".to_owned();
+        return pick_default_remote_name(&remotes);
     };
     let head = head_raw.trim();
     let Some(rest) = head.strip_prefix("ref: ") else {
-        return "origin".to_owned();
+        return pick_default_remote_name(&remotes);
     };
     let target = rest.trim();
     let Some(branch) = target.strip_prefix("refs/heads/") else {
-        return "origin".to_owned();
+        return pick_default_remote_name(&remotes);
     };
     let remote_key = format!("branch.{branch}.remote");
     let Some(remote) = config.get(&remote_key) else {
-        return "origin".to_owned();
+        return pick_default_remote_name(&remotes);
     };
     let remote = remote.trim();
     if remote.is_empty() {
-        return "origin".to_owned();
+        return pick_default_remote_name(&remotes);
     }
     let url_key = format!("remote.{remote}.url");
     if config.get(&url_key).is_some() {
         remote.to_owned()
     } else {
+        pick_default_remote_name(&remotes)
+    }
+}
+
+fn pick_default_remote_name(remotes: &[String]) -> String {
+    if remotes.iter().any(|r| r == "origin") {
         "origin".to_owned()
+    } else {
+        remotes
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "origin".to_owned())
     }
 }
 
@@ -5388,39 +5404,12 @@ fn repository_is_bare(git_dir: &Path) -> bool {
 
 /// Check if a branch ref is checked out in any worktree, return the worktree path.
 fn is_branch_in_worktree(git_dir: &std::path::Path, branch_ref: &str) -> Option<String> {
-    let common = grit_lib::refs::common_dir(git_dir).unwrap_or_else(|| git_dir.to_path_buf());
-    // Check main worktree
-    if let Ok(head) = grit_lib::state::resolve_head(&common) {
-        if let grit_lib::state::HeadState::Branch { ref refname, .. } = head {
-            if refname == branch_ref {
-                return Some(common.parent().unwrap_or(&common).display().to_string());
-            }
-        }
-    }
-    // Check linked worktrees
-    let wt_dir = common.join("worktrees");
-    if wt_dir.is_dir() {
-        for entry in std::fs::read_dir(&wt_dir).into_iter().flatten().flatten() {
-            let admin = entry.path();
-            if !admin.is_dir() {
-                continue;
-            }
-            let head_file = admin.join("HEAD");
-            if let Ok(content) = std::fs::read_to_string(&head_file) {
-                if let Some(refname) = content.trim().strip_prefix("ref: ") {
-                    if refname.trim() == branch_ref {
-                        let gitdir_file = admin.join("gitdir");
-                        let path = if let Ok(raw) = std::fs::read_to_string(&gitdir_file) {
-                            let p = std::path::Path::new(raw.trim());
-                            p.parent().unwrap_or(p).display().to_string()
-                        } else {
-                            entry.file_name().to_string_lossy().to_string()
-                        };
-                        return Some(path);
-                    }
-                }
-            }
-        }
-    }
-    None
+    let short = branch_ref.strip_prefix("refs/heads/")?;
+    let work_tree = if repository_is_bare(git_dir) {
+        None
+    } else {
+        git_dir.parent()
+    };
+    let repo = Repository::open(git_dir, work_tree).ok()?;
+    crate::commands::worktree_refs::branch_occupied_any_worktree(&repo, short)
 }

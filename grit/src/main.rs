@@ -801,13 +801,16 @@ fn run_test_tool_partial_clone(rest: &[String]) -> Result<()> {
 }
 
 fn run_test_tool_ref_store(rest: &[String]) -> Result<()> {
-    if rest.len() < 4 {
+    if rest.len() < 3 {
         bail!("usage: test-tool ref-store <backend> <subcommand> ...");
     }
     let backend = rest[1].as_str();
     let sub = rest[2].as_str();
+    if backend.starts_with("worktree:") {
+        return commands::test_tool_ref_store::run(&rest[1..]);
+    }
     if backend != "main" {
-        bail!("test-tool ref-store: unsupported backend (only 'main' is implemented)");
+        bail!("test-tool ref-store: unsupported backend (only 'main' and 'worktree:*' are implemented)");
     }
 
     let repo = grit_lib::repo::Repository::discover(None)?;
@@ -2727,7 +2730,9 @@ fn apply_globals(opts: &GlobalOpts) -> Result<()> {
         }
     }
     if let Some(git_dir) = &opts.git_dir {
-        std::env::set_var("GIT_DIR", git_dir);
+        let resolved =
+            grit_lib::repo::resolve_git_directory_arg(git_dir).unwrap_or_else(|_| git_dir.clone());
+        std::env::set_var("GIT_DIR", resolved);
     }
     if let Some(wt) = &opts.work_tree {
         std::env::set_var("GIT_WORK_TREE", wt);
@@ -4097,6 +4102,10 @@ fn preprocess_diff_args(rest: &[String]) -> Vec<String> {
         } else if let Some(n) = arg.strip_prefix("-U") {
             // `-U<N>` without a space
             result.push(format!("--unified={n}"));
+            i += 1;
+        } else if arg == "--submodule" {
+            // Bare `--submodule` must not consume the next argv token (e.g. `main^!` in t2405).
+            result.push("--submodule=log".to_owned());
             i += 1;
         } else {
             result.push(arg.clone());

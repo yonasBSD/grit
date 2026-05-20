@@ -142,19 +142,11 @@ pub struct Args {
     #[arg(long = "no-shallow-submodules")]
     pub no_shallow_submodules: bool,
 
-    /// Parallel jobs when cloning multiple submodules (`--recurse-submodules`).
-    #[arg(long = "jobs", value_name = "N")]
-    pub submodule_jobs: Option<usize>,
-
     /// Use a custom upload-pack command on the remote side.
     #[arg(short = 'u', long = "upload-pack", value_name = "UPLOAD_PACK")]
     pub upload_pack: Option<String>,
     /// Transmit the given string to the server when speaking protocol v2.
-    #[arg(
-        short = 'o',
-        long = "server-option",
-        action = clap::ArgAction::Append
-    )]
+    #[arg(long = "server-option", action = clap::ArgAction::Append)]
     pub server_options: Vec<String>,
 
     /// Force local clone (default for local paths, accepted for compatibility).
@@ -1057,7 +1049,7 @@ pub fn run(mut args: Args) -> Result<()> {
             (args.shared && args.reference.is_empty() && args.reference_if_able.is_empty())
                 || has_reference;
         if should_add_source_alternate {
-            let source_objects = source.git_dir.join("objects");
+            let source_objects = object_store_git_dir(&source.git_dir).join("objects");
             if let Ok(abs) = source_objects.canonicalize() {
                 add_alternate_objects_line(&alt_dir, &abs)?;
             }
@@ -1358,6 +1350,10 @@ pub fn run(mut args: Args) -> Result<()> {
                 }
             }
         }
+    }
+
+    if args.bare {
+        grit_lib::repo::ensure_core_bare(&dest.git_dir)?;
     }
 
     if !args.quiet && !args.no_checkout {
@@ -2785,7 +2781,7 @@ fn run_ssh_clone(args: Args) -> Result<()> {
             (args.shared && args.reference.is_empty() && args.reference_if_able.is_empty())
                 || has_reference;
         if should_add_source_alternate {
-            let source_objects = source.git_dir.join("objects");
+            let source_objects = object_store_git_dir(&source.git_dir).join("objects");
             if let Ok(abs) = source_objects.canonicalize() {
                 add_alternate_objects_line(&alt_dir, &abs)?;
             }
@@ -3563,7 +3559,7 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
     }
 
     let n_workers = clone_args
-        .submodule_jobs
+        .jobs
         .unwrap_or(1)
         .max(1)
         .min(jobs.len());
@@ -3931,6 +3927,11 @@ fn copy_refs_mirror_all(src_git_dir: &Path, dst_git_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Git directory that owns `objects/` (the common dir when `git_dir` is a linked worktree admin).
+fn object_store_git_dir(git_dir: &Path) -> PathBuf {
+    grit_lib::repo::common_git_dir_for_config(git_dir)
+}
+
 /// Open a source repository (bare or non-bare).
 fn open_source_repo(path: &Path) -> Result<Repository> {
     if path.is_file() {
@@ -3970,6 +3971,7 @@ fn add_alternate_objects_line(objects_info_dir: &Path, objects_abs: &Path) -> Re
 /// Copy `objects/info/alternates` from the source into `dst_objects`, resolving relative paths
 /// against the source repo root (matches Git's `copy_alternates`).
 fn merge_alternates_from_source_objects(src_git_dir: &Path, dst_objects: &Path) -> Result<()> {
+    let src_git_dir = object_store_git_dir(src_git_dir);
     let src_alt = src_git_dir.join("objects/info/alternates");
     let Ok(text) = fs::read_to_string(&src_alt) else {
         return Ok(());
@@ -4035,7 +4037,7 @@ fn write_shared_alternates(
     let dst_objects = dst_git_dir.join("objects");
     let dst_info = dst_objects.join("info");
     fs::create_dir_all(&dst_info)?;
-    let src_objects = src_git_dir.join("objects");
+    let src_objects = object_store_git_dir(src_git_dir).join("objects");
     let src_abs = src_objects.canonicalize().unwrap_or(src_objects);
     add_alternate_objects_line(&dst_info, &src_abs)?;
     append_reference_alternates(&dst_objects, required, optional)?;
@@ -4171,7 +4173,7 @@ fn objects_dir_has_no_data(git_dir: &Path) -> bool {
 /// (local clone fast path). When false, always copy bytes (e.g. `--no-hardlinks`, post-fetch
 /// materialization).
 fn copy_objects(src_git_dir: &Path, dst_git_dir: &Path, try_hardlink: bool) -> Result<()> {
-    let src_objects = src_git_dir.join("objects");
+    let src_objects = object_store_git_dir(src_git_dir).join("objects");
     let dst_objects = dst_git_dir.join("objects");
 
     // Copy loose objects

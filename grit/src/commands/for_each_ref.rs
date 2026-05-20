@@ -572,6 +572,17 @@ fn collect_refs(git_dir: &Path) -> Result<Vec<RefEntry>> {
     }
 
     let mut refs: BTreeMap<String, RefEntry> = BTreeMap::new();
+    for (name, oid) in grit_lib::refs::list_refs(git_dir, "refs/")? {
+        refs.insert(
+            name.clone(),
+            RefEntry {
+                name,
+                oid: Some(oid),
+                object_name: oid.to_string(),
+                symref_target: None,
+            },
+        );
+    }
     collect_loose_refs(git_dir, &git_dir.join("refs"), "refs", &mut refs)?;
     for (name, oid) in parse_packed_refs(git_dir)? {
         refs.entry(name.clone()).or_insert_with(|| RefEntry {

@@ -108,12 +108,9 @@ fn cmd_create_symref(store: &RefStore, args: &[String]) -> Result<()> {
 
     let refname = &args[0];
     let target = &args[1];
-    let base_dir = if is_per_worktree_ref(refname) {
-        &store.git_dir
-    } else {
-        &store.common_dir
-    };
-    let path = base_dir.join(refname);
+    let (base_dir, stor_name) =
+        grit_lib::worktree_ref::resolve_ref_storage(&store.git_dir, refname);
+    let path = base_dir.join(&stor_name);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -155,12 +152,9 @@ fn resolve_ref_for_store(store: &RefStore, refname: &str, depth: usize) -> Resul
         Err(err) => return Err(err.into()),
     }
 
-    let packed_dir = if is_per_worktree_ref(refname) {
-        &store.git_dir
-    } else {
-        &store.common_dir
-    };
-    if let Some(oid) = lookup_packed_ref(packed_dir, refname)? {
+    let (packed_dir, packed_name) =
+        grit_lib::worktree_ref::resolve_ref_storage(&store.git_dir, refname);
+    if let Some(oid) = lookup_packed_ref(&packed_dir, &packed_name)? {
         return Ok(ResolvedRef {
             oid,
             name: refname.to_owned(),
@@ -175,21 +169,17 @@ fn read_loose_ref_for_store(
     store: &RefStore,
     refname: &str,
 ) -> Result<std::result::Result<Ref, grit_lib::error::Error>> {
-    let git_dir_path = store.git_dir.join(refname);
-    match read_ref_file(&git_dir_path) {
+    let (stor_dir, stor_name) = grit_lib::worktree_ref::resolve_ref_storage(&store.git_dir, refname);
+    match read_ref_file(&stor_dir.join(&stor_name)) {
         Ok(reference) => return Ok(Ok(reference)),
         Err(grit_lib::error::Error::Io(err)) if err.kind() == io::ErrorKind::NotFound => {}
         Err(err) => return Ok(Err(err)),
     }
 
-    if is_per_worktree_ref(refname) || store.git_dir == store.common_dir {
-        return Ok(Err(grit_lib::error::Error::Io(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("missing ref: {refname}"),
-        ))));
-    }
-
-    Ok(read_ref_file(&store.common_dir.join(refname)))
+    Ok(Err(grit_lib::error::Error::Io(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("missing ref: {refname}"),
+    ))))
 }
 
 fn common_dir(git_dir: &Path) -> Result<PathBuf> {
@@ -206,13 +196,6 @@ fn common_dir(git_dir: &Path) -> Result<PathBuf> {
         git_dir.join(rel)
     };
     path.canonicalize().context("canonicalizing common dir")
-}
-
-fn is_per_worktree_ref(refname: &str) -> bool {
-    !refname.starts_with("refs/")
-        || refname.starts_with("refs/bisect/")
-        || refname.starts_with("refs/worktree/")
-        || refname.starts_with("refs/rewritten/")
 }
 
 fn lookup_packed_ref(git_dir: &Path, refname: &str) -> Result<Option<ObjectId>> {
