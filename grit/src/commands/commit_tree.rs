@@ -8,6 +8,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
+use std::collections::HashSet;
 use std::env;
 use std::io::Read;
 use time::format_description::well_known::Rfc3339;
@@ -51,12 +52,15 @@ pub fn run(args: Args) -> Result<()> {
     let tree_oid = resolve_revision_for_commit_tree_tree(&repo, &args.tree)
         .with_context(|| format!("not a valid object name: '{}'", args.tree))?;
 
-    // Preserve parent order and duplicates: `git commit-tree -p P -p P` records two parent lines.
+    // Preserve parent order, but omit duplicates like Git.
     let mut parent_oids: Vec<ObjectId> = Vec::new();
+    let mut seen_parents = HashSet::new();
     for p in &args.parents {
         let oid = resolve_revision_for_range_end(&repo, p)
             .with_context(|| format!("not a valid object name: '{p}'"))?;
-        parent_oids.push(oid);
+        if seen_parents.insert(oid) {
+            parent_oids.push(oid);
+        }
     }
 
     // Build commit message
