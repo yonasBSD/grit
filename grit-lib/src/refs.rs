@@ -41,12 +41,14 @@ pub enum Ref {
 pub fn read_ref_file(path: &Path) -> Result<Ref> {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
-        // `refs/heads/master` can be a directory when a branch named `master/...` exists (Git
-        // creates `refs/heads/master` as a dir). Treat like a missing loose ref so resolution
-        // falls through to packed-refs (`t6437-submodule-merge` merge-search setup).
+        // `refs/heads/master` can be a directory when a branch named `master/...` exists, and a
+        // probe like `refs/remotes/v1` can hit ENOTDIR when `refs/remotes` is a file. Treat both
+        // like a missing loose ref so optional DWIM candidates fall through cleanly.
         Err(e)
             if e.kind() == io::ErrorKind::IsADirectory
-                || e.raw_os_error() == Some(libc::EISDIR) =>
+                || e.kind() == io::ErrorKind::NotADirectory
+                || e.raw_os_error() == Some(libc::EISDIR)
+                || e.raw_os_error() == Some(libc::ENOTDIR) =>
         {
             return Err(Error::Io(io::Error::new(io::ErrorKind::NotFound, e)));
         }
@@ -137,15 +139,14 @@ fn resolve_ref_depth(
 
     let (store, stor_name) = crate::worktree_ref::resolve_ref_storage(git_dir, refname);
     let storage_owned = crate::ref_namespace::storage_ref_name(&stor_name);
-    let try_names: Vec<&str> = if stor_name == "HEAD"
-        && crate::ref_namespace::ref_storage_prefix().is_some()
-    {
-        vec![storage_owned.as_str()]
-    } else if storage_owned != stor_name {
-        vec![storage_owned.as_str(), stor_name.as_str()]
-    } else {
-        vec![stor_name.as_str()]
-    };
+    let try_names: Vec<&str> =
+        if stor_name == "HEAD" && crate::ref_namespace::ref_storage_prefix().is_some() {
+            vec![storage_owned.as_str()]
+        } else if storage_owned != stor_name {
+            vec![storage_owned.as_str(), stor_name.as_str()]
+        } else {
+            vec![stor_name.as_str()]
+        };
 
     for name in try_names {
         let path = store.join(name);
@@ -241,7 +242,13 @@ fn read_raw_ref_at(path: PathBuf) -> Result<Option<RawRefLookup>> {
             }
             Ok(Some(RawRefLookup::Exists))
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e)
+            if e.kind() == io::ErrorKind::NotFound
+                || e.kind() == io::ErrorKind::NotADirectory
+                || e.raw_os_error() == Some(libc::ENOTDIR) =>
+        {
+            Ok(None)
+        }
         Err(e) => Err(Error::Io(e)),
     }
 }
@@ -723,7 +730,13 @@ fn remove_packed_ref(git_dir: &Path, refname: &str) -> Result<()> {
     let packed_path = git_dir.join("packed-refs");
     let content = match fs::read_to_string(&packed_path) {
         Ok(c) => c,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e)
+            if e.kind() == io::ErrorKind::NotFound
+                || e.kind() == io::ErrorKind::NotADirectory
+                || e.raw_os_error() == Some(libc::ENOTDIR) =>
+        {
+            return Ok(());
+        }
         Err(e) => return Err(Error::Io(e)),
     };
 
@@ -817,15 +830,14 @@ pub fn read_symbolic_ref(git_dir: &Path, refname: &str) -> Result<Option<String>
     }
     let (store, stor_name) = crate::worktree_ref::resolve_ref_storage(git_dir, refname);
     let storage_owned = crate::ref_namespace::storage_ref_name(&stor_name);
-    let try_names: Vec<&str> = if stor_name == "HEAD"
-        && crate::ref_namespace::ref_storage_prefix().is_some()
-    {
-        vec![storage_owned.as_str()]
-    } else if storage_owned != stor_name {
-        vec![storage_owned.as_str(), stor_name.as_str()]
-    } else {
-        vec![stor_name.as_str()]
-    };
+    let try_names: Vec<&str> =
+        if stor_name == "HEAD" && crate::ref_namespace::ref_storage_prefix().is_some() {
+            vec![storage_owned.as_str()]
+        } else if storage_owned != stor_name {
+            vec![storage_owned.as_str(), stor_name.as_str()]
+        } else {
+            vec![stor_name.as_str()]
+        };
 
     for name in try_names {
         let path = store.join(name);
@@ -1114,10 +1126,7 @@ pub fn list_refs(git_dir: &Path, prefix: &str) -> Result<Vec<(String, ObjectId)>
 
 /// Resolve a ref using Git DWIM rules (`expand_ref` / `repo_dwim_ref`).
 pub fn resolve_ref_dwim(git_dir: &Path, spec: &str) -> (usize, Option<ObjectId>) {
-    crate::worktree_ref::resolve_ref_dwim(
-        |candidate| resolve_ref(git_dir, candidate).ok(),
-        spec,
-    )
+    crate::worktree_ref::resolve_ref_dwim(|candidate| resolve_ref(git_dir, candidate).ok(), spec)
 }
 
 /// List refs under `prefix` using **literal** on-disk paths (ignores `GIT_NAMESPACE`).
@@ -1275,7 +1284,13 @@ fn collect_loose_refs_into_map(
 ) -> Result<()> {
     let read = match fs::read_dir(dir) {
         Ok(r) => r,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e)
+            if e.kind() == io::ErrorKind::NotFound
+                || e.kind() == io::ErrorKind::NotADirectory
+                || e.raw_os_error() == Some(libc::ENOTDIR) =>
+        {
+            return Ok(());
+        }
         Err(e) => return Err(Error::Io(e)),
     };
 

@@ -273,6 +273,9 @@ pub(crate) fn try_lazy_fetch_promisor_object(repo: &Repository, oid: ObjectId) -
                             format!("writing lazy-fetched object from {remote_name}")
                         })?;
                         if repo.odb.exists_local(&oid) {
+                            write_promisor_pack_for_local_oids(repo, &[oid]).with_context(
+                                || format!("writing promisor pack for {}", oid.to_hex()),
+                            )?;
                             return Ok(());
                         }
                     }
@@ -324,6 +327,14 @@ pub(crate) fn try_lazy_fetch_promisor_object(repo: &Repository, oid: ObjectId) -
     }
 
     bail!("could not fetch {} from promisor remote", oid.to_hex());
+}
+
+fn write_promisor_pack_for_local_oids(repo: &Repository, oids: &[ObjectId]) -> Result<()> {
+    let pack_dir = repo.odb.objects_dir().join("pack");
+    let pack_path =
+        crate::commands::pack_objects::write_partial_clone_promisor_pack(repo, &pack_dir, oids)?;
+    std::fs::File::create(pack_path.with_extension("promisor"))?;
+    Ok(())
 }
 
 /// Lazy-fetch several missing objects in as few promisor negotiations as possible.
@@ -716,6 +727,7 @@ pub(crate) fn flush_promisor_blob_batch(
     let count = batch.len();
     match promisor {
         PromisorSource::Local(odb) => {
+            let mut fetched = Vec::new();
             for oid in batch.drain(..) {
                 let obj = odb
                     .read(&oid)
@@ -723,6 +735,10 @@ pub(crate) fn flush_promisor_blob_batch(
                 repo.odb
                     .write(obj.kind, &obj.data)
                     .with_context(|| format!("writing {}", oid.to_hex()))?;
+                fetched.push(oid);
+            }
+            if !fetched.is_empty() {
+                write_promisor_pack_for_local_oids(repo, &fetched)?;
             }
         }
         PromisorSource::Http { remote } => {

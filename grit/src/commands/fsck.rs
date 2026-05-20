@@ -181,6 +181,11 @@ fn read_shallow_boundary_oids(git_dir: &Path) -> HashSet<ObjectId> {
         .collect()
 }
 
+fn refs_fsck_promisor_missing_oid(detail: &str) -> Option<ObjectId> {
+    let hex = detail.strip_prefix("points to missing object ")?;
+    ObjectId::from_hex(hex).ok()
+}
+
 /// A problem found during fsck.
 #[derive(Debug)]
 enum Issue {
@@ -397,6 +402,13 @@ pub fn run(args: Args) -> Result<()> {
     // 6. Reference database (same as `git refs verify`).
     if check_references && !grit_lib::reftable::is_reftable_repo(&repo.git_dir) {
         for line in refs_fsck(&repo, &odb, &config, false)? {
+            if promisor_active
+                && line.msg_id == "missingObject"
+                && refs_fsck_promisor_missing_oid(&line.detail)
+                    .is_some_and(|oid| promisor_expanded.contains(&oid))
+            {
+                continue;
+            }
             eprintln!("{}", format_refs_fsck_line(&line));
             if line.severity == RefsFsckSeverity::Error {
                 has_errors = true;

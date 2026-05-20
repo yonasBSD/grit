@@ -1538,7 +1538,8 @@ fn create_branch(
         );
     }
     let descendant_prefix = format!("{refname}/");
-    if let Some((blocking, _)) = grit_lib::refs::list_refs(&repo.git_dir, &descendant_prefix)?
+    if let Some((blocking, _)) = grit_lib::refs::list_refs(&repo.git_dir, &descendant_prefix)
+        .with_context(|| format!("checking descendant refs under {descendant_prefix}"))?
         .into_iter()
         .next()
     {
@@ -1551,7 +1552,9 @@ fn create_branch(
     }
 
     let oid = match start_point {
-        Some(rev) => resolve_revision(repo, rev)?,
+        Some(rev) => {
+            resolve_revision(repo, rev).with_context(|| format!("resolving start point {rev}"))?
+        }
         None => *head
             .oid()
             .ok_or_else(|| anyhow::anyhow!("not a valid object name: 'HEAD'"))?,
@@ -1570,7 +1573,9 @@ fn create_branch(
         }
     }
 
-    grit_lib::refs::write_ref(&repo.git_dir, &refname, &oid).map_err(|e| anyhow::anyhow!("{e}"))?;
+    grit_lib::refs::write_ref(&repo.git_dir, &refname, &oid)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .with_context(|| format!("updating branch ref {refname}"))?;
 
     if start_point.is_none() && args.track.is_some() {
         if let Some(tracked_short) = head.branch_name() {
@@ -1589,7 +1594,8 @@ fn create_branch(
     if args.create_reflog || should_log_ref_updates(repo) {
         let reflog_path = grit_lib::refs::reflog_file_path(&repo.git_dir, &refname);
         if let Some(parent) = reflog_path.parent() {
-            let _ = fs::create_dir_all(parent);
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating reflog directory {}", parent.display()))?;
         }
         let ident = get_reflog_identity();
         let zero = "0000000000000000000000000000000000000000";
@@ -1605,7 +1611,8 @@ fn create_branch(
                     let mut f = fs::OpenOptions::new()
                         .create(true)
                         .append(true)
-                        .open(&reflog_path)?;
+                        .open(&reflog_path)
+                        .with_context(|| format!("opening reflog {}", reflog_path.display()))?;
                     f.write_all(entry.as_bytes())?;
                 }
             }

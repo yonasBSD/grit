@@ -24,8 +24,8 @@ tests should be driven through library APIs**, not ad hoc logic in the binary.
    - **fsmonitor** / builtin fsmonitor daemon integration and status acceleration
      that depends on it (`core.fsmonitor`, untracked-cache *for fsmonitor paths*).
    - Shell completion, `git send-email`, `git shell`, Scalar, server/daemon parity.
-4. **Submodules:** last milestone before v1 tag—after worktrees, sparse, promisor,
-   signing, and hooks are solid.
+4. **Submodules:** last milestone before v1 tag—after worktrees, promisor,
+   signing, hooks, and sparse checkout are solid.
 
 ### How to work
 
@@ -112,11 +112,94 @@ tests. Most logic belongs in a new **`grit-lib/src/worktree.rs`** (and friends).
 
 ---
 
-## Phase 2 — Sparse checkout (cone + compatibility)
+## Phase 2 — Partial clone, promisor remotes, lazy objects
+
+Extend `promisor.rs`, `shallow.rs`, and ODB miss handling.
+
+### 2.1 Promisor ODB and packs
+
+- [~] Align promisor marker with Git (`promisor` remote config, `.promisor` pack sidecars,
+  `extensions.partialClone` / `core.promisorRemote`).
+- [ ] `odb` miss → promisor remote fetch (single blob/tree/commit) without full clone.
+- [ ] `rev-list --missing`, `--exclude-promisor-objects`, connectivity checks.
+
+### 2.2 Clone/fetch filters
+
+- [ ] `filter=blob:none|tree:0|...` on clone/fetch; record filter in config.
+- [ ] Lazy fetch in merge, checkout, `cat-file`, `apply` (blob touch paths).
+- [ ] `backfill` / `promisor hydrate` as library API.
+
+### 2.3 Shallow + partial interaction
+
+- [ ] Shallow boundary + promisor: fetch deepen, push shallow (non-interactive).
+
+### 2.4 Harness targets (partial / promisor)
+
+- [ ] `t0410-partial-clone`, `t5616-partial-clone`
+- [ ] `t6421-merge-partial-clone`, `t1022-read-tree-partial-clone`
+- [ ] `t5620-backfill`, `t6110-rev-list-sparse` (promisor-related cases)
+- [ ] `t4067-diff-partial-clone`, `t5537-fetch-shallow` (non-interactive)
+
+---
+
+## Phase 3 — Signing (GPG + SSH)
+
+New **`grit-lib/src/signing.rs`** (and small `gpg.rs` / `ssh_sign.rs` if needed).
+
+### 3.1 Commit signing
+
+- [ ] Read `user.signingkey`, `gpg.program`, `gpg.format` (`openpgp` vs `ssh`).
+- [ ] Produce `gpgsig` / `gpgsig-sha256` on commit; SSH cert/key parsing per Git 2.x.
+- [ ] `commit -S` / `--no-gpg-sign` plumbing via library `CommitOptions`.
+
+### 3.2 Tag signing
+
+- [ ] Annotated tag signing; `verify-tag` / `verify-commit` in library.
+- [ ] `push` signed-tag checks where server advertises `allowSignedPush` (client side).
+
+### 3.3 Harness targets (signing)
+
+- [ ] `t7510-signed-commit`
+- [ ] `t7528-signed-commit-ssh`
+- [ ] `t7031-verify-tag-signed-ssh`
+- [ ] `t5534-push-signed` (client-side generation/verification only)
+
+---
+
+## Phase 4 — Hooks (multihook + porcelain integration)
+
+Extend existing **`grit-lib/src/hooks.rs`**.
+
+### 4.1 Hook runner completeness
+
+- [ ] `hook.<name>.*` multihook ordering, `hookPath`, `core.hooksPath`, `init.templateDir`.
+- [ ] All v1-required hook names wired with correct stdin/stdout/env:
+  `pre-commit`, `prepare-commit-msg`, `commit-msg`, `post-commit`,
+  `pre-merge-commit`, `pre-push`, `post-merge`, `post-checkout`, `post-rewrite`,
+  `update` / `pre-receive` (push path, client-side invocation of local hooks only).
+- [ ] `GIT_HOOK_INFO` for post-checkout; exit code propagation and `--no-verify`.
+
+### 4.2 Library call sites
+
+- [ ] `commit`, `merge`, `checkout`, `push`, `fetch` (where Git runs hooks) call
+  `hooks::run_*` with shared `CommitHookEnv`.
+- [ ] `git hook run` / `git hook list` delegate to library.
+
+### 4.3 Harness targets (hooks)
+
+- [ ] `t1800-hook`
+- [ ] `t7503-pre-commit-and-pre-merge-commit-hooks`
+- [ ] `t7504-commit-msg-hook`, `t7505-prepare-commit-msg-hook`
+- [ ] `t5571-pre-push-hook`, `t5402-post-merge-hook`, `t5403-post-checkout-hook`
+- [ ] `t5407-post-rewrite-hook`, `t5401-update-hooks`
+
+---
+
+## Phase 5 — Sparse checkout (cone + compatibility)
 
 Build on existing `sparse_checkout.rs` and index `sdir` extension support.
 
-### 2.1 Sparse index and read-tree integration
+### 5.1 Sparse index and read-tree integration
 
 - [ ] Cone/non-cone pattern load/save (`$GIT_DIR/info/sparse-checkout`,
   `index.sparse` config).
@@ -125,12 +208,12 @@ Build on existing `sparse_checkout.rs` and index `sdir` extension support.
 - [ ] `ls-files`, `add`, `rm`, `mv`, `clean`, `status` respect sparse specification
   (no interactive modes).
 
-### 2.2 Merge and diff under sparse
+### 5.2 Merge and diff under sparse
 
 - [ ] `merge-recursive` / `merge-ort` path limiting vs sparse patterns.
 - [ ] `diff` / `diff-tree` skip out-of-cone paths unless `--sparse` / config says otherwise.
 
-### 2.3 Harness targets (sparse)
+### 5.3 Harness targets (sparse)
 
 - [ ] `t1091-sparse-checkout-builtin`
 - [ ] `t1092-sparse-checkout-compatibility`
@@ -141,89 +224,6 @@ Build on existing `sparse_checkout.rs` and index `sdir` extension support.
 - [ ] `t3705-add-sparse-checkout`
 - [ ] `t3602-rm-sparse-checkout`
 - [ ] `t7002-mv-sparse-checkout`
-
----
-
-## Phase 3 — Partial clone, promisor remotes, lazy objects
-
-Extend `promisor.rs`, `shallow.rs`, and ODB miss handling.
-
-### 3.1 Promisor ODB and packs
-
-- [ ] Align promisor marker with Git (`promisor` remote config, `.promisor` pack sidecars,
-  `extensions.partialClone` / `core.promisorRemote`).
-- [ ] `odb` miss → promisor remote fetch (single blob/tree/commit) without full clone.
-- [ ] `rev-list --missing`, `--exclude-promisor-objects`, connectivity checks.
-
-### 3.2 Clone/fetch filters
-
-- [ ] `filter=blob:none|tree:0|...` on clone/fetch; record filter in config.
-- [ ] Lazy fetch in merge, checkout, `cat-file`, `apply` (blob touch paths).
-- [ ] `backfill` / `promisor hydrate` as library API.
-
-### 3.3 Shallow + partial interaction
-
-- [ ] Shallow boundary + promisor: fetch deepen, push shallow (non-interactive).
-
-### 3.4 Harness targets (partial / promisor)
-
-- [ ] `t0410-partial-clone`, `t5616-partial-clone`
-- [ ] `t6421-merge-partial-clone`, `t1022-read-tree-partial-clone`
-- [ ] `t5620-backfill`, `t6110-rev-list-sparse` (promisor-related cases)
-- [ ] `t4067-diff-partial-clone`, `t5537-fetch-shallow` (non-interactive)
-
----
-
-## Phase 4 — Signing (GPG + SSH)
-
-New **`grit-lib/src/signing.rs`** (and small `gpg.rs` / `ssh_sign.rs` if needed).
-
-### 4.1 Commit signing
-
-- [ ] Read `user.signingkey`, `gpg.program`, `gpg.format` (`openpgp` vs `ssh`).
-- [ ] Produce `gpgsig` / `gpgsig-sha256` on commit; SSH cert/key parsing per Git 2.x.
-- [ ] `commit -S` / `--no-gpg-sign` plumbing via library `CommitOptions`.
-
-### 4.2 Tag signing
-
-- [ ] Annotated tag signing; `verify-tag` / `verify-commit` in library.
-- [ ] `push` signed-tag checks where server advertises `allowSignedPush` (client side).
-
-### 4.3 Harness targets (signing)
-
-- [ ] `t7510-signed-commit`
-- [ ] `t7528-signed-commit-ssh`
-- [ ] `t7031-verify-tag-signed-ssh`
-- [ ] `t5534-push-signed` (client-side generation/verification only)
-
----
-
-## Phase 5 — Hooks (multihook + porcelain integration)
-
-Extend existing **`grit-lib/src/hooks.rs`**.
-
-### 5.1 Hook runner completeness
-
-- [ ] `hook.<name>.*` multihook ordering, `hookPath`, `core.hooksPath`, `init.templateDir`.
-- [ ] All v1-required hook names wired with correct stdin/stdout/env:
-  `pre-commit`, `prepare-commit-msg`, `commit-msg`, `post-commit`,
-  `pre-merge-commit`, `pre-push`, `post-merge`, `post-checkout`, `post-rewrite`,
-  `update` / `pre-receive` (push path, client-side invocation of local hooks only).
-- [ ] `GIT_HOOK_INFO` for post-checkout; exit code propagation and `--no-verify`.
-
-### 5.2 Library call sites
-
-- [ ] `commit`, `merge`, `checkout`, `push`, `fetch` (where Git runs hooks) call
-  `hooks::run_*` with shared `CommitHookEnv`.
-- [ ] `git hook run` / `git hook list` delegate to library.
-
-### 5.3 Harness targets (hooks)
-
-- [ ] `t1800-hook`
-- [ ] `t7503-pre-commit-and-pre-merge-commit-hooks`
-- [ ] `t7504-commit-msg-hook`, `t7505-prepare-commit-msg-hook`
-- [ ] `t5571-pre-push-hook`, `t5402-post-merge-hook`, `t5403-post-checkout-hook`
-- [ ] `t5407-post-rewrite-hook`, `t5401-update-hooks`
 
 ---
 
@@ -316,17 +316,17 @@ within a phase can be parallelized where noted.
 | 1.2 | 1 | Worktree lifecycle API | `t2400`, `t2402` |
 | 1.3 | 1 | Per-worktree index/refs in commands | `t2404`, `t2407` |
 | 1.4 | 1 | Worktree repair/prune/lock | `t2401`, `t2406` |
-| 2.1 | 2 | Sparse index + checkout | `t1091`, `t1011` |
-| 2.2 | 2 | Sparse merge/diff | `t1092`, `t6435` |
-| 2.3 | 2 | Sparse add/rm/mv/status | `t3705`, `t3602` |
-| 3.1 | 3 | Promisor ODB + packs | `t0410` |
-| 3.2 | 3 | Filter clone/fetch + lazy fetch | `t5616` |
-| 3.3 | 3 | Backfill + merge on partial | `t5620`, `t6421` |
-| 4.1 | 4 | GPG/SSH commit signing | `t7510`, `t7528` |
-| 4.2 | 4 | Tag verify + push signed | `t7031`, `t5534` |
-| 5.1 | 5 | Multihook runner complete | `t1800` |
-| 5.2 | 5 | Hook integration in commit/merge/push | `t7503`–`t7505`, `t5571` |
-| 5.3 | 5 | post-checkout/merge/rewrite hooks | `t5402`, `t5403`, `t5407` |
+| 2.1 | 2 | Promisor ODB + packs | `t0410` |
+| 2.2 | 2 | Filter clone/fetch + lazy fetch | `t5616` |
+| 2.3 | 2 | Backfill + merge on partial | `t5620`, `t6421` |
+| 3.1 | 3 | GPG/SSH commit signing | `t7510`, `t7528` |
+| 3.2 | 3 | Tag verify + push signed | `t7031`, `t5534` |
+| 4.1 | 4 | Multihook runner complete | `t1800` |
+| 4.2 | 4 | Hook integration in commit/merge/push | `t7503`–`t7505`, `t5571` |
+| 4.3 | 4 | post-checkout/merge/rewrite hooks | `t5402`, `t5403`, `t5407` |
+| 5.1 | 5 | Sparse index + checkout | `t1091`, `t1011` |
+| 5.2 | 5 | Sparse merge/diff | `t1092`, `t6435` |
+| 5.3 | 5 | Sparse add/rm/mv/status | `t3705`, `t3602` |
 | 6.1 | 6 | Checkout/restore/reset polish | `t7201`, `t7102` |
 | 6.2 | 6 | Merge/pull/cherry-pick (no `-i`) | `t7600`, `t3500` |
 | 6.3 | 6 | Status/log/diff polish | `t7508`, `t4202` |

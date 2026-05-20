@@ -3365,7 +3365,7 @@ pub(crate) fn write_partial_clone_promisor_pack(
     repo: &Repository,
     pack_dir: &Path,
     oids: &[ObjectId],
-) -> Result<()> {
+) -> Result<PathBuf> {
     std::fs::create_dir_all(pack_dir)?;
     let pack_hash_bytes = pack_trailer_bytes_for_repo(&repo.git_dir);
     let mut sorted: Vec<ObjectId> = oids.to_vec();
@@ -3399,5 +3399,5 @@ pub(crate) fn write_partial_clone_promisor_pack(
     std::fs::write(&pack_path, &pack_bytes)?;
     let (idx_bytes, _) = build_idx_for_pack(&pack_bytes, &write_entries, pack_hash_bytes)?;
     std::fs::write(&idx_path, &idx_bytes)?;
-    Ok(())
+    Ok(pack_path)
 }
