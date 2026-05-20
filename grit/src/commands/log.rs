@@ -1078,7 +1078,7 @@ fn run_line_log(
         })
         .unwrap_or(false);
     let (show_decorations, decorate_full) =
-        resolve_decoration_display(&args, format_requires_decorations);
+        resolve_decoration_display(&args, &repo.git_dir, format_requires_decorations);
     let decorations = if !show_decorations {
         None
     } else {
@@ -1522,10 +1522,40 @@ fn log_uses_builtin_oneline(args: &Args) -> bool {
 /// Mirrors Git's handling of `--decorate`, `--no-decorate`, and raw argv scanning for
 /// those flags. `--oneline` does not imply `--decorate`; use `--decorate` or a format
 /// with `%d` / `%D` when decorations are required.
-fn resolve_decoration_display(args: &Args, format_requires_decorations: bool) -> (bool, bool) {
+fn resolve_decoration_display(
+    args: &Args,
+    git_dir: &Path,
+    format_requires_decorations: bool,
+) -> (bool, bool) {
     let mut show = format_requires_decorations;
     // Git enables decorations for `%d` / `%D` with short ref names; `--decorate=full` opts in.
     let mut full = false;
+    if let Some(mode) = ConfigSet::load(Some(git_dir), true)
+        .unwrap_or_default()
+        .get("log.decorate")
+    {
+        match mode.trim().to_ascii_lowercase().as_str() {
+            "full" => {
+                show = true;
+                full = true;
+            }
+            "short" | "auto" => {
+                show = true;
+                full = false;
+            }
+            other => match parse_bool(other) {
+                Ok(true) => {
+                    show = true;
+                    full = false;
+                }
+                Ok(false) => {
+                    show = false;
+                    full = false;
+                }
+                Err(_) => {}
+            },
+        }
+    }
     for arg in std::env::args() {
         if arg == "--no-decorate" {
             show = false;
@@ -1980,7 +2010,7 @@ fn run_rev_list_log(
         })
         .unwrap_or(false);
     let (show_decorations, decorate_full) =
-        resolve_decoration_display(args, format_requires_decorations);
+        resolve_decoration_display(args, &repo.git_dir, format_requires_decorations);
     let decoration_map_for_display = if show_decorations {
         Some(collect_decorations(repo, decorate_full)?)
     } else {
@@ -2363,7 +2393,7 @@ fn run_graph_log(
         })
         .unwrap_or(false);
     let (show_decorations_graph, decorate_full_graph) =
-        resolve_decoration_display(args, format_requires_decorations_graph);
+        resolve_decoration_display(args, &repo.git_dir, format_requires_decorations_graph);
     let decorations = if args.simplify_by_decoration || show_decorations_graph {
         Some(collect_decorations(repo, decorate_full_graph)?)
     } else {
@@ -3950,7 +3980,7 @@ pub fn run(mut args: Args) -> Result<()> {
         .unwrap_or(false);
 
     let (show_decorations, decorate_full) =
-        resolve_decoration_display(&args, format_requires_decorations);
+        resolve_decoration_display(&args, &repo.git_dir, format_requires_decorations);
     // `--simplify-by-decoration` needs ref→OID mapping even when decorations are not shown
     // (`--oneline` does not imply `--decorate`). Use a separate map for display so we do not
     // print `(refs)` unless `--decorate` / `%d` requests it; OID keys match for full vs short maps.
