@@ -777,8 +777,12 @@ fn sparse_pattern_matches(p: &SparsePattern, pathname: &str, as_directory: bool)
         return trimmed.contains('/') || as_directory;
     }
     if !p.has_slash && !p.anchored {
+        let pat = p.body.as_bytes();
         sparse_unanchored_basename_matches(&p.body, pathname)
-            || wildmatch(p.body.as_bytes(), pathname.as_bytes(), WM_PATHNAME)
+            || wildmatch(pat, pathname.as_bytes(), WM_PATHNAME)
+            || pathname
+                .split('/')
+                .any(|comp| wildmatch(pat, comp.as_bytes(), 0))
     } else if p.anchored && !p.has_slash && p.body == "*" && !p.directory_only {
         // Sparse line `/*`: include only top-level paths (one segment). `WM_PATHNAME` keeps `*`
         // from matching `/`, but we match against the bare pathname; require no `/` so `dir/c` is
@@ -988,13 +992,19 @@ mod sparse_checkout_tests {
         let lines = vec!["/*".into(), "!/*/".into()];
         assert!(path_in_sparse_checkout("a", &lines, None));
         assert!(!path_in_sparse_checkout("folder1/a", &lines, None));
-        let wt = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        // work_tree only affects directory vs file matching on parent walks
         let wt = std::env::temp_dir().join("grit-sparse-wt-test");
         let _ = std::fs::create_dir_all(wt.join("folder1"));
         let _ = std::fs::write(wt.join("a"), b"x");
         assert!(!path_in_sparse_checkout("folder1/a", &lines, Some(&wt)));
         assert!(!path_in_sparse_checkout("folder1", &lines, Some(&wt)));
+    }
+
+    #[test]
+    fn unanchored_glob_matches_path_components() {
+        let lines = vec!["/*".into(), "!/*/".into(), "*folder*".into()];
+        assert!(path_in_sparse_checkout("folder1/a", &lines, None));
+        assert!(path_in_sparse_checkout("folder2/a", &lines, None));
+        assert!(!path_in_sparse_checkout("deep/a", &lines, None));
     }
 }
 
