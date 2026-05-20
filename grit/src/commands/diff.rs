@@ -1703,8 +1703,14 @@ pub fn run(mut args: Args) -> Result<()> {
         revs.retain(|r| r != "-B" && r != "--break-rewrites");
     }
 
-    // Outside any repository, `git diff <path> <path>` behaves like `diff --no-index` (t4035).
-    if repo_opt.is_none() && revs.is_empty() && raw_path_args.len() == 2 && !args.cached {
+    // Outside any repository, `git diff <path> <path>` behaves like `diff --no-index`.
+    if repo_opt.is_none()
+        && !args.cached
+        && ((revs.is_empty() && raw_path_args.len() == 2)
+            || (raw_path_args.is_empty()
+                && revs.len() == 2
+                && revs.iter().all(|p| Path::new(p).exists())))
+    {
         return run_no_index(args);
     }
 
@@ -3125,9 +3131,10 @@ pub fn run(mut args: Args) -> Result<()> {
             }
             // `git diff --stat -p` prints stat then patch only when `-p`/`-u`/etc. appear on argv;
             // plain `--stat` must not append hunks (matches Git).
-            let show_unified_after_stat =
-                diff_cli_requests_unified_patch_alongside_stat(&raw_args) && !args.no_patch;
-            if show_unified_after_stat {
+            let write_unified_patch = !args.no_patch
+                && (!format_besides_unified_patch
+                    || diff_cli_requests_unified_patch_alongside_stat(&raw_args));
+            if write_unified_patch {
                 for patch in &conflict_combined_patches {
                     write!(out, "{patch}")?;
                 }
@@ -4467,6 +4474,10 @@ fn diff_cli_requests_unified_patch_alongside_stat(argv: &[String]) -> bool {
             continue;
         }
         if arg == "-p" || arg == "--patch" || arg == "-u" {
+            emit = true;
+            continue;
+        }
+        if arg == "--patch-with-raw" || arg == "--patch-with-stat" {
             emit = true;
             continue;
         }
