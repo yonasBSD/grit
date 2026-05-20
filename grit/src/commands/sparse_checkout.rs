@@ -19,7 +19,7 @@ use grit_lib::sparse_checkout::{
     sparse_checkout_lines_look_like_expanded_cone, ConePatterns, ConeWorkspace, NonConePatterns,
 };
 use grit_lib::state::resolve_head;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
