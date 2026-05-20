@@ -633,7 +633,7 @@ pub fn run(mut args: Args) -> Result<()> {
             &mut sparse_advice_paths,
         )?;
     } else if pathspecs_are_all_exclude(&resolved_specs) {
-        add_with_pathspec_list(
+        let _ = add_with_pathspec_list(
             odb,
             &mut index,
             work_tree,
@@ -663,75 +663,100 @@ pub fn run(mut args: Args) -> Result<()> {
         let mut had_errors = false;
         let mut had_ignored = false;
         let mut chmod_deferred: Option<anyhow::Error> = None;
-        for (_pathspec, resolved) in args.pathspec.iter().zip(resolved_specs.iter()) {
-            // Expand glob patterns (e.g. "file?.t", "*.c") against the working tree.
-            let expanded = expand_glob_pathspec(resolved, work_tree, add_cfg.precompose_unicode);
-            for resolved in &expanded {
-                match add_path(
-                    odb,
-                    &mut index,
-                    work_tree,
-                    resolved,
-                    &args,
-                    &repo,
-                    &mut ignore_matcher,
-                    &add_cfg,
-                ) {
-                    Ok(()) => {}
-                    Err(AddPathError::Ignored(msg)) => {
-                        eprintln!("{msg}");
-                        had_errors = true;
-                        if !(args.dry_run && args.ignore_missing) {
-                            had_ignored = true;
-                        }
-                    }
-                    Err(AddPathError::DryRunFatalPathspec { message }) => {
-                        println!("{message}");
-                        return Err(anyhow::Error::new(SilentNonZeroExit { code: 128 }));
-                    }
-                    Err(AddPathError::EmbeddedNoCommit { rel_path }) => {
-                        eprintln!("error: '{rel_path}' does not have a commit checked out");
-                        eprintln!("error: unable to index file '{rel_path}'");
-                        eprintln!("fatal: adding files failed");
-                        std::process::exit(128);
-                    }
-                    Err(AddPathError::IoError(e)) => {
-                        if add_cfg.ignore_errors {
-                            eprintln!("warning: {e}");
-                            had_errors = true;
-                        } else if args.chmod.is_some() && error_is_chmod_on_non_regular(&e) {
-                            chmod_deferred = chmod_deferred.or(Some(e));
-                            had_errors = true;
-                        } else {
-                            if is_unwritable_odb_error(&e) {
-                                eprintln!(
-                                    "error: insufficient permission for adding an object to repository database .git/objects"
-                                );
-                                eprintln!("error: {}: failed to insert into database", resolved);
-                                eprintln!("error: unable to index file '{}'", resolved);
-                                eprintln!("fatal: updating files failed");
-                                std::process::exit(1);
-                            }
-                            return Err(e);
-                        }
-                    }
-                    Err(AddPathError::OutsideSparse(path)) => {
-                        sparse_advice_paths.push(path);
-                        had_errors = true;
-                    }
-                    Err(AddPathError::Other(e)) => {
-                        if add_cfg.ignore_errors {
-                            eprintln!("warning: {e}");
-                            had_errors = true;
-                        } else if args.chmod.is_some() && error_is_chmod_on_non_regular(&e) {
-                            chmod_deferred = chmod_deferred.or(Some(e));
-                            had_errors = true;
-                        } else {
-                            return Err(e);
-                        }
-                    }
+        if pathspecs_need_match_walk(&args.pathspec) {
+            let matched = add_with_pathspec_list(
+                odb,
+                &mut index,
+                work_tree,
+                &resolved_specs,
+                &args,
+                &repo,
+                &mut ignore_matcher,
+                &add_cfg,
+            )?;
+            if !matched && !(args.dry_run && args.ignore_missing) {
+                let pathspec = args.pathspec.first().map_or("", String::as_str);
+                if args.dry_run {
+                    println!("fatal: pathspec '{pathspec}' did not match any files");
+                    return Err(anyhow::Error::new(SilentNonZeroExit { code: 128 }));
                 }
-            } // end expanded loop
+                bail!("pathspec '{}' did not match any files", pathspec);
+            }
+        } else {
+            for (_pathspec, resolved) in args.pathspec.iter().zip(resolved_specs.iter()) {
+                // Expand glob patterns (e.g. "file?.t", "*.c") against the working tree.
+                let expanded =
+                    expand_glob_pathspec(resolved, work_tree, add_cfg.precompose_unicode);
+                for resolved in &expanded {
+                    match add_path(
+                        odb,
+                        &mut index,
+                        work_tree,
+                        resolved,
+                        &args,
+                        &repo,
+                        &mut ignore_matcher,
+                        &add_cfg,
+                    ) {
+                        Ok(()) => {}
+                        Err(AddPathError::Ignored(msg)) => {
+                            eprintln!("{msg}");
+                            had_errors = true;
+                            if !(args.dry_run && args.ignore_missing) {
+                                had_ignored = true;
+                            }
+                        }
+                        Err(AddPathError::DryRunFatalPathspec { message }) => {
+                            println!("{message}");
+                            return Err(anyhow::Error::new(SilentNonZeroExit { code: 128 }));
+                        }
+                        Err(AddPathError::EmbeddedNoCommit { rel_path }) => {
+                            eprintln!("error: '{rel_path}' does not have a commit checked out");
+                            eprintln!("error: unable to index file '{rel_path}'");
+                            eprintln!("fatal: adding files failed");
+                            std::process::exit(128);
+                        }
+                        Err(AddPathError::IoError(e)) => {
+                            if add_cfg.ignore_errors {
+                                eprintln!("warning: {e}");
+                                had_errors = true;
+                            } else if args.chmod.is_some() && error_is_chmod_on_non_regular(&e) {
+                                chmod_deferred = chmod_deferred.or(Some(e));
+                                had_errors = true;
+                            } else {
+                                if is_unwritable_odb_error(&e) {
+                                    eprintln!(
+                                        "error: insufficient permission for adding an object to repository database .git/objects"
+                                    );
+                                    eprintln!(
+                                        "error: {}: failed to insert into database",
+                                        resolved
+                                    );
+                                    eprintln!("error: unable to index file '{}'", resolved);
+                                    eprintln!("fatal: updating files failed");
+                                    std::process::exit(1);
+                                }
+                                return Err(e);
+                            }
+                        }
+                        Err(AddPathError::OutsideSparse(path)) => {
+                            sparse_advice_paths.push(path);
+                            had_errors = true;
+                        }
+                        Err(AddPathError::Other(e)) => {
+                            if add_cfg.ignore_errors {
+                                eprintln!("warning: {e}");
+                                had_errors = true;
+                            } else if args.chmod.is_some() && error_is_chmod_on_non_regular(&e) {
+                                chmod_deferred = chmod_deferred.or(Some(e));
+                                had_errors = true;
+                            } else {
+                                return Err(e);
+                            }
+                        }
+                    }
+                } // end expanded loop
+            }
         }
 
         deferred_chmod = chmod_deferred;
@@ -1537,6 +1562,19 @@ fn pathspecs_are_all_exclude(pathspecs: &[String]) -> bool {
             .all(|s| grit_lib::pathspec::pathspec_is_exclude(s))
 }
 
+fn pathspecs_need_match_walk(pathspecs: &[String]) -> bool {
+    pathspecs
+        .iter()
+        .any(|s| pathspec_uses_long_magic(s) && !grit_lib::pathspec::pathspec_is_exclude(s))
+}
+
+fn pathspec_uses_long_magic(pathspec: &str) -> bool {
+    !grit_lib::pathspec::literal_pathspecs_enabled()
+        && pathspec
+            .strip_prefix(":(")
+            .is_some_and(|rest| rest.contains(')'))
+}
+
 /// Stage every work-tree file that matches `pathspecs` (Git `match_pathspec`, including excludes).
 fn add_with_pathspec_list(
     odb: &Odb,
@@ -1547,7 +1585,7 @@ fn add_with_pathspec_list(
     repo: &Repository,
     ignore_matcher: &mut Option<IgnoreMatcher>,
     add_cfg: &AddConfig,
-) -> Result<()> {
+) -> Result<bool> {
     let mut paths: Vec<(String, PathBuf)> = Vec::new();
     walk_directory(
         work_tree,
@@ -1561,11 +1599,13 @@ fn add_with_pathspec_list(
 
     let worktree_paths: std::collections::HashSet<&str> =
         paths.iter().map(|(r, _)| r.as_str()).collect();
+    let mut matched_any = false;
 
     for (rel_path, abs_path) in &paths {
         if !grit_lib::pathspec::matches_pathspec_list(rel_path, pathspecs) {
             continue;
         }
+        matched_any = true;
         if let Err(e) = stage_file(
             odb,
             index,
@@ -1599,6 +1639,7 @@ fn add_with_pathspec_list(
         .collect();
 
     for path in removed {
+        matched_any = true;
         if args.verbose {
             let path_str = String::from_utf8_lossy(&path);
             eprintln!("remove '{path_str}'");
@@ -1608,7 +1649,7 @@ fn add_with_pathspec_list(
         }
     }
 
-    Ok(())
+    Ok(matched_any)
 }
 
 /// Add all files under the working tree (or a prefix) to the index.
