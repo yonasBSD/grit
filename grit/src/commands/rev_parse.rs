@@ -98,7 +98,7 @@ fn print_rev_parse_path(
                 let prefix = cli_prefix.filter(|p| !p.as_os_str().is_empty());
                 match prefix {
                     None => {
-                        println!("{}", path_abs.display());
+                        println!("{}", to_relative_path(&path_abs, &cwd_abs));
                     }
                     Some(base) => {
                         let base_abs = realpath_forgiving(base);
@@ -1145,8 +1145,17 @@ pub fn run(args: Args) -> Result<()> {
                             grit_lib::config::ConfigSet::load(Some(&current.git_dir), true)?;
                         if let Some(hooks_path) = config.get("core.hooksPath") {
                             let hooks_dir = std::path::Path::new(&hooks_path);
-                            if path_arg == "hooks" {
+                            let hook_base = current
+                                .work_tree
+                                .as_deref()
+                                .unwrap_or(current.git_dir.as_path());
+                            let hooks_dir = if hooks_dir.is_absolute() {
                                 hooks_dir.to_path_buf()
+                            } else {
+                                hook_base.join(hooks_dir)
+                            };
+                            if path_arg == "hooks" {
+                                hooks_dir
                             } else {
                                 let remainder = &path_arg["hooks/".len()..];
                                 hooks_dir.join(remainder)
