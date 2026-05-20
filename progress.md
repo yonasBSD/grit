@@ -15,10 +15,13 @@ Task lines in `PLAN.md`: 17 completed (`[x]`), 0 in progress (`[~]`), 68 remaini
 
 ## In progress
 
+- **PLAN §2.1 sparse checkout** — `t1091-sparse-checkout-builtin` **54/77** (worktree config, non-cone `/*` nodir, worktree pruning on apply); see `logs/2026-05-20-sparse-checkout-t1091.md`.
 - `t5319-multi-pack-index` (~14/98): MIDX read/write groundwork + `Odb` integration; CLI verify/expire/repack/bitmap still open (see `logs/2026-04-10_t5319-midx-progress.md`).
 
 ## Recently completed
 
+- **PR [#773](https://github.com/schacon/grit/pull/773)** — sparse-checkout: `init_worktree_config`, non-cone nodir, apply removes excluded paths (t1091 27→54/77).
+- **PR [#772](https://github.com/schacon/grit/pull/772)** — worktree linked HEAD, submodules, config, harness.
 - **PLAN §1.1–1.2 worktrees** — Registry, commondir/refs, `config.worktree` / `worktreeConfig`, lifecycle commands, occupation guards (harness t2400–t2407, t2205, t1415, t1407, t2405).
 - `t2404-worktree-config` — 12/12; `t2205-add-worktree-config` — 13/13.
 - `t2405-worktree-submodule` — 11/11 harness (10 pass + 1 `test_expect_failure`; submodule worktree checkout, `--recurse-submodules`, `core.worktree` in linked module config).
