@@ -47,11 +47,12 @@ use grit_lib::merge_diff::{
 use grit_lib::objects::{parse_commit, parse_tag, ObjectId, ObjectKind};
 use grit_lib::odb::Odb;
 use grit_lib::quote_path::{format_diff_path_with_prefix, quote_c_style};
-use grit_lib::repo::Repository;
+use grit_lib::repo::{resolve_dot_git, Repository};
 use grit_lib::rev_list::{is_symmetric_diff, rev_list, RevListOptions};
 use grit_lib::rev_parse::{
-    abbreviate_object_id, resolve_revision, resolve_revision_as_commit,
-    resolve_treeish_blob_at_path, show_prefix, split_treeish_colon, TreeishBlobAtPath,
+    abbreviate_object_id, expand_rev_token_circ_bang, resolve_revision,
+    resolve_revision_as_commit, resolve_treeish_blob_at_path, show_prefix, split_treeish_colon,
+    TreeishBlobAtPath,
 };
 use grit_lib::userdiff::{matcher_for_path_parsed, word_regex_pattern_for_path_parsed};
 use grit_lib::ws::{self, WhitespaceGitAttr, WS_BLANK_AT_EOF, WS_INCOMPLETE_LINE};
@@ -552,6 +553,31 @@ fn submodule_gitlink_patch_plus_suffix(
     }
 }
 
+/// Open the submodule repository for `--submodule=log` only when it is checked out.
+fn open_submodule_repo_for_log(
+    super_git_dir: &Path,
+    work_tree: Option<&Path>,
+    path: &str,
+) -> Option<Repository> {
+    if let Some(wt) = work_tree {
+        let sub_wt = wt.join(path);
+        let dot_git = sub_wt.join(".git");
+        if dot_git.exists() {
+            if let Ok(gd) = resolve_dot_git(&dot_git) {
+                if let Ok(repo) = Repository::open(&gd, Some(&sub_wt)) {
+                    return Some(repo);
+                }
+            }
+        }
+    }
+    let modules_dir = super_git_dir.join("modules").join(path);
+    if modules_dir.is_dir() {
+        Repository::open(&modules_dir, None).ok()
+    } else {
+        None
+    }
+}
+
 fn write_submodule_log_lines(
     out: &mut impl Write,
     repo: &Repository,
@@ -573,20 +599,31 @@ fn write_submodule_log_lines(
     }
     let old_a = abbreviate_object_id(repo, entry.old_oid, 7)?;
     let new_a = abbreviate_object_id(repo, new_oid, 7)?;
+    let Some(wt) = work_tree.or(repo.work_tree.as_deref()) else {
+        writeln!(out, "Submodule {} {}..{}:", entry.path(), old_a, new_a)?;
+        return Ok(());
+    };
+    let sub_repo = open_submodule_repo_for_log(&repo.git_dir, Some(wt), entry.path());
+    if sub_repo.is_none() {
+        writeln!(
+            out,
+            "Submodule {} {}...{} (commits not present)",
+            entry.path(),
+            old_a,
+            new_a
+        )?;
+        return Ok(());
+    }
+    let sub_repo = sub_repo.expect("checked above");
     writeln!(out, "Submodule {} {}..{}:", entry.path(), old_a, new_a)?;
-    let Some(wt) = repo.work_tree.as_deref() else {
-        return Ok(());
-    };
-    let sub_path = wt.join(entry.path());
-    let Ok(sub_repo) = Repository::discover(Some(&sub_path)) else {
-        return Ok(());
-    };
     let mut opts = RevListOptions::default();
     opts.first_parent = true;
+    let (_, negative_specs) =
+        grit_lib::rev_list::split_revision_token(&format!("^{}", entry.old_oid.to_hex()));
     let Ok(res) = rev_list(
         &sub_repo,
         &[new_oid.to_hex()],
-        &[entry.old_oid.to_hex()],
+        &negative_specs,
         &opts,
     ) else {
         return Ok(());
@@ -1703,14 +1740,8 @@ pub fn run(mut args: Args) -> Result<()> {
         revs.retain(|r| r != "-B" && r != "--break-rewrites");
     }
 
-    // Outside any repository, `git diff <path> <path>` behaves like `diff --no-index`.
-    if repo_opt.is_none()
-        && !args.cached
-        && ((revs.is_empty() && raw_path_args.len() == 2)
-            || (raw_path_args.is_empty()
-                && revs.len() == 2
-                && revs.iter().all(|p| Path::new(p).exists())))
-    {
+    // Outside any repository, `git diff <path> <path>` behaves like `diff --no-index` (t4035).
+    if repo_opt.is_none() && revs.is_empty() && raw_path_args.len() == 2 && !args.cached {
         return run_no_index(args);
     }
 
@@ -1774,6 +1805,20 @@ pub fn run(mut args: Args) -> Result<()> {
     };
     let diff_algo_cli = parse_cli_diff_algorithm_from_argv();
 
+    if args.submodule.as_deref().is_none_or(str::is_empty)
+        && raw_args
+            .iter()
+            .any(|a| a == "--submodule" || a.starts_with("--submodule="))
+    {
+        args.submodule = Some(
+            raw_args
+                .iter()
+                .find_map(|a| a.strip_prefix("--submodule="))
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "log".to_string()),
+        );
+    }
     let emit_unified_patch = diff_emit_unified_patch_from_argv(&raw_args);
     let indent_heuristic = resolve_indent_heuristic(
         &diff_config_early,
@@ -2249,7 +2294,19 @@ pub fn run(mut args: Args) -> Result<()> {
 
     let mut _symmetric = false;
     if revs.len() == 1 {
-        if let Some((left_spec, right_spec)) = try_treeish_blob_range(&revs[0]) {
+        if revs[0].ends_with("^!") {
+            let expanded = expand_rev_token_circ_bang(&repo, &revs[0])?;
+            if expanded.len() >= 2 {
+                let parent_spec = expanded[1]
+                    .strip_prefix('^')
+                    .unwrap_or(expanded[1].as_str());
+                let parent_oid = resolve_revision(&repo, parent_spec)
+                    .with_context(|| format!("unknown revision: '{parent_spec}'"))?;
+                let commit_oid = resolve_revision(&repo, &expanded[0])
+                    .with_context(|| format!("unknown revision: '{}'", expanded[0]))?;
+                revs = vec![parent_oid.to_hex(), commit_oid.to_hex()];
+            }
+        } else if let Some((left_spec, right_spec)) = try_treeish_blob_range(&revs[0]) {
             revs = vec![left_spec, right_spec];
         } else if let Some((left, right)) = revs[0].split_once("...") {
             let left = if left.is_empty() { "HEAD" } else { left };
@@ -3131,10 +3188,14 @@ pub fn run(mut args: Args) -> Result<()> {
             }
             // `git diff --stat -p` prints stat then patch only when `-p`/`-u`/etc. appear on argv;
             // plain `--stat` must not append hunks (matches Git).
-            let write_unified_patch = !args.no_patch
-                && (!format_besides_unified_patch
-                    || diff_cli_requests_unified_patch_alongside_stat(&raw_args));
-            if write_unified_patch {
+            let submodule_fmt_requested = args
+                .submodule
+                .as_deref()
+                .is_some_and(|s| !s.is_empty());
+            let show_unified_after_stat = !args.no_patch
+                && (diff_cli_requests_unified_patch_alongside_stat(&raw_args)
+                    || submodule_fmt_requested);
+            if show_unified_after_stat {
                 for patch in &conflict_combined_patches {
                     write!(out, "{patch}")?;
                 }
@@ -4474,10 +4535,6 @@ fn diff_cli_requests_unified_patch_alongside_stat(argv: &[String]) -> bool {
             continue;
         }
         if arg == "-p" || arg == "--patch" || arg == "-u" {
-            emit = true;
-            continue;
-        }
-        if arg == "--patch-with-raw" || arg == "--patch-with-stat" {
             emit = true;
             continue;
         }

@@ -142,5 +142,6 @@ pub mod whitespace_rule;
 pub mod wildmatch;
 pub mod worktree;
 pub mod worktree_cwd;
+pub mod worktree_ref;
 pub mod write_tree;
 pub mod ws;

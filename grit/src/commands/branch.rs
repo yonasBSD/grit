@@ -1487,6 +1487,30 @@ fn create_branch(
         bail!("A branch named '{name}' already exists.");
     }
 
+    // Cannot force-update a branch checked out in any worktree (before ref lock checks).
+    if args.force {
+        let current = head.branch_name().unwrap_or("");
+        if name == current {
+            let wt_path = repo
+                .work_tree
+                .as_deref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| repo.git_dir.display().to_string());
+            bail!(
+                "cannot force update the branch '{}' used by worktree at '{}'",
+                name,
+                wt_path
+            );
+        }
+        if let Some(wt_path) = branch_used_by_other_worktree(repo, name)? {
+            bail!(
+                "cannot force update the branch '{}' used by worktree at '{}'",
+                name,
+                wt_path
+            );
+        }
+    }
+
     // Check for D/F conflict: a prefix of the new name exists as a branch
     // e.g., cannot create 'c/d' if 'c' already exists as a branch
     let heads_dir = repo.git_dir.join("refs/heads");
@@ -1524,30 +1548,6 @@ fn create_branch(
             blocking,
             refname
         );
-    }
-
-    // Cannot force-update the current branch
-    if args.force {
-        let current = head.branch_name().unwrap_or("");
-        if name == current {
-            let wt_path = repo
-                .work_tree
-                .as_deref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| repo.git_dir.display().to_string());
-            bail!(
-                "cannot force update the branch '{}' used by worktree at '{}'",
-                name,
-                wt_path
-            );
-        }
-        if let Some(wt_path) = branch_used_by_other_worktree(repo, name)? {
-            bail!(
-                "cannot force update the branch '{}' used by worktree at '{}'",
-                name,
-                wt_path
-            );
-        }
     }
 
     let oid = match start_point {
@@ -1821,7 +1821,7 @@ fn delete_branch(repo: &Repository, head: &HeadState, args: &Args, name_input: &
     }
 
     let current = head.branch_name().unwrap_or("");
-    if name == current {
+    if name == current && repo.work_tree.is_some() {
         let wt_path = repo
             .work_tree
             .as_deref()
@@ -1914,6 +1914,10 @@ fn rename_branch(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
 
     let old_ref = format!("refs/heads/{old_name}");
     let new_ref = format!("refs/heads/{new_name}");
+
+    if let Some(wt_path) = branch_used_by_other_worktree(repo, old_name)? {
+        bail!("fatal: cannot rename the branch '{old_name}' used by worktree at '{wt_path}'");
+    }
 
     // Resolve old branch - check both loose and packed refs
     let old_oid = if let Ok(oid) = grit_lib::refs::resolve_ref(&repo.git_dir, &old_ref) {
@@ -2075,12 +2079,7 @@ fn update_worktree_heads(repo: &Repository, old_name: &str, new_name: &str) -> R
 }
 
 fn branch_used_by_other_worktree(repo: &Repository, branch: &str) -> Result<Option<String>> {
-    let occupied = crate::commands::worktree_refs::occupied_branch_refs(repo);
-    let target = format!("refs/heads/{branch}");
-    if let Some(wt_path) = occupied.get(&target) {
-        return Ok(Some(wt_path.clone()));
-    }
-    Ok(None)
+    Ok(crate::commands::worktree_refs::branch_occupied_any_worktree(repo, branch))
 }
 
 fn branch_checked_out_in_other_worktree(repo: &Repository, branch: &str) -> Option<String> {

@@ -40,8 +40,9 @@ use grit_lib::rev_list::{
     merge_bases, rev_list, split_symmetric_diff, OrderingMode, RevListOptions,
 };
 use grit_lib::rev_parse::{
-    peel_to_commit_for_merge_base, resolve_reflog_walk_log_ref, resolve_revision_as_commit,
-    resolve_revision_for_range_end, try_parse_double_dot_log_range,
+    load_graft_parents, peel_to_commit_for_merge_base, resolve_reflog_walk_log_ref,
+    resolve_revision_as_commit, resolve_revision_for_range_end,
+    try_parse_double_dot_log_range,
 };
 use grit_lib::state::{resolve_head, HeadState};
 use regex::{Regex, RegexBuilder};
@@ -215,7 +216,7 @@ pub struct Args {
     pub walk_reflogs: bool,
 
     /// Show unified diff (patch) after each commit.
-    #[arg(short = 'p', long = "patch", alias = "unified")]
+    #[arg(short = 'p', long = "patch")]
     pub patch: bool,
 
     /// Do not show diff after commits.
@@ -2636,9 +2637,7 @@ fn graph_reaches(
 }
 
 fn load_raw_parents(repo: &Repository, oid: ObjectId) -> Result<Vec<ObjectId>> {
-    let object = repo.odb.read(&oid)?;
-    let commit = parse_commit(&object.data)?;
-    Ok(commit.parents)
+    grit_lib::rev_parse::commit_parents_for_navigation(repo, oid).map_err(Into::into)
 }
 
 fn visible_parents_for_graph(
@@ -5861,6 +5860,7 @@ struct WalkCommitsIter<'a> {
     bloom_cwd: Option<String>,
     author_date_order: bool,
     shallow_boundaries: HashSet<ObjectId>,
+    graft_parents: HashMap<ObjectId, Vec<ObjectId>>,
     blocked: HashSet<ObjectId>,
     enlisted: HashSet<ObjectId>,
     queue: BTreeMap<CommitQueueKey, ()>,
@@ -5912,6 +5912,7 @@ impl<'a> WalkCommitsIter<'a> {
         author_date_order: bool,
     ) -> Self {
         let shallow_boundaries = load_shallow_boundaries(git_dir);
+        let graft_parents = load_graft_parents(git_dir);
         let blocked: HashSet<ObjectId> = excluded.clone();
         let mut enlisted = HashSet::new();
         let mut queue: BTreeMap<CommitQueueKey, ()> = BTreeMap::new();
@@ -5945,6 +5946,7 @@ impl<'a> WalkCommitsIter<'a> {
             bloom_cwd,
             author_date_order,
             shallow_boundaries,
+            graft_parents,
             blocked,
             enlisted,
             queue,
@@ -6010,10 +6012,14 @@ impl<'a> WalkCommitsIter<'a> {
                 continue;
             }
             let commit = parse_commit(&obj.data)?;
+            let mut walk_parents = commit.parents.clone();
+            if let Some(grafted) = self.graft_parents.get(&oid) {
+                walk_parents = grafted.clone();
+            }
 
             let info = CommitInfo {
                 tree: commit.tree,
-                parents: commit.parents.clone(),
+                parents: walk_parents.clone(),
                 author: commit.author.clone(),
                 committer: commit.committer.clone(),
                 message: commit.message.clone(),
@@ -6021,7 +6027,7 @@ impl<'a> WalkCommitsIter<'a> {
 
             if !self.shallow_boundaries.contains(&oid) {
                 if self.first_parent {
-                    if let Some(parent) = commit.parents.first() {
+                    if let Some(parent) = walk_parents.first() {
                         if !self.blocked.contains(parent) && self.enlisted.insert(*parent) {
                             let ts = if self.author_date_order {
                                 read_author_timestamp_repo(self.repo, parent)
@@ -6034,7 +6040,7 @@ impl<'a> WalkCommitsIter<'a> {
                         }
                     }
                 } else {
-                    for parent in &commit.parents {
+                    for parent in &walk_parents {
                         if !self.blocked.contains(parent) && self.enlisted.insert(*parent) {
                             let ts = if self.author_date_order {
                                 read_author_timestamp_repo(self.repo, parent)

@@ -3548,7 +3548,7 @@ pub(crate) struct CommitGraph<'r> {
 impl<'r> CommitGraph<'r> {
     pub(crate) fn new(repo: &'r Repository, first_parent_only: bool) -> Self {
         let shallow_boundaries = load_shallow_boundaries(&repo.git_dir);
-        let graft_parents = load_graft_parents(&repo.git_dir);
+        let graft_parents = crate::rev_parse::load_graft_parents(&repo.git_dir);
         Self {
             repo,
             first_parent_only,
@@ -3628,43 +3628,6 @@ fn load_shallow_boundaries(git_dir: &Path) -> HashSet<ObjectId> {
         }
     }
     set
-}
-
-/// Load commit parent overrides from `.git/info/grafts`.
-fn load_graft_parents(git_dir: &Path) -> HashMap<ObjectId, Vec<ObjectId>> {
-    let graft_path = git_dir.join("info/grafts");
-    let mut grafts = HashMap::new();
-    let Ok(contents) = fs::read_to_string(&graft_path) else {
-        return grafts;
-    };
-    for raw_line in contents.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let mut fields = line.split_whitespace();
-        let Some(commit_hex) = fields.next() else {
-            continue;
-        };
-        let Ok(commit_oid) = commit_hex.parse::<ObjectId>() else {
-            continue;
-        };
-        let mut parents = Vec::new();
-        let mut valid = true;
-        for parent_hex in fields {
-            match parent_hex.parse::<ObjectId>() {
-                Ok(parent_oid) => parents.push(parent_oid),
-                Err(_) => {
-                    valid = false;
-                    break;
-                }
-            }
-        }
-        if valid {
-            grafts.insert(commit_oid, parents);
-        }
-    }
-    grafts
 }
 
 fn commit_tips_from_ref_pairs(

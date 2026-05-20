@@ -42,6 +42,22 @@ pub fn resolve_linked_head(admin: &Path, _common: &Path) -> HeadState {
     resolve_head(admin).unwrap_or(HeadState::Invalid)
 }
 
+/// Number of registered worktrees (main + linked entries under `worktrees/`).
+#[must_use]
+pub fn registered_worktree_count(common: &Path) -> usize {
+    let worktrees_dir = common.join("worktrees");
+    if !worktrees_dir.is_dir() {
+        return 1;
+    }
+    let linked = fs::read_dir(&worktrees_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .count();
+    1 + linked
+}
+
 /// Whether `common` is configured as a bare repository (`core.bare=true`).
 #[must_use]
 pub fn is_bare_repository(common: &Path) -> bool {
@@ -117,6 +133,167 @@ pub fn list_worktrees(repo: &Repository) -> Result<Vec<WorktreeEntry>> {
     Ok(entries)
 }
 
+/// Last path component of `path`, without trailing directory separators (Git `worktree_basename`).
+#[must_use]
+pub fn worktree_path_basename(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    let trimmed = s.trim_end_matches(['/', '\\']);
+    trimmed
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(trimmed)
+        .to_owned()
+}
+
+/// Sanitize a path basename for use as `worktrees/<id>/` (Git `sanitize_refname_component`).
+#[must_use]
+pub fn sanitize_worktree_id_component(name: &str) -> String {
+    if name == "@" {
+        return "-".to_owned();
+    }
+
+    let mut out = String::new();
+    let mut last = '\0';
+    let chars: Vec<char> = name.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch.is_ascii_control()
+            || matches!(ch, ':' | '?' | '[' | '\\' | '^' | '~' | ' ' | '\t' | '*')
+        {
+            if out.is_empty() && last != '-' {
+                out.push('-');
+            } else if !out.is_empty() {
+                out.push('-');
+            }
+            last = '-';
+            i += 1;
+            continue;
+        }
+        if ch == '.' && i + 1 < chars.len() && chars[i + 1] == '.' {
+            if last == '.' {
+                out.pop();
+            } else {
+                out.push('.');
+                last = '.';
+            }
+            i += 2;
+            continue;
+        }
+        if ch == '@' && i + 1 < chars.len() && chars[i + 1] == '{' {
+            if let Some(last_ch) = out.pop() {
+                if last_ch != '-' {
+                    out.push('-');
+                }
+            }
+            last = '-';
+            i += 2;
+            continue;
+        }
+        if ch == '.' && out.is_empty() {
+            out.push('-');
+            last = '-';
+            i += 1;
+            continue;
+        }
+        out.push(ch);
+        last = ch;
+        i += 1;
+    }
+
+    const LOCK_SUFFIX: &str = ".lock";
+    while out.ends_with(LOCK_SUFFIX) {
+        out.truncate(out.len() - LOCK_SUFFIX.len());
+    }
+    while out.ends_with('.') {
+        out.pop();
+    }
+    out
+}
+
+/// Pick a unique `<common>/worktrees/<id>/` directory for a new linked worktree at `wt_path`.
+///
+/// Git uses the sanitized basename and appends `1`, `2`, … when the admin dir already exists.
+#[must_use]
+pub fn allocate_worktree_admin_dir(common: &Path, wt_path: &Path) -> PathBuf {
+    let worktrees_dir = common.join("worktrees");
+    let base = sanitize_worktree_id_component(&worktree_path_basename(wt_path));
+    let base = if base.is_empty() {
+        "worktree".to_owned()
+    } else {
+        base
+    };
+
+    let mut counter = 0u32;
+    loop {
+        let id = if counter == 0 {
+            base.clone()
+        } else {
+            format!("{base}{counter}")
+        };
+        let admin = worktrees_dir.join(&id);
+        if !admin.exists() {
+            return admin;
+        }
+        counter = counter.saturating_add(1);
+        if counter == 0 {
+            break;
+        }
+    }
+    worktrees_dir.join(format!("{base}{}", std::process::id()))
+}
+
+/// Copy `config.worktree` into a linked worktree admin dir, stripping keys Git omits
+/// when `extensions.worktreeConfig` is enabled (`core.bare`, `core.worktree`).
+pub fn copy_filtered_worktree_config(source_git_dir: &Path, admin_dir: &Path) -> Result<()> {
+    let src = source_git_dir.join("config.worktree");
+    if !src.is_file() {
+        return Ok(());
+    }
+    let dst = admin_dir.join("config.worktree");
+    fs::copy(&src, &dst).map_err(Error::Io)?;
+    strip_worktree_config_keys(&dst, &["core.bare", "core.worktree"])?;
+    Ok(())
+}
+
+fn strip_worktree_config_keys(path: &Path, keys: &[&str]) -> Result<()> {
+    let content = fs::read_to_string(path).map_err(Error::Io)?;
+    let mut kept = Vec::new();
+    let mut section: Option<String> = None;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+            kept.push(line);
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            let end = trimmed.find(']').unwrap_or(trimmed.len());
+            let name = trimmed[1..end].trim().to_ascii_lowercase();
+            section = Some(name);
+            kept.push(line);
+            continue;
+        }
+        if let Some((key, _)) = trimmed.split_once('=') {
+            let key = key.trim().to_ascii_lowercase();
+            let full = match section.as_deref() {
+                Some(sec) => format!("{sec}.{key}"),
+                None => key.clone(),
+            };
+            if keys.iter().any(|k| full.eq_ignore_ascii_case(k)) {
+                continue;
+            }
+        } else if keys.iter().any(|k| trimmed.eq_ignore_ascii_case(k)) {
+            continue;
+        }
+        kept.push(line);
+    }
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    fs::write(path, out).map_err(Error::Io)
+}
+
 /// Read the working tree path from `<admin>/gitdir` (parent of the worktree `.git` file).
 pub fn read_worktree_path(admin: &Path) -> Result<PathBuf> {
     let gitdir_path = admin.join("gitdir");
@@ -168,6 +345,39 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].path, root.canonicalize().unwrap());
         assert!(!list[0].is_bare);
+    }
+
+    #[test]
+    fn allocate_unique_worktree_id() {
+        let tmp = TempDir::new().unwrap();
+        let common = tmp.path().join("git");
+        fs::create_dir_all(common.join("worktrees/here")).unwrap();
+        let admin = allocate_worktree_admin_dir(&common, Path::new("/tmp/sub/here"));
+        assert_eq!(admin, common.join("worktrees/here1"));
+    }
+
+    #[test]
+    fn strip_worktree_config_removes_core_bare_and_worktree() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.worktree");
+        fs::write(
+            &path,
+            "[core]\n\tbare = true\n\tworktree = /wt\n[bogus]\n\tkey = value\n",
+        )
+        .unwrap();
+        strip_worktree_config_keys(&path, &["core.bare", "core.worktree"]).unwrap();
+        let out = fs::read_to_string(&path).unwrap();
+        assert!(out.contains("bogus"));
+        assert!(!out.contains("bare"));
+        assert!(!out.contains("worktree"));
+    }
+
+    #[test]
+    fn sanitize_funny_worktree_name() {
+        assert_eq!(
+            sanitize_worktree_id_component(".  weird*..?.lock.lock"),
+            "---weird-.-"
+        );
     }
 
     #[test]
