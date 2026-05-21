@@ -489,6 +489,10 @@ pub struct RevListOptions {
     pub no_kept_objects: bool,
     /// Behavior when referenced objects are missing.
     pub missing_action: MissingAction,
+    /// Stop traversal at objects promised by promisor packs.
+    pub exclude_promisor_objects: bool,
+    /// Ignore missing command-line revision/object arguments.
+    pub ignore_missing: bool,
     /// When set with `--objects`, omit path names from non-commit object lines (bitmap-style output).
     pub use_bitmap_index: bool,
     /// When set with `--objects`, list only objects not present in any pack file.
@@ -557,6 +561,8 @@ impl Default for RevListOptions {
             in_commit_order: false,
             no_kept_objects: false,
             missing_action: MissingAction::Error,
+            exclude_promisor_objects: false,
+            ignore_missing: false,
             use_bitmap_index: false,
             unpacked_only: false,
             bitmap_oid_only_objects: false,
@@ -631,15 +637,15 @@ pub fn rev_list(
     let mut graph = CommitGraph::new(repo, options.first_parent);
 
     let (mut include, object_roots, tip_annotated_tag_by_commit) = if options.objects {
-        resolve_specs_for_objects(repo, positive_specs)?
+        resolve_specs_for_objects_with_options(repo, positive_specs, options.ignore_missing)?
     } else {
         (
-            resolve_specs(repo, positive_specs)?,
+            resolve_specs_with_options(repo, positive_specs, options.ignore_missing)?,
             Vec::new(),
             HashMap::new(),
         )
     };
-    let exclude = resolve_specs(repo, negative_specs)?;
+    let exclude = resolve_specs_with_options(repo, negative_specs, options.ignore_missing)?;
 
     if options.all_refs {
         include.extend(all_ref_tips(repo, &RefExclusions::default())?);
@@ -679,6 +685,23 @@ pub fn rev_list(
     };
 
     if include.is_empty() && object_roots.is_empty() {
+        if options.ignore_missing {
+            return Ok(RevListResult {
+                commits: Vec::new(),
+                objects: Vec::new(),
+                omitted_objects: Vec::new(),
+                missing_objects: Vec::new(),
+                boundary_commits: Vec::new(),
+                left_right_map: HashMap::new(),
+                cherry_equivalent: HashSet::new(),
+                per_commit_object_counts: Vec::new(),
+                object_walk_tips: Vec::new(),
+                objects_print_commit: Vec::new(),
+                object_segments: Vec::new(),
+                bitmap_object_format: false,
+                tip_annotated_tag_by_commit: HashMap::new(),
+            });
+        }
         return Err(Error::InvalidRef("no revisions specified".to_owned()));
     }
 
@@ -688,13 +711,23 @@ pub fn rev_list(
         Vec::new()
     };
 
+    let excluded_promisor = if options.exclude_promisor_objects {
+        crate::promisor::promisor_expanded_object_ids(repo)?
+    } else {
+        HashSet::new()
+    };
+
     let (mut included, _discovery_order) = if include.is_empty() {
         (HashSet::new(), Vec::new())
+    } else if options.exclude_promisor_objects {
+        walk_closure_ordered_excluding(&mut graph, &include, &excluded_promisor)?
     } else {
         walk_closure_ordered(&mut graph, &include)?
     };
     let excluded = if exclude.is_empty() {
         HashSet::new()
+    } else if options.exclude_promisor_objects {
+        walk_closure_ordered_excluding(&mut graph, &exclude, &excluded_promisor)?.0
     } else if options.exclude_first_parent_only {
         walk_closure_first_parent_only(&mut graph, &exclude)?
     } else {
@@ -1024,12 +1057,14 @@ pub fn rev_list(
     let skip_trees = skip_tree_descent_for_object_type_filter(options.filter.as_ref());
     let walk_cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
     let promisor_repo = crate::promisor::repo_treats_promisor_packs(&repo.git_dir, &walk_cfg);
-    let object_walk_missing_action =
-        if options.objects && options.missing_action == MissingAction::Error && promisor_repo {
-            MissingAction::Allow
-        } else {
-            options.missing_action
-        };
+    let object_walk_missing_action = if options.objects
+        && options.missing_action == MissingAction::Error
+        && (promisor_repo || options.exclude_promisor_objects)
+    {
+        MissingAction::Allow
+    } else {
+        options.missing_action
+    };
     let bitmap_object_format = options.objects
         && options.use_bitmap_index
         && (options.bitmap_oid_only_objects || !object_roots.is_empty() || options.unpacked_only);
@@ -1047,7 +1082,7 @@ pub fn rev_list(
     let (objects, omitted_objects, missing_objects, per_commit_object_counts, object_segments) =
         if options.objects {
             let filter_provided = options.filter_provided_objects;
-            let (mut objs, omit, miss, counts, segments) = if options.in_commit_order {
+            let (mut objs, omit, miss, counts, mut segments) = if options.in_commit_order {
                 let (o, om, mi, c) = collect_reachable_objects_in_commit_order(
                     repo,
                     &mut graph,
@@ -1084,6 +1119,12 @@ pub fn rev_list(
             };
             if options.no_kept_objects {
                 objs.retain(|(oid, _)| !kept_set.contains(oid));
+            }
+            if options.exclude_promisor_objects {
+                objs.retain(|(oid, _)| !excluded_promisor.contains(oid));
+                for segment in &mut segments {
+                    segment.retain(|(oid, _)| !excluded_promisor.contains(oid));
+                }
             }
             (objs, omit, miss, counts, segments)
         } else {
@@ -2284,11 +2325,21 @@ fn packed_object_set(repo: &Repository) -> HashSet<ObjectId> {
 }
 
 fn resolve_specs(repo: &Repository, specs: &[String]) -> Result<Vec<ObjectId>> {
+    resolve_specs_with_options(repo, specs, false)
+}
+
+fn resolve_specs_with_options(
+    repo: &Repository,
+    specs: &[String],
+    ignore_missing: bool,
+) -> Result<Vec<ObjectId>> {
     let mut out = Vec::with_capacity(specs.len());
     for spec in specs {
-        let oid = resolve_revision_for_range_end(repo, spec)?;
-        let commit_oid = peel_to_commit(repo, oid)?;
-        out.push(commit_oid);
+        match resolve_revision_for_range_end(repo, spec).and_then(|oid| peel_to_commit(repo, oid)) {
+            Ok(commit_oid) => out.push(commit_oid),
+            Err(Error::ObjectNotFound(_) | Error::InvalidRef(_)) if ignore_missing => {}
+            Err(err) => return Err(err),
+        }
     }
     Ok(out)
 }
@@ -2335,13 +2386,25 @@ fn resolve_specs_for_objects(
     repo: &Repository,
     specs: &[String],
 ) -> Result<(Vec<ObjectId>, Vec<RootObject>, HashMap<ObjectId, ObjectId>)> {
+    resolve_specs_for_objects_with_options(repo, specs, false)
+}
+
+fn resolve_specs_for_objects_with_options(
+    repo: &Repository,
+    specs: &[String],
+    ignore_missing: bool,
+) -> Result<(Vec<ObjectId>, Vec<RootObject>, HashMap<ObjectId, ObjectId>)> {
     let mut commits = Vec::new();
     let mut roots = Vec::new();
     let mut tip_annotated_tag_by_commit: HashMap<ObjectId, ObjectId> = HashMap::new();
 
     for spec in specs {
         if let Ok(raw_oid) = spec.parse::<ObjectId>() {
-            let raw_object = repo.odb.read(&raw_oid)?;
+            let raw_object = match repo.odb.read(&raw_oid) {
+                Ok(obj) => obj,
+                Err(Error::ObjectNotFound(_)) if ignore_missing => continue,
+                Err(err) => return Err(err),
+            };
             match raw_object.kind {
                 ObjectKind::Commit => {
                     commits.push(raw_oid);
@@ -2379,8 +2442,20 @@ fn resolve_specs_for_objects(
 
         if let Some((treeish, path)) = split_treeish_spec(spec) {
             if !path.is_empty() {
-                let treeish_oid = resolve_revision_for_range_end(repo, treeish)?;
-                let blob_oid = resolve_treeish_path(repo, treeish_oid, path)?;
+                let treeish_oid = match resolve_revision_for_range_end(repo, treeish) {
+                    Ok(oid) => oid,
+                    Err(Error::ObjectNotFound(_) | Error::InvalidRef(_)) if ignore_missing => {
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
+                let blob_oid = match resolve_treeish_path(repo, treeish_oid, path) {
+                    Ok(oid) => oid,
+                    Err(Error::ObjectNotFound(_) | Error::InvalidRef(_)) if ignore_missing => {
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
                 roots.push(RootObject {
                     oid: blob_oid,
                     input: spec.clone(),
@@ -2392,7 +2467,11 @@ fn resolve_specs_for_objects(
             }
         }
 
-        let oid = resolve_revision_for_range_end(repo, spec)?;
+        let oid = match resolve_revision_for_range_end(repo, spec) {
+            Ok(oid) => oid,
+            Err(Error::ObjectNotFound(_) | Error::InvalidRef(_)) if ignore_missing => continue,
+            Err(err) => return Err(err),
+        };
         if let Ok(obj) = repo.odb.read(&oid) {
             if obj.kind == ObjectKind::Tag {
                 if let Ok(commit_oid) = peel_to_commit(repo, oid) {
@@ -2402,6 +2481,8 @@ fn resolve_specs_for_objects(
         }
         match peel_to_commit(repo, oid) {
             Ok(commit_oid) => commits.push(commit_oid),
+            Err(Error::CorruptObject(_)) if ignore_missing => {}
+            Err(Error::ObjectNotFound(_)) if ignore_missing => {}
             Err(Error::CorruptObject(_)) | Err(Error::ObjectNotFound(_)) => {
                 roots.push(RootObject {
                     oid,
@@ -2495,6 +2576,14 @@ pub(crate) fn walk_closure_ordered(
     graph: &mut CommitGraph<'_>,
     starts: &[ObjectId],
 ) -> Result<(HashSet<ObjectId>, Vec<ObjectId>)> {
+    walk_closure_ordered_excluding(graph, starts, &HashSet::new())
+}
+
+fn walk_closure_ordered_excluding(
+    graph: &mut CommitGraph<'_>,
+    starts: &[ObjectId],
+    excluded: &HashSet<ObjectId>,
+) -> Result<(HashSet<ObjectId>, Vec<ObjectId>)> {
     let mut seen = HashSet::new();
     let mut order = Vec::new();
     let mut queue = VecDeque::new();
@@ -2502,6 +2591,9 @@ pub(crate) fn walk_closure_ordered(
         queue.push_back(start);
     }
     while let Some(oid) = queue.pop_front() {
+        if excluded.contains(&oid) {
+            continue;
+        }
         if !seen.insert(oid) {
             continue;
         }

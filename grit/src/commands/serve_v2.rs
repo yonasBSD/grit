@@ -38,6 +38,7 @@ pub struct ServerCaps {
     object_format: String,
     advertise_filter: bool,
     advertise_packfile_uris: bool,
+    advertise_ref_in_want: bool,
     advertise_object_info: bool,
     advertise_bundle_uri: bool,
     advertise_session_id: bool,
@@ -54,6 +55,7 @@ impl ServerCaps {
         let advertise_bundle_uri = read_config_bool(git_dir, "uploadpack.advertiseBundleURIs");
         let advertise_filter = read_config_bool(git_dir, "uploadpack.allowfilter");
         let advertise_packfile_uris = read_config_nonempty(git_dir, "uploadpack.blobpackfileuri");
+        let advertise_ref_in_want = read_config_bool(git_dir, "uploadpack.allowrefinwant");
         let advertise_session_id = read_config_bool(git_dir, "transfer.advertiseSID")
             || read_config_bool(git_dir, "transfer.advertisesid")
             || read_config_bool(git_dir, "transfer.advertiseSid");
@@ -68,6 +70,7 @@ impl ServerCaps {
             object_format: "sha1".to_owned(),
             advertise_filter,
             advertise_packfile_uris,
+            advertise_ref_in_want,
             advertise_object_info,
             advertise_bundle_uri,
             advertise_session_id,
@@ -86,6 +89,9 @@ impl ServerCaps {
         }
         if self.advertise_packfile_uris {
             fetch_features.push_str(" packfile-uris");
+        }
+        if self.advertise_ref_in_want {
+            fetch_features.push_str(" ref-in-want");
         }
         pkt_line::write_line(w, &fetch_features)?;
         pkt_line::write_line(w, "server-option")?;

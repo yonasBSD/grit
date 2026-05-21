@@ -172,7 +172,7 @@ pub fn run(args: Args) -> Result<()> {
                 "--not" => not_mode = !not_mode,
                 "--end-of-options" => end_of_options = true,
                 "--objects" => options.objects = true,
-                "--objects-edge" => options.objects = true,
+                "--objects-edge" | "--objects-edge-aggressive" => options.objects = true,
                 "--use-bitmap-index" => use_bitmap_index = true,
                 "--test-bitmap" => test_bitmap = true,
                 "--unpacked" => unpacked_only = true,
@@ -205,6 +205,8 @@ pub fn run(args: Args) -> Result<()> {
                 "--boundary" => options.boundary = true,
                 "--in-commit-order" => options.in_commit_order = true,
                 "--no-kept-objects" => options.no_kept_objects = true,
+                "--exclude-promisor-objects" => options.exclude_promisor_objects = true,
+                "--ignore-missing" => options.ignore_missing = true,
                 "--full-history" => options.full_history = true,
                 "--sparse" => options.sparse = true,
                 "--dense" => { /* default behavior, no-op */ }

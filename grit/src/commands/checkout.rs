@@ -1057,6 +1057,23 @@ pub fn run(mut args: Args) -> Result<()> {
         if args.force {
             return force_reset_to_head(&repo);
         }
+        let head = resolve_head(&repo.git_dir)?;
+        if let Some(oid) = head.oid() {
+            let target_tree = commit_to_tree(&repo, oid)?;
+            let index_empty = repo
+                .load_index()
+                .map(|idx| idx.entries.is_empty())
+                .unwrap_or(true);
+            if index_empty || !index_matches_flat_tree(&repo, &target_tree)? {
+                return switch_to_tree(
+                    &repo,
+                    &head,
+                    &target_tree,
+                    false,
+                    RECURSE_SUBMODULES.with(|r| r.get()),
+                );
+            }
+        }
         return Ok(());
     }
 

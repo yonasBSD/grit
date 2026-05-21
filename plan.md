@@ -121,7 +121,7 @@ Extend `promisor.rs`, `shallow.rs`, and ODB miss handling.
 - [~] Align promisor marker with Git (`promisor` remote config, `.promisor` pack sidecars,
   `extensions.partialClone` / `core.promisorRemote`).
 - [ ] `odb` miss → promisor remote fetch (single blob/tree/commit) without full clone.
-- [ ] `rev-list --missing`, `--exclude-promisor-objects`, connectivity checks.
+- [~] `rev-list --missing`, `--exclude-promisor-objects`, connectivity checks.
 
 ### 2.2 Clone/fetch filters
 

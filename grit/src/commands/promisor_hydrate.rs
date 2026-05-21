@@ -729,9 +729,9 @@ pub(crate) fn flush_promisor_blob_batch(
         PromisorSource::Local(odb) => {
             let mut fetched = Vec::new();
             for oid in batch.drain(..) {
-                let obj = odb
-                    .read(&oid)
-                    .with_context(|| format!("promisor remote missing object {}", oid.to_hex()))?;
+                let obj = odb.read(&oid).with_context(|| {
+                    format!("could not fetch {} from promisor remote", oid.to_hex())
+                })?;
                 repo.odb
                     .write(obj.kind, &obj.data)
                     .with_context(|| format!("writing {}", oid.to_hex()))?;

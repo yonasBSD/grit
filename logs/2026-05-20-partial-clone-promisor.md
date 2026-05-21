@@ -18,3 +18,17 @@ Validation:
 - `cargo test -p grit-lib --lib` passed, 204/204.
 - `cargo build --release -p grit-cli` passed.
 - `./scripts/run-tests.sh t0410-partial-clone.sh` passed 27/38.
+
+Continuation:
+
+- Fixed `checkout HEAD` in a partial clone with an empty/mismatched index so it hydrates the HEAD
+  tree instead of returning as a no-op. The unreliable promisor checkout case now fails with
+  `could not fetch ... from promisor remote` when the source no longer has the promised blob.
+- Added `uploadpack.allowrefinwant` to protocol-v2 capability advertisements so packet traces show
+  `fetch=... ref-in-want`.
+- Added `rev-list --exclude-promisor-objects` traversal support: commit walks stop at the expanded
+  promisor closure, and `--objects` output filters promised tree/blob IDs.
+- Added `rev-list --objects-edge-aggressive` parsing and `--ignore-missing` handling for missing
+  command-line objects.
+- Result: `t0410-partial-clone` is now 35/38. First remaining harness failure is the next
+  post-`--ignore-missing` partial-clone case after test 24.
