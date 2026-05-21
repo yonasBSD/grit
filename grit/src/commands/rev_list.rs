@@ -819,7 +819,7 @@ pub fn run(args: Args) -> Result<()> {
         Ok(())
     };
 
-    if !options.quiet || options.objects {
+    if !options.quiet {
         let interleaved_objects = options.objects
             && options.use_bitmap_index
             && result.per_commit_object_counts.is_empty()

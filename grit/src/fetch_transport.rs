@@ -1207,12 +1207,14 @@ pub(crate) fn unpack_upload_pack_bytes(
         return Ok(());
     }
     append_pack_to_git_trace_packfile(pack_buf)?;
-    if filter_active {
+    if filter_active || std::env::var_os("GRIT_FETCH_KEEP_PACK").is_some() {
         let repo = Repository::open(local_git_dir, None)
             .with_context(|| format!("open repository {}", local_git_dir.display()))?;
         let pack_path =
-            index_pack::ingest_pack_bytes(&repo, pack_buf, true).context("ingest filtered pack")?;
-        let _ = std::fs::File::create(pack_path.with_extension("promisor"));
+            index_pack::ingest_pack_bytes(&repo, pack_buf, true).context("ingest fetched pack")?;
+        if filter_active {
+            let _ = std::fs::File::create(pack_path.with_extension("promisor"));
+        }
         return Ok(());
     }
     if should_store_fetched_pack_as_pack(local_git_dir, pack_buf) {

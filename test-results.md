@@ -1,6 +1,6 @@
 # Test Results
 
-Updated: 2026-05-20
+Updated: 2026-05-21
 
 - `cargo build --release -p grit-cli`: pass.
 - `cargo fmt`: run. `cargo fmt --check` still reports pre-existing formatting drift in unrelated files; those mechanical edits were not included in this scoped commit.
@@ -14,3 +14,7 @@ Updated: 2026-05-20
 - Phase 2 sparse verification: `./scripts/run-tests.sh t1011-read-tree-sparse-checkout.sh t1090-sparse-checkout-scope.sh t1092-sparse-checkout-compatibility.sh t6428-merge-conflicts-sparse.sh t6435-merge-sparse.sh t3705-add-sparse-checkout.sh t3602-rm-sparse-checkout.sh t7002-mv-sparse-checkout.sh`.
 - Results from that run: `t6435-merge-sparse` pass 6/6; `t1011-read-tree-sparse-checkout` 21/23, `t1090-sparse-checkout-scope` 6/7, `t1092-sparse-checkout-compatibility` 48/106, `t6428-merge-conflicts-sparse` 1/2, `t3705-add-sparse-checkout` 15/20, `t3602-rm-sparse-checkout` 7/13, `t7002-mv-sparse-checkout` 4/22.
 - Partial clone focus: `./scripts/run-tests.sh t0410-partial-clone.sh` improved to 36/38. Remaining failures are late partial-clone repack/gc/backfill cases after the promisor repack checks.
+- Phase 2 partial-clone continuation: `cargo build --release -p grit-cli` passes with existing warnings.
+- Focused partial clone: `t5616-partial-clone.sh --run=1-8`, `--run=34`, and `--run=35` pass.
+- Harness partial clone: `./scripts/run-tests.sh t5616-partial-clone.sh` is 21/47 after clone/fetch filter work.
+- Regression partial clone: `./scripts/run-tests.sh t0410-partial-clone.sh` remains 37/38.

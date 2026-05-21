@@ -125,7 +125,7 @@ Extend `promisor.rs`, `shallow.rs`, and ODB miss handling.
 
 ### 2.2 Clone/fetch filters
 
-- [ ] `filter=blob:none|tree:0|...` on clone/fetch; record filter in config.
+- [~] `filter=blob:none|tree:0|...` on clone/fetch; record filter in config.
 - [ ] Lazy fetch in merge, checkout, `cat-file`, `apply` (blob touch paths).
 - [ ] `backfill` / `promisor hydrate` as library API.
 

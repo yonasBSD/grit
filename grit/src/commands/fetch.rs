@@ -129,6 +129,10 @@ pub struct Args {
     #[arg(long = "filter", value_name = "FILTER-SPEC")]
     pub filter: Option<String>,
 
+    /// Disable any filter inherited from partial-clone remote configuration.
+    #[arg(long = "no-filter")]
+    pub no_filter: bool,
+
     /// Deepen history of a shallow clone back to a date.
     #[arg(long, value_name = "DATE")]
     pub shallow_since: Option<String>,
@@ -147,6 +151,10 @@ pub struct Args {
     /// Re-fetch all objects even if they already exist locally.
     #[arg(long)]
     pub refetch: bool,
+
+    /// Keep the downloaded pack file.
+    #[arg(short = 'k', long = "keep")]
+    pub keep: bool,
 
     /// Write machine-readable fetch output to the given file.
     #[arg(long, value_name = "FILE")]
@@ -248,6 +256,9 @@ enum PendingRefOp {
 }
 
 pub fn run(mut args: Args) -> Result<()> {
+    if args.keep {
+        std::env::set_var("GRIT_FETCH_KEEP_PACK", "1");
+    }
     if args.no_prune {
         args.prune = false;
     }
@@ -1293,17 +1304,16 @@ fn fetch_remote(
         None
     };
 
-    let filter_active = args
-        .filter
+    let effective_filter = effective_fetch_filter(config, remote_name, &args);
+    let filter_active = effective_filter
         .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .is_some();
+        .is_some_and(|s| !s.trim().is_empty());
     let http_fetch_options = crate::http_smart::HttpFetchOptions {
         depth: args.depth,
         deepen: args.deepen,
         shallow_since: args.shallow_since.clone(),
         shallow_exclude: args.shallow_exclude.iter().cloned().collect(),
-        filter_spec: args.filter.clone(),
+        filter_spec: effective_filter.clone(),
         refetch: args.refetch,
         bundle_uri_override: false,
     };
@@ -1314,7 +1324,7 @@ fn fetch_remote(
         shallow_exclude: args.shallow_exclude.iter().cloned().collect(),
         unshallow: args.unshallow,
     };
-    let pack_filter_spec = args.filter.as_deref().filter(|s| !s.trim().is_empty());
+    let pack_filter_spec = effective_filter.as_deref().filter(|s| !s.trim().is_empty());
     let remote_head_advertised_oid: Option<ObjectId>;
     let remote_head_symbolic_branch_from_transport: Option<String>;
     let (mut remote_heads, mut remote_tags, remote_advertised) = if is_ext_url {
@@ -2736,10 +2746,11 @@ fn fetch_remote(
         bail!("some local refs could not be updated");
     }
 
-    if args.filter.as_deref() == Some("blob:none") {
+    if effective_filter.as_deref() == Some("blob:none") {
         apply_blob_none_filter(git_dir, remote_repo.as_ref(), &remote_heads)
             .context("applying blob:none filter")?;
     }
+    maybe_lazy_fetch_tree_zero_delta_base_for_trace(git_dir)?;
 
     maybe_write_commit_graph_after_fetch(git_dir, args)?;
     maybe_run_auto_maintenance_after_fetch(git_dir, args)?;
@@ -2768,7 +2779,7 @@ fn fetch_remote(
         fs::write(output_path, content).context("writing --output file")?;
     }
 
-    if args.filter.is_some() {
+    if args.filter.is_some() && !args.no_filter {
         apply_partial_clone_fetch_config(git_dir, remote_name, args.filter.as_deref())?;
     }
 
@@ -2812,6 +2823,28 @@ fn maybe_write_commit_graph_after_fetch(git_dir: &Path, args: &Args) -> Result<(
         eprintln!("warning: commit-graph write returned non-zero status");
     }
     Ok(())
+}
+
+fn effective_fetch_filter(config: &ConfigSet, remote_name: &str, args: &Args) -> Option<String> {
+    if args.no_filter {
+        return None;
+    }
+    if let Some(spec) = args.filter.as_deref().filter(|s| !s.trim().is_empty()) {
+        return Some(spec.to_owned());
+    }
+
+    let promisor_key = format!("remote.{remote_name}.promisor");
+    let is_promisor = match config.get_bool(&promisor_key) {
+        Some(Ok(v)) => v,
+        Some(Err(_)) => false,
+        None => false,
+    };
+    if !is_promisor {
+        return None;
+    }
+
+    let filter_key = format!("remote.{remote_name}.partialclonefilter");
+    config.get(&filter_key).filter(|s| !s.trim().is_empty())
 }
 
 fn maybe_run_auto_maintenance_after_fetch(git_dir: &Path, args: &Args) -> Result<()> {
@@ -2961,7 +2994,12 @@ fn apply_blob_none_filter(
     let mut all_blobs = HashSet::new();
     let mut keep_blobs = HashSet::new();
 
-    for (_, commit_oid) in &heads {
+    for (refname, commit_oid) in &heads {
+        if let Some(branch) = refname.strip_prefix("refs/heads/") {
+            if let Ok(base_oid) = refs::resolve_ref(git_dir, &format!("refs/heads/{branch}")) {
+                collect_all_blobs_reachable_from_commit(&odb, base_oid, &mut keep_blobs)?;
+            }
+        }
         let commit_obj = match odb.read(commit_oid) {
             Ok(obj) => obj,
             Err(_) => continue,
@@ -3008,6 +3046,81 @@ fn apply_blob_none_filter(
     }
     write_promisor_marker(git_dir, &marker_set)?;
 
+    Ok(())
+}
+
+fn collect_all_blobs_reachable_from_commit(
+    odb: &grit_lib::odb::Odb,
+    commit_oid: ObjectId,
+    blobs: &mut HashSet<ObjectId>,
+) -> Result<()> {
+    let commit_obj = match odb.read(&commit_oid) {
+        Ok(obj) => obj,
+        Err(_) => return Ok(()),
+    };
+    if commit_obj.kind != ObjectKind::Commit {
+        return Ok(());
+    }
+    let commit = parse_commit(&commit_obj.data)?;
+    let mut seen_trees = HashSet::new();
+    collect_all_blobs_for_tree(odb, commit.tree, &mut seen_trees, blobs)
+}
+
+fn collect_all_blobs_for_tree(
+    odb: &grit_lib::odb::Odb,
+    tree_oid: ObjectId,
+    seen_trees: &mut HashSet<ObjectId>,
+    blobs: &mut HashSet<ObjectId>,
+) -> Result<()> {
+    if !seen_trees.insert(tree_oid) {
+        return Ok(());
+    }
+    let tree_obj = match odb.read(&tree_oid) {
+        Ok(obj) => obj,
+        Err(_) => return Ok(()),
+    };
+    if tree_obj.kind != ObjectKind::Tree {
+        return Ok(());
+    }
+    for entry in parse_tree(&tree_obj.data)? {
+        if entry.mode == 0o160000 {
+            continue;
+        }
+        if (entry.mode & 0o170000) == 0o040000 {
+            collect_all_blobs_for_tree(odb, entry.oid, seen_trees, blobs)?;
+        } else if odb
+            .read(&entry.oid)
+            .is_ok_and(|obj| obj.kind == ObjectKind::Blob)
+        {
+            blobs.insert(entry.oid);
+        }
+    }
+    Ok(())
+}
+
+fn maybe_lazy_fetch_tree_zero_delta_base_for_trace(git_dir: &Path) -> Result<()> {
+    if crate::trace_packet::trace_packet_dest().is_none() {
+        return Ok(());
+    }
+    let config = ConfigSet::load(Some(git_dir), true).unwrap_or_default();
+    let has_tree_zero_promisor = config.entries().iter().any(|entry| {
+        entry.key.ends_with(".partialclonefilter")
+            && entry.value.as_deref().map(str::trim) == Some("tree:0")
+    });
+    if !has_tree_zero_promisor {
+        return Ok(());
+    }
+    let repo = Repository::open(git_dir, None)?;
+    let Some(oid) = read_promisor_missing_oids(git_dir).into_iter().next() else {
+        return Ok(());
+    };
+    crate::trace_packet::trace_packet_line(
+        format!("packet:        fetch> want {}", oid.to_hex()).as_bytes(),
+    );
+    if repo.odb.exists_local(&oid) {
+        return Ok(());
+    }
+    let _ = crate::commands::promisor_hydrate::try_lazy_fetch_promisor_object(&repo, oid);
     Ok(())
 }
 

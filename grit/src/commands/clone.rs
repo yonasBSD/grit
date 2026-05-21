@@ -19,6 +19,7 @@ use grit_lib::repo::{
     init_bare_clone_minimal, init_bare_with_env_worktree, init_repository,
     init_repository_separate_git_dir, Repository,
 };
+use grit_lib::rev_list::ObjectFilter;
 use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -142,6 +143,10 @@ pub struct Args {
     #[arg(long = "no-shallow-submodules")]
     pub no_shallow_submodules: bool,
 
+    /// Apply the partial clone filter to submodules when recursing.
+    #[arg(long = "also-filter-submodules")]
+    pub also_filter_submodules: bool,
+
     /// Use a custom upload-pack command on the remote side.
     #[arg(short = 'u', long = "upload-pack", value_name = "UPLOAD_PACK")]
     pub upload_pack: Option<String>,
@@ -161,9 +166,9 @@ pub struct Args {
     #[arg(long = "no-hardlinks", action = clap::ArgAction::SetTrue)]
     pub no_hardlinks: bool,
 
-    /// Partial clone filter spec (accepted but currently a no-op).
-    #[arg(long = "filter", value_name = "FILTER-SPEC")]
-    pub filter: Option<String>,
+    /// Partial clone filter spec. Repeated filters are combined.
+    #[arg(long = "filter", value_name = "FILTER-SPEC", action = clap::ArgAction::Append)]
+    pub filter: Vec<String>,
 
     /// Initialize sparse-checkout in cone mode.
     #[arg(long = "sparse")]
@@ -605,18 +610,20 @@ pub fn run(mut args: Args) -> Result<()> {
     }
     maybe_warn_shallow_options_ignored(&repo_path_str, &args);
 
-    if is_file_url && args.filter.is_some() && !uploadpack_filter_allowed(&source.git_dir) {
+    let filter_spec = clone_filter_spec(&args);
+
+    if is_file_url && filter_spec.is_some() && !uploadpack_filter_allowed(&source.git_dir) {
         eprintln!(
             "warning: filtering not recognized by server, ignoring --filter={}",
-            args.filter.as_deref().unwrap_or("")
+            filter_spec.as_deref().unwrap_or("")
         );
     }
 
     let partial_blob_limit_zero = matches!(
-        args.filter.as_deref(),
+        filter_spec.as_deref(),
         Some("blob:limit=0") | Some("blob:size=0")
     );
-    let partial_blob_none = matches!(args.filter.as_deref(), Some("blob:none"))
+    let partial_blob_none = matches!(filter_spec.as_deref(), Some("blob:none"))
         || (partial_blob_limit_zero && uploadpack_filter_allowed(&source.git_dir))
         || inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
     let pack_filter_active = clone_pack_filter_active(&args, Some(&source.git_dir));
@@ -815,7 +822,7 @@ pub fn run(mut args: Args) -> Result<()> {
         shallow_exclude: args.shallow_exclude.clone(),
         unshallow: false,
     };
-    let pack_filter_spec = args.filter.as_deref().filter(|s| !s.trim().is_empty());
+    let pack_filter_spec = filter_spec.as_deref().filter(|s| !s.trim().is_empty());
 
     if let Some(ref bu) = args.bundle_uri {
         crate::bundle_uri::apply_bundle_uri(&dest.git_dir, bu, &target_name, true)?;
@@ -1220,11 +1227,17 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     if partial_blob_none {
-        let filter_spec = args.filter.as_deref().unwrap_or("blob:none");
+        let filter_spec = filter_spec.as_deref().unwrap_or("blob:none");
         materialize_blob_none_partial_layout(&dest)
             .context("materializing partial-clone object layout")?;
         initialize_partial_clone_state(&source, &dest, &remote_name, filter_spec)
             .context("initializing partial-clone promisor state")?;
+    } else if clone_filter_omits_root_trees(filter_spec.as_deref()) {
+        let filter_spec = filter_spec.as_deref().unwrap_or("tree:0");
+        let omitted = materialize_tree_zero_partial_layout(&dest)
+            .context("materializing tree:0 partial-clone object layout")?;
+        initialize_partial_clone_state_from_missing(&dest, &remote_name, filter_spec, omitted)
+            .context("initializing tree:0 partial-clone promisor state")?;
     }
 
     // `materialize_blob_none_partial_layout` removes `objects/info/alternates`, so blobs
@@ -1232,7 +1245,7 @@ pub fn run(mut args: Args) -> Result<()> {
     // Only for an explicit `--filter=blob:none` clone; cloning a promisor repo without `--filter`
     // inherits metadata (`partial_blob_none`) but must not pre-hydrate (t0411-clone-from-partial).
     if partial_blob_none
-        && matches!(args.filter.as_deref(), Some("blob:none"))
+        && matches!(filter_spec.as_deref(), Some("blob:none"))
         && !args.bare
         && !args.no_checkout
     {
@@ -1270,7 +1283,7 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     if partial_blob_none
-        && !matches!(args.filter.as_deref(), Some("blob:none"))
+        && !matches!(filter_spec.as_deref(), Some("blob:none"))
         && !read_promisor_missing_oids(&dest.git_dir).is_empty()
         && !crate::commands::promisor_hydrate::promisor_lazy_fetch_allowed_for_client_process()?
     {
@@ -1313,7 +1326,7 @@ pub fn run(mut args: Args) -> Result<()> {
         );
 
     let sparse_partial_skip =
-        partial_blob_none && matches!(args.filter.as_deref(), Some("blob:none")) && args.sparse;
+        partial_blob_none && matches!(filter_spec.as_deref(), Some("blob:none")) && args.sparse;
 
     // Checkout working tree unless --bare or --no-checkout.
     // Sparse partial clones already materialize tip files via promisor hydration.
@@ -1940,6 +1953,7 @@ fn run_http_clone(args: Args) -> Result<()> {
     crate::http_smart::clear_trace2_https_url_dedup();
 
     let remote_name = resolve_remote_name(&args)?;
+    let filter_spec = clone_filter_spec(&args);
     let filter_active = clone_pack_filter_active(&args, None);
     let repo_url = args.repository.clone();
     if let Some(ref bundle_uri) = args.bundle_uri {
@@ -2052,7 +2066,7 @@ fn run_http_clone(args: Args) -> Result<()> {
         deepen: None,
         shallow_since: args.shallow_since.clone(),
         shallow_exclude: args.shallow_exclude.clone(),
-        filter_spec: args.filter.clone(),
+        filter_spec: filter_spec.clone(),
         refetch: false,
         bundle_uri_override: args.bundle_uri.is_some(),
     };
@@ -2201,18 +2215,14 @@ fn run_http_clone(args: Args) -> Result<()> {
         config.write().context("writing config")?;
     }
 
-    let partial_blob_none_http = matches!(args.filter.as_deref(), Some("blob:none"));
+    let partial_blob_none_http = matches!(filter_spec.as_deref(), Some("blob:none"));
     if partial_blob_none_http {
         materialize_blob_none_partial_layout(&dest)
             .context("materializing partial-clone object layout")?;
         initialize_partial_clone_state_http(&dest, &remote_name, "blob:none")?;
     }
 
-    if partial_blob_none_http
-        && matches!(args.filter.as_deref(), Some("blob:none"))
-        && !args.bare
-        && !args.no_checkout
-    {
+    if partial_blob_none_http && !args.bare && !args.no_checkout {
         if grit_lib::refs::resolve_ref(&dest.git_dir, "HEAD").is_err() {
             crate::commands::promisor_hydrate::trim_promisor_marker_to_missing_local(&dest)
                 .context("trimming promisor marker")?;
@@ -2254,9 +2264,7 @@ fn run_http_clone(args: Args) -> Result<()> {
 
     maybe_print_local_clone_progress(args.progress);
 
-    let sparse_partial_skip = partial_blob_none_http
-        && matches!(args.filter.as_deref(), Some("blob:none"))
-        && args.sparse;
+    let sparse_partial_skip = partial_blob_none_http && args.sparse;
 
     if !args.bare && !args.no_checkout && !sparse_partial_skip {
         if head_points_to_missing_ref(&dest) {
@@ -2361,6 +2369,8 @@ fn initialize_partial_clone_state_http(
         Some(c) => c,
         None => ConfigFile::parse(&config_path, "", ConfigScope::Local)?,
     };
+    config.set("core.repositoryformatversion", "1")?;
+    config.set("extensions.partialclone", remote_name)?;
     config.set(&format!("remote.{remote_name}.promisor"), "true")?;
     config.set(
         &format!("remote.{remote_name}.partialclonefilter"),
@@ -2414,11 +2424,12 @@ fn run_ssh_clone(args: Args) -> Result<()> {
         args.ipv6,
     )?;
 
+    let filter_spec = clone_filter_spec(&args);
     let partial_blob_limit_zero = matches!(
-        args.filter.as_deref(),
+        filter_spec.as_deref(),
         Some("blob:limit=0") | Some("blob:size=0")
     );
-    let partial_blob_none = matches!(args.filter.as_deref(), Some("blob:none"))
+    let partial_blob_none = matches!(filter_spec.as_deref(), Some("blob:none"))
         || (partial_blob_limit_zero && uploadpack_filter_allowed(&source.git_dir))
         || inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
     let pack_filter_active = clone_pack_filter_active(&args, Some(&source.git_dir));
@@ -2564,7 +2575,7 @@ fn run_ssh_clone(args: Args) -> Result<()> {
         shallow_exclude: args.shallow_exclude.clone(),
         unshallow: false,
     };
-    let pack_filter_spec = args.filter.as_deref().filter(|s| !s.trim().is_empty());
+    let pack_filter_spec = filter_spec.as_deref().filter(|s| !s.trim().is_empty());
 
     if let Some(ref bu) = args.bundle_uri {
         crate::bundle_uri::apply_bundle_uri(&dest.git_dir, bu, &target_name, true)?;
@@ -2903,10 +2914,16 @@ fn run_ssh_clone(args: Args) -> Result<()> {
             .context("materializing partial-clone object layout")?;
         initialize_partial_clone_state(&source, &dest, &remote_name, "blob:none")
             .context("initializing partial-clone promisor state")?;
+    } else if clone_filter_omits_root_trees(filter_spec.as_deref()) {
+        let filter_spec = filter_spec.as_deref().unwrap_or("tree:0");
+        let omitted = materialize_tree_zero_partial_layout(&dest)
+            .context("materializing tree:0 partial-clone object layout")?;
+        initialize_partial_clone_state_from_missing(&dest, &remote_name, filter_spec, omitted)
+            .context("initializing tree:0 partial-clone promisor state")?;
     }
 
     if partial_blob_none
-        && matches!(args.filter.as_deref(), Some("blob:none"))
+        && matches!(filter_spec.as_deref(), Some("blob:none"))
         && !args.bare
         && !args.no_checkout
     {
@@ -2944,7 +2961,7 @@ fn run_ssh_clone(args: Args) -> Result<()> {
     }
 
     if partial_blob_none
-        && !matches!(args.filter.as_deref(), Some("blob:none"))
+        && !matches!(filter_spec.as_deref(), Some("blob:none"))
         && !read_promisor_missing_oids(&dest.git_dir).is_empty()
         && !crate::commands::promisor_hydrate::promisor_lazy_fetch_allowed_for_client_process()?
     {
@@ -3846,20 +3863,45 @@ fn uploadpack_filter_allowed(git_dir: &Path) -> bool {
     )
 }
 
+fn clone_filter_spec(args: &Args) -> Option<String> {
+    let mut filters: Vec<String> = args
+        .filter
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if filters.is_empty() {
+        return None;
+    }
+    if filters.len() == 1 {
+        return filters.pop();
+    }
+    Some(format!("combine:{}", filters.join("+")))
+}
+
 /// True when a non-empty `--filter` was passed and the upload-pack source is known to allow
 /// filtering (or unknown, for transports without a local repo path).
 fn clone_pack_filter_active(args: &Args, source_git_dir: Option<&Path>) -> bool {
-    if args
-        .filter
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .is_none()
-    {
+    if clone_filter_spec(args).is_none() {
         return false;
     }
     match source_git_dir {
         Some(gd) => uploadpack_filter_allowed(gd),
         None => true,
+    }
+}
+
+fn clone_filter_omits_root_trees(filter_spec: Option<&str>) -> bool {
+    let Some(spec) = filter_spec.map(str::trim).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    match ObjectFilter::parse(spec) {
+        Ok(ObjectFilter::TreeDepth(0)) => true,
+        Ok(ObjectFilter::Combine(filters)) => filters
+            .iter()
+            .any(|filter| matches!(filter, ObjectFilter::TreeDepth(0))),
+        _ => false,
     }
 }
 
@@ -4786,6 +4828,22 @@ fn materialize_blob_none_partial_layout(dest: &Repository) -> Result<()> {
         }
     }
 
+    let mut skeleton_oids: Vec<ObjectId> = skeleton.into_iter().collect();
+    skeleton_oids.sort_by_key(ObjectId::to_hex);
+    if !skeleton_oids.is_empty() {
+        let pack_path = crate::commands::pack_objects::write_partial_clone_promisor_pack(
+            dest,
+            &pack_dir,
+            &skeleton_oids,
+        )
+        .context("writing partial-clone promisor skeleton pack")?;
+        fs::write(
+            pack_path.with_extension("promisor"),
+            promisor_ref_list(dest)?,
+        )
+        .context("writing partial-clone promisor sidecar")?;
+    }
+
     for oid in &blobs {
         let hex = oid.to_hex();
         if hex.len() < 3 {
@@ -4796,6 +4854,79 @@ fn materialize_blob_none_partial_layout(dest: &Repository) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn materialize_tree_zero_partial_layout(dest: &Repository) -> Result<Vec<ObjectId>> {
+    let alt = dest.git_dir.join("objects/info/alternates");
+    let _ = fs::remove_file(&alt);
+
+    let (kept, omitted) = collect_tree_zero_kept_and_omitted(dest)?;
+
+    for oid in &kept {
+        let obj = match dest.odb.read(oid) {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        let _ = dest.odb.write(obj.kind, &obj.data)?;
+    }
+
+    let pack_dir = dest.git_dir.join("objects/pack");
+    if pack_dir.is_dir() {
+        for entry in fs::read_dir(&pack_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+
+    let mut kept_oids: Vec<ObjectId> = kept.into_iter().collect();
+    kept_oids.sort_by_key(ObjectId::to_hex);
+    if !kept_oids.is_empty() {
+        let pack_path = crate::commands::pack_objects::write_partial_clone_promisor_pack(
+            dest, &pack_dir, &kept_oids,
+        )
+        .context("writing tree:0 promisor commit pack")?;
+        fs::write(
+            pack_path.with_extension("promisor"),
+            promisor_ref_list(dest)?,
+        )
+        .context("writing tree:0 promisor sidecar")?;
+    }
+
+    let mut omitted_oids: Vec<ObjectId> = omitted.into_iter().collect();
+    omitted_oids.sort_by_key(ObjectId::to_hex);
+    omitted_oids.dedup();
+    for oid in &omitted_oids {
+        let hex = oid.to_hex();
+        if hex.len() < 3 {
+            continue;
+        }
+        let loose = dest.git_dir.join("objects").join(&hex[..2]).join(&hex[2..]);
+        let _ = fs::remove_file(loose);
+    }
+
+    Ok(omitted_oids)
+}
+
+fn promisor_ref_list(repo: &Repository) -> Result<String> {
+    let mut lines = Vec::new();
+    if let Ok(head_oid) = grit_lib::refs::resolve_ref(&repo.git_dir, "HEAD") {
+        lines.push(format!("{} HEAD", head_oid.to_hex()));
+    }
+    if let Ok(refs) = grit_lib::refs::list_refs(&repo.git_dir, "refs/") {
+        for (name, oid) in refs {
+            lines.push(format!("{} {name}", oid.to_hex()));
+        }
+    }
+    lines.sort();
+    lines.dedup();
+    Ok(if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    })
 }
 
 /// Walk all refs and partition reachable objects into commits+trees vs blobs.
@@ -4869,6 +5000,71 @@ fn collect_reachable_skeleton_and_blobs(
     Ok((skeleton, blobs))
 }
 
+fn collect_tree_zero_kept_and_omitted(
+    repo: &Repository,
+) -> Result<(HashSet<ObjectId>, HashSet<ObjectId>)> {
+    let mut kept = HashSet::new();
+    let mut omitted = HashSet::new();
+    let mut seen_commits = HashSet::new();
+    let mut seen_trees = HashSet::new();
+    let mut seen_tags = HashSet::new();
+    let mut queue = VecDeque::new();
+
+    if let Ok(head) = grit_lib::refs::resolve_ref(&repo.git_dir, "HEAD") {
+        queue.push_back(head);
+    }
+    if let Ok(refs) = grit_lib::refs::list_refs(&repo.git_dir, "refs/") {
+        for (_, oid) in refs {
+            queue.push_back(oid);
+        }
+    }
+
+    while let Some(oid) = queue.pop_front() {
+        let obj = match repo.odb.read(&oid) {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        match obj.kind {
+            ObjectKind::Commit => {
+                if !seen_commits.insert(oid) {
+                    continue;
+                }
+                kept.insert(oid);
+                let commit = parse_commit(&obj.data)?;
+                for p in &commit.parents {
+                    queue.push_back(*p);
+                }
+                queue.push_back(commit.tree);
+            }
+            ObjectKind::Tag => {
+                if !seen_tags.insert(oid) {
+                    continue;
+                }
+                kept.insert(oid);
+                if let Ok(tag) = parse_tag(&obj.data) {
+                    queue.push_back(tag.object);
+                }
+            }
+            ObjectKind::Tree => {
+                if !seen_trees.insert(oid) {
+                    continue;
+                }
+                omitted.insert(oid);
+                for entry in parse_tree(&obj.data)? {
+                    if entry.mode != 0o160000 {
+                        queue.push_back(entry.oid);
+                    }
+                }
+            }
+            ObjectKind::Blob => {
+                omitted.insert(oid);
+            }
+        }
+    }
+
+    Ok((kept, omitted))
+}
+
 /// Initialize internal promisor metadata for `--filter=blob:none` clones.
 ///
 /// This records reachable blob OIDs in a marker file so commands can emulate
@@ -4880,7 +5076,19 @@ fn initialize_partial_clone_state(
     filter_spec: &str,
 ) -> Result<()> {
     let blobs = collect_reachable_blob_oids_from_dest_refs(source, dest)?;
-    let mut missing: Vec<String> = blobs.into_iter().map(|oid| oid.to_hex()).collect();
+    initialize_partial_clone_state_from_missing(dest, remote_name, filter_spec, blobs)
+}
+
+fn initialize_partial_clone_state_from_missing<I>(
+    dest: &Repository,
+    remote_name: &str,
+    filter_spec: &str,
+    missing_oids: I,
+) -> Result<()>
+where
+    I: IntoIterator<Item = ObjectId>,
+{
+    let mut missing: Vec<String> = missing_oids.into_iter().map(|oid| oid.to_hex()).collect();
     missing.sort();
     missing.dedup();
 
@@ -4897,6 +5105,8 @@ fn initialize_partial_clone_state(
         Some(c) => c,
         None => ConfigFile::parse(&config_path, "", ConfigScope::Local)?,
     };
+    config.set("core.repositoryformatversion", "1")?;
+    config.set("extensions.partialclone", remote_name)?;
     config.set(&format!("remote.{remote_name}.promisor"), "true")?;
     config.set(
         &format!("remote.{remote_name}.partialclonefilter"),
