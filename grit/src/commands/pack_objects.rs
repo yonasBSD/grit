@@ -964,6 +964,7 @@ fn pack_objects_all_enumeration(repo: &Repository, args: &Args) -> Result<Vec<Ob
     opts.include_reflog_entries = args.reflog;
     opts.include_indexed_objects = args.indexed_objects;
     opts.missing_action = MissingAction::Allow;
+    opts.exclude_promisor_objects = args.exclude_promisor_objects;
     let r = match rev_list(repo, &[] as &[String], &[] as &[String], &opts) {
         Ok(r) => r,
         Err(LibError::InvalidRef(ref s)) if s == "no revisions specified" => {
@@ -993,6 +994,7 @@ fn reachable_objects_for_full_repack(repo: &Repository, args: &Args) -> Result<V
     opts.include_reflog_entries = false;
     opts.include_indexed_objects = args.indexed_objects;
     opts.missing_action = MissingAction::Allow;
+    opts.exclude_promisor_objects = args.exclude_promisor_objects;
     let r = match rev_list(repo, &[] as &[String], &[] as &[String], &opts) {
         Ok(r) => r,
         Err(LibError::InvalidRef(ref s)) if s == "no revisions specified" => {
@@ -2323,6 +2325,7 @@ fn collect_incremental_repack_oids(repo: &Repository, args: &Args) -> Result<Pac
     opts.include_indexed_objects = args.indexed_objects;
     opts.unpacked_only = true;
     opts.missing_action = MissingAction::Allow;
+    opts.exclude_promisor_objects = args.exclude_promisor_objects;
 
     let result = match rev_list(repo, &[] as &[String], &[] as &[String], &opts) {
         Ok(r) => r,

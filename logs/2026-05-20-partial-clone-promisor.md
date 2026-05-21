@@ -32,3 +32,7 @@ Continuation:
   command-line objects.
 - Result: `t0410-partial-clone` is now 35/38. First remaining harness failure is the next
   post-`--ignore-missing` partial-clone case after test 24.
+- Wired `pack-objects --exclude-promisor-objects` into the full-repack rev-list enumeration so
+  `repack -a/-A/-l` does not traverse through promised commits into deleted ancestors.
+- Result: `t0410-partial-clone` is now 36/38. First remaining harness failure is currently the
+  next repack/gc partial-clone case after test 28.
