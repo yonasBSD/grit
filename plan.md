@@ -1,6 +1,6 @@
 # PLAN.md — Grit v1 Library Release
 
-**Updated:** 2026-05-21
+**Updated:** 2026-05-22
 
 ## Goal
 
@@ -120,7 +120,7 @@ Extend `promisor.rs`, `shallow.rs`, and ODB miss handling.
 
 - [~] Align promisor marker with Git (`promisor` remote config, `.promisor` pack sidecars,
   `extensions.partialClone` / `core.promisorRemote`).
-- [ ] `odb` miss → promisor remote fetch (single blob/tree/commit) without full clone.
+- [~] `odb` miss → promisor remote fetch (single blob/tree/commit) without full clone.
 - [~] `rev-list --missing`, `--exclude-promisor-objects`, connectivity checks.
 
 ### 2.2 Clone/fetch filters
@@ -135,7 +135,8 @@ Extend `promisor.rs`, `shallow.rs`, and ODB miss handling.
 
 ### 2.4 Harness targets (partial / promisor)
 
-- [~] `t0410-partial-clone`, `t5616-partial-clone`
+- [x] `t0410-partial-clone`
+- [~] `t5616-partial-clone`
 - [ ] `t6421-merge-partial-clone`, `t1022-read-tree-partial-clone`
 - [ ] `t5620-backfill`, `t6110-rev-list-sparse` (promisor-related cases)
 - [ ] `t4067-diff-partial-clone`, `t5537-fetch-shallow` (non-interactive)

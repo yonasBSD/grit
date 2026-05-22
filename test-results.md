@@ -1,6 +1,6 @@
 # Test Results
 
-Updated: 2026-05-21
+Updated: 2026-05-22
 
 - `cargo build --release -p grit-cli`: pass.
 - `cargo fmt`: run. `cargo fmt --check` still reports pre-existing formatting drift in unrelated files; those mechanical edits were not included in this scoped commit.
@@ -29,3 +29,5 @@ Updated: 2026-05-21
 - Harness partial clone: `./scripts/run-tests.sh t5616-partial-clone.sh` is 26/47 after shallow promisor marker and filtered-refetch marker trimming fixes.
 - Pre-commit: `cargo fmt` ran; `cargo check` passes with existing warnings; `cargo test -p grit-lib --lib` passes 204/204.
 - Pre-commit: `cargo clippy --fix --allow-dirty` completed after sandbox escalation; it applied one unused-import cleanup and still reports the existing clippy warning backlog plus failed auto-fixes in unrelated files.
+- Phase 2 HTTP promisor: focused `t0410-partial-clone.sh --run=38` passes after HTTP lazy fetch keeps received packs as promisor packs.
+- Harness partial clone: `./scripts/run-tests.sh t0410-partial-clone.sh` passes 38/38 when run with local HTTP server binding allowed.

@@ -792,13 +792,6 @@ fn run_http_fetch_objects(
         refetch: true,
         ..Default::default()
     };
-    crate::http_smart::http_fetch_pack(
-        &repo.git_dir,
-        &url,
-        &refspecs,
-        filter_spec.is_some(),
-        &options,
-        &http_ctx,
-    )?;
+    crate::http_smart::http_fetch_pack(&repo.git_dir, &url, &refspecs, true, &options, &http_ctx)?;
     Ok(())
 }
