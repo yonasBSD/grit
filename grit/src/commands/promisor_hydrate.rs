@@ -544,6 +544,55 @@ pub(crate) fn hydrate_tree_blobs_from_promisor(
     flush_promisor_blob_batches(dest, promisor, &mut need, 50_000)
 }
 
+/// Lazily fetch every tree and blob reachable from the given commits from the
+/// promisor remote, so a subsequent `rev-list --objects --missing=error` walk
+/// finds the full reachable set present (t5616 fsck before/after subtree fetch).
+///
+/// Returns `Ok(false)` (no-op) when the repository is not a promisor clone or no
+/// promisor remote is configured.
+pub(crate) fn hydrate_reachable_trees_blobs_from_commits(
+    dest: &Repository,
+    commits: &[ObjectId],
+) -> Result<bool> {
+    let config = ConfigSet::load(Some(&dest.git_dir), true).unwrap_or_default();
+    if !repo_treats_promisor_packs(&dest.git_dir, &config) {
+        return Ok(false);
+    }
+    if git_no_lazy_fetch_env_disables_lazy()? {
+        warn_lazy_fetch_disabled_once();
+        bail!("lazy fetching disabled");
+    }
+    let Some(promisor) = find_promisor_source(&config, &dest.git_dir)? else {
+        return Ok(false);
+    };
+
+    let mut need = Vec::new();
+    let mut seen_trees = HashSet::new();
+    let mut seen_blobs = HashSet::new();
+    for commit_oid in commits {
+        let obj = match dest.odb.read(commit_oid) {
+            Ok(o) => o,
+            Err(_) => {
+                read_or_fetch_promisor_object(dest, &promisor, *commit_oid, "commit for hydration")?
+            }
+        };
+        if obj.kind != ObjectKind::Commit {
+            continue;
+        }
+        let commit = parse_commit(&obj.data)?;
+        collect_all_missing_blobs_from_tree(
+            dest,
+            &promisor,
+            commit.tree,
+            &mut seen_trees,
+            &mut seen_blobs,
+            &mut need,
+        )?;
+    }
+    flush_promisor_blob_batches(dest, &promisor, &mut need, 50_000)?;
+    Ok(true)
+}
+
 /// Copy every blob reachable from `HEAD`'s tree from the promisor remote.
 pub(crate) fn hydrate_head_tree_blobs_from_promisor(
     dest: &Repository,
