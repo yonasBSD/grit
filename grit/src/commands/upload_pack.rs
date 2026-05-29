@@ -7,7 +7,6 @@
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
 use grit_lib::config::ConfigSet;
-use grit_lib::diff::zero_oid;
 use grit_lib::merge_base;
 use grit_lib::objects::{parse_commit, ObjectId, ObjectKind};
 use grit_lib::refs;
@@ -354,6 +353,16 @@ fn ok_to_give_up(
     !client_known.is_empty() && wants.iter().all(|w| client_known.contains(w))
 }
 
+/// Hex string for the null OID, sized to the object format (40 zeros for SHA-1, 64 for SHA-256).
+fn zero_oid_hex_for_format(object_format: &str) -> String {
+    let width = if object_format.eq_ignore_ascii_case("sha256") {
+        64
+    } else {
+        40
+    };
+    "0".repeat(width)
+}
+
 fn write_ref_advertisement(w: &mut impl Write, git_dir: &Path) -> Result<()> {
     let version = crate::version_string();
     let set = ConfigSet::load(Some(git_dir), false).unwrap_or_default();
@@ -416,8 +425,11 @@ fn write_ref_advertisement(w: &mut impl Write, git_dir: &Path) -> Result<()> {
             write!(w, "{:04x}{}", len, line)?;
             first = false;
         } else if let Ok(HeadState::Branch { oid: None, .. }) = resolve_head(git_dir) {
-            let z = zero_oid();
-            let line = format!("{}\tHEAD\0{}\n", z.to_hex(), caps);
+            // An unborn HEAD advertises the null OID. The OID width must match the repository's
+            // object format (64 hex zeros for SHA-256, 40 for SHA-1) so a hash-aware client can
+            // detect the format from an empty repository (`t5551` empty SHA-256 clone, proto v0).
+            let z = zero_oid_hex_for_format(&object_format);
+            let line = format!("{z}\tHEAD\0{caps}\n");
             let len = 4 + line.len();
             write!(w, "{:04x}{}", len, line)?;
             first = false;

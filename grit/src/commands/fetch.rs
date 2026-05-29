@@ -1417,7 +1417,12 @@ fn fetch_remote(
             None,
             Some(&http_ctx),
         )?;
-        let (heads, tags, adv) = crate::http_smart::http_fetch_pack(
+        let crate::http_smart::HttpFetchResult {
+            heads,
+            tags,
+            all_advertised: adv,
+            ..
+        } = crate::http_smart::http_fetch_pack(
             git_dir,
             &url,
             upload_pack_refspecs,

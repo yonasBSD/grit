@@ -51,6 +51,8 @@ impl ServerCaps {
         let version = crate::version_string();
         let agent = format!("agent=git/{version}-");
 
+        let object_format = read_object_format(git_dir);
+
         let advertise_object_info = read_config_bool(git_dir, "transfer.advertiseObjectInfo");
         let advertise_bundle_uri = read_config_bool(git_dir, "uploadpack.advertiseBundleURIs");
         let advertise_filter = read_config_bool(git_dir, "uploadpack.allowfilter");
@@ -67,7 +69,7 @@ impl ServerCaps {
 
         Self {
             agent,
-            object_format: "sha1".to_owned(),
+            object_format,
             advertise_filter,
             advertise_packfile_uris,
             advertise_ref_in_want,
@@ -682,6 +684,20 @@ fn cmd_bundle_uri(git_dir: &Path, args: &[String], out: &mut impl Write) -> Resu
 }
 
 /// Read a boolean config value.
+/// Read the repository's object format (`extensions.objectformat`), defaulting to `sha1`.
+///
+/// The advertised `object-format` capability lets a SHA-256-aware client clone a SHA-256
+/// repository (including an empty one) with the correct hash algorithm; otherwise the client
+/// assumes the default SHA-1 (`t5551` empty SHA-256 clone over protocol v2).
+fn read_object_format(git_dir: &Path) -> String {
+    let set = ConfigSet::load(Some(git_dir), false).unwrap_or_default();
+    set.get("extensions.objectformat")
+        .or_else(|| set.get("extensions.objectFormat"))
+        .map(|s| s.to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "sha1".to_owned())
+}
+
 fn read_config_bool(git_dir: &Path, key: &str) -> bool {
     // Check environment-based config overrides first
     if let Some(val) = check_env_config(key) {

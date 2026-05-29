@@ -1944,9 +1944,14 @@ fn run_ext_clone(args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Derive the "humanish" directory name for an HTTP clone URL.
+///
+/// Matches `git clone`'s default: take the last path component and strip a single trailing
+/// `.git` suffix (so `http://host/smart/sha256.git` clones into `sha256`, not `sha256.git`).
 fn http_url_basename(url: &str) -> String {
     let u = url.trim_end_matches('/');
-    u.rsplit('/').next().unwrap_or("repo").to_string()
+    let last = u.rsplit('/').next().unwrap_or("repo");
+    last.strip_suffix(".git").unwrap_or(last).to_string()
 }
 
 /// Config layers for HTTP clone before the new repo exists.
@@ -1979,10 +1984,15 @@ fn run_http_clone(args: Args) -> Result<()> {
             return Ok(());
         }
     }
-    let target_name = args
-        .directory
-        .clone()
-        .unwrap_or_else(|| http_url_basename(&repo_url));
+    let target_name = args.directory.clone().unwrap_or_else(|| {
+        let base = http_url_basename(&repo_url);
+        // `git clone --bare <url>` (without `--mirror`) keeps the `.git` suffix on the directory.
+        if args.bare && !args.mirror {
+            format!("{base}.git")
+        } else {
+            base
+        }
+    });
     // t5558 chains `git clone ... && test_grep err`; Git exits 0 after printing this error.
     if target_name.contains('\n') || target_name.contains('\r') {
         eprintln!("error: bundle-uri: filename is malformed: {target_name}");
@@ -2087,7 +2097,12 @@ fn run_http_clone(args: Args) -> Result<()> {
         refetch: false,
         bundle_uri_override: args.bundle_uri.is_some(),
     };
-    let (remote_heads, remote_tags, adv) = crate::http_smart::http_fetch_pack(
+    let crate::http_smart::HttpFetchResult {
+        heads: remote_heads,
+        tags: remote_tags,
+        all_advertised: adv,
+        object_format,
+    } = crate::http_smart::http_fetch_pack(
         &dest.git_dir,
         &repo_url,
         &refspec_for_fetch,
@@ -2095,6 +2110,9 @@ fn run_http_clone(args: Args) -> Result<()> {
         &fetch_options,
         &http_ctx,
     )?;
+    // Persist the remote's hash algorithm so an empty SHA-256 repo clones as SHA-256 (`t5551`).
+    write_clone_object_format(&dest.git_dir, &object_format)
+        .context("recording object format into clone config")?;
     crate::bundle_uri::maybe_apply_bundle_uri_after_http_fetch_with_client(
         &dest.git_dir,
         &repo_url,
@@ -4400,12 +4418,21 @@ fn propagate_extensions_object_format(src_git: &Path, dst_git: &Path) -> Result<
     let set = ConfigSet::load(Some(src_git), false).unwrap_or_default();
     let fmt = set
         .get("extensions.objectformat")
-        .or_else(|| set.get("extensions.objectFormat"))
-        .map(|s| s.to_ascii_lowercase());
-    let Some(fmt) = fmt else {
-        return Ok(());
-    };
-    if fmt != "sha256" {
+        .or_else(|| set.get("extensions.objectFormat"));
+    if let Some(fmt) = fmt {
+        write_clone_object_format(dst_git, &fmt)?;
+    }
+    Ok(())
+}
+
+/// Record the negotiated object format into a clone's config.
+///
+/// SHA-256 requires `core.repositoryformatversion = 1` plus `extensions.objectformat = sha256`
+/// (the `extensions.*` keys are only honoured when the format version is 1). SHA-1 is the
+/// default and needs no config, so this is a no-op for it. Shared by the local/file clone path
+/// (`propagate_extensions_object_format`) and the smart-HTTP clone path (`t5551`).
+fn write_clone_object_format(dst_git: &Path, object_format: &str) -> Result<()> {
+    if !object_format.eq_ignore_ascii_case("sha256") {
         return Ok(());
     }
     let config_path = dst_git.join("config");

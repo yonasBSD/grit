@@ -305,12 +305,11 @@ fn parse_v0_v1_advertisement(
                     .split_once('\t')
                     .or_else(|| payload.split_once(' '))
                     .ok_or_else(|| anyhow::anyhow!("malformed v0/v1 advertisement: {line}"))?;
-                let oid = ObjectId::from_hex(oid_hex.trim())
-                    .with_context(|| format!("bad oid in v0/v1 advertisement: {oid_hex}"))?;
+                let oid_hex = oid_hex.trim();
                 let refname = refname.trim();
-                if refname.is_empty() {
-                    continue;
-                }
+                // Capabilities ride on the first ref line (after the NUL). Parse them before the
+                // OID so an empty SHA-256 repo's unborn-HEAD carrier line (a 64-zero null OID,
+                // which our 20-byte ObjectId cannot represent) still yields `object-format=sha256`.
                 if first_ref_line {
                     if let Some(raw_caps) = cap_part {
                         for cap in raw_caps.split_whitespace() {
@@ -319,6 +318,16 @@ fn parse_v0_v1_advertisement(
                     }
                     first_ref_line = false;
                 }
+                if refname.is_empty() {
+                    continue;
+                }
+                // An all-zero OID marks the capabilities carrier for an unborn HEAD (empty repo);
+                // it is not a real ref, and a non-SHA-1-width zero OID would fail `from_hex`.
+                if oid_hex.bytes().all(|b| b == b'0') {
+                    continue;
+                }
+                let oid = ObjectId::from_hex(oid_hex)
+                    .with_context(|| format!("bad oid in v0/v1 advertisement: {oid_hex}"))?;
                 refs.push(LsRefEntry {
                     name: refname.to_string(),
                     oid,
@@ -346,6 +355,16 @@ fn discover_http_protocol(pkt_body: &[u8]) -> Result<HttpDiscovery> {
     let first = match pkt_line::read_packet(&mut cur)? {
         None => bail!("empty smart-http advertisement"),
         Some(pkt_line::Packet::Data(s)) => s,
+        // A lone flush is the v0 advertisement of an empty repository served by an older Git
+        // whose `upload-pack --advertise-refs` omits the `capabilities^{}` carrier line. There
+        // are no refs and no advertised object-format; treat it as an empty v0 advertisement so
+        // the clone still completes (object-format defaults to sha1 absent any signal).
+        Some(pkt_line::Packet::Flush) => {
+            return Ok(HttpDiscovery::V0V1 {
+                advertised: Vec::new(),
+                caps: std::collections::HashSet::new(),
+            });
+        }
         Some(other) => bail!("unexpected first advertisement packet: {other:?}"),
     };
     if first == "version 2" {
@@ -901,12 +920,13 @@ fn fetch_pack_v0_v1_stateless_http(
     filter_active: bool,
     options: &HttpFetchOptions,
     client: &crate::http_client::HttpClientContext,
-) -> Result<(Vec<LsRefEntry>, Vec<LsRefEntry>, Vec<LsRefEntry>)> {
+) -> Result<HttpFetchResult> {
+    let object_format = caps
+        .iter()
+        .find_map(|c| c.strip_prefix("object-format="))
+        .unwrap_or("sha1")
+        .to_string();
     let wants = collect_wants_from_advertised(advertised, refspecs)?;
-    if wants.is_empty() {
-        bail!("nothing to fetch (empty want list)");
-    }
-
     let remote_heads: Vec<_> = advertised
         .iter()
         .filter(|e| e.name.starts_with("refs/heads/"))
@@ -918,12 +938,27 @@ fn fetch_pack_v0_v1_stateless_http(
         .cloned()
         .collect();
     let all_advertised = advertised.to_vec();
+    if wants.is_empty() {
+        // Empty repository: nothing to fetch, but report the advertised refs and object format
+        // so the clone caller can record SHA-256 (`t5551` empty SHA-256 clone over protocol v0).
+        return Ok(HttpFetchResult {
+            heads: remote_heads,
+            tags: remote_tags,
+            all_advertised,
+            object_format,
+        });
+    }
     if !options.refetch && !has_fetch_request_extensions(options) {
         let repo = Repository::open(local_git_dir, None)
             .with_context(|| format!("open {}", local_git_dir.display()))?;
         let all_wants_local = wants.iter().all(|oid| repo.odb.read(oid).is_ok());
         if all_wants_local {
-            return Ok((remote_heads, remote_tags, all_advertised));
+            return Ok(HttpFetchResult {
+                heads: remote_heads,
+                tags: remote_tags,
+                all_advertised,
+                object_format,
+            });
         }
     }
 
@@ -1098,7 +1133,12 @@ fn fetch_pack_v0_v1_stateless_http(
                 &retry_pack,
                 filter_active,
             )?;
-            return Ok((remote_heads, remote_tags, all_advertised));
+            return Ok(HttpFetchResult {
+                heads: remote_heads,
+                tags: remote_tags,
+                all_advertised,
+                object_format,
+            });
         }
         if let Some(line) = retry_first_pkt {
             let normalized = line.trim();
@@ -1121,7 +1161,12 @@ fn fetch_pack_v0_v1_stateless_http(
         }
     }
 
-    Ok((remote_heads, remote_tags, all_advertised))
+    Ok(HttpFetchResult {
+        heads: remote_heads,
+        tags: remote_tags,
+        all_advertised,
+        object_format,
+    })
 }
 
 fn trace_clone_negotiation_line(line: &str) {
@@ -1199,7 +1244,19 @@ fn read_sideband_pack_until_done(r: &mut impl Read, out: &mut Vec<u8>) -> Result
 /// Fetch packfile via HTTP protocol v2 into `local_git_dir`, using the same skipping
 /// negotiation idea as local upload-pack (initial have window, then `done`).
 ///
-/// Returns `(heads, tags, all_advertised)` where `all_advertised` is every ref from `ls-refs`.
+/// Result of an HTTP fetch/clone negotiation.
+///
+/// `object_format` is the hash algorithm advertised by the remote (`sha1` or `sha256`); the
+/// clone caller persists it into the destination config so an empty SHA-256 repository is
+/// cloned with the correct format (`t5551`).
+pub struct HttpFetchResult {
+    pub heads: Vec<LsRefEntry>,
+    pub tags: Vec<LsRefEntry>,
+    pub all_advertised: Vec<LsRefEntry>,
+    pub object_format: String,
+}
+
+/// Returns the advertised refs and negotiated object format.
 pub fn http_fetch_pack(
     local_git_dir: &Path,
     repo_url: &str,
@@ -1207,7 +1264,7 @@ pub fn http_fetch_pack(
     filter_active: bool,
     options: &HttpFetchOptions,
     client: &crate::http_client::HttpClientContext,
-) -> Result<(Vec<LsRefEntry>, Vec<LsRefEntry>, Vec<LsRefEntry>)> {
+) -> Result<HttpFetchResult> {
     trace_http_v0_v1_negotiated(client);
     let base = repo_url.trim_end_matches('/');
     let mut refs_url = format!("{base}/info/refs");
@@ -1279,11 +1336,6 @@ pub fn http_fetch_pack(
     };
 
     let wants = collect_wants_from_advertised(&advertised, refspecs)?;
-    if wants.is_empty() {
-        bail!("nothing to fetch (empty want list)");
-    }
-
-    let want_set: HashSet<ObjectId> = wants.iter().copied().collect();
     let all_advertised = advertised.clone();
     let remote_heads: Vec<_> = advertised
         .iter()
@@ -1295,12 +1347,30 @@ pub fn http_fetch_pack(
         .filter(|e| e.name.starts_with("refs/tags/"))
         .cloned()
         .collect();
+    if wants.is_empty() {
+        // An empty repository (or a fully-excluded refspec) advertises no fetchable refs. The
+        // clone/fetch still succeeds with nothing to download; the caller persists the
+        // negotiated `object_format` so an empty SHA-256 repo is recorded as SHA-256 (`t5551`).
+        return Ok(HttpFetchResult {
+            heads: remote_heads,
+            tags: remote_tags,
+            all_advertised,
+            object_format,
+        });
+    }
+
+    let want_set: HashSet<ObjectId> = wants.iter().copied().collect();
     if !options.refetch && !has_fetch_request_extensions(options) {
         let repo = Repository::open(local_git_dir, None)
             .with_context(|| format!("open {}", local_git_dir.display()))?;
         let all_wants_local = wants.iter().all(|oid| repo.odb.read(oid).is_ok());
         if all_wants_local {
-            return Ok((remote_heads, remote_tags, all_advertised));
+            return Ok(HttpFetchResult {
+                heads: remote_heads,
+                tags: remote_tags,
+                all_advertised,
+                object_format,
+            });
         }
     }
 
@@ -1444,7 +1514,12 @@ pub fn http_fetch_pack(
                 read_sideband_pack_until_done(&mut cur, &mut pack_buf)?;
                 unpack_packfile(&pack_buf)?;
                 crate::trace_packet::trace_packet_line(b"clone> packfile negotiation complete");
-                return Ok((remote_heads, remote_tags, all_advertised));
+                return Ok(HttpFetchResult {
+                    heads: remote_heads,
+                    tags: remote_tags,
+                    all_advertised,
+                    object_format,
+                });
             }
         }
     }
@@ -1481,7 +1556,12 @@ pub fn http_fetch_pack(
     }
 
     crate::trace_packet::trace_packet_line(b"clone> packfile negotiation complete");
-    Ok((remote_heads, remote_tags, all_advertised))
+    Ok(HttpFetchResult {
+        heads: remote_heads,
+        tags: remote_tags,
+        all_advertised,
+        object_format,
+    })
 }
 
 /// Best-effort default branch from `ls-refs` (`HEAD` symref target or first `refs/heads/*`).
