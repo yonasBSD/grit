@@ -4952,9 +4952,14 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         "backfill" => commands::backfill::run(parse_cmd_args(subcmd, rest)),
         // Bisect is parsed manually: upstream tests pass unknown `--bisect-*` flags that must
         // reach `bisect::run` as Git-style "unknown option" errors, not clap parse failures.
-        "bisect" => commands::bisect::run(commands::bisect::Args {
-            args: rest.to_vec(),
-        }),
+        // Because of the manual dispatch we bypass the centralized -h/--help-all synopsis path,
+        // so handle a bare -h/--help/--help-all here before any repo discovery happens.
+        "bisect" => {
+            commands::upstream_synopsis_help::try_print_upstream_help_and_exit(subcmd, rest);
+            commands::bisect::run(commands::bisect::Args {
+                args: rest.to_vec(),
+            })
+        }
         "blame" => commands::blame::run(parse_cmd_args(subcmd, &preprocess_blame_argv(rest))),
         "branch" => commands::branch::run(parse_cmd_args(subcmd, rest)),
         "bugreport" => commands::bugreport::run(parse_cmd_args(subcmd, rest)),
@@ -5319,7 +5324,13 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
             let rest = preprocess_git_notes_display_argv(&rest, NotesDisplayDefault::OnIfUnset);
             commands::show::run(parse_cmd_args(subcmd, &rest))
         }
-        "show-branch" => commands::show_branch::run_raw(rest),
+        "show-branch" => {
+            // show-branch is dispatched manually (run_raw discovers the repo first), so it
+            // bypasses the centralized -h/--help-all synopsis path. Handle a bare
+            // -h/--help/--help-all here before any repo discovery happens.
+            commands::upstream_synopsis_help::try_print_upstream_help_and_exit(subcmd, rest);
+            commands::show_branch::run_raw(rest)
+        }
         "show-index" => commands::show_index::run(parse_cmd_args(subcmd, rest)),
         "show-ref" => commands::show_ref::run(parse_cmd_args(subcmd, rest)),
         "sparse-checkout" => commands::sparse_checkout::run(parse_cmd_args(
