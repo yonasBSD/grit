@@ -64,15 +64,17 @@ inject **time** and **environment** at boundaries; no `.unwrap()` in library cod
 
 Keep existing strengths stable while moving logic down from the binary.
 
-- [~] **0.1 Repository session API** — Single `Repository::open` path with explicit
+- [x] **0.1 Repository session API** — Single `Repository::open` path with explicit
   `GitDir`, common dir, work tree, commondir, and config load order documented.
-  - Harness: `t1510-repo-setup`, `t1517-outside-repo` (subset: open/discovery only)
+  - Harness: `t1510-repo-setup` **109/109**, `t1517-outside-repo` **191/191** (both green 2026-05-29).
 - [ ] **0.2 Move transport negotiation to lib** — `fetch_transport` / smart HTTP
   session types live in `grit-lib::transport`; CLI calls `Repository::fetch_pack` /
   `push_pack` style methods.
-  - Harness: `t5551-http-fetch-smart`, `t5541-http-push-smart` (regression guard)
-- [ ] **0.3 Audit binary-only helpers** — List `grit/src/` modules that implement
+  - Refactor plan written: `plans/phase0-0.2-transport-in-lib-assessment.md` (the move itself is still TODO).
+  - Harness: `t5551-http-fetch-smart` 29/37 (subtests 36/37 are run by the host's old system git, not grit — env-blocked, not a grit bug); `t5541-http-push-smart` 19/21 (subtests 14/15 fail at base too; CSV's "21/21" was stale).
+- [x] **0.3 Audit binary-only helpers** — List `grit/src/` modules that implement
   domain rules (index, merge, checkout, signing) and file issues per module to relocate.
+  - Delivered: `plans/phase0-0.3-binary-relocation-audit.md` (top-level `grit/src/*.rs` domain modules + target `grit-lib` module for each).
 
 ---
 
