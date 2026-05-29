@@ -524,6 +524,36 @@ pub(crate) fn hydrate_sparse_tip_blobs_from_promisor(
     flush_promisor_blob_batches(dest, promisor, &mut need, 50_000)
 }
 
+/// Copy blobs under `tree_oid` matching sparse-checkout `patterns` from the promisor remote.
+///
+/// Like [`hydrate_sparse_tip_blobs_from_promisor`] but hydrates an explicit tree (e.g. a checkout
+/// target) rather than the current `HEAD` commit. Used so a `checkout` into a partial clone with
+/// sparse-checkout enabled only fetches the blobs needed for the sparse working set instead of
+/// every blob in the tree (t5620 `backfill --sparse without cone mode`).
+pub(crate) fn hydrate_sparse_tree_blobs_from_promisor(
+    dest: &Repository,
+    promisor: &PromisorSource,
+    tree_oid: ObjectId,
+    patterns: &[String],
+    cone_mode: bool,
+) -> Result<()> {
+    let mut need = Vec::new();
+    let mut seen_trees = HashSet::new();
+    let mut seen_blobs = HashSet::new();
+    collect_sparse_missing_blobs_from_tree(
+        dest,
+        promisor,
+        tree_oid,
+        "",
+        patterns,
+        cone_mode,
+        &mut seen_trees,
+        &mut seen_blobs,
+        &mut need,
+    )?;
+    flush_promisor_blob_batches(dest, promisor, &mut need, 50_000)
+}
+
 /// Copy every blob under `tree_oid` that is not yet present in the local ODB (loose or pack).
 pub(crate) fn hydrate_tree_blobs_from_promisor(
     dest: &Repository,
