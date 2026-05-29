@@ -1325,6 +1325,98 @@ fn blob_oid_for_tree_path(repo: &Repository, tree_oid: &ObjectId, name: &[u8]) -
     );
 }
 
+/// Recursively map every blob's tree path (e.g. `dir/file`) to its OID for a commit's tree.
+fn commit_tree_blob_paths(
+    repo: &Repository,
+    commit_oid: &ObjectId,
+    out: &mut HashMap<Vec<u8>, ObjectId>,
+) -> Result<()> {
+    let obj = read_object_from_repo(repo, commit_oid)?;
+    if obj.kind != ObjectKind::Commit {
+        return Ok(());
+    }
+    let commit = parse_commit(&obj.data).map_err(|e| anyhow::anyhow!("{e}"))?;
+    collect_tree_blob_paths(repo, &commit.tree, &[], out)
+}
+
+fn collect_tree_blob_paths(
+    repo: &Repository,
+    tree_oid: &ObjectId,
+    prefix: &[u8],
+    out: &mut HashMap<Vec<u8>, ObjectId>,
+) -> Result<()> {
+    let obj = match read_object_from_repo(repo, tree_oid) {
+        Ok(o) => o,
+        Err(_) => return Ok(()),
+    };
+    if obj.kind != ObjectKind::Tree {
+        return Ok(());
+    }
+    for e in parse_tree(&obj.data).map_err(|e| anyhow::anyhow!("{e}"))? {
+        // Gitlink (submodule) entries have no object in this repo.
+        if e.mode == 0o160000 {
+            continue;
+        }
+        let mut path = prefix.to_vec();
+        if !path.is_empty() {
+            path.push(b'/');
+        }
+        path.extend_from_slice(&e.name);
+        if e.mode == 0o040000 {
+            collect_tree_blob_paths(repo, &e.oid, &path, out)?;
+        } else {
+            out.entry(path).or_insert(e.oid);
+        }
+    }
+    Ok(())
+}
+
+/// For a thin pack with `--not <boundary>` commits, pair each packed blob with a same-path blob in
+/// the boundary trees so it can be sent as a REF_DELTA against the (already-present) boundary blob.
+///
+/// Mirrors Git's thin-pack delta selection against the boundary the receiver already has. The base
+/// may be omitted from the pack (the receiver resolves it from its own objects or a promisor fetch).
+fn thin_pack_boundary_blob_deltas(
+    repo: &Repository,
+    packed_oids: &[ObjectId],
+    boundary_commits: &[ObjectId],
+) -> Vec<(ObjectId, ObjectId)> {
+    if boundary_commits.is_empty() {
+        return Vec::new();
+    }
+    let mut boundary_by_path: HashMap<Vec<u8>, ObjectId> = HashMap::new();
+    for c in boundary_commits {
+        let _ = commit_tree_blob_paths(repo, c, &mut boundary_by_path);
+    }
+    if boundary_by_path.is_empty() {
+        return Vec::new();
+    }
+    let packed_set: HashSet<ObjectId> = packed_oids.iter().copied().collect();
+    // Build path -> blob OID for the packed result commits so each packed blob's tree path is known,
+    // then pair it with the boundary blob at the same path.
+    let mut packed_by_path: HashMap<Vec<u8>, ObjectId> = HashMap::new();
+    for oid in packed_oids {
+        if let Ok(o) = read_object_from_repo(repo, oid) {
+            if o.kind == ObjectKind::Commit {
+                let _ = commit_tree_blob_paths(repo, oid, &mut packed_by_path);
+            }
+        }
+    }
+
+    let mut deltas: Vec<(ObjectId, ObjectId)> = Vec::new();
+    for (path, blob_oid) in &packed_by_path {
+        if !packed_set.contains(blob_oid) {
+            continue;
+        }
+        if let Some(base) = boundary_by_path.get(path) {
+            if base != blob_oid {
+                deltas.push((*blob_oid, *base));
+            }
+        }
+    }
+    deltas
+}
+
 /// Write the given objects into a pack at `base` via `pack-objects` stdin (OID lines).
 fn write_pack_via_stdin_objects(
     repo: &Repository,
@@ -2093,9 +2185,15 @@ fn collect_pack_objects_from_rev_stdin_lines(
             ordered = prune_hidden_objects_for_shallow_repo(repo, &ordered)?;
         }
 
+        let thin_blob_deltas = if args.thin && !exclude_roots.is_empty() {
+            thin_pack_boundary_blob_deltas(repo, &ordered, &exclude_roots)
+        } else {
+            Vec::new()
+        };
+
         return Ok(PackObjectList {
             oids: ordered,
-            thin_blob_deltas: Vec::new(),
+            thin_blob_deltas,
             rev_list_stdin: true,
         });
     }
@@ -2139,9 +2237,24 @@ fn collect_pack_objects_from_rev_stdin_lines(
         ordered = prune_hidden_objects_for_shallow_repo(repo, &ordered)?;
     }
 
+    // Thin pack (`--thin`): delta new blobs against same-path blobs in the `--not` boundary trees,
+    // which the receiver already has. The boundary blobs are intentionally NOT in the pack
+    // (REF_DELTA against an external base), matching Git's thin-pack output (t5616 REF_DELTA test).
+    let thin_blob_deltas = if args.thin && !negative.is_empty() {
+        let mut boundary: Vec<ObjectId> = Vec::with_capacity(negative.len());
+        for neg in &negative {
+            if let Ok(oid) = resolve_revision(repo, neg) {
+                boundary.push(oid);
+            }
+        }
+        thin_pack_boundary_blob_deltas(repo, &ordered, &boundary)
+    } else {
+        Vec::new()
+    };
+
     Ok(PackObjectList {
         oids: ordered,
-        thin_blob_deltas: Vec::new(),
+        thin_blob_deltas,
         rev_list_stdin: true,
     })
 }
@@ -3338,7 +3451,15 @@ fn build_pack(
                     encode_git_ofs_delta_distance(&mut buf, dist);
                 } else {
                     encode_pack_object_header(&mut buf, 7, delta.len());
-                    buf.extend_from_slice(base_pack.as_slice());
+                    // REF_DELTA: the bytes after the header are the base object's OID. For a base
+                    // that is also packed, `base_pack` already holds those bytes; for a thin-pack
+                    // delta against an external base (not in this pack), `base_pack` is empty, so
+                    // emit the base OID directly (t5616 REF_DELTA against missing promisor base).
+                    if base_pack.is_empty() {
+                        buf.extend_from_slice(base_oid.as_bytes());
+                    } else {
+                        buf.extend_from_slice(base_pack.as_slice());
+                    }
                 }
                 let mut enc = ZlibEncoder::new(Vec::new(), zlib);
                 enc.write_all(delta)?;
