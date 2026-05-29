@@ -1137,8 +1137,19 @@ pub fn run(mut args: Args) -> Result<()> {
             }
         } else {
             // Non-bare clone: copy refs as remote-tracking refs
-            copy_refs_as_remote(&source.git_dir, &dest.git_dir, &remote_name, args.no_tags)
-                .context("copying refs")?;
+            let single_branch_name = if args.single_branch {
+                Some(head_branch.as_deref().unwrap_or(initial_fallback.as_str()))
+            } else {
+                None
+            };
+            copy_refs_as_remote_filtered(
+                &source.git_dir,
+                &dest.git_dir,
+                &remote_name,
+                args.no_tags,
+                single_branch_name,
+            )
+            .context("copying refs")?;
 
             // Set up remote "origin" in config
             let refspec = if args.single_branch {
@@ -2877,8 +2888,19 @@ fn run_ssh_clone(args: Args) -> Result<()> {
                 }
             }
         } else {
-            copy_refs_as_remote(&source.git_dir, &dest.git_dir, &remote_name, args.no_tags)
-                .context("copying refs")?;
+            let single_branch_name = if args.single_branch {
+                Some(head_branch.as_deref().unwrap_or(initial_fallback.as_str()))
+            } else {
+                None
+            };
+            copy_refs_as_remote_filtered(
+                &source.git_dir,
+                &dest.git_dir,
+                &remote_name,
+                args.no_tags,
+                single_branch_name,
+            )
+            .context("copying refs")?;
             let refspec = if args.single_branch {
                 let branch = head_branch.as_deref().unwrap_or(initial_fallback.as_str());
                 format!("+refs/heads/{branch}:refs/remotes/{remote_name}/{branch}")
@@ -4477,28 +4499,63 @@ fn copy_refs_from_upload_pack_lists(
 }
 
 /// Copy refs from source into remote-tracking refs in the destination.
-fn copy_refs_as_remote(
+/// Copy source refs into the destination as remote-tracking refs.
+///
+/// When `single_branch` names a branch, only that branch is mirrored to
+/// `refs/remotes/<remote>/<branch>` and tags are auto-followed only when their
+/// (peeled) target is reachable from that branch tip — mirroring Git's
+/// `clone --single-branch` tag auto-follow, which never downloads tags that
+/// point outside the fetched history.
+fn copy_refs_as_remote_filtered(
     src_git_dir: &Path,
     dst_git_dir: &Path,
     remote_name: &str,
     no_tags: bool,
+    single_branch: Option<&str>,
 ) -> Result<()> {
     let dst_odb = grit_lib::odb::Odb::new(&dst_git_dir.join("objects"));
 
     // Use the library ref-listing API which handles both files and reftable
     let heads = grit_lib::refs::list_refs(src_git_dir, "refs/heads/")
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut branch_tips: Vec<ObjectId> = Vec::new();
     for (refname, oid) in &heads {
         let branch = refname.strip_prefix("refs/heads/").unwrap_or(refname);
+        if let Some(only) = single_branch {
+            if branch != only {
+                continue;
+            }
+        }
         let dst_name = format!("refs/remotes/{remote_name}/{branch}");
         clone_write_direct_ref(dst_git_dir, &dst_name, &oid.to_hex())?;
+        branch_tips.push(*oid);
     }
+
+    // For single-branch clones, build the reachable commit set from the single
+    // branch tip so tag auto-follow can be restricted to that history.
+    let reachable: Option<HashSet<ObjectId>> = if single_branch.is_some() {
+        Some(reachable_commits_from_tips(&dst_odb, &branch_tips))
+    } else {
+        None
+    };
+    let tag_reachable = |tag_oid: &ObjectId| -> bool {
+        if !dst_odb.exists(tag_oid) {
+            return false;
+        }
+        match &reachable {
+            None => true,
+            Some(set) => {
+                let target = peel_tag_target(&dst_odb, *tag_oid);
+                set.contains(&target)
+            }
+        }
+    };
 
     if !no_tags {
         let tags = grit_lib::refs::list_refs(src_git_dir, "refs/tags/")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         for (refname, oid) in &tags {
-            if !dst_odb.exists(oid) {
+            if !tag_reachable(oid) {
                 continue;
             }
             clone_write_direct_ref(dst_git_dir, refname, &oid.to_hex())?;
@@ -4521,6 +4578,11 @@ fn copy_refs_as_remote(
                 };
 
                 if let Some(branch) = refname.strip_prefix("refs/heads/") {
+                    if let Some(only) = single_branch {
+                        if branch != only {
+                            continue;
+                        }
+                    }
                     let dst_name = format!("refs/remotes/{remote_name}/{branch}");
                     if !clone_ref_file_exists(dst_git_dir, &dst_name) {
                         clone_write_direct_ref(dst_git_dir, &dst_name, oid)?;
@@ -4529,7 +4591,7 @@ fn copy_refs_as_remote(
                     let Ok(oid_parsed) = oid.parse::<grit_lib::objects::ObjectId>() else {
                         continue;
                     };
-                    if !dst_odb.exists(&oid_parsed) {
+                    if !tag_reachable(&oid_parsed) {
                         continue;
                     }
                     if !clone_ref_file_exists(dst_git_dir, refname) {
@@ -4541,6 +4603,51 @@ fn copy_refs_as_remote(
     }
 
     Ok(())
+}
+
+/// Peel an annotated tag to its underlying commit/object OID (following nested
+/// tags). Returns the input OID unchanged when it is not a tag or cannot be read.
+fn peel_tag_target(odb: &grit_lib::odb::Odb, mut oid: ObjectId) -> ObjectId {
+    for _ in 0..16 {
+        match odb.read(&oid) {
+            Ok(obj) if obj.kind == ObjectKind::Tag => match parse_tag(&obj.data) {
+                Ok(tag) => oid = tag.object,
+                Err(_) => return oid,
+            },
+            _ => return oid,
+        }
+    }
+    oid
+}
+
+/// Compute the set of commit OIDs reachable from the given tips, walking the
+/// commit graph through whatever commits are present locally. Trees/blobs are
+/// not included; only commit reachability is needed for tag auto-follow.
+fn reachable_commits_from_tips(odb: &grit_lib::odb::Odb, tips: &[ObjectId]) -> HashSet<ObjectId> {
+    let mut seen = HashSet::new();
+    let mut queue: VecDeque<ObjectId> = tips.iter().copied().collect();
+    while let Some(oid) = queue.pop_front() {
+        if !seen.insert(oid) {
+            continue;
+        }
+        let Ok(obj) = odb.read(&oid) else { continue };
+        match obj.kind {
+            ObjectKind::Commit => {
+                if let Ok(commit) = parse_commit(&obj.data) {
+                    for p in &commit.parents {
+                        queue.push_back(*p);
+                    }
+                }
+            }
+            ObjectKind::Tag => {
+                if let Ok(tag) = parse_tag(&obj.data) {
+                    queue.push_back(tag.object);
+                }
+            }
+            _ => {}
+        }
+    }
+    seen
 }
 
 /// In shallow clones, keep only tags reachable from the shallow boundary commits.
