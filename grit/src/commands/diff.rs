@@ -1734,7 +1734,23 @@ pub fn run(mut args: Args) -> Result<()> {
         revs.retain(|r| r != "-B" && r != "--break-rewrites");
     }
 
-    // Outside any repository, `git diff <path> <path>` behaves like `diff --no-index` (t4035).
+    // Outside any repository, `git diff <path> <path>` behaves like `diff --no-index` (t4035,
+    // t1517). When there is no work tree, parse_rev_and_paths cannot classify args as paths
+    // (it has no index/worktree to resolve pathspecs against) and instead funnels everything
+    // into `revs`, so we cannot rely on raw_path_args here. Inspect the raw argv directly:
+    // exactly two non-option operands, no `--` separator, no `--cached`, and both operands
+    // existing on disk means git falls back to implicit `--no-index`.
+    if repo_opt.is_none() && !args.cached && args.args.iter().all(|a| a != "--") {
+        let operands: Vec<&String> = args.args.iter().filter(|a| !a.starts_with('-')).collect();
+        if operands.len() == 2
+            && operands
+                .iter()
+                .all(|p| std::fs::symlink_metadata(Path::new(p.as_str())).is_ok())
+        {
+            return run_no_index(args);
+        }
+    }
+    // Inside a repo (or with `--`), keep the existing classification-based fallback.
     if repo_opt.is_none() && revs.is_empty() && raw_path_args.len() == 2 && !args.cached {
         return run_no_index(args);
     }
