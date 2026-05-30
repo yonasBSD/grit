@@ -838,16 +838,30 @@ fn cmd_check_rules(repo: &Repository, args: &CheckRulesArgs) -> Result<()> {
             while line.last() == Some(&b'\n') || line.last() == Some(&b'\r') {
                 line.pop();
             }
-            let path = String::from_utf8_lossy(&line);
-            let path = path.as_ref();
+            let raw = String::from_utf8_lossy(&line);
+            // Git `check_rules`: C-unquote a `"`-quoted input line before matching, then re-quote
+            // the matched path on output via `write_name_quoted` (t1091 check-rules quoting).
+            let path = if raw.starts_with('"') {
+                unquote_c_style(raw.as_ref())?
+            } else {
+                raw.into_owned()
+            };
             if path_in_sparse_checkout(
-                path,
+                &path,
                 effective_cone,
                 cone_pat.as_ref(),
                 &non_cone,
                 repo.work_tree.as_deref(),
             ) {
-                writeln!(out, "{path}")?;
+                let quote_fully = config
+                    .get("core.quotePath")
+                    .map(|v| v != "false")
+                    .unwrap_or(true);
+                writeln!(
+                    out,
+                    "{}",
+                    grit_lib::quote_path::quote_c_style(&path, quote_fully)
+                )?;
             }
         }
     }
@@ -885,18 +899,43 @@ fn cmd_clean(repo: &Repository, args: &CleanArgs) -> Result<()> {
     }
 
     let index_path = repo.index_path();
-    let index = repo.load_index_at(&index_path).context("reading index")?;
+    let mut index = repo.load_index_at(&index_path).context("reading index")?;
+
+    // Git `sparse_checkout_clean`: convert the index to a sparse index in memory and remove the
+    // sparse-directory placeholders. Unmerged entries block the conversion, mirroring
+    // `convert_to_sparse` failing (t1091 'operations with merge conflicts').
+    if index.entries.iter().any(|e| e.stage() != 0) {
+        bail!("failed to convert index to a sparse index; resolve merge conflicts and try again");
+    }
+    if index.has_sparse_directory_placeholders() {
+        index
+            .expand_sparse_directory_placeholders(&repo.odb)
+            .context("expanding sparse index before clean")?;
+    }
+    let patterns = read_sparse_patterns(repo)?;
+    if let Some(tree_oid) = head_tree_oid(repo)? {
+        // Force the in-memory collapse regardless of `index.sparse`.
+        index.try_collapse_sparse_directories(&repo.odb, &tree_oid, &patterns, true, true)?;
+    }
 
     let msg_remove = "Removing ";
     let msg_would = "Would remove ";
     let msg = if args.dry_run { msg_would } else { msg_remove };
 
-    for entry in &index.entries {
-        if entry.mode != MODE_TREE || !entry.is_sparse_directory_placeholder() {
-            continue;
-        }
-        let path_str = String::from_utf8_lossy(&entry.path);
-        let full = work_tree.join(path_str.as_ref());
+    let mut placeholders: Vec<String> = index
+        .entries
+        .iter()
+        .filter(|e| e.mode == MODE_TREE && e.is_sparse_directory_placeholder())
+        .map(|e| {
+            String::from_utf8_lossy(&e.path)
+                .trim_end_matches('/')
+                .to_string()
+        })
+        .collect();
+    placeholders.sort();
+
+    for name in placeholders {
+        let full = work_tree.join(&name);
         if !full.is_dir() {
             continue;
         }
@@ -905,7 +944,7 @@ fn cmd_clean(repo: &Repository, args: &CleanArgs) -> Result<()> {
                 writeln!(io::stdout(), "{msg}{rel}")?;
             }
         } else {
-            writeln!(io::stdout(), "{msg}{path_str}/")?;
+            writeln!(io::stdout(), "{msg}{name}/")?;
         }
         if !args.dry_run {
             let _ = fs::remove_dir_all(&full);
