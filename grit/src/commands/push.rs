@@ -693,6 +693,188 @@ fn rewrite_submodule_refspecs_for_detached_head(
         .collect()
 }
 
+/// The effective `--signed` mode (`send-pack.c`'s `SEND_PACK_PUSH_CERT_*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushCertMode {
+    /// `--no-signed` / `--signed=false`: never send a certificate.
+    Never,
+    /// `--signed=if-asked`: send only when the receiver advertises `push-cert`.
+    IfAsked,
+    /// `--signed` / `--signed=true` / `--signed=1`: require certificate support.
+    Always,
+}
+
+impl PushCertMode {
+    /// Resolve from the parsed CLI flags (Git `parse_push_signed`).
+    fn from_args(args: &Args) -> PushCertMode {
+        if args.no_signed {
+            return PushCertMode::Never;
+        }
+        match args.signed.as_deref() {
+            None => PushCertMode::Never,
+            Some(v) => match v {
+                "true" | "1" | "yes" | "" => PushCertMode::Always,
+                "false" | "0" | "no" => PushCertMode::Never,
+                "if-asked" => PushCertMode::IfAsked,
+                other => {
+                    // Git's git_parse_maybe_bool: unknown -> treat as boolean-true
+                    // only for the known truthy spellings; anything else is an error
+                    // upstream, but tolerate it as Always to avoid surprising users.
+                    let _ = other;
+                    PushCertMode::Always
+                }
+            },
+        }
+    }
+}
+
+/// A signed push certificate prepared for the receiving end: the cert blob OID
+/// (written into the receiver), the issued nonce, and the verification result.
+struct PreparedPushCert {
+    env: grit_lib::push_cert::PushCertEnv,
+}
+
+/// Generate, sign, store, and verify a push certificate for the local/native
+/// transport, honoring the receiver's `receive.certNonceSeed` advertisement.
+///
+/// Returns:
+/// * `Ok(None)` when no certificate should be sent (mode `Never`, or `IfAsked`
+///   with no receiver support, or no updates to certify).
+/// * `Ok(Some(_))` when a certificate was signed and stored on the receiver.
+/// * `Err(_)` when `Always` was requested but the receiver does not support
+///   push certificates, or when signing fails.
+fn prepare_signed_push_cert(
+    local_config: &ConfigSet,
+    remote_repo: &Repository,
+    receive_remote_config: &ConfigSet,
+    mode: PushCertMode,
+    url: &str,
+    push_options: &[String],
+    updates: &[RefUpdate],
+    pre_reject: &[Option<String>],
+) -> Result<Option<PreparedPushCert>> {
+    use grit_lib::push_cert::{
+        build_push_cert_payload, prepare_push_cert_nonce, verify_push_cert, CertRefUpdate,
+    };
+    use grit_lib::signing::{committer_signing_default, sign_buffer, GpgConfig};
+
+    if mode == PushCertMode::Never {
+        return Ok(None);
+    }
+
+    // The receiver advertises `push-cert` only when receive.certNonceSeed is set
+    // (receive-pack.c). With no seed, --signed fails and --signed=if-asked is a no-op.
+    let nonce_seed = receive_remote_config
+        .get("receive.certnonceseed")
+        .filter(|s| !s.is_empty());
+
+    let issued_nonce = match &nonce_seed {
+        Some(seed) => {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let path = remote_repo.git_dir.to_string_lossy();
+            Some(prepare_push_cert_nonce(&path, stamp, seed))
+        }
+        None => {
+            if mode == PushCertMode::Always {
+                bail!("the receiving end does not support --signed push");
+            }
+            // if-asked, unsupported: send nothing.
+            return Ok(None);
+        }
+    };
+
+    // Collect the ref-update lines (skip client-side rejected refs).
+    let zero = "0".repeat(40);
+    let mut cert_updates = Vec::new();
+    for (i, u) in updates.iter().enumerate() {
+        if pre_reject[i].is_some() {
+            continue;
+        }
+        let old = u
+            .old_oid
+            .map(|o| o.to_hex())
+            .unwrap_or_else(|| zero.clone());
+        let new = u
+            .new_oid
+            .map(|o| o.to_hex())
+            .unwrap_or_else(|| zero.clone());
+        cert_updates.push(CertRefUpdate {
+            old_oid: old,
+            new_oid: new,
+            refname: u.remote_ref.clone(),
+        });
+    }
+
+    // Resolve the signing identity and key (Git get_signing_key_id / get_signing_key).
+    let gpg_cfg = GpgConfig::from_config(local_config).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let committer_ident = {
+        let (name, email) = grit_lib::ident_resolve::resolve_loose_committer_parts_with(
+            &grit_lib::ident_resolve::SystemIdentityEnv,
+            local_config,
+        );
+        format!("{name} <{email}>")
+    };
+    let pusher = committer_signing_default(&committer_ident);
+    let signing_key = gpg_cfg.resolve_signing_key(None, &pusher);
+
+    // Date stamp: "<epoch> <tz>" (Git datestamp). Honor GIT_COMMITTER_DATE if epoch+tz.
+    let date = committer_datestamp();
+
+    let payload = match build_push_cert_payload(
+        &pusher,
+        &date,
+        Some(url),
+        issued_nonce.as_deref(),
+        push_options,
+        &cert_updates,
+    ) {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+
+    // Sign the payload and append the detached signature (cert = payload + signature).
+    let signature =
+        sign_buffer(&gpg_cfg, &payload, &signing_key).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut signed_cert = payload;
+    signed_cert.extend_from_slice(&signature);
+
+    // Store the certificate as a blob on the receiver (receive-pack writes a blob).
+    let cert_oid = remote_repo
+        .odb
+        .write(grit_lib::objects::ObjectKind::Blob, &signed_cert)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Verify the signature on the receiving end to derive signer/key/status, using
+    // the receiver's gpg config (allowedSignersFile etc.).
+    let recv_gpg =
+        GpgConfig::from_config(receive_remote_config).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let check = verify_push_cert(&recv_gpg, &signed_cert).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let env = grit_lib::push_cert::cert_env_from_check(&check, cert_oid.to_hex(), issued_nonce);
+    Ok(Some(PreparedPushCert { env }))
+}
+
+/// Current `"<epoch> <tz>"` datestamp, honoring `GIT_COMMITTER_DATE` when it is
+/// already in epoch+tz form (the only form the push cert needs to round-trip).
+fn committer_datestamp() -> String {
+    if let Ok(d) = std::env::var("GIT_COMMITTER_DATE") {
+        let trimmed = d.trim();
+        let parts: Vec<&str> = trimmed.rsplitn(2, ' ').collect();
+        if parts.len() == 2 && parts[1].chars().all(|c| c.is_ascii_digit()) && !parts[1].is_empty()
+        {
+            return trimmed.to_owned();
+        }
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{secs} +0000")
+}
+
 fn push_to_url(
     repo: &Repository,
     config: &ConfigSet,
@@ -1799,7 +1981,7 @@ fn push_to_url(
     }
 
     // Build push option env vars for hooks
-    let push_option_env: Vec<(String, String)> = if !effective_push_options.is_empty() {
+    let mut push_option_env: Vec<(String, String)> = if !effective_push_options.is_empty() {
         let mut env = vec![(
             "GIT_PUSH_OPTION_COUNT".to_owned(),
             effective_push_options.len().to_string(),
@@ -1811,6 +1993,27 @@ fn push_to_url(
     } else {
         Vec::new()
     };
+
+    // `git push --signed`: generate, sign, and store a push certificate, then
+    // expose the receiver-side `GIT_PUSH_CERT*` environment to the receive hooks.
+    // A `--signed` (Always) push against a receiver without `receive.certNonceSeed`
+    // fails here with "the receiving end does not support --signed push".
+    let push_cert_mode = PushCertMode::from_args(args);
+    if push_cert_mode != PushCertMode::Never && !args.dry_run {
+        if let Some(prepared) = prepare_signed_push_cert(
+            config,
+            &remote_repo,
+            &receive_remote_config,
+            push_cert_mode,
+            url,
+            &effective_push_options,
+            &updates,
+            &pre_reject,
+        )? {
+            push_option_env.extend(prepared.env.to_env_pairs());
+        }
+    }
+
     let push_option_env_refs: Vec<(&str, &str)> = push_option_env
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
