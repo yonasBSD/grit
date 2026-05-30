@@ -186,11 +186,7 @@ pub struct Args {
     pub trailer: Vec<String>,
 
     /// Override gpg sign.
-    ///
-    /// The optional key id must be attached (`-S<keyid>` / `--gpg-sign=<keyid>`)
-    /// so following arguments are not consumed as the key id (matches Git's
-    /// `PARSE_OPT_OPTARG`).
-    #[arg(short = 'S', long = "gpg-sign", value_name = "KEYID", num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    #[arg(short = 'S', long = "gpg-sign", value_name = "KEYID", num_args = 0..=1, default_missing_value = "")]
     pub gpg_sign: Option<String>,
 
     /// Don't sign the commit.

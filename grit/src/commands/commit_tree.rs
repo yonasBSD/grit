@@ -46,7 +46,8 @@ pub struct Args {
     /// GPG-sign the commit, optionally with a specific key id.
     ///
     /// The optional key id must be attached (`-S<keyid>` / `--gpg-sign=<keyid>`)
-    /// so a following positional `<tree>` is not consumed as the key id.
+    /// so the positional `<tree>` is not consumed as the key id (Git's
+    /// `PARSE_OPT_OPTARG`).
     #[arg(short = 'S', long = "gpg-sign", value_name = "KEYID", num_args = 0..=1, require_equals = true, default_missing_value = "")]
     pub gpg_sign: Option<String>,
 
