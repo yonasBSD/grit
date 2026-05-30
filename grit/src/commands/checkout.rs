@@ -3195,27 +3195,21 @@ pub(crate) fn check_dirty_worktree(
 
                 if !has_tracked_prefix && !replaces_tracked_dir {
                     // When the target tree wants to materialize a path that is absent from
-                    // the old index but present on disk as an untracked file, Git normally
-                    // refuses checkout. After orphan / `rm --cached -r .` flows, stale files
-                    // from earlier branches often remain; removing them here matches the
-                    // practical outcome of `rm <path>` before switching and keeps the
-                    // upstream cherry-pick/revert tests (e.g. t3501) working.
+                    // the old index but present on disk as an untracked file, Git refuses
+                    // checkout (unpack-trees.c verify_absent) unless the file's content is
+                    // byte-identical to the target blob. The content-identical case (which
+                    // also covers orphan / `rm --cached -r .` flows such as t3501's
+                    // cherry-pick on an unborn branch, where the orphaned worktree files
+                    // already equal the target blobs) is handled here so the checkout
+                    // proceeds; differing untracked files fall through to a conflict below.
                     if untracked_path_matches_index_entry(repo, &abs_path, new_entry)? {
                         continue;
                     }
-                    // Git refuses checkout when a submodule gitlink would replace an untracked path
-                    // (t3426: `>sub1` before rebasing onto `add_sub1`). Do not auto-remove like we do
-                    // for ordinary files (t3501 cherry-pick / orphan cleanup).
-                    if new_entry.mode == MODE_GITLINK
-                        && (abs_path.is_file() || abs_path.is_symlink())
-                    {
-                        untracked_conflicts.push(rel_path.into_owned());
-                        continue;
-                    }
-                    if abs_path.is_file() || abs_path.is_symlink() {
-                        let _ = std::fs::remove_file(&abs_path);
-                        continue;
-                    }
+                    // A differing untracked file (ordinary file, symlink, or gitlink path)
+                    // would be overwritten by the target tree. Flag it as a conflict and let
+                    // the bail below abort the checkout, matching upstream git verify_absent.
+                    // (t3426: `>sub1` before rebasing onto `add_sub1` exercises the gitlink
+                    // case; t5403 subtests 9/13 exercise the ordinary-file case.)
                     untracked_conflicts.push(rel_path.into_owned());
                 }
             }
