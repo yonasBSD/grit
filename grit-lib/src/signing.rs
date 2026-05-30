@@ -421,7 +421,7 @@ pub struct SignatureCheck {
 
 impl SignatureCheck {
     /// Construct the "no signature" result (`%G?` -> `N`).
-    fn none() -> SignatureCheck {
+    pub fn default_none() -> SignatureCheck {
         SignatureCheck {
             result: 'N',
             trust_level: TrustLevel::Undefined,
@@ -523,7 +523,7 @@ pub fn extract_signed_payload(raw_commit: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
 pub fn verify_commit(cfg: &GpgConfig, raw_commit: &[u8]) -> Result<SignatureCheck> {
     let (payload, signature) = match extract_signed_payload(raw_commit) {
         Some(parts) => parts,
-        None => return Ok(SignatureCheck::none()),
+        None => return Ok(SignatureCheck::default_none()),
     };
 
     if cfg.format == GpgFormat::Ssh {
@@ -852,7 +852,7 @@ mod tests {
 [GNUPG:] GOODSIG 73D758744BE721698EC54E8713D758744BE7216 C O Mitter <committer@example.com>\n\
 [GNUPG:] VALIDSIG FINGERPRINT 2010-04-01 1270074988 0 4 0 17 2 00 PRIMARYFPR\n\
 [GNUPG:] TRUST_ULTIMATE 0 pgp\n";
-        let mut sigc = SignatureCheck::none();
+        let mut sigc = SignatureCheck::default_none();
         parse_gpg_output(&mut sigc, status);
         assert_eq!(sigc.result, 'G');
         assert_eq!(sigc.trust_level, TrustLevel::Ultimate);
@@ -872,7 +872,7 @@ mod tests {
     #[test]
     fn parse_badsig() {
         let status = "[GNUPG:] BADSIG KEYID Some Signer <s@example.com>\n";
-        let mut sigc = SignatureCheck::none();
+        let mut sigc = SignatureCheck::default_none();
         parse_gpg_output(&mut sigc, status);
         assert_eq!(sigc.result, 'B');
         assert!(!sigc.is_good());
@@ -881,7 +881,7 @@ mod tests {
     #[test]
     fn double_exclusive_status_is_error() {
         let status = "[GNUPG:] GOODSIG K1 A <a@x>\n[GNUPG:] BADSIG K2 B <b@x>\n";
-        let mut sigc = SignatureCheck::none();
+        let mut sigc = SignatureCheck::default_none();
         parse_gpg_output(&mut sigc, status);
         assert_eq!(sigc.result, 'E');
     }

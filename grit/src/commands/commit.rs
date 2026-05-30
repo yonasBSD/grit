@@ -1220,7 +1220,15 @@ pub fn run(mut args: Args) -> Result<()> {
         raw_message,
     };
 
-    let commit_bytes = serialize_commit(&commit_data);
+    let mut commit_bytes = serialize_commit(&commit_data);
+    if should_sign_commit(&args, &config) {
+        commit_bytes = sign_commit_bytes(
+            &config,
+            &commit_data.committer,
+            args.gpg_sign.as_deref(),
+            commit_bytes,
+        )?;
+    }
     let commit_oid = repo.odb.write(ObjectKind::Commit, &commit_bytes)?;
 
     // Update HEAD
@@ -3946,6 +3954,42 @@ fn resolve_author(
 }
 
 /// Resolve the committer identity from env and config.
+/// Decide whether the commit being created should be GPG-signed.
+///
+/// Mirrors `git commit`: sign when `-S`/`--gpg-sign` is given, or when
+/// `commit.gpgsign` is true; never when `--no-gpg-sign` is given.
+fn should_sign_commit(args: &Args, config: &ConfigSet) -> bool {
+    if args.no_gpg_sign {
+        return false;
+    }
+    if args.gpg_sign.is_some() {
+        return true;
+    }
+    matches!(config.get_bool("commit.gpgsign"), Some(Ok(true)))
+}
+
+/// Sign the serialized commit object and splice in a `gpgsig` header.
+///
+/// `key_override` is the value of `-S<keyid>` / `--gpg-sign=<keyid>` (empty when
+/// `-S` was given without an argument).  The signing key falls back to
+/// `user.signingkey` then to the committer identity.
+fn sign_commit_bytes(
+    config: &ConfigSet,
+    committer: &str,
+    key_override: Option<&str>,
+    commit_bytes: Vec<u8>,
+) -> Result<Vec<u8>> {
+    let cfg = grit_lib::signing::GpgConfig::from_config(config)?;
+    let committer_default = grit_lib::signing::committer_signing_default(committer);
+    let signing_key = cfg.resolve_signing_key(key_override, &committer_default);
+    let signature = grit_lib::signing::sign_buffer(&cfg, &commit_bytes, &signing_key)?;
+    Ok(grit_lib::signing::add_header_signature(
+        &commit_bytes,
+        &signature,
+        grit_lib::signing::GPG_SIG_HEADER_SHA1,
+    ))
+}
+
 fn resolve_committer(config: &ConfigSet, now: OffsetDateTime) -> Result<String> {
     let name = resolve_name(config, IdentRole::Committer)?;
 

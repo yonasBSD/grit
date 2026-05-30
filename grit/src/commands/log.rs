@@ -6466,6 +6466,31 @@ fn log_notes_enabled() -> bool {
 /// Whether `git show` should print the default `Notes:` block for medium-style headers.
 ///
 /// `git show --pretty` (no format) matches C Git: no notes. Plain `git show` and `--pretty=<fmt>` can show notes.
+/// Run signature verification on a raw commit object, returning the parsed
+/// [`SignatureCheck`].  Errors (e.g. gpg not runnable) collapse to a
+/// "no signature" result so callers can still format something sensible.
+pub fn verify_commit_signature(
+    config: &ConfigSet,
+    raw_commit: &[u8],
+) -> grit_lib::signing::SignatureCheck {
+    match grit_lib::signing::GpgConfig::from_config(config) {
+        Ok(cfg) => grit_lib::signing::verify_commit(&cfg, raw_commit)
+            .unwrap_or_else(|_| grit_lib::signing::SignatureCheck::default_none()),
+        Err(_) => grit_lib::signing::SignatureCheck::default_none(),
+    }
+}
+
+/// Format the GPG verification lines for `--show-signature`, mirroring git's
+/// `show_signature`: when the commit carries no signature, nothing is emitted;
+/// otherwise the human-readable gpg output (its stderr) is returned verbatim.
+pub fn format_commit_signature_lines(config: &ConfigSet, raw_commit: &[u8]) -> String {
+    if grit_lib::signing::extract_signed_payload(raw_commit).is_none() {
+        return String::new();
+    }
+    let sigc = verify_commit_signature(config, raw_commit);
+    sigc.output
+}
+
 pub fn show_notes_display_enabled() -> bool {
     if std::env::var("GIT_GRIT_SHOW_BARE_PRETTY").ok().as_deref() == Some("1") {
         return false;

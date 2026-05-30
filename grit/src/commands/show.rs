@@ -141,6 +141,14 @@ pub struct Args {
     #[arg(long = "raw")]
     pub raw: bool,
 
+    /// Verify and display the signature of the commit (`--show-signature`).
+    #[arg(long = "show-signature", overrides_with = "no_show_signature")]
+    pub show_signature: bool,
+
+    /// Do not display the signature even if `log.showSignature` is set.
+    #[arg(long = "no-show-signature", overrides_with = "show_signature")]
+    pub no_show_signature: bool,
+
     /// Show only names of changed files.
     #[arg(long = "name-only")]
     pub name_only: bool,
@@ -876,6 +884,21 @@ fn show_commit(
     let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
     let hex = oid.to_hex();
 
+    // `--show-signature` (or `log.showSignature`) emits the GPG verification
+    // lines immediately after the `commit <hash>` header line.
+    let want_signature = if args.no_show_signature {
+        false
+    } else {
+        args.show_signature || matches!(config.get_bool("log.showsignature"), Some(Ok(true)))
+    };
+    let signature_lines: Option<String> = if want_signature {
+        Some(crate::commands::log::format_commit_signature_lines(
+            &config, data,
+        ))
+    } else {
+        None
+    };
+
     let mut resolved_format = args.format.clone();
     if let Some(ref f) = resolved_format {
         let r = crate::commands::log::resolve_pretty_alias_with_config(f, repo);
@@ -971,6 +994,9 @@ fn show_commit(
         }
         Some("short") => {
             writeln!(out, "commit {hex}")?;
+            if let Some(sig) = &signature_lines {
+                out.write_all(sig.as_bytes())?;
+            }
             let author_name = extract_name(&commit.author);
             writeln!(out, "Author: {author_name}")?;
             writeln!(out)?;
@@ -1026,6 +1052,9 @@ fn show_commit(
         Some("medium") | None => {
             // Medium format (default)
             writeln!(out, "commit {hex}")?;
+            if let Some(sig) = &signature_lines {
+                out.write_all(sig.as_bytes())?;
+            }
             writeln!(out, "Author: {}", format_ident_display(&commit.author))?;
             writeln!(out, "Date:   {}", format_date(&commit.author))?;
             writeln!(out)?;
