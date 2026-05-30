@@ -616,6 +616,7 @@ fn cmd_reapply(repo: &Repository, args: &ReapplyArgs) -> Result<()> {
     crate::commands::promisor_hydrate::hydrate_sparse_patterns_after_sparse_checkout_update(
         repo, &patterns, cone,
     )?;
+    warn_sparse_apply_side_effects(repo, &patterns, cone, true)?;
     apply_sparse_patterns(repo, &patterns, cone)?;
     Ok(())
 }
@@ -1158,22 +1159,22 @@ fn path_included_for_sparse_apply(
     }
 }
 
-/// Warn about worktree paths Git leaves when applying sparse patterns (`unpack-trees` / t1091).
-fn warn_sparse_apply_side_effects(
+/// Excluded paths Git leaves on disk when applying sparse patterns: unmerged entries and
+/// not-up-to-date entries (on-disk content differs from the indexed OID). These are reported as
+/// warnings and must NOT be removed / marked skip-worktree (`unpack-trees` `verify_uptodate` /
+/// t1091 tests 27, 31, 32).
+struct SparseSideEffects {
+    unmerged: BTreeSet<String>,
+    not_uptodate: BTreeSet<String>,
+}
+
+fn compute_sparse_side_effect_paths(
     repo: &Repository,
+    index: &grit_lib::index::Index,
     patterns: &[String],
     cone_mode: bool,
-    warn_not_uptodate: bool,
-) -> Result<()> {
-    let Some(work_tree) = repo.work_tree.as_deref() else {
-        return Ok(());
-    };
-    if !repo.index_path().exists() {
-        return Ok(());
-    }
-    let index = repo
-        .load_index()
-        .context("reading index for sparse warnings")?;
+) -> SparseSideEffects {
+    let work_tree = repo.work_tree.as_deref();
     let file_content = read_sparse_file_content(repo);
     let cone_struct = if effective_cone_mode_for_sparse_file(cone_mode, patterns) {
         ConePatterns::try_parse(&file_content)
@@ -1188,56 +1189,80 @@ fn warn_sparse_apply_side_effects(
             unmerged.insert(String::from_utf8_lossy(&entry.path).into_owned());
         }
     }
-    if !unmerged.is_empty() {
+
+    let mut not_uptodate = BTreeSet::new();
+    if let Some(work_tree) = work_tree {
+        for entry in &index.entries {
+            if entry.stage() != 0 || entry.mode == MODE_TREE {
+                continue;
+            }
+            let path_str = String::from_utf8_lossy(&entry.path);
+            // A path being excluded by the new patterns is what matters; the current skip-worktree
+            // bit is irrelevant (a second sparse op over an already-excluded dirty file must still
+            // warn, t1091 test 31).
+            if path_included_for_sparse_apply(
+                path_str.as_ref(),
+                patterns,
+                cone_mode,
+                &file_content,
+                cone_struct.as_ref(),
+                &non_cone,
+                Some(work_tree),
+            ) {
+                continue;
+            }
+            let full = work_tree.join(path_str.as_ref());
+            let Ok(meta) = fs::symlink_metadata(&full) else {
+                continue;
+            };
+            if !meta.is_file() && !meta.file_type().is_symlink() {
+                continue;
+            }
+            let differs = match (repo.odb.read(&entry.oid), fs::read(&full)) {
+                (Ok(obj), Ok(disk)) => obj.data != disk,
+                _ => true,
+            };
+            if differs {
+                not_uptodate.insert(path_str.into_owned());
+            }
+        }
+    }
+
+    SparseSideEffects {
+        unmerged,
+        not_uptodate,
+    }
+}
+
+/// Warn about worktree paths Git leaves when applying sparse patterns (`unpack-trees` / t1091).
+fn warn_sparse_apply_side_effects(
+    repo: &Repository,
+    patterns: &[String],
+    cone_mode: bool,
+    warn_not_uptodate: bool,
+) -> Result<()> {
+    if repo.work_tree.is_none() || !repo.index_path().exists() {
+        return Ok(());
+    }
+    let index = repo
+        .load_index()
+        .context("reading index for sparse warnings")?;
+    let effects = compute_sparse_side_effect_paths(repo, &index, patterns, cone_mode);
+
+    if !effects.unmerged.is_empty() {
         eprintln!(
             "warning: The following paths are unmerged and were left despite sparse patterns:"
         );
-        for path in &unmerged {
+        for path in &effects.unmerged {
             eprintln!("{path}");
         }
     }
 
-    if !warn_not_uptodate {
-        return Ok(());
-    }
-
-    let mut not_uptodate = BTreeSet::new();
-    for entry in &index.entries {
-        if entry.stage() != 0 || entry.mode == MODE_TREE || entry.skip_worktree() {
-            continue;
-        }
-        let path_str = String::from_utf8_lossy(&entry.path);
-        if path_included_for_sparse_apply(
-            path_str.as_ref(),
-            patterns,
-            cone_mode,
-            &file_content,
-            cone_struct.as_ref(),
-            &non_cone,
-            Some(work_tree),
-        ) {
-            continue;
-        }
-        let full = work_tree.join(path_str.as_ref());
-        let Ok(meta) = fs::symlink_metadata(&full) else {
-            continue;
-        };
-        if !meta.is_file() && !meta.file_type().is_symlink() {
-            continue;
-        }
-        let differs = match (repo.odb.read(&entry.oid), fs::read(&full)) {
-            (Ok(obj), Ok(disk)) => obj.data != disk,
-            _ => true,
-        };
-        if differs {
-            not_uptodate.insert(path_str.into_owned());
-        }
-    }
-    if !not_uptodate.is_empty() {
+    if warn_not_uptodate && !effects.not_uptodate.is_empty() {
         eprintln!(
             "warning: The following paths are not up to date and were left despite sparse patterns:"
         );
-        for path in &not_uptodate {
+        for path in &effects.not_uptodate {
             eprintln!("{path}");
         }
     }
@@ -1309,6 +1334,20 @@ fn apply_sparse_patterns_inner(
     let effective_cone = expanded_cone_shape && cone_struct.is_some();
     let non_cone = NonConePatterns::from_lines(patterns.to_vec());
 
+    // Git's `unpack-trees` refuses to drop not-up-to-date / unmerged paths (`verify_uptodate`).
+    // Keep those excluded files on disk (do not clear/remove) so sparsifying never destroys local
+    // edits — only warn (t1091 tests 27, 31, 32). A full checkout includes everything anyway.
+    let protected: HashSet<String> = if force_include_all {
+        HashSet::new()
+    } else {
+        let effects = compute_sparse_side_effect_paths(repo, &index, patterns, cone_mode);
+        effects
+            .not_uptodate
+            .into_iter()
+            .chain(effects.unmerged)
+            .collect()
+    };
+
     for entry in &mut index.entries {
         if entry.mode == MODE_TREE {
             continue;
@@ -1358,6 +1397,9 @@ fn apply_sparse_patterns_inner(
                     }
                 }
             }
+        } else if protected.contains(&path_str) {
+            // Not-up-to-date or unmerged: leave the file on disk and keep it in the worktree (do
+            // not set skip-worktree) so the local edit/conflict is preserved (t1091 27/31/32).
         } else {
             entry.set_skip_worktree(true);
             let full_path = work_tree.join(&path_str);
