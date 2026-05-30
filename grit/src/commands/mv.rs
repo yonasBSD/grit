@@ -324,7 +324,7 @@ pub fn run(args: Args) -> Result<()> {
                     {
                         if !args.force {
                             let msg = format!(
-                                "destination exists, source='{src_rel}', destination='{dst_rel}'"
+                                "fatal: destination exists, source={src_rel}, destination={dst_rel}"
                             );
                             if args.skip_errors {
                                 continue;
@@ -333,7 +333,7 @@ pub fn run(args: Args) -> Result<()> {
                         }
                         if dst_abs.is_dir() {
                             let msg = format!(
-                                "Cannot overwrite, source='{src_rel}', destination='{dst_rel}'"
+                                "fatal: Cannot overwrite, source={src_rel}, destination={dst_rel}"
                             );
                             if args.skip_errors {
                                 continue;
@@ -438,7 +438,7 @@ pub fn run(args: Args) -> Result<()> {
                 let ce = &index.entries[p];
                 if !ce.skip_worktree() {
                     let msg = format!(
-                        "not under version control, source='{src_rel}', destination='{dst_rel}'"
+                        "fatal: not under version control, source={src_rel}, destination={dst_rel}"
                     );
                     if args.skip_errors {
                         continue;
@@ -452,8 +452,9 @@ pub fn run(args: Args) -> Result<()> {
                 if index.get(dst_rel.as_bytes(), 0).is_none() {
                     sparse_source = true;
                 } else if !args.force {
-                    let msg =
-                        format!("destination exists, source='{src_rel}', destination='{dst_rel}'");
+                    let msg = format!(
+                        "fatal: destination exists, source={src_rel}, destination={dst_rel}"
+                    );
                     if args.skip_errors {
                         continue;
                     }
@@ -463,7 +464,7 @@ pub fn run(args: Args) -> Result<()> {
                 }
             } else {
                 let msg = format!(
-                    "not under version control, source='{src_rel}', destination='{dst_rel}'"
+                    "fatal: not under version control, source={src_rel}, destination={dst_rel}"
                 );
                 if args.skip_errors {
                     continue;
@@ -478,7 +479,7 @@ pub fn run(args: Args) -> Result<()> {
                     == precompose_utf8_path(&index_src_rel).as_ref()
         });
         if has_conflict {
-            let msg = format!("conflicted, source='{src_rel}', destination='{dst_rel}'");
+            let msg = format!("fatal: conflicted, source={src_rel}, destination={dst_rel}");
             if args.skip_errors {
                 continue;
             }
@@ -487,8 +488,9 @@ pub fn run(args: Args) -> Result<()> {
 
         let stage0 = index.get(index_src_rel.as_bytes(), 0);
         if stage0.is_none() && !src_abs.is_dir() {
-            let msg =
-                format!("not under version control, source='{src_rel}', destination='{dst_rel}'");
+            let msg = format!(
+                "fatal: not under version control, source={src_rel}, destination={dst_rel}"
+            );
             if args.skip_errors {
                 continue;
             }
@@ -504,7 +506,7 @@ pub fn run(args: Args) -> Result<()> {
             && !args.force
         {
             let msg = format!(
-                "destination exists in the index, source='{src_rel}', destination='{dst_rel}'"
+                "fatal: destination exists in the index, source={src_rel}, destination={dst_rel}"
             );
             if args.skip_errors {
                 continue;
@@ -514,7 +516,7 @@ pub fn run(args: Args) -> Result<()> {
 
         if index_src_rel == dst_rel {
             let msg = format!(
-                "source and destination are the same, source='{src_rel}', destination='{dst_rel}'"
+                "fatal: source and destination are the same, source={src_rel}, destination={dst_rel}"
             );
             if args.skip_errors {
                 continue;
@@ -533,14 +535,15 @@ pub fn run(args: Args) -> Result<()> {
         {
             if !args.force {
                 let msg =
-                    format!("destination exists, source='{src_rel}', destination='{dst_rel}'");
+                    format!("fatal: destination exists, source={src_rel}, destination={dst_rel}");
                 if args.skip_errors {
                     continue;
                 }
                 bail!("{msg}");
             }
             if dst_abs.is_dir() {
-                let msg = format!("Cannot overwrite, source='{src_rel}', destination='{dst_rel}'");
+                let msg =
+                    format!("fatal: Cannot overwrite, source={src_rel}, destination={dst_rel}");
                 if args.skip_errors {
                     continue;
                 }
