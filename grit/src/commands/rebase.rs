@@ -6413,6 +6413,11 @@ fn do_skip() -> Result<()> {
                 peek_next_rebase_flush_hint(&repo, &todo_lines_skip, 0, interactive_skip);
             record_rebase_in_rewritten_pending(git_dir, &rb_dir, &skipped_oid, next_cmd)?;
         }
+        // After a conflict stop the todo was rewritten as `todo[i..]`, so the skipped commit is
+        // still the first actionable line. Drop it so replay_remaining resumes at the next commit
+        // instead of re-applying the one we are skipping (which would conflict again and re-record
+        // a spurious rewrite entry).
+        pop_first_nonempty_todo_line(&repo, &rb_dir)?;
     }
     let _ = fs::remove_file(rb_dir.join("stopped-sha"));
 
