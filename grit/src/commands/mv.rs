@@ -8,6 +8,7 @@ use clap::Args as ClapArgs;
 use grit_lib::config::{ConfigFile, ConfigScope, ConfigSet};
 use grit_lib::diff::worktree_differs_from_index_entry;
 use grit_lib::error::Error;
+use grit_lib::ignore::path_in_sparse_checkout as path_in_sparse_checkout_lines;
 use grit_lib::index::{Index, MODE_GITLINK};
 use grit_lib::objects::ObjectKind;
 use grit_lib::odb::Odb;
@@ -82,6 +83,21 @@ struct MoveRow {
     index_only: bool,
     /// Source was skip-worktree (sparse) before the move.
     sparse_source: bool,
+}
+
+/// Whether `path` is inside the sparse-checkout, mirroring Git's `path_in_sparse_checkout`.
+///
+/// In cone mode the expanded-cone prefix rules apply (`path_in_sparse_checkout_patterns`).
+/// In non-cone mode Git walks each parent directory with last-match-wins, tri-state
+/// (`UNDECIDED` → check parent) semantics so a pattern like `!x/y/z` excludes `x/y/z/new-a`
+/// and an unanchored `y/` matches a `y` directory at any depth (t7002 #8, #9). Routing
+/// through `grit_lib::ignore::path_in_sparse_checkout` reproduces that exactly.
+fn path_in_sparse(path: &str, patterns: &[String], cone_cfg: bool) -> bool {
+    if cone_cfg {
+        path_in_sparse_checkout_patterns(path, patterns, true)
+    } else {
+        path_in_sparse_checkout_lines(path, patterns, None)
+    }
 }
 
 /// Run the `mv` command.
@@ -293,11 +309,11 @@ pub fn run(args: Args) -> Result<()> {
         if !args.sparse && sparse_enabled {
             let mut blocked = false;
             for (fsrc, fdst) in &sparse_path_pairs {
-                if !path_in_sparse_checkout_patterns(fsrc, &sparse_patterns, cone_cfg) {
+                if !path_in_sparse(fsrc, &sparse_patterns, cone_cfg) {
                     sparse_blocklist.push(fsrc.clone());
                     blocked = true;
                 }
-                if !path_in_sparse_checkout_patterns(fdst, &sparse_patterns, cone_cfg) {
+                if !path_in_sparse(fdst, &sparse_patterns, cone_cfg) {
                     sparse_blocklist.push(fdst.clone());
                     blocked = true;
                 }
