@@ -1669,12 +1669,20 @@ fn reset_commit(
     new_index.clear_resolve_undo();
     repo.write_index_at(&index_path, &mut new_index)
         .context("writing index")?;
-    // NOTE: do NOT re-apply sparse-checkout here. Git's `reset` only copies the
-    // existing entry's skip-worktree bit (or `path_in_sparse_checkout` for new
-    // entries) and never deletes worktree files or re-runs sparse application
-    // (git/builtin/reset.c). `preserve_index_cache_flags_from` above already
-    // carries skip-worktree/assume-unchanged forward, so re-applying sparsity
-    // would spuriously delete worktree files of skip-worktree entries (t3705 #16).
+    // For MIXED (and SOFT) resets, do NOT re-apply sparse-checkout. Git's `reset`
+    // only copies the existing entry's skip-worktree bit and never deletes
+    // worktree files or re-runs sparse application (git/builtin/reset.c).
+    // `preserve_index_cache_flags_from` above already carries
+    // skip-worktree/assume-unchanged forward, so re-applying sparsity here would
+    // spuriously delete worktree files of skip-worktree entries (t3705 #16).
+    //
+    // The worktree-checkout modes (--hard/--merge/--keep) materialize the index
+    // into the worktree without honoring skip-worktree, so they still need the
+    // sparse re-apply to prune excluded paths back out (t1091 "cone mode: match
+    // patterns").
+    if needs_worktree_checkout {
+        crate::commands::sparse_checkout::reapply_sparse_checkout_if_configured(repo)?;
+    }
 
     update_head_ref(&repo.git_dir, &head, &target_oid)?;
     write_reset_reflog(repo, &head, &old_oid, &target_oid, commit_spec);
