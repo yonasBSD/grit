@@ -325,6 +325,7 @@ pub fn run(args: Args) -> Result<()> {
             };
             fs::write(repo.git_dir.join("FETCH_HEAD"), lines.concat())?;
 
+            grit_lib::pack::clear_pack_cache();
             let kind = do_merge_or_rebase_after_fetch(&args, &config, &repo, &head)?;
             maybe_update_submodules_after_pull(&args, &config, kind)?;
             return Ok(());
@@ -353,6 +354,7 @@ pub fn run(args: Args) -> Result<()> {
         };
         fs::write(repo.git_dir.join("FETCH_HEAD"), lines.concat())?;
 
+        grit_lib::pack::clear_pack_cache();
         let kind = do_merge_or_rebase_after_fetch(&args, &config, &repo, &head)?;
         maybe_update_submodules_after_pull(&args, &config, kind)?;
         return Ok(());
@@ -408,6 +410,12 @@ pub fn run(args: Args) -> Result<()> {
         no_ipv6: false,
     };
     super::fetch::run(fetch_args)?;
+    // The in-process fetch (and its post-fetch maintenance repack/gc) added and
+    // removed packs; drop the process-wide pack-index cache so the subsequent
+    // merge sees the freshly-fetched (and lazily-fetched) objects rather than a
+    // stale directory listing that points at deleted packs (t5616 partial-clone
+    // pull-then-gc).
+    grit_lib::pack::clear_pack_cache();
     if effective_refspecs.is_empty() {
         normalize_fetch_head_for_pull_branch(&repo, &merge_branch)?;
     }

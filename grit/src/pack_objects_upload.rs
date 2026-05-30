@@ -46,7 +46,7 @@ pub fn spawn_pack_objects_upload(
             c.arg("--thin");
         }
         if let Some(spec) = filter_spec.map(str::trim).filter(|s| !s.is_empty()) {
-            c.arg("--filter").arg(spec);
+            c.arg(format!("--filter={spec}"));
         }
         c.arg("--stdout")
             .arg("--progress")
@@ -59,7 +59,7 @@ pub fn spawn_pack_objects_upload(
             c.arg("--thin");
         }
         if let Some(spec) = filter_spec.map(str::trim).filter(|s| !s.is_empty()) {
-            c.arg("--filter").arg(spec);
+            c.arg(format!("--filter={spec}"));
         }
         c.arg("--stdout")
             .arg("--progress")

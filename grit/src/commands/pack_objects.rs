@@ -624,20 +624,19 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     if pack_list.oids.is_empty() {
-        // Git’s cruft `pack-objects` pass may enumerate zero objects; `repack` still passes
-        // `--non-empty` but expects a successful no-op with no stdout hash.
-        //
-        // An empty repository’s full `repack`/`gc` also runs `pack-objects --all --non-empty` with
-        // zero reachable objects; Git skips writing a pack (t6500 `gc --quiet` on fresh repo).
-        let allow_empty = (args.cruft && !args.incremental)
-            || (args.all && !args.incremental && !args.unpacked)
-            // `repack -d` incremental pass: nothing loose to pack (t5332 after full repack).
-            || (args.all && args.incremental && args.unpacked);
-        if args.non_empty && !allow_empty {
-            bail!("pack-objects refuses to create an empty pack");
-        }
+        // `--non-empty` means "do not write an empty pack": Git's pack-objects
+        // simply succeeds writing nothing (`if (non_empty && !nr_result) goto
+        // cleanup;`), it never errors. A `repack --geometric --exclude-promisor-objects`
+        // on a partial clone can legitimately enumerate zero non-promisor objects
+        // (t5616 "after fetching descendants of non-promisor commits, gc works").
         if !args.stdout && !args.quiet {
             eprintln!("Total 0 (delta 0), reused 0 (delta 0)");
+        }
+        // `--unpack-unreachable` (repack -A) must still run the loosen pass and
+        // emit its trace even when no pack is written (Git runs
+        // `loosen_unused_packed_objects` during object enumeration).
+        if args.unpack_unreachable.is_some() {
+            loosen_unused_packed_objects(&repo, &HashSet::new(), &[], args.honor_pack_keep)?;
         }
         return Ok(());
     }
@@ -689,11 +688,16 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     if entries.is_empty() {
-        if args.non_empty && !(args.all && args.incremental && args.unpacked) {
-            bail!("pack-objects refuses to create an empty pack");
-        }
+        // `--non-empty` with an empty result is success (no pack written), never
+        // an error — matches Git's pack-objects `goto cleanup`.
         if !args.stdout && !args.quiet {
             eprintln!("Total 0 (delta 0), reused 0 (delta 0)");
+        }
+        // See comment above: emit the `--unpack-unreachable` loosen trace even
+        // when the filtered object set turns out empty.
+        if args.unpack_unreachable.is_some() {
+            let packed: HashSet<ObjectId> = pack_list.oids.iter().copied().collect();
+            loosen_unused_packed_objects(&repo, &packed, &[], args.honor_pack_keep)?;
         }
         return Ok(());
     }
@@ -1321,6 +1325,98 @@ fn blob_oid_for_tree_path(repo: &Repository, tree_oid: &ObjectId, name: &[u8]) -
     );
 }
 
+/// Recursively map every blob's tree path (e.g. `dir/file`) to its OID for a commit's tree.
+fn commit_tree_blob_paths(
+    repo: &Repository,
+    commit_oid: &ObjectId,
+    out: &mut HashMap<Vec<u8>, ObjectId>,
+) -> Result<()> {
+    let obj = read_object_from_repo(repo, commit_oid)?;
+    if obj.kind != ObjectKind::Commit {
+        return Ok(());
+    }
+    let commit = parse_commit(&obj.data).map_err(|e| anyhow::anyhow!("{e}"))?;
+    collect_tree_blob_paths(repo, &commit.tree, &[], out)
+}
+
+fn collect_tree_blob_paths(
+    repo: &Repository,
+    tree_oid: &ObjectId,
+    prefix: &[u8],
+    out: &mut HashMap<Vec<u8>, ObjectId>,
+) -> Result<()> {
+    let obj = match read_object_from_repo(repo, tree_oid) {
+        Ok(o) => o,
+        Err(_) => return Ok(()),
+    };
+    if obj.kind != ObjectKind::Tree {
+        return Ok(());
+    }
+    for e in parse_tree(&obj.data).map_err(|e| anyhow::anyhow!("{e}"))? {
+        // Gitlink (submodule) entries have no object in this repo.
+        if e.mode == 0o160000 {
+            continue;
+        }
+        let mut path = prefix.to_vec();
+        if !path.is_empty() {
+            path.push(b'/');
+        }
+        path.extend_from_slice(&e.name);
+        if e.mode == 0o040000 {
+            collect_tree_blob_paths(repo, &e.oid, &path, out)?;
+        } else {
+            out.entry(path).or_insert(e.oid);
+        }
+    }
+    Ok(())
+}
+
+/// For a thin pack with `--not <boundary>` commits, pair each packed blob with a same-path blob in
+/// the boundary trees so it can be sent as a REF_DELTA against the (already-present) boundary blob.
+///
+/// Mirrors Git's thin-pack delta selection against the boundary the receiver already has. The base
+/// may be omitted from the pack (the receiver resolves it from its own objects or a promisor fetch).
+fn thin_pack_boundary_blob_deltas(
+    repo: &Repository,
+    packed_oids: &[ObjectId],
+    boundary_commits: &[ObjectId],
+) -> Vec<(ObjectId, ObjectId)> {
+    if boundary_commits.is_empty() {
+        return Vec::new();
+    }
+    let mut boundary_by_path: HashMap<Vec<u8>, ObjectId> = HashMap::new();
+    for c in boundary_commits {
+        let _ = commit_tree_blob_paths(repo, c, &mut boundary_by_path);
+    }
+    if boundary_by_path.is_empty() {
+        return Vec::new();
+    }
+    let packed_set: HashSet<ObjectId> = packed_oids.iter().copied().collect();
+    // Build path -> blob OID for the packed result commits so each packed blob's tree path is known,
+    // then pair it with the boundary blob at the same path.
+    let mut packed_by_path: HashMap<Vec<u8>, ObjectId> = HashMap::new();
+    for oid in packed_oids {
+        if let Ok(o) = read_object_from_repo(repo, oid) {
+            if o.kind == ObjectKind::Commit {
+                let _ = commit_tree_blob_paths(repo, oid, &mut packed_by_path);
+            }
+        }
+    }
+
+    let mut deltas: Vec<(ObjectId, ObjectId)> = Vec::new();
+    for (path, blob_oid) in &packed_by_path {
+        if !packed_set.contains(blob_oid) {
+            continue;
+        }
+        if let Some(base) = boundary_by_path.get(path) {
+            if base != blob_oid {
+                deltas.push((*blob_oid, *base));
+            }
+        }
+    }
+    deltas
+}
+
 /// Write the given objects into a pack at `base` via `pack-objects` stdin (OID lines).
 fn write_pack_via_stdin_objects(
     repo: &Repository,
@@ -1547,6 +1643,62 @@ fn object_filter_omits_blob(filter: &ObjectFilter, size: u64) -> bool {
             .any(|filter| object_filter_omits_blob(filter, size)),
         _ => false,
     }
+}
+
+/// Whether `--filter=<spec>` needs the reachability-aware `rev-list` object walk rather than the
+/// flat blob-size post-filter (`object_filter_omits_blob`).
+///
+/// `blob:none` / `blob:limit=<n>` only depend on a blob's size, so the cheaper flat pass suffices.
+/// `tree:<depth>`, `sparse:oid=…`, and `object:type=…` (and any combine spec containing them) depend
+/// on the object's position in the reachability graph (tree depth, path), so the full walk is
+/// required to know which trees/blobs to omit.
+fn filter_needs_rev_list_walk(spec: &str) -> bool {
+    fn needs(f: &ObjectFilter) -> bool {
+        match f {
+            ObjectFilter::BlobNone | ObjectFilter::BlobLimit(_) => false,
+            ObjectFilter::TreeDepth(_)
+            | ObjectFilter::SparseOid(_)
+            | ObjectFilter::ObjectType(_) => true,
+            ObjectFilter::Combine(parts) => parts.iter().any(needs),
+        }
+    }
+    ObjectFilter::parse(spec)
+        .map(|f| needs(&f))
+        .unwrap_or(false)
+}
+
+/// Collect the filtered object set for `pack-objects --revs --filter=<spec>` using the
+/// reachability-aware `rev-list` walk (which honors `tree:<depth>`, `sparse:oid=…`, `combine:…`).
+///
+/// Commits are included as objects so the resulting pack carries the commit history; trees/blobs
+/// follow the filter's per-object decisions.
+fn collect_filtered_objects_via_rev_list(
+    repo: &Repository,
+    positive: &[String],
+    negative: &[String],
+    filter_spec: &str,
+) -> Result<Vec<ObjectId>> {
+    let filter = ObjectFilter::parse(filter_spec)
+        .map_err(|e| anyhow::anyhow!("invalid filter spec '{filter_spec}': {e}"))?;
+    let mut opts = RevListOptions::default();
+    opts.objects = true;
+    opts.missing_action = MissingAction::Allow;
+    opts.filter = Some(filter);
+    let r = rev_list(repo, positive, negative, &opts)
+        .map_err(|e| anyhow::anyhow!("rev-list for pack-objects --filter: {e}"))?;
+    let mut seen: HashSet<ObjectId> = HashSet::new();
+    let mut out: Vec<ObjectId> = Vec::new();
+    for c in &r.commits {
+        if seen.insert(*c) {
+            out.push(*c);
+        }
+    }
+    for (o, _) in &r.objects {
+        if seen.insert(*o) {
+            out.push(*o);
+        }
+    }
+    Ok(out)
 }
 
 fn read_object_from_repo_unverified(
@@ -1962,6 +2114,24 @@ fn collect_pack_objects_from_rev_stdin_lines(
         }
     }
 
+    // A reachability-aware filter (`tree:<depth>`, `sparse:oid=…`, `object:type=…`, or a combine
+    // spec containing them) cannot be applied by the flat blob-size post-pass. Enumerate the
+    // filtered object set with the `rev-list` walk, which honors per-object tree depth / path.
+    if let Some(spec) = args
+        .filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter(|s| filter_needs_rev_list_walk(s))
+    {
+        let ordered = collect_filtered_objects_via_rev_list(repo, &positive, &negative, spec)?;
+        return Ok(PackObjectList {
+            oids: ordered,
+            thin_blob_deltas: Vec::new(),
+            rev_list_stdin: true,
+        });
+    }
+
     let use_sparse = pack_objects_sparse_mode(repo, args)?;
 
     if use_sparse {
@@ -2015,9 +2185,15 @@ fn collect_pack_objects_from_rev_stdin_lines(
             ordered = prune_hidden_objects_for_shallow_repo(repo, &ordered)?;
         }
 
+        let thin_blob_deltas = if args.thin && !exclude_roots.is_empty() {
+            thin_pack_boundary_blob_deltas(repo, &ordered, &exclude_roots)
+        } else {
+            Vec::new()
+        };
+
         return Ok(PackObjectList {
             oids: ordered,
-            thin_blob_deltas: Vec::new(),
+            thin_blob_deltas,
             rev_list_stdin: true,
         });
     }
@@ -2061,9 +2237,24 @@ fn collect_pack_objects_from_rev_stdin_lines(
         ordered = prune_hidden_objects_for_shallow_repo(repo, &ordered)?;
     }
 
+    // Thin pack (`--thin`): delta new blobs against same-path blobs in the `--not` boundary trees,
+    // which the receiver already has. The boundary blobs are intentionally NOT in the pack
+    // (REF_DELTA against an external base), matching Git's thin-pack output (t5616 REF_DELTA test).
+    let thin_blob_deltas = if args.thin && !negative.is_empty() {
+        let mut boundary: Vec<ObjectId> = Vec::with_capacity(negative.len());
+        for neg in &negative {
+            if let Ok(oid) = resolve_revision(repo, neg) {
+                boundary.push(oid);
+            }
+        }
+        thin_pack_boundary_blob_deltas(repo, &ordered, &boundary)
+    } else {
+        Vec::new()
+    };
+
     Ok(PackObjectList {
         oids: ordered,
-        thin_blob_deltas: Vec::new(),
+        thin_blob_deltas,
         rev_list_stdin: true,
     })
 }
@@ -2172,6 +2363,15 @@ fn collect_oids(repo: &Repository, args: &Args) -> Result<PackObjectList> {
         .lines()
         .collect::<std::io::Result<Vec<_>>>()?;
 
+    // `--stdin-packs` interprets stdin as pack names (`pack-…` / `^pack-…`), not
+    // as rev-list arguments. This must be handled before the rev-list heuristic
+    // below, otherwise the leading `^` of an excluded pack makes the line look
+    // like a rev exclusion and the pack name is fed to rev-parse (`repack
+    // --geometric` on a partial clone: t5616 "after fetching descendants ...").
+    if args.stdin_packs {
+        return collect_stdin_packs_oids(repo, args, &stdin_lines);
+    }
+
     let rev_mode = args.revs || stdin_looks_like_rev_list(&stdin_lines);
     let has_rev_input = stdin_lines.iter().any(|l| !l.trim().is_empty());
     if rev_mode && has_rev_input {
@@ -2219,58 +2419,7 @@ fn collect_oids(repo: &Repository, args: &Args) -> Result<PackObjectList> {
         oids.retain(|o| !skip.contains(o));
     }
 
-    if args.stdin_packs {
-        // Read pack filenames from stdin: `^pack-…` builds an exclusion set; other lines add
-        // objects from those packs minus exclusions (order-independent; `git repack --filter`).
-        let pack_dir = repo.odb.objects_dir().join("pack");
-        let mut exclude: HashSet<ObjectId> = HashSet::new();
-        for trimmed in stdin_lines
-            .iter()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
-            if !trimmed.starts_with('^') {
-                continue;
-            }
-            let spec = trimmed[1..].trim();
-            let idx_path = pack_index_path_for_stdin_pack_spec(&pack_dir, spec)?;
-            let idx = grit_lib::pack::read_pack_index(&idx_path)
-                .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", idx_path.display()))?;
-            for entry in idx.entries {
-                if entry.oid.len() == 20 {
-                    if let Ok(oid) = ObjectId::from_bytes(&entry.oid) {
-                        exclude.insert(oid);
-                    }
-                }
-            }
-        }
-        for trimmed in stdin_lines
-            .iter()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
-            if trimmed.starts_with('^') {
-                continue;
-            }
-            let idx_path = pack_index_path_for_stdin_pack_spec(&pack_dir, trimmed)?;
-            let idx = grit_lib::pack::read_pack_index(&idx_path)
-                .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", idx_path.display()))?;
-            for entry in idx.entries {
-                if entry.oid.len() == 20 {
-                    if let Ok(oid) = ObjectId::from_bytes(&entry.oid) {
-                        if !exclude.contains(&oid) {
-                            oids.insert(oid);
-                        }
-                    }
-                }
-            }
-        }
-        return Ok(PackObjectList {
-            oids: oids.into_iter().collect(),
-            thin_blob_deltas: Vec::new(),
-            rev_list_stdin: false,
-        });
-    } else if !args.all {
+    if !args.all {
         // Git `pack-objects` stdin format (see git/builtin/pack-objects.c `read_object_list_from_stdin`):
         //   -<oid>  — set preferred base (tree OID for thin-pack blob deltas), not an exclusion
         //   <oid> [<path>] — object to pack; with a preferred base, path selects the base blob
@@ -2330,6 +2479,83 @@ fn collect_oids(repo: &Repository, args: &Args) -> Result<PackObjectList> {
         }
     }
 
+    Ok(PackObjectList {
+        oids: oids.into_iter().collect(),
+        thin_blob_deltas: Vec::new(),
+        rev_list_stdin: false,
+    })
+}
+
+/// Collect the object set for `pack-objects --stdin-packs`: each non-`^` line
+/// names a pack whose objects are included; each `^pack-…` line names a pack
+/// whose objects are excluded. With `--exclude-promisor-objects`, members of
+/// promisor packs are also dropped so `repack --geometric` on a partial clone
+/// does not try to repack lazily-fetchable objects.
+fn collect_stdin_packs_oids(
+    repo: &Repository,
+    args: &Args,
+    stdin_lines: &[String],
+) -> Result<PackObjectList> {
+    let pack_dir = repo.odb.objects_dir().join("pack");
+    let mut oids: BTreeSet<ObjectId> = BTreeSet::new();
+    let mut exclude: HashSet<ObjectId> = HashSet::new();
+    for trimmed in stdin_lines
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        if !trimmed.starts_with('^') {
+            continue;
+        }
+        let spec = trimmed[1..].trim();
+        let idx_path = pack_index_path_for_stdin_pack_spec(&pack_dir, spec)?;
+        let idx = grit_lib::pack::read_pack_index(&idx_path)
+            .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", idx_path.display()))?;
+        for entry in idx.entries {
+            if entry.oid.len() == 20 {
+                if let Ok(oid) = ObjectId::from_bytes(&entry.oid) {
+                    exclude.insert(oid);
+                }
+            }
+        }
+    }
+    if args.exclude_promisor_objects {
+        let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        if repo_treats_promisor_packs(&repo.git_dir, &config) {
+            exclude.extend(promisor_pack_object_ids(&repo.git_dir.join("objects")));
+        }
+    }
+    for trimmed in stdin_lines
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        if trimmed.starts_with('^') {
+            continue;
+        }
+        let idx_path = pack_index_path_for_stdin_pack_spec(&pack_dir, trimmed)?;
+        let idx = grit_lib::pack::read_pack_index(&idx_path)
+            .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", idx_path.display()))?;
+        for entry in idx.entries {
+            if entry.oid.len() == 20 {
+                if let Ok(oid) = ObjectId::from_bytes(&entry.oid) {
+                    if !exclude.contains(&oid) {
+                        oids.insert(oid);
+                    }
+                }
+            }
+        }
+    }
+    // `--unpacked` additionally packs loose objects not present in any pack.
+    if args.unpacked {
+        let mut loose = BTreeSet::new();
+        collect_all_loose(&repo.odb, &mut loose)?;
+        for oid in loose {
+            if !exclude.contains(&oid) {
+                oids.insert(oid);
+            }
+        }
+    }
     Ok(PackObjectList {
         oids: oids.into_iter().collect(),
         thin_blob_deltas: Vec::new(),
@@ -2492,6 +2718,7 @@ fn loosen_unused_packed_objects(
     };
     let indexes = grit_lib::pack::read_local_pack_indexes(&objects_dir)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut loosened_objects_nr: i64 = 0;
     for idx in indexes {
         let name = idx
             .pack_path
@@ -2499,6 +2726,12 @@ fn loosen_unused_packed_objects(
             .and_then(|s| s.to_str())
             .unwrap_or("");
         if !name.ends_with(".pack") {
+            continue;
+        }
+        // Never loosen objects that live in a promisor pack: those are
+        // lazily-fetchable from the promisor remote and must stay packed
+        // (Git skips non-local/promisor packs in `loosen_unused_packed_objects`).
+        if idx.pack_path.with_extension("promisor").is_file() {
             continue;
         }
         let stem = name.strip_suffix(".pack").unwrap_or(name);
@@ -2526,8 +2759,14 @@ fn loosen_unused_packed_objects(
             }
             let obj = read_object_from_repo(repo, &oid)?;
             repo.odb.write(obj.kind, &obj.data)?;
+            loosened_objects_nr += 1;
         }
     }
+    crate::trace2_emit_data_intmax(
+        "pack-objects",
+        "loosen_unused_packed_objects/loosened",
+        loosened_objects_nr,
+    );
     Ok(())
 }
 
@@ -3212,7 +3451,15 @@ fn build_pack(
                     encode_git_ofs_delta_distance(&mut buf, dist);
                 } else {
                     encode_pack_object_header(&mut buf, 7, delta.len());
-                    buf.extend_from_slice(base_pack.as_slice());
+                    // REF_DELTA: the bytes after the header are the base object's OID. For a base
+                    // that is also packed, `base_pack` already holds those bytes; for a thin-pack
+                    // delta against an external base (not in this pack), `base_pack` is empty, so
+                    // emit the base OID directly (t5616 REF_DELTA against missing promisor base).
+                    if base_pack.is_empty() {
+                        buf.extend_from_slice(base_oid.as_bytes());
+                    } else {
+                        buf.extend_from_slice(base_pack.as_slice());
+                    }
                 }
                 let mut enc = ZlibEncoder::new(Vec::new(), zlib);
                 enc.write_all(delta)?;

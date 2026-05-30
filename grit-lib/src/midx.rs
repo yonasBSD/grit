@@ -1144,6 +1144,13 @@ pub fn try_read_object_via_midx(
         .get(pack_id as usize)
         .ok_or_else(|| Error::CorruptObject("bad pack-int-id".to_owned()))?;
     let idx_path = pack_dir.join(idx_name);
+    // A multi-pack-index can outlive packs it names (e.g. a `repack -d` deleted a
+    // pack but did not rewrite the MIDX). Git tolerates such stale entries by
+    // skipping the missing pack; mirror that by falling through to other object
+    // sources instead of surfacing the open error.
+    if !idx_path.exists() {
+        return Ok(None);
+    }
     let idx = crate::pack::read_pack_index(&idx_path)?;
     crate::pack::read_object_from_pack(&idx, oid).map(Some)
 }

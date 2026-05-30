@@ -1462,6 +1462,9 @@ pub fn http_fetch_pack(
         }
         pkt_line::write_delim(&mut req)?;
         for w in &wants {
+            // Trace the sent `want` line (matches Git's `packet: fetch> want <oid>`); tests grep the
+            // packet trace to assert which objects were requested (t5616 REF_DELTA lazy fetch).
+            crate::trace_packet::trace_packet_git('>', &format!("want {}", w.to_hex()));
             pkt_line::write_line_to_vec(&mut req, &format!("want {} {}", w.to_hex(), fetch_caps))?;
         }
         append_fetch_request_extensions_v2(&mut req, &caps, options, &local_shallow_oids)?;

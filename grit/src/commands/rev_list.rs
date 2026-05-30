@@ -663,8 +663,31 @@ pub fn run(args: Args) -> Result<()> {
         options.symmetric_right = Some(rhs_oid);
     }
 
-    let result =
+    let mut result =
         rev_list(&repo, &positive_specs, &negative_specs, &options).context("rev-list failed")?;
+
+    // `rev-list --objects --missing=error` against a promisor remote must
+    // hydrate the full reachable set: Git bulk lazy-fetches every missing
+    // reachable tree/blob so they become present and are enumerated. The first
+    // walk above only returns the present commits (missing objects are skipped),
+    // so use its commit set to drive a bulk hydration, then walk again.
+    if options.objects
+        && options.missing_action == MissingAction::Error
+        && !options.exclude_promisor_objects
+    {
+        match crate::commands::promisor_hydrate::hydrate_reachable_trees_blobs_from_commits(
+            &repo,
+            &result.commits,
+        ) {
+            Ok(true) => {
+                grit_lib::pack::clear_pack_cache();
+                result = rev_list(&repo, &positive_specs, &negative_specs, &options)
+                    .context("rev-list failed")?;
+            }
+            Ok(false) => {}
+            Err(e) => return Err(e),
+        }
+    }
 
     if let Some(format) = disk_usage_format {
         let mut object_ids = Vec::with_capacity(result.commits.len() + result.objects.len());

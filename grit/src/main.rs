@@ -446,6 +446,27 @@ pub(crate) fn trace2_write_json_data_line(
     Ok(())
 }
 
+/// Emit a `trace2_data_intmax`-style data event to whichever trace2 targets are
+/// active (PERF and/or EVENT), matching Git's `trace2_data_intmax`. The PERF
+/// payload is rendered as `<key>:<value>` so substring greps used by the test
+/// suite (e.g. `loosen_unused_packed_objects/loosened:0`) match.
+pub(crate) fn trace2_emit_data_intmax(category: &str, key: &str, value: i64) {
+    if let Some(path) = std::env::var_os("GIT_TRACE2_PERF") {
+        if let Some(p) = path.to_str() {
+            if !p.is_empty() {
+                let _ = trace2_write_perf(p, "data", &format!("{key}:{value}"));
+            }
+        }
+    }
+    if let Some(path) = std::env::var_os("GIT_TRACE2_EVENT") {
+        if let Some(p) = path.to_str() {
+            if !p.is_empty() {
+                let _ = trace2_write_json_data_line(p, category, key, &value.to_string());
+            }
+        }
+    }
+}
+
 /// Emit a trace2 counter event used by upstream fsync assertions.
 pub(crate) fn trace2_write_json_counter_line(
     path: &str,

@@ -976,7 +976,6 @@ fn apply_one_time_script(script_path: &Path, input: &[u8]) -> Result<Vec<u8>, St
         .output()
         .map_err(|e| format!("Failed to execute one-time-script: {e}"))?;
     let _ = fs::remove_file(&tmp_path);
-    let _ = fs::remove_file(script_path);
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
@@ -984,6 +983,13 @@ fn apply_one_time_script(script_path: &Path, input: &[u8]) -> Result<Vec<u8>, St
             output.status.code().unwrap_or(-1),
             err.trim()
         ));
+    }
+    // Match upstream `apply-one-time-script.sh`: only consume the one-time script when it actually
+    // modified the response. A preceding `ls-refs` round whose response is passed through unchanged
+    // must NOT consume the script, so the subsequent `fetch` response is the one that gets rewritten
+    // (t5616 HTTP partial-clone tests rely on the fetch pack being the substituted one).
+    if output.stdout != input {
+        let _ = fs::remove_file(script_path);
     }
     Ok(output.stdout)
 }

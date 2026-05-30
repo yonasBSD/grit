@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use crate::config::ConfigSet;
 use crate::error::{Error, Result};
 use crate::objects::{parse_commit, ObjectId, ObjectKind};
-use crate::promisor::{promisor_pack_object_ids, repo_treats_promisor_packs};
+use crate::promisor::{read_promisor_missing_oids, repo_treats_promisor_packs};
 use crate::reflog::read_reflog;
 use crate::repo::Repository;
 use crate::rev_parse::{
@@ -379,8 +379,18 @@ struct CommitGraphCache<'r> {
 impl<'r> CommitGraphCache<'r> {
     fn new(repo: &'r Repository) -> Self {
         let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        // Stop ancestry traversal only at genuinely-missing promisor objects, not
+        // at every member of a promisor pack. The clone base commit lives in a
+        // promisor pack but is fully present locally; treating it as a stop point
+        // truncates ancestry and breaks fast-forward detection on a push from a
+        // partial clone (t5616 "after fetching descendants of non-promisor
+        // commits, gc works"). Missing parents are already handled by
+        // `parents_of` returning no parents on `ObjectNotFound`, so we only need
+        // to record the OIDs the partial clone knows are absent.
         let promisor_stop = if repo_treats_promisor_packs(&repo.git_dir, &cfg) {
-            promisor_pack_object_ids(&repo.git_dir.join("objects"))
+            read_promisor_missing_oids(&repo.git_dir)
+                .into_iter()
+                .collect::<HashSet<ObjectId>>()
         } else {
             HashSet::new()
         };

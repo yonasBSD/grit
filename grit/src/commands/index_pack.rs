@@ -15,7 +15,7 @@ use sha2::{Digest as Sha2Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use grit_lib::odb::Odb;
 use grit_lib::pack::{read_pack_index, verify_pack_and_collect};
@@ -386,6 +386,46 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
+std::thread_local! {
+    /// Guards against re-entering thin-pack base lazy-fetch while a lazy fetch is already in
+    /// flight (the promisor fetch itself ingests a pack with `--fix-thin`).
+    static IN_THIN_BASE_LAZY_FETCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Lazily fetch missing REF_DELTA base objects from the promisor remote so a thin pack can be
+/// resolved. Returns true if at least one base was fetched. Best-effort: failures (no promisor
+/// remote, lazy-fetch disabled, network error) leave the bases missing so the caller bails as before.
+///
+/// `objects_dir` is the target repo's `objects/` directory (its parent is the git dir), used so the
+/// fetch targets the repository being written even when the process cwd differs (`git -C <dir>`).
+fn lazy_fetch_thin_delta_bases(objects_dir: Option<&Path>, bases: &[ObjectId]) -> bool {
+    if bases.is_empty() {
+        return false;
+    }
+    if IN_THIN_BASE_LAZY_FETCH.with(std::cell::Cell::get) {
+        return false;
+    }
+    let repo = match objects_dir.and_then(|d| d.parent()) {
+        Some(git_dir) => match grit_lib::repo::Repository::open(git_dir, None) {
+            Ok(r) => r,
+            Err(_) => return false,
+        },
+        None => match grit_lib::repo::Repository::discover(None) {
+            Ok(r) => r,
+            Err(_) => return false,
+        },
+    };
+    let config = grit_lib::config::ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    if !grit_lib::promisor::repo_treats_promisor_packs(&repo.git_dir, &config) {
+        return false;
+    }
+    IN_THIN_BASE_LAZY_FETCH.with(|c| c.set(true));
+    let result =
+        crate::commands::promisor_hydrate::try_lazy_fetch_promisor_objects_batch(&repo, bases);
+    IN_THIN_BASE_LAZY_FETCH.with(|c| c.set(false));
+    result.is_ok()
+}
+
 /// Write `pack_bytes` under `repo`'s `objects/pack/`, build the `.idx`, and return the `.pack` path.
 ///
 /// Used when ingesting a pack from the network (e.g. promisor lazy fetch) without unpacking loose objects.
@@ -628,14 +668,20 @@ fn parse_and_resolve(
         usize,
     )> = Vec::new();
 
-    // Try to open repo ODB for fix-thin.
-    let odb = if fix_thin {
-        grit_lib::repo::Repository::discover(None)
-            .ok()
-            .map(|r| r.odb)
+    // Try to open repo ODB for fix-thin. Prefer the caller-supplied ODB (the actual target repo,
+    // e.g. when ingesting a fetched pack for `git -C <dir> fetch`) over re-discovering from the
+    // process cwd, which may differ from the repository being written.
+    let fix_thin_objects_dir: Option<PathBuf> = if fix_thin {
+        match collision_odb {
+            Some(o) => Some(o.objects_dir().to_path_buf()),
+            None => grit_lib::repo::Repository::discover(None)
+                .ok()
+                .map(|r| r.odb.objects_dir().to_path_buf()),
+        }
     } else {
         None
     };
+    let mut odb = fix_thin_objects_dir.as_deref().map(Odb::new);
 
     for (offset, type_code, _entry_len, data, base_oid, base_offset) in &entries {
         let obj_start = *offset as usize;
@@ -688,6 +734,36 @@ fn parse_and_resolve(
         }
 
         if fix_thin {
+            // A REF_DELTA base that is missing locally but lives on a promisor remote (e.g. a blob
+            // filtered out of a partial clone) must be lazily fetched so the thin-pack delta can be
+            // resolved. Fetch only the genuinely-missing bases; bases the client already has are
+            // read from the ODB, never re-fetched (t5616 REF_DELTA test asserts `want
+            // <deltabase_missing>` is sent but `want <deltabase_have>` is not).
+            if let Some(ref o) = odb {
+                let mut missing_bases: Vec<ObjectId> = Vec::new();
+                for (_, type_code, _, base_oid_opt, _, _, _) in &remaining {
+                    if *type_code != 7 {
+                        continue;
+                    }
+                    let Some(bo) = base_oid_opt else {
+                        continue;
+                    };
+                    if by_oid.contains_key(bo) {
+                        continue;
+                    }
+                    if o.read(bo).is_err() {
+                        missing_bases.push(*bo);
+                    }
+                }
+                missing_bases.sort();
+                missing_bases.dedup();
+                if !missing_bases.is_empty()
+                    && lazy_fetch_thin_delta_bases(fix_thin_objects_dir.as_deref(), &missing_bases)
+                {
+                    // Re-open the ODB so reads see the just-fetched promisor pack(s).
+                    odb = fix_thin_objects_dir.as_deref().map(Odb::new);
+                }
+            }
             if let Some(ref o) = odb {
                 let mut bases_to_add: Vec<ObjectId> = Vec::new();
                 for (_, type_code, _, base_oid_opt, _, _, _) in &remaining {

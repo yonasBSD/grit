@@ -291,12 +291,20 @@ pub fn run(args: Args) -> Result<()> {
         write_bitmaps = 0;
         quiet_pack_objects_local_alt = true;
     }
-    if write_bitmaps != 0 {
-        if repo_treats_promisor_packs(&repo.git_dir, &cfg)
-            && !promisor_pack_object_ids(&objects_dir_for_warn).is_empty()
-        {
+    if write_bitmaps != 0
+        && repo_treats_promisor_packs(&repo.git_dir, &cfg)
+        && !promisor_pack_object_ids(&objects_dir_for_warn).is_empty()
+    {
+        // A repo with promisor packs cannot have a closed bitmap. When bitmaps
+        // were explicitly requested (`-b`/config), this is a hard error to match
+        // Git. When bitmaps are merely the auto/"quiet" default (`write_bitmaps
+        // < 0`, e.g. a bare `repack -A -d` on a partial clone), Git passes
+        // `--write-bitmap-index-quiet` and simply skips the bitmap without
+        // failing — so do the same here.
+        if write_bitmaps > 0 {
             anyhow::bail!("fatal: failed to write bitmap index");
         }
+        write_bitmaps = 0;
     }
     if pack_dir_has_any_keep_file(&pack_dir_abs) {
         write_bitmaps = 0;

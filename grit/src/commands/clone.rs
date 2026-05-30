@@ -613,6 +613,20 @@ pub fn run(mut args: Args) -> Result<()> {
 
     let filter_spec = clone_filter_spec(&args);
 
+    // A `file://` partial clone whose filter cannot be reproduced by the client-side
+    // `copy_objects` + materialize layout (e.g. `tree:<n>`, `sparse:oid=…`, or a combine spec
+    // containing them) must negotiate via upload-pack so `pack-objects --filter` applies the
+    // reachability-aware filter server-side. Match upstream Git, which disables the local-clone
+    // optimization for partial clones.
+    if is_file_url
+        && !args.no_local
+        && uploadpack_filter_allowed(&source.git_dir)
+        && filter_spec.is_some()
+        && !clone_filter_materializable_locally(filter_spec.as_deref())
+    {
+        args.no_local = true;
+    }
+
     if is_file_url && filter_spec.is_some() && !uploadpack_filter_allowed(&source.git_dir) {
         eprintln!(
             "warning: filtering not recognized by server, ignoring --filter={}",
@@ -1137,8 +1151,19 @@ pub fn run(mut args: Args) -> Result<()> {
             }
         } else {
             // Non-bare clone: copy refs as remote-tracking refs
-            copy_refs_as_remote(&source.git_dir, &dest.git_dir, &remote_name, args.no_tags)
-                .context("copying refs")?;
+            let single_branch_name = if args.single_branch {
+                Some(head_branch.as_deref().unwrap_or(initial_fallback.as_str()))
+            } else {
+                None
+            };
+            copy_refs_as_remote_filtered(
+                &source.git_dir,
+                &dest.git_dir,
+                &remote_name,
+                args.no_tags,
+                single_branch_name,
+            )
+            .context("copying refs")?;
 
             // Set up remote "origin" in config
             let refspec = if args.single_branch {
@@ -2257,6 +2282,15 @@ fn run_http_clone(args: Args) -> Result<()> {
         initialize_partial_clone_state_http(&dest, &remote_name, "blob:none")?;
     }
 
+    // A filtered HTTP clone must still receive every object a ref points at directly (upstream
+    // upload-pack always sends ref-tip objects). Verify each ref tip is present or promised; if a
+    // crafted/buggy server omits one without promising it, fail like Git rather than leaving a ref
+    // dangling (t5616 "upon cloning, check that all refs point to objects").
+    if partial_blob_none_http {
+        check_clone_ref_tip_connectivity(&dest)
+            .context("checking ref-tip connectivity after partial clone")?;
+    }
+
     if partial_blob_none_http && !args.bare && !args.no_checkout {
         if grit_lib::refs::resolve_ref(&dest.git_dir, "HEAD").is_err() {
             crate::commands::promisor_hydrate::trim_promisor_marker_to_missing_local(&dest)
@@ -2877,8 +2911,19 @@ fn run_ssh_clone(args: Args) -> Result<()> {
                 }
             }
         } else {
-            copy_refs_as_remote(&source.git_dir, &dest.git_dir, &remote_name, args.no_tags)
-                .context("copying refs")?;
+            let single_branch_name = if args.single_branch {
+                Some(head_branch.as_deref().unwrap_or(initial_fallback.as_str()))
+            } else {
+                None
+            };
+            copy_refs_as_remote_filtered(
+                &source.git_dir,
+                &dest.git_dir,
+                &remote_name,
+                args.no_tags,
+                single_branch_name,
+            )
+            .context("copying refs")?;
             let refspec = if args.single_branch {
                 let branch = head_branch.as_deref().unwrap_or(initial_fallback.as_str());
                 format!("+refs/heads/{branch}:refs/remotes/{remote_name}/{branch}")
@@ -3967,6 +4012,31 @@ fn clone_filter_omits_root_trees(filter_spec: Option<&str>) -> bool {
     }
 }
 
+/// Whether the client-side `copy_objects` + materialize layout can faithfully apply this filter.
+///
+/// Only `blob:none` (and combine specs whose only effect is omitting blobs / omitting root trees,
+/// i.e. `tree:0`) can be materialized client-side. A `tree:<depth>` with depth>0, `sparse:oid=…`,
+/// or `blob:limit=<nonzero>` requires the actual reachability-aware filter that
+/// `pack-objects --filter` applies on the upload-pack side; those must negotiate via upload-pack.
+fn clone_filter_materializable_locally(filter_spec: Option<&str>) -> bool {
+    let Some(spec) = filter_spec.map(str::trim).filter(|s| !s.is_empty()) else {
+        return true;
+    };
+    fn one_ok(f: &ObjectFilter) -> bool {
+        match f {
+            ObjectFilter::BlobNone => true,
+            ObjectFilter::TreeDepth(d) => *d == 0,
+            ObjectFilter::Combine(parts) => parts.iter().all(one_ok),
+            _ => false,
+        }
+    }
+    match ObjectFilter::parse(spec) {
+        Ok(f) => one_ok(&f),
+        // An unparseable spec is left to the server to reject.
+        Err(_) => false,
+    }
+}
+
 fn setup_remote_mirror_fetch_and_url(
     git_dir: &Path,
     remote_url: &str,
@@ -4499,28 +4569,63 @@ fn copy_refs_from_upload_pack_lists(
 }
 
 /// Copy refs from source into remote-tracking refs in the destination.
-fn copy_refs_as_remote(
+/// Copy source refs into the destination as remote-tracking refs.
+///
+/// When `single_branch` names a branch, only that branch is mirrored to
+/// `refs/remotes/<remote>/<branch>` and tags are auto-followed only when their
+/// (peeled) target is reachable from that branch tip — mirroring Git's
+/// `clone --single-branch` tag auto-follow, which never downloads tags that
+/// point outside the fetched history.
+fn copy_refs_as_remote_filtered(
     src_git_dir: &Path,
     dst_git_dir: &Path,
     remote_name: &str,
     no_tags: bool,
+    single_branch: Option<&str>,
 ) -> Result<()> {
     let dst_odb = grit_lib::odb::Odb::new(&dst_git_dir.join("objects"));
 
     // Use the library ref-listing API which handles both files and reftable
     let heads = grit_lib::refs::list_refs(src_git_dir, "refs/heads/")
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut branch_tips: Vec<ObjectId> = Vec::new();
     for (refname, oid) in &heads {
         let branch = refname.strip_prefix("refs/heads/").unwrap_or(refname);
+        if let Some(only) = single_branch {
+            if branch != only {
+                continue;
+            }
+        }
         let dst_name = format!("refs/remotes/{remote_name}/{branch}");
         clone_write_direct_ref(dst_git_dir, &dst_name, &oid.to_hex())?;
+        branch_tips.push(*oid);
     }
+
+    // For single-branch clones, build the reachable commit set from the single
+    // branch tip so tag auto-follow can be restricted to that history.
+    let reachable: Option<HashSet<ObjectId>> = if single_branch.is_some() {
+        Some(reachable_commits_from_tips(&dst_odb, &branch_tips))
+    } else {
+        None
+    };
+    let tag_reachable = |tag_oid: &ObjectId| -> bool {
+        if !dst_odb.exists(tag_oid) {
+            return false;
+        }
+        match &reachable {
+            None => true,
+            Some(set) => {
+                let target = peel_tag_target(&dst_odb, *tag_oid);
+                set.contains(&target)
+            }
+        }
+    };
 
     if !no_tags {
         let tags = grit_lib::refs::list_refs(src_git_dir, "refs/tags/")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         for (refname, oid) in &tags {
-            if !dst_odb.exists(oid) {
+            if !tag_reachable(oid) {
                 continue;
             }
             clone_write_direct_ref(dst_git_dir, refname, &oid.to_hex())?;
@@ -4543,6 +4648,11 @@ fn copy_refs_as_remote(
                 };
 
                 if let Some(branch) = refname.strip_prefix("refs/heads/") {
+                    if let Some(only) = single_branch {
+                        if branch != only {
+                            continue;
+                        }
+                    }
                     let dst_name = format!("refs/remotes/{remote_name}/{branch}");
                     if !clone_ref_file_exists(dst_git_dir, &dst_name) {
                         clone_write_direct_ref(dst_git_dir, &dst_name, oid)?;
@@ -4551,7 +4661,7 @@ fn copy_refs_as_remote(
                     let Ok(oid_parsed) = oid.parse::<grit_lib::objects::ObjectId>() else {
                         continue;
                     };
-                    if !dst_odb.exists(&oid_parsed) {
+                    if !tag_reachable(&oid_parsed) {
                         continue;
                     }
                     if !clone_ref_file_exists(dst_git_dir, refname) {
@@ -4563,6 +4673,51 @@ fn copy_refs_as_remote(
     }
 
     Ok(())
+}
+
+/// Peel an annotated tag to its underlying commit/object OID (following nested
+/// tags). Returns the input OID unchanged when it is not a tag or cannot be read.
+fn peel_tag_target(odb: &grit_lib::odb::Odb, mut oid: ObjectId) -> ObjectId {
+    for _ in 0..16 {
+        match odb.read(&oid) {
+            Ok(obj) if obj.kind == ObjectKind::Tag => match parse_tag(&obj.data) {
+                Ok(tag) => oid = tag.object,
+                Err(_) => return oid,
+            },
+            _ => return oid,
+        }
+    }
+    oid
+}
+
+/// Compute the set of commit OIDs reachable from the given tips, walking the
+/// commit graph through whatever commits are present locally. Trees/blobs are
+/// not included; only commit reachability is needed for tag auto-follow.
+fn reachable_commits_from_tips(odb: &grit_lib::odb::Odb, tips: &[ObjectId]) -> HashSet<ObjectId> {
+    let mut seen = HashSet::new();
+    let mut queue: VecDeque<ObjectId> = tips.iter().copied().collect();
+    while let Some(oid) = queue.pop_front() {
+        if !seen.insert(oid) {
+            continue;
+        }
+        let Ok(obj) = odb.read(&oid) else { continue };
+        match obj.kind {
+            ObjectKind::Commit => {
+                if let Ok(commit) = parse_commit(&obj.data) {
+                    for p in &commit.parents {
+                        queue.push_back(*p);
+                    }
+                }
+            }
+            ObjectKind::Tag => {
+                if let Ok(tag) = parse_tag(&obj.data) {
+                    queue.push_back(tag.object);
+                }
+            }
+            _ => {}
+        }
+    }
+    seen
 }
 
 /// In shallow clones, keep only tags reachable from the shallow boundary commits.
@@ -5029,6 +5184,34 @@ fn promisor_ref_list(repo: &Repository) -> Result<String> {
     })
 }
 
+/// Verify that every ref points directly at an object that is present or promised.
+///
+/// This does NOT descend into trees or follow tag peel chains: content blobs/trees omitted by the
+/// filter — and the target of an annotated tag — are legitimately absent (promised by the promisor
+/// remote), which upstream tolerates ("tolerate server not sending target of tag"). It only fails
+/// when a ref itself points directly at an object the server neither sent nor promised — Git's
+/// "did not send all necessary objects" ("upon cloning, check that all refs point to objects").
+fn check_clone_ref_tip_connectivity(dest: &Repository) -> Result<()> {
+    let promised = grit_lib::promisor::promisor_pack_object_ids(&dest.git_dir.join("objects"));
+
+    let mut tips: Vec<ObjectId> = Vec::new();
+    if let Ok(head) = grit_lib::refs::resolve_ref(&dest.git_dir, "HEAD") {
+        tips.push(head);
+    }
+    if let Ok(refs) = grit_lib::refs::list_refs(&dest.git_dir, "refs/") {
+        for (_, oid) in refs {
+            tips.push(oid);
+        }
+    }
+
+    for oid in tips {
+        if dest.odb.read(&oid).is_err() && !promised.contains(&oid) {
+            bail!("did not send all necessary objects");
+        }
+    }
+    Ok(())
+}
+
 /// Walk all refs and partition reachable objects into commits+trees vs blobs.
 fn collect_reachable_skeleton_and_blobs(
     repo: &Repository,
@@ -5040,11 +5223,19 @@ fn collect_reachable_skeleton_and_blobs(
     let mut seen_tags = HashSet::new();
     let mut queue = VecDeque::new();
 
+    // Blobs that a ref (or a tag chain) points at directly must stay present, like upstream
+    // upload-pack, which always sends ref-tip objects (even blobs) in a filtered pack. Track
+    // those OIDs so the `Blob` arm classifies them as skeleton (kept) rather than deletable
+    // content blobs (t5616 "fetches blobs pointed to by refs even if normally filtered out").
+    let mut ref_target_blobs: HashSet<ObjectId> = HashSet::new();
+
     if let Ok(head) = grit_lib::refs::resolve_ref(&repo.git_dir, "HEAD") {
+        ref_target_blobs.insert(head);
         queue.push_back(head);
     }
     if let Ok(refs) = grit_lib::refs::list_refs(&repo.git_dir, "refs/") {
         for (_, oid) in refs {
+            ref_target_blobs.insert(oid);
             queue.push_back(oid);
         }
     }
@@ -5088,14 +5279,23 @@ fn collect_reachable_skeleton_and_blobs(
                 }
                 skeleton.insert(oid);
                 if let Ok(tag) = parse_tag(&obj.data) {
+                    // A tag pointing directly at a blob keeps that blob present too.
+                    ref_target_blobs.insert(tag.object);
                     queue.push_back(tag.object);
                 }
             }
             ObjectKind::Blob => {
-                blobs.insert(oid);
+                if ref_target_blobs.contains(&oid) {
+                    skeleton.insert(oid);
+                } else {
+                    blobs.insert(oid);
+                }
             }
         }
     }
+
+    // A ref-tip blob must never also be queued for deletion via a tree entry.
+    blobs.retain(|oid| !skeleton.contains(oid));
 
     Ok((skeleton, blobs))
 }

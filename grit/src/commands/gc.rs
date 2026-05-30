@@ -541,6 +541,16 @@ fn parse_pack_objects_stdout_hash(stdout: &[u8]) -> Result<String> {
     Ok(line.to_string())
 }
 
+/// Like [`parse_pack_objects_stdout_hash`] but returns `None` when pack-objects
+/// wrote no pack (empty object set), which is not an error.
+fn parse_optional_pack_objects_stdout_hash(stdout: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(stdout).ok()?;
+    s.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(str::to_string)
+}
+
 fn apply_gc_pack_objects_args(cmd: &mut Command, quiet: bool, gc_args: &Args) {
     if quiet {
         cmd.arg("-q");
@@ -680,10 +690,20 @@ fn run_promisor_merge_repack_gc(
             out2.status
         );
     }
-    let hash2 = parse_pack_objects_stdout_hash(&out2.stdout)?;
-    let main_pack_name = format!("pack-{hash2}.pack");
+    // The non-promisor pass can legitimately enumerate zero objects (everything
+    // reachable is already in promisor packs), in which case pack-objects writes
+    // no pack and prints no hash. That is not an error: simply drop the
+    // superseded non-promisor packs and keep the freshly written promisor pack.
+    let main_pack_name = match parse_optional_pack_objects_stdout_hash(&out2.stdout) {
+        Some(hash2) => format!("pack-{hash2}.pack"),
+        None => String::new(),
+    };
 
-    repack::remove_superseded_packs_multi(&pack_dir, &[promisor_pack_name, main_pack_name])?;
+    let mut keep: Vec<String> = vec![promisor_pack_name];
+    if !main_pack_name.is_empty() {
+        keep.push(main_pack_name);
+    }
+    repack::remove_superseded_packs_multi(&pack_dir, &keep)?;
     update_server_info::refresh_objects_info_packs(repo)?;
     Ok(())
 }

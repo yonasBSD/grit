@@ -1058,7 +1058,7 @@ pub fn rev_list(
         Vec::new()
     };
 
-    let sparse_lines = sparse_oid_lines_from_filter(repo, options.filter.as_ref());
+    let sparse_lines = sparse_oid_lines_from_filter(repo, options.filter.as_ref())?;
     let skip_trees = skip_tree_descent_for_object_type_filter(options.filter.as_ref());
     let walk_cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
     let promisor_repo = crate::promisor::repo_treats_promisor_packs(&repo.git_dir, &walk_cfg);
@@ -2283,35 +2283,65 @@ fn sparse_filter_includes_path(
 fn sparse_oid_lines_from_filter(
     repo: &Repository,
     filter: Option<&ObjectFilter>,
-) -> Option<Vec<String>> {
-    let f = filter?;
+) -> Result<Option<Vec<String>>> {
+    let Some(f) = filter else {
+        return Ok(None);
+    };
     match f {
         ObjectFilter::SparseOid(spec) => {
+            // Resolve `<rev>:<path>` (or a raw blob OID) to a blob, matching Git's
+            // `repo_get_oid_with_flags(..., GET_OID_BLOB)`. A name that does not resolve to an
+            // accessible blob is a hard error (`unable to access sparse blob in '<name>'`).
             let blob_oid = if let Ok(oid) = spec.parse::<ObjectId>() {
                 oid
             } else if let Some((treeish, path)) = split_treeish_spec(spec) {
-                let treeish_oid = resolve_revision_for_range_end(repo, treeish).ok()?;
-                resolve_treeish_path(repo, treeish_oid, path).ok()?
+                let treeish_oid = resolve_revision_for_range_end(repo, treeish)
+                    .map_err(|_| sparse_blob_access_error(spec))?;
+                resolve_treeish_path(repo, treeish_oid, path)
+                    .map_err(|_| sparse_blob_access_error(spec))?
             } else {
-                return None;
+                // A bare name with no `:<path>` (e.g. `main`): Git resolves it to whatever object
+                // the revision names (commit/tree/tag/blob), then tries to parse that object as a
+                // sparse blob. A non-blob therefore fails parsing, not access (t5616 expects
+                // "unable to parse sparse filter data in <oid>" for `sparse:oid=main`).
+                resolve_revision_for_range_end(repo, spec)
+                    .map_err(|_| sparse_blob_access_error(spec))?
             };
-            let obj = repo.odb.read(&blob_oid).ok()?;
+            let obj = repo
+                .odb
+                .read(&blob_oid)
+                .map_err(|_| sparse_blob_access_error(spec))?;
+            // A resolved object that is not a parseable sparse blob (e.g. a tree) fails parsing:
+            // `unable to parse sparse filter data in <oid>`.
             if obj.kind != ObjectKind::Blob {
-                return None;
+                return Err(Error::Message(format!(
+                    "fatal: unable to parse sparse filter data in {}",
+                    blob_oid.to_hex()
+                )));
             }
-            let text = std::str::from_utf8(&obj.data).ok()?;
-            Some(parse_sparse_patterns_from_blob(text))
+            let text = std::str::from_utf8(&obj.data).map_err(|_| {
+                Error::Message(format!(
+                    "fatal: unable to parse sparse filter data in {}",
+                    blob_oid.to_hex()
+                ))
+            })?;
+            Ok(Some(parse_sparse_patterns_from_blob(text)))
         }
         ObjectFilter::Combine(parts) => {
             for p in parts {
-                if let Some(lines) = sparse_oid_lines_from_filter(repo, Some(p)) {
-                    return Some(lines);
+                if let Some(lines) = sparse_oid_lines_from_filter(repo, Some(p))? {
+                    return Ok(Some(lines));
                 }
             }
-            None
+            Ok(None)
         }
-        _ => None,
+        _ => Ok(None),
     }
+}
+
+/// Git's `unable to access sparse blob in '<name>'` error for an unresolvable `sparse:oid` spec.
+fn sparse_blob_access_error(spec: &str) -> Error {
+    Error::Message(format!("fatal: unable to access sparse blob in '{spec}'"))
 }
 
 fn packed_object_set(repo: &Repository) -> HashSet<ObjectId> {

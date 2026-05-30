@@ -1163,6 +1163,29 @@ fn merge_unborn(repo: &Repository, head: &HeadState, args: &Args) -> Result<()> 
     Ok(())
 }
 
+/// Lazily fetch any index blobs that are missing locally (best-effort).
+///
+/// On a partial clone, a checkout target tree can reference filtered-out blobs.
+/// Batch-fetch them from the promisor remote before the working tree is written
+/// so `checkout_entries` does not fail with "object not found". Failures are
+/// ignored here: the subsequent checkout will surface a precise error if a blob
+/// is truly unavailable.
+fn lazy_fetch_missing_index_blobs(repo: &Repository, index: &Index) {
+    let mut need: Vec<ObjectId> = Vec::new();
+    for e in index.entries.iter().filter(|e| e.stage() == 0) {
+        if e.mode == MODE_GITLINK || e.mode == MODE_TREE {
+            continue;
+        }
+        if !repo.odb.exists(&e.oid) {
+            need.push(e.oid);
+        }
+    }
+    if need.is_empty() {
+        return;
+    }
+    let _ = crate::commands::promisor_hydrate::try_lazy_fetch_promisor_objects_batch(repo, &need);
+}
+
 /// Fast-forward: update HEAD and working tree.
 fn do_fast_forward(
     repo: &Repository,
@@ -1219,6 +1242,10 @@ Aborting"
             &new_index,
             sparse_checkout_enabled(&repo.git_dir),
         )?;
+        // On a partial clone the fast-forwarded tree may reference blobs that
+        // were filtered out (blob:none); lazily fetch any that the checkout will
+        // need before writing the working tree (t5616 partial-clone pull).
+        lazy_fetch_missing_index_blobs(repo, &new_index);
         checkout_entries(
             repo,
             wt,
