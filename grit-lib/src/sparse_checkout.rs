@@ -190,10 +190,10 @@ impl ConePatterns {
 
             if negated && rest.ends_with("/*/") && rest.starts_with('/') && rest.len() > 4 {
                 let inner = &rest[1..rest.len() - 3];
-                if inner.is_empty()
-                    || inner.contains('/')
-                    || glob_special_unescaped(inner.as_bytes())
-                {
+                // Git (`add_pattern_to_hashsets`) accepts multi-segment cone parents
+                // such as `!/deep/deeper1/*/`; `/` is not a glob-special character.
+                // Only reject an empty inner or one containing real glob specials.
+                if inner.is_empty() || glob_special_unescaped(inner.as_bytes()) {
                     warnings.push(format!("warning: unrecognized negative pattern: '{rest}'"));
                     warnings.push("warning: disabling cone pattern matching".to_string());
                     return None;

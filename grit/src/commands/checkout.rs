@@ -5324,7 +5324,11 @@ fn warn_sparse_paths_already_present(
         }
         let rel = String::from_utf8_lossy(&entry.path);
         let old_entry = old_stage0.get(entry.path.as_slice());
-        let materializing = old_entry.map_or(true, |e| e.skip_worktree());
+        // Git (unpack-trees.c apply_sparse_checkout) only warns when the path
+        // previously existed as a skip_worktree entry and is now non-sparse
+        // (`was_skip_worktree && !ce_skip_worktree`). A path absent from the old
+        // index (new in the target tree) or already non-sparse must not warn.
+        let materializing = old_entry.map(|e| e.skip_worktree()).unwrap_or(false);
         if !materializing {
             continue;
         }

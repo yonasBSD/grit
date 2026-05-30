@@ -1295,6 +1295,19 @@ fn apply_sparse_patterns(repo: &Repository, patterns: &[String], cone_mode: bool
                         let _ = fs::write(&full_path, &data);
                     }
                 }
+                // Refresh the cached stat data so subsequent stat-only comparisons
+                // (diff-files, status) see the materialized file as up to date rather
+                // than reporting a spurious modification. Mirrors checkout's stat-fill.
+                if let Ok(meta) = fs::symlink_metadata(&full_path) {
+                    use std::os::unix::fs::MetadataExt as _;
+                    entry.ctime_sec = meta.ctime() as u32;
+                    entry.ctime_nsec = meta.ctime_nsec() as u32;
+                    entry.mtime_sec = meta.mtime() as u32;
+                    entry.mtime_nsec = meta.mtime_nsec() as u32;
+                    entry.dev = meta.dev() as u32;
+                    entry.ino = meta.ino() as u32;
+                    entry.size = meta.size() as u32;
+                }
             }
         } else {
             entry.set_skip_worktree(true);
