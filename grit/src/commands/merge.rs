@@ -228,7 +228,11 @@ pub struct Args {
     pub no_signoff: bool,
 
     /// GPG-sign the resulting merge commit (Git's `merge -S`/`--gpg-sign`).
-    #[arg(short = 'S', long = "gpg-sign", value_name = "KEYID", num_args = 0..=1, default_missing_value = "")]
+    ///
+    /// The key id is optional and, like Git, only attached (`-S<keyid>` or
+    /// `--gpg-sign=<keyid>`); a bare `-S` must not swallow the following
+    /// positional (e.g. `git merge -S side`).
+    #[arg(short = 'S', long = "gpg-sign", value_name = "KEYID", num_args = 0..=1, default_missing_value = "", require_equals = true)]
     pub gpg_sign: Option<String>,
 
     /// Do not GPG-sign the merge commit.
