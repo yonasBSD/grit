@@ -171,8 +171,9 @@ pub struct Args {
     #[arg(long = "no-rebase-merges", conflicts_with = "rebase_merges")]
     pub no_rebase_merges: bool,
 
-    /// Force rebase even if the current branch is up to date.
-    #[arg(long = "no-ff", alias = "force-rebase")]
+    /// Force rebase even if the current branch is up to date
+    /// (Git's `-f`/`--force-rebase`, also spelled `--no-ff`).
+    #[arg(short = 'f', long = "no-ff", visible_alias = "force-rebase")]
     pub no_ff: bool,
 
     /// Keep the base of the branch (rebase onto the merge-base of upstream and branch).
@@ -5282,11 +5283,20 @@ fn cherry_pick_for_rebase(
 
     // Three-way merge: base=parent_tree, ours=HEAD_tree, theirs=commit_tree
     //
-    // While the first patch is applied with HEAD still at the recorded **onto** commit, use the
-    // picked commit's parent tree as the merge base (standard cherry-pick). After HEAD has moved
-    // past onto (a patch succeeded or `--continue` completed one), merge against the **onto**
-    // tree instead. Matching this split avoids both bogus clean merges on later picks (t3407
-    // `--continue`) and wrong conflict geometry on the first pick (t3407 `--skip` / apply).
+    // Standard cherry-pick semantics (Git's sequencer `do_recursive_merge`): the
+    // merge base is always the *picked commit's parent tree*. ours = the current
+    // HEAD tree (the series replayed so far), theirs = the picked commit's tree.
+    // When the replayed predecessor matches the original (the common case) this
+    // makes base == ours so the picked diff applies cleanly; when a force-rebase
+    // replays a chain of dependent commits (e.g. `rebase -f HEAD^^`) it keeps the
+    // base correct so sequential edits to the same file do not spuriously
+    // conflict.
+    //
+    // The lone exception is the onto's own tree on the very first pick: when HEAD
+    // is still at the recorded `onto` and the picked commit's parent is *not* the
+    // onto (an `--onto <newbase>` rebase), use the onto tree so the first patch's
+    // conflict geometry matches Git (otherwise base would be the old upstream
+    // tree and produce wrong conflicts).
     let base_tree_oid = if ws_fix_rule.is_some() {
         // After an earlier replay, HEAD can differ from the picked commit's parent tree in the ODB
         // (e.g. `rebase --whitespace=fix`). Use the current tip tree as the merge base so the
@@ -5295,7 +5305,9 @@ fn cherry_pick_for_rebase(
     } else {
         let onto_hex = fs::read_to_string(rb_dir.join("onto"))?;
         let onto_oid_state = ObjectId::from_hex(onto_hex.trim())?;
-        if head_oid != onto_oid_state {
+        let picked_parent_is_onto = commit.parents.first() == Some(&onto_oid_state);
+        if head_oid == onto_oid_state && !picked_parent_is_onto {
+            // First pick of an `--onto <newbase>` rebase: base against the onto tree.
             let onto_obj = repo.odb.read(&onto_oid_state)?;
             let onto_commit = parse_commit(&onto_obj.data)?;
             onto_commit.tree
