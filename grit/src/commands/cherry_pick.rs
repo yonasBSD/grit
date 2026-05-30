@@ -18,6 +18,7 @@ use grit_lib::commit_trailers::{
 };
 use grit_lib::config::ConfigSet;
 use grit_lib::diff::diff_index_to_worktree;
+use grit_lib::hooks::{run_commit_hook, CommitHookEnv, HookResult};
 use grit_lib::ident::parse_signature_times;
 use grit_lib::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_SYMLINK, MODE_TREE};
 use grit_lib::merge_file::{merge, ConflictStyle, MergeFavor, MergeInput};
@@ -500,6 +501,15 @@ fn run_commit_sequence(
                             &[],
                             args,
                         )?;
+                        write_abort_safety_file(git_dir)?;
+                    }
+                    std::process::exit(1);
+                }
+                if err_msg.contains("HOOK_FAILED") {
+                    // The "'prepare-commit-msg' hook failed" line was already printed by the
+                    // pick path (sequencer.c emits it once); just abort without re-reporting.
+                    if oids.len() > 1 {
+                        save_sequencer_state(git_dir, &orig_head_oid, remaining, args)?;
                         write_abort_safety_file(git_dir)?;
                     }
                     std::process::exit(1);
@@ -1014,6 +1024,11 @@ fn cherry_pick_one_commit(repo: &Repository, commit_oid: ObjectId, args: &Args) 
         let sob = format_signoff_line(&cname, &cemail);
         append_signoff_trailer(&mut msg, &sob, &config);
     }
+
+    // Run prepare-commit-msg on the clean (non-conflict, non-amend) pick, mirroring
+    // sequencer.c:run_prepare_commit_msg_hook (arg1 = "message", GIT_EDITOR=:). The hook may
+    // rewrite the message; read it back before creating the commit.
+    let msg = run_cherry_pick_prepare_commit_msg_hook(repo, msg)?;
 
     // Create the cherry-pick commit (preserving original author).
     create_cherry_pick_commit(repo, &head, &merge_result.index, &msg, &commit, commit_oid)?;
@@ -1697,6 +1712,49 @@ fn bump_committer_ident_unix_seconds(ident: &str) -> Result<String> {
     out.push(' ');
     out.push_str(tz);
     Ok(out)
+}
+
+/// Run `prepare-commit-msg` for a clean (non-conflict, non-amend) cherry-pick, mirroring
+/// `sequencer.c:run_prepare_commit_msg_hook`.
+///
+/// The message is written to `COMMIT_EDITMSG`, the hook is invoked with `arg1 = "message"`
+/// and `GIT_EDITOR=:` (the sequencer always passes `editor_is_used = 0` to `run_commit_hook`
+/// for a clean pick), the (possibly hook-modified) message is read back, and the index is
+/// re-read in case the hook touched it. A failing hook reports `'prepare-commit-msg' hook
+/// failed` (matching `sequencer.c`) and bails so the pick aborts.
+fn run_cherry_pick_prepare_commit_msg_hook(repo: &Repository, msg: String) -> Result<String> {
+    let editmsg_path = repo.git_dir.join("COMMIT_EDITMSG");
+    fs::write(&editmsg_path, msg.as_bytes())?;
+
+    let index_path = repo.index_path();
+    let editmsg_str = editmsg_path.to_string_lossy().to_string();
+    let hook_env = CommitHookEnv {
+        index_file: Some(index_path.as_path()),
+        git_editor: Some(":"),
+        git_prefix: None,
+        extra_env: &[],
+    };
+    let r = run_commit_hook(
+        repo,
+        "prepare-commit-msg",
+        &[editmsg_str.as_str(), "message"],
+        None,
+        &hook_env,
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
+    if let HookResult::Failed(_) = r {
+        // Matches sequencer.c: emit the hook-failure line exactly once, then abort the pick
+        // without repeating the hook name in the top-level error (t7505 greps for a count of 1).
+        eprintln!("error: 'prepare-commit-msg' hook failed");
+        bail!("HOOK_FAILED");
+    }
+    if !r.was_executed() {
+        // No hook ran; keep the original message untouched.
+        return Ok(msg);
+    }
+
+    let edited = fs::read_to_string(&editmsg_path)?;
+    Ok(edited)
 }
 
 fn create_cherry_pick_commit(
