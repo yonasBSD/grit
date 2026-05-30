@@ -819,7 +819,12 @@ pub fn run(mut args: Args) -> Result<()> {
             orphan_name,
             start_point,
             CreateOrphanOptions {
-                switch_style: false,
+                // `git switch --orphan` clears the index and working tree to the empty tree
+                // (and rejects a start point); `git checkout --orphan` keeps them so a
+                // following `commit -a` can re-record the previous content. Distinguish the
+                // two by how the command was invoked (t3501 cherry-pick-on-unborn flow relies
+                // on `switch --orphan` leaving a clean worktree).
+                switch_style: args.switch_mode,
                 force: args.force,
             },
         );

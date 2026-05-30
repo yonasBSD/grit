@@ -1984,7 +1984,14 @@ Aborting"
     // builtin/merge.c:prepare_to_commit. The index is re-read in case a hook updated it.
     let will_edit = args.edit && !args.no_edit;
     let hook_cleanup = args.cleanup.as_deref().unwrap_or("whitespace");
-    msg = run_merge_commit_msg_hooks(repo, args.no_verify, will_edit, msg, &mut index, hook_cleanup)?;
+    msg = run_merge_commit_msg_hooks(
+        repo,
+        args.no_verify,
+        will_edit,
+        msg,
+        &mut index,
+        hook_cleanup,
+    )?;
     if will_edit && msg.trim().is_empty() {
         bail!("Empty commit message.");
     }

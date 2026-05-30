@@ -1101,6 +1101,33 @@ fn merge_adjacent_replace_and_trailing_insert_conflicts(hunks: Vec<Hunk>) -> Vec
                     theirs: t.clone(),
                 })
             }
+            // A pure insertion by one side immediately *before* a base line the other side
+            // modifies. `compute_hunks` emits the leading insert (`Only*` with empty base) then
+            // the modify (`Only*` with non-empty base) as two separate hunks, but git's
+            // `xdl_merge` attaches the insertion to the adjacent change region and reports a
+            // single conflict (e.g. base `d`, ours `c\nd`, theirs `e`). Mirror that here.
+            (Hunk::OnlyOurs { base: bo, ours }, Some(Hunk::OnlyTheirs { base: bt, theirs }))
+                if bo.is_empty() && !bt.is_empty() && !ours.is_empty() && !theirs.is_empty() =>
+            {
+                let mut conflict_ours = ours.clone();
+                conflict_ours.extend(bt.iter().cloned());
+                Some(Hunk::Conflict {
+                    base: bt.clone(),
+                    ours: conflict_ours,
+                    theirs: theirs.clone(),
+                })
+            }
+            (Hunk::OnlyTheirs { base: bt, theirs }, Some(Hunk::OnlyOurs { base: bo, ours }))
+                if bt.is_empty() && !bo.is_empty() && !theirs.is_empty() && !ours.is_empty() =>
+            {
+                let mut conflict_theirs = theirs.clone();
+                conflict_theirs.extend(bo.iter().cloned());
+                Some(Hunk::Conflict {
+                    base: bo.clone(),
+                    ours: ours.clone(),
+                    theirs: conflict_theirs,
+                })
+            }
             _ => None,
         };
         if let Some(h) = merged {
@@ -1430,6 +1457,43 @@ mod tests {
         let theirs = "remove-conflict\n";
         let (r, c) = do_merge(base, ours, theirs);
         assert_eq!(c, 1, "expected conflict, got: {r:?}");
+    }
+
+    #[test]
+    fn conflict_insert_before_modified_line() {
+        // Base one line; ours inserts a new line *before* it (keeping the base line); theirs
+        // modifies that base line. Git's `xdl_merge` attaches the leading insertion to the
+        // adjacent change region and reports a content conflict (t3407 `--abort after
+        // --continue`: base `d`, ours `c\nd`, theirs `e`).
+        let base = "d\n";
+        let ours = "c\nd\n";
+        let theirs = "e\n";
+        let (r, c) = do_merge(base, ours, theirs);
+        assert_eq!(c, 1, "expected conflict, got: {r:?}");
+        // The ours side of the conflict carries both the inserted and the kept base line.
+        assert!(r.contains("c\nd\n"), "ours side should keep c\\nd: {r}");
+        assert!(r.contains("e\n"), "theirs side should be e: {r}");
+    }
+
+    #[test]
+    fn conflict_insert_before_modified_line_symmetric() {
+        // Symmetric case: theirs inserts before the base line, ours modifies it.
+        let base = "d\n";
+        let ours = "e\n";
+        let theirs = "c\nd\n";
+        let (r, c) = do_merge(base, ours, theirs);
+        assert_eq!(c, 1, "expected conflict, got: {r:?}");
+    }
+
+    #[test]
+    fn clean_insert_separated_from_modified_line() {
+        // An insertion separated by unchanged context from the other side's modification must
+        // still merge cleanly (git only conflicts when the insertion is *adjacent* to the change).
+        let base = "a\nb\nc\n";
+        let ours = "x\na\nb\nc\n"; // insert x at the top
+        let theirs = "a\nb\nC\n"; // modify the last line, two lines away
+        let (r, c) = do_merge(base, ours, theirs);
+        assert_eq!(c, 0, "expected clean merge, got: {r:?}");
     }
 
     #[test]

@@ -690,11 +690,11 @@ fn cherry_pick_one_commit(repo: &Repository, commit_oid: ObjectId, args: &Args) 
     let head = resolve_head(git_dir)?;
     let head_oid_opt = head.oid().map(|o| o.to_owned());
 
-    // Grit tests expect cherry-pick onto an unborn branch (no commits yet) to fail when a new
-    // commit would be recorded. `git cherry-pick -n` still applies to the index (Git-compatible).
-    if !args.no_commit && head_oid_opt.is_none() {
-        bail!("cannot cherry-pick onto unborn branch without -n/--no-commit");
-    }
+    // Cherry-pick onto an unborn branch records the picked content as the branch's first
+    // (root) commit, mirroring `git cherry-pick <commit>` on an orphan/unborn HEAD: the
+    // three-way merge below uses the empty tree as both base ("ours") and HEAD tree, and
+    // `create_cherry_pick_commit` writes a parentless commit, updating the unborn branch ref
+    // (t3501 "cherry-pick on unborn branch"). `git cherry-pick -n` still only stages the index.
 
     // Check for fast-forward possibility with --ff
     if args.ff {
