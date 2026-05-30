@@ -195,9 +195,10 @@ impl GpgConfig {
 
         let nonempty = |k: &str| config.get(k).filter(|p| !p.is_empty());
         let generic_program = nonempty("gpg.program");
-        let openpgp_program = nonempty("gpg.openpgp.program");
-        let x509_program = nonempty("gpg.x509.program");
-        let ssh_program = nonempty("gpg.ssh.program");
+        let fmt_program = |f: GpgFormat| nonempty(&format!("gpg.{}.program", f.name()));
+        let openpgp_program = fmt_program(GpgFormat::OpenPgp);
+        let x509_program = fmt_program(GpgFormat::X509);
+        let ssh_program = fmt_program(GpgFormat::Ssh);
 
         // `gpg.<fmt>.program` takes precedence over `gpg.program`.
         let program = resolve_program_for_format(
@@ -1491,5 +1492,104 @@ mod tests {
         );
         assert_eq!(TrustLevel::from_config("FULLY"), Some(TrustLevel::Fully));
         assert_eq!(TrustLevel::from_config("bogus"), None);
+    }
+
+    #[test]
+    fn format_detected_from_signature_armor() {
+        assert_eq!(
+            GpgFormat::from_signature(b"-----BEGIN SSH SIGNATURE-----\nABC\n"),
+            Some(GpgFormat::Ssh)
+        );
+        assert_eq!(
+            GpgFormat::from_signature(b"-----BEGIN PGP SIGNATURE-----\n"),
+            Some(GpgFormat::OpenPgp)
+        );
+        assert_eq!(
+            GpgFormat::from_signature(b"-----BEGIN PGP MESSAGE-----\n"),
+            Some(GpgFormat::OpenPgp)
+        );
+        assert_eq!(
+            GpgFormat::from_signature(b"-----BEGIN SIGNED MESSAGE-----\n"),
+            Some(GpgFormat::X509)
+        );
+        assert_eq!(GpgFormat::from_signature(b"garbage"), None);
+    }
+
+    #[test]
+    fn literal_ssh_key_detection() {
+        assert_eq!(
+            is_literal_ssh_key("key::ssh-ed25519 AAAA"),
+            Some("ssh-ed25519 AAAA")
+        );
+        assert_eq!(
+            is_literal_ssh_key("ssh-ed25519 AAAA"),
+            Some("ssh-ed25519 AAAA")
+        );
+        assert_eq!(is_literal_ssh_key("/home/u/.ssh/id_ed25519"), None);
+    }
+
+    #[test]
+    fn parse_ssh_output_trusted_principal() {
+        let mut sigc = SignatureCheck::default_none();
+        sigc.output =
+            "Good \"git\" signature for principal with number 1 with ED25519 key SHA256:ABC\n"
+                .to_owned();
+        parse_ssh_output(&mut sigc);
+        assert_eq!(sigc.result, 'G');
+        assert_eq!(sigc.trust_level, TrustLevel::Fully);
+        assert_eq!(sigc.signer.as_deref(), Some("principal with number 1"));
+        assert_eq!(sigc.key.as_deref(), Some("SHA256:ABC"));
+        assert_eq!(sigc.fingerprint.as_deref(), Some("SHA256:ABC"));
+        assert!(sigc.primary_key_fingerprint.is_none());
+    }
+
+    #[test]
+    fn parse_ssh_output_untrusted_unknown_key() {
+        let mut sigc = SignatureCheck::default_none();
+        // The trailing `No principal matched.` is appended on its own line by
+        // stripspace; only the first line should be parsed.
+        sigc.output = "Good \"git\" signature with ED25519 key SHA256:XYZ\nNo principal matched.\n"
+            .to_owned();
+        parse_ssh_output(&mut sigc);
+        assert_eq!(sigc.result, 'G');
+        assert_eq!(sigc.trust_level, TrustLevel::Undefined);
+        assert!(sigc.signer.is_none());
+        assert_eq!(sigc.key.as_deref(), Some("SHA256:XYZ"));
+        assert_eq!(sigc.fingerprint.as_deref(), Some("SHA256:XYZ"));
+    }
+
+    #[test]
+    fn parse_ssh_output_bad_signature() {
+        let mut sigc = SignatureCheck::default_none();
+        sigc.output = "Signature verification failed: incorrect signature\n".to_owned();
+        parse_ssh_output(&mut sigc);
+        assert_eq!(sigc.result, 'B');
+        assert_eq!(sigc.trust_level, TrustLevel::Never);
+        assert!(sigc.key.is_none());
+    }
+
+    #[test]
+    fn stripspace_keeps_line_terminators() {
+        // Each non-empty line keeps a trailing newline; trailing blanks dropped.
+        assert_eq!(stripspace("Good ... SHA256:FPR\n"), "Good ... SHA256:FPR\n");
+        assert_eq!(stripspace("a  \n\n\nb\n\n"), "a\n\nb\n");
+        assert_eq!(stripspace(""), "");
+        // Concatenating a stripspaced line with following stderr keeps them on
+        // separate lines.
+        let mut out = stripspace("Good ... SHA256:FPR\n");
+        out.push_str("No principal matched.\n");
+        assert_eq!(out.lines().next(), Some("Good ... SHA256:FPR"));
+    }
+
+    #[test]
+    fn payload_committer_timestamp_parsed() {
+        let payload =
+            b"tree 0123\nauthor A <a@x> 1112912173 -0700\ncommitter C <c@x> 1112912273 +0200\n\nmsg\n";
+        assert_eq!(payload_committer_timestamp(payload), Some(1112912273));
+        // Falls back to tagger for tag payloads.
+        let tag = b"object 0123\ntype commit\ntag v1\ntagger T <t@x> 1112912000 -0500\n\nmsg\n";
+        assert_eq!(payload_committer_timestamp(tag), Some(1112912000));
+        // No ident header.
+        assert_eq!(payload_committer_timestamp(b"tree 0123\n\nmsg\n"), None);
     }
 }
