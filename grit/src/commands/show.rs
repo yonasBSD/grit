@@ -361,6 +361,7 @@ pub fn run(mut args: Args) -> Result<()> {
         let mut split_at = 0usize;
         for s in &raw_objects {
             let looks_like_rev_spec = s.starts_with('^')
+                || s.starts_with(':')
                 || split_double_dot_range(s).is_some()
                 || (s.contains("...") && !s.contains("...."))
                 || split_treeish_colon(s).is_some_and(|(b, a)| !b.is_empty() && !a.is_empty());
