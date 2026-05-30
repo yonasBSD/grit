@@ -4722,8 +4722,12 @@ fn replay_remaining(
                          hint:   grit rebase --continue",
                             exec_cmd
                         );
-                        let remaining: Vec<&str> = todo[i..].to_vec();
-                        write_rebase_todo_slice(rb_dir, &remaining)?;
+                        // The todo was already written as `todo[i+1..]` above (matching Git's
+                        // `save_todo` with `!reschedule`, which drops the executing command). With
+                        // `rebase.rescheduleFailedExec` unset (Git's default), a failed `exec` is
+                        // NOT rescheduled: `rebase --continue` must resume at the NEXT command, not
+                        // re-run the failed exec. Leave the todo as-is and exit; re-writing
+                        // `todo[i..]` here would re-add the exec and loop forever (t5407 `-i (exec)`).
                         std::process::exit(code);
                     }
                     continue 'rebase_loop;
@@ -5301,7 +5305,22 @@ fn cherry_pick_for_rebase(
                         append_rebase_rewrite_line(rb_dir, commit_oid, &new_oid)?;
                     }
                 } else {
+                    // True fast-forward: HEAD already matches the picked commit's parent and we
+                    // keep the original commit OID. Git still records this in the rewritten list
+                    // (sequencer.c `record_in_rewritten` after every successful pick, including the
+                    // fast-forward at `allow_ff && !is_fixup`). Recording is essential when a
+                    // following fixup/squash will amend this commit: the pending entry then flushes
+                    // to the amended OID, so both the picked commit and the fixup map to the final
+                    // commit in the post-rewrite hook input (t5407).
                     fs::write(git_dir.join("HEAD"), format!("{}\n", commit_oid.to_hex()))?;
+                    if record_rewrite {
+                        record_rebase_in_rewritten_pending(
+                            git_dir,
+                            rb_dir,
+                            commit_oid,
+                            next_after_line,
+                        )?;
+                    }
                 }
                 return Ok(());
             }
@@ -5393,25 +5412,22 @@ fn cherry_pick_for_rebase(
     } else {
         let onto_hex = fs::read_to_string(rb_dir.join("onto"))?;
         let onto_oid_state = ObjectId::from_hex(onto_hex.trim())?;
-        // `force_rewrite_commits && head_tree==parent_tree` identifies a clean
-        // replay of a *dependent* chain (e.g. `rebase -f HEAD^^`): the
-        // already-replayed predecessor reproduced its original tree, so the
-        // picked commit's parent tree is the correct cherry-pick base and
-        // base==ours makes sequential edits to the same file apply without
-        // spurious conflicts. The first pick (HEAD still at onto) likewise uses
+        // When the replayed predecessor's tree exactly reproduces the picked
+        // commit's parent tree, the parent tree is the correct cherry-pick base
+        // (base==ours, so the picked diff applies cleanly). This covers:
+        //   * a clean dependent-chain replay under force-rewrite (`rebase -f
+        //     HEAD^^`), where the already-replayed predecessor reproduced its
+        //     original tree, so sequential edits to the same file do not
+        //     spuriously conflict; and
+        //   * a `--continue` that resumes after a resolved conflict whose
+        //     resolution matches the original parent content — the next commit
+        //     must NOT be merged against the onto tree (which would conflict
+        //     spuriously on lines the resolved commit already settled).
+        // Matches Git's sequencer, which always uses the picked commit's parent
+        // tree as the base. The first pick (HEAD still at onto) likewise uses
         // the picked commit's parent tree.
-        let clean_dependent_chain = force_rewrite_commits && head_tree_oid == parent_tree_oid;
-        if head_oid == onto_oid_state || clean_dependent_chain {
-            parent_tree_oid
-        } else {
-            // The replayed predecessor differs from the picked commit's original
-            // parent (a conflict was resolved during `--continue`, or an
-            // `--onto <newbase>` moved the series). Merge against the onto tree so
-            // the conflict geometry matches Git's sequencer.
-            let onto_obj = repo.odb.read(&onto_oid_state)?;
-            let onto_commit = parse_commit(&onto_obj.data)?;
-            onto_commit.tree
-        }
+        let _ = onto_oid_state;
+        parent_tree_oid
     };
     let base_entries = tree_to_map(tree_to_index_entries(repo, &base_tree_oid, "")?);
     let ours_entries = tree_to_map(tree_to_index_entries(repo, &head_tree_oid, "")?);
@@ -6330,10 +6346,17 @@ fn do_continue() -> Result<()> {
     let _ = fs::remove_file(rb_dir.join("message"));
     let _ = fs::remove_file(rb_dir.join("current-final-fixup"));
 
-    let (oid_for_rewrite, next_after_continue) = if stopped_oid.is_some() {
+    // The just-resolved conflicting commit is still `todo[0]` in the post-conflict todo (the
+    // conflict stop wrote `todo[i..]`; we pop it only after recording, at the end of this
+    // function). Its "next command" for the rewritten-pending flush decision is therefore the
+    // command at index 1 — so a following `fixup`/`squash` defers the flush and both the resolved
+    // commit and the fixup/squash map to the final amended commit in the post-rewrite hook input
+    // (t5407 `-i (squash)`). Peeking index 0 here would see the resolved commit's own `pick` and
+    // flush early, mapping it to the intermediate (pre-squash) commit.
+    let (oid_for_rewrite, next_after_continue) = if let Some(stopped) = stopped_oid.as_ref() {
         (
-            stopped_oid.as_ref().unwrap(),
-            peek_next_rebase_flush_hint(&repo, &todo_lines_continue, 0, interactive_continue),
+            stopped,
+            peek_next_rebase_flush_hint(&repo, &todo_lines_continue, 1, interactive_continue),
         )
     } else {
         (
@@ -6358,6 +6381,12 @@ fn do_continue() -> Result<()> {
     };
     let msg = format!("{ra} ({verb}): {subject}");
     let _ = append_reflog(git_dir, "HEAD", &head_oid, &new_oid, &ident, &msg, false);
+
+    // The conflict stop paths (RebaseReplayStep::PickLike / Pick `Err`) rewrite the todo as
+    // `todo[i..]`, leaving the *conflicting* commit as the first actionable line with msgnum=1.
+    // We have now committed that resolved commit and advanced HEAD, so drop it from the todo
+    // before resuming; otherwise replay_remaining would re-apply it (double "Applying: …").
+    pop_first_nonempty_todo_line(&repo, &rb_dir)?;
 
     // Continue with remaining
     replay_remaining(
@@ -6400,6 +6429,11 @@ fn do_skip() -> Result<()> {
                 peek_next_rebase_flush_hint(&repo, &todo_lines_skip, 0, interactive_skip);
             record_rebase_in_rewritten_pending(git_dir, &rb_dir, &skipped_oid, next_cmd)?;
         }
+        // After a conflict stop the todo was rewritten as `todo[i..]`, so the skipped commit is
+        // still the first actionable line. Drop it so replay_remaining resumes at the next commit
+        // instead of re-applying the one we are skipping (which would conflict again and re-record
+        // a spurious rewrite entry).
+        pop_first_nonempty_todo_line(&repo, &rb_dir)?;
     }
     let _ = fs::remove_file(rb_dir.join("stopped-sha"));
 
