@@ -2196,9 +2196,12 @@ fn add_path(
         // Check unmerged entries (stages 1, 2, 3)
         let has_unmerged = (1..=3).any(|stage| index.get(path_bytes, stage).is_some());
         if has_unmerged {
-            // Can't resolve a conflict if file doesn't exist
+            // Can't resolve a conflict if file doesn't exist. Git uses die()
+            // here (`fatal:` + exit 128); prefix with `fatal: ` so main.rs
+            // re-emits the message verbatim and exits 128. The multi-pathspec
+            // arm still matches "did not match any files" to `continue`.
             return Err(AddPathError::Other(anyhow::anyhow!(
-                "pathspec '{}' did not match any files",
+                "fatal: pathspec '{}' did not match any files",
                 path
             )));
         }
@@ -2226,8 +2229,11 @@ fn add_path(
                 message: format!("fatal: pathspec '{path}' did not match any files"),
             });
         }
+        // Git die()s here (`fatal:` + exit 128). Prefix so main.rs re-emits
+        // the message verbatim and exits 128; the multi-pathspec arm still
+        // matches "did not match any files" to `continue`.
         return Err(AddPathError::Other(anyhow::anyhow!(
-            "pathspec '{}' did not match any files",
+            "fatal: pathspec '{}' did not match any files",
             path
         )));
     }
