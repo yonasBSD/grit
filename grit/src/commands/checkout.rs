@@ -1464,8 +1464,8 @@ fn collect_checkout_local_change_lines(repo: &Repository) -> Result<Vec<String>>
 fn sparse_checkout_config_enabled(git_dir: &std::path::Path) -> bool {
     ConfigSet::load(Some(git_dir), true)
         .unwrap_or_default()
-        .get("core.sparsecheckout")
-        .map(|v| v.eq_ignore_ascii_case("true"))
+        .get_bool("core.sparsecheckout")
+        .and_then(|r| r.ok())
         .unwrap_or(false)
 }
 
@@ -1479,8 +1479,8 @@ fn sparse_checkout_patterns_for_hydration(
     cfg: &ConfigSet,
 ) -> Option<(Vec<String>, bool)> {
     let sparse_enabled = cfg
-        .get("core.sparsecheckout")
-        .map(|v| v.eq_ignore_ascii_case("true"))
+        .get_bool("core.sparsecheckout")
+        .and_then(|r| r.ok())
         .unwrap_or(false);
     if !sparse_enabled {
         return None;
@@ -1493,10 +1493,16 @@ fn sparse_checkout_patterns_for_hydration(
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(String::from)
         .collect();
-    let cone = cfg
-        .get("core.sparsecheckoutcone")
-        .map(|v| v.eq_ignore_ascii_case("true"))
+    // Only treat the file as cone-mode when both the config opts in AND the file actually parses
+    // as cone patterns. A non-cone file (e.g. `!/*` + `/a`) under the default cone=true would
+    // otherwise be matched by the cone matcher, which over-includes paths. This mirrors
+    // `apply_sparse_checkout_skip_worktree`'s `effective_cone` logic.
+    let cone_config = cfg
+        .get_bool("core.sparsecheckoutcone")
+        .and_then(|r| r.ok())
         .unwrap_or(true);
+    let cone =
+        cone_config && grit_lib::sparse_checkout::ConePatterns::try_parse(&content).is_some();
     Some((patterns, cone))
 }
 
