@@ -196,11 +196,18 @@ pub fn run(args: Args) -> Result<()> {
     let mut child_stdin = child.stdin.take().context("receive-pack stdin")?;
     let mut child_stdout = child.stdout.take().context("receive-pack stdout")?;
 
-    let (extra_have, _server_sideband, advertised_oids) = read_advertisement(&mut child_stdout)?;
+    let (extra_have, server_sideband, advertised_oids) = read_advertisement(&mut child_stdout)?;
 
-    // Raw pack bytes after the command flush (do not negotiate side-band-64k for the pack:
-    // `git receive-pack` reads the pack from stdin without demuxing client→server sideband).
-    let mut caps = "report-status report-status-v2 quiet object-format=sha1".to_owned();
+    // Negotiate `side-band-64k` when the server advertises it: the server then multiplexes its
+    // report-status on band 1 and hook/diagnostic output on band 2, which we demultiplex below
+    // (band 2/3 → stderr prefixed `remote: `). The client→server pack is still raw (receive-pack
+    // reads it from stdin without demuxing).
+    let use_sideband = server_sideband;
+    let mut caps = if use_sideband {
+        "report-status report-status-v2 side-band-64k quiet object-format=sha1".to_owned()
+    } else {
+        "report-status report-status-v2 quiet object-format=sha1".to_owned()
+    };
     if trace2_transfer::transfer_advertise_sid_enabled(&repo.git_dir) {
         let sid = trace2_transfer::trace2_session_id_wire_once();
         caps.push_str(" session-id=");
@@ -303,12 +310,96 @@ pub fn run(args: Args) -> Result<()> {
     let mut output = Vec::new();
     child_stdout.read_to_end(&mut output)?;
     let status = child.wait()?;
-    io::stdout().write_all(&output)?;
-    if !status.success() {
-        bail!("receive-pack failed");
+
+    // With side-band, band 1 carries the report-status pkt-lines and band 2/3 carries remote
+    // diagnostics; demultiplex here. Without it, the raw stream is the report-status itself.
+    let report = if use_sideband {
+        demux_report_and_remote_messages(&output)?
+    } else {
+        output
+    };
+
+    // Parse the report-status stream to detect per-ref rejections (`ng <ref> <reason>`).
+    let rejected = report_has_rejections(&report);
+
+    // `git send-pack` consumes the report-status stream (it does not echo it to stdout) and exits
+    // non-zero when any ref was rejected or the remote failed, without printing "receive-pack
+    // failed" — the rejection is communicated via the report-status stream / push status.
+    if !status.success() || rejected {
+        return Err(anyhow::Error::new(ExplicitExit {
+            code: 1,
+            message: String::new(),
+        }));
     }
 
     Ok(())
+}
+
+/// Split a side-band stream: band 1 (report-status) is returned; band 2/3 (remote diagnostics)
+/// is written to stderr, line-buffered and prefixed with `remote: ` like git's `recv_sideband`.
+fn demux_report_and_remote_messages(input: &[u8]) -> Result<Vec<u8>> {
+    let mut report = Vec::new();
+    let mut progress: Vec<u8> = Vec::new();
+    let stderr = io::stderr();
+    let mut err = stderr.lock();
+    let mut i = 0usize;
+    while i + 4 <= input.len() {
+        let len = match grit_lib::pkt_line::parse_hex_len(&input[i..i + 4]) {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        i += 4;
+        if len == 0 {
+            continue;
+        }
+        if len < 4 || i + (len - 4) > input.len() {
+            break;
+        }
+        let payload = &input[i..i + (len - 4)];
+        i += len - 4;
+        if payload.is_empty() {
+            continue;
+        }
+        let band = payload[0];
+        let data = &payload[1..];
+        match band {
+            1 => report.extend_from_slice(data),
+            2 | 3 => {
+                progress.extend_from_slice(data);
+                while let Some(pos) = progress.iter().position(|b| *b == b'\n') {
+                    let mut line = progress[..pos].to_vec();
+                    if line.ends_with(b"\r") {
+                        line.pop();
+                    }
+                    writeln!(err, "remote: {}        ", String::from_utf8_lossy(&line))?;
+                    progress.drain(..=pos);
+                }
+            }
+            _ => {}
+        }
+    }
+    if !progress.is_empty() {
+        writeln!(
+            err,
+            "remote: {}        ",
+            String::from_utf8_lossy(&progress)
+        )?;
+    }
+    err.flush()?;
+    Ok(report)
+}
+
+/// True when the report-status stream contains any `ng <ref> ...` (rejected) command line.
+fn report_has_rejections(report: &[u8]) -> bool {
+    let mut cursor = io::Cursor::new(report);
+    while let Ok(Some(pkt)) = read_packet(&mut cursor) {
+        if let Packet::Data(line) = pkt {
+            if line.trim_start().starts_with("ng ") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 pub(crate) fn write_pkt_line(w: &mut impl Write, payload: &[u8]) -> io::Result<()> {

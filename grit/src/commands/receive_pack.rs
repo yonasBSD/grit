@@ -26,7 +26,9 @@ use std::process::{Command, Stdio};
 use crate::grit_exe;
 use crate::trace2_transfer;
 use crate::wire_trace;
-use grit_lib::pkt_line::{read_packet, write_flush, write_packet_raw, Packet};
+use grit_lib::pkt_line::{
+    read_packet, write_flush, write_packet_raw, write_sideband_packet, Packet,
+};
 
 /// Arguments for `grit receive-pack`.
 #[derive(Debug, ClapArgs)]
@@ -71,6 +73,7 @@ pub fn run(args: Args) -> Result<()> {
     let mut updates: Vec<(String, String, String)> = Vec::new();
     let mut caps_seen = false;
     let mut client_sid_from_caps: Option<String> = None;
+    let mut use_sideband = false;
 
     loop {
         match read_packet(&mut cursor)? {
@@ -80,8 +83,11 @@ pub fn run(args: Args) -> Result<()> {
             Some(Packet::Data(line)) => {
                 if !caps_seen {
                     if let Some((_, feats)) = line.split_once('\0') {
-                        if let Some(sid) = trace2_transfer::extract_session_id_feature(feats.trim())
-                        {
+                        let feats = feats.trim();
+                        if feats.split([' ', '\n']).any(|f| f == "side-band-64k") {
+                            use_sideband = true;
+                        }
+                        if let Some(sid) = trace2_transfer::extract_session_id_feature(feats) {
                             client_sid_from_caps = Some(sid.to_owned());
                         }
                     }
@@ -94,6 +100,11 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
+    // `git receive-pack` routes hook output and diagnostics to sideband band 2 when the client
+    // negotiated `side-band-64k`, and wraps the report-status stream in band 1. The client
+    // demultiplexes band 2/3 to its stderr (prefixed `remote: `) and band 1 to its status parser.
+    let mut diag = DiagSink::new(use_sideband);
+
     if let Some(ref sid) = client_sid_from_caps {
         trace2_transfer::emit_client_sid(sid);
     }
@@ -104,9 +115,9 @@ pub fn run(args: Args) -> Result<()> {
         let full = ref_namespace::storage_ref_name(refname);
         if hide_refs::ref_is_hidden(refname, &full, &hide_patterns) {
             if new_h == &zero_oid_early {
-                eprintln!("remote: error: deny deleting a hidden ref");
+                diag.line("error: deny deleting a hidden ref");
             } else {
-                eprintln!("remote: error: deny updating a hidden ref");
+                diag.line("error: deny updating a hidden ref");
             }
             hidden_rejects.push(refname.clone());
         }
@@ -242,58 +253,177 @@ pub fn run(args: Args) -> Result<()> {
     if let Some(ref e) = traverse_err {
         for line in e.lines() {
             if line.starts_with("fatal: ") {
-                eprintln!("{line}");
+                diag.line(line);
             } else {
-                eprintln!("error: {line}");
+                diag.line(&format!("error: {line}"));
             }
         }
     }
 
-    write_status_lines(
-        &updates,
-        &connectivity_failed,
-        &hidden_rejects,
-        &zero_oid,
-        &unpack_status,
-    )?;
+    // Refs already rejected by connectivity/hidden checks never reach the hook stage.
+    let pre_rejected: Vec<(String, &'static str)> = updates
+        .iter()
+        .filter_map(|(_o, new_hex, refname)| {
+            if new_hex == &zero_oid {
+                return None;
+            }
+            if hidden_rejects.iter().any(|r| r == refname) {
+                Some((refname.clone(), "failed to update ref"))
+            } else if connectivity_failed.iter().any(|r| r == refname) {
+                Some((refname.clone(), "missing necessary objects"))
+            } else {
+                None
+            }
+        })
+        .collect();
 
-    if !connectivity_failed.is_empty() || !hidden_rejects.is_empty() {
-        return Ok(());
+    // When any ref already failed an earlier gate, do not run hooks/update refs: report and exit.
+    let ref_outcomes: Vec<RefOutcome> =
+        if !connectivity_failed.is_empty() || !hidden_rejects.is_empty() {
+            updates
+                .iter()
+                .map(|(_o, new_hex, refname)| {
+                    let is_delete = new_hex == &zero_oid;
+                    match pre_rejected.iter().find(|(r, _)| r == refname) {
+                        Some((_, reason)) => {
+                            RefOutcome::rejected(refname, reason).with_delete(is_delete)
+                        }
+                        None => RefOutcome::accepted(refname).with_delete(is_delete),
+                    }
+                })
+                .collect()
+        } else {
+            run_hooks_and_update_refs(&repo, &config, &updates, &zero_oid, &mut diag)?
+        };
+
+    write_status_lines(&ref_outcomes, &zero_oid, &unpack_status, &mut diag)?;
+    diag.finish()?;
+
+    Ok(())
+}
+
+/// Outcome of a single ref update after all gates and hooks have run.
+struct RefOutcome {
+    refname: String,
+    /// `None` if the ref was accepted; otherwise the report-status `ng` reason string.
+    reject_reason: Option<String>,
+    /// Whether this update is a deletion (`new` is the null OID).
+    is_delete: bool,
+}
+
+impl RefOutcome {
+    fn accepted(refname: &str) -> Self {
+        Self {
+            refname: refname.to_owned(),
+            reject_reason: None,
+            is_delete: false,
+        }
     }
 
-    run_hooks_and_update_refs(&repo, &config, &updates, &zero_oid)
+    fn rejected(refname: &str, reason: &str) -> Self {
+        Self {
+            refname: refname.to_owned(),
+            reject_reason: Some(reason.to_owned()),
+            is_delete: false,
+        }
+    }
+
+    fn with_delete(mut self, is_delete: bool) -> Self {
+        self.is_delete = is_delete;
+        self
+    }
+}
+
+/// Sink for receive-pack diagnostic/hook output and the report-status stream.
+///
+/// With `side-band-64k` negotiated, diagnostics go to band 2 and the report to band 1 on stdout
+/// (the client demultiplexes, prefixing band 2/3 with `remote: `). Otherwise diagnostics go to
+/// this process's stderr and the report is written as bare pkt-lines on stdout.
+struct DiagSink {
+    use_sideband: bool,
+}
+
+impl DiagSink {
+    fn new(use_sideband: bool) -> Self {
+        Self { use_sideband }
+    }
+
+    /// Emit one diagnostic line (no trailing newline expected in `line`).
+    fn line(&mut self, line: &str) {
+        let mut buf = line.as_bytes().to_vec();
+        buf.push(b'\n');
+        self.bytes(&buf);
+    }
+
+    /// Emit raw diagnostic bytes (e.g. captured hook stdout/stderr) verbatim.
+    fn bytes(&mut self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        if self.use_sideband {
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            for chunk in data.chunks(65515) {
+                let _ = write_sideband_packet(&mut out, 2, chunk);
+            }
+            let _ = out.flush();
+        } else {
+            let _ = io::stderr().write_all(data);
+        }
+    }
+
+    /// Write the report-status pkt-line stream (already framed) to the wire.
+    fn write_report(&mut self, report: &[u8]) -> Result<()> {
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        if self.use_sideband {
+            for chunk in report.chunks(65515) {
+                write_sideband_packet(&mut out, 1, chunk)?;
+            }
+        } else {
+            out.write_all(report)?;
+        }
+        out.flush()?;
+        Ok(())
+    }
+
+    /// Final flush packet that closes the sideband stream (no-op without sideband).
+    fn finish(&mut self) -> Result<()> {
+        if self.use_sideband {
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            write_flush(&mut out)?;
+            out.flush()?;
+        }
+        Ok(())
+    }
 }
 
 fn write_status_lines(
-    updates: &[(String, String, String)],
-    connectivity_failed: &[String],
-    hidden_failed: &[String],
-    zero_oid: &str,
+    outcomes: &[RefOutcome],
+    _zero_oid: &str,
     unpack_status: &[u8],
+    diag: &mut DiagSink,
 ) -> Result<()> {
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    write_packet_raw(&mut out, unpack_status)?;
-    for (_old_hex, new_hex, refname) in updates {
-        if new_hex == zero_oid {
+    let mut report: Vec<u8> = Vec::new();
+    write_packet_raw(&mut report, unpack_status)?;
+    for outcome in outcomes {
+        // Deletions are not echoed in the status report (matches the existing receive-pack path).
+        if outcome.is_delete {
             continue;
         }
-        if hidden_failed.iter().any(|f| f == refname) {
-            write_packet_raw(
-                &mut out,
-                format!("ng {refname} failed to update ref\n").as_bytes(),
-            )?;
-        } else if connectivity_failed.iter().any(|f| f == refname) {
-            write_packet_raw(
-                &mut out,
-                format!("ng {refname} missing necessary objects\n").as_bytes(),
-            )?;
-        } else {
-            write_packet_raw(&mut out, format!("ok {refname}\n").as_bytes())?;
+        let refname = &outcome.refname;
+        match &outcome.reject_reason {
+            Some(reason) => {
+                write_packet_raw(&mut report, format!("ng {refname} {reason}\n").as_bytes())?;
+            }
+            None => {
+                write_packet_raw(&mut report, format!("ok {refname}\n").as_bytes())?;
+            }
         }
     }
-    write_flush(&mut out)?;
-    out.flush()?;
+    write_flush(&mut report)?;
+    diag.write_report(&report)?;
     Ok(())
 }
 
@@ -454,8 +584,8 @@ fn advertise_refs_phase(repo: &Repository, extra_have: &HashSet<ObjectId>) -> Re
     let mut out = stdout.lock();
     let version = crate::version_string();
     let mut caps = format!(
-        "report-status report-status-v2 delete-refs quiet ofs-delta object-format=sha1 \
-         agent=grit/{version}"
+        "report-status report-status-v2 delete-refs side-band-64k quiet ofs-delta \
+         object-format=sha1 agent=grit/{version}"
     );
     if trace2_transfer::transfer_advertise_sid_enabled(&repo.git_dir) {
         let sid = trace2_transfer::trace2_session_id_wire_once();
@@ -543,7 +673,8 @@ fn run_hooks_and_update_refs(
     remote_config: &ConfigSet,
     updates: &[(String, String, String)],
     zero_oid: &str,
-) -> Result<()> {
+    diag: &mut DiagSink,
+) -> Result<Vec<RefOutcome>> {
     let hook_stdin = updates
         .iter()
         .map(|(old_hex, new_hex, refname)| format!("{old_hex} {new_hex} {refname}\n"))
@@ -592,9 +723,7 @@ fn run_hooks_and_update_refs(
         Some(hook_stdin.as_bytes()),
         &push_option_env,
     );
-    if !pre_receive_output.is_empty() {
-        let _ = io::stderr().write_all(&pre_receive_output);
-    }
+    diag.bytes(&pre_receive_output);
     if let HookResult::Failed(_code) = pre_receive_result {
         bail!("pre-receive hook declined the push");
     }
@@ -617,9 +746,7 @@ fn run_hooks_and_update_refs(
         Some(ref_tx_stdin.as_bytes()),
         &push_option_env,
     );
-    if !tx_preparing_output.is_empty() {
-        let _ = io::stderr().write_all(&tx_preparing_output);
-    }
+    diag.bytes(&tx_preparing_output);
     if let HookResult::Failed(_code) = tx_preparing_result {
         bail!("reference-transaction hook declined the update");
     }
@@ -631,9 +758,7 @@ fn run_hooks_and_update_refs(
         Some(ref_tx_stdin.as_bytes()),
         &push_option_env,
     );
-    if !tx_prepared_output.is_empty() {
-        let _ = io::stderr().write_all(&tx_prepared_output);
-    }
+    diag.bytes(&tx_prepared_output);
     if let HookResult::Failed(_code) = tx_prepared_result {
         let _ = run_hook_in_git_dir(
             repo,
@@ -645,8 +770,15 @@ fn run_hooks_and_update_refs(
         bail!("reference-transaction hook declined the update");
     }
 
+    // Per-ref acceptance: `git receive-pack` rejects individual commands (policy or update-hook
+    // declines) and continues with the rest, rather than aborting the whole push. Accepted refs
+    // are committed; rejected refs are reported via `ng <ref> <reason>` in the status report.
+    let mut outcomes: Vec<RefOutcome> = Vec::with_capacity(updates.len());
+    let mut accepted: Vec<(String, String, String)> = Vec::new();
     for (old_hex, new_hex, refname) in updates {
-        check_receive_update_policy(
+        let is_delete = new_hex == zero_oid;
+
+        match check_receive_update_policy(
             repo,
             remote_config,
             refname,
@@ -655,7 +787,14 @@ fn run_hooks_and_update_refs(
             deny_deletes,
             deny_nff,
             head_ref_for_delete.as_deref(),
-        )?;
+            diag,
+        )? {
+            Some(reason) => {
+                outcomes.push(RefOutcome::rejected(refname, reason).with_delete(is_delete));
+                continue;
+            }
+            None => {}
+        }
 
         let old_for_update = refs::resolve_ref(&repo.git_dir, refname)
             .map(|oid| oid.to_hex())
@@ -667,21 +806,14 @@ fn run_hooks_and_update_refs(
             None,
             &push_option_env,
         );
-        if !update_output.is_empty() {
-            let _ = io::stderr().write_all(&update_output);
-        }
+        diag.bytes(&update_output);
         if let HookResult::Failed(_code) = update_result {
-            let _ = run_hook_in_git_dir(
-                repo,
-                "reference-transaction",
-                &["aborted"],
-                Some(ref_tx_stdin.as_bytes()),
-                &push_option_env,
-            );
-            bail!("update hook declined the update");
+            diag.line(&format!("error: hook declined to update {refname}"));
+            outcomes.push(RefOutcome::rejected(refname, "hook declined").with_delete(is_delete));
+            continue;
         }
 
-        if new_hex == zero_oid {
+        if is_delete {
             refs::delete_ref(&repo.git_dir, refname)
                 .with_context(|| format!("deleting ref {refname}"))?;
         } else {
@@ -695,7 +827,7 @@ fn run_hooks_and_update_refs(
                 }) = resolve_head(&repo.git_dir)
                 {
                     if head_br == *refname {
-                        let deny = read_receive_deny_current(&remote_config);
+                        let deny = read_receive_deny_current(remote_config);
                         if matches!(deny, ReceiveDenyAction::UpdateInstead) {
                             checkout_worktree_to_commit(wt, new_oid)?;
                         }
@@ -703,6 +835,9 @@ fn run_hooks_and_update_refs(
                 }
             }
         }
+
+        outcomes.push(RefOutcome::accepted(refname).with_delete(is_delete));
+        accepted.push((old_hex.clone(), new_hex.clone(), refname.clone()));
     }
 
     let (tx_committed_result, tx_committed_output) = run_hook_in_git_dir(
@@ -712,32 +847,34 @@ fn run_hooks_and_update_refs(
         Some(ref_tx_stdin.as_bytes()),
         &push_option_env,
     );
-    if !tx_committed_output.is_empty() {
-        let _ = io::stderr().write_all(&tx_committed_output);
-    }
+    diag.bytes(&tx_committed_output);
     if let HookResult::Failed(_code) = tx_committed_result {
         // committed hook exit status is ignored (matches githooks(5)).
     }
 
-    let (post_receive_result, post_receive_output) = run_hook_in_git_dir(
-        repo,
-        "post-receive",
-        &[],
-        Some(hook_stdin.as_bytes()),
-        &push_option_env,
-    );
-    if !post_receive_output.is_empty() {
-        let _ = io::stderr().write_all(&post_receive_output);
-    }
-    if let HookResult::Failed(_code) = post_receive_result {
-        // post-receive is informational only.
-    }
+    // post-receive and post-update only see the refs that were actually updated (matches
+    // `git receive-pack`). When nothing was committed, neither hook runs.
+    if !accepted.is_empty() {
+        let post_receive_stdin = accepted
+            .iter()
+            .map(|(old_hex, new_hex, refname)| format!("{old_hex} {new_hex} {refname}\n"))
+            .collect::<String>();
+        let (post_receive_result, post_receive_output) = run_hook_in_git_dir(
+            repo,
+            "post-receive",
+            &[],
+            Some(post_receive_stdin.as_bytes()),
+            &push_option_env,
+        );
+        diag.bytes(&post_receive_output);
+        if let HookResult::Failed(_code) = post_receive_result {
+            // post-receive is informational only.
+        }
 
-    let post_update_arg_strings: Vec<String> = updates
-        .iter()
-        .map(|(_, _, refname)| refname.clone())
-        .collect();
-    if !post_update_arg_strings.is_empty() {
+        let post_update_arg_strings: Vec<String> = accepted
+            .iter()
+            .map(|(_, _, refname)| refname.clone())
+            .collect();
         let post_update_args: Vec<&str> =
             post_update_arg_strings.iter().map(|s| s.as_str()).collect();
         let (post_update_result, post_update_output) = run_hook_in_git_dir(
@@ -747,20 +884,18 @@ fn run_hooks_and_update_refs(
             None,
             &push_option_env,
         );
-        if !post_update_output.is_empty() {
-            let _ = io::stderr().write_all(&post_update_output);
-        }
+        diag.bytes(&post_update_output);
         if let HookResult::Failed(_code) = post_update_result {
             // post-update failures are ignored (matches receive-pack).
         }
     }
 
-    let auto_gc = config_bool_any(&remote_config, &["receive.autoGc", "receive.autogc"], true);
-    if auto_gc && !updates.is_empty() {
+    let auto_gc = config_bool_any(remote_config, &["receive.autoGc", "receive.autogc"], true);
+    if auto_gc && !accepted.is_empty() {
         run_auto_maintenance_quiet(&repo.git_dir);
     }
 
-    Ok(())
+    Ok(outcomes)
 }
 
 fn config_bool_any(cfg: &ConfigSet, keys: &[&str], default: bool) -> bool {
@@ -830,6 +965,13 @@ fn checkout_worktree_to_commit(wt: &Path, oid: ObjectId) -> Result<()> {
     Ok(())
 }
 
+/// Apply the receive-pack acceptance policy for one ref.
+///
+/// Returns `Ok(None)` when the update is allowed, `Ok(Some(reason))` with the report-status
+/// `ng` reason when this single ref is rejected (matching `git receive-pack`'s per-command
+/// rejection), or `Err` only for genuine internal errors. Human-readable diagnostics are routed
+/// through `diag` (band 2 under side-band, otherwise stderr).
+#[allow(clippy::too_many_arguments)]
 fn check_receive_update_policy(
     repo: &Repository,
     cfg: &ConfigSet,
@@ -839,14 +981,15 @@ fn check_receive_update_policy(
     deny_deletes: bool,
     deny_nff: bool,
     head_branch: Option<&str>,
-) -> Result<()> {
+    diag: &mut DiagSink,
+) -> Result<Option<&'static str>> {
     let zero_oid = "0".repeat(40);
     let is_delete = new_hex == zero_oid;
     let had_old = old_hex != zero_oid;
 
     if is_delete && had_old && deny_deletes && refname.starts_with("refs/heads/") {
-        eprintln!("error: denying ref deletion for {refname}");
-        bail!("deletion prohibited");
+        diag.line(&format!("error: denying ref deletion for {refname}"));
+        return Ok(Some("deletion prohibited"));
     }
 
     if is_delete && had_old {
@@ -856,14 +999,16 @@ fn check_receive_update_policy(
                 match deny {
                     ReceiveDenyAction::Ignore => {}
                     ReceiveDenyAction::Warn => {
-                        eprintln!("warning: deleting the current branch");
+                        diag.line("warning: deleting the current branch");
                     }
                     ReceiveDenyAction::Refuse | ReceiveDenyAction::UpdateInstead => {
-                        eprintln!("error: refusing to delete the current branch: {refname}");
-                        bail!("deletion of the current branch prohibited");
+                        diag.line(&format!(
+                            "error: refusing to delete the current branch: {refname}"
+                        ));
+                        return Ok(Some("deletion of the current branch prohibited"));
                     }
                     ReceiveDenyAction::Unconfigured => {
-                        eprintln!(
+                        diag.line(
                             "error: By default, deleting the current branch is denied, because the next\n\
                              'git clone' won't result in any file checked out, causing confusion.\n\
                              \n\
@@ -871,10 +1016,12 @@ fn check_receive_update_policy(
                              'warn' or 'ignore' in the remote repository to allow deleting the\n\
                              current branch, with or without a warning message.\n\
                              \n\
-                             To squelch this message, you can set it to 'refuse'."
+                             To squelch this message, you can set it to 'refuse'.",
                         );
-                        eprintln!("error: refusing to delete the current branch: {refname}");
-                        bail!("deletion of the current branch prohibited");
+                        diag.line(&format!(
+                            "error: refusing to delete the current branch: {refname}"
+                        ));
+                        return Ok(Some("deletion of the current branch prohibited"));
                     }
                 }
             }
@@ -887,8 +1034,10 @@ fn check_receive_update_policy(
         let new_oid =
             ObjectId::from_hex(new_hex).with_context(|| format!("invalid new oid on {refname}"))?;
         if old_oid != new_oid && !is_ancestor(repo, old_oid, new_oid)? {
-            eprintln!("error: denying non-fast-forward {refname} (you should pull first)");
-            bail!("non-fast-forward");
+            diag.line(&format!(
+                "error: denying non-fast-forward {refname} (you should pull first)"
+            ));
+            return Ok(Some("non-fast-forward"));
         }
     }
 
@@ -898,19 +1047,21 @@ fn check_receive_update_policy(
                 let head_oid_ok = refs::resolve_ref(&repo.git_dir, head).is_ok();
                 let deny = read_receive_deny_current(cfg);
                 if !head_oid_ok && matches!(deny, ReceiveDenyAction::UpdateInstead) {
-                    return Ok(());
+                    return Ok(None);
                 }
                 match deny {
                     ReceiveDenyAction::Ignore | ReceiveDenyAction::UpdateInstead => {}
                     ReceiveDenyAction::Warn => {
-                        eprintln!("warning: updating the current branch");
+                        diag.line("warning: updating the current branch");
                     }
                     ReceiveDenyAction::Refuse => {
-                        eprintln!("error: refusing to update checked out branch: {refname}");
-                        bail!("branch is currently checked out");
+                        diag.line(&format!(
+                            "error: refusing to update checked out branch: {refname}"
+                        ));
+                        return Ok(Some("branch is currently checked out"));
                     }
                     ReceiveDenyAction::Unconfigured => {
-                        eprintln!(
+                        diag.line(&format!(
                             "error: refusing to update checked out branch: {refname}\n\
                              error: By default, updating the current branch in a non-bare repository\n\
                              is denied, because it will make the index and work tree inconsistent\n\
@@ -925,15 +1076,15 @@ fn check_receive_update_policy(
                              \n\
                              To squelch this message and still keep the default behaviour, set\n\
                              'receive.denyCurrentBranch' configuration variable to 'refuse'."
-                        );
-                        bail!("branch is currently checked out");
+                        ));
+                        return Ok(Some("branch is currently checked out"));
                     }
                 }
             }
         }
     }
 
-    Ok(())
+    Ok(None)
 }
 
 fn run_auto_maintenance_quiet(git_dir: &Path) {
