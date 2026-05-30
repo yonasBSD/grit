@@ -1480,23 +1480,13 @@ fn remove_untracked_outside_sparse(
             }
             continue;
         }
-        if !meta.is_file() && !meta.file_type().is_symlink() {
-            continue;
-        }
-        if indexed_paths.contains(&rel) {
-            continue;
-        }
-        let included = if effective_cone {
-            path_in_sparse_checkout(&rel, true, cone_struct, non_cone, Some(work_tree))
-        } else {
-            path_in_sparse_checkout_lines(&rel, patterns, Some(work_tree))
-        };
-        if !included {
-            let _ = fs::remove_file(&path);
-            if let Some(parent) = path.parent() {
-                remove_empty_dirs_up_to(parent, work_tree);
-            }
-        }
+        // Untracked files (and symlinks) are NEVER deleted when applying sparse-checkout
+        // patterns. Upstream Git's `clean_tracked_sparse_directories`
+        // (git/builtin/sparse-checkout.c) only removes whole *tracked* sparse directories
+        // that have gone out of cone scope, and explicitly preserves any directory that
+        // still contains untracked/ignored files. Deleting individual untracked files here
+        // would destroy user data (and breaks tests that stage helper files outside the
+        // cone, e.g. t3602/t3705).
     }
     Ok(())
 }
