@@ -1536,6 +1536,19 @@ fn run_update_index_again(
             continue;
         }
 
+        // Git's `do_reupdate` calls `update_one`, which honors the bit-only modes
+        // (`--skip-worktree` / `--no-skip-worktree`) before any lstat. Replay the bit
+        // change on each differing path rather than touching the worktree.
+        if args.skip_worktree || args.no_skip_worktree {
+            let path = ce.path.clone();
+            if let Some(e) = index.get_mut(&path, 0) {
+                e.set_skip_worktree(args.skip_worktree);
+                index.version = index.version.max(3);
+            }
+            pos += 1;
+            continue;
+        }
+
         if ce.skip_worktree() {
             if args.ignore_skip_worktree_entries && args.remove {
                 let path = ce.path.clone();
