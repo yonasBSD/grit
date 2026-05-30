@@ -1025,6 +1025,20 @@ fn cherry_pick_one_commit(repo: &Repository, commit_oid: ObjectId, args: &Args) 
         append_signoff_trailer(&mut msg, &sob, &config);
     }
 
+    if args.edit {
+        // `cherry-pick -e`: upstream's sequencer (`should_edit()` true → `msg_file = NULL`)
+        // delegates to `git commit -e` via `run_git_commit`. That `git commit` sees the
+        // leftover `MERGE_MSG`/`CHERRY_PICK_HEAD` state, so the prepare-commit-msg hook runs
+        // with `arg1 = "merge"` and the editor is launched. Mirror that by recording the
+        // pick state and spawning `grit commit -n -e` on the staged index.
+        fs::write(git_dir.join("MERGE_MSG"), &msg)?;
+        fs::write(
+            git_dir.join("CHERRY_PICK_HEAD"),
+            format!("{}\n", commit_oid.to_hex()),
+        )?;
+        return finish_cherry_pick_via_commit(repo);
+    }
+
     // Run prepare-commit-msg on the clean (non-conflict, non-amend) pick, mirroring
     // sequencer.c:run_prepare_commit_msg_hook (arg1 = "message", GIT_EDITOR=:). The hook may
     // rewrite the message; read it back before creating the commit.
@@ -1042,6 +1056,27 @@ fn cherry_pick_one_commit(repo: &Repository, commit_oid: ObjectId, args: &Args) 
     let first_line = msg.lines().next().unwrap_or("");
     eprintln!("[{branch} {short}] {first_line}");
 
+    Ok(())
+}
+
+/// Finalise a clean `cherry-pick -e` by delegating to `grit commit -n -e`, mirroring
+/// `sequencer.c:run_git_commit` (which spawns `git commit` for the editor path).
+///
+/// The staged index plus `MERGE_MSG`/`CHERRY_PICK_HEAD` have already been written, so the
+/// spawned `commit` reads the pick message, runs `prepare-commit-msg` (arg1 = "merge", editor
+/// used), launches the editor, and records the commit — preserving the picked author via
+/// `CHERRY_PICK_HEAD`. The environment (including `GIT_EDITOR`) is inherited unchanged.
+fn finish_cherry_pick_via_commit(repo: &Repository) -> Result<()> {
+    let self_exe = std::env::current_exe().context("cannot determine grit binary path")?;
+    let mut cmd = std::process::Command::new(&self_exe);
+    // `-n` (no pre-commit/commit-msg), `-e` (editor), `--allow-empty` mirror the
+    // `EDIT_MSG | ALLOW_EMPTY` flags upstream passes for a clean pick.
+    cmd.args(["commit", "-n", "-e", "--allow-empty", "--no-gpg-sign"]);
+    cmd.current_dir(repo.work_tree.as_deref().unwrap_or(&repo.git_dir));
+    let status = cmd.status().context("run grit commit for cherry-pick -e")?;
+    if !status.success() {
+        bail!("HOOK_FAILED");
+    }
     Ok(())
 }
 
