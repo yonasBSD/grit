@@ -4297,7 +4297,11 @@ fn copy_objects(src_git_dir: &Path, dst_git_dir: &Path, try_hardlink: bool) -> R
                 if try_hardlink && fs::hard_link(&src_file, &dst_file).is_ok() {
                     continue;
                 }
-                fs::copy(&src_file, &dst_file)?;
+                // A concurrent `git maintenance`/repack on the source can remove a pack file
+                // between the directory scan and this copy. Treat a vanished source file as a
+                // skip rather than aborting the whole clone (Git's local clone is similarly
+                // robust to maintenance running on the source).
+                copy_skip_vanished_source(&src_file, &dst_file)?;
             }
         }
     }
@@ -4311,12 +4315,23 @@ fn copy_objects(src_git_dir: &Path, dst_git_dir: &Path, try_hardlink: bool) -> R
             let entry = entry?;
             if entry.path().is_file() {
                 let dst_file = dst_info.join(entry.file_name());
-                fs::copy(entry.path(), &dst_file)?;
+                copy_skip_vanished_source(&entry.path(), &dst_file)?;
             }
         }
     }
 
     Ok(())
+}
+
+/// Copy `src` to `dst`, treating a source file that vanished mid-copy (`ErrorKind::NotFound`)
+/// as a no-op. Concurrent maintenance on the clone source can delete pack/info files between
+/// the directory listing and the copy; aborting the clone in that case would be incorrect.
+fn copy_skip_vanished_source(src: &Path, dst: &Path) -> Result<()> {
+    match fs::copy(src, dst) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Copy directory contents recursively, skipping named subdirectories.
@@ -4333,7 +4348,14 @@ fn copy_dir_contents(src: &Path, dst: &Path, skip_dirs: &[&str], try_hardlink: b
             // This is a loose object fan-out directory (2-char hex prefix)
             let dst_dir = dst.join(&*name);
             fs::create_dir_all(&dst_dir)?;
-            for inner in fs::read_dir(entry.path())? {
+            // A concurrent repack can remove a whole fan-out directory while we walk it; treat a
+            // vanished source directory as nothing to copy rather than aborting the clone.
+            let inner_rd = match fs::read_dir(entry.path()) {
+                Ok(rd) => rd,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            for inner in inner_rd {
                 let inner = inner?;
                 if inner.file_type()?.is_file() {
                     let dst_file = dst_dir.join(inner.file_name());
@@ -4343,7 +4365,7 @@ fn copy_dir_contents(src: &Path, dst: &Path, skip_dirs: &[&str], try_hardlink: b
                     if try_hardlink && fs::hard_link(inner.path(), &dst_file).is_ok() {
                         continue;
                     }
-                    fs::copy(inner.path(), &dst_file)?;
+                    copy_skip_vanished_source(&inner.path(), &dst_file)?;
                 }
             }
         }
@@ -4885,7 +4907,11 @@ fn materialize_blob_none_partial_layout(dest: &Repository) -> Result<()> {
             Ok(o) => o,
             Err(_) => continue,
         };
-        let _ = dest.odb.write(obj.kind, &obj.data)?;
+        // Use `write_loose_materialize` (not `write`): the object is still present in the
+        // just-copied local pack, so `Odb::write` would short-circuit via `exists()` and skip
+        // writing the loose file. The packs are removed below, so the skeleton objects must be
+        // duplicated as loose files first or they vanish entirely.
+        let _ = dest.odb.write_loose_materialize(obj.kind, &obj.data)?;
     }
 
     let pack_dir = dest.git_dir.join("objects/pack");
@@ -4938,7 +4964,10 @@ fn materialize_tree_zero_partial_layout(dest: &Repository) -> Result<Vec<ObjectI
             Ok(o) => o,
             Err(_) => continue,
         };
-        let _ = dest.odb.write(obj.kind, &obj.data)?;
+        // Same reasoning as `materialize_blob_none_partial_layout`: the kept commit/tree objects
+        // are still in the local pack that is deleted below, so `Odb::write`'s `exists()`
+        // short-circuit would skip the loose write and leave them missing. Force a loose copy.
+        let _ = dest.odb.write_loose_materialize(obj.kind, &obj.data)?;
     }
 
     let pack_dir = dest.git_dir.join("objects/pack");

@@ -1464,6 +1464,37 @@ fn sparse_checkout_config_enabled(git_dir: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// When sparse-checkout is enabled, return its patterns and whether cone mode is active.
+///
+/// Returns `None` when sparse-checkout is disabled (caller should hydrate the full tree). Mirrors
+/// how `grit backfill --sparse` loads patterns so promisor hydration during checkout fetches only
+/// the blobs the sparse working set needs.
+fn sparse_checkout_patterns_for_hydration(
+    git_dir: &std::path::Path,
+    cfg: &ConfigSet,
+) -> Option<(Vec<String>, bool)> {
+    let sparse_enabled = cfg
+        .get("core.sparsecheckout")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !sparse_enabled {
+        return None;
+    }
+    let sc_path = git_dir.join("info").join("sparse-checkout");
+    let content = std::fs::read_to_string(&sc_path).ok()?;
+    let patterns: Vec<String> = content
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(String::from)
+        .collect();
+    let cone = cfg
+        .get("core.sparsecheckoutcone")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true);
+    Some((patterns, cone))
+}
+
 fn refresh_index_blobs_from_worktree(
     repo: &Repository,
     index: &mut Index,
@@ -2669,12 +2700,29 @@ fn switch_to_tree(
         if let Some(p) =
             crate::commands::promisor_hydrate::find_promisor_source(&cfg, &repo.git_dir)?
         {
-            crate::commands::promisor_hydrate::hydrate_tree_blobs_from_promisor(
-                repo,
-                &p,
-                *target_tree_oid,
-            )
-            .context("hydrating checkout tree from promisor remote")?;
+            // When sparse-checkout is enabled, only hydrate the blobs the sparse working set
+            // needs. Otherwise checkout would lazily fetch every blob in the tree, defeating the
+            // purpose of a partial clone with sparse-checkout (t5620 `backfill --sparse`).
+            match sparse_checkout_patterns_for_hydration(&repo.git_dir, &cfg) {
+                Some((patterns, cone_mode)) => {
+                    crate::commands::promisor_hydrate::hydrate_sparse_tree_blobs_from_promisor(
+                        repo,
+                        &p,
+                        *target_tree_oid,
+                        &patterns,
+                        cone_mode,
+                    )
+                    .context("hydrating sparse checkout tree from promisor remote")?;
+                }
+                None => {
+                    crate::commands::promisor_hydrate::hydrate_tree_blobs_from_promisor(
+                        repo,
+                        &p,
+                        *target_tree_oid,
+                    )
+                    .context("hydrating checkout tree from promisor remote")?;
+                }
+            }
             let _ = crate::commands::promisor_hydrate::trim_promisor_marker_to_missing_local(repo);
         }
     }
