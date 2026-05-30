@@ -916,17 +916,33 @@ fn removable_sparse_directories(
     shallow
 }
 
-/// Whether a worktree directory contains any file on disk (recursively). Used to decide whether a
-/// sparse directory can be silently removed or must be left with a warning (Git
-/// `clean_tracked_sparse_directories`).
-fn dir_has_any_file(dir: &Path) -> bool {
+/// Whether a sparse directory holds a *non-ignored* untracked file on disk (recursively). Git's
+/// `clean_tracked_sparse_directories` uses `fill_directory` (which excludes gitignored paths), so a
+/// directory whose only contents are gitignored files is still removable.
+fn dir_has_unignored_file(
+    repo: &Repository,
+    matcher: &mut grit_lib::ignore::IgnoreMatcher,
+    index: Option<&grit_lib::index::Index>,
+    work_tree: &Path,
+    dir: &Path,
+) -> bool {
     let Ok(rd) = fs::read_dir(dir) else {
         return false;
     };
     for ent in rd.flatten() {
         let Ok(meta) = ent.metadata() else { continue };
+        let path = ent.path();
+        let rel = normalize_rel_path(path.strip_prefix(work_tree).unwrap_or(&path));
+        let ignored = matcher
+            .check_path(repo, index, &rel, meta.is_dir())
+            .map(|(i, _)| i)
+            .unwrap_or(false);
+        if ignored {
+            // An ignored directory (and everything under it) is removable; an ignored file too.
+            continue;
+        }
         if meta.is_dir() {
-            if dir_has_any_file(&ent.path()) {
+            if dir_has_unignored_file(repo, matcher, index, work_tree, &path) {
                 return true;
             }
         } else {
@@ -937,19 +953,25 @@ fn dir_has_any_file(dir: &Path) -> bool {
 }
 
 /// Git `clean_tracked_sparse_directories`: after applying sparse patterns, remove the now
-/// out-of-cone sparse directories that have no files on disk, and warn about those that still
-/// contain (untracked) files (t1091 'clean with sparse file states').
+/// out-of-cone sparse directories that hold only tracked/ignored content, and warn about those
+/// that still contain non-ignored untracked files (t1091 'cone mode clears ignored subdirectories'
+/// / 'clean with sparse file states').
 fn clean_tracked_sparse_directories(
+    repo: &Repository,
     work_tree: &Path,
     index: &grit_lib::index::Index,
     patterns: &[String],
 ) {
+    let mut matcher = match grit_lib::ignore::IgnoreMatcher::from_repository(repo) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
     for name in removable_sparse_directories(index, patterns) {
         let full = work_tree.join(&name);
         if !full.is_dir() {
             continue;
         }
-        if dir_has_any_file(&full) {
+        if dir_has_unignored_file(repo, &mut matcher, Some(index), work_tree, &full) {
             eprintln!(
                 "warning: directory '{name}/' contains untracked files, but is not in the sparse-checkout cone"
             );
@@ -1535,7 +1557,7 @@ fn apply_sparse_patterns_inner(
     // still holding untracked files. Skip for a full checkout (everything is in-cone) and in cone
     // mode only (matches Git). Computed from the pre-collapse per-file skip-worktree state.
     if !force_include_all && effective_cone {
-        clean_tracked_sparse_directories(work_tree, &index, patterns);
+        clean_tracked_sparse_directories(repo, work_tree, &index, patterns);
     }
 
     // In partial clones (`grit-promisor-missing` lists blobs not yet local), sparse
