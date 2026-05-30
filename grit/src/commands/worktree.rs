@@ -976,8 +976,10 @@ fn cmd_add(args: AddArgs) -> Result<()> {
 
     // A new worktree inherits the main worktree's sparse-checkout patterns (copied above). Apply
     // them to the freshly checked-out tree so out-of-cone paths (e.g. `folder2`) are excluded,
-    // matching Git's `worktree add` (t1091 'different sparse-checkouts with worktrees').
-    if !args.no_checkout {
+    // matching Git's `worktree add` (t1091 'different sparse-checkouts with worktrees'). Only when
+    // the worktree actually has a sparse-checkout file, to avoid touching admin files (and the
+    // relative gitdir/commondir links) in the common non-sparse case.
+    if !args.no_checkout && wt_admin.join("info").join("sparse-checkout").exists() {
         if let Ok(wt_repo) = Repository::open(&wt_admin, Some(&wt_path)) {
             let _ =
                 crate::commands::sparse_checkout::reapply_sparse_checkout_if_configured(&wt_repo);
