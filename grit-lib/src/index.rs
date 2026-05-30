@@ -604,6 +604,14 @@ impl Index {
             if !matched.iter().all(|e| e.skip_worktree()) {
                 continue;
             }
+            // Git's convert_to_sparse_rec refuses to collapse a directory that contains a
+            // submodule (gitlink); the sparse-directory entry could not faithfully represent
+            // the gitlink's committed OID. Leave such directories expanded.
+            if matched.iter().any(|e| e.mode == MODE_GITLINK)
+                || exp_sorted.iter().any(|e| e.mode == MODE_GITLINK)
+            {
+                continue;
+            }
 
             let mut path_with_slash = pref.clone();
             if !path_with_slash.ends_with(b"/") {
@@ -1341,7 +1349,16 @@ fn path_under_prefix(path: &[u8], prefix: &[u8]) -> bool {
 }
 
 fn directory_in_cone(dir_path: &str, patterns: &[String], cone_mode: bool) -> bool {
-    crate::sparse_checkout::path_matches_sparse_patterns(dir_path, patterns, cone_mode)
+    // `path_matches_sparse_patterns` distinguishes a directory from a file by a trailing
+    // slash (expanded-cone matching uses dtype the way Git does). Collapse prefixes arrive
+    // without one (e.g. `before`, `folder1`), so append it to avoid a top-level directory
+    // being mistaken for an always-in-cone top-level file.
+    let dir_with_slash = if dir_path.ends_with('/') {
+        dir_path.to_string()
+    } else {
+        format!("{dir_path}/")
+    };
+    crate::sparse_checkout::path_matches_sparse_patterns(&dir_with_slash, patterns, cone_mode)
 }
 
 fn collect_directory_prefixes(path: &[u8], out: &mut BTreeSet<Vec<u8>>) {
