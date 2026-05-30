@@ -5291,12 +5291,6 @@ fn cherry_pick_for_rebase(
     // replays a chain of dependent commits (e.g. `rebase -f HEAD^^`) it keeps the
     // base correct so sequential edits to the same file do not spuriously
     // conflict.
-    //
-    // The lone exception is the onto's own tree on the very first pick: when HEAD
-    // is still at the recorded `onto` and the picked commit's parent is *not* the
-    // onto (an `--onto <newbase>` rebase), use the onto tree so the first patch's
-    // conflict geometry matches Git (otherwise base would be the old upstream
-    // tree and produce wrong conflicts).
     let base_tree_oid = if ws_fix_rule.is_some() {
         // After an earlier replay, HEAD can differ from the picked commit's parent tree in the ODB
         // (e.g. `rebase --whitespace=fix`). Use the current tip tree as the merge base so the
@@ -5305,14 +5299,24 @@ fn cherry_pick_for_rebase(
     } else {
         let onto_hex = fs::read_to_string(rb_dir.join("onto"))?;
         let onto_oid_state = ObjectId::from_hex(onto_hex.trim())?;
-        let picked_parent_is_onto = commit.parents.first() == Some(&onto_oid_state);
-        if head_oid == onto_oid_state && !picked_parent_is_onto {
-            // First pick of an `--onto <newbase>` rebase: base against the onto tree.
+        // `force_rewrite_commits && head_tree==parent_tree` identifies a clean
+        // replay of a *dependent* chain (e.g. `rebase -f HEAD^^`): the
+        // already-replayed predecessor reproduced its original tree, so the
+        // picked commit's parent tree is the correct cherry-pick base and
+        // base==ours makes sequential edits to the same file apply without
+        // spurious conflicts. The first pick (HEAD still at onto) likewise uses
+        // the picked commit's parent tree.
+        let clean_dependent_chain = force_rewrite_commits && head_tree_oid == parent_tree_oid;
+        if head_oid == onto_oid_state || clean_dependent_chain {
+            parent_tree_oid
+        } else {
+            // The replayed predecessor differs from the picked commit's original
+            // parent (a conflict was resolved during `--continue`, or an
+            // `--onto <newbase>` moved the series). Merge against the onto tree so
+            // the conflict geometry matches Git's sequencer.
             let onto_obj = repo.odb.read(&onto_oid_state)?;
             let onto_commit = parse_commit(&onto_obj.data)?;
             onto_commit.tree
-        } else {
-            parent_tree_oid
         }
     };
     let base_entries = tree_to_map(tree_to_index_entries(repo, &base_tree_oid, "")?);
