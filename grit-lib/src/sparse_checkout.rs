@@ -850,8 +850,14 @@ fn path_in_expanded_cone(path: &str, lines: &[String]) -> bool {
         }
         let rest = &path[p_slash.len()..];
         let Some(slash_pos) = rest.find('/') else {
-            // Immediate child `p/name`: in-cone only when it leads into a recursive directory
-            // (e.g. `sub/dir` under parent `sub`), not for unrelated files like `sub/d`.
+            // Immediate child `p/name`. Git's cone for a parent emits `/p/` plus `!/p/*/`:
+            // a FILE directly in `p/` matches `/p/` (the `!/p/*/` exclusion only matches
+            // sub-DIRECTORIES, never files), so `sub/d` is in-cone. A directory directly in
+            // `p/` is excluded by `!/p/*/` unless a recursive rule re-includes it
+            // (e.g. `sub/dir` under parent `sub`).
+            if !is_directory_path {
+                return true;
+            }
             let combined = format!("{}/{}", p, rest);
             return recursive
                 .iter()

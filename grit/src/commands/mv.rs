@@ -568,8 +568,9 @@ pub fn run(args: Args) -> Result<()> {
         });
     }
 
-    sparse_blocklist.sort();
-    sparse_blocklist.dedup();
+    // Match Git's `only_match_skip_worktree` (STRING_LIST_INIT_DUP, `string_list_append`):
+    // paths are listed in insertion order — for each blocked move, src then dst — with no
+    // sorting or de-duplication. See git/builtin/mv.c and git/advice.c.
     if !sparse_blocklist.is_empty() {
         emit_sparse_path_advice(&mut std::io::stderr(), &config, &sparse_blocklist)?;
         if !args.skip_errors {
