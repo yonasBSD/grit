@@ -2934,6 +2934,21 @@ fn walk_reachable(
 
 /// Read an object from loose store or pack files.
 fn read_object_from_repo(repo: &Repository, oid: &ObjectId) -> Result<grit_lib::objects::Object> {
+    // The empty tree is a well-known virtual object with no on-disk loose file and is
+    // present in no pack. Git treats it as always available (it backs `--allow-empty`
+    // commits, among others). Mirror Odb::read / Odb::exists, which already special-case
+    // both the canonical SHA-1 and the legacy typo hash, so the thin-pack reachability
+    // walk does not bail with `missing object in non-promisor repository`.
+    const EMPTY_TREE_CANON: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    const EMPTY_TREE_LEGACY: &str = "4b825dc642cb6eb9a060e54bf899d69f7c6948d4";
+    let hex = oid.to_hex();
+    if hex == EMPTY_TREE_CANON || hex == EMPTY_TREE_LEGACY {
+        return Ok(grit_lib::objects::Object {
+            kind: ObjectKind::Tree,
+            data: Vec::new(),
+        });
+    }
+
     let loose_path = repo.odb.object_path(oid);
     if loose_path.is_file() {
         return Odb::read_loose_verify_oid(&loose_path, oid).map_err(|e| anyhow::anyhow!("{e}"));
