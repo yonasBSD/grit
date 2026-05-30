@@ -382,6 +382,14 @@ pub fn run(args: Args) -> Result<()> {
                     }
                     bail!("{msg}");
                 }
+                if let Some((cs, cd)) =
+                    first_index_collision(&expanded, &index, args.sparse, dst_mode, args.force)
+                {
+                    if args.skip_errors {
+                        continue;
+                    }
+                    bail!("fatal: destination exists in the index, source={cs}, destination={cd}");
+                }
                 moved_dir_roots.insert(index_src_rel.clone());
                 rows.push(MoveRow {
                     src: index_src_rel.clone(),
@@ -427,6 +435,14 @@ pub fn run(args: Args) -> Result<()> {
                         continue;
                     }
                     bail!("{msg}");
+                }
+                if let Some((cs, cd)) =
+                    first_index_collision(&expanded, &index, args.sparse, dst_mode, args.force)
+                {
+                    if args.skip_errors {
+                        continue;
+                    }
+                    bail!("fatal: destination exists in the index, source={cs}, destination={cd}");
                 }
                 moved_dir_roots.insert(index_src_rel.clone());
                 rows.push(MoveRow {
@@ -1061,6 +1077,33 @@ fn refresh_index_gitmodules(repo: &Repository, work_tree: &Path, index: &mut Ind
 ///
 /// Returns a list of `(old_index_path, new_index_path)` pairs for every file
 /// inside the directory.
+/// Find the first expanded (src, dst) pair whose destination already exists in the index.
+///
+/// Mirrors Git's per-entry `destination exists in the index` guard for directory moves into a
+/// `SKIP_WORKTREE_DIR` / `SPARSE` destination with `--sparse` and without `--force`
+/// (git/builtin/mv.c). The entries are walked in index order so the reported pair matches Git.
+fn first_index_collision(
+    expanded: &[(String, String)],
+    index: &Index,
+    sparse: bool,
+    dst_mode: DstSparseMode,
+    force: bool,
+) -> Option<(String, String)> {
+    if !sparse
+        || force
+        || !matches!(
+            dst_mode,
+            DstSparseMode::SkipWorktreeDir | DstSparseMode::SparseFile
+        )
+    {
+        return None;
+    }
+    expanded
+        .iter()
+        .find(|(_, fdst)| index.get(fdst.as_bytes(), 0).is_some())
+        .cloned()
+}
+
 fn expand_dir_sources(src_dir: &str, dst_dir: &str, index: &Index) -> Vec<(String, String)> {
     let src_key = precompose_utf8_path(src_dir.trim_end_matches('/'));
     let prefix_nfc = format!("{}/", src_key.as_ref());
