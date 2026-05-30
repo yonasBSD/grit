@@ -235,12 +235,18 @@ pub fn run(args: Args) -> Result<()> {
         bail!("too many trees (max 4)");
     }
 
-    if let Some(prefix) = &args.prefix {
+    // Git accepts `--prefix=<subdir>` with or without a trailing slash; normalize to a
+    // trailing-slash form so path construction is consistent (t1092 read-tree --prefix).
+    let normalized_prefix = args.prefix.as_ref().map(|p| {
+        if p.is_empty() || p.ends_with('/') {
+            p.clone()
+        } else {
+            format!("{p}/")
+        }
+    });
+    if let Some(prefix) = &normalized_prefix {
         if prefix.starts_with('/') {
             bail!("--prefix must be relative to repository root");
-        }
-        if !prefix.is_empty() && !prefix.ends_with('/') {
-            bail!("--prefix requires a trailing '/'");
         }
         if args.merge || args.reset || tree_oids.len() != 1 {
             bail!("--prefix only supports a single non-merge tree read");
@@ -316,7 +322,7 @@ pub fn run(args: Args) -> Result<()> {
     let old_index = repo.load_index_at(&index_path).context("loading index")?;
     let mut new_index = old_index.clone();
 
-    if let Some(prefix) = &args.prefix {
+    if let Some(prefix) = &normalized_prefix {
         read_tree_into_index_prefixed(&repo, &tree_oids[0], prefix, &mut new_index, prot)?;
     } else if !args.merge {
         if tree_oids.len() == 1 {
@@ -650,6 +656,28 @@ fn read_tree_into_index_prefixed(
     // Strip trailing slash from prefix for storage
     let prefix = prefix.trim_end_matches('/');
     let entries = tree_to_index_entries(repo, oid, prefix, prot)?;
+    // Git's `bind_merge`: a `--prefix` read can only *bind* new paths into the index. If
+    // the index already has a stage-0 entry at a path the new tree would introduce, the
+    // bind overlaps and read-tree must fail (t1092 read-tree --prefix). The sparse index
+    // must be expanded for this comparison so collapsed placeholders are seen as their
+    // contained entries.
+    for e in &entries {
+        // Exact existing entry, or a sparse-directory placeholder whose subtree already
+        // covers this path -> overlap.
+        let conflict = index.entries.iter().find(|x| {
+            x.stage() == 0
+                && (x.path == e.path
+                    || (x.is_sparse_directory_placeholder()
+                        && e.path.starts_with(x.path.as_slice())))
+        });
+        if let Some(existing) = conflict {
+            bail!(
+                "Entry '{}' overlaps with '{}'.  Cannot bind.",
+                String::from_utf8_lossy(&e.path),
+                String::from_utf8_lossy(&existing.path)
+            );
+        }
+    }
     for e in entries {
         add_or_replace_with_df_cleanup(index, e);
     }
