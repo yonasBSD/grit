@@ -22,7 +22,7 @@ use grit_lib::config::ConfigSet;
 use grit_lib::diff::{
     self, count_changes, diff_index_to_tree, diff_index_to_worktree, DiffEntry, DiffStatus,
 };
-use grit_lib::hooks::{run_hook, HookResult};
+use grit_lib::hooks::{run_commit_hook, run_hook, CommitHookEnv, HookResult};
 use grit_lib::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_SYMLINK, MODE_TREE};
 use grit_lib::merge_base::{ancestor_closure, fork_point, is_ancestor, merge_bases_first_vs_rest};
 use grit_lib::merge_file::{merge, ConflictStyle, MergeInput};
@@ -2103,6 +2103,42 @@ fn commit_message_after_prepare_hook(
     fs::write(&editmsg, text)?;
     run_prepare_commit_msg_hook(repo, &editmsg, source)?;
     fs::read_to_string(&editmsg).context("read COMMIT_EDITMSG after prepare-commit-msg hook")
+}
+
+/// Run the `commit-msg` hook on a reworded message, matching upstream `sequencer.c` reword
+/// (`run_git_commit` with `VERIFY_MSG`): writes `COMMIT_EDITMSG`, runs `commit-msg <COMMIT_EDITMSG>`,
+/// and on success re-reads the file (so a hook that rewrites the message is honoured) and re-applies
+/// `rebase_commit_msg_cleanup`. The reword pipeline always verifies, so this is unconditional.
+fn run_reword_commit_msg_hook(
+    repo: &Repository,
+    git_dir: &Path,
+    message: String,
+    config: &ConfigSet,
+) -> Result<String> {
+    let editmsg = git_dir.join("COMMIT_EDITMSG");
+    fs::write(&editmsg, &message)?;
+    let editmsg_str = editmsg.to_string_lossy().to_string();
+    let index_path = repo.index_path();
+    let hook_env = CommitHookEnv {
+        index_file: Some(index_path.as_path()),
+        git_editor: Some(":"),
+        git_prefix: None,
+        extra_env: &[],
+    };
+    let result = run_commit_hook(repo, "commit-msg", &[editmsg_str.as_str()], None, &hook_env)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    match result {
+        HookResult::Failed(code) => bail!("commit-msg hook exited with status {code}"),
+        HookResult::Success => {
+            let new = fs::read_to_string(&editmsg)
+                .context("read COMMIT_EDITMSG after commit-msg hook")?;
+            Ok(apply_commit_msg_cleanup(
+                &new,
+                rebase_commit_msg_cleanup(config),
+            ))
+        }
+        _ => Ok(message),
+    }
 }
 
 fn strip_comment_lines_template(msg: &str) -> String {
@@ -5354,6 +5390,7 @@ fn cherry_pick_for_rebase(
                     rebase_commit_msg_cleanup(&config),
                     &config,
                 )?;
+                let cleaned = run_reword_commit_msg_hook(repo, git_dir, cleaned, &config)?;
                 let (message, encoding, raw_message) =
                     finalize_message_for_commit_encoding(cleaned, &config);
                 let author = rebase_replayed_author_line(&commit.author, replay_opts, now)?;
@@ -5653,6 +5690,7 @@ fn cherry_pick_for_rebase(
         let after_editor = run_commit_editor_for_reword(repo, git_dir, &template)?;
         let cleaned =
             message_from_reword_editor(&after_editor, rebase_commit_msg_cleanup(&config), &config)?;
+        let cleaned = run_reword_commit_msg_hook(repo, git_dir, cleaned, &config)?;
         finalize_message_for_commit_encoding(cleaned, &config)
     } else {
         let (msg_base, _enc_base, _raw_base) = if root_rebase {
@@ -6260,6 +6298,7 @@ fn do_continue() -> Result<()> {
         let after_editor = run_commit_editor_for_reword(&repo, git_dir, &template)?;
         let cleaned =
             message_from_reword_editor(&after_editor, rebase_commit_msg_cleanup(&config), &config)?;
+        let cleaned = run_reword_commit_msg_hook(&repo, git_dir, cleaned, &config)?;
         let (message, encoding, raw_message) =
             finalize_message_for_commit_encoding(cleaned, &config);
         let tree_oid = write_tree_from_index(&repo.odb, &index, "")?;

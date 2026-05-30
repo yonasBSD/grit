@@ -132,61 +132,79 @@ fn run_pre_merge_commit_hook(
     Ok(())
 }
 
-/// Run `prepare-commit-msg` (and, when editing, the editor) on the merge commit message,
-/// mirroring `builtin/merge.c:prepare_to_commit`.
+/// Run `prepare-commit-msg`, the editor (when `will_edit`), then `commit-msg` on the merge
+/// commit message, mirroring `builtin/merge.c:prepare_to_commit`.
 ///
-/// The message is written to `MERGE_MSG`, the hook is invoked with `arg1 = "merge"` (and
-/// `GIT_EDITOR=:` when no editor will be launched, so hooks can detect a non-interactive merge),
-/// the editor is launched on `MERGE_MSG` when `will_edit`, and the (possibly hook/editor-modified)
-/// message is read back, comment-stripped, and returned. `--no-verify` skips the hook.
-fn run_merge_prepare_commit_msg_hook(
+/// Writes `MERGE_MSG`; runs `prepare-commit-msg <MERGE_MSG> merge` (always, even with
+/// `--no-verify`, like upstream); re-reads the index in case the hook ran `git add`; launches the
+/// editor on `MERGE_MSG` when `will_edit`; runs `commit-msg <MERGE_MSG>` unless `--no-verify`; then
+/// reads the (possibly hook/editor-modified) message back and applies `cleanup_mode`. When no
+/// editor will run, `GIT_EDITOR=:` is exported so hooks can detect a non-interactive merge.
+fn run_merge_commit_msg_hooks(
     repo: &Repository,
     no_verify: bool,
     will_edit: bool,
     msg: String,
     index: &mut Index,
+    cleanup_mode: &str,
 ) -> Result<String> {
     let merge_msg_path = repo.git_dir.join("MERGE_MSG");
     fs::write(&merge_msg_path, msg.as_bytes())?;
+    let index_path = repo.index_path();
+    let merge_msg_str = merge_msg_path.to_string_lossy().to_string();
+    let hook_env = CommitHookEnv {
+        index_file: Some(index_path.as_path()),
+        git_editor: if will_edit { None } else { Some(":") },
+        git_prefix: None,
+        extra_env: &[],
+    };
 
-    if !no_verify {
-        let index_path = repo.index_path();
-        let merge_msg_str = merge_msg_path.to_string_lossy().to_string();
-        let hook_env = CommitHookEnv {
-            index_file: Some(index_path.as_path()),
-            git_editor: if will_edit { None } else { Some(":") },
-            git_prefix: None,
-            extra_env: &[],
+    // prepare-commit-msg runs even with `--no-verify` (only pre-commit/commit-msg are skipped).
+    let prepared = run_commit_hook(
+        repo,
+        "prepare-commit-msg",
+        &[merge_msg_str.as_str(), "merge"],
+        None,
+        &hook_env,
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
+    if let HookResult::Failed(code) = prepared {
+        bail!("prepare-commit-msg hook exited with status {code}");
+    }
+    if prepared.was_executed() {
+        // The hook may have updated the index (e.g. via `git add`); re-read it.
+        *index = match repo.load_index_at(&index_path) {
+            Ok(idx) => idx,
+            Err(grit_lib::error::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                Index::new()
+            }
+            Err(e) => return Err(e.into()),
         };
-        let r = run_commit_hook(
-            repo,
-            "prepare-commit-msg",
-            &[merge_msg_str.as_str(), "merge"],
-            None,
-            &hook_env,
-        )
-        .map_err(|e| anyhow::anyhow!(e))?;
-        if let HookResult::Failed(code) = r {
-            bail!("prepare-commit-msg hook exited with status {code}");
-        }
-        if r.was_executed() {
-            // The hook may have updated the index (e.g. via `git add`); re-read it.
-            *index = match repo.load_index_at(&index_path) {
-                Ok(idx) => idx,
-                Err(grit_lib::error::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                    Index::new()
-                }
-                Err(e) => return Err(e.into()),
-            };
-        }
     }
 
+    // Editor runs after prepare-commit-msg and before commit-msg (builtin/merge.c order).
     if will_edit {
         crate::commands::commit::launch_commit_editor(repo, &merge_msg_path)?;
     }
 
+    if !no_verify {
+        let verified = run_commit_hook(
+            repo,
+            "commit-msg",
+            &[merge_msg_str.as_str()],
+            None,
+            &hook_env,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+        if let HookResult::Failed(code) = verified {
+            bail!("commit-msg hook exited with status {code}");
+        }
+    }
+
+    // Re-read MERGE_MSG so an edit by either hook (or the editor) is picked up, then re-apply
+    // cleanup (upstream `read_merge_msg` + `cleanup_message`).
     let edited = fs::read_to_string(&merge_msg_path)?;
-    Ok(cleanup_message(&edited, "default"))
+    Ok(cleanup_message(&edited, cleanup_mode))
 }
 
 /// Update `HEAD` (and branch ref when on a branch) then run `reference-transaction` with phase
@@ -1962,10 +1980,11 @@ Aborting"
     if let Some(ref mode) = args.cleanup {
         msg = cleanup_message(&msg, mode);
     }
-    // Run prepare-commit-msg (and the editor when -e) on the merge message, matching
-    // builtin/merge.c:prepare_to_commit. The index is re-read in case the hook updated it.
+    // Run prepare-commit-msg, the editor when -e, and commit-msg on the merge message, matching
+    // builtin/merge.c:prepare_to_commit. The index is re-read in case a hook updated it.
     let will_edit = args.edit && !args.no_edit;
-    msg = run_merge_prepare_commit_msg_hook(repo, args.no_verify, will_edit, msg, &mut index)?;
+    let hook_cleanup = args.cleanup.as_deref().unwrap_or("whitespace");
+    msg = run_merge_commit_msg_hooks(repo, args.no_verify, will_edit, msg, &mut index, hook_cleanup)?;
     if will_edit && msg.trim().is_empty() {
         bail!("Empty commit message.");
     }
@@ -2412,15 +2431,17 @@ Aborting"
         msg = cleanup_message(&msg, mode);
     }
 
-    // Run prepare-commit-msg (and the editor when -e) on the merge message, matching
-    // builtin/merge.c:prepare_to_commit. The index is re-read in case the hook updated it.
+    // Run prepare-commit-msg, the editor when -e, and commit-msg on the merge message
+    // (upstream `prepare_to_commit`); these may rewrite the message and the index before commit.
     let will_edit = args.edit && !args.no_edit;
-    msg = run_merge_prepare_commit_msg_hook(
+    let hook_cleanup = args.cleanup.as_deref().unwrap_or("whitespace");
+    msg = run_merge_commit_msg_hooks(
         repo,
         args.no_verify,
         will_edit,
         msg,
         &mut merge_result.index,
+        hook_cleanup,
     )?;
     if will_edit && msg.trim().is_empty() {
         bail!("Empty commit message.");
@@ -3693,6 +3714,15 @@ fn do_octopus_merge(
     let msg = build_octopus_merge_message(head, &merge_names, args.message.as_deref(), repo);
 
     let config = ConfigSet::load(Some(&repo.git_dir), true)?;
+    let hook_cleanup = args.cleanup.as_deref().unwrap_or("whitespace");
+    let msg = run_merge_commit_msg_hooks(
+        repo,
+        args.no_verify,
+        args.edit && !args.no_edit,
+        msg,
+        &mut final_index,
+        hook_cleanup,
+    )?;
     let now = OffsetDateTime::now_utc();
     let author = resolve_ident(&config, "author", now)?;
     let committer = resolve_ident(&config, "committer", now)?;
@@ -3916,6 +3946,16 @@ fn do_strategy_ours(
 
     let tree_oid = write_tree_from_index(&repo.odb, &idx, "")?;
 
+    let hook_cleanup = args.cleanup.as_deref().unwrap_or("whitespace");
+    let msg = run_merge_commit_msg_hooks(
+        repo,
+        args.no_verify,
+        args.edit && !args.no_edit,
+        msg,
+        &mut idx,
+        hook_cleanup,
+    )?;
+
     let commit_data = CommitData {
         tree: tree_oid,
         parents: vec![head_oid, merge_oid],
@@ -3978,6 +4018,16 @@ fn do_strategy_theirs(
     repo.write_index(&mut idx)?;
 
     let tree_oid = write_tree_from_index(&repo.odb, &idx, "")?;
+
+    let hook_cleanup = args.cleanup.as_deref().unwrap_or("whitespace");
+    let msg = run_merge_commit_msg_hooks(
+        repo,
+        args.no_verify,
+        args.edit && !args.no_edit,
+        msg,
+        &mut idx,
+        hook_cleanup,
+    )?;
 
     let commit_data = CommitData {
         tree: tree_oid,
