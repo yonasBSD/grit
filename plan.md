@@ -129,22 +129,21 @@ Extend `promisor.rs`, `shallow.rs`, and ODB miss handling.
 
 - [~] `filter=blob:none|tree:0|...` on clone/fetch; record filter in config.
 - [~] Lazy fetch in merge, checkout, `cat-file`, `apply` (blob touch paths).
-- [ ] `backfill` / `promisor hydrate` as library API.
+- [x] `backfill` / `promisor hydrate` as library API. (`t5620-backfill` 10/10, 2026-05-29.)
 
 ### 2.3 Shallow + partial interaction
 
 - [~] Shallow boundary + promisor: fetch deepen, push shallow (non-interactive).
+  - `t5537-fetch-shallow` 14/16 — remaining: subtest 12 (shallow point with submodules, out of v1 scope) and 16 (connectivity check before writing shallow file).
 
 ### 2.4 Harness targets (partial / promisor)
 
-- [x] `t0410-partial-clone`
-- [~] `t5616-partial-clone`
-  - [x] `fetch --refetch` runs partial-clone maintenance in the foreground and emits expected trace2 config params (`t5616` test 18).
-  - [x] Filtered `file://` clones with `transfer.fsckobjects=1` emit the expected `index-pack --fsck-objects` trace (`t5616` test 21).
-  - [~] Remaining failures cover `tree:0` backfill/fsck, combine-filter tracing, sparse filter files, lazy delta fetch, partial-clone repack/gc, submodule lazy fetch, and HTTP incomplete-pack edge cases.
-- [ ] `t6421-merge-partial-clone`, `t1022-read-tree-partial-clone`
-- [ ] `t5620-backfill`, `t6110-rev-list-sparse` (promisor-related cases)
-- [ ] `t4067-diff-partial-clone`, `t5537-fetch-shallow` (non-interactive)
+- [x] `t0410-partial-clone` (38/38)
+- [x] `t1022-read-tree-partial-clone` (1/1), `t4067-diff-partial-clone` (9/9), `t6110-rev-list-sparse` (2/2), `t5620-backfill` (10/10) — all green 2026-05-29.
+- [~] `t5616-partial-clone` **44/47** (was 34) — tree:0/sparse/combine filters via upload-pack + `pack-objects --filter`, ref-tip blob skeleton, thin REF_DELTA base lazy-fetch.
+  - [ ] Remaining 2: subtest 43 (`restore --recurse-submodules`, out of v1 scope) and 47 (HTTP v2 multi-round thin-pack negotiation against one-time-script server).
+- [ ] `t6421-merge-partial-clone` (0/3) — blocked on merge-ort **relevant-rename pruning** so merge fetches the minimal object set (3/6/22 vs current 20/21/25). Needs basename-first rename relevance + rename-aware content-merge fetch in `grit-lib/src/diff.rs::detect_renames`.
+- [ ] `t5537-fetch-shallow` (14/16, see 2.3).
 
 ---
 
