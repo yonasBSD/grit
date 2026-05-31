@@ -704,9 +704,25 @@ pub fn run(args: Args) -> Result<()> {
             // pack; every other local pack is redundant. The union-based remover kept old packs that
             // still held OIDs missing from the new pack (unreachable objects), which prevented
             // `git prune --expire=now` from dropping them (t3306-notes-prune).
+            //
+            // Exception: when grafts / replace-refs / a shallow boundary are in effect, the
+            // reachability walk uses the rewritten parentage and may exclude an object that is
+            // still literally referenced by a packed commit (e.g. a grafted-out parent). Git keeps
+            // such "unreachable by grafts only" objects (t7700-repack subtest 12), so fall back to
+            // the union-based remover that retains old packs holding objects missing from the new
+            // pack.
+            let grafts_or_replace_in_effect = repo.git_dir.join("info/grafts").is_file()
+                || repo.git_dir.join("shallow").is_file()
+                || repo
+                    .git_dir
+                    .join("refs/replace")
+                    .read_dir()
+                    .map(|mut rd| rd.next().is_some())
+                    .unwrap_or(false);
             let simple_full_repack = args.all
                 && !args.cruft
                 && !args.repack_all_unpack
+                && !grafts_or_replace_in_effect
                 && args
                     .filter
                     .as_deref()
