@@ -1787,7 +1787,8 @@ fn merge_branch_working_tree(
         recurse_submodules_after_checkout(repo)?;
     }
 
-    let mut merged_index = merged.index;
+    let merged_index = merged.index;
+    // Write the merged content (auto-resolved blobs and conflict markers) into the work tree.
     // Compare against the pre-merge index (still reflects the branch we came from), not the
     // post-`switch_to_tree` index (which matches the destination and would skip writes when the
     // merge result OID equals the tip).
@@ -1799,12 +1800,48 @@ fn merge_branch_working_tree(
         &merged.conflict_content,
     )?;
 
-    for entry in &mut merged_index.entries {
+    // Build the final index the way Git's `checkout -m` does: stage-0 entries hold the
+    // **destination tree** blob (so `git diff --cached` is empty — the index matches the branch we
+    // switched to), while the *work tree* keeps the merged content. The index/work-tree disagreement
+    // is what makes `git diff` report `M <path>` for cleanly auto-merged files (t7201 5, 6). Only
+    // genuinely conflicting paths keep their unmerged stages 1/2/3 from the merge result.
+    let conflicted_paths: HashSet<Vec<u8>> = merged_index
+        .entries
+        .iter()
+        .filter(|e| e.stage() != 0)
+        .map(|e| e.path.clone())
+        .collect();
+    let mut final_index = Index::new();
+    for e in &dest_index.entries {
+        if conflicted_paths.contains(&e.path) {
+            continue;
+        }
+        final_index.entries.push(e.clone());
+    }
+    for e in &merged_index.entries {
+        if e.stage() != 0 {
+            final_index.entries.push(e.clone());
+        }
+    }
+    final_index.sort();
+
+    // Refresh the cached stat only for entries whose work-tree content actually matches the index
+    // blob (truly clean). Auto-merged paths have an index blob (destination tree) that differs from
+    // the merged work-tree content; leaving their stat stale forces `diff_index_to_worktree` to
+    // re-hash and report `M` instead of being fooled by a matching size/mtime (the t7201 4 trap).
+    for entry in &mut final_index.entries {
         if entry.stage() != 0 {
             continue;
         }
         let path_str = String::from_utf8_lossy(&entry.path);
         let abs = work_tree.join(path_str.as_ref());
+        let worktree_matches_index = match std::fs::read(&abs) {
+            Ok(data) => Odb::hash_object_data(ObjectKind::Blob, &data) == entry.oid,
+            Err(_) => false,
+        };
+        if !worktree_matches_index {
+            continue;
+        }
         if let Ok(meta) = std::fs::symlink_metadata(&abs) {
             use std::os::unix::fs::MetadataExt as _;
             entry.ctime_sec = meta.ctime() as u32;
@@ -1816,7 +1853,8 @@ fn merge_branch_working_tree(
             entry.size = meta.size() as u32;
         }
     }
-    repo.write_index_at(&index_path, &mut merged_index)
+    let mut final_index = final_index;
+    repo.write_index_at(&index_path, &mut final_index)
         .context("writing index after merge checkout")?;
 
     if recurse_submodules {

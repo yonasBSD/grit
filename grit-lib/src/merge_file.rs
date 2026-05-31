@@ -769,10 +769,20 @@ fn compute_hunks(
 
         // Changed region: expand end until all overlapping Changed ops from
         // either side are fully consumed.  Repeat until stable.
+        //
+        // A region is also extended across *contiguous* changed base lines from EITHER side:
+        // when ours changes one base line and theirs changes the very next base line (with no
+        // unchanged base line between), Git's `xdl_merge` treats them as a single overlapping
+        // region and reports a conflict. Without this, interleaved deletions (e.g. base `a b c d e`,
+        // ours `a c e`, theirs `b d`) would be split into alternating one-sided hunks that each
+        // "resolve" cleanly, producing an empty merge where Git conflicts (t7201 8).
         let mut end = pos + 1;
         loop {
-            let new_end = furthest_changed_op_end(ours_ops, pos, end)
+            let mut new_end = furthest_changed_op_end(ours_ops, pos, end)
                 .max(furthest_changed_op_end(theirs_ops, pos, end));
+            while new_end < base.len() && (ours_changed[new_end] || theirs_changed[new_end]) {
+                new_end += 1;
+            }
             if new_end <= end {
                 break;
             }

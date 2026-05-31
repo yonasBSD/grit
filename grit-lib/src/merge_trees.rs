@@ -453,36 +453,11 @@ fn content_merge_or_conflict(
         return Ok(());
     }
 
-    // `git checkout -m`: Git records unmerged index entries whenever the branch being checked
-    // out and the pre-checkout working tree disagree, even when a line merge would auto-resolve.
-    if presentation.checkout_merge && !same_blob(ours, theirs) {
-        let ours_obj = repo.odb.read(&ours.oid)?;
-        let theirs_obj = repo.odb.read(&theirs.oid)?;
-        let path_label = String::from_utf8_lossy(path);
-        let label_theirs: std::borrow::Cow<'_, str> = match presentation.label_theirs {
-            TheirsConflictLabel::PathUtf8 => path_label.clone(),
-            TheirsConflictLabel::Fixed(s) => std::borrow::Cow::Borrowed(s),
-        };
-        let mut out = Vec::new();
-        out.extend_from_slice(format!("<<<<<<< {}\n", presentation.label_ours).as_bytes());
-        out.extend_from_slice(&ours_obj.data);
-        if !out.ends_with(b"\n") {
-            out.push(b'\n');
-        }
-        out.extend_from_slice(b"=======\n");
-        out.extend_from_slice(&theirs_obj.data);
-        if !out.ends_with(b"\n") {
-            out.push(b'\n');
-        }
-        out.extend_from_slice(format!(">>>>>>> {}\n", label_theirs).as_bytes());
-        let conflict_oid = repo.odb.write(ObjectKind::Blob, &out)?;
-        conflict_content.insert(path.to_vec(), conflict_oid);
-        stage_entry(index, path, base, 1);
-        stage_entry(index, path, ours, 2);
-        stage_entry(index, path, theirs, 3);
-        return Ok(());
-    }
-
+    // `git checkout -m` runs the normal three-way line merge below: when the merge auto-resolves
+    // (non-overlapping edits) Git records a clean stage-0 entry and reports a single `M <path>`;
+    // only a genuine line conflict (`result.conflicts > 0`) records unmerged stages 1/2/3. The
+    // marker style (merge vs. diff3) is taken from `presentation.style`, so `--conflict=diff3`
+    // produces the `||||||| base` section (t7201 5, 6, 9).
     let base_obj = repo.odb.read(&base.oid)?;
     let ours_obj = repo.odb.read(&ours.oid)?;
     let theirs_obj = repo.odb.read(&theirs.oid)?;
