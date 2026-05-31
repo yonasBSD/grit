@@ -284,6 +284,10 @@ pub struct Args {
     /// Message cleanup mode (matches `git cherry-pick --cleanup`; used for conflict `MERGE_MSG`).
     #[arg(long = "cleanup", value_name = "MODE", hide = true)]
     pub cleanup: Option<String>,
+
+    /// Read the list of commits to cherry-pick from standard input (one revision per line).
+    #[arg(long = "stdin", hide = true)]
+    pub stdin: bool,
 }
 
 /// Run the `cherry-pick` command.
@@ -316,11 +320,34 @@ pub fn run(args: Args) -> Result<()> {
     if args.r#continue {
         return do_continue(args);
     }
+
+    let mut args = args;
+    // `--stdin`: read revisions to pick from standard input, one per line (git accepts
+    // the option as a hidden walker arg; e.g. `git rev-list ... | git cherry-pick --stdin`).
+    if args.stdin {
+        use std::io::Read;
+        let mut input = String::new();
+        std::io::stdin()
+            .read_to_string(&mut input)
+            .context("reading --stdin commit list")?;
+        for line in input.lines() {
+            let spec = line.trim();
+            if !spec.is_empty() {
+                args.commits.push(spec.to_string());
+            }
+        }
+    }
+
     if args.commits.is_empty() {
+        if args.stdin {
+            // Match git's "empty commit set passed" for `--stdin` with no input.
+            eprintln!("error: empty commit set passed");
+            eprintln!("fatal: cherry-pick failed");
+            std::process::exit(128);
+        }
         bail!("nothing to cherry-pick; specify at least one commit");
     }
 
-    let mut args = args;
     if args.keep_redundant_commits || matches!(args.empty.as_deref(), Some("keep")) {
         args.allow_empty = true;
     }
@@ -630,10 +657,65 @@ fn expand_commit_specs(repo: &Repository, specs: &[String]) -> Result<Vec<Object
         } else {
             let oid =
                 resolve_revision(repo, spec).with_context(|| format!("bad revision '{spec}'"))?;
+            // Validate up front that each spec names a commit. `git cherry-pick` checks every
+            // pending object before applying any pick (sequencer.c sequencer_pick_revisions),
+            // so a non-commit (e.g. `two:` -> tree) fails the whole command with nothing
+            // applied (t3508 "cherry-pick three one two: fails").
+            ensure_commit_or_fail(repo, oid, spec)?;
             oids.push(oid);
         }
     }
     Ok(oids)
+}
+
+/// Fail like `git cherry-pick` if `oid` is not (or does not peel to) a commit.
+///
+/// Prints `error: <spec>: can't cherry-pick a <type>` and exits 128, matching
+/// sequencer.c's pre-flight object-type validation. Tags that peel to a commit pass.
+fn ensure_commit_or_fail(repo: &Repository, oid: ObjectId, spec: &str) -> Result<()> {
+    let obj = repo
+        .odb
+        .read(&oid)
+        .with_context(|| format!("bad revision '{spec}'"))?;
+    let kind = match obj.kind {
+        ObjectKind::Commit => return Ok(()),
+        ObjectKind::Tag => {
+            // Peel the tag; if it ultimately points at a commit, it's pickable.
+            if tag_peels_to_commit(repo, &obj.data) {
+                return Ok(());
+            }
+            "tag"
+        }
+        other => other.as_str(),
+    };
+    eprintln!("error: {spec}: can't cherry-pick a {kind}");
+    eprintln!("fatal: cherry-pick failed");
+    std::process::exit(128);
+}
+
+/// Whether an annotated tag object (recursively) targets a commit.
+fn tag_peels_to_commit(repo: &Repository, tag_data: &[u8]) -> bool {
+    let mut data = tag_data.to_vec();
+    for _ in 0..16 {
+        let Some(line) = data
+            .split(|&b| b == b'\n')
+            .find_map(|l| l.strip_prefix(b"object "))
+        else {
+            return false;
+        };
+        let Ok(target) = ObjectId::from_hex(&String::from_utf8_lossy(line)) else {
+            return false;
+        };
+        let Ok(obj) = repo.odb.read(&target) else {
+            return false;
+        };
+        match obj.kind {
+            ObjectKind::Commit => return true,
+            ObjectKind::Tag => data = obj.data,
+            _ => return false,
+        }
+    }
+    false
 }
 
 fn walk_first_parent_filtered(
@@ -819,6 +901,7 @@ fn cherry_pick_one_commit(repo: &Repository, commit_oid: ObjectId, args: &Args) 
             ours_tree_oid,
             commit_tree_oid,
             wt,
+            args.no_commit,
         )?;
     }
 
@@ -855,6 +938,16 @@ fn cherry_pick_one_commit(repo: &Repository, commit_oid: ObjectId, args: &Args) 
         let ours_entries = tree_to_map(tree_to_index_entries(repo, &ours_tree_oid, "")?);
         let theirs_entries = tree_to_map(tree_to_index_entries(repo, &commit_tree_oid, "")?);
         bail_if_df_merge_would_remove_cwd(wt, &base_entries, &ours_entries, &theirs_entries)?;
+    }
+
+    // The `resolve` strategy (git-merge-resolve) announces "Trying simple merge." on stdout
+    // before each three-way merge (t3508 "output during multi-pick indicates merge strategy").
+    if args
+        .strategy
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case("resolve"))
+    {
+        println!("Trying simple merge.");
     }
 
     let merged = merge_trees_three_way(
@@ -1056,10 +1149,9 @@ fn cherry_pick_one_commit(repo: &Repository, commit_oid: ObjectId, args: &Args) 
     let new_oid = new_head
         .oid()
         .ok_or_else(|| anyhow::anyhow!("HEAD has no OID"))?;
-    let short = &new_oid.to_hex()[..7];
-    let branch = branch_name(&head);
     let first_line = msg.lines().next().unwrap_or("");
-    eprintln!("[{branch} {short}] {first_line}");
+    // Summarise on the pre-commit HEAD state so an unborn-branch pick reports `(root-commit)`.
+    print_commit_summary(repo, &head, *new_oid, first_line);
 
     Ok(())
 }
@@ -1093,6 +1185,168 @@ fn branch_name(head: &HeadState) -> &str {
     }
 }
 
+/// Render an ident string (`Name <email> <ts> <tz>`) as `Name <email>`.
+fn ident_name_email(ident: &str) -> String {
+    match (ident.find('<'), ident.find('>')) {
+        (Some(lt), Some(gt)) if gt > lt => {
+            let name = ident[..lt].trim_end();
+            let email = &ident[lt + 1..gt];
+            format!("{name} <{email}>")
+        }
+        _ => ident.to_string(),
+    }
+}
+
+/// Format the author date of an ident as git's `DATE_NORMAL` (`Thu Apr 7 15:14:13 2005 -0700`),
+/// using an un-padded day like git's `"%.3s %d "` (date.c).
+fn format_normal_date(ident: &str) -> String {
+    let parts: Vec<&str> = ident.rsplitn(3, ' ').collect();
+    if parts.len() < 2 {
+        return String::new();
+    }
+    let ts_str = parts[1];
+    let offset_str = parts[0];
+    let Ok(ts) = ts_str.parse::<i64>() else {
+        return format!("{ts_str} {offset_str}");
+    };
+    let tz_bytes = offset_str.as_bytes();
+    let tz_secs: i64 = if tz_bytes.len() >= 5 {
+        let sign = if tz_bytes[0] == b'-' { -1i64 } else { 1i64 };
+        let h: i64 = offset_str[1..3].parse().unwrap_or(0);
+        let m: i64 = offset_str[3..5].parse().unwrap_or(0);
+        sign * (h * 3600 + m * 60)
+    } else {
+        0
+    };
+    let adjusted = ts + tz_secs;
+    let dt = time::OffsetDateTime::from_unix_timestamp(adjusted)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    let weekday = match dt.weekday() {
+        time::Weekday::Monday => "Mon",
+        time::Weekday::Tuesday => "Tue",
+        time::Weekday::Wednesday => "Wed",
+        time::Weekday::Thursday => "Thu",
+        time::Weekday::Friday => "Fri",
+        time::Weekday::Saturday => "Sat",
+        time::Weekday::Sunday => "Sun",
+    };
+    let month = match dt.month() {
+        time::Month::January => "Jan",
+        time::Month::February => "Feb",
+        time::Month::March => "Mar",
+        time::Month::April => "Apr",
+        time::Month::May => "May",
+        time::Month::June => "Jun",
+        time::Month::July => "Jul",
+        time::Month::August => "Aug",
+        time::Month::September => "Sep",
+        time::Month::October => "Oct",
+        time::Month::November => "Nov",
+        time::Month::December => "Dec",
+    };
+    format!(
+        "{} {} {} {:02}:{:02}:{:02} {} {}",
+        weekday,
+        month,
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        dt.second(),
+        dt.year(),
+        offset_str
+    )
+}
+
+/// Print git's `print_commit_summary` for a freshly created pick/revert commit, to stdout.
+///
+/// Mirrors sequencer.c:print_commit_summary — always `[<branch>[ (root-commit)] <short>] <subject>`,
+/// then ` Author: <ident>` only when the author ident differs from the committer ident, then
+/// ` Date: <author-date>`, then a shortstat line. The cherry-pick/revert summary is emitted to
+/// stdout (t3508 "output to keep user entertained during multi-pick").
+fn print_commit_summary(repo: &Repository, head: &HeadState, new_oid: ObjectId, subject: &str) {
+    let branch = branch_name(head);
+    let short = &new_oid.to_hex()[..7];
+    let root = head.is_unborn();
+    if root {
+        println!("[{branch} (root-commit) {short}] {subject}");
+    } else {
+        println!("[{branch} {short}] {subject}");
+    }
+
+    let Ok(obj) = repo.odb.read(&new_oid) else {
+        return;
+    };
+    let Ok(commit) = parse_commit(&obj.data) else {
+        return;
+    };
+
+    let author_ne = ident_name_email(&commit.author);
+    let committer_ne = ident_name_email(&commit.committer);
+    if author_ne != committer_ne {
+        println!(" Author: {author_ne}");
+    }
+    let date = format_normal_date(&commit.author);
+    if !date.is_empty() {
+        println!(" Date: {date}");
+    }
+
+    // Shortstat against the first parent (or empty tree for a root commit).
+    let parent_tree = if commit.parents.is_empty() {
+        None
+    } else if let Ok(po) = repo.odb.read(&commit.parents[0]) {
+        parse_commit(&po.data).ok().map(|c| c.tree)
+    } else {
+        None
+    };
+    if let Ok(diff_entries) =
+        grit_lib::diff::diff_trees(&repo.odb, parent_tree.as_ref(), Some(&commit.tree), "")
+    {
+        let zero_oid = ObjectId::from_bytes(&[0u8; 20]).unwrap();
+        let mut total_files = 0usize;
+        let mut total_ins = 0usize;
+        let mut total_del = 0usize;
+        for entry in &diff_entries {
+            total_files += 1;
+            let read_text = |oid: &ObjectId| -> String {
+                if *oid == zero_oid {
+                    String::new()
+                } else {
+                    repo.odb
+                        .read(oid)
+                        .map(|o| String::from_utf8_lossy(&o.data).into_owned())
+                        .unwrap_or_default()
+                }
+            };
+            let (a, d) =
+                grit_lib::diff::count_changes(&read_text(&entry.old_oid), &read_text(&entry.new_oid));
+            total_ins += a;
+            total_del += d;
+        }
+        if total_files > 0 {
+            let mut summary = format!(
+                " {} file{} changed",
+                total_files,
+                if total_files == 1 { "" } else { "s" }
+            );
+            if total_ins > 0 {
+                summary.push_str(&format!(
+                    ", {} insertion{}(+)",
+                    total_ins,
+                    if total_ins == 1 { "" } else { "s" }
+                ));
+            }
+            if total_del > 0 {
+                summary.push_str(&format!(
+                    ", {} deletion{}(-)",
+                    total_del,
+                    if total_del == 1 { "" } else { "s" }
+                ));
+            }
+            println!("{summary}");
+        }
+    }
+}
+
 fn merge_conflict_advice_enabled(git_dir: &Path) -> bool {
     let Ok(config) = ConfigSet::load(Some(git_dir), true) else {
         return true;
@@ -1101,6 +1355,7 @@ fn merge_conflict_advice_enabled(git_dir: &Path) -> bool {
 }
 
 /// Refuse cherry-pick when local changes overlap the merge, matching Git's messages.
+#[allow(clippy::too_many_arguments)]
 fn error_if_cherry_pick_would_clobber_worktree(
     repo: &Repository,
     _git_dir: &Path,
@@ -1109,9 +1364,18 @@ fn error_if_cherry_pick_would_clobber_worktree(
     head_tree: ObjectId,
     picked_tree: ObjectId,
     work_tree: &Path,
+    no_commit: bool,
 ) -> Result<()> {
     let touched = merge_touched_paths(repo, parent_tree, head_tree, picked_tree)?;
-    let staged_dirty = staged_dirty_paths_vs_head(repo, head_oid)?;
+    // In `--no-commit` mode the index legitimately accumulates earlier picks of the same
+    // sequence (`ours` is the evolving index tree, not HEAD). git's overwrite protection
+    // there is `unpack_trees` against the index, so only genuine *unstaged* worktree edits
+    // count — staged-vs-HEAD deltas are expected (t3508 "cherry-pick -n first..fourth").
+    let staged_dirty = if no_commit {
+        BTreeSet::new()
+    } else {
+        staged_dirty_paths_vs_head(repo, head_oid)?
+    };
 
     if !staged_dirty.is_empty() {
         let overlap: BTreeSet<String> = staged_dirty.intersection(&touched).cloned().collect();
@@ -1298,10 +1562,8 @@ fn do_continue(mut args: Args) -> Result<()> {
     let new_oid = new_head
         .oid()
         .ok_or_else(|| anyhow::anyhow!("HEAD has no OID"))?;
-    let short = &new_oid.to_hex()[..7];
-    let branch = branch_name(&head);
     let first_line = msg.lines().next().unwrap_or("");
-    eprintln!("[{branch} {short}] {first_line}");
+    print_commit_summary(&repo, &head, *new_oid, first_line);
 
     cleanup_cherry_pick_state(git_dir);
 
@@ -1365,6 +1627,7 @@ pub(crate) fn try_resume_pick_sequence_after_commit(repo: &Repository) -> Result
         edit: false,
         reference: false,
         cleanup: None,
+        stdin: false,
     };
     merge_sequencer_opts(git_dir, &mut args);
     if args.keep_redundant_commits || matches!(args.empty.as_deref(), Some("keep")) {

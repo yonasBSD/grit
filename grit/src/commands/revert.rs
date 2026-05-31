@@ -522,23 +522,94 @@ fn run_revert_sequence(
 /// For revert, A..B means revert commits from B down to (but not including) A,
 /// in reverse order (newest first).
 fn expand_revert_specs(repo: &Repository, specs: &[String]) -> Result<Vec<String>> {
-    let mut result = Vec::new();
+    // `git revert` parses all arguments as a single revision set (setup_revisions):
+    // `^X` and `A..B` contribute UNINTERESTING tips, bare refs are interesting tips.
+    // When any range/exclusion is present, the reverts are ordered newest-first across
+    // the whole reachable set (e.g. `revert ^first fourth` == `revert first..fourth`).
+    let has_set_syntax = specs
+        .iter()
+        .any(|s| s.starts_with('^') || s.contains(".."));
+    if !has_set_syntax {
+        return Ok(specs.to_vec());
+    }
+
+    let mut include: Vec<ObjectId> = Vec::new();
+    let mut exclude: Vec<ObjectId> = Vec::new();
     for spec in specs {
-        if let Some((lhs, rhs)) = spec.split_once("..") {
-            let exclude_oid =
+        if let Some(neg) = spec.strip_prefix('^') {
+            let oid =
+                resolve_revision(repo, neg).with_context(|| format!("bad revision '{spec}'"))?;
+            exclude.push(oid);
+        } else if let Some((lhs, rhs)) = spec.split_once("..") {
+            let lo =
                 resolve_revision(repo, lhs).with_context(|| format!("bad revision '{lhs}'"))?;
-            let include_oid =
+            let hi =
                 resolve_revision(repo, rhs).with_context(|| format!("bad revision '{rhs}'"))?;
-            let range_oids = walk_commit_range(repo, exclude_oid, include_oid)?;
-            // Revert in reverse order (newest first)
-            for oid in range_oids.into_iter().rev() {
-                result.push(oid.to_hex());
-            }
+            exclude.push(lo);
+            include.push(hi);
         } else {
-            result.push(spec.clone());
+            let oid =
+                resolve_revision(repo, spec).with_context(|| format!("bad revision '{spec}'"))?;
+            include.push(oid);
         }
     }
-    Ok(result)
+
+    let ordered = revision_set_newest_first(repo, &include, &exclude)?;
+    Ok(ordered.into_iter().map(|o| o.to_hex()).collect())
+}
+
+/// Commits reachable from `include` tips but not from `exclude` tips, newest-first.
+///
+/// Mirrors `git rev-list <include> --not <exclude>` ordering for revert: a first-parent
+/// reachability walk collecting commits whose ancestry is not pruned by an excluded tip,
+/// returned in descending committer-date order (newest first), matching how `git revert`
+/// replays a range.
+fn revision_set_newest_first(
+    repo: &Repository,
+    include: &[ObjectId],
+    exclude: &[ObjectId],
+) -> Result<Vec<ObjectId>> {
+    // Closure of all ancestors of the excluded tips (these commits are NOT reverted).
+    let mut excluded: HashSet<ObjectId> = HashSet::new();
+    let mut stack: Vec<ObjectId> = exclude.to_vec();
+    while let Some(oid) = stack.pop() {
+        if !excluded.insert(oid) {
+            continue;
+        }
+        if let Ok(obj) = repo.odb.read(&oid) {
+            if let Ok(commit) = parse_commit(&obj.data) {
+                stack.extend(commit.parents.iter().copied());
+            }
+        }
+    }
+
+    // Closure of ancestors of the included tips, minus the excluded set.
+    let mut seen: HashSet<ObjectId> = HashSet::new();
+    let mut collected: Vec<(i64, ObjectId)> = Vec::new();
+    let mut stack: Vec<ObjectId> = include.to_vec();
+    while let Some(oid) = stack.pop() {
+        if excluded.contains(&oid) || !seen.insert(oid) {
+            continue;
+        }
+        let obj = repo.odb.read(&oid)?;
+        let commit = parse_commit(&obj.data)?;
+        let ts = committer_timestamp(&commit.committer);
+        collected.push((ts, oid));
+        stack.extend(commit.parents.iter().copied());
+    }
+
+    // Newest first: descending committer timestamp (stable on ties).
+    collected.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(collected.into_iter().map(|(_, oid)| oid).collect())
+}
+
+/// Parse the unix timestamp from an ident string (`Name <email> <ts> <tz>`).
+fn committer_timestamp(ident: &str) -> i64 {
+    ident
+        .rsplitn(3, ' ')
+        .nth(1)
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0)
 }
 
 /// Walk commits reachable from `tip` but not from `base`, oldest first.
