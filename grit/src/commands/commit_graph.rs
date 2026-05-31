@@ -18,14 +18,12 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::Duration;
 
 use grit_lib::bloom::BloomFilterSettings;
 use grit_lib::commit_graph_file::CommitGraphChain;
 use grit_lib::commit_graph_write::{
-    build_commit_graph_bytes, collect_reachable_commit_oids, load_commit_graph_commit_info,
-    BloomWriteStats,
+    build_commit_graph_bytes, collect_reachable_commit_oids, count_referenced_commit_tips,
+    load_commit_graph_commit_info, BloomWriteStats,
 };
 use grit_lib::config::ConfigSet;
 use grit_lib::objects::{parse_commit, ObjectId, ObjectKind};
@@ -423,6 +421,17 @@ fn cmd_write(
         }
         walk_commit_closure(&odb, seeds)?
     } else {
+        // Mirror Git's "Collecting referenced commits" progress meter on the --reachable path
+        // (commit-graph.c:write_commit_graph_reachable): the count is the number of distinct
+        // commit OIDs that refs point to directly (after peeling tags), not the full closure.
+        // This is a *delayed* progress meter: it only shows for a TTY or when GIT_PROGRESS_DELAY
+        // is 0 (fast operations stay silent under the default 2s delay, matching upstream).
+        if should_show_commit_graph_progress(progress, no_progress)
+            && (progress_delay_secs() == 0 || std::io::stderr().is_terminal())
+        {
+            let referenced = count_referenced_commit_tips(&repo.git_dir, &odb).unwrap_or(0);
+            eprintln!("Collecting referenced commits: {referenced}, done.");
+        }
         collect_reachable_commit_oids(&repo.git_dir, &odb)?
     };
 
@@ -530,12 +539,12 @@ fn cmd_write(
         infos.insert(*oid, load_commit_graph_commit_info(&odb, *oid)?);
     }
 
-    let show_progress = should_show_commit_graph_progress(progress, no_progress);
+    // Delayed progress: like Git's start_delayed_progress, a fast operation stays silent under
+    // the default GIT_PROGRESS_DELAY (2s) unless stderr is a TTY. Only GIT_PROGRESS_DELAY=0 (or a
+    // TTY) forces the meter to display. Avoid sleeping; just decide whether to emit the line.
+    let show_progress = should_show_commit_graph_progress(progress, no_progress)
+        && (progress_delay_secs() == 0 || std::io::stderr().is_terminal());
     if show_progress {
-        let delay = progress_delay_secs();
-        if delay > 0 {
-            thread::sleep(Duration::from_secs(delay));
-        }
         eprintln!(
             "Computing commit graph generation numbers: 100% ({n}/{n}), done.",
             n = layer_oids.len()

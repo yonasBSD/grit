@@ -2086,7 +2086,7 @@ fn update_worktree_heads(repo: &Repository, old_name: &str, new_name: &str) -> R
 }
 
 fn branch_used_by_other_worktree(repo: &Repository, branch: &str) -> Result<Option<String>> {
-    Ok(crate::commands::worktree_refs::branch_occupied_any_worktree(repo, branch))
+    Ok(crate::commands::worktree_refs::branch_occupied_by_other_worktree(repo, branch))
 }
 
 fn branch_checked_out_in_other_worktree(repo: &Repository, branch: &str) -> Option<String> {

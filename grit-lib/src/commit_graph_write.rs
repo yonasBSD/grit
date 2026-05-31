@@ -532,3 +532,86 @@ pub fn collect_reachable_commit_oids(
 
     Ok(commits)
 }
+
+/// Count unique commit OIDs that refs point to directly (peeling annotated tags), matching Git's
+/// `add_ref_to_set` accounting for the "Collecting referenced commits" progress meter. Unlike
+/// [`collect_reachable_commit_oids`], this does not walk commit parents.
+pub fn count_referenced_commit_tips(
+    git_dir: &std::path::Path,
+    odb: &Odb,
+) -> crate::error::Result<usize> {
+    use std::fs;
+    let mut tips: Vec<ObjectId> = Vec::new();
+
+    fn collect_ref_tips(
+        dir: &std::path::Path,
+        tips: &mut Vec<ObjectId>,
+    ) -> crate::error::Result<()> {
+        if !dir.exists() {
+            return Ok(());
+        }
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                collect_ref_tips(&path, tips)?;
+            } else if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(oid) = ObjectId::from_hex(content.trim()) {
+                    tips.push(oid);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    collect_ref_tips(&git_dir.join("refs"), &mut tips)?;
+
+    let packed_refs = git_dir.join("packed-refs");
+    if packed_refs.exists() {
+        if let Ok(content) = fs::read_to_string(&packed_refs) {
+            for line in content.lines() {
+                if line.starts_with('#') || line.starts_with('^') {
+                    continue;
+                }
+                if let Some(hex) = line.split_whitespace().next() {
+                    if let Ok(oid) = ObjectId::from_hex(hex) {
+                        tips.push(oid);
+                    }
+                }
+            }
+        }
+    }
+
+    // Peel each ref tip to the commit it ultimately references (an annotated tag points at a
+    // commit) and collect distinct commit OIDs. Non-commit tips (e.g. tags pointing at trees)
+    // are ignored, exactly like Git's OBJ_COMMIT check.
+    let mut commits: HashSet<ObjectId> = HashSet::new();
+    for tip in tips {
+        if let Some(commit_oid) = peel_to_commit(odb, tip) {
+            commits.insert(commit_oid);
+        }
+    }
+    Ok(commits.len())
+}
+
+/// Peel `oid` through annotated tags until a commit is reached. Returns `None` if it does not
+/// resolve to a commit.
+fn peel_to_commit(odb: &Odb, oid: ObjectId) -> Option<ObjectId> {
+    let mut current = oid;
+    for _ in 0..16 {
+        let obj = odb.read(&current).ok()?;
+        match obj.kind {
+            ObjectKind::Commit => return Some(current),
+            ObjectKind::Tag => {
+                let text = std::str::from_utf8(&obj.data).ok()?;
+                let target = text
+                    .lines()
+                    .find_map(|line| line.strip_prefix("object "))
+                    .and_then(|rest| ObjectId::from_hex(rest.trim()).ok())?;
+                current = target;
+            }
+            _ => return None,
+        }
+    }
+    None
+}

@@ -102,8 +102,33 @@ pub fn run(args: Args) -> Result<()> {
     let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
 
     let quiet = args.quiet && !args.no_quiet;
-    // Auto-gc should not spam stderr with repack/pack-objects summaries (matches `git gc --auto`).
-    let quiet_effective = quiet || args.auto;
+
+    // Tri-state `--detach` (Git `opts.detach`, default -1): `--detach` -> 1, `--no-detach` -> 0,
+    // otherwise fall back to `gc.autodetach` (default true) under `--auto`. grit always runs in
+    // the foreground, but this controls user-facing messages and progress (t6500 34/35).
+    let effective_detach = if args.detach {
+        1
+    } else if args.no_detach {
+        0
+    } else if args.auto {
+        if cfg
+            .get_bool("gc.autodetach")
+            .and_then(|r| r.ok())
+            .unwrap_or(true)
+        {
+            1
+        } else {
+            0
+        }
+    } else {
+        // Non-auto gc never daemonizes.
+        0
+    };
+
+    // Auto-gc should not spam stderr with repack/pack-objects summaries (matches `git gc --auto`),
+    // but when it runs in the foreground (`--no-detach` / `gc.autodetach=false`) it should still
+    // surface progress like a normal gc (t6500 35). Detached/background auto gc stays quiet.
+    let quiet_effective = quiet || (args.auto && effective_detach > 0);
 
     if args.auto {
         if !need_to_gc(&repo, &cfg) && !reftable_auto_pack_needed(&repo) {
@@ -117,12 +142,28 @@ pub fn run(args: Args) -> Result<()> {
             return Ok(());
         }
         if !args.quiet {
-            eprintln!("Auto packing the repository for optimum performance.");
+            if effective_detach > 0 {
+                eprintln!("Auto packing the repository in background for optimum performance.");
+            } else {
+                eprintln!("Auto packing the repository for optimum performance.");
+            }
             eprintln!("See \"git help gc\" for manual housekeeping.");
+        }
+
+        // When detaching (the default), a previous failed gc leaves `gc.log`; Git's
+        // report_last_gc_error() refuses to run again while a recent, non-empty log exists
+        // (git/builtin/gc.c:791-832), skipping silently (exit 0) after printing a warning.
+        if effective_detach > 0 && report_last_gc_error(&repo.git_dir, &cfg) {
+            return Ok(());
         }
     }
 
-    let _gc_pid_guard = acquire_gc_pid(&repo.git_dir, args.force)?;
+    // Be quiet on `--auto` when another gc already holds the lock (git/builtin/gc.c:992-1001):
+    // exit 0 without doing anything instead of erroring out.
+    let _gc_pid_guard = match acquire_gc_pid(&repo.git_dir, args.force, args.auto)? {
+        Some(guard) => guard,
+        None => return Ok(()),
+    };
 
     let objects_dir = repo.git_dir.join("objects");
     if !args.no_prune {
@@ -180,7 +221,12 @@ pub fn run(args: Args) -> Result<()> {
         run_reflog_expire_for_gc(&repo, &cfg)?;
         run_reflog_expire_unreachable_for_gc(&repo, &cfg)?;
     }
-    run_commit_graph_for_gc(&repo, &cfg, quiet_effective, args.no_quiet)?;
+    // Git enables the commit-graph progress meter when `!quiet && !daemonized`
+    // (git/builtin/gc.c:1056-1058). For a foreground auto gc (`--no-detach` / `gc.autodetach=false`)
+    // that means progress should be requested even though grit forces the repack summaries quiet.
+    let commit_graph_progress =
+        args.no_quiet || (!quiet && effective_detach <= 0 && !args.skip_foreground_tasks);
+    run_commit_graph_for_gc(&repo, &cfg, quiet_effective, commit_graph_progress)?;
 
     Ok(())
 }
@@ -228,21 +274,41 @@ impl Drop for GcPidGuard {
     }
 }
 
-fn acquire_gc_pid(git_dir: &Path, force: bool) -> Result<GcPidGuard> {
+/// Acquire the `gc.pid` lock. Returns `Ok(None)` when the lock is held by a live process AND
+/// `auto` is set — Git's "be quiet on --auto" behavior (git/builtin/gc.c:992-1001): the caller
+/// should then exit 0 doing nothing. For non-auto gc a held lock is a hard error.
+fn acquire_gc_pid(git_dir: &Path, force: bool, auto: bool) -> Result<Option<GcPidGuard>> {
     let pid_path = git_dir.join("gc.pid");
     if !force {
-        check_or_clear_stale_gc_pid(&pid_path)?;
+        match check_or_clear_stale_gc_pid(&pid_path)? {
+            GcLockState::Free => {}
+            GcLockState::Held(host) => {
+                if auto {
+                    // Another gc holds the lock; auto gc exits silently.
+                    return Ok(None);
+                }
+                bail!("gc is already running on machine {host}");
+            }
+        }
     }
     let my_pid = std::process::id();
     let host = gc_hostname();
     fs::write(&pid_path, format!("{my_pid} {host}\n"))?;
-    Ok(GcPidGuard { path: pid_path })
+    Ok(Some(GcPidGuard { path: pid_path }))
 }
 
-fn check_or_clear_stale_gc_pid(pid_path: &Path) -> Result<()> {
+/// Result of inspecting an existing `gc.pid` lock file.
+enum GcLockState {
+    /// No (valid, live) lock — safe to take it.
+    Free,
+    /// The lock is held by a live process on the named host.
+    Held(String),
+}
+
+fn check_or_clear_stale_gc_pid(pid_path: &Path) -> Result<GcLockState> {
     let meta = match fs::metadata(pid_path) {
         Ok(m) => m,
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(GcLockState::Free),
     };
     let age_secs = SystemTime::now()
         .duration_since(meta.modified().unwrap_or(SystemTime::UNIX_EPOCH))
@@ -250,38 +316,93 @@ fn check_or_clear_stale_gc_pid(pid_path: &Path) -> Result<()> {
         .unwrap_or(u64::MAX);
     if age_secs > 12 * 3600 {
         let _ = fs::remove_file(pid_path);
-        return Ok(());
+        return Ok(GcLockState::Free);
     }
     let contents = fs::read_to_string(pid_path)?;
     let mut parts = contents.split_whitespace();
     let Some(pid_s) = parts.next() else {
         let _ = fs::remove_file(pid_path);
-        return Ok(());
+        return Ok(GcLockState::Free);
     };
     let Some(locking_host) = parts.next() else {
         let _ = fs::remove_file(pid_path);
-        return Ok(());
+        return Ok(GcLockState::Free);
     };
     let Ok(foreign_pid) = pid_s.parse::<u32>() else {
         let _ = fs::remove_file(pid_path);
-        return Ok(());
+        return Ok(GcLockState::Free);
     };
     let my_host = gc_hostname();
     if locking_host != my_host {
-        bail!("gc is already running on machine {locking_host}");
+        return Ok(GcLockState::Held(locking_host.to_string()));
     }
     #[cfg(unix)]
     {
         if grit_lib::unix_process::pid_is_alive(foreign_pid) {
-            bail!("gc is already running on machine {locking_host}");
+            return Ok(GcLockState::Held(locking_host.to_string()));
         }
         let _ = fs::remove_file(pid_path);
-        Ok(())
+        Ok(GcLockState::Free)
     }
     #[cfg(not(unix))]
     {
-        bail!("gc.pid file exists; use --force to bypass");
+        let _ = foreign_pid;
+        Ok(GcLockState::Held(locking_host.to_string()))
     }
+}
+
+/// Mirror Git's `report_last_gc_error` (git/builtin/gc.c:791-832): if `gc.log` exists, is
+/// non-empty, and its mtime is at or after `now - gc.logexpiry` (default `1.day.ago`), print the
+/// warning and signal that the gc should be skipped. Returns `true` when the gc must be skipped.
+fn report_last_gc_error(git_dir: &Path, cfg: &ConfigSet) -> bool {
+    let log_path = git_dir.join("gc.log");
+    let meta = match fs::metadata(&log_path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let expire_spec = cfg
+        .get("gc.logexpiry")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "1.day.ago".to_string());
+
+    if expire_spec.eq_ignore_ascii_case("never") {
+        // A "never"-expiring log is always considered recent: never auto-run again.
+        // fall through to the non-empty check below.
+    }
+    let expire_time = if expire_spec.eq_ignore_ascii_case("never") {
+        i64::MIN
+    } else {
+        grit_lib::git_date::approx::approxidate_careful(&expire_spec, None) as i64
+    };
+
+    // Older than the expiry cutoff -> ignore the stale log and let gc proceed.
+    if mtime < expire_time {
+        return false;
+    }
+
+    let contents = fs::read_to_string(&log_path).unwrap_or_default();
+    if contents.is_empty() {
+        return false;
+    }
+
+    eprint!(
+        "warning: The last gc run reported the following. Please correct the root cause\n\
+         and remove {}\n\
+         Automatic cleanup will not be performed until the file is removed.\n\n\
+         {}",
+        log_path.display(),
+        contents
+    );
+    true
 }
 
 fn too_many_packs_for_gc(repo: &Repository, cfg: &ConfigSet) -> bool {
@@ -307,7 +428,9 @@ fn auto_gc_keep_packs(repo: &Repository, cfg: &ConfigSet) -> Result<Vec<String>>
     }
 
     if let Some(limit_s) = cfg.get("gc.bigpackthreshold") {
-        let limit: u64 = limit_s.parse().unwrap_or(0);
+        // `gc.bigPackThreshold` accepts size suffixes (`2g`, `1m`); plain `parse::<u64>` would drop
+        // them and silently treat the threshold as 0 (= keep largest pack).
+        let limit = parse_byte_size_with_suffix(&limit_s).unwrap_or(0);
         if limit > 0 {
             let mut keep = find_base_packs(&repo.git_dir, limit)?;
             if keep.len() as i32 >= pack_limit {
@@ -447,7 +570,7 @@ fn run_repack_for_gc(
         } else if gc_args.keep_largest_pack {
             find_base_packs(&repo.git_dir, 0)?
         } else if let Some(limit_s) = cfg.get("gc.bigpackthreshold") {
-            let limit: u64 = limit_s.parse().unwrap_or(0);
+            let limit = parse_byte_size_with_suffix(&limit_s).unwrap_or(0);
             if limit > 0 {
                 find_base_packs(&repo.git_dir, limit)?
             } else {
@@ -760,11 +883,14 @@ fn run_reflog_expire_unreachable_for_gc(repo: &Repository, cfg: &ConfigSet) -> R
 }
 
 /// Run `grit commit-graph write` when `gc.writeCommitGraph` is true (Git default: on).
+///
+/// `want_progress` requests the commit-graph progress meter (Git enables it when the gc is not
+/// quiet and not daemonized); otherwise `quiet` forces `--no-progress`.
 fn run_commit_graph_for_gc(
     repo: &Repository,
     cfg: &ConfigSet,
     quiet: bool,
-    no_quiet: bool,
+    want_progress: bool,
 ) -> Result<()> {
     let write_graph = cfg
         .get_bool("gc.writecommitgraph")
@@ -775,37 +901,25 @@ fn run_commit_graph_for_gc(
     }
 
     let work_dir = repo.work_tree.as_deref().unwrap_or(&repo.git_dir);
-    if quiet && !no_quiet {
-        trace_run_command_git_invocation(&[
-            "commit-graph",
-            "write",
-            "--reachable",
-            "--changed-paths",
-            "--no-progress",
-        ]);
-    } else if no_quiet {
-        trace_run_command_git_invocation(&[
-            "commit-graph",
-            "write",
-            "--reachable",
-            "--changed-paths",
-            "--progress",
-        ]);
+    let progress_flag = if want_progress {
+        Some("--progress")
+    } else if quiet {
+        Some("--no-progress")
     } else {
-        trace_run_command_git_invocation(&[
-            "commit-graph",
-            "write",
-            "--reachable",
-            "--changed-paths",
-        ]);
+        None
+    };
+
+    let mut trace_args = vec!["commit-graph", "write", "--reachable", "--changed-paths"];
+    if let Some(flag) = progress_flag {
+        trace_args.push(flag);
     }
+    trace_run_command_git_invocation(&trace_args);
+
     let mut cmd = Command::new(grit_exe::grit_executable());
     cmd.current_dir(work_dir)
         .args(["commit-graph", "write", "--reachable", "--changed-paths"]);
-    if quiet && !no_quiet {
-        cmd.arg("--no-progress");
-    } else if no_quiet {
-        cmd.arg("--progress");
+    if let Some(flag) = progress_flag {
+        cmd.arg(flag);
     }
     let status = cmd
         .status()

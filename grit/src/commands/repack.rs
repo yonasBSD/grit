@@ -568,12 +568,20 @@ pub fn run(args: Args) -> Result<()> {
             .is_some_and(|s| !s.is_empty())
     {
         if let Some(last) = new_pack_names.last().cloned() {
-            let filter_dest = args
+            let explicit_filter_to = args
                 .filter_to
                 .as_deref()
                 .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .unwrap_or(pack_base);
+                .filter(|s| !s.is_empty());
+            let filter_dest = explicit_filter_to.unwrap_or(pack_base);
+            // The filtered-out objects land in the LOCAL pack dir only when `--filter-to` was
+            // omitted (Git writes them next to the main pack). With an explicit `--filter-to`
+            // pointing at another repository (t6500 gc.repackFilterTo), the side pack lives THERE,
+            // so it must NOT join `new_pack_names` — otherwise it is treated as a local pack to
+            // keep, and a same-named leftover pack in this repo survives `repack -d`.
+            let dest_is_local = explicit_filter_to
+                .map(|to| filter_dest_is_local(work_dir, &pack_dir_abs, to))
+                .unwrap_or(true);
             if let Some(h) = run_filtered_followup_pack_objects(
                 &grit_bin,
                 work_dir,
@@ -585,7 +593,9 @@ pub fn run(args: Args) -> Result<()> {
                 pack_kept_objects,
                 write_bitmaps,
             )? {
-                new_pack_names.push(format!("pack-{h}.pack"));
+                if dest_is_local {
+                    new_pack_names.push(format!("pack-{h}.pack"));
+                }
             }
         }
     }
@@ -1468,6 +1478,27 @@ fn remove_pack_sidecars(pack_dir: &Path, stem: &str) {
 
 /// Union OIDs from every `.idx` in `dirs` (non-recursive). Used for `--filter-to` packs written
 /// next to a path prefix outside `objects/pack/`.
+/// Whether a `--filter-to <prefix>` destination (resolved relative to `work_dir`) writes its pack
+/// into this repository's own `objects/pack` directory (`pack_dir_abs`).
+fn filter_dest_is_local(work_dir: &Path, pack_dir_abs: &Path, filter_to: &str) -> bool {
+    let dest = Path::new(filter_to);
+    let resolved = if dest.is_absolute() {
+        dest.to_path_buf()
+    } else {
+        work_dir.join(dest)
+    };
+    let Some(parent) = resolved.parent() else {
+        return false;
+    };
+    if parent == pack_dir_abs {
+        return true;
+    }
+    match (parent.canonicalize(), pack_dir_abs.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 fn union_oids_from_flat_pack_index_dirs(dirs: &[PathBuf]) -> Result<HashSet<ObjectId>> {
     let mut out = HashSet::new();
     for dir in dirs {

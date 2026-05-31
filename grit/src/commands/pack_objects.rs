@@ -1465,9 +1465,45 @@ fn write_pack_via_stdin_objects(
         .map(str::trim)
         .filter(|s| !s.is_empty());
     if let Some(h) = hash {
-        record_extra_pack_for_repack(&repo.git_dir, &format!("pack-{h}.pack"))?;
+        // Only record the side pack so a following `repack -d` keeps it when the
+        // pack actually landed in THIS repo's objects/pack dir. With an explicit
+        // `--filter-to` pointing at a different repository (t6500 gc.repackFilterTo),
+        // the pack lives elsewhere and must NOT be recorded locally — otherwise
+        // `repack -d` would retain a same-named leftover pack here.
+        if side_pack_is_local(repo, work_dir, base) {
+            record_extra_pack_for_repack(&repo.git_dir, &format!("pack-{h}.pack"))?;
+        }
     }
     Ok(())
+}
+
+/// Whether a pack written at `base` (resolved relative to `work_dir`) lands in this
+/// repository's own `objects/pack` directory.
+fn side_pack_is_local(repo: &Repository, work_dir: &Path, base: &str) -> bool {
+    let base_path = Path::new(base);
+    let resolved = if base_path.is_absolute() {
+        base_path.to_path_buf()
+    } else {
+        work_dir.join(base_path)
+    };
+    let Some(parent) = resolved.parent() else {
+        return false;
+    };
+    let local_pack_dir = repo.git_dir.join("objects").join("pack");
+    paths_refer_to_same_dir(parent, &local_pack_dir)
+}
+
+/// Compare two directory paths, tolerating non-canonicalizable (not-yet-existing) inputs.
+fn paths_refer_to_same_dir(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    let ca = a.canonicalize();
+    let cb = b.canonicalize();
+    match (ca, cb) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => false,
+    }
 }
 
 fn record_extra_pack_for_repack(git_dir: &Path, pack_name: &str) -> Result<()> {
