@@ -475,8 +475,8 @@ pub fn apply_sparse_checkout_skip_worktree(
     let config = crate::config::ConfigSet::load(Some(git_dir), true)
         .unwrap_or_else(|_| crate::config::ConfigSet::new());
     let sparse_enabled = config
-        .get("core.sparsecheckout")
-        .map(|v| v.eq_ignore_ascii_case("true"))
+        .get_bool("core.sparsecheckout")
+        .and_then(|r| r.ok())
         .unwrap_or(false);
 
     if !sparse_enabled {
@@ -487,9 +487,8 @@ pub fn apply_sparse_checkout_skip_worktree(
     // is absent, treat the sparse file as non-cone so we do not try to cone-parse a legitimate
     // non-cone file (e.g. a bare `sub` pattern) and emit spurious "disabling cone pattern
     // matching" warnings on every index update (t1011 subtest 21).
-    let cone_config = config
-        .get("core.sparsecheckoutcone")
-        .map(|v| v.eq_ignore_ascii_case("true"))
+        .get_bool("core.sparsecheckoutcone")
+        .and_then(|r| r.ok())
         .unwrap_or(false);
 
     let mut warnings = Vec::new();
@@ -615,8 +614,8 @@ pub fn clear_skip_worktree_from_present_files(
     let config = crate::config::ConfigSet::load(Some(git_dir), true)
         .unwrap_or_else(|_| crate::config::ConfigSet::new());
     let sparse_enabled = config
-        .get("core.sparsecheckout")
-        .map(|v| v.eq_ignore_ascii_case("true"))
+        .get_bool("core.sparsecheckout")
+        .and_then(|r| r.ok())
         .unwrap_or(false);
     if !sparse_enabled {
         return;
