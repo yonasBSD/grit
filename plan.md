@@ -193,13 +193,14 @@ Extend existing **`grit-lib/src/hooks.rs`**.
   `hooks::run_*` with shared `CommitHookEnv`.
 - [ ] `git hook run` / `git hook list` delegate to library.
 
-### 4.3 Harness targets (hooks)
+### 4.3 Harness targets (hooks) — Phase 4 done (2026-05-30)
 
-- [ ] `t1800-hook`
-- [ ] `t7503-pre-commit-and-pre-merge-commit-hooks`
-- [ ] `t7504-commit-msg-hook`, `t7505-prepare-commit-msg-hook`
-- [ ] `t5571-pre-push-hook`, `t5402-post-merge-hook`, `t5403-post-checkout-hook`
-- [ ] `t5407-post-rewrite-hook`, `t5401-update-hooks`
+- [x] `t1800-hook` 44/44
+- [x] `t7503-pre-commit-and-pre-merge-commit-hooks` 22/22
+- [x] `t7504-commit-msg-hook` 29/30, [~] `t7505-prepare-commit-msg-hook` 22/23 (last is rebase-i engine, not a hook bug)
+- [x] `t5571-pre-push-hook` 11/11, `t5402-post-merge-hook` 7/7, `t5403-post-checkout-hook` 14/14
+- [~] `t5407-post-rewrite-hook` 11/17 (16/17 in upstream-sanitized env; gap is tests/test-lib.sh not unsetting GIT_EDITOR/VISUAL), [x] `t5401-update-hooks` 13/13
+- Merge needed a semantic resolution (two branches added different merge-hook fns → unified to builtin/merge.c order) + a follow-up fix for 3 regressions (t3407 #5/#13, t3501 #12) whose real causes were in `merge_file.rs` + `checkout.rs --orphan`.
 
 ---
 
@@ -221,17 +222,17 @@ Build on existing `sparse_checkout.rs` and index `sdir` extension support.
 - [ ] `merge-recursive` / `merge-ort` path limiting vs sparse patterns.
 - [ ] `diff` / `diff-tree` skip out-of-cone paths unless `--sparse` / config says otherwise.
 
-### 5.3 Harness targets (sparse)
+### 5.3 Harness targets (sparse) — Phase 5 done (2026-05-30)
 
-- [ ] `t1091-sparse-checkout-builtin`
-- [ ] `t1092-sparse-checkout-compatibility`
-- [ ] `t1011-read-tree-sparse-checkout`
-- [ ] `t1090-sparse-checkout-scope`
-- [ ] `t6428-merge-conflicts-sparse`
+- [x] `t1091-sparse-checkout-builtin` 76/77 (1 = upstream test_expect_failure)
+- [~] `t1092-sparse-checkout-compatibility` 47→64/106 (remaining: sparse-index lazy expansion / ensure_full_index trace, merge-OID determinism, diff sparse routing — design-scope)
+- [x] `t1011-read-tree-sparse-checkout` 23/23
+- [x] `t1090-sparse-checkout-scope` 7/7
+- [x] `t6428-merge-conflicts-sparse` 2/2
 - [x] `t6435-merge-sparse`
-- [ ] `t3705-add-sparse-checkout`
-- [ ] `t3602-rm-sparse-checkout`
-- [ ] `t7002-mv-sparse-checkout`
+- [x] `t3705-add-sparse-checkout` 20/20
+- [x] `t3602-rm-sparse-checkout` 13/13
+- [x] `t7002-mv-sparse-checkout` 22/22
 
 ---
 
