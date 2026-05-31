@@ -6573,6 +6573,31 @@ fn do_abort() -> Result<()> {
     let head_name = fs::read_to_string(rb_dir.join("head-name"))?;
     let head_name = head_name.trim().to_string();
 
+    // Before mutating anything, refuse the abort if laying down the orig-HEAD
+    // tree would clobber an untracked working tree file/dir. Upstream
+    // `rebase --abort` resets via unpack-trees twoway_merge, whose
+    // `verify_absent` refuses to overwrite untracked paths. We perform the same
+    // check up front so HEAD, the index, and the worktree are all left untouched
+    // on failure (t2500: `git rm init.t` then an untracked init.t must survive).
+    {
+        let obj = repo.odb.read(&orig_head_oid)?;
+        let commit = parse_commit(&obj.data)?;
+        let entries = tree_to_index_entries(&repo, &commit.tree, "")?;
+        let mut restore_index = Index::new();
+        restore_index.entries = entries;
+        restore_index.sort();
+        let old_index = load_index(&repo)?;
+        if let Some((path, is_dir)) =
+            super::reset::find_untracked_obstruction(&repo, &old_index, &restore_index)?
+        {
+            if is_dir {
+                bail!("Updating '{}' would lose untracked files in it", path);
+            } else {
+                bail!("Updating '{}' would lose untracked files.", path);
+            }
+        }
+    }
+
     let ra = load_rebase_reflog_action(&rb_dir);
     let ident = reflog_identity(&repo);
     let cur_head = resolve_head(git_dir)?;

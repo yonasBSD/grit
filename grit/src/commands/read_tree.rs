@@ -1500,6 +1500,15 @@ fn checkout_index_entries(
         if abs.is_file() || abs.is_symlink() {
             let _ = std::fs::remove_file(&abs);
         } else if abs.is_dir() {
+            // The tracked path is being removed but the work tree now holds a
+            // directory there. If that directory contains untracked files, Git's
+            // `verify_clean_subdirectory` refuses rather than `rm -rf` them
+            // (t2500: `git am --skip` after `rm newfile; mkdir newfile`). Without
+            // `--recurse-submodules` a gitlink path is handled above and never
+            // reaches here.
+            if worktree_has_untracked_under_path(&work_tree, old_index, &rel)? {
+                bail!("Updating '{rel}' would lose untracked files in it");
+            }
             let _ = std::fs::remove_dir_all(&abs);
         }
         remove_empty_parent_dirs(&work_tree, &abs);

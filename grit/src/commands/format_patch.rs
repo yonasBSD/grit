@@ -777,8 +777,12 @@ fn collect_commits_for_format_patch(
         positive.push("HEAD".to_owned());
     }
 
-    // `git format-patch <since>` with a single committish: same as `<since>..HEAD` (see `setup_revisions`).
-    if negative.is_empty() && positive.len() == 1 {
+    // `git format-patch <since>` with a single committish: same as `<since>..HEAD` (see
+    // `setup_revisions`). This rewrite only applies when no explicit commit count is given.
+    // With an explicit `-N` count (e.g. `git format-patch -1 <commit>`) the committish is the
+    // positive endpoint itself — format `<commit>` and its N-1 ancestors — per
+    // git-format-patch docs ("If you want to format only <commit> itself ... `-1 <commit>`").
+    if max_count.is_none() && negative.is_empty() && positive.len() == 1 {
         let spec = positive[0].trim();
         if spec != "HEAD"
             && !spec.is_empty()

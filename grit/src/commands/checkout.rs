@@ -1774,6 +1774,13 @@ fn merge_branch_working_tree(
         &mut dest_index,
         false,
     );
+    // Refuse to clobber untracked working tree files before laying down the
+    // destination tree. `checkout_index_to_worktree(force_write_all=true)` below
+    // blindly overwrites, so without this `checkout -m` would silently nuke an
+    // untracked file that the target branch also tracks (t2500: untracked
+    // notes.txt vs tracked notes.txt from `work`). This only checks untracked
+    // obstructions; local modifications to tracked files are still merged.
+    check_untracked_overwrite(repo, &index_before, &dest_index, work_tree)?;
     checkout_index_to_worktree(
         repo,
         &index_before,
@@ -3245,6 +3252,25 @@ pub(crate) fn check_dirty_worktree(
     }
 
     // Check for untracked files that would be overwritten by new entries.
+    check_untracked_overwrite(repo, old_index, new_index, work_tree)?;
+
+    Ok(())
+}
+
+/// Refuse a checkout/merge that would clobber untracked working tree files.
+///
+/// For every path materialized by `new_index` (stage 0) that is absent from
+/// `old_index` but present on disk as an untracked file or directory, this
+/// matches upstream git `verify_absent` and bails before any worktree mutation.
+/// It performs **no** tracked-file "local changes" detection, so it is safe to
+/// call on merge paths (e.g. `checkout -m`) where local modifications are meant
+/// to be merged rather than refused.
+pub(crate) fn check_untracked_overwrite(
+    repo: &Repository,
+    old_index: &Index,
+    new_index: &Index,
+    work_tree: &std::path::Path,
+) -> Result<()> {
     // Include all stages (not just stage 0) so that files in a merge conflict
     // (which only have higher-stage entries) are still recognized as tracked.
     let old_paths: HashSet<&[u8]> = old_index

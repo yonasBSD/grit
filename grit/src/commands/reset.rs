@@ -1795,11 +1795,24 @@ fn check_merge_reset_worktree(
 
         match (idx_e, tgt_e) {
             (None, Some(_)) => {
-                if abs_path.exists() || abs_path.is_symlink() {
-                    bail!(
-                        "Entry '{}' would be overwritten by merge. Cannot merge.",
-                        path_str
-                    );
+                // The path is present in the target tree but absent from the index
+                // (stage 0), i.e. it is untracked. If something exists on disk at
+                // this path it would be clobbered by the reset. Git's `verify_absent`
+                // distinguishes between an untracked directory (which may contain
+                // untracked files) and an untracked file, emitting
+                // `Updating '<path>' would lose untracked files in it` for a directory
+                // and `Updating '<path>' would lose untracked files.` for a file.
+                match std::fs::symlink_metadata(&abs_path) {
+                    Ok(meta) => {
+                        if meta.is_dir() {
+                            bail!("Updating '{}' would lose untracked files in it", path_str);
+                        } else {
+                            bail!("Updating '{}' would lose untracked files.", path_str);
+                        }
+                    }
+                    Err(_) => {
+                        // Nothing on disk (and not a dangling symlink) — no obstruction.
+                    }
                 }
             }
             (Some(ie), None) => {
@@ -2319,7 +2332,7 @@ fn path_is_ignored_for_obstruction(
     false
 }
 
-fn find_untracked_obstruction(
+pub(crate) fn find_untracked_obstruction(
     repo: &Repository,
     old_index: &Index,
     new_index: &Index,
