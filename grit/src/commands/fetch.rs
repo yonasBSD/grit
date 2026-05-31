@@ -1133,7 +1133,7 @@ fn fetch_remote(
     let had_configured_fetch = !configured_refspecs.is_empty();
     let user_passed_cli_refspecs = !args.refspecs.is_empty();
     let explicit_refmap = !args.refmap.is_empty();
-    let cli_tracking_refspecs: Vec<FetchRefspec> = if explicit_refmap {
+    let mut cli_tracking_refspecs: Vec<FetchRefspec> = if explicit_refmap {
         let non_empty: Vec<String> = args
             .refmap
             .iter()
@@ -1166,6 +1166,10 @@ fn fetch_remote(
         } else {
             apply_prefetch_to_refspecs(&mut configured_refspecs);
         }
+        // The remote-tracking destination mapping uses `cli_tracking_refspecs`
+        // (the configured/refmap refspecs); rewrite it too so fetched refs land
+        // under `refs/prefetch/` rather than `refs/remotes/`.
+        apply_prefetch_to_refspecs(&mut cli_tracking_refspecs);
     }
 
     let cli_refspecs: &[String] = &cli_refspecs_owned;
@@ -2201,6 +2205,12 @@ fn fetch_remote(
             }
             union_refspecs.extend(rs);
         }
+        // `git fetch --prefetch` redirects every positive destination under
+        // `refs/prefetch/` (and drops tag refspecs). This union is rebuilt from
+        // config here, so re-apply the rewrite (matches apply_prefetch_to_refspecs).
+        if args.prefetch {
+            apply_prefetch_to_refspecs(&mut union_refspecs);
+        }
 
         let refs_for_mapping: Vec<(String, ObjectId)> =
             if let Some(rr) = ext_resolved_remote.as_ref().or(remote_repo.as_ref()) {
@@ -2635,8 +2645,12 @@ fn fetch_remote(
 
     // Update `refs/remotes/<remote>/HEAD` to match the remote's default branch (Git `set_head`).
     let follow = follow_remote_head;
-    let do_set_head =
-        cli_refspecs.is_empty() && !refspecs.is_empty() && follow.mode != FollowRemoteHead::Never;
+    // `git fetch --prefetch` redirects refs under `refs/prefetch/` and never
+    // updates the remote-tracking `refs/remotes/<remote>/HEAD`.
+    let do_set_head = !args.prefetch
+        && cli_refspecs.is_empty()
+        && !refspecs.is_empty()
+        && follow.mode != FollowRemoteHead::Never;
     if do_set_head {
         if follow.mode != FollowRemoteHead::Never {
             trace_ls_refs_head_prefix();
