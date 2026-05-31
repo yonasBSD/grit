@@ -19,6 +19,7 @@ use sha1::{Digest, Sha1};
 
 use crate::error::{Error, Result};
 use crate::gitmodules;
+use crate::index::MODE_GITLINK;
 use crate::objects::{parse_commit, parse_tag, parse_tree, Object, ObjectId, ObjectKind};
 use crate::odb::Odb;
 
@@ -279,6 +280,13 @@ fn strict_verify_packed_references_map(
             PackedObjectEntry::InMemory { kind, data } => match kind {
                 ObjectKind::Tree => {
                     for e in parse_tree(data)? {
+                        // Gitlink (submodule) entries point at commits that live
+                        // in the submodule repository, not the superproject's
+                        // pack/ODB. Skip them in the connectivity walk, matching
+                        // upstream git (git/fsck.c:374 `if (S_ISGITLINK) continue;`).
+                        if e.mode == MODE_GITLINK {
+                            continue;
+                        }
                         if !strict_ref_resolves_map(&e.oid, pack, odb) {
                             return Err(Error::CorruptObject(format!(
                                 "strict: missing object {} referenced by tree",
@@ -349,6 +357,13 @@ pub fn strict_verify_packed_references(
         match kind {
             ObjectKind::Tree => {
                 for e in parse_tree(data)? {
+                    // Gitlink (submodule) entries point at commits that live in
+                    // the submodule repository, not this pack/ODB. Skip them in
+                    // the connectivity walk, matching upstream git
+                    // (git/fsck.c:374 `if (S_ISGITLINK) continue;`).
+                    if e.mode == MODE_GITLINK {
+                        continue;
+                    }
                     if !strict_ref_resolves(&e.oid, pack, odb) {
                         return Err(Error::CorruptObject(format!(
                             "strict: missing object {} referenced by tree",
