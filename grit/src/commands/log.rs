@@ -506,6 +506,10 @@ pub struct Args {
     #[arg(long = "ignore-missing")]
     pub ignore_missing: bool,
 
+    /// Exclude promisor objects from the walk (only valid in a partial-clone repository).
+    #[arg(long = "exclude-promisor-objects")]
+    pub exclude_promisor_objects: bool,
+
     /// Clear all decorations.
     #[arg(long = "clear-decorations")]
     pub clear_decorations: bool,
@@ -1728,6 +1732,81 @@ fn log_option_consumes_separate_value(arg: &str) -> bool {
     )
 }
 
+/// Whether the raw argv contained a "pseudo-ref" input (`--tags`, `--remotes`, `--glob`,
+/// `--branches`, `--all`) that counts as revision input even if it matches nothing.
+fn log_argv_has_pseudo_ref_input(args: &Args) -> bool {
+    let src: &[String] = if args.raw_argv_tail.is_empty() {
+        &args.revisions
+    } else {
+        &args.raw_argv_tail
+    };
+    let mut saw = false;
+    for a in src {
+        if a == "--" {
+            break;
+        }
+        if a == "--tags"
+            || a == "--remotes"
+            || a == "--glob"
+            || a == "--branches"
+            || a == "--all"
+            || a.starts_with("--tags=")
+            || a.starts_with("--remotes=")
+            || a.starts_with("--glob=")
+            || a.starts_with("--branches=")
+        {
+            saw = true;
+        }
+    }
+    saw
+}
+
+/// Whether the merged argv contains a positional (non-option, pre-`--`) token. Used so an
+/// explicitly-given object dropped by `--ignore-missing` still counts as revision input.
+fn log_argv_has_positional_token(merged_argv: &[String]) -> bool {
+    for a in merged_argv {
+        if a == "--" {
+            break;
+        }
+        if a == "--end-of-options" {
+            continue;
+        }
+        if !a.starts_with('-') {
+            return true;
+        }
+        if let Some(stripped) = a.strip_prefix('^') {
+            if !stripped.is_empty() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Resolve revision specs to commit OIDs, dropping specs that fail to resolve when
+/// `--ignore-missing` is in effect (git's `--ignore-missing`).
+fn resolve_specs_to_commits_ignoring_missing(
+    repo: &Repository,
+    specs: &[String],
+    args: &Args,
+) -> Result<Vec<ObjectId>> {
+    if !args.ignore_missing {
+        return grit_lib::rev_list::resolve_revision_specs_to_commits(repo, specs)
+            .map_err(|e| anyhow::anyhow!("{e}"));
+    }
+    let mut out = Vec::new();
+    for spec in specs {
+        match grit_lib::rev_list::resolve_revision_specs_to_commits(
+            repo,
+            std::slice::from_ref(spec),
+        ) {
+            Ok(mut oids) => out.append(&mut oids),
+            Err(_) => { /* --ignore-missing: silently drop unresolved objects */ }
+        }
+    }
+    Ok(out)
+}
+
 fn merge_log_revision_argv(repo: &Repository, args: &Args) -> Result<Vec<String>> {
     let src: &[String] = if args.raw_argv_tail.is_empty() {
         &args.revisions
@@ -1907,7 +1986,7 @@ fn pathspecs_after_dashdash(merged_argv: &[String], clap_pathspecs: &[String]) -
 /// revision vs pathspec disambiguation used for graph output.
 fn extract_log_cli_revision_specs(
     repo: &Repository,
-    _args: &Args,
+    args: &Args,
     merged_revisions: &[String],
 ) -> Result<(Vec<String>, Vec<String>)> {
     let mut implied_pathspecs: Vec<String> = Vec::new();
@@ -1945,6 +2024,8 @@ fn extract_log_cli_revision_specs(
                     Err(_err) if token_names_existing_path(repo, stripped) => {
                         implied_pathspecs.push(stripped.to_owned());
                     }
+                    // `--ignore-missing`: drop tokens that name no object instead of erroring.
+                    Err(_err) if args.ignore_missing => {}
                     Err(err) => return Err(err.into()),
                 },
             }
@@ -1968,6 +2049,8 @@ fn extract_log_cli_revision_specs(
                     Err(_err) if token_names_existing_path(repo, rev) => {
                         implied_pathspecs.push(rev.clone());
                     }
+                    // `--ignore-missing`: drop tokens that name no object instead of erroring.
+                    Err(_err) if args.ignore_missing => {}
                     Err(err) => return Err(err.into()),
                 },
             }
@@ -3915,6 +3998,15 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     let cfg = ConfigSet::load(Some(&repo.git_dir), true).context("loading git config")?;
+
+    // `--exclude-promisor-objects` is only meaningful in a partial clone; in an ordinary repo
+    // git aborts (BUG/die). Reject it up front so the command fails non-zero.
+    if args.exclude_promisor_objects
+        && !grit_lib::promisor::repo_treats_promisor_packs(&repo.git_dir, &cfg)
+    {
+        anyhow::bail!("--exclude-promisor-objects requires a promisor remote");
+    }
+
     let patch_context = if let Some(u) = args.unified {
         u
     } else {
@@ -4107,9 +4199,8 @@ pub fn run(mut args: Args) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("failed to parse revision arguments: {e}"))?;
         implied_pathspecs.extend(stdin_paths);
 
-        let mut start_oids = grit_lib::rev_list::resolve_revision_specs_to_commits(&repo, &pos_s)?;
-        let mut exclude_oids =
-            grit_lib::rev_list::resolve_revision_specs_to_commits(&repo, &neg_s)?;
+        let mut start_oids = resolve_specs_to_commits_ignoring_missing(&repo, &pos_s, &args)?;
+        let mut exclude_oids = resolve_specs_to_commits_ignoring_missing(&repo, &neg_s, &args)?;
 
         if args.all {
             start_oids.extend(collect_all_ref_oids(&repo.git_dir)?);
@@ -4122,10 +4213,34 @@ pub fn run(mut args: Args) -> Result<()> {
         start_oids = dedupe_oid_order(start_oids);
         exclude_oids = dedupe_oid_order(exclude_oids);
 
+        // Git only falls back to HEAD when *no* revision input was given. `--branches`/`--tags`/
+        // `--remotes`/`--all` (even matching nothing), explicit revs, an ignored object, or
+        // stdin revs all count as "input given" — do not default to HEAD in those cases.
+        let rev_input_given = !pos_s.is_empty()
+            || !neg_s.is_empty()
+            || args.all
+            || args.branches.is_some()
+            || stdin_all_refs
+            || (args.read_stdin && args.ignore_missing)
+            || log_argv_has_pseudo_ref_input(&args)
+            // With --ignore-missing, an explicitly-given (then dropped) positional still counts
+            // as revision input — do not fall back to HEAD.
+            || (args.ignore_missing && log_argv_has_positional_token(&merged_argv));
         if start_oids.is_empty() && !args.all {
-            let head = resolve_head(&repo.git_dir)?;
-            if let Some(oid) = head.oid() {
-                start_oids.push(*oid);
+            if rev_input_given {
+                // Input was given but resolved to nothing: produce empty output, not HEAD.
+            } else {
+                let head = resolve_head(&repo.git_dir)?;
+                match head.oid() {
+                    Some(oid) => start_oids.push(*oid),
+                    None => {
+                        // Unborn / empty HEAD with no revisions: git errors out.
+                        let branch = head.branch_name().unwrap_or("HEAD");
+                        anyhow::bail!(
+                            "your current branch '{branch}' does not have any commits yet"
+                        );
+                    }
+                }
             }
         }
         (start_oids, exclude_oids)
