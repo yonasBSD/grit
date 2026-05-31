@@ -3578,17 +3578,16 @@ fn run_summary(args: &SummaryArgs, _quiet: bool) -> Result<()> {
         if args.cached {
             bail!("options '--cached' and '--files' cannot be used together");
         }
+        // Git's `--files` mode runs `git diff-files --ignore-submodules=dirty --raw`, comparing
+        // each **index** gitlink OID against the submodule working-tree HEAD. It iterates the
+        // index gitlinks directly, NOT `.gitmodules` (which may be empty/unregistered — t7508).
         let mut out = Vec::new();
-        let modules = parse_gitmodules_with_repo(work_tree, Some(&repo))?;
-        for m in &modules {
-            let path_bytes = m.path.as_bytes();
-            let Some(ie) = index.get(path_bytes, 0) else {
-                continue;
-            };
-            if ie.mode != MODE_GITLINK {
+        for ie in &index.entries {
+            if ie.stage() != 0 || ie.mode != MODE_GITLINK || ie.skip_worktree() {
                 continue;
             }
-            let sub_path = work_tree.join(&m.path);
+            let path_str = String::from_utf8_lossy(&ie.path).into_owned();
+            let sub_path = work_tree.join(&path_str);
             let dst_oid = if let Some(h) = grit_lib::diff::read_submodule_head_oid(&sub_path) {
                 h
             } else {
@@ -3599,8 +3598,8 @@ fn run_summary(args: &SummaryArgs, _quiet: bool) -> Result<()> {
             }
             out.push(DiffEntry {
                 status: DiffStatus::Modified,
-                old_path: Some(m.path.clone()),
-                new_path: Some(m.path.clone()),
+                old_path: Some(path_str.clone()),
+                new_path: Some(path_str),
                 old_mode: format!("{:o}", MODE_GITLINK),
                 new_mode: format!("{:o}", MODE_GITLINK),
                 old_oid: ie.oid,

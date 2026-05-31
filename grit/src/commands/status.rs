@@ -880,11 +880,72 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     if !args.no_optional_locks {
+        // Git refreshes the index during `status`: entries whose worktree content still matches
+        // the recorded OID but whose stat went stale (e.g. `touch`) get their cached stat updated
+        // so a subsequent `diff-files` sees them as clean (t7508 'status refreshes the index').
+        let modified_paths: std::collections::HashSet<&str> =
+            unstaged.iter().map(|e| e.path()).collect();
+        refresh_index_stat(work_tree, &mut index, &modified_paths);
         // Best-effort: status must succeed even when `.git/` is read-only (t7508).
         let _ = repo.write_index_at(&index_path, &mut index);
     }
 
     Ok(())
+}
+
+/// Update cached stat data for stage-0 file entries whose worktree content still matches the index
+/// but whose on-disk stat differs (Git `refresh_index` / `refresh_cache_ent`). Entries in
+/// `modified_paths` (content actually changed) are left untouched so they keep reporting as dirty.
+fn refresh_index_stat(
+    work_tree: &Path,
+    index: &mut Index,
+    modified_paths: &std::collections::HashSet<&str>,
+) {
+    for entry in &mut index.entries {
+        if entry.stage() != 0
+            || entry.skip_worktree()
+            || entry.assume_unchanged()
+            || entry.intent_to_add()
+        {
+            continue;
+        }
+        // Only refresh regular/executable file entries; gitlinks and symlinks are handled by their
+        // own status paths and must not be smudged here.
+        if entry.mode != grit_lib::index::MODE_REGULAR
+            && entry.mode != grit_lib::index::MODE_EXECUTABLE
+        {
+            continue;
+        }
+        let Ok(path) = std::str::from_utf8(&entry.path) else {
+            continue;
+        };
+        if modified_paths.contains(path) {
+            continue;
+        }
+        let abs = work_tree.join(path);
+        let Ok(meta) = fs::symlink_metadata(&abs) else {
+            continue;
+        };
+        if !meta.file_type().is_file() {
+            continue;
+        }
+        if grit_lib::diff::stat_matches(entry, &meta) {
+            continue;
+        }
+        // Stat differs but the entry was not reported as modified, so the content matches the
+        // recorded OID: adopt the worktree stat (mode is preserved from the existing entry).
+        let refreshed =
+            grit_lib::index::entry_from_metadata(&meta, &entry.path, entry.oid, entry.mode);
+        entry.ctime_sec = refreshed.ctime_sec;
+        entry.ctime_nsec = refreshed.ctime_nsec;
+        entry.mtime_sec = refreshed.mtime_sec;
+        entry.mtime_nsec = refreshed.mtime_nsec;
+        entry.dev = refreshed.dev;
+        entry.ino = refreshed.ino;
+        entry.uid = refreshed.uid;
+        entry.gid = refreshed.gid;
+        entry.size = refreshed.size;
+    }
 }
 
 /// Quote a path for `git status -s` / porcelain (Git `quote_path` / C-style rules).
@@ -2464,6 +2525,118 @@ pub(crate) fn parse_submodule_summary_limit(config: &ConfigSet) -> Option<i32> {
     (n > 0).then_some(n)
 }
 
+/// How `git status` should treat a submodule's dirtiness, mirroring Git's `--ignore-submodules`
+/// argument and `submodule.<name>.ignore` / `diff.ignoreSubmodules` config values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum SubmoduleIgnore {
+    /// Report new commits, modified content and untracked content.
+    #[default]
+    None,
+    /// Hide only untracked content; still report new commits and modified content.
+    Untracked,
+    /// Hide modified and untracked content; still report new commits.
+    Dirty,
+    /// Hide the submodule entirely (also from "Changes to be committed").
+    All,
+}
+
+impl SubmoduleIgnore {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(SubmoduleIgnore::None),
+            "untracked" => Some(SubmoduleIgnore::Untracked),
+            "dirty" => Some(SubmoduleIgnore::Dirty),
+            "all" => Some(SubmoduleIgnore::All),
+            _ => None,
+        }
+    }
+}
+
+/// Map submodule paths to the `name` declared in `.gitmodules`, plus the per-name `ignore` values
+/// from `.gitmodules`. The map is keyed by submodule path (the value Git uses for the gitlink).
+#[derive(Default)]
+struct GitmodulesIgnore {
+    /// `submodule.<name>.ignore` from `.gitmodules`, keyed by submodule path.
+    by_path: HashMap<String, String>,
+    /// submodule path -> declared name (for resolving `.git/config submodule.<name>.ignore`).
+    name_by_path: HashMap<String, String>,
+}
+
+/// Read `submodule.<name>.path` / `submodule.<name>.ignore` from the work-tree `.gitmodules`.
+fn load_gitmodules_ignore(work_tree: &Path) -> GitmodulesIgnore {
+    use grit_lib::config::{ConfigFile, ConfigScope};
+    let path = work_tree.join(".gitmodules");
+    let Ok(content) = fs::read_to_string(&path) else {
+        return GitmodulesIgnore::default();
+    };
+    let (entries, _) =
+        ConfigFile::parse_gitmodules_best_effort(&path, &content, ConfigScope::Local);
+    let mut path_by_name: HashMap<String, String> = HashMap::new();
+    let mut ignore_by_name: HashMap<String, String> = HashMap::new();
+    for e in &entries {
+        let Some(rest) = e.key.strip_prefix("submodule.") else {
+            continue;
+        };
+        let Some(dot) = rest.rfind('.') else { continue };
+        let name = &rest[..dot];
+        let var = &rest[dot + 1..];
+        match var {
+            "path" => {
+                if let Some(v) = e.value.as_deref() {
+                    path_by_name.insert(name.to_owned(), v.to_owned());
+                }
+            }
+            "ignore" => {
+                if let Some(v) = e.value.as_deref() {
+                    ignore_by_name.insert(name.to_owned(), v.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut result = GitmodulesIgnore::default();
+    for (name, sm_path) in path_by_name {
+        if let Some(ig) = ignore_by_name.get(&name) {
+            result.by_path.insert(sm_path.clone(), ig.clone());
+        }
+        result.name_by_path.insert(sm_path, name);
+    }
+    result
+}
+
+/// Resolve the effective submodule-ignore setting for `sm_path`, following Git's precedence:
+/// `--ignore-submodules` CLI > `submodule.<name>.ignore` in `.git/config` > the same in
+/// `.gitmodules` > `diff.ignoreSubmodules`. Unrecognized values default to [`SubmoduleIgnore::None`].
+fn effective_submodule_ignore(
+    config: &ConfigSet,
+    cli_ignore: Option<&str>,
+    gitmodules: &GitmodulesIgnore,
+    sm_path: &str,
+) -> SubmoduleIgnore {
+    if let Some(v) = cli_ignore.and_then(SubmoduleIgnore::parse) {
+        return v;
+    }
+    let name = gitmodules.name_by_path.get(sm_path).map(String::as_str);
+    if let Some(name) = name {
+        let key = format!("submodule.{name}.ignore");
+        if let Some(v) = config.get(&key).as_deref().and_then(SubmoduleIgnore::parse) {
+            return v;
+        }
+    }
+    if let Some(v) = gitmodules
+        .by_path
+        .get(sm_path)
+        .and_then(|v| SubmoduleIgnore::parse(v))
+    {
+        return v;
+    }
+    config
+        .get("diff.ignoreSubmodules")
+        .as_deref()
+        .and_then(SubmoduleIgnore::parse)
+        .unwrap_or_default()
+}
+
 fn count_stash_reflog_entries(git_dir: &Path) -> usize {
     if let Ok(n) = reflog::read_reflog(git_dir, "refs/stash").map(|e| e.len()) {
         if n > 0 {
@@ -2835,13 +3008,92 @@ fn format_long(
     let mut unmerged_paths: Vec<(String, u8)> =
         unmerged_map.iter().map(|(p, m)| (p.clone(), *m)).collect();
 
+    // Resolve `--ignore-submodules` / `submodule.<name>.ignore` for submodule entries and compute
+    // the per-submodule annotation (`(new commits, modified content, ...)`) shown in the
+    // "Changes not staged for commit" section (Git `wt_longstatus_print_change_data`).
+    let cli_ignore = args
+        .ignore_submodules
+        .as_deref()
+        .map(|s| s.to_ascii_lowercase());
+    let gitmodules_ignore = repo
+        .work_tree
+        .as_deref()
+        .map(load_gitmodules_ignore)
+        .unwrap_or_default();
+    let gitlink_oid_by_path: HashMap<String, ObjectId> = expanded_index
+        .entries
+        .iter()
+        .filter(|e| e.stage() == 0 && e.mode == MODE_GITLINK)
+        .map(|e| (String::from_utf8_lossy(&e.path).into_owned(), e.oid))
+        .collect();
+    let submodule_ignore_for = |sm_path: &str| -> SubmoduleIgnore {
+        effective_submodule_ignore(config, cli_ignore.as_deref(), &gitmodules_ignore, sm_path)
+    };
+    // Annotation suffix per unstaged submodule path; `None` means the entry is fully suppressed.
+    let mut submodule_unstaged_annotation: HashMap<String, Option<String>> = HashMap::new();
+    let mut any_dirty_submodule_shown = false;
+    for path in gitlink_oid_by_path.keys() {
+        let recorded = gitlink_oid_by_path[path];
+        let ignore = submodule_ignore_for(path);
+        if ignore == SubmoduleIgnore::All {
+            submodule_unstaged_annotation.insert(path.clone(), None);
+            continue;
+        }
+        let flags = repo
+            .work_tree
+            .as_deref()
+            .map(|wt| submodule_porcelain_flags(wt, path, recorded))
+            .unwrap_or_default();
+        let new_commits = flags.new_commits;
+        let modified = flags.modified && ignore != SubmoduleIgnore::Dirty;
+        let untracked = flags.untracked
+            && ignore != SubmoduleIgnore::Dirty
+            && ignore != SubmoduleIgnore::Untracked;
+        if !new_commits && !modified && !untracked {
+            submodule_unstaged_annotation.insert(path.clone(), None);
+            continue;
+        }
+        let mut parts: Vec<&str> = Vec::new();
+        if new_commits {
+            parts.push("new commits");
+        }
+        if modified {
+            parts.push("modified content");
+        }
+        if untracked {
+            parts.push("untracked content");
+        }
+        if modified || untracked {
+            any_dirty_submodule_shown = true;
+        }
+        submodule_unstaged_annotation
+            .insert(path.clone(), Some(format!(" ({})", parts.join(", "))));
+    }
+
     let staged_normal: Vec<&DiffEntry> = staged
         .iter()
         .filter(|e| e.status != DiffStatus::Unmerged)
+        .filter(|e| {
+            // `--ignore-submodules=all` (and `submodule.<name>.ignore=all`) hides the gitlink from
+            // "Changes to be committed" too (Git `set_diffopt_flags_from_submodule_config`).
+            if gitlink_oid_by_path.contains_key(e.path()) {
+                submodule_ignore_for(e.path()) != SubmoduleIgnore::All
+            } else {
+                true
+            }
+        })
         .collect();
     let unstaged_normal: Vec<&DiffEntry> = unstaged
         .iter()
         .filter(|e| e.status != DiffStatus::Unmerged && !unmerged_map.contains_key(e.path()))
+        .filter(|e| {
+            // Drop submodule entries the ignore setting fully suppresses.
+            if gitlink_oid_by_path.contains_key(e.path()) {
+                !matches!(submodule_unstaged_annotation.get(e.path()), Some(None))
+            } else {
+                true
+            }
+        })
         .collect();
 
     let has_unmerged = !unmerged_paths.is_empty();
@@ -2933,6 +3185,13 @@ fn format_long(
                 cp,
                 "  (use \"git restore <file>...\" to discard changes in working directory)",
             )?;
+            if any_dirty_submodule_shown {
+                cpw(
+                    out,
+                    cp,
+                    "  (commit or discard the untracked or modified content in submodules)",
+                )?;
+            }
         }
         for entry in &unstaged_normal {
             let label = match entry.status {
@@ -2944,7 +3203,15 @@ fn format_long(
                 DiffStatus::TypeChanged => "typechange",
                 _ => "changed",
             };
-            cpw(out, cp, &format!("\t{label}:   {}", entry.display_path()))?;
+            let suffix = submodule_unstaged_annotation
+                .get(entry.path())
+                .and_then(|a| a.as_deref())
+                .unwrap_or("");
+            cpw(
+                out,
+                cp,
+                &format!("\t{label}:   {}{suffix}", entry.display_path()),
+            )?;
         }
         cpw(out, cp, "")?;
     }
