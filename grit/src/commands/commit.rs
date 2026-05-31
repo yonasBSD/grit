@@ -1163,7 +1163,24 @@ pub fn run(mut args: Args) -> Result<()> {
     // commit-msg hook (skipped with `--no-verify` / `-n`).
     if !args.no_verify {
         let msg_file = repo.git_dir.join("COMMIT_EDITMSG");
-        if let Some(ref raw) = raw_message {
+        // When finishing a conflicted cherry-pick/revert, git keeps the trailing `# Conflicts:`
+        // comment block in COMMIT_EDITMSG even though it is stripped from the committed message
+        // — and a `-s` sign-off sits above it (t3507 "commit after failed cherry-pick adds -s at
+        // the right place"). The committed `message` is already clean+signed; re-attach the
+        // conflicts comment block (read from the still-present MERGE_MSG) for the on-disk editmsg.
+        let editmsg_conflicts_suffix = if had_cp_head || had_rv_head {
+            conflicts_comment_block(&repo.git_dir, &config)
+        } else {
+            None
+        };
+        if let (Some(suffix), None) = (&editmsg_conflicts_suffix, &raw_message) {
+            let mut editmsg = message.clone();
+            if !editmsg.ends_with('\n') {
+                editmsg.push('\n');
+            }
+            editmsg.push_str(suffix);
+            fs::write(&msg_file, &editmsg)?;
+        } else if let Some(ref raw) = raw_message {
             fs::write(&msg_file, raw)?;
         } else {
             fs::write(&msg_file, &message)?;
@@ -1396,10 +1413,19 @@ pub fn run(mut args: Args) -> Result<()> {
     cleanup_merge_state(&repo.git_dir);
     // A plain `git commit` that resolves a cherry-pick/revert conflict only removes
     // CHERRY_PICK_HEAD/REVERT_HEAD (done via cleanup_merge_state). It must NOT advance
-    // the remaining sequencer todo: git only continues the sequence on an explicit
-    // `cherry-pick --continue` / `revert --continue` (sequencer.c). Auto-resuming here
-    // would tear down the sequencer state that a later `--continue` needs.
-    let _ = (resume_pick_after_cp, resume_revert_after_rv);
+    // and replay the remaining sequencer todo: git only continues the sequence on an
+    // explicit `cherry-pick --continue` / `revert --continue` (sequencer.c). Auto-resuming
+    // here would tear down the sequencer state that a later `--continue` needs.
+    //
+    // BUT sequencer.c:sequencer_post_commit_cleanup *does* remove the whole sequencer
+    // state when the just-committed pick was the final one (`have_finished_the_last_pick`:
+    // the todo has at most one line left). That lets the last pick of a sequence be
+    // finished with a plain `git commit` (t3507 "successful final commit clears ... state").
+    if (resume_pick_after_cp || resume_revert_after_rv)
+        && sequencer_finished_last_pick(&repo.git_dir)
+    {
+        let _ = fs::remove_dir_all(repo.git_dir.join("sequencer"));
+    }
 
     // Refresh the index file Git used for this commit (including `GIT_INDEX_FILE`).
     let mut index_refresh = match repo.load_index_at(&index_path) {
@@ -4178,6 +4204,41 @@ fn update_head(git_dir: &Path, head: &HeadState, commit_oid: &ObjectId) -> Resul
         }
     }
     Ok(())
+}
+
+/// Extract the trailing `# Conflicts:` comment block from `MERGE_MSG` for re-attaching to
+/// COMMIT_EDITMSG (git keeps it in the editor file when finishing a conflicted pick/revert).
+///
+/// Returns the block as `\n# Conflicts:\n#\t<path>...\n` (leading blank line included) using the
+/// repo's comment prefix, or `None` when no such block is present.
+fn conflicts_comment_block(git_dir: &Path, config: &ConfigSet) -> Option<String> {
+    let merge_msg = fs::read_to_string(git_dir.join("MERGE_MSG")).ok()?;
+    let cp = comment_line_prefix_full(config);
+    let header = format!("{cp} Conflicts:");
+    let start = merge_msg.lines().position(|l| l.trim_end() == header)?;
+    let mut block = String::from("\n");
+    for line in merge_msg.lines().skip(start) {
+        block.push_str(line);
+        block.push('\n');
+    }
+    Some(block)
+}
+
+/// Whether the sequencer todo has at most one remaining line (git's `have_finished_the_last_pick`).
+///
+/// Returns `true` when `sequencer/todo` is missing or contains only the final pick line, signalling
+/// that a plain `git commit` finishing the conflict resolution also completed the whole sequence.
+fn sequencer_finished_last_pick(git_dir: &Path) -> bool {
+    let todo_path = git_dir.join("sequencer").join("todo");
+    let Ok(content) = fs::read_to_string(&todo_path) else {
+        // Missing todo => not in a sequence; nothing to remove (git returns 0 here).
+        return false;
+    };
+    // git checks for a second line: only one line (or a trailing-newline-only remainder) => done.
+    match content.find('\n') {
+        None => true,
+        Some(eol) => content[eol + 1..].is_empty(),
+    }
 }
 
 /// Clean up merge-related state files after a successful commit.

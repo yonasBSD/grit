@@ -1568,7 +1568,13 @@ fn checkout_index_entries(
         // Sparse checkout: when `skip-worktree` was cleared because the work tree did not match
         // the index (Git `verify_uptodate_sparse`), do not overwrite the on-disk file with the
         // index blob (t1011 read-tree dirty case outside sparse cone).
-        if entry.mode != MODE_GITLINK
+        //
+        // `read-tree -u --reset` (force) is the exception: it discards local modifications and
+        // force-overwrites the work tree to match the reset tree (t3507 `read_tree -u --reset HEAD`
+        // restoring a `foo` left dirty by `checkout <rev> -- foo`). `force_gitlink_checkout` is
+        // `true` only on that reset path, so it doubles as the "force-overwrite work tree" flag.
+        if !force_gitlink_checkout
+            && entry.mode != MODE_GITLINK
             && checkout_entry_present_on_disk(&abs_path, entry.mode)
             && !worktree_matches_entry(repo, entry, &abs_path)?
         {
