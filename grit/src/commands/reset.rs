@@ -1870,22 +1870,42 @@ fn build_merge_reset_index(
     head_oid: ObjectId,
     target_oid: &ObjectId,
 ) -> Result<Index> {
-    if head_oid == *target_oid {
-        let has_unmerged = old_index.entries.iter().any(|e| e.stage() != 0);
-        if !has_unmerged {
-            let mut idx = Index::new();
-            for e in &old_index.entries {
-                if e.stage() == 0 {
-                    idx.entries.push(e.clone());
-                }
-            }
-            idx.sort();
-            return Ok(idx);
-        }
-    }
-
     let head_tree_oid = commit_to_tree(repo, &head_oid)?;
     let target_tree_oid = commit_to_tree(repo, target_oid)?;
+
+    if head_oid == *target_oid {
+        let has_unmerged = old_index.entries.iter().any(|e| e.stage() != 0);
+        // Fast-path the no-op `reset --merge HEAD`: only keep the existing stage-0 index verbatim
+        // when it already matches the target tree. If a path was staged differently from the
+        // target (e.g. a rerere auto-staged resolution before a cherry-pick `--abort`), Git's
+        // `reset --merge` discards that staged change and rewrites the work tree from the target,
+        // so we must fall through to the general per-path logic below (t3504). Preserving the
+        // staged blob here would leave the work tree dirty after the abort.
+        if !has_unmerged {
+            let target_entries = tree_to_flat_entries(repo, &target_tree_oid, "")?;
+            let target_map: HashMap<Vec<u8>, &IndexEntry> =
+                target_entries.iter().map(|e| (e.path.clone(), e)).collect();
+            let stage0: Vec<&IndexEntry> = old_index
+                .entries
+                .iter()
+                .filter(|e| e.stage() == 0)
+                .collect();
+            let matches_target = stage0.len() == target_entries.len()
+                && stage0.iter().all(|e| {
+                    target_map
+                        .get(&e.path)
+                        .is_some_and(|t| t.oid == e.oid && t.mode == e.mode)
+                });
+            if matches_target {
+                let mut idx = Index::new();
+                for e in stage0 {
+                    idx.entries.push(e.clone());
+                }
+                idx.sort();
+                return Ok(idx);
+            }
+        }
+    }
 
     let head_entries = tree_to_flat_entries(repo, &head_tree_oid, "")?;
     let target_entries = tree_to_flat_entries(repo, &target_tree_oid, "")?;
