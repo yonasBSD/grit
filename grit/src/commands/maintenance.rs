@@ -267,6 +267,12 @@ fn systemctl_user_works() -> bool {
         .unwrap_or(false)
 }
 
+/// Mirror of git's `get_schedule_cmd`. Returns `(from_env, command, is_available)`.
+///
+/// When `GIT_TEST_MAINT_SCHEDULER` is set but the requested `cmd` is not one of
+/// the listed keys, the scheduler is reported as UNAVAILABLE (git sets
+/// `*is_available = 0` and returns the original command unchanged). The `val !=
+/// "false"` convention lets tests model a present-but-failing scheduler.
 fn scheduler_testing_lookup(cmd: &str) -> (bool, String, bool) {
     let Ok(testing) = std::env::var("GIT_TEST_MAINT_SCHEDULER") else {
         return (false, cmd.to_string(), true);
@@ -279,7 +285,8 @@ fn scheduler_testing_lookup(cmd: &str) -> (bool, String, bool) {
             return (true, val.to_string(), val != "false");
         }
     }
-    (true, cmd.to_string(), true)
+    // Set, but this scheduler is not listed: not available.
+    (true, cmd.to_string(), false)
 }
 
 fn scheduler_available(sk: SchedulerKind) -> bool {
@@ -325,7 +332,10 @@ fn resolve_auto_scheduler() -> SchedulerKind {
 
 fn cmd_stop() -> Result<()> {
     let repo = Repository::discover(None).context("not a git repository")?;
-    update_background_schedule(&repo, false, None)
+    let lock_path = repo.git_dir.join("objects").join("schedule.lock");
+    fs::create_dir_all(lock_path.parent().unwrap())?;
+    let _lock = ScheduleLock::acquire(lock_path)?;
+    update_background_schedule_locked(&repo, false, None)
 }
 
 fn cmd_start(rest: &[String]) -> Result<()> {
@@ -362,21 +372,43 @@ fn cmd_start(rest: &[String]) -> Result<()> {
         parse_scheduler_arg(raw)?
     };
 
+    // Acquire the schedule lock before doing anything else. Git checks scheduler
+    // availability first, but doing the lock first lets us surface the
+    // "another process is running" error even when an unrelated scheduler env
+    // mock claims the requested scheduler is unavailable.
+    let lock_path = repo.git_dir.join("objects").join("schedule.lock");
+    fs::create_dir_all(lock_path.parent().unwrap())?;
+    let _lock = ScheduleLock::acquire(lock_path)?;
+
     if !scheduler_available(sk) {
         bail!(
             "fatal: {} scheduler is not available",
-            match sk {
-                SchedulerKind::Crontab => "crontab",
-                SchedulerKind::Systemd => "systemctl",
-                SchedulerKind::Launchctl => "launchctl",
-                SchedulerKind::Schtasks => "schtasks",
-            }
+            scheduler_cmd_name(sk)
         );
     }
 
-    update_background_schedule(&repo, true, Some(sk))?;
+    update_background_schedule_locked(&repo, true, Some(sk))?;
     cmd_register(&[])
 }
+
+fn scheduler_cmd_name(sk: SchedulerKind) -> &'static str {
+    match sk {
+        SchedulerKind::Crontab => "crontab",
+        SchedulerKind::Systemd => "systemctl",
+        SchedulerKind::Launchctl => "launchctl",
+        SchedulerKind::Schtasks => "schtasks",
+    }
+}
+
+/// All schedulers in git's `scheduler_fn` iteration order (crontab, systemd,
+/// launchctl, schtasks). `update_background_schedule` tears these down in this
+/// order before enabling the selected one.
+const ALL_SCHEDULERS: [SchedulerKind; 4] = [
+    SchedulerKind::Crontab,
+    SchedulerKind::Systemd,
+    SchedulerKind::Launchctl,
+    SchedulerKind::Schtasks,
+];
 
 struct ScheduleLock {
     path: PathBuf,
@@ -414,94 +446,65 @@ impl Drop for ScheduleLock {
     }
 }
 
-fn update_background_schedule(
+/// Tear down every available scheduler except the selected one (in git's
+/// `scheduler_fn` order), then enable the selected scheduler. On disable, tear
+/// down all of them. Assumes the schedule lock is already held by the caller.
+fn update_background_schedule_locked(
     repo: &Repository,
     enable: bool,
     sk: Option<SchedulerKind>,
 ) -> Result<()> {
-    let lock_path = repo.git_dir.join("objects").join("schedule.lock");
-    fs::create_dir_all(lock_path.parent().unwrap())?;
-    let _lock = ScheduleLock::acquire(lock_path)?;
+    // First, remove schedules from every OTHER available scheduler.
+    for &other in &ALL_SCHEDULERS {
+        if enable && sk == Some(other) {
+            continue;
+        }
+        if !scheduler_available(other) {
+            continue;
+        }
+        scheduler_remove(repo, other)?;
+    }
 
     if enable {
-        let Some(sk) = sk else {
-            return Ok(());
-        };
-        match sk {
-            SchedulerKind::Systemd => systemd_enable_timers()?,
-            SchedulerKind::Crontab => crontab_install(repo)?,
-            _ => {}
+        if let Some(sk) = sk {
+            scheduler_enable(repo, sk)?;
         }
+    }
+    Ok(())
+}
+
+fn scheduler_remove(repo: &Repository, sk: SchedulerKind) -> Result<()> {
+    match sk {
+        SchedulerKind::Crontab => crontab_clear(repo),
+        SchedulerKind::Systemd => systemd_remove_units(),
+        SchedulerKind::Launchctl => launchctl_remove_plists(repo),
+        SchedulerKind::Schtasks => schtasks_remove_tasks(repo),
+    }
+}
+
+fn scheduler_enable(repo: &Repository, sk: SchedulerKind) -> Result<()> {
+    match sk {
+        SchedulerKind::Crontab => crontab_install(repo),
+        SchedulerKind::Systemd => systemd_setup_units(repo),
+        SchedulerKind::Launchctl => launchctl_add_plists(repo),
+        SchedulerKind::Schtasks => schtasks_add_tasks(repo),
+    }
+}
+
+const FREQUENCIES: [&str; 3] = ["hourly", "daily", "weekly"];
+
+/// Schedule minute: a fixed value under tests (git `get_random_minute`).
+fn schedule_minute() -> u32 {
+    if std::env::var("GIT_TEST_MAINT_SCHEDULER").is_ok() {
+        13
     } else {
-        let _ = systemd_disable_timers();
-        crontab_clear(repo)?;
-    }
-    Ok(())
-}
-
-fn systemd_disable_timers() -> Result<()> {
-    let (_, cmdline, ok) = scheduler_testing_lookup("systemctl");
-    if !ok {
-        return Ok(());
-    }
-    let parts: Vec<String> = cmdline.split_whitespace().map(|s| s.to_string()).collect();
-    if parts.is_empty() {
-        return Ok(());
-    }
-    for freq in ["hourly", "daily", "weekly"] {
-        let mut c = parts.clone();
-        c.extend([
-            "--user".into(),
-            "disable".into(),
-            "--now".into(),
-            format!("git-maintenance@{freq}.timer"),
-        ]);
-        let _ = run_cmd_quiet(&c);
-    }
-    Ok(())
-}
-
-fn run_cmd_quiet(argv: &[String]) -> Result<()> {
-    if argv.is_empty() {
-        return Ok(());
-    }
-    let st = Command::new(&argv[0])
-        .args(&argv[1..])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    match st {
-        Ok(s) if s.success() => Ok(()),
-        _ => Ok(()),
+        0
     }
 }
 
-fn systemd_enable_timers() -> Result<()> {
-    let (_, cmdline, _) = scheduler_testing_lookup("systemctl");
-    let parts: Vec<String> = cmdline.split_whitespace().map(|s| s.to_string()).collect();
-    if parts.is_empty() {
-        bail!("failed to set up maintenance schedule");
-    }
-    let mut base = parts.clone();
-    base.extend([
-        "--user".into(),
-        "list-timers".into(),
-        "--all".into(),
-        "--no-pager".into(),
-    ]);
-    run_cmd(&base)?;
-    for freq in ["hourly", "daily", "weekly"] {
-        let mut c = parts.clone();
-        c.extend([
-            "--user".into(),
-            "enable".into(),
-            "--now".into(),
-            format!("git-maintenance@{freq}.timer"),
-        ]);
-        run_cmd(&c)?;
-    }
-    Ok(())
+fn cmd_parts(name: &str) -> Vec<String> {
+    let (_, cmdline, _) = scheduler_testing_lookup(name);
+    cmdline.split_whitespace().map(|s| s.to_string()).collect()
 }
 
 fn run_cmd(argv: &[String]) -> Result<()> {
@@ -510,6 +513,8 @@ fn run_cmd(argv: &[String]) -> Result<()> {
     }
     let st = Command::new(&argv[0])
         .args(&argv[1..])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .with_context(|| format!("failed to run {}", argv[0]))?;
     if !st.success() {
@@ -518,17 +523,32 @@ fn run_cmd(argv: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn run_cmd_ignore(argv: &[String]) {
+    if argv.is_empty() {
+        return;
+    }
+    let _ = Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+fn grit_exec_path() -> String {
+    grit_exe::grit_executable().to_string_lossy().to_string()
+}
+
+const EXTRA_CONFIG: &[&str] = &["credential.interactive=false", "core.askPass=true"];
+
+// --------------------------------------------------------------------------
+// crontab backend
+// --------------------------------------------------------------------------
+
 const CRON_BEGIN: &str = "# BEGIN GIT MAINTENANCE SCHEDULE";
 const CRON_END: &str = "# END GIT MAINTENANCE SCHEDULE";
 
-fn crontab_install(repo: &Repository) -> Result<()> {
-    let (_, cmdline, _) = scheduler_testing_lookup("crontab");
-    let parts: Vec<String> = cmdline.split_whitespace().map(|s| s.to_string()).collect();
-    if parts.is_empty() {
-        bail!("failed to set up maintenance schedule");
-    }
-
-    let tmp = repo.git_dir.join("objects").join("cron-edit.txt");
+fn crontab_read_without_git_region(parts: &[String]) -> String {
     let mut list_cmd = Command::new(&parts[0]);
     list_cmd.args(&parts[1..]).arg("-l");
     list_cmd.stdin(Stdio::null());
@@ -536,7 +556,6 @@ fn crontab_install(repo: &Repository) -> Result<()> {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
-
     let mut out = String::new();
     let mut skip = false;
     for line in existing.lines() {
@@ -553,9 +572,18 @@ fn crontab_install(repo: &Repository) -> Result<()> {
             out.push('\n');
         }
     }
+    out
+}
 
-    let exec = grit_exe::grit_executable();
-    let exec_s = exec.to_string_lossy();
+fn crontab_install(repo: &Repository) -> Result<()> {
+    let parts = cmd_parts("crontab");
+    if parts.is_empty() {
+        bail!("failed to set up maintenance schedule");
+    }
+
+    let mut out = crontab_read_without_git_region(&parts);
+
+    let exec_s = grit_exec_path();
     let work = repo
         .work_tree
         .as_deref()
@@ -563,11 +591,7 @@ fn crontab_install(repo: &Repository) -> Result<()> {
         .canonicalize()
         .unwrap_or_else(|_| repo.git_dir.clone());
     let work_s = work.to_string_lossy();
-    let minute = if std::env::var("GIT_TEST_MAINT_SCHEDULER").is_ok() {
-        13u32
-    } else {
-        0u32
-    };
+    let minute = schedule_minute();
     let extra = "-c credential.interactive=false -c core.askPass=true ";
 
     out.push_str(CRON_BEGIN);
@@ -576,7 +600,7 @@ fn crontab_install(repo: &Repository) -> Result<()> {
     out.push_str("# Any edits made in this region might be\n");
     out.push_str("# replaced in the future by a Git command.\n\n");
     out.push_str(&format!(
-        "{minute} 1-23 * * * cd \"{work_s}\" && \"{exec_s}\" for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=hourly\n"
+        "{minute} 1-23 * * * cd \"{work_s}\" && \"{exec_s}\" {extra}for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=hourly\n"
     ));
     out.push_str(&format!(
         "{minute} 0 * * 1-6 cd \"{work_s}\" && \"{exec_s}\" {extra}for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=daily\n"
@@ -588,10 +612,12 @@ fn crontab_install(repo: &Repository) -> Result<()> {
     out.push_str(CRON_END);
     out.push('\n');
 
+    let tmp = repo.git_dir.join("objects").join("cron-edit.txt");
     fs::write(&tmp, &out)?;
     let mut install = Command::new(&parts[0]);
     install.args(&parts[1..]).arg(&tmp);
     let st = install.status().context("crontab install")?;
+    let _ = fs::remove_file(&tmp);
     if !st.success() {
         bail!("failed to set up maintenance schedule");
     }
@@ -599,39 +625,383 @@ fn crontab_install(repo: &Repository) -> Result<()> {
 }
 
 fn crontab_clear(repo: &Repository) -> Result<()> {
-    let (_, cmdline, _) = scheduler_testing_lookup("crontab");
-    let parts: Vec<String> = cmdline.split_whitespace().map(|s| s.to_string()).collect();
+    let parts = cmd_parts("crontab");
     if parts.is_empty() {
         return Ok(());
     }
+    let out = crontab_read_without_git_region(&parts);
     let tmp = repo.git_dir.join("objects").join("cron-clear.txt");
-    let mut list_cmd = Command::new(&parts[0]);
-    list_cmd.args(&parts[1..]).arg("-l");
-    list_cmd.stdin(Stdio::null());
-    let existing = list_cmd
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
-    let mut out = String::new();
-    let mut skip = false;
-    for line in existing.lines() {
-        if line == CRON_BEGIN {
-            skip = true;
-            continue;
-        }
-        if line == CRON_END {
-            skip = false;
-            continue;
-        }
-        if !skip {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
     fs::write(&tmp, &out)?;
     let mut install = Command::new(&parts[0]);
     install.args(&parts[1..]).arg(&tmp);
     let _ = install.status();
+    let _ = fs::remove_file(&tmp);
+    Ok(())
+}
+
+// --------------------------------------------------------------------------
+// systemd backend
+// --------------------------------------------------------------------------
+
+fn xdg_config_home_dir() -> PathBuf {
+    if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
+        if !x.is_empty() {
+            return PathBuf::from(x);
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".config")
+}
+
+fn systemd_unit_path(name: &str) -> PathBuf {
+    xdg_config_home_dir()
+        .join("systemd")
+        .join("user")
+        .join(name)
+}
+
+fn systemd_write_service_template() -> Result<()> {
+    let path = systemd_unit_path("git-maintenance@.service");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let exec = grit_exec_path();
+    let extra: String = EXTRA_CONFIG
+        .iter()
+        .map(|c| format!("-c {c} "))
+        .collect::<String>();
+    let unit = format!(
+        "# This file was created and is maintained by Git.\n\
+# Any edits made in this file might be replaced in the future\n\
+# by a Git command.\n\
+\n\
+[Unit]\n\
+Description=Optimize Git repositories data\n\
+\n\
+[Service]\n\
+Type=oneshot\n\
+ExecStart=\"{exec}\" {extra}for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=%i\n\
+LockPersonality=yes\n\
+MemoryDenyWriteExecute=yes\n\
+NoNewPrivileges=yes\n\
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_VSOCK\n\
+RestrictNamespaces=yes\n\
+RestrictRealtime=yes\n\
+RestrictSUIDSGID=yes\n\
+SystemCallArchitectures=native\n\
+SystemCallFilter=@system-service\n"
+    );
+    fs::write(&path, unit)?;
+    Ok(())
+}
+
+fn systemd_write_timer_file(freq: &str, minute: u32) -> Result<()> {
+    let path = systemd_unit_path(&format!("git-maintenance@{freq}.timer"));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let pattern = match freq {
+        "hourly" => format!("*-*-* 1..23:{minute:02}:00"),
+        "daily" => format!("Tue..Sun *-*-* 0:{minute:02}:00"),
+        "weekly" => format!("Mon 0:{minute:02}:00"),
+        _ => bail!("unknown schedule frequency {freq}"),
+    };
+    let unit = format!(
+        "# This file was created and is maintained by Git.\n\
+# Any edits made in this file might be replaced in the future\n\
+# by a Git command.\n\
+\n\
+[Unit]\n\
+Description=Optimize Git repositories data\n\
+\n\
+[Timer]\n\
+OnCalendar={pattern}\n\
+Persistent=true\n\
+\n\
+[Install]\n\
+WantedBy=timers.target\n"
+    );
+    fs::write(&path, unit)?;
+    Ok(())
+}
+
+fn systemd_enable_unit(enable: bool, freq: &str, minute: u32) -> Result<()> {
+    if enable {
+        systemd_write_timer_file(freq, minute)?;
+    }
+    let mut c = cmd_parts("systemctl");
+    if c.is_empty() {
+        bail!("failed to set up maintenance schedule");
+    }
+    c.extend([
+        "--user".into(),
+        if enable { "enable" } else { "disable" }.into(),
+        "--now".into(),
+        format!("git-maintenance@{freq}.timer"),
+    ]);
+    if enable {
+        run_cmd(&c)?;
+    } else {
+        run_cmd_ignore(&c);
+    }
+    Ok(())
+}
+
+fn systemd_setup_units(_repo: &Repository) -> Result<()> {
+    let minute = schedule_minute();
+    systemd_write_service_template()?;
+    for freq in FREQUENCIES {
+        systemd_enable_unit(true, freq, minute)?;
+    }
+    Ok(())
+}
+
+fn systemd_remove_units() -> Result<()> {
+    let minute = schedule_minute();
+    for freq in FREQUENCIES {
+        let _ = systemd_enable_unit(false, freq, minute);
+    }
+    for freq in FREQUENCIES {
+        let _ = fs::remove_file(systemd_unit_path(&format!("git-maintenance@{freq}.timer")));
+    }
+    let _ = fs::remove_file(systemd_unit_path("git-maintenance@.service"));
+    Ok(())
+}
+
+// --------------------------------------------------------------------------
+// launchctl backend (macOS)
+// --------------------------------------------------------------------------
+
+fn launchctl_service_name(freq: &str) -> String {
+    format!("org.git-scm.git.{freq}")
+}
+
+fn launchctl_plist_path(name: &str) -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home)
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{name}.plist"))
+}
+
+fn launchctl_uid() -> String {
+    format!("gui/{}", grit_lib::ident_config::current_uid())
+}
+
+fn launchctl_boot(enable: bool, filename: &Path) {
+    let mut c = cmd_parts("launchctl");
+    if c.is_empty() {
+        return;
+    }
+    c.push(if enable { "bootstrap" } else { "bootout" }.into());
+    c.push(launchctl_uid());
+    c.push(filename.to_string_lossy().to_string());
+    run_cmd_ignore(&c);
+}
+
+fn launchctl_list_contains(name: &str) -> bool {
+    let mut c = cmd_parts("launchctl");
+    if c.is_empty() {
+        return false;
+    }
+    c.push("list".into());
+    c.push(name.to_string());
+    Command::new(&c[0])
+        .args(&c[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn launchctl_plist_contents(name: &str, freq: &str, minute: u32) -> String {
+    let exec = grit_exec_path();
+    let exec_dir = grit_exe::grit_executable()
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let extra: String = EXTRA_CONFIG
+        .iter()
+        .map(|c| format!("<string>-c</string>\n<string>{c}</string>\n"))
+        .collect();
+    let mut plist = String::new();
+    plist.push_str(&format!(
+        "<?xml version=\"1.0\"?>\n\
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+<plist version=\"1.0\"><dict>\n\
+<key>Label</key><string>{name}</string>\n\
+<key>ProgramArguments</key>\n\
+<array>\n\
+<string>{exec_dir}/git</string>\n\
+<string>--exec-path={exec}</string>\n\
+{extra}\
+<string>for-each-repo</string>\n\
+<string>--keep-going</string>\n\
+<string>--config=maintenance.repo</string>\n\
+<string>maintenance</string>\n\
+<string>run</string>\n\
+<string>--schedule={freq}</string>\n\
+</array>\n\
+<key>StartCalendarInterval</key>\n\
+<array>\n"
+    ));
+    match freq {
+        "hourly" => {
+            for hour in 1..=23 {
+                plist.push_str(&format!(
+                    "<dict>\n<key>Hour</key><integer>{hour}</integer>\n<key>Minute</key><integer>{minute}</integer>\n</dict>\n"
+                ));
+            }
+        }
+        "daily" => {
+            for weekday in 1..=6 {
+                plist.push_str(&format!(
+                    "<dict>\n<key>Weekday</key><integer>{weekday}</integer>\n<key>Hour</key><integer>0</integer>\n<key>Minute</key><integer>{minute}</integer>\n</dict>\n"
+                ));
+            }
+        }
+        _ => {
+            plist.push_str(&format!(
+                "<dict>\n<key>Weekday</key><integer>0</integer>\n<key>Hour</key><integer>0</integer>\n<key>Minute</key><integer>{minute}</integer>\n</dict>\n"
+            ));
+        }
+    }
+    plist.push_str("</array>\n</dict>\n</plist>\n");
+    plist
+}
+
+fn launchctl_schedule_plist(freq: &str, minute: u32) -> Result<()> {
+    let name = launchctl_service_name(freq);
+    let filename = launchctl_plist_path(&name);
+    if let Some(parent) = filename.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let contents = launchctl_plist_contents(&name, freq, minute);
+
+    // If the file already exists with identical contents and launchctl reports
+    // the service as registered, there is nothing to do (git short-circuit).
+    let already = fs::read_to_string(&filename)
+        .map(|c| c == contents)
+        .unwrap_or(false)
+        && launchctl_list_contains(&name);
+    if already {
+        return Ok(());
+    }
+
+    fs::write(&filename, &contents)?;
+    launchctl_boot(false, &filename);
+    launchctl_boot(true, &filename);
+    Ok(())
+}
+
+fn launchctl_add_plists(_repo: &Repository) -> Result<()> {
+    let minute = schedule_minute();
+    for freq in FREQUENCIES {
+        launchctl_schedule_plist(freq, minute)?;
+    }
+    Ok(())
+}
+
+fn launchctl_remove_plists(_repo: &Repository) -> Result<()> {
+    for freq in FREQUENCIES {
+        let name = launchctl_service_name(freq);
+        let filename = launchctl_plist_path(&name);
+        launchctl_boot(false, &filename);
+        let _ = fs::remove_file(&filename);
+    }
+    Ok(())
+}
+
+// --------------------------------------------------------------------------
+// schtasks backend (Windows)
+// --------------------------------------------------------------------------
+
+fn schtasks_task_name(freq: &str) -> String {
+    format!("Git Maintenance ({freq})")
+}
+
+fn schtasks_xml(freq: &str, minute: u32) -> String {
+    let exec = grit_exec_path();
+    let exec_dir = grit_exe::grit_executable()
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let extra: String = EXTRA_CONFIG
+        .iter()
+        .map(|c| format!("-c {c} "))
+        .collect::<String>();
+    let trigger = match freq {
+        "hourly" => format!(
+            "<StartBoundary>2020-01-01T01:{minute:02}:00</StartBoundary>\n\
+<Enabled>true</Enabled>\n\
+<ScheduleByDay>\n<DaysInterval>1</DaysInterval>\n</ScheduleByDay>\n\
+<Repetition>\n<Interval>PT1H</Interval>\n<Duration>PT23H</Duration>\n<StopAtDurationEnd>false</StopAtDurationEnd>\n</Repetition>\n"
+        ),
+        "daily" => format!(
+            "<StartBoundary>2020-01-01T00:{minute:02}:00</StartBoundary>\n\
+<Enabled>true</Enabled>\n\
+<ScheduleByWeek>\n<DaysOfWeek>\n<Monday />\n<Tuesday />\n<Wednesday />\n<Thursday />\n<Friday />\n<Saturday />\n</DaysOfWeek>\n<WeeksInterval>1</WeeksInterval>\n</ScheduleByWeek>\n"
+        ),
+        _ => format!(
+            "<StartBoundary>2020-01-01T00:{minute:02}:00</StartBoundary>\n\
+<Enabled>true</Enabled>\n\
+<ScheduleByWeek>\n<DaysOfWeek>\n<Sunday />\n</DaysOfWeek>\n<WeeksInterval>1</WeeksInterval>\n</ScheduleByWeek>\n"
+        ),
+    };
+    format!(
+        "<?xml version=\"1.0\" ?>\n\
+<Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n\
+<Triggers>\n<CalendarTrigger>\n{trigger}</CalendarTrigger>\n</Triggers>\n\
+<Principals>\n<Principal id=\"Author\">\n<LogonType>InteractiveToken</LogonType>\n<RunLevel>LeastPrivilege</RunLevel>\n</Principal>\n</Principals>\n\
+<Settings>\n<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n<Enabled>true</Enabled>\n<Hidden>true</Hidden>\n<UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>\n<WakeToRun>false</WakeToRun>\n<ExecutionTimeLimit>PT72H</ExecutionTimeLimit>\n<Priority>7</Priority>\n</Settings>\n\
+<Actions Context=\"Author\">\n<Exec>\n<Command>\"{exec_dir}\\headless-git.exe\"</Command>\n<Arguments>--exec-path=\"{exec}\" {extra}for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule={freq}</Arguments>\n</Exec>\n</Actions>\n\
+</Task>\n"
+    )
+}
+
+fn schtasks_schedule_task(repo: &Repository, freq: &str, minute: u32) -> Result<()> {
+    let name = schtasks_task_name(freq);
+    // Git writes the XML to a temp file under the common dir (`.git`).
+    let xml_path = repo
+        .git_dir
+        .join(format!("schedule_{freq}_{}.xml", std::process::id()));
+    fs::write(&xml_path, schtasks_xml(freq, minute))?;
+    let mut c = cmd_parts("schtasks");
+    if c.is_empty() {
+        bail!("failed to set up maintenance schedule");
+    }
+    c.extend([
+        "/create".into(),
+        "/tn".into(),
+        name,
+        "/f".into(),
+        "/xml".into(),
+        xml_path.to_string_lossy().to_string(),
+    ]);
+    run_cmd(&c)?;
+    Ok(())
+}
+
+fn schtasks_add_tasks(repo: &Repository) -> Result<()> {
+    let minute = schedule_minute();
+    for freq in FREQUENCIES {
+        schtasks_schedule_task(repo, freq, minute)?;
+    }
+    Ok(())
+}
+
+fn schtasks_remove_tasks(_repo: &Repository) -> Result<()> {
+    for freq in FREQUENCIES {
+        let name = schtasks_task_name(freq);
+        let mut c = cmd_parts("schtasks");
+        if c.is_empty() {
+            continue;
+        }
+        c.extend(["/delete".into(), "/tn".into(), name, "/f".into()]);
+        run_cmd_ignore(&c);
+    }
     Ok(())
 }
 
@@ -651,6 +1021,14 @@ fn cmd_register(rest: &[String]) -> Result<()> {
     }
 
     let repo = Repository::discover(None).context("not a git repository")?;
+
+    // A valueless `maintenance.repo` anywhere in the merged config makes git
+    // print `error: missing value for 'maintenance.repo'`; register still
+    // succeeds (exit 0).
+    if maintenance_repo_has_missing_value(&repo) {
+        eprintln!("error: missing value for 'maintenance.repo'");
+    }
+
     let cfg_path = repo.git_dir.join("config");
     let content = fs::read_to_string(&cfg_path).unwrap_or_default();
     let mut local = ConfigFile::parse(&cfg_path, &content, ConfigScope::Local)?;
@@ -678,6 +1056,9 @@ fn cmd_register(rest: &[String]) -> Result<()> {
             .next()
             .unwrap_or_else(|| PathBuf::from("/tmp/.gitconfig"))
     });
+    if let Some(parent) = global_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let g_content = fs::read_to_string(&global_path).unwrap_or_default();
     let mut global = ConfigFile::parse(&global_path, &g_content, ConfigScope::Global)?;
     let exists = global
@@ -689,6 +1070,19 @@ fn cmd_register(rest: &[String]) -> Result<()> {
         global.write()?;
     }
     Ok(())
+}
+
+/// True when `maintenance.repo` is present in any reachable config scope with no
+/// value (e.g. `[maintenance]\n\trepo`). Mirrors git's config parser emitting
+/// `error: missing value for 'maintenance.repo'`.
+fn maintenance_repo_has_missing_value(repo: &Repository) -> bool {
+    let cfg = match ConfigSet::load(Some(&repo.git_dir), true) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    cfg.get_all_raw("maintenance.repo")
+        .iter()
+        .any(|v| v.is_none())
 }
 
 fn cmd_unregister(rest: &[String]) -> Result<()> {
@@ -713,6 +1107,20 @@ fn cmd_unregister(rest: &[String]) -> Result<()> {
     }
 
     let repo = Repository::discover(None).context("not a git repository")?;
+
+    // A valueless `maintenance.repo` makes git print the error and exit 128
+    // (unless --force, where it prints the error but still succeeds).
+    if maintenance_repo_has_missing_value(&repo) {
+        eprintln!("error: missing value for 'maintenance.repo'");
+        if !force {
+            return Err(ExplicitExit {
+                code: 128,
+                message: String::new(),
+            }
+            .into());
+        }
+    }
+
     let maintpath = repo
         .work_tree
         .as_deref()
