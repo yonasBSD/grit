@@ -756,7 +756,9 @@ fn run_one_commit(repo: &Repository, opts: &Options, out: &mut impl Write) -> Re
                         if !omit_commit_id_line {
                             write_commit_header(out, &oid, &obj.data, opts, None)?;
                         }
-                        print_diff(out, repo, &filtered, opts, None)?;
+                        if !opts.suppress_diff {
+                            print_diff(out, repo, &filtered, opts, None)?;
+                        }
                     }
                 }
             } else if commit.parents.len() == 2
@@ -862,7 +864,10 @@ fn run_one_commit(repo: &Repository, opts: &Options, out: &mut impl Write) -> Re
                 }
                 if !opts.quiet && (has_diff || opts.pretty.is_some()) {
                     write_commit_header(out, &oid, &obj.data, opts, None)?;
-                    print_diff(out, repo, &filtered, opts, Some(&parent_tree))?;
+                    // `-s`/`--no-patch`: print the (pretty) header only, omit the diff.
+                    if !opts.suppress_diff {
+                        print_diff(out, repo, &filtered, opts, Some(&parent_tree))?;
+                    }
                 }
             }
         }
@@ -2494,7 +2499,11 @@ fn write_commit_header(
             if template == "%s" {
                 let first_line = commit.message.lines().next().unwrap_or("");
                 writeln!(out, "{first_line}")?;
-                writeln!(out)?;
+                // The trailing blank line separates the subject from the raw/patch
+                // diff; with `-s`/`--no-patch` there is no diff, so git omits it.
+                if !opts.suppress_diff {
+                    writeln!(out)?;
+                }
                 return Ok(false);
             }
         }

@@ -1093,6 +1093,8 @@ pub(crate) fn do_continue() -> Result<()> {
 }
 
 /// After a manual `git commit` finished the current revert, resume remaining `sequencer/todo` reverts.
+/// NOTE: git does NOT auto-resume on a plain commit (only `revert --continue` advances); kept unused.
+#[allow(dead_code)]
 pub(crate) fn try_resume_revert_sequence_after_commit(repo: &Repository) -> Result<()> {
     let git_dir = &repo.git_dir;
     if !git_dir.join("sequencer").join("todo").exists() {

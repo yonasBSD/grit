@@ -1690,10 +1690,21 @@ fn reset_commit(
     let _ = std::fs::remove_file(repo.git_dir.join("MERGE_MSG"));
     let _ = std::fs::remove_file(repo.git_dir.join("MERGE_MODE"));
     if !extra.skip_sequencer_head_cleanup {
+        // Mirror git's `sequencer_post_commit_cleanup` (via `remove_branch_state`):
+        // CHERRY_PICK_HEAD/REVERT_HEAD are always removed, but the sequencer dir
+        // (todo/head/opts/abort-safety) is only torn down when the last pick has
+        // already finished — i.e. when `sequencer/todo` has at most one line.
+        // Keeping the sequencer state preserves an in-progress multi-pick sequence
+        // across `reset` so a subsequent `--skip`/`--continue` still finds it.
+        let had_pick_head = repo.git_dir.join("CHERRY_PICK_HEAD").exists();
+        let had_revert_head = repo.git_dir.join("REVERT_HEAD").exists();
         let _ = std::fs::remove_file(repo.git_dir.join("CHERRY_PICK_HEAD"));
         let _ = std::fs::remove_file(repo.git_dir.join("REVERT_HEAD"));
         let seq = repo.git_dir.join("sequencer");
-        if seq.is_dir() {
+        if (had_pick_head || had_revert_head)
+            && seq.is_dir()
+            && sequencer_has_finished_last_pick(&repo.git_dir)
+        {
             let _ = std::fs::remove_dir_all(&seq);
         }
     }
@@ -1703,6 +1714,23 @@ fn reset_commit(
     }
 
     Ok(())
+}
+
+/// Mirror git's `have_finished_the_last_pick` (sequencer.c): returns true when the
+/// `sequencer/todo` file is missing or has at most one line (the current/last pick),
+/// meaning no further picks remain and the sequencer state may be torn down.
+fn sequencer_has_finished_last_pick(git_dir: &Path) -> bool {
+    let todo_path = git_dir.join("sequencer").join("todo");
+    let content = match std::fs::read_to_string(&todo_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    // `git` checks for a newline followed by a non-empty remainder. A todo with a
+    // single (possibly newline-terminated) line counts as finished.
+    match content.find('\n') {
+        Some(idx) => content[idx + 1..].is_empty(),
+        None => true,
+    }
 }
 
 /// Refuse `reset --keep` when a merge is in progress (Git: `die_if_unmerged_cache`).

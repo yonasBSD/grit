@@ -3899,6 +3899,9 @@ checking out of the index."
                             None,
                         );
                         if w.is_ok() {
+                            // Collapse any leftover conflict stages (1/2/3) so the
+                            // restored path becomes a single stage-0 entry, matching git.
+                            index.remove_path_all_stages(&flat_entry.path);
                             index.add_or_replace(flat_entry.clone());
                             index_modified = true;
                             matched = true;
@@ -3988,6 +3991,9 @@ checking out of the index."
                             None,
                         );
                         if w.is_ok() {
+                            // Collapse any leftover conflict stages (1/2/3) so the
+                            // restored path becomes a single stage-0 entry, matching git.
+                            index.remove_path_all_stages(&flat_entry.path);
                             index.add_or_replace(flat_entry.clone());
                             index_modified = true;
                             matched = true;
@@ -4099,9 +4105,12 @@ checking out of the index."
                             oid: blob_oid,
                             flags: path_bytes.len().min(0xFFF) as u16,
                             flags_extended: None,
-                            path: path_bytes,
+                            path: path_bytes.clone(),
                             base_index_pos: 0,
                         };
+                        // Collapse any leftover conflict stages (1/2/3) so the
+                        // restored path becomes a single stage-0 entry, matching git.
+                        index.remove_path_all_stages(&path_bytes);
                         index.add_or_replace(entry);
                         index_modified = true;
                     }

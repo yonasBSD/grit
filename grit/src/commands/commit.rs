@@ -29,8 +29,6 @@ use grit_lib::state::{detect_in_progress, resolve_head, HeadState};
 use regex::RegexBuilder;
 
 use crate::branch_tracking::{format_tracking_info, AheadBehindMode};
-use crate::commands::cherry_pick::try_resume_pick_sequence_after_commit;
-use crate::commands::revert::try_resume_revert_sequence_after_commit;
 use grit_lib::write_tree::{
     write_tree_from_index, write_tree_from_index_subset, write_tree_partial_from_index,
 };
@@ -1396,12 +1394,12 @@ pub fn run(mut args: Args) -> Result<()> {
         }
     }
     cleanup_merge_state(&repo.git_dir);
-    if resume_pick_after_cp {
-        try_resume_pick_sequence_after_commit(&repo)?;
-    }
-    if resume_revert_after_rv {
-        try_resume_revert_sequence_after_commit(&repo)?;
-    }
+    // A plain `git commit` that resolves a cherry-pick/revert conflict only removes
+    // CHERRY_PICK_HEAD/REVERT_HEAD (done via cleanup_merge_state). It must NOT advance
+    // the remaining sequencer todo: git only continues the sequence on an explicit
+    // `cherry-pick --continue` / `revert --continue` (sequencer.c). Auto-resuming here
+    // would tear down the sequencer state that a later `--continue` needs.
+    let _ = (resume_pick_after_cp, resume_revert_after_rv);
 
     // Refresh the index file Git used for this commit (including `GIT_INDEX_FILE`).
     let mut index_refresh = match repo.load_index_at(&index_path) {
