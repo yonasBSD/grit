@@ -1261,6 +1261,45 @@ mod tests {
         assert!(odb.exists(&oid));
     }
 
+    #[test]
+    fn test_strict_skips_gitlink_tree_entries() {
+        use crate::index::{MODE_GITLINK, MODE_REGULAR};
+        use crate::objects::{serialize_tree, TreeEntry};
+
+        // A submodule commit oid that is NOT in the pack/ODB (lives in the
+        // submodule repository, like a 160000 gitlink target on push).
+        let submodule_oid = ObjectId::from_hex(&"7f".repeat(20)).unwrap();
+
+        // Superproject tree referencing the submodule via a gitlink entry.
+        let tree_data = serialize_tree(&[TreeEntry {
+            mode: MODE_GITLINK,
+            name: b"sub".to_vec(),
+            oid: submodule_oid,
+        }]);
+        let tree_oid = Odb::hash_object_data(ObjectKind::Tree, &tree_data);
+
+        // Strict connectivity must NOT flag the gitlink target as missing,
+        // matching upstream git (git/fsck.c skips S_ISGITLINK entries).
+        let mut pack = HashMap::new();
+        pack.insert(tree_oid, (ObjectKind::Tree, tree_data.clone()));
+        assert!(strict_verify_packed_references(None, &pack).is_ok());
+
+        // Regression guard: a non-gitlink (regular file) entry pointing at an
+        // absent blob must still be reported as a strict connectivity error.
+        let bad_tree = serialize_tree(&[TreeEntry {
+            mode: MODE_REGULAR,
+            name: b"file".to_vec(),
+            oid: ObjectId::from_hex(&"ab".repeat(20)).unwrap(),
+        }]);
+        let bad_oid = Odb::hash_object_data(ObjectKind::Tree, &bad_tree);
+        let mut bad_pack = HashMap::new();
+        bad_pack.insert(bad_oid, (ObjectKind::Tree, bad_tree));
+        assert!(matches!(
+            strict_verify_packed_references(None, &bad_pack),
+            Err(Error::CorruptObject(_))
+        ));
+    }
+
     /// `Read` that returns at most `max_len` bytes per call (simulates side-band chunking).
     struct ChunkedReader<'a> {
         data: &'a [u8],
