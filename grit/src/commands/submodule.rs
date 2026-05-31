@@ -3430,9 +3430,9 @@ fn submodule_log_one(
     dst_abbrev: &str,
     prefix: char,
 ) -> Result<()> {
-    let pretty = format!("  {} %s", prefix);
+    let pretty = format!("--pretty=  {} %s", prefix);
     let st = grit_subprocess(grit_bin)
-        .args(["log", "--pretty", &pretty, "-1", dst_abbrev, "--"])
+        .args(["log", &pretty, "-1", dst_abbrev, "--"])
         .current_dir(sub_path)
         .status()
         .context("submodule log -1 for summary")?;
