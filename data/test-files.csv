@@ -639,8 +639,8 @@ t3503-cherry-pick-root	t3	yes	6	6	0	true	ok	0
 t3504-cherry-pick-rerere	t3	yes	9	3	6	false	ok	0
 t3505-cherry-pick-empty	t3	yes	17	17	0	true	ok	0
 t3506-cherry-pick-ff	t3	yes	11	11	0	true	ok	0
-t3507-cherry-pick-conflict	t3	yes	44	24	20	false	ok	0
-t3508-cherry-pick-many-commits	t3	yes	14	9	5	false	ok	0
+t3507-cherry-pick-conflict	t3	yes	44	44	0	true	ok	0
+t3508-cherry-pick-many-commits	t3	yes	14	14	0	true	ok	0
 t3509-cherry-pick-merge-df	t3	yes	9	9	0	true	ok	0
 t3510-cherry-pick	t3	yes	65	5	60	false	ok	0
 t3510-cherry-pick-sequence	t3	yes	55	55	0	true	ok	0
