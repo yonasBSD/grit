@@ -40,7 +40,10 @@ use super::checkout::checkout_index_to_worktree;
 use super::cherry_pick::{
     bail_if_df_merge_would_remove_cwd, preflight_cherry_pick_cwd_obstruction,
 };
-use super::merge::{cleanup_message, refresh_index_stat_cache_from_worktree};
+use super::merge::{
+    cleanup_message, merge_touched_paths, refresh_index_stat_cache_from_worktree,
+    staged_dirty_paths_vs_head,
+};
 use super::sequencer::{
     append_merge_msg_conflict_footer, rollback_is_safe, sequencer_is_pick_sequence,
     sequencer_is_revert_sequence, strip_first_sequencer_todo_line, unmerged_paths,
@@ -526,9 +529,7 @@ fn expand_revert_specs(repo: &Repository, specs: &[String]) -> Result<Vec<String
     // `^X` and `A..B` contribute UNINTERESTING tips, bare refs are interesting tips.
     // When any range/exclusion is present, the reverts are ordered newest-first across
     // the whole reachable set (e.g. `revert ^first fourth` == `revert first..fourth`).
-    let has_set_syntax = specs
-        .iter()
-        .any(|s| s.starts_with('^') || s.contains(".."));
+    let has_set_syntax = specs.iter().any(|s| s.starts_with('^') || s.contains(".."));
     if !has_set_syntax {
         return Ok(specs.to_vec());
     }
@@ -725,6 +726,51 @@ fn parse_strategy_options_revert(
     (favor, ws)
 }
 
+/// Abort the revert if local edits overlap paths the revert three-way merge would touch.
+///
+/// Revert's merge inputs are base = commit tree, ours = HEAD tree, theirs = parent tree.
+/// Any staged-vs-HEAD or unstaged worktree change on a touched path would be overwritten,
+/// so emit git's "Your local changes ... would be overwritten by merge" and fail (exit 128).
+fn error_if_revert_would_clobber_worktree(
+    repo: &Repository,
+    head_oid: ObjectId,
+    commit_tree: ObjectId,
+    head_tree: ObjectId,
+    parent_tree: ObjectId,
+    work_tree: &Path,
+) -> Result<()> {
+    use std::collections::BTreeSet;
+    let touched = merge_touched_paths(repo, commit_tree, head_tree, parent_tree)?;
+
+    let staged_dirty = staged_dirty_paths_vs_head(repo, head_oid)?;
+    let staged_overlap: BTreeSet<String> = staged_dirty.intersection(&touched).cloned().collect();
+    if !staged_overlap.is_empty() {
+        bail_local_changes_overwritten(&staged_overlap);
+    }
+
+    let index = repo.load_index()?;
+    let unstaged =
+        grit_lib::diff::diff_index_to_worktree(&repo.odb, &index, work_tree, false, false)?;
+    let unstaged_paths: BTreeSet<String> = unstaged.iter().map(|e| e.path().to_string()).collect();
+    let unstaged_overlap: BTreeSet<String> =
+        unstaged_paths.intersection(&touched).cloned().collect();
+    if !unstaged_overlap.is_empty() {
+        bail_local_changes_overwritten(&unstaged_overlap);
+    }
+    Ok(())
+}
+
+fn bail_local_changes_overwritten(paths: &std::collections::BTreeSet<String>) -> ! {
+    eprintln!("error: Your local changes to the following files would be overwritten by merge:");
+    for p in paths {
+        eprintln!("\t{p}");
+    }
+    eprintln!("Please commit your changes or stash them before you merge.");
+    eprintln!("Aborting");
+    eprintln!("fatal: revert failed");
+    std::process::exit(128);
+}
+
 fn error_dirty_index_revert(repo: &Repository, head_oid: ObjectId) -> Result<()> {
     if super::merge::index_matches_head_tree(repo, head_oid)? {
         return Ok(());
@@ -891,6 +937,17 @@ fn revert_one_commit(repo: &Repository, spec: &str, args: &Args) -> Result<()> {
     }
 
     if let Some(wt) = repo.work_tree.as_deref() {
+        // Refuse to overwrite local (unstaged/staged) edits that overlap the reverted paths,
+        // matching `git revert`'s unpack_trees check (t3507 "revert w/dirty tree ...").
+        error_if_revert_would_clobber_worktree(
+            repo,
+            head_oid,
+            commit_tree_oid,
+            head_tree_oid,
+            parent_tree_oid,
+            wt,
+        )?;
+
         let base_map = tree_entries_to_map(tree_to_index_entries(repo, &commit_tree_oid, "")?);
         let ours_map = tree_entries_to_map(tree_to_index_entries(repo, &head_tree_oid, "")?);
         let theirs_map = tree_entries_to_map(tree_to_index_entries(repo, &parent_tree_oid, "")?);
@@ -963,7 +1020,9 @@ fn revert_one_commit(repo: &Repository, spec: &str, args: &Args) -> Result<()> {
     let template_msg = if use_reference {
         format!("{title_line}\n\n{body_suffix}")
     } else {
-        format!("{title_line}{body_suffix}")
+        // git separates the `Revert "..."` subject from the `This reverts commit ...` body with
+        // a blank line (sequencer.c's revert message; `title_line` already ends in one `\n`).
+        format!("{title_line}\n{body_suffix}")
     };
 
     if has_conflicts {
@@ -978,12 +1037,12 @@ fn revert_one_commit(repo: &Repository, spec: &str, args: &Args) -> Result<()> {
             .as_deref()
             .or(commit_cleanup.as_deref())
             .unwrap_or("default");
-        let scissors_body = cleanup_message(&template_msg, cleanup_mode);
-        let mut merge_msg = scissors_body;
-        if cleanup_mode.eq_ignore_ascii_case("scissors") {
-            let paths = unmerged_paths(&merged_index);
-            append_merge_msg_conflict_footer(&mut merge_msg, &paths);
-        }
+        let is_scissors = cleanup_mode.eq_ignore_ascii_case("scissors");
+        let mut merge_msg = cleanup_message(&template_msg, cleanup_mode);
+        // Always append the `# Conflicts:` block; the scissors cut-line only for cleanup=scissors
+        // (t3507 revert scissors / default-cleanup MERGE_MSG), matching append_conflicts_hint.
+        let paths = unmerged_paths(&merged_index);
+        append_merge_msg_conflict_footer(&mut merge_msg, &paths, is_scissors);
         fs::write(git_dir.join("MERGE_MSG"), &merge_msg)?;
 
         eprintln!("error: could not revert {short_oid}... {subject}");

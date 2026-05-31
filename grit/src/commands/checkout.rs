@@ -1800,6 +1800,42 @@ fn merge_branch_working_tree(
 }
 
 /// Switch HEAD to an existing branch, updating the working tree and index.
+/// Tear down in-progress operation state when switching what HEAD points at.
+///
+/// Mirrors git's `remove_branch_state` (branch.c), invoked by `git checkout`/`git switch` after
+/// moving HEAD: it drops `CHERRY_PICK_HEAD`/`REVERT_HEAD`, the merge state files (`MERGE_HEAD`,
+/// `MERGE_MSG`, `MERGE_MODE`, `MERGE_RR`, `AUTO_MERGE`) and `SQUASH_MSG`, and — when the sequencer
+/// has finished its last pick — the whole `sequencer/` directory. (t3507 `pristine_detach` relies
+/// on a forced checkout clearing a stranded cherry-pick/revert.)
+fn remove_branch_state(git_dir: &Path) {
+    // sequencer_post_commit_cleanup: drop the pseudo-refs, then remove the sequencer dir
+    // only if the last pick has been finished (todo has <= 1 line / is gone).
+    let had_pick = git_dir.join("CHERRY_PICK_HEAD").exists();
+    let had_revert = git_dir.join("REVERT_HEAD").exists();
+    let _ = std::fs::remove_file(git_dir.join("CHERRY_PICK_HEAD"));
+    let _ = std::fs::remove_file(git_dir.join("REVERT_HEAD"));
+    let _ = std::fs::remove_file(git_dir.join("AUTO_MERGE"));
+    if had_pick || had_revert {
+        let todo = git_dir.join("sequencer").join("todo");
+        let finished = match std::fs::read_to_string(&todo) {
+            Ok(content) => match content.find('\n') {
+                None => true,
+                Some(eol) => content[eol + 1..].is_empty(),
+            },
+            Err(_) => true,
+        };
+        if finished {
+            let _ = std::fs::remove_dir_all(git_dir.join("sequencer"));
+        }
+    }
+    // remove_merge_branch_state + SQUASH_MSG.
+    let _ = std::fs::remove_file(git_dir.join("MERGE_HEAD"));
+    let _ = std::fs::remove_file(git_dir.join("MERGE_RR"));
+    let _ = std::fs::remove_file(git_dir.join("MERGE_MSG"));
+    let _ = std::fs::remove_file(git_dir.join("MERGE_MODE"));
+    let _ = std::fs::remove_file(git_dir.join("SQUASH_MSG"));
+}
+
 fn switch_branch(
     repo: &Repository,
     branch_name: &str,
@@ -1969,6 +2005,8 @@ fn switch_branch(
     // Update HEAD before appending the checkout reflog so `@{-1}` / `git switch -`
     // see the branch we are leaving as the previous checkout (matches Git).
     std::fs::write(repo.git_dir.join("HEAD"), format!("ref: {branch_ref}\n"))?;
+    // git checkout/switch tears down any in-progress cherry-pick/revert/merge after moving HEAD.
+    remove_branch_state(&repo.git_dir);
 
     let old_oid = old_head_commit.unwrap_or_else(|| ObjectId::from_bytes(&[0u8; 20]).unwrap());
     let from_desc = match &head {
@@ -2464,6 +2502,8 @@ fn force_reset_to_tree(repo: &Repository, target_tree: &ObjectId) -> Result<()> 
     if RECURSE_SUBMODULES.with(|r| r.get()) {
         recurse_submodules_after_checkout(repo)?;
     }
+    // A forced checkout clears any in-progress cherry-pick/revert/merge (git remove_branch_state).
+    remove_branch_state(&repo.git_dir);
     Ok(())
 }
 
@@ -2588,6 +2628,8 @@ fn force_reset_to_head(repo: &Repository) -> Result<()> {
     if RECURSE_SUBMODULES.with(|r| r.get()) {
         recurse_submodules_after_checkout(repo)?;
     }
+    // A forced checkout clears any in-progress cherry-pick/revert/merge (git remove_branch_state).
+    remove_branch_state(&repo.git_dir);
 
     // Print current branch/commit info
     match &head {
@@ -2649,6 +2691,8 @@ fn detach_head_inner(repo: &Repository, oid: &ObjectId, force: bool, explicit: b
 
     // Write detached HEAD
     std::fs::write(repo.git_dir.join("HEAD"), format!("{oid}\n"))?;
+    // git checkout/switch tears down any in-progress cherry-pick/revert/merge after moving HEAD.
+    remove_branch_state(&repo.git_dir);
 
     if already_at_target && !force {
         // post-checkout already ran for same-commit detach

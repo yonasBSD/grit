@@ -498,12 +498,19 @@ fn run_commit_sequence(
         write_abort_safety_file(git_dir)?;
     }
 
+    // A bare `git cherry-pick -s <commit>` bakes the sign-off into the conflict MERGE_MSG so a
+    // plain `git commit` finishing the resolution carries it (t3507 "failed cherry-pick does not
+    // forget -s"). For a multi-pick sequence the sign-off is a persisted opt replayed per pick, so
+    // the conflict MERGE_MSG is left without it (t3510 #46/#47 keep the manually resolved pick
+    // unsigned). A continuation replay (`orig_head_override`) is likewise not a fresh single pick.
+    let single_pick_signoff = oids.len() == 1 && orig_head_override.is_none() && !args.no_commit;
+
     for (i, commit_oid) in oids.iter().enumerate() {
         // When the sequence stops on `oids[i]` (conflict / empty / hook failure), git
         // keeps the *current* (failing) pick at the head of `sequencer/todo` so that a
         // later `--continue` / `--skip` operates on it. Include `oids[i]` in `remaining`.
         let remaining = &oids[i..];
-        match cherry_pick_one_commit(repo, *commit_oid, args) {
+        match cherry_pick_one_commit(repo, *commit_oid, args, single_pick_signoff) {
             Ok(()) => {
                 if oids.len() > 1 && !args.no_commit {
                     strip_first_sequencer_todo_line(git_dir)?;
@@ -767,7 +774,12 @@ fn walk_commit_range(repo: &Repository, base: ObjectId, tip: ObjectId) -> Result
     Ok(chain)
 }
 
-fn cherry_pick_one_commit(repo: &Repository, commit_oid: ObjectId, args: &Args) -> Result<()> {
+fn cherry_pick_one_commit(
+    repo: &Repository,
+    commit_oid: ObjectId,
+    args: &Args,
+    single_pick_signoff: bool,
+) -> Result<()> {
     let git_dir = &repo.git_dir;
 
     let commit_obj = repo.odb.read(&commit_oid)?;
@@ -1075,12 +1087,24 @@ fn cherry_pick_one_commit(repo: &Repository, commit_oid: ObjectId, args: &Args) 
             .as_deref()
             .or(commit_cleanup.as_deref())
             .unwrap_or("default");
-        let scissors_body = cleanup_message(&msg, cleanup_mode);
-        let mut merge_msg = scissors_body;
-        if cleanup_mode.eq_ignore_ascii_case("scissors") {
-            let paths = unmerged_paths(&merge_result.index);
-            append_merge_msg_conflict_footer(&mut merge_msg, &paths);
+        let is_scissors = cleanup_mode.eq_ignore_ascii_case("scissors");
+        let mut merge_msg = cleanup_message(&msg, cleanup_mode);
+        // A bare `cherry-pick -s <commit>` bakes the sign-off into MERGE_MSG (before the
+        // `# Conflicts:` block) so a manual `git commit` finishing the resolution carries it
+        // (t3507 "failed cherry-pick does not forget -s"). Sequence picks leave it out
+        // (t3510 #46/#47) and `--continue` re-affirms it separately. Skip when the picked
+        // message already ends with that exact sign-off (t3507 "does not add duplicated -s").
+        if single_pick_signoff && args.signoff {
+            let sob = format_signoff_line(&cname, &cemail);
+            if merge_msg.trim_end().lines().last().map(str::trim_end) != Some(sob.trim_end()) {
+                append_signoff_trailer(&mut merge_msg, &sob, &config);
+            }
         }
+        // git's append_conflicts_hint always appends the `# Conflicts:` comment block on a
+        // conflicted pick; the scissors cut-line is added only for cleanup=scissors
+        // (t3507 "ensure commit.cleanup = scissors ..." and the default-cleanup MERGE_MSG).
+        let paths = unmerged_paths(&merge_result.index);
+        append_merge_msg_conflict_footer(&mut merge_msg, &paths, is_scissors);
         // Do NOT bake `--signoff` into MERGE_MSG. The conflict-resolution commit
         // (the interrupted pick completed by `--continue`, or a manual `git commit`)
         // should NOT carry an automatic Signed-off-by: the user must re-affirm `-s`
@@ -1182,6 +1206,26 @@ fn branch_name(head: &HeadState) -> &str {
         HeadState::Branch { short_name, .. } => short_name.as_str(),
         HeadState::Detached { .. } => "HEAD detached",
         HeadState::Invalid => "unknown",
+    }
+}
+
+/// Remove a single trailing sign-off line (`sob`, a full `Signed-off-by: ...` line possibly with a
+/// trailing newline) and any blank lines its removal leaves behind.
+fn strip_trailing_signoff_line(msg: &mut String, sob: &str) {
+    let target = sob.trim_end();
+    let mut lines: Vec<&str> = msg.lines().collect();
+    // Find the last occurrence of the exact sign-off line and drop it.
+    if let Some(pos) = lines.iter().rposition(|l| l.trim_end() == target) {
+        lines.remove(pos);
+        // Trim trailing blank lines created by the removal.
+        while lines.last().is_some_and(|l| l.trim().is_empty()) {
+            lines.pop();
+        }
+        *msg = if lines.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", lines.join("\n"))
+        };
     }
 }
 
@@ -1317,8 +1361,10 @@ fn print_commit_summary(repo: &Repository, head: &HeadState, new_oid: ObjectId, 
                         .unwrap_or_default()
                 }
             };
-            let (a, d) =
-                grit_lib::diff::count_changes(&read_text(&entry.old_oid), &read_text(&entry.new_oid));
+            let (a, d) = grit_lib::diff::count_changes(
+                &read_text(&entry.old_oid),
+                &read_text(&entry.new_oid),
+            );
             total_ins += a;
             total_del += d;
         }
@@ -1524,6 +1570,18 @@ fn do_continue(mut args: Args) -> Result<()> {
             &cp_oid.to_hex(),
         ),
     };
+
+    // A single-pick `cherry-pick -s <commit>` baked the committer sign-off into MERGE_MSG (so a
+    // manual `git commit` keeps it, t3507). But `--continue` must re-affirm `-s` on its own
+    // command line (t3510 #48), so drop a trailing committer sign-off that the original commit
+    // message did not carry unless `-s` was given on this `--continue`.
+    if !cli_signoff {
+        let sob = format_signoff_line(&cname, &cemail);
+        let original_has_sob = cherry_pick_source_message(&cp_commit).contains(sob.trim_end());
+        if !original_has_sob {
+            strip_trailing_signoff_line(&mut msg, &sob);
+        }
+    }
 
     if args.append_source {
         let trailer = format!("(cherry picked from commit {})", cp_oid.to_hex());

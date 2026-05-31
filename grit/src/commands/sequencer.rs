@@ -92,12 +92,24 @@ pub fn rollback_is_safe(git_dir: &Path) -> bool {
 }
 
 /// Append Git's scissors + `# Conflicts:` trailer to `MERGE_MSG` during sequencer conflicts.
-pub(crate) fn append_merge_msg_conflict_footer(msg: &mut String, conflicted_paths: &[Vec<u8>]) {
+/// Append git's `append_conflicts_hint` footer to a conflict `MERGE_MSG`.
+///
+/// The `# Conflicts:` block (each unmerged path on its own commented line) is *always*
+/// appended. When `scissors` is set (`commit.cleanup=scissors` / `--cleanup=scissors`), the
+/// scissors cut-line block is emitted first, mirroring sequencer.c:append_conflicts_hint.
+pub(crate) fn append_merge_msg_conflict_footer(
+    msg: &mut String,
+    conflicted_paths: &[Vec<u8>],
+    scissors: bool,
+) {
+    if scissors {
+        msg.push('\n');
+        msg.push_str("# ------------------------ >8 ------------------------\n");
+        msg.push_str("# Do not modify or remove the line above.\n");
+        msg.push_str("# Everything below it will be ignored.\n");
+        msg.push('#');
+    }
     msg.push('\n');
-    msg.push_str("# ------------------------ >8 ------------------------\n");
-    msg.push_str("# Do not modify or remove the line above.\n");
-    msg.push_str("# Everything below it will be ignored.\n");
-    msg.push_str("#\n");
     msg.push_str("# Conflicts:\n");
     for p in conflicted_paths {
         msg.push_str("#\t");
