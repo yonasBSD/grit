@@ -61,6 +61,12 @@ pub struct WriteArgs {
     /// Read `pack-*.idx` basenames from stdin (one per line) to include in order.
     #[arg(long = "stdin-packs")]
     pub stdin_packs: bool,
+    /// Suppress progress (accepted for compat).
+    #[arg(long = "no-progress")]
+    pub no_progress: bool,
+    /// Show progress (accepted for compat).
+    #[arg(long = "progress")]
+    pub progress: bool,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -138,6 +144,8 @@ pub fn run_from_argv(argv: &[String]) -> Result<()> {
             let mut no_bitmap = false;
             let mut preferred_pack = None;
             let mut stdin_packs = false;
+            let mut no_progress = false;
+            let mut progress = false;
             let mut i = 1usize;
             while i < rest.len() {
                 let a = rest[i].as_str();
@@ -146,6 +154,8 @@ pub fn run_from_argv(argv: &[String]) -> Result<()> {
                     "--bitmap" => bitmap = true,
                     "--no-bitmap" => no_bitmap = true,
                     "--stdin-packs" => stdin_packs = true,
+                    "--no-progress" => no_progress = true,
+                    "--progress" => progress = true,
                     _ if a.starts_with("--preferred-pack=") => {
                         preferred_pack = Some(a["--preferred-pack=".len()..].to_string());
                     }
@@ -168,6 +178,8 @@ pub fn run_from_argv(argv: &[String]) -> Result<()> {
                     no_bitmap,
                     preferred_pack,
                     stdin_packs,
+                    no_progress,
+                    progress,
                 },
             )
         }

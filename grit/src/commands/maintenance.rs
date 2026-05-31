@@ -1711,7 +1711,9 @@ fn get_auto_pack_size(repo: &Repository) -> u64 {
     if let Ok(rd) = fs::read_dir(&d) {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().to_string();
-            if !(n.starts_with("pack-") && n.ends_with(".pack")) {
+            // Match git's `repo_for_each_pack`: any `*.pack` counts, not only
+            // `pack-*` (t7900's incremental-repack uses `test-N.pack`).
+            if !n.ends_with(".pack") {
                 continue;
             }
             let size = e.metadata().map(|m| m.len()).unwrap_or(0);

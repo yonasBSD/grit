@@ -1256,12 +1256,17 @@ pub fn write_multi_pack_index_with_options(
     pack_dir: &Path,
     opts: &WriteMultiPackIndexOptions,
 ) -> Result<()> {
+    // Git's MIDX covers every pack index in the directory regardless of its
+    // basename (the `.git/objects/pack/test-*.idx` packs created by t7900's
+    // incremental-repack test, for instance), so include any `*.idx` whose
+    // companion `.pack` exists.
     let mut idx_names: Vec<String> = fs::read_dir(pack_dir)
         .map_err(Error::Io)?
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            if name.ends_with(".idx") && name.starts_with("pack-") {
+            let stem = name.strip_suffix(".idx")?;
+            if pack_dir.join(format!("{stem}.pack")).exists() {
                 Some(name)
             } else {
                 None
