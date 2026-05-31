@@ -6054,14 +6054,12 @@ fn checkout_conflicted_path_with_merge(
         style = ConflictStyle::Merge;
     }
 
-    if let Some((driver_cmd, recursive_binary)) = resolve_path_merge_driver_command(repo, rel_path)
+    if let Some((driver_cmd, _recursive_binary)) = resolve_path_merge_driver_command(repo, rel_path)
     {
-        if recursive_binary
-            || merge_file::is_binary(&ours_obj.data)
-            || merge_file::is_binary(&theirs_obj.data)
-        {
-            return write_to_worktree(work_tree, rel_path, &ours_obj.data, ours_entry.mode);
-        }
+        // `merge.<driver>.recursive` only selects how the *virtual ancestor* is merged when there
+        // is more than one merge base; it does NOT make the leaf content merge binary. The leaf
+        // merge always runs the configured driver (t7201 45). (A genuinely binary blob is already
+        // handled by the unconditional is_binary short-circuit above.)
         let (merged, _code) = execute_custom_merge_driver(
             &driver_cmd,
             rel_path,
