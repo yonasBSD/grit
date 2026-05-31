@@ -538,7 +538,13 @@ fn run_commit_sequence(
         }
     }
 
-    let nested_single_in_sequence = oids.len() == 1 && !args.no_commit && head_file_path.exists();
+    // A continuation/skip replay (`orig_head_override` set) always finishes a sequence,
+    // so it must clean up the sequencer state even when only one pick remained. A genuine
+    // standalone `cherry-pick <single commit>` run while a sequence is in progress
+    // (`orig_head_override` == None, head file present) must instead leave the state alone.
+    let is_continuation = orig_head_override.is_some();
+    let nested_single_in_sequence =
+        !is_continuation && oids.len() == 1 && !args.no_commit && head_file_path.exists();
     if nested_single_in_sequence {
         // "git cherry-pick <single commit>" in the middle of a sequence is a plain
         // single_pick (sequencer.c:5565-5571): it commits on top of HEAD, clears
@@ -982,17 +988,13 @@ fn cherry_pick_one_commit(repo: &Repository, commit_oid: ObjectId, args: &Args) 
             let paths = unmerged_paths(&merge_result.index);
             append_merge_msg_conflict_footer(&mut merge_msg, &paths);
         }
-        if args.signoff {
-            let sob = format_signoff_line(&cname, &cemail);
-            let already_has_committer_sob = merge_msg.lines().any(|l| {
-                l.trim_start()
-                    .strip_prefix("Signed-off-by:")
-                    .is_some_and(|rest| rest.trim() == format!("{cname} <{cemail}>"))
-            });
-            if !already_has_committer_sob {
-                append_signoff_trailer(&mut merge_msg, &sob, &config);
-            }
-        }
+        // Do NOT bake `--signoff` into MERGE_MSG. The conflict-resolution commit
+        // (the interrupted pick completed by `--continue`, or a manual `git commit`)
+        // should NOT carry an automatic Signed-off-by: the user must re-affirm `-s`
+        // on the continue/commit command line (t3510 #46/#47/#48). Note `-x`
+        // (record-origin) IS already present via finalize_cherry_pick_message and is
+        // intentionally kept (t3510 #45). The signoff is only re-applied to picks
+        // that `--continue` replays *fresh* (done inside cherry_pick_one_commit).
         fs::write(git_dir.join("MERGE_MSG"), &merge_msg)?;
 
         eprintln!("error: could not apply {short_oid}... {subject}");
@@ -1163,6 +1165,10 @@ fn do_continue(mut args: Args) -> Result<()> {
     // Compatibility check uses command-line flags only (git's `verify_opt_compatible`
     // runs before `read_populate_opts`); merge persisted sequencer/opts afterwards.
     verify_pick_flags_not_with_operation(&args, "--continue");
+    // Remember whether `-s`/`--signoff` was given on *this* command line, before the
+    // persisted opts are merged in. The conflict-resolution commit only gets a
+    // Signed-off-by when the user re-affirms `-s` on the `--continue` line itself.
+    let cli_signoff = args.signoff;
     merge_sequencer_opts(git_dir, &mut args);
     let args = &args;
 
@@ -1262,7 +1268,10 @@ fn do_continue(mut args: Args) -> Result<()> {
         }
     }
 
-    if args.signoff {
+    // Only sign off the conflict-resolution commit when `-s` was re-affirmed on the
+    // `--continue` command line; the persisted sequence signoff must NOT auto-apply
+    // here (t3510 #47/#48). Fresh picks replayed afterwards still get the persisted -s.
+    if cli_signoff {
         let sob = format_signoff_line(&cname, &cemail);
         append_signoff_trailer(&mut msg, &sob, &config);
     }
