@@ -154,6 +154,10 @@ fn verify_pick_flags_not_with_operation(args: &Args, operation: &str) {
         incompatible = Some("-x");
     } else if args.ff {
         incompatible = Some("--ff");
+    } else if args.rerere_autoupdate {
+        incompatible = Some("--rerere-autoupdate");
+    } else if args.no_rerere_autoupdate {
+        incompatible = Some("--no-rerere-autoupdate");
     } else if args.keep_redundant_commits {
         incompatible = Some("--keep-redundant-commits");
     } else if args.empty.is_some() {
@@ -171,7 +175,7 @@ fn verify_pick_flags_not_with_operation(args: &Args, operation: &str) {
 
 use super::merge::{
     bail_if_resolve_index_not_clean_vs_head, cleanup_message, merge_touched_paths,
-    staged_dirty_paths_vs_head,
+    refresh_index_stat_cache_from_worktree, staged_dirty_paths_vs_head,
 };
 use super::sequencer::{
     append_merge_msg_conflict_footer, rollback_is_safe, sequencer_is_pick_sequence,
@@ -276,6 +280,24 @@ pub struct Args {
     /// Open an editor for the commit message.
     #[arg(short = 'e', long = "edit")]
     pub edit: bool,
+
+    /// After a conflict, record conflict preimages / replay recorded resolutions and optionally stage.
+    ///
+    /// `--rerere-autoupdate` / `--no-rerere-autoupdate` form a last-wins tristate (Git's
+    /// `OPT_RERERE_AUTOUPDATE`): they may be repeated and each overrides the other, so the final
+    /// occurrence on the command line decides the mode (t3504 "more than once").
+    #[arg(
+        long = "rerere-autoupdate",
+        overrides_with_all = ["rerere_autoupdate", "no_rerere_autoupdate"]
+    )]
+    pub rerere_autoupdate: bool,
+
+    /// Do not update the index when a recorded rerere resolution is replayed.
+    #[arg(
+        long = "no-rerere-autoupdate",
+        overrides_with_all = ["rerere_autoupdate", "no_rerere_autoupdate"]
+    )]
+    pub no_rerere_autoupdate: bool,
 
     /// Unsupported on cherry-pick (revert-only); accepted to print upstream usage.
     #[arg(long = "reference", hide = true)]
@@ -944,6 +966,18 @@ fn cherry_pick_one_commit(repo: &Repository, commit_oid: ObjectId, args: &Args) 
         &merge_result.conflict_content,
     )?;
 
+    // The merged index was built from tree entries with an empty stat cache. After writing the
+    // working tree, refresh the stat cache for the resolved (stage-0) paths and persist the index
+    // so `git diff-files` sees them as clean (matches `git merge`, which refreshes the index after
+    // a conflicted checkout). Conflict stages (1/2/3) are left untouched. This also gives `rerere`
+    // (invoked below on the conflict path) an index whose clean paths match the working tree, so a
+    // replayed/auto-staged resolution leaves `diff-files` clean (t3504 `--rerere-autoupdate`).
+    if has_conflicts {
+        refresh_index_stat_cache_from_worktree(repo, &mut merge_result.index)?;
+        repo.write_index(&mut merge_result.index)
+            .context("writing index")?;
+    }
+
     // Build the cherry-pick message (Git: `sequencer.c` + `commit.cleanup` when `-x`).
     let (cname, cemail) = committer_name_email(&config);
     let mut msg = finalize_cherry_pick_message(
@@ -1016,6 +1050,20 @@ fn cherry_pick_one_commit(repo: &Repository, commit_oid: ObjectId, args: &Args) 
                 "hint: Disable this message with \"git config set advice.mergeConflict false\""
             );
         }
+
+        // Record conflict preimages / replay recorded resolutions, mirroring
+        // sequencer.c:do_pick_commit -> repo_rerere(r, opts->allow_rerere_auto) on the
+        // conflict path. The autoupdate mode follows the command line flags, falling back
+        // to rerere.autoUpdate config (RerereAutoupdate::FromConfig).
+        let rr = if args.no_rerere_autoupdate {
+            grit_lib::rerere::RerereAutoupdate::No
+        } else if args.rerere_autoupdate {
+            grit_lib::rerere::RerereAutoupdate::Yes
+        } else {
+            grit_lib::rerere::RerereAutoupdate::FromConfig
+        };
+        let _ = grit_lib::rerere::repo_rerere(repo, rr);
+
         bail!("CONFLICT_EXIT");
     }
 
@@ -1363,6 +1411,8 @@ pub(crate) fn try_resume_pick_sequence_after_commit(repo: &Repository) -> Result
         strategy_option: vec![],
         empty: None,
         edit: false,
+        rerere_autoupdate: false,
+        no_rerere_autoupdate: false,
         reference: false,
         cleanup: None,
     };
@@ -1605,6 +1655,13 @@ fn write_sequencer_opts(git_dir: &Path, args: &Args) -> Result<()> {
     for xopt in &args.strategy_option {
         opts.push_str(&format!("\tstrategy-option = {xopt}\n"));
     }
+    // Persist the rerere autoupdate choice so `--continue` of a multi-commit sequence
+    // replays it (sequencer.c writes `options.allow-rerere-auto` only when set).
+    if args.rerere_autoupdate {
+        opts.push_str("\tallow-rerere-auto = true\n");
+    } else if args.no_rerere_autoupdate {
+        opts.push_str("\tallow-rerere-auto = false\n");
+    }
     if args.edit {
         opts.push_str("\tedit = true\n");
     }
@@ -1688,6 +1745,13 @@ fn merge_sequencer_opts(git_dir: &Path, args: &mut Args) {
                 }
                 "strategy" => args.strategy = Some(val.to_string()),
                 "strategy-option" => args.strategy_option.push(val.to_string()),
+                "allow-rerere-auto" => {
+                    if val == "true" {
+                        args.rerere_autoupdate = true;
+                    } else if val == "false" {
+                        args.no_rerere_autoupdate = true;
+                    }
+                }
                 "empty" => args.empty = Some(val.to_string()),
                 "cleanup" => args.cleanup = Some(val.to_string()),
                 _ => {}

@@ -386,8 +386,22 @@ fn merge_one_path(
             index.entries.push(e);
         }
         (None, Some(oe), Some(te)) => {
-            stage_entry(index, out_path, oe, 2);
-            stage_entry(index, out_path, te, 3);
+            // add/add conflict: both sides introduced the path with differing content and there
+            // is no merge base. Git performs a content merge against an empty base, leaving
+            // conflict markers in the working tree (and unmerged stages 2/3 in the index). We
+            // previously only recorded the index stages, leaving the working-tree file as the
+            // plain "ours" blob — that hid the conflict from `rerere` and the user (t3504).
+            add_add_content_conflict(
+                repo,
+                index,
+                conflict_content,
+                out_path,
+                oe,
+                te,
+                favor,
+                ws,
+                presentation,
+            )?;
         }
         (Some(_), None, None) => {}
         (Some(be), Some(oe), None) if same_blob(be, oe) => {}
@@ -540,6 +554,103 @@ fn content_merge_or_conflict(
         if base.mode == ours.mode && base.mode != theirs.mode {
             entry.mode = theirs.mode;
         }
+        index.entries.push(entry);
+    }
+
+    Ok(())
+}
+
+/// Resolve an add/add conflict (no merge base, both sides created `path`).
+///
+/// Mirrors Git's behaviour: a content merge with an empty base. When the line merge does not
+/// auto-resolve (the common case for genuinely different content), the conflict-marker blob is
+/// recorded for the working tree and the unmerged stages 2/3 are written to the index. Gitlink
+/// (submodule) and binary add/adds fall back to plain unmerged stages, matching the
+/// `content_merge_or_conflict` policy.
+#[allow(clippy::too_many_arguments)]
+fn add_add_content_conflict(
+    repo: &Repository,
+    index: &mut Index,
+    conflict_content: &mut BTreeMap<Vec<u8>, ObjectId>,
+    path: &[u8],
+    ours: &IndexEntry,
+    theirs: &IndexEntry,
+    favor: MergeFavor,
+    ws: WhitespaceMergeOptions,
+    presentation: TreeMergeConflictPresentation<'_>,
+) -> crate::error::Result<()> {
+    // Gitlink add/add: no textual merge is possible; leave unmerged stages.
+    if ours.mode == 0o160000 || theirs.mode == 0o160000 {
+        stage_entry(index, path, ours, 2);
+        stage_entry(index, path, theirs, 3);
+        return Ok(());
+    }
+
+    let ours_obj = repo.odb.read(&ours.oid)?;
+    let theirs_obj = repo.odb.read(&theirs.oid)?;
+
+    // Binary add/add: honour an explicit favour, else leave unmerged stages.
+    if crate::merge_file::is_binary(&ours_obj.data)
+        || crate::merge_file::is_binary(&theirs_obj.data)
+    {
+        match favor {
+            MergeFavor::Theirs => {
+                let mut e = theirs.clone();
+                e.path = path.to_vec();
+                e.flags = path_len_flags(path);
+                index.entries.push(e);
+            }
+            MergeFavor::Ours => {
+                let mut e = ours.clone();
+                e.path = path.to_vec();
+                e.flags = path_len_flags(path);
+                index.entries.push(e);
+            }
+            _ => {
+                stage_entry(index, path, ours, 2);
+                stage_entry(index, path, theirs, 3);
+            }
+        }
+        return Ok(());
+    }
+
+    let path_label = String::from_utf8_lossy(path);
+    let label_theirs: std::borrow::Cow<'_, str> = match presentation.label_theirs {
+        TheirsConflictLabel::PathUtf8 => path_label.clone(),
+        TheirsConflictLabel::Fixed(s) => std::borrow::Cow::Borrowed(s),
+    };
+    let input = MergeInput {
+        base: b"",
+        ours: &ours_obj.data,
+        theirs: &theirs_obj.data,
+        label_ours: presentation.label_ours,
+        label_base: presentation.label_base,
+        label_theirs: label_theirs.as_ref(),
+        favor,
+        style: presentation.style,
+        marker_size: 7,
+        diff_algorithm: None,
+        ignore_all_space: ws.ignore_all_space,
+        ignore_space_change: ws.ignore_space_change,
+        ignore_space_at_eol: ws.ignore_space_at_eol,
+        ignore_cr_at_eol: ws.ignore_cr_at_eol,
+    };
+
+    let result = merge(&input)?;
+
+    if result.conflicts > 0 {
+        let conflict_oid = repo.odb.write(ObjectKind::Blob, &result.content)?;
+        conflict_content.insert(path.to_vec(), conflict_oid);
+        stage_entry(index, path, ours, 2);
+        stage_entry(index, path, theirs, 3);
+    } else {
+        // A favour (ours/theirs/union) or identical-after-normalisation merge resolved the
+        // content cleanly: record a single stage-0 entry with the merged blob.
+        let merged_oid = repo.odb.write(ObjectKind::Blob, &result.content)?;
+        let mut entry = ours.clone();
+        entry.path = path.to_vec();
+        entry.flags = path_len_flags(path);
+        entry.oid = merged_oid;
         index.entries.push(entry);
     }
 

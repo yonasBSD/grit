@@ -11,7 +11,7 @@ use sha1::{Digest, Sha1};
 
 use crate::config::ConfigSet;
 use crate::error::Result;
-use crate::index::{Index, IndexEntry, MODE_REGULAR};
+use crate::index::{entry_from_metadata, Index, IndexEntry, MODE_REGULAR};
 use crate::merge_file::{merge, ConflictStyle, MergeFavor, MergeInput};
 use crate::objects::{ObjectId, ObjectKind};
 use crate::repo::Repository;
@@ -627,7 +627,9 @@ fn stage_resolved_path(repo: &Repository, index: &mut Index, path: &str) -> Resu
     let data = fs::read(&abs)?;
     let oid = repo.odb.write(ObjectKind::Blob, &data)?;
     let path_b = path.as_bytes().to_vec();
-    let template = index
+    // Preserve the mode recorded for the conflicting path (stage 2, else stage 3) so
+    // executable bits / symlinks survive auto-staging; default to a regular file.
+    let mode = index
         .entries
         .iter()
         .find(|e| e.path == path_b && e.stage() == 2)
@@ -637,27 +639,33 @@ fn stage_resolved_path(repo: &Repository, index: &mut Index, path: &str) -> Resu
                 .iter()
                 .find(|e| e.path == path_b && e.stage() == 3)
         })
-        .cloned()
-        .unwrap_or_else(|| IndexEntry {
+        .map(|e| e.mode)
+        .unwrap_or(MODE_REGULAR);
+
+    // Fill the stat cache from the on-disk file (mirroring git's `add_index_entry` after a
+    // rerere autoupdate) so `git diff-files` sees the resolved path as clean (t3504). Without
+    // a fresh stat cache the index entry would carry the stale/zero stat of the conflict
+    // stage and `diff-files` would report the file as modified.
+    let mut entry = match fs::symlink_metadata(&abs) {
+        Ok(meta) => entry_from_metadata(&meta, &path_b, oid, mode),
+        Err(_) => IndexEntry {
             ctime_sec: 0,
             ctime_nsec: 0,
             mtime_sec: 0,
             mtime_nsec: 0,
             dev: 0,
             ino: 0,
-            mode: MODE_REGULAR,
+            mode,
             uid: 0,
             gid: 0,
             size: data.len().min(u32::MAX as usize) as u32,
             oid,
-            flags: 0,
+            flags: path_b.len().min(0xFFF) as u16,
             flags_extended: None,
-            path: path_b,
+            path: path_b.clone(),
             base_index_pos: 0,
-        });
-    let mut entry = template;
-    entry.oid = oid;
-    entry.size = data.len().min(u32::MAX as usize) as u32;
+        },
+    };
     entry.flags &= !0x3000;
     index.stage_file(entry);
     Ok(())
