@@ -3204,6 +3204,33 @@ pub(crate) fn check_dirty_worktree(
                 let rel_path = String::from_utf8_lossy(path_bytes);
                 staged_conflicts.push(rel_path.into_owned());
             }
+
+            // Staged deletions: a path present in HEAD but removed from the index (e.g. after
+            // `git rm <path>`) does not appear in `old_index`, so the loop above never sees it.
+            // Git still refuses the switch when the target branch *modifies* that same path
+            // (the staged deletion would be overwritten by the target's content — t7201 10).
+            let old_stage0: HashSet<&[u8]> = old_index
+                .entries
+                .iter()
+                .filter(|e| e.stage() == 0)
+                .map(|e| e.path.as_slice())
+                .collect();
+            for (path_bytes, head_oid) in &head_tree_map {
+                if old_stage0.contains(path_bytes.as_slice()) {
+                    continue; // still tracked in the index; handled above
+                }
+                // Path deleted from the index relative to HEAD. Refuse only when the target
+                // changes the path's content (target != HEAD); if the target also deletes or
+                // keeps it unchanged there is nothing to overwrite.
+                if let Some(ne) = new_map.get(path_bytes.as_slice()) {
+                    if ne.oid != *head_oid {
+                        let rel_path = String::from_utf8_lossy(path_bytes);
+                        staged_conflicts.push(rel_path.into_owned());
+                    }
+                }
+            }
+            staged_conflicts.sort();
+            staged_conflicts.dedup();
             if !staged_conflicts.is_empty() {
                 let mut msg = String::from(
                     "Your local changes to the following files would be overwritten by checkout:\n",

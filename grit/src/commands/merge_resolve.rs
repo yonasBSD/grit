@@ -24,6 +24,7 @@ pub fn run(args: Args) -> Result<()> {
 
     read_tree::run(read_tree::Args {
         merge: true,
+        quiet: false,
         index_only: false,
         update: true,
         reset: false,

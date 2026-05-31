@@ -28,6 +28,10 @@ pub struct Args {
     #[arg(short = 'm')]
     pub merge: bool,
 
+    /// Suppress feedback messages (e.g. "would be overwritten") while still failing the merge.
+    #[arg(short = 'q', long = "quiet")]
+    pub quiet: bool,
+
     /// Perform index-only operation (don't check working tree).
     #[arg(short = 'i')]
     pub index_only: bool,
@@ -205,6 +209,20 @@ fn hfs_equivalent_to_dotgit(name: &[u8]) -> bool {
 ///
 /// Returns an error when repository discovery fails, tree-ish resolution
 /// fails, index/worktree updates fail, or option combinations are invalid.
+/// Map a merge/update result to a silent non-zero exit when `--quiet` is set.
+///
+/// `git read-tree -m --quiet` (used by `git merge` for its trial merge) suppresses the
+/// "would be overwritten" feedback while still failing with a non-zero exit code so the caller
+/// can fall back to a real merge (t7201 10). Without `--quiet` the original error is returned
+/// unchanged so the message is printed normally.
+fn quiet_merge_error<T>(quiet: bool, result: Result<T>) -> Result<T> {
+    match result {
+        Ok(v) => Ok(v),
+        Err(_) if quiet => Err(crate::explicit_exit::SilentNonZeroExit { code: 128 }.into()),
+        Err(e) => Err(e),
+    }
+}
+
 pub fn run(args: Args) -> Result<()> {
     maybe_write_trace_packet_done();
     let repo = Repository::discover(None).context("not a git repository")?;
@@ -372,13 +390,19 @@ pub fn run(args: Args) -> Result<()> {
             2 => {
                 let old_tree = tree_to_map(tree_to_index_entries(&repo, &tree_oids[0], "", prot)?);
                 let new_tree = tree_to_map(tree_to_index_entries(&repo, &tree_oids[1], "", prot)?);
-                new_index = two_way_merge(&repo, &old_index, &old_tree, &new_tree)?;
+                new_index = quiet_merge_error(
+                    args.quiet,
+                    two_way_merge(&repo, &old_index, &old_tree, &new_tree),
+                )?;
             }
             3 => {
                 let base = tree_to_map(tree_to_index_entries(&repo, &tree_oids[0], "", prot)?);
                 let ours = tree_to_map(tree_to_index_entries(&repo, &tree_oids[1], "", prot)?);
                 let theirs = tree_to_map(tree_to_index_entries(&repo, &tree_oids[2], "", prot)?);
-                new_index = three_way_merge(&repo, &old_index, &base, &ours, &theirs)?;
+                new_index = quiet_merge_error(
+                    args.quiet,
+                    three_way_merge(&repo, &old_index, &base, &ours, &theirs),
+                )?;
             }
             4 => {
                 if tree_oids[0] != tree_oids[3] || tree_oids[1] != tree_oids[2] {
@@ -401,15 +425,18 @@ pub fn run(args: Args) -> Result<()> {
     )?;
 
     if args.update {
-        validate_worktree_updates(
-            &repo,
-            &old_index,
-            &new_index,
-            allow_ignored_overwrite,
-            args.super_prefix.as_deref(),
-            recurse_submodules_effective,
-            args.recurse_submodules,
-            false,
+        quiet_merge_error(
+            args.quiet,
+            validate_worktree_updates(
+                &repo,
+                &old_index,
+                &new_index,
+                allow_ignored_overwrite,
+                args.super_prefix.as_deref(),
+                recurse_submodules_effective,
+                args.recurse_submodules,
+                false,
+            ),
         )?;
     }
 
@@ -924,6 +951,10 @@ fn two_way_merge(
     let mut result = stage0_index_map(current_index);
     let current = stage0_index_map(current_index);
     let mut conflicts = Vec::new();
+    // Git's `twoway_merge` only treats a missing index entry as a *staged deletion* (and thus a
+    // potential conflict) when this is NOT an initial checkout. An unborn/empty index just fast-
+    // forwards to the new tree (`git read-tree -m H M` with no index — t1001 "no carry forward").
+    let initial_checkout = current_index.entries.is_empty();
 
     let mut all_paths = BTreeSet::new();
     all_paths.extend(old_tree.keys().cloned());
@@ -971,9 +1002,20 @@ fn two_way_merge(
             },
             (Some(o), Some(n)) => match cur {
                 None => {
-                    // Empty/new index case: just move to the merged head.
-                    result.insert(path.clone(), n.clone());
-                    remove_index_descendants_not_in_tree(&mut result, &path, new_tree);
+                    // The path is in both HEAD (old) and the target (new) but absent from the
+                    // index. On an initial (unborn-index) checkout this is just a fast-forward to
+                    // the new tree. Otherwise it is a staged deletion (e.g. `git rm <path>`): Git's
+                    // `twoway_merge` keeps the deletion when the two trees agree, but conflicts when
+                    // the target *modifies* the path (the staged deletion would be overwritten —
+                    // t7201 10).
+                    if initial_checkout {
+                        result.insert(path.clone(), n.clone());
+                        remove_index_descendants_not_in_tree(&mut result, &path, new_tree);
+                    } else if !same_blob(o, n) {
+                        conflicts.push(String::from_utf8_lossy(&path).into_owned());
+                    } else {
+                        remove_index_descendants(&mut result, &path);
+                    }
                 }
                 Some(c) if same_blob(c, o) => {
                     if !same_blob(o, n) {
