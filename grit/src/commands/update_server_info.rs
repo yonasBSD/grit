@@ -139,6 +139,18 @@ pub fn refresh_objects_info_packs(repo: &Repository) -> Result<()> {
     update_info_packs(repo, shared_repo)
 }
 
+/// Refresh both `info/refs` and `objects/info/packs` (matches Git's `update_server_info`,
+/// which `git repack` runs by default at the end of a repack unless `-n` /
+/// `repack.updateServerInfo=false`).
+pub fn refresh_server_info(repo: &Repository) -> Result<()> {
+    let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_else(|_| ConfigSet::new());
+    let shared_repo =
+        shared_repository_from_config_value(cfg.get("core.sharedRepository").as_deref())
+            .map_err(|msg| anyhow::anyhow!(msg))?;
+    update_info_refs(repo, false, shared_repo)?;
+    update_info_packs(repo, shared_repo)
+}
+
 fn update_info_packs(repo: &Repository, shared_repo: i32) -> Result<()> {
     let objects_dir = repo.odb.objects_dir();
     let info_dir = objects_dir.join("info");

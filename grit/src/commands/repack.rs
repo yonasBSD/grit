@@ -133,6 +133,10 @@ pub struct Args {
     #[arg(long = "max-pack-size")]
     pub max_pack_size: Option<String>,
 
+    /// Do not update server info (`git repack -n` / `--no-update-server-info`).
+    #[arg(short = 'n', long = "no-update-server-info")]
+    pub no_update_server_info: bool,
+
     /// Extra arguments (ignored).
     #[arg(value_name = "ARG", num_args = 0.., allow_hyphen_values = true, trailing_var_arg = true)]
     pub rest: Vec<String>,
@@ -189,6 +193,21 @@ fn effective_write_bitmaps_int(
         }
     }
     wb
+}
+
+/// Whether `git repack` should run `update_server_info` at the end. Git defaults to true; it is
+/// disabled by `-n` / `--no-update-server-info` or `repack.updateServerInfo=false`.
+fn should_update_server_info(args: &Args, cfg: &ConfigSet) -> bool {
+    if args.no_update_server_info {
+        return false;
+    }
+    if let Some(v) = cfg
+        .get("repack.updateserverinfo")
+        .or_else(|| cfg.get("repack.updateServerInfo"))
+    {
+        return !(v == "false" || v == "0" || v.eq_ignore_ascii_case("no"));
+    }
+    true
 }
 
 /// Whether to include objects from `.keep` packs in the new pack(s), matching Git `pack_kept_objects`.
@@ -705,7 +724,50 @@ pub fn run(args: Args) -> Result<()> {
         } else if let Some(new_pack_name) = new_pack_names.first().cloned() {
             remove_superseded_packs_incremental(&pack_dir_abs, &new_pack_name, &args.keep_pack)?;
         }
-        update_server_info::refresh_objects_info_packs(&repo)?;
+    }
+
+    // Multi-pack-index handling for the non-geometric path. `git repack --write-midx` (and
+    // `repack -m...`) must write `objects/pack/multi-pack-index`; a full repack without
+    // `--write-midx` must leave no stale MIDX behind (full_repack already cleared it above).
+    if args.write_midx {
+        let has_local_idx = fs::read_dir(&pack_dir_abs)
+            .map(|rd| {
+                rd.filter_map(std::result::Result::ok).any(|e| {
+                    let n = e.file_name().to_string_lossy().to_string();
+                    n.starts_with("pack-") && n.ends_with(".idx")
+                })
+            })
+            .unwrap_or(false);
+        if has_local_idx {
+            let pref_stem = new_pack_names
+                .first()
+                .and_then(|n| n.strip_prefix("pack-"))
+                .and_then(|n| n.strip_suffix(".pack"))
+                .map(str::to_owned);
+            let pref_idx = preferred_pack_index(&pack_dir_abs, pref_stem.as_deref())?;
+            // Only write the placeholder MIDX bitmap when bitmaps were actually requested
+            // (`-b`); a bare `--write-midx` must not create any bitmap (subtest 28).
+            let bitmap_placeholders = write_bitmaps > 0
+                && !args.no_write_bitmap_index
+                && !(args.local
+                    && grit_lib::pack::read_alternates_recursive(&objects_dir_for_warn)
+                        .map_or(false, |v| !v.is_empty()));
+            write_multi_pack_index_with_options(
+                &pack_dir_abs,
+                &WriteMultiPackIndexOptions {
+                    preferred_pack_idx: pref_idx,
+                    write_bitmap_placeholders: bitmap_placeholders,
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+    }
+
+    // Git runs `update_server_info` at the END of repack by default (regardless of `-d`),
+    // unless `-n` / `repack.updateServerInfo=false`.
+    if should_update_server_info(&args, &cfg) {
+        update_server_info::refresh_server_info(&repo)?;
     }
 
     let _ = grit_lib::shared_repo::refresh_repository_shared_tree(&repo.git_dir);
