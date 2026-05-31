@@ -1187,20 +1187,27 @@ fn reset_paths(
             .map(|k| String::from_utf8_lossy(&k).into_owned())
             .collect::<Vec<_>>()
     } else {
-        let mut out: Vec<String> = index
-            .entries
-            .iter()
-            .filter(|e| {
-                e.stage() == 0
-                    && grit_lib::pathspec::matches_pathspec_list(
-                        &String::from_utf8_lossy(&e.path),
-                        &resolved_specs,
-                    )
-            })
-            .map(|e| String::from_utf8_lossy(&e.path).into_owned())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+        // Mirror git's `do_diff_cache` semantics: the candidate path set is the
+        // union of (a) stage-0 index entries matching the pathspec and (b) tree
+        // (HEAD) entries matching the pathspec. A path that was `git rm`'d has no
+        // stage-0 index entry but is still present in the tree, so it must be
+        // re-added from HEAD by a `reset HEAD -- <path>`.
+        let mut set: HashSet<String> = HashSet::new();
+        for e in &index.entries {
+            if e.stage() == 0 {
+                let p = String::from_utf8_lossy(&e.path);
+                if grit_lib::pathspec::matches_pathspec_list(&p, &resolved_specs) {
+                    set.insert(p.into_owned());
+                }
+            }
+        }
+        for k in tree_map.keys() {
+            let p = String::from_utf8_lossy(k);
+            if grit_lib::pathspec::matches_pathspec_list(&p, &resolved_specs) {
+                set.insert(p.into_owned());
+            }
+        }
+        let mut out: Vec<String> = set.into_iter().collect();
         out.sort();
         if out.is_empty() {
             bail!(
