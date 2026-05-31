@@ -1698,12 +1698,32 @@ fn geom_auto(repo: &Repository, cfg: &ConfigSet) -> bool {
     if v < 0 {
         return true;
     }
-    if count_packs(repo) >= 2 {
+    // Mirror git's geometric_repack_auto_condition: when the geometric split
+    // would roll up at least one pack, always repack; otherwise estimate the
+    // number of loose objects.
+    let split_factor = cfg_i32(cfg, "maintenance.geometric-repack.splitFactor", 2).max(2) as u64;
+    let weights = geometry_weights(repo);
+    if compute_geometry_split(&weights, split_factor) > 0 {
         return true;
     }
-    Repository::discover(None)
-        .map(|r| loose_count_at_least(&r, v as usize))
-        .unwrap_or(false)
+    too_many_loose_objects(repo, v)
+}
+
+/// Git `too_many_loose_objects`: count objects in the `objects/17` shard, scale
+/// by 256 (approximate total), and compare to the limit rounded up to 256.
+fn too_many_loose_objects(repo: &Repository, limit: i32) -> bool {
+    let threshold = ((limit as i64 + 255) / 256) * 256;
+    let shard = repo.git_dir.join("objects").join("17");
+    let mut count: i64 = 0;
+    if let Ok(rd) = fs::read_dir(&shard) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.len() == 38 && name.chars().all(|c| c.is_ascii_hexdigit()) {
+                count += 1;
+            }
+        }
+    }
+    count.saturating_mul(256) > threshold
 }
 
 /// Git `get_auto_pack_size` (git/builtin/gc.c): one more than the second
@@ -1734,40 +1754,88 @@ fn get_auto_pack_size(repo: &Repository) -> u64 {
     result.min(i32::MAX as u64)
 }
 
-fn count_packs(repo: &Repository) -> usize {
+/// Object counts (the geometric "weight") of each local, non-cruft pack,
+/// ascending. Mirrors git's `pack_geometry_init` candidate set + sort.
+fn geometry_weights(repo: &Repository) -> Vec<u64> {
     let d = repo.git_dir.join("objects").join("pack");
+    let mut weights: Vec<u64> = Vec::new();
     let Ok(rd) = fs::read_dir(&d) else {
-        return 0;
+        return weights;
     };
-    rd.flatten()
-        .filter(|e| {
-            let n = e.file_name().to_string_lossy().to_string();
-            n.starts_with("pack-") && n.ends_with(".pack") && !n.starts_with("pack-loose-")
-        })
-        .count()
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let Some(stem) = name.strip_suffix(".idx") else {
+            continue;
+        };
+        // Skip cruft packs (those with a `.mtimes` sidecar) and `.keep` packs.
+        if d.join(format!("{stem}.mtimes")).exists() || d.join(format!("{stem}.keep")).exists() {
+            continue;
+        }
+        if let Ok(pi) = grit_lib::pack::read_pack_index(&e.path()) {
+            weights.push(pi.entries.len() as u64);
+        }
+    }
+    weights.sort_unstable();
+    weights
+}
+
+/// Replicates git's `compute_pack_geometry_split` (repack-geometry.c) over the
+/// ascending pack weights, returning the split index. Packs `[0, split)` get
+/// rolled into a new pack; if `split == pack_nr`, all packs collapse.
+fn compute_geometry_split(weights: &[u64], split_factor: u64) -> usize {
+    let pack_nr = weights.len();
+    if pack_nr == 0 {
+        return 0;
+    }
+    let mut i = pack_nr - 1;
+    while i > 0 {
+        if weights[i] < split_factor.saturating_mul(weights[i - 1]) {
+            break;
+        }
+        i -= 1;
+    }
+    let mut split = i;
+    if split > 0 {
+        split += 1;
+    }
+    let mut total_size: u64 = weights[..split].iter().sum();
+    let mut j = split;
+    while j < pack_nr {
+        if weights[j] < split_factor.saturating_mul(total_size) {
+            total_size = total_size.saturating_add(weights[j]);
+            split += 1;
+            j += 1;
+        } else {
+            break;
+        }
+    }
+    split
 }
 
 fn geom_repack(repo: &Repository, cfg: &ConfigSet, quiet: bool) -> Result<()> {
-    let split = cfg_i32(cfg, "maintenance.geometric-repack.splitFactor", 2).max(2);
-    let n = count_packs(repo);
-    let q = if quiet { "--quiet" } else { "--no-quiet" };
-    if n >= 2 {
-        let g = format!("--geometric={split}");
-        run_grit(repo, &["repack", "-d", "-l", g.as_str(), q, "--write-midx"])?;
+    let split_factor = cfg_i32(cfg, "maintenance.geometric-repack.splitFactor", 2).max(2) as u64;
+    let weights = geometry_weights(repo);
+    let split = compute_geometry_split(&weights, split_factor);
+    let want_midx = core_multi_pack_index(cfg);
+
+    let mut a: Vec<String> = vec!["repack".into(), "-d".into(), "-l".into()];
+    if split < weights.len() {
+        // Partial geometric merge.
+        a.push(format!("--geometric={split_factor}"));
     } else {
-        run_grit(
-            repo,
-            &[
-                "repack",
-                "-d",
-                "-l",
-                "--cruft",
-                "--cruft-expiration=2.weeks.ago",
-                q,
-                "--write-midx",
-            ],
-        )?;
+        // All packs collapse into one: do an all-into-one cruft repack
+        // (git's add_repack_all_option for maintenance).
+        a.push("--cruft".into());
+        a.push("--cruft-expiration=2.weeks.ago".into());
     }
+    if quiet {
+        a.push("--quiet".into());
+    }
+    if want_midx {
+        a.push("--write-midx".into());
+    }
+    let argv: Vec<&str> = a.iter().map(String::as_str).collect();
+    run_grit(repo, &argv)?;
     Ok(())
 }
 
