@@ -2438,7 +2438,14 @@ fn collect_oids(repo: &Repository, args: &Args) -> Result<PackObjectList> {
         // `--all` semantics), not every object under `.git/objects`.
         let use_reachable_only = !args.incremental;
         if use_reachable_only {
-            let v = reachable_objects_for_full_repack(repo, args)?;
+            let mut v = reachable_objects_for_full_repack(repo, args)?;
+            if args.local {
+                // `git pack-objects --local`: omit objects that exist only in alternate
+                // ODBs. For a full repack (`repack -a -d -l`) the reachability walk still
+                // reads alternate objects (so the closure is complete), but they must not
+                // be written into the local pack or they would be duplicated.
+                v.retain(|oid| !repo.odb.exists(oid) || repo.odb.exists_local(oid));
+            }
             oids.extend(v);
             // `--keep-unreachable` (Git `repack -k`) folds unreachable objects into
             // the same pack instead of leaving them loose / in a separate pack.
@@ -3016,6 +3023,17 @@ fn read_object_from_repo(repo: &Repository, oid: &ObjectId) -> Result<grit_lib::
             return Ok(obj);
         }
     }
+
+    // The local loose store and local packs do not have the object. Before treating
+    // it as missing (and possibly trying a promisor lazy-fetch), consult the full ODB
+    // read path which also follows info/alternates and GIT_ALTERNATE_OBJECT_DIRECTORIES.
+    // During `repack -a -d -l` the reachability walk and the write phase must be able to
+    // READ objects stored in alternate ODBs; the `--local` filter (applied later in
+    // collect_pack_object_list) is responsible for excluding them from the written pack.
+    if let Ok(obj) = repo.odb.read(oid) {
+        return Ok(obj);
+    }
+
     maybe_lazy_fetch_missing_object(repo, oid)?;
     let loose_path = repo.odb.object_path(oid);
     if loose_path.is_file() {
