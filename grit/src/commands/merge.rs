@@ -2143,6 +2143,178 @@ Aborting"
     Ok(())
 }
 
+/// Whether the chosen merge strategy permits git's "really trivial in-index merge"
+/// (`allow_trivial`). Only `resolve` and `octopus` keep it; `recursive`/`ort`/`ours`/`subtree`
+/// (and the default `ort`) carry `NO_TRIVIAL` (builtin/merge.c all_strategy).
+fn strategy_allows_trivial(args: &Args) -> bool {
+    matches!(primary_merge_strategy(args), Some("resolve" | "octopus"))
+}
+
+/// Git's "Trying really trivial in-index merge..." path (builtin/merge.c merge_trivial), attempted
+/// for a single-head, non-fast-forward merge before running the real strategy. Performs a per-path
+/// trivial 3-way at the tree level: each path must be unchanged on at least one side (or identical
+/// on both). On success it commits with parents `[head, merge]`, prints `Wonderful.`, and records
+/// reflog `In-index merge`; returns `Ok(true)`. On any non-trivial path it prints `Nope.` and
+/// returns `Ok(false)` so the caller falls through to the strategy.
+fn attempt_trivial_in_index_merge(
+    repo: &Repository,
+    head: &HeadState,
+    head_oid: ObjectId,
+    merge_oid: ObjectId,
+    args: &Args,
+) -> Result<bool> {
+    // Index must match HEAD before a trivial merge (builtin/merge.c:1709).
+    if !index_matches_head_tree(repo, head_oid)? {
+        return Ok(false);
+    }
+    let bases = grit_lib::merge_base::merge_bases_first_vs_rest(repo, head_oid, &[merge_oid])?;
+    if bases.len() != 1 {
+        return Ok(false); // criss-cross / no base: not "really trivial"
+    }
+    let base_oid = bases[0];
+
+    let base_tree = commit_tree(repo, base_oid)?;
+    let ours_tree = commit_tree(repo, head_oid)?;
+    let theirs_tree = commit_tree(repo, merge_oid)?;
+    let base = tree_to_map(tree_to_index_entries(repo, &base_tree, "")?);
+    let ours = tree_to_map(tree_to_index_entries(repo, &ours_tree, "")?);
+    let theirs = tree_to_map(tree_to_index_entries(repo, &theirs_tree, "")?);
+
+    if !args.quiet {
+        println!("Trying really trivial in-index merge...");
+    }
+
+    let Some(result) = trivial_three_way_index(&base, &ours, &theirs) else {
+        if !args.quiet {
+            println!("Nope.");
+        }
+        return Ok(false);
+    };
+
+    if !args.quiet {
+        println!("Wonderful.");
+    }
+
+    fs::write(
+        repo.git_dir.join("ORIG_HEAD"),
+        format!("{}\n", head_oid.to_hex()),
+    )?;
+
+    let mut new_index = result;
+    new_index.sort();
+    let tree_oid = write_tree_from_index(&repo.odb, &new_index, "")?;
+
+    let config = ConfigSet::load(Some(&repo.git_dir), true)?;
+    let now = OffsetDateTime::now_utc();
+    let author = resolve_ident(&config, "author", now)?;
+    let committer = resolve_ident(&config, "committer", now)?;
+    let msg = build_merge_message(head, &args.commits[0], args.message.as_deref(), repo);
+    let finalized = finalize_merge_commit_message(msg, &config);
+    let commit_data = CommitData {
+        tree: tree_oid,
+        parents: vec![head_oid, merge_oid],
+        author,
+        committer,
+        author_raw: Vec::new(),
+        committer_raw: Vec::new(),
+        encoding: finalized.encoding,
+        message: finalized.message,
+        raw_message: finalized.raw_message,
+    };
+    let mut commit_bytes = serialize_commit(&commit_data);
+    if should_sign_merge(args, &config) {
+        commit_bytes = sign_merge_commit_bytes(
+            &config,
+            &commit_data.committer,
+            args.gpg_sign.as_deref(),
+            commit_bytes,
+        )?;
+    }
+    let commit_oid = repo.odb.write(ObjectKind::Commit, &commit_bytes)?;
+
+    apply_sparse_checkout_skip_worktree(
+        &repo.git_dir,
+        repo.work_tree.as_deref(),
+        &mut new_index,
+        false,
+    );
+    if let Some(ref wt) = repo.work_tree {
+        let old_entries = tree_to_map(tree_to_index_entries(repo, &ours_tree, "")?);
+        remove_deleted_files(
+            wt,
+            &old_entries,
+            &new_index,
+            sparse_checkout_enabled(&repo.git_dir),
+        )?;
+        checkout_entries(
+            repo,
+            wt,
+            &new_index,
+            None,
+            sparse_checkout_enabled(&repo.git_dir),
+        )?;
+    }
+    refresh_index_stat_cache_from_worktree(repo, &mut new_index)?;
+    repo.write_index(&mut new_index)?;
+
+    merge_update_head_with_reflog(
+        repo,
+        head,
+        Some(head_oid),
+        commit_oid,
+        Some("In-index merge"),
+    )?;
+
+    if !args.quiet {
+        let short = &commit_oid.to_hex()[..7];
+        let branch = head.branch_name().unwrap_or("HEAD");
+        let first_line = commit_data.message.lines().next().unwrap_or("");
+        println!("[{branch} {short}] {first_line}");
+    }
+    run_post_merge_hook(repo, false);
+    Ok(true)
+}
+
+/// Per-path trivial 3-way merge over tree maps. Returns the merged index on success, or `None` if
+/// any path requires a non-trivial (content) resolution. For each path: if ours == base take
+/// theirs; if theirs == base take ours; if ours == theirs take either; otherwise not trivial.
+fn trivial_three_way_index(
+    base: &HashMap<Vec<u8>, IndexEntry>,
+    ours: &HashMap<Vec<u8>, IndexEntry>,
+    theirs: &HashMap<Vec<u8>, IndexEntry>,
+) -> Option<Index> {
+    let mut paths: BTreeSet<&Vec<u8>> = BTreeSet::new();
+    paths.extend(base.keys());
+    paths.extend(ours.keys());
+    paths.extend(theirs.keys());
+
+    let mut out = Index::new();
+    for path in paths {
+        let b = base.get(path);
+        let o = ours.get(path);
+        let t = theirs.get(path);
+        let same = |x: Option<&IndexEntry>, y: Option<&IndexEntry>| match (x, y) {
+            (Some(a), Some(c)) => a.oid == c.oid && a.mode == c.mode,
+            (None, None) => true,
+            _ => false,
+        };
+        let chosen: Option<&IndexEntry> = if same(o, t) {
+            o
+        } else if same(o, b) {
+            t
+        } else if same(t, b) {
+            o
+        } else {
+            // Both sides changed differently: not a trivial merge.
+            return None;
+        };
+        if let Some(entry) = chosen {
+            out.entries.push(entry.clone());
+        }
+    }
+    Some(out)
+}
+
 fn do_real_merge(
     repo: &Repository,
     head: &HeadState,
@@ -2156,6 +2328,17 @@ fn do_real_merge(
     trial_for_multi_strategy: bool,
     exit_on_merge_conflict: bool,
 ) -> Result<()> {
+    // Git's "really trivial in-index merge" runs before the strategy for single-head, non-FF
+    // merges when the strategy allows it (`-s resolve`/`octopus`). `allow_trivial && !FF_ONLY`.
+    if !trial_for_multi_strategy
+        && !args.ff_only
+        && !args.squash
+        && strategy_allows_trivial(args)
+        && attempt_trivial_in_index_merge(repo, head, head_oid, merge_oid, args)?
+    {
+        return Ok(());
+    }
+
     if primary_merge_strategy(args) == Some("resolve") {
         bail_if_resolve_index_not_clean_vs_head(repo, head_oid, args.autostash)?;
     } else if matches!(
