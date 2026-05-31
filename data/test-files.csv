@@ -819,7 +819,7 @@ t4153-am-resume-override-opts	t4	yes	0	0	0	false	timeout	0
 t4200-rerere	t4	yes	36	26	10	false	ok	0
 t4201-log-graph	t4	yes	23	1	22	false	ok	0
 t4201-shortlog	t4	yes	32	3	29	false	ok	0
-t4202-log	t4	yes	145	0	0	false	ok	0
+t4202-log	t4	yes	149	90	59	false	ok	0
 t4203-log-diff-filter	t4	yes	7	1	6	false	ok	0
 t4203-mailmap	t4	yes	74	70	4	false	ok	0
 t4204-log-follow	t4	yes	5	1	4	false	ok	0
@@ -870,7 +870,7 @@ t5302-pack-index	t5	yes	36	12	24	false	ok	0
 t5302-show-index	t5	yes	17	3	14	false	ok	0
 t5303-pack-corruption	t5	yes	25	3	22	false	ok	0
 t5303-pack-corruption-resilience	t5	yes	36	23	13	false	ok	0
-t5304-prune	t5	yes	0	0	0	false	timeout	0
+t5304-prune	t5	yes	32	9	23	false	ok	0
 t5304-prune-packed	t5	yes	20	8	12	false	ok	0
 t5305-include-tag	t5	yes	15	12	3	false	ok	0
 t5306-pack-nobase	t5	yes	4	3	1	false	ok	0
@@ -887,7 +887,7 @@ t5316-pack-delta-depth	t5	yes	5	2	3	false	ok	0
 t5317-pack-objects-filter-objects	t5	yes	33	19	14	false	ok	0
 t5318-commit-graph	t5	skip	85	0	0	false	ok	0
 t5318-pack-objects-revs-exclude	t5	yes	9	6	3	false	ok	0
-t5319-multi-pack-index	t5	yes	98	26	72	false	ok	0
+t5319-multi-pack-index	t5	yes	98	45	53	false	ok	0
 t5320-delta-islands	t5	yes	15	5	10	false	ok	0
 t5321-pack-large-objects	t5	yes	2	2	0	true	ok	0
 t5322-pack-objects-sparse	t5	yes	11	11	0	true	ok	0
@@ -966,7 +966,7 @@ t5542-push-advanced	t5	yes	4	4	0	true	ok	0
 t5542-push-http-shallow	t5	yes	3	3	0	true	ok	0
 t5543-atomic-push	t5	yes	13	11	2	false	ok	0
 t5544-pack-objects-hook	t5	yes	7	6	1	false	ok	0
-t5545-push-options	t5	yes	13	12	1	false	ok	0
+t5545-push-options	t5	yes	13	13	0	true	ok	0
 t5546-receive-limits	t5	yes	17	17	0	true	ok	0
 t5547-push-quarantine	t5	yes	6	6	0	true	ok	0
 t5548-push-porcelain	t5	yes	25	5	20	false	ok	0
@@ -1140,7 +1140,7 @@ t6436-merge-overwrite	t6	yes	0	0	0	false	timeout	0
 t6437-submodule-merge	t6	yes	22	20	2	false	ok	0
 t6438-submodule-directory-file-conflicts	t6	yes	56	4	52	false	ok	0
 t6439-merge-co-error-msgs	t6	yes	6	4	2	false	ok	0
-t6500-gc	t6	yes	35	29	6	false	ok	0
+t6500-gc	t6	yes	35	34	1	false	ok	0
 t6501-freshen-objects	t6	yes	42	36	6	false	ok	0
 t6600-test-reach	t6	yes	47	16	31	false	ok	0
 t6601-path-walk	t6	yes	15	15	0	true	ok	0
@@ -1250,7 +1250,7 @@ t7525-status-rename	t7	yes	15	10	5	false	ok	0
 t7526-commit-pathspec-file	t7	yes	11	11	0	true	ok	0
 t7527-builtin-fsmonitor	t7	yes	0	0	0	false	ok	0
 t7528-signed-commit-ssh	t7	yes	26	26	0	true	ok	3
-t7600-merge	t7	yes	83	0	0	false	ok	0
+t7600-merge	t7	yes	83	81	2	false	ok	0
 t7601-merge-pull-config	t7	yes	65	63	2	false	ok	0
 t7602-merge-octopus-many	t7	yes	5	2	3	false	ok	0
 t7603-merge-reduce-heads	t7	yes	13	11	2	false	ok	0
@@ -1265,7 +1265,7 @@ t7611-merge-abort	t7	yes	19	19	0	true	ok	0
 t7612-merge-verify-signatures	t7	skip	16	0	0	false	ok	0
 t7614-merge-signoff	t7	yes	4	4	0	true	ok	0
 t7615-diff-algo-with-mergy-operations	t7	yes	7	5	2	false	ok	0
-t7700-repack	t7	yes	47	17	30	false	ok	0
+t7700-repack	t7	yes	47	39	8	false	ok	0
 t7701-repack-unpack-unreachable	t7	yes	9	2	7	false	ok	0
 t7702-repack-cyclic-alternate	t7	yes	2	2	0	true	ok	0
 t7703-repack-geometric	t7	yes	18	3	15	false	ok	0
@@ -1280,7 +1280,7 @@ t7815-grep-binary	t7	yes	22	22	0	true	ok	0
 t7816-grep-binary-pattern	t7	yes	145	145	0	true	ok	0
 t7817-grep-sparse-checkout	t7	yes	8	4	4	false	ok	0
 t7818-grep-extended	t7	yes	11	1	10	false	ok	0
-t7900-maintenance	t7	yes	72	35	37	false	ok	0
+t7900-maintenance	t7	yes	72	71	1	false	ok	0
 t7901-stash-resolve-merge	t7	yes	7	1	6	false	ok	0
 t8001-annotate	t8	yes	117	95	22	false	ok	0
 t8002-blame	t8	yes	135	54	81	false	ok	0
