@@ -1657,12 +1657,14 @@ fn format_porcelain_v2(
 
         let (sub, sm_flags) =
             if mode_head == MODE_GITLINK || mode_index == MODE_GITLINK || mode_wt == MODE_GITLINK {
-                let mut f = submodule_porcelain_flags(work_tree, path, recorded_gitlink_oid);
-                if let Some(ue) = unstaged_e {
-                    if ue.status == DiffStatus::Modified && ue.old_oid != ue.new_oid {
-                        f.new_commits = true;
-                    }
-                }
+                // The 'C' (new-commits) bit is determined solely by comparing the
+                // submodule's current HEAD against the recorded gitlink OID inside
+                // submodule_porcelain_flags. It must NOT be derived from the
+                // unstaged DiffEntry's old/new OIDs: for a dirty-but-unchanged-HEAD
+                // submodule, diff_index_to_worktree emits a Modified gitlink entry
+                // with old_oid = index OID (nonzero) and new_oid = zero, which would
+                // spuriously force new_commits = true (emitting SC.. tokens).
+                let f = submodule_porcelain_flags(work_tree, path, recorded_gitlink_oid);
                 (format_submodule_token(f), Some(f))
             } else {
                 ("N...".to_string(), None)
