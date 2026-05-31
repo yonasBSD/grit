@@ -487,6 +487,7 @@ pub fn apply_sparse_checkout_skip_worktree(
     // is absent, treat the sparse file as non-cone so we do not try to cone-parse a legitimate
     // non-cone file (e.g. a bare `sub` pattern) and emit spurious "disabling cone pattern
     // matching" warnings on every index update (t1011 subtest 21).
+    let cone_config = config
         .get_bool("core.sparsecheckoutcone")
         .and_then(|r| r.ok())
         .unwrap_or(false);
