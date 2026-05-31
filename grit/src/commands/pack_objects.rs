@@ -2404,6 +2404,12 @@ fn collect_oids(repo: &Repository, args: &Args) -> Result<PackObjectList> {
         if use_reachable_only {
             let v = reachable_objects_for_full_repack(repo, args)?;
             oids.extend(v);
+            // `--keep-unreachable` (Git `repack -k`) folds unreachable objects into
+            // the same pack instead of leaving them loose / in a separate pack.
+            if args.keep_unreachable {
+                let all = pack_objects_all_enumeration(repo, args)?;
+                oids.extend(all);
+            }
         } else {
             let mut v = pack_objects_all_enumeration(repo, args)?;
             if args.local {

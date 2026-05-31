@@ -1390,12 +1390,23 @@ fn run_maintenance_tasks(
         return Ok(());
     };
 
+    // Mirror git's `maybe_run_task`: when running with --auto, a task is skipped
+    // entirely (foreground AND background) unless its auto-condition holds. This
+    // gating is applied once per task here so the task bodies need not re-check.
+    let mut to_run: Vec<TaskId> = Vec::new();
     for t in tasks {
+        if auto && !task_auto_needed(repo, cfg, *t)? {
+            continue;
+        }
+        to_run.push(*t);
+    }
+
+    for t in &to_run {
         trace2_region(repo, "maintenance foreground", t.name(), || {
             run_foreground(repo, cfg, *t, auto, quiet)
         })?;
     }
-    for t in tasks {
+    for t in &to_run {
         trace2_region(repo, "maintenance", t.name(), || {
             run_background(repo, cfg, *t, auto, quiet)
         })?;
@@ -1450,11 +1461,9 @@ fn run_foreground(
     auto: bool,
     _quiet: bool,
 ) -> Result<()> {
+    // Auto-gating already happened in `run_maintenance_tasks::maybe_run_task`.
     match t {
         TaskId::PackRefs => {
-            if auto && !pack_refs_auto_needed(repo) {
-                return Ok(());
-            }
             let mut a = vec!["pack-refs", "--all", "--prune"];
             if auto {
                 a.push("--auto");
@@ -1462,18 +1471,9 @@ fn run_foreground(
             run_grit(repo, &a)?;
         }
         TaskId::ReflogExpire => {
-            // Git's auto maintenance may run reflog expiry less aggressively than our
-            // `reflog expire --all` pass. Running it after every `--auto` cycle trims
-            // `logs/refs/heads/*` and breaks tests such as t3202 (`show-branch --reflog`).
-            if auto {
-                return Ok(());
-            }
             run_grit(repo, &["reflog", "expire", "--all"])?;
         }
         TaskId::Gc => {
-            if auto && !crate::commands::gc::need_to_gc(repo, cfg) {
-                return Ok(());
-            }
             run_grit(repo, &["pack-refs", "--all", "--prune"])?;
             if !auto
                 && cfg

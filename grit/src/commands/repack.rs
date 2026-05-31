@@ -51,6 +51,10 @@ pub struct Args {
     #[arg(short = 'A', conflicts_with = "all")]
     pub repack_all_unpack: bool,
 
+    /// Keep unreachable objects, folding them into the repacked pack (Git `-k`).
+    #[arg(short = 'k', long = "keep-unreachable")]
+    pub keep_unreachable: bool,
+
     /// Write a bitmap index (same as `git repack -b`). Fails when promisor packs are present or
     /// the object set is not closed (matches Git’s bitmap constraints).
     #[arg(
@@ -395,6 +399,8 @@ pub fn run(args: Args) -> Result<()> {
                         cmd.arg(format!("--unpack-unreachable={exp}"));
                     } else if loosen_unreachable {
                         cmd.arg("--unpack-unreachable");
+                    } else if args.keep_unreachable {
+                        cmd.arg("--keep-unreachable");
                     }
                 }
             } else {
