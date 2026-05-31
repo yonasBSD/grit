@@ -1294,13 +1294,25 @@ fn do_continue(mut args: Args) -> Result<()> {
     let first_line = msg.lines().next().unwrap_or("");
     eprintln!("[{branch} {short}] {first_line}");
 
-    let remaining = load_sequencer_todo(git_dir);
     cleanup_cherry_pick_state(git_dir);
 
-    if !remaining.is_empty() {
+    // The head of sequencer/todo is the pick we just committed (fix: the conflicting
+    // commit is kept at the head on a stop). Advance past it (`todo_list.current++`)
+    // and replay only the *remaining* picks.
+    let stored_orig = {
+        let head_file = git_dir.join("sequencer").join("head");
+        fs::read_to_string(&head_file)
+            .ok()
+            .and_then(|s| ObjectId::from_hex(s.trim()).ok())
+    };
+    let full_todo = load_sequencer_todo(git_dir);
+    if !full_todo.is_empty() {
         strip_first_sequencer_todo_line(git_dir)?;
+    }
+    let remaining = load_sequencer_todo(git_dir);
+    if !remaining.is_empty() {
         write_abort_safety_file(git_dir)?;
-        run_commit_sequence(&repo, &remaining, args, None)?;
+        run_commit_sequence(&repo, &remaining, args, stored_orig)?;
     } else {
         cleanup_sequencer_state(git_dir);
     }
@@ -1490,15 +1502,8 @@ fn do_skip(mut args: Args) -> Result<()> {
 
     if has_cp {
         reset_to_head_tree(&repo, git_dir)?;
-        let remaining = load_sequencer_todo(git_dir);
         cleanup_cherry_pick_state(git_dir);
-        if !remaining.is_empty() {
-            strip_first_sequencer_todo_line(git_dir)?;
-            write_abort_safety_file(git_dir)?;
-            run_commit_sequence(&repo, &remaining, args, None)?;
-        } else {
-            cleanup_sequencer_state(git_dir);
-        }
+        skip_current_pick_and_continue(&repo, args)?;
         return Ok(());
     }
 
@@ -1511,20 +1516,37 @@ fn do_skip(mut args: Args) -> Result<()> {
             std::process::exit(128);
         }
         reset_to_head_tree(&repo, git_dir)?;
-        let remaining = load_sequencer_todo(git_dir);
         cleanup_cherry_pick_state(git_dir);
-        if !remaining.is_empty() {
-            strip_first_sequencer_todo_line(git_dir)?;
-            write_abort_safety_file(git_dir)?;
-            run_commit_sequence(&repo, &remaining, args, None)?;
-        } else {
-            cleanup_sequencer_state(git_dir);
-        }
+        skip_current_pick_and_continue(&repo, args)?;
         return Ok(());
     }
 
     eprintln!("error: no cherry-pick in progress");
     std::process::exit(1);
+}
+
+/// Drop the current pick (the head of `sequencer/todo`) and replay the remaining picks,
+/// matching git's `--skip` (`todo_list.current++` then `pick_commits`). Preserves the
+/// stored pre-sequence HEAD so abort-safety stays valid across the resumed sequence.
+fn skip_current_pick_and_continue(repo: &Repository, args: &Args) -> Result<()> {
+    let git_dir = &repo.git_dir;
+    let stored_orig = {
+        let head_file = git_dir.join("sequencer").join("head");
+        fs::read_to_string(&head_file)
+            .ok()
+            .and_then(|s| ObjectId::from_hex(s.trim()).ok())
+    };
+    if !load_sequencer_todo(git_dir).is_empty() {
+        strip_first_sequencer_todo_line(git_dir)?;
+    }
+    let remaining = load_sequencer_todo(git_dir);
+    if !remaining.is_empty() {
+        write_abort_safety_file(git_dir)?;
+        run_commit_sequence(repo, &remaining, args, stored_orig)?;
+    } else {
+        cleanup_sequencer_state(git_dir);
+    }
+    Ok(())
 }
 
 // ── --quit ──────────────────────────────────────────────────────────
