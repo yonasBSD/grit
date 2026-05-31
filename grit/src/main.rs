@@ -550,6 +550,29 @@ fn run_test_tool_example_tap(rest: &[String]) -> Result<()> {
     std::process::exit(1);
 }
 
+/// `test-tool crontab <file> -l|<input>` (git/t/helper/test-crontab.c).
+///
+/// With `-l`, copy `<file>` to stdout (nothing if it does not exist); otherwise
+/// copy `<input>` into `<file>`. Used to mock crontab in t7900.
+fn run_test_tool_crontab(args: &[String]) -> Result<()> {
+    if args.len() != 2 {
+        bail!("usage: test-tool crontab <file> -l|<input>");
+    }
+    let file = &args[0];
+    if args[1] == "-l" {
+        if let Ok(contents) = std::fs::read(file) {
+            use std::io::Write as _;
+            std::io::stdout().write_all(&contents)?;
+        }
+    } else {
+        let input = std::fs::read(&args[1])
+            .with_context(|| format!("test-tool crontab: cannot read '{}'", args[1]))?;
+        std::fs::write(file, input)
+            .with_context(|| format!("test-tool crontab: cannot write '{file}'"))?;
+    }
+    Ok(())
+}
+
 fn run_test_tool_trace2(rest: &[String]) -> Result<()> {
     match rest.get(1).map(String::as_str).unwrap_or("") {
         "001return" => {
@@ -5470,6 +5493,7 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
                         std::process::exit(1);
                     }
                 }
+                "crontab" => run_test_tool_crontab(&rest[1..]),
                 "trace2" => run_test_tool_trace2(rest),
                 "example-tap" => run_test_tool_example_tap(rest),
                 "advise" => run_test_tool_advise(rest),

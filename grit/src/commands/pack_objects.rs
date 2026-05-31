@@ -100,6 +100,10 @@ pub struct Args {
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
 
+    /// Explicitly enable progress output (accepted for compat; counterpart of `--quiet`).
+    #[arg(long = "no-quiet")]
+    pub no_quiet: bool,
+
     /// Keep unreachable objects (accepted for compat).
     #[arg(long = "keep-unreachable")]
     pub keep_unreachable: bool,
@@ -620,7 +624,9 @@ pub fn run(mut args: Args) -> Result<()> {
         if delay > 0 {
             thread::sleep(Duration::from_secs(delay));
         }
-        eprintln!("Enumerating objects");
+        // Mirror Git's `display_progress` final line, e.g.
+        // "Enumerating objects: 50, done." (t7900 loose-objects.batchSize).
+        eprintln!("Enumerating objects: {}, done.", pack_list.oids.len());
     }
 
     if pack_list.oids.is_empty() {
@@ -2398,6 +2404,12 @@ fn collect_oids(repo: &Repository, args: &Args) -> Result<PackObjectList> {
         if use_reachable_only {
             let v = reachable_objects_for_full_repack(repo, args)?;
             oids.extend(v);
+            // `--keep-unreachable` (Git `repack -k`) folds unreachable objects into
+            // the same pack instead of leaving them loose / in a separate pack.
+            if args.keep_unreachable {
+                let all = pack_objects_all_enumeration(repo, args)?;
+                oids.extend(all);
+            }
         } else {
             let mut v = pack_objects_all_enumeration(repo, args)?;
             if args.local {

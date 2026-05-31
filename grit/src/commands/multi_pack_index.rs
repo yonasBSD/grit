@@ -6,12 +6,16 @@
 
 use anyhow::{bail, Context, Result};
 use clap::{Args as ClapArgs, Subcommand};
-use grit_lib::midx::{write_multi_pack_index_with_options, WriteMultiPackIndexOptions};
+use grit_lib::midx::{
+    read_midx_objects, write_multi_pack_index_with_options, WriteMultiPackIndexOptions,
+};
+use grit_lib::pack::read_pack_index;
 use grit_lib::repo::Repository;
+use std::collections::HashSet;
 use std::fs;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::grit_exe;
 
@@ -31,6 +35,8 @@ pub enum MpiCommand {
     Write(WriteArgs),
     /// Run `grit repack -d`, then write the multi-pack index.
     Repack(RepackArgs),
+    /// Delete packfiles no longer referenced by the multi-pack index.
+    Expire(ExpireArgs),
     /// Rewrite the multi-pack index from all packs (no incremental chain merge).
     Compact(CompactArgs),
 }
@@ -55,6 +61,12 @@ pub struct WriteArgs {
     /// Read `pack-*.idx` basenames from stdin (one per line) to include in order.
     #[arg(long = "stdin-packs")]
     pub stdin_packs: bool,
+    /// Suppress progress (accepted for compat).
+    #[arg(long = "no-progress")]
+    pub no_progress: bool,
+    /// Show progress (accepted for compat).
+    #[arg(long = "progress")]
+    pub progress: bool,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -62,6 +74,22 @@ pub struct RepackArgs {
     /// Suppress progress (accepted for compat).
     #[arg(long = "no-progress")]
     pub no_progress: bool,
+    /// Show progress (accepted for compat).
+    #[arg(long = "progress")]
+    pub progress: bool,
+    /// Maximum total size (in bytes) of packs to combine; `0` repacks everything.
+    #[arg(long = "batch-size", default_value_t = 0)]
+    pub batch_size: u64,
+}
+
+#[derive(Debug, ClapArgs)]
+pub struct ExpireArgs {
+    /// Suppress progress (accepted for compat).
+    #[arg(long = "no-progress")]
+    pub no_progress: bool,
+    /// Show progress (accepted for compat).
+    #[arg(long = "progress")]
+    pub progress: bool,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -74,6 +102,7 @@ pub fn run(args: Args) -> Result<()> {
         MpiCommand::Verify(_) => cmd_verify(&repo),
         MpiCommand::Write(w) => cmd_write(&repo, &w),
         MpiCommand::Repack(a) => cmd_repack(&repo, &a),
+        MpiCommand::Expire(_) => cmd_expire(&repo),
         MpiCommand::Compact(_) => cmd_compact(&repo),
     }
 }
@@ -115,6 +144,8 @@ pub fn run_from_argv(argv: &[String]) -> Result<()> {
             let mut no_bitmap = false;
             let mut preferred_pack = None;
             let mut stdin_packs = false;
+            let mut no_progress = false;
+            let mut progress = false;
             let mut i = 1usize;
             while i < rest.len() {
                 let a = rest[i].as_str();
@@ -123,6 +154,8 @@ pub fn run_from_argv(argv: &[String]) -> Result<()> {
                     "--bitmap" => bitmap = true,
                     "--no-bitmap" => no_bitmap = true,
                     "--stdin-packs" => stdin_packs = true,
+                    "--no-progress" => no_progress = true,
+                    "--progress" => progress = true,
                     _ if a.starts_with("--preferred-pack=") => {
                         preferred_pack = Some(a["--preferred-pack=".len()..].to_string());
                     }
@@ -145,20 +178,58 @@ pub fn run_from_argv(argv: &[String]) -> Result<()> {
                     no_bitmap,
                     preferred_pack,
                     stdin_packs,
+                    no_progress,
+                    progress,
                 },
             )
         }
         "verify" => cmd_verify(&repo),
         "repack" => {
             let mut no_progress = false;
-            for a in rest.iter().skip(1) {
+            let mut progress = false;
+            let mut batch_size: u64 = 0;
+            let mut i = 1usize;
+            while i < rest.len() {
+                let a = rest[i].as_str();
                 if a == "--no-progress" {
                     no_progress = true;
+                } else if a == "--progress" {
+                    progress = true;
+                } else if let Some(v) = a.strip_prefix("--batch-size=") {
+                    batch_size = v
+                        .parse()
+                        .with_context(|| format!("invalid --batch-size value: {v}"))?;
+                } else if a == "--batch-size" {
+                    let Some(v) = rest.get(i + 1) else {
+                        bail!("--batch-size requires a value");
+                    };
+                    batch_size = v
+                        .parse()
+                        .with_context(|| format!("invalid --batch-size value: {v}"))?;
+                    i += 1;
                 } else {
                     bail!("unsupported multi-pack-index repack option: {a}");
                 }
+                i += 1;
             }
-            cmd_repack(&repo, &RepackArgs { no_progress })
+            cmd_repack(
+                &repo,
+                &RepackArgs {
+                    no_progress,
+                    progress,
+                    batch_size,
+                },
+            )
+        }
+        "expire" => {
+            for a in rest.iter().skip(1) {
+                if a == "--no-progress" || a == "--progress" {
+                    // accepted for compat
+                } else {
+                    bail!("unsupported multi-pack-index expire option: {a}");
+                }
+            }
+            cmd_expire(&repo)
         }
         "compact" => {
             if rest.len() > 1 {
@@ -215,12 +286,82 @@ fn cmd_write(repo: &Repository, args: &WriteArgs) -> Result<()> {
 }
 
 fn cmd_repack(repo: &Repository, args: &RepackArgs) -> Result<()> {
+    let objects_dir = objects_dir_for_repo(repo);
+
+    // Without an existing MIDX there is nothing to drive the batch selection;
+    // fall back to repacking everything and (re)writing the MIDX (matches the
+    // `--batch-size=0` "repack all" behavior used by t5319).
+    let pd = pack_dir(repo);
+    let have_midx = pd.join("multi-pack-index").exists() || midx_chain_path(&pd).exists();
+    if !have_midx {
+        return repack_all_and_write_midx(repo);
+    }
+
+    let (names, objects) = read_midx_objects(&objects_dir).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let include = if args.batch_size > 0 {
+        select_packs_for_batch(&objects_dir, &names, &objects, args.batch_size)?
+    } else {
+        // batch-size 0 => include every (local, non-cruft) pack referenced by the MIDX.
+        let mut set = HashSet::new();
+        for o in &objects {
+            set.insert(o.pack_int_id);
+        }
+        // Drop cruft packs from the candidate set.
+        set.retain(|&id| {
+            names
+                .get(id)
+                .map(|n| !is_cruft_idx_name(&objects_dir, n))
+                .unwrap_or(false)
+        });
+        set
+    };
+
+    if include.len() <= 1 {
+        // Nothing meaningful to combine; leave packs untouched.
+        return Ok(());
+    }
+
+    // Gather the OIDs attributed to the included packs and feed them to
+    // pack-objects, producing a single new pack.
+    let mut oids: Vec<String> = Vec::new();
+    for o in &objects {
+        if include.contains(&o.pack_int_id) {
+            oids.push(o.oid.to_hex());
+        }
+    }
+
     let work_dir = repo.work_tree.as_deref().unwrap_or(&repo.git_dir);
-    let mut cmd = Command::new(grit_exe::grit_executable());
-    cmd.current_dir(work_dir).args(["repack", "-d"]);
-    if args.no_progress {
+    let base = pd.join("pack");
+    let grit = grit_exe::grit_executable();
+    let mut cmd = Command::new(&grit);
+    cmd.current_dir(work_dir)
+        .arg("pack-objects")
+        .arg(base.to_string_lossy().to_string())
+        .arg("--delta-base-offset");
+    if args.no_progress || !args.progress {
         cmd.arg("-q");
     }
+    cmd.stdin(Stdio::piped()).stdout(Stdio::null());
+    let mut child = cmd.spawn().context("could not start pack-objects")?;
+    {
+        let mut stdin = child.stdin.take().context("pack-objects stdin")?;
+        for oid in &oids {
+            writeln!(stdin, "{oid}")?;
+        }
+    }
+    let status = child.wait().context("could not finish pack-objects")?;
+    if !status.success() {
+        bail!("pack-objects failed with status {status}");
+    }
+
+    write_multi_pack_index_with_options(&pack_dir(repo), &WriteMultiPackIndexOptions::default())
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+fn repack_all_and_write_midx(repo: &Repository) -> Result<()> {
+    let work_dir = repo.work_tree.as_deref().unwrap_or(&repo.git_dir);
+    let mut cmd = Command::new(grit_exe::grit_executable());
+    cmd.current_dir(work_dir).args(["repack", "-d", "-q"]);
     let status = cmd
         .status()
         .context("failed to run grit repack for multi-pack-index")?;
@@ -229,6 +370,160 @@ fn cmd_repack(repo: &Repository, args: &RepackArgs) -> Result<()> {
     }
     write_multi_pack_index_with_options(&pack_dir(repo), &WriteMultiPackIndexOptions::default())
         .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// `git multi-pack-index expire`: delete packfiles no longer referenced by the
+/// MIDX (every object they held is provided by another pack), then rewrite the
+/// MIDX over the survivors. Mirrors `expire_midx_packs` in git/midx-write.c.
+fn cmd_expire(repo: &Repository) -> Result<()> {
+    let objects_dir = objects_dir_for_repo(repo);
+    let pd = pack_dir(repo);
+    if !pd.join("multi-pack-index").exists() && !midx_chain_path(&pd).exists() {
+        return Ok(());
+    }
+    let (names, objects) = read_midx_objects(&objects_dir).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut count = vec![0usize; names.len()];
+    for o in &objects {
+        if let Some(c) = count.get_mut(o.pack_int_id) {
+            *c += 1;
+        }
+    }
+
+    let mut survivors: Vec<String> = Vec::new();
+    let mut to_drop: Vec<String> = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        // Never expire cruft packs.
+        let keep = count.get(i).copied().unwrap_or(0) > 0 || is_cruft_idx_name(&objects_dir, name);
+        if keep {
+            survivors.push(name.clone());
+        } else {
+            to_drop.push(name.clone());
+        }
+    }
+
+    if to_drop.is_empty() {
+        return Ok(());
+    }
+
+    // Rewrite the MIDX over the surviving packs before removing files.
+    if survivors.is_empty() {
+        // No packs left to index: just clear the MIDX and drop the packs.
+        grit_lib::midx::clear_pack_midx_state(&pd).map_err(|e| anyhow::anyhow!("{e}"))?;
+    } else {
+        write_multi_pack_index_with_options(
+            &pd,
+            &WriteMultiPackIndexOptions {
+                pack_names_subset_ordered: Some(survivors.clone()),
+                ..Default::default()
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+
+    for idx_name in &to_drop {
+        remove_pack_files(&pd, idx_name);
+    }
+    Ok(())
+}
+
+/// Remove every sidecar of a pack given its `.idx` basename (`pack-<hash>.idx`).
+fn remove_pack_files(pack_dir: &Path, idx_name: &str) {
+    let stem = idx_name.strip_suffix(".idx").unwrap_or(idx_name);
+    for ext in ["idx", "pack", "rev", "bitmap", "mtimes", "keep", "promisor"] {
+        let _ = fs::remove_file(pack_dir.join(format!("{stem}.{ext}")));
+    }
+}
+
+fn is_cruft_idx_name(objects_dir: &Path, idx_name: &str) -> bool {
+    let stem = idx_name.strip_suffix(".idx").unwrap_or(idx_name);
+    objects_dir
+        .join("pack")
+        .join(format!("{stem}.mtimes"))
+        .exists()
+}
+
+/// Select the set of MIDX pack ids to combine so the estimated total stays
+/// under `batch_size`, oldest packs first. Mirrors `fill_included_packs_batch`.
+fn select_packs_for_batch(
+    objects_dir: &Path,
+    names: &[String],
+    objects: &[grit_lib::midx::MidxObjectRef],
+    batch_size: u64,
+) -> Result<HashSet<usize>> {
+    let pack_dir = objects_dir.join("pack");
+
+    // Per-pack referenced-object counts (from the MIDX).
+    let mut referenced = vec![0u64; names.len()];
+    for o in objects {
+        if let Some(c) = referenced.get_mut(o.pack_int_id) {
+            *c += 1;
+        }
+    }
+
+    struct Info {
+        id: usize,
+        mtime: i64,
+        referenced: u64,
+        num_objects: u64,
+        pack_size: u64,
+        usable: bool,
+    }
+    let mut infos: Vec<Info> = Vec::with_capacity(names.len());
+    for (id, name) in names.iter().enumerate() {
+        let stem = name.strip_suffix(".idx").unwrap_or(name);
+        let idx_path = pack_dir.join(format!("{stem}.idx"));
+        let pack_path = pack_dir.join(format!("{stem}.pack"));
+        let mtime = fs::metadata(&pack_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let pack_size = fs::metadata(&pack_path).map(|m| m.len()).unwrap_or(0);
+        let (num_objects, usable) = match read_pack_index(&idx_path) {
+            Ok(pi) => {
+                let n = pi.entries.len() as u64;
+                // Skip cruft packs and empty packs (Git want_included_pack).
+                let cruft = is_cruft_idx_name(objects_dir, name);
+                (n, n > 0 && !cruft)
+            }
+            Err(_) => (0, false),
+        };
+        infos.push(Info {
+            id,
+            mtime,
+            referenced: referenced.get(id).copied().unwrap_or(0),
+            num_objects,
+            pack_size,
+            usable,
+        });
+    }
+
+    infos.sort_by(|a, b| a.mtime.cmp(&b.mtime));
+
+    let mut include = HashSet::new();
+    let mut total_size: u64 = 0;
+    for info in &infos {
+        if total_size >= batch_size {
+            break;
+        }
+        if !info.usable || info.num_objects == 0 {
+            continue;
+        }
+        // expected_size = referenced/num_objects * pack_size, via shifted ints.
+        let mut expected = (info.referenced as u128) << 14;
+        expected /= info.num_objects as u128;
+        expected = expected.saturating_mul(info.pack_size as u128);
+        expected = (expected + (1u128 << 13)) >> 14;
+        let expected = expected.min(u64::MAX as u128) as u64;
+
+        if expected >= batch_size {
+            continue;
+        }
+        total_size = total_size.saturating_add(expected);
+        include.insert(info.id);
+    }
+    Ok(include)
 }
 
 fn cmd_compact(repo: &Repository) -> Result<()> {

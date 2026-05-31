@@ -1553,55 +1553,22 @@ fn cmd_remove(args: RemoveArgs) -> Result<()> {
 
 /// Find a worktree admin directory name by matching the path recorded in its
 /// `gitdir` file.
-/// Check if a worktree was checked out recently (relative to an expire time like "2.days.ago").
-/// Returns true if it was checked out AFTER the expire threshold (i.e., not expired).
-fn is_recently_checked_out(admin: &Path, expire: &str) -> bool {
-    // Parse expire string like "2.days.ago", "1.hour.ago", "now"
-    let threshold_secs = parse_expire_to_secs(expire);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let threshold = now - threshold_secs;
-
-    // Check the gitdir file's mtime
-    let gitdir_file = admin.join("gitdir");
-    if let Ok(meta) = std::fs::metadata(&gitdir_file) {
-        if let Ok(mtime) = meta.modified() {
-            if let Ok(d) = mtime.duration_since(std::time::UNIX_EPOCH) {
-                return (d.as_secs() as i64) > threshold;
-            }
+/// Whether a stale worktree (working `.git` gone) is past its expiry, matching
+/// git's `should_prune_worktree`: prune when the admin `index` is missing or
+/// its mtime is `<= expire`. `expire` is parsed with the full approxidate
+/// grammar ("now", "1.week.ago", etc.).
+fn worktree_index_expired(admin: &Path, expire: &str) -> bool {
+    let expire_secs = grit_lib::git_date::approx::approxidate_careful(expire, None) as i64;
+    match std::fs::metadata(admin.join("index")).and_then(|m| m.modified()) {
+        Ok(mtime) => {
+            let secs = mtime
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            secs <= expire_secs
         }
+        Err(_) => true,
     }
-    false
-}
-
-/// Parse git's expire format like "2.days.ago", "1.hour.ago", "2.weeks.ago", "now".
-/// Returns number of seconds to subtract from now to get the threshold.
-fn parse_expire_to_secs(expire: &str) -> i64 {
-    if expire == "now" {
-        return 0;
-    }
-    // Format: N.unit.ago
-    let parts: Vec<&str> = expire.split('.').collect();
-    if parts.len() >= 3 && parts[2] == "ago" {
-        if let Ok(n) = parts[0].parse::<i64>() {
-            let secs = match parts[1] {
-                "seconds" | "second" => n,
-                "minutes" | "minute" => n * 60,
-                "hours" | "hour" => n * 3600,
-                "days" | "day" => n * 86400,
-                "weeks" | "week" => n * 604800,
-                _ => n * 86400,
-            };
-            return secs;
-        }
-    }
-    // Default: treat as days if just a number
-    if let Ok(n) = expire.parse::<i64>() {
-        return n * 86400;
-    }
-    0
 }
 
 /// Check if a directory contains an initialized submodule (has .git directory inside).
@@ -1862,10 +1829,16 @@ fn cmd_prune(args: PruneArgs) -> Result<()> {
             continue; // Not stale, keep it
         }
 
-        // Stale: if --expire is set, only prune if older than expire time
-        if let Some(ref expire_str) = args.expire {
-            if is_recently_checked_out(&admin, expire_str) {
-                continue; // Recent enough, don't prune
+        // Stale: when the only problem is that the working `.git` is gone
+        // ("non-existent location"), Git keeps the worktree until its admin
+        // `index` is older than --expire (git should_prune_worktree). Other
+        // stale reasons (missing/invalid gitdir, duplicate) are pruned
+        // unconditionally.
+        if stale_reason == "gitdir file points to non-existent location" {
+            if let Some(ref expire_str) = args.expire {
+                if !worktree_index_expired(&admin, expire_str) {
+                    continue; // index is newer than the expiry; keep it
+                }
             }
         }
 
