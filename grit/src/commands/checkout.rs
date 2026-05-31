@@ -395,6 +395,10 @@ fn effective_path_checkout_merge(cli: &CheckoutMergeCli, args_merge_flag: bool) 
 thread_local! {
     static QUIET: Cell<bool> = const { Cell::new(false) };
     static RECURSE_SUBMODULES: Cell<bool> = const { Cell::new(false) };
+    /// Whether `--overwrite-ignore` was passed to the current `checkout`/`switch` invocation.
+    /// When set, untracked paths that are wholly covered by ignore rules may be clobbered
+    /// (matches Git's `o->internal.dir` populated from `setup_standard_excludes`).
+    static OVERWRITE_IGNORE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Set whether the current `checkout` invocation should recurse into submodules after updating
@@ -417,6 +421,7 @@ macro_rules! checkout_eprintln {
 pub fn run(mut args: Args) -> Result<()> {
     QUIET.with(|q| q.set(args.quiet));
     RECURSE_SUBMODULES.with(|r| r.set(args.recurse_submodules));
+    OVERWRITE_IGNORE.with(|o| o.set(args.overwrite_ignore));
     let repo = Repository::discover(None).context("not a git repository")?;
     let raw_args: Vec<String> = std::env::args().collect();
     let merge_cli = parse_checkout_merge_flags_from_raw(&raw_args);
@@ -3021,6 +3026,46 @@ fn path_has_tracked_symlink_prefix(
     false
 }
 
+/// When the target tree materializes `rel_str` (an entry absent from disk at its full path),
+/// return the first untracked ancestor directory component that exists on disk as a
+/// *non-directory* (regular file or symlink) and is in the way.
+///
+/// This mirrors upstream Git's `check_leading_path` -> `check_ok_to_remove`
+/// (unpack-trees.c): to create `a/b/c/d` Git lstats the leading path `a/b`; if that is an
+/// untracked non-directory it refuses with `ERROR_NOT_UPTODATE_FILE`. We only flag genuinely
+/// untracked ancestors (not present in `old_paths`) so tracked dir→file/symlink transitions
+/// that Git legitimately performs are not regressed.
+fn untracked_leading_path_in_the_way(
+    work_tree: &std::path::Path,
+    rel_str: &str,
+    old_paths: &HashSet<&[u8]>,
+) -> Option<String> {
+    let mut prefix = String::new();
+    for component in rel_str.split('/') {
+        if !prefix.is_empty() {
+            prefix.push('/');
+        }
+        prefix.push_str(component);
+        // Only consider strict ancestors (skip the final, full path component).
+        if prefix.len() >= rel_str.len() {
+            break;
+        }
+        // A tracked ancestor is handled by the existing tracked-prefix / replaces_tracked_dir
+        // logic; only untracked ancestors are our concern here.
+        if old_paths.contains(prefix.as_bytes()) {
+            continue;
+        }
+        let abs = work_tree.join(&prefix);
+        if let Ok(meta) = std::fs::symlink_metadata(&abs) {
+            if !meta.file_type().is_dir() {
+                // A regular file or symlink sits where Git needs a directory: in the way.
+                return Some(prefix);
+            }
+        }
+    }
+    None
+}
+
 /// True when `path` on disk matches the blob (and executable bit) of `entry`.
 fn untracked_path_matches_index_entry(
     repo: &Repository,
@@ -3279,6 +3324,58 @@ pub(crate) fn check_untracked_overwrite(
         .map(|e| e.path.as_slice())
         .collect();
 
+    // When `--overwrite-ignore` is set, untracked paths that are entirely covered by ignore
+    // rules may be clobbered (matches Git populating `o->internal.dir` from
+    // `setup_standard_excludes`, consulted by `check_ok_to_remove` / `verify_clean_subdirectory`).
+    let overwrite_ignore = OVERWRITE_IGNORE.with(|o| o.get());
+    let mut ignore_matcher = if overwrite_ignore {
+        grit_lib::ignore::IgnoreMatcher::from_repository(repo).ok()
+    } else {
+        None
+    };
+    // Returns true when every untracked file under `abs_dir` is ignored (an empty dir counts as
+    // wholly-ignored). Mirrors `verify_clean_subdirectory`'s `read_directory` with standard
+    // excludes: the directory is "clean enough" to remove when it contains no non-ignored
+    // untracked content.
+    let dir_only_holds_ignored =
+        |matcher: &mut grit_lib::ignore::IgnoreMatcher, abs_dir: &std::path::Path| -> bool {
+            let mut stack = vec![abs_dir.to_path_buf()];
+            while let Some(dir) = stack.pop() {
+                let Ok(children) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for child in children.flatten() {
+                    let child_path = child.path();
+                    let Ok(meta) = std::fs::symlink_metadata(&child_path) else {
+                        return false;
+                    };
+                    let Ok(rel_child) = child_path.strip_prefix(work_tree) else {
+                        return false;
+                    };
+                    let rel_child_str = rel_child.to_string_lossy().replace('\\', "/");
+                    let is_dir = meta.file_type().is_dir();
+                    if old_paths.contains(rel_child_str.as_bytes()) {
+                        // A tracked file in the way is never "only ignored".
+                        return false;
+                    }
+                    match matcher.check_path(repo, Some(old_index), &rel_child_str, is_dir) {
+                        Ok((true, _)) => {
+                            // Whole subtree is ignored; no need to descend.
+                            continue;
+                        }
+                        _ => {
+                            if is_dir {
+                                stack.push(child_path);
+                            } else {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+            true
+        };
+
     let mut untracked_conflicts = Vec::new();
     let mut dir_untracked_conflicts = Vec::new();
     for new_entry in &new_index.entries {
@@ -3296,6 +3393,31 @@ pub(crate) fn check_untracked_overwrite(
                 continue;
             }
             let abs_path = work_tree.join(rel_path.as_ref());
+            if !abs_path.exists() && !abs_path.is_symlink() {
+                // The full target path is absent, but an untracked *ancestor* may be a file or
+                // symlink standing where the target needs a directory (e.g. target turns `a/b`
+                // back into a directory holding `a/b/c/d`, while `a/b` is an untracked file or
+                // symlink on disk). Git refuses such a checkout via check_leading_path.
+                if let Some(blocker) =
+                    untracked_leading_path_in_the_way(&work_tree, rel_str, &old_paths)
+                {
+                    let blocker_ignored = match &mut ignore_matcher {
+                        Some(m) => {
+                            let blocker_abs = work_tree.join(&blocker);
+                            let is_dir = blocker_abs.is_dir() && !blocker_abs.is_symlink();
+                            matches!(
+                                m.check_path(repo, Some(old_index), &blocker, is_dir),
+                                Ok((true, _))
+                            )
+                        }
+                        None => false,
+                    };
+                    if !blocker_ignored {
+                        untracked_conflicts.push(blocker);
+                    }
+                }
+                continue;
+            }
             if abs_path.exists() || abs_path.is_symlink() {
                 // Empty directory at a path that becomes a submodule: Git removes the directory
                 // during checkout (t3426 `mkdir sub1` before `rebase` onto `add_sub1`).
@@ -3372,7 +3494,15 @@ pub(crate) fn check_untracked_overwrite(
                     }
 
                     if has_untracked_in_dir {
-                        dir_untracked_conflicts.push(rel_path.into_owned());
+                        // With --overwrite-ignore, skip the conflict when every untracked file
+                        // in the way is ignored (mirrors verify_clean_subdirectory).
+                        let only_ignored = match &mut ignore_matcher {
+                            Some(m) => dir_only_holds_ignored(m, &abs_path),
+                            None => false,
+                        };
+                        if !only_ignored {
+                            dir_untracked_conflicts.push(rel_path.into_owned());
+                        }
                     }
                     continue;
                 }
@@ -3388,6 +3518,20 @@ pub(crate) fn check_untracked_overwrite(
                     // proceeds; differing untracked files fall through to a conflict below.
                     if untracked_path_matches_index_entry(repo, &abs_path, new_entry)? {
                         continue;
+                    }
+                    // With --overwrite-ignore, skip the conflict when the in-the-way path is
+                    // itself ignored, or (for an untracked directory standing where the target
+                    // wants a file) when the directory holds only ignored files. Mirrors Git's
+                    // check_ok_to_remove (is_excluded) / verify_clean_subdirectory.
+                    if let Some(m) = &mut ignore_matcher {
+                        let is_dir = abs_path.is_dir() && !abs_path.is_symlink();
+                        let path_ignored = matches!(
+                            m.check_path(repo, Some(old_index), rel_str, is_dir),
+                            Ok((true, _))
+                        );
+                        if path_ignored || (is_dir && dir_only_holds_ignored(m, &abs_path)) {
+                            continue;
+                        }
                     }
                     // A differing untracked file (ordinary file, symlink, or gitlink path)
                     // would be overwritten by the target tree. Flag it as a conflict and let
@@ -3413,6 +3557,8 @@ pub(crate) fn check_untracked_overwrite(
         bail!("{msg}");
     }
 
+    untracked_conflicts.sort();
+    untracked_conflicts.dedup();
     if !untracked_conflicts.is_empty() {
         let mut msg = String::from(
             "The following untracked working tree files would be overwritten by checkout:\n",
