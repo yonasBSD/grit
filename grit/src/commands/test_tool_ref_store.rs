@@ -52,7 +52,9 @@ fn open_store(repo: &Repository, spec: &str) -> Result<RefStore> {
             // submodule:<name> -> try multiple locations:
             // 1. .git/modules/<name> (standard submodule internals)
             // 2. <name>/.git (direct submodule with separate git dir)
-            let name = spec.strip_prefix("submodule:").unwrap();
+            let name = spec
+                .strip_prefix("submodule:")
+                .ok_or_else(|| anyhow::anyhow!("invalid submodule spec: {spec}"))?;
             let modules_dir = common_dir.join("modules").join(name);
             if modules_dir.join("HEAD").exists() {
                 modules_dir

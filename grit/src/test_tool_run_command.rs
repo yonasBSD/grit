@@ -299,8 +299,11 @@ fn run_processes_parallel_grouped(
                     let _ = feed_stdin_line(&mut stdin, &mut left);
                 }
             }
-            let mut stderr = child.stderr.take().expect("stderr");
-            let mut stdout = child.stdout.take().expect("stdout");
+            let (Some(mut stderr), Some(mut stdout)) = (child.stderr.take(), child.stdout.take())
+            else {
+                let _ = txw.send(WorkerToMain::Finished(slot));
+                return;
+            };
             let mut buf = [0u8; 4096];
             loop {
                 match stderr.read(&mut buf) {
@@ -418,9 +421,11 @@ fn run_processes_parallel_ungrouped(
             let use_stdin_f = use_stdin;
             pending.push(thread::spawn(move || {
                 eprint!("{PRELOAD}");
-                let mut child =
+                let Ok(mut child) =
                     spawn_with_shell_fallback(Path::new(&av[0]), av.as_ref(), &[], use_stdin_f)
-                        .expect("spawn");
+                else {
+                    return;
+                };
 
                 if use_stdin_f {
                     if let Some(mut stdin) = child.stdin.take() {
@@ -430,8 +435,12 @@ fn run_processes_parallel_ungrouped(
                     }
                 }
 
-                let mut stderr = child.stderr.take().expect("stderr");
-                let mut stdout = child.stdout.take().expect("stdout");
+                let (Some(mut stderr), Some(mut stdout)) =
+                    (child.stderr.take(), child.stdout.take())
+                else {
+                    let _ = child.wait();
+                    return;
+                };
                 let out_h = thread::spawn(move || {
                     let mut buf = [0u8; 4096];
                     loop {

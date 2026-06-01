@@ -279,8 +279,10 @@ fn cmp_two_packs(a: &mut PackState, b: &mut PackState) {
     if b.unique.is_none() {
         b.unique = Some(b.remaining.clone());
     }
-    let ua = a.unique.as_mut().expect("unique set");
-    let ub = b.unique.as_mut().expect("unique set");
+    // Both `unique` fields were just populated above, so they are `Some`.
+    let (Some(ua), Some(ub)) = (a.unique.as_mut(), b.unique.as_mut()) else {
+        return;
+    };
 
     let va: Vec<ObjectId> = ua.iter().copied().collect();
     let vb: Vec<ObjectId> = ub.iter().copied().collect();
@@ -323,8 +325,10 @@ fn minimize<'a>(local_packs: &'a [PackState]) -> Vec<&'a PackState> {
     let mut unique: Vec<&'a PackState> = Vec::new();
     let mut non_unique: Vec<&'a PackState> = Vec::new();
     for p in local_packs {
-        let u = p.unique.as_ref().expect("cmp_local_packs sets unique");
-        if !u.is_empty() {
+        // `cmp_local_packs` populates `unique` for every pack; treat an
+        // absent set as empty so the pack is classified as non-unique.
+        let has_unique = p.unique.as_ref().is_some_and(|u| !u.is_empty());
+        if has_unique {
             unique.push(p);
         } else {
             non_unique.push(p);

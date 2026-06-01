@@ -3477,8 +3477,10 @@ pub(crate) fn parse_cmd_args<T: Args + FromArgMatches>(subcmd: &str, rest: &[Str
 
 fn run() -> Result<()> {
     // Check env vars that clap would have handled
-    if std::env::var("GIT_DIR").is_ok() && std::env::var("GIT_DIR").unwrap().is_empty() {
-        // ignore empty GIT_DIR
+    if let Ok(git_dir) = std::env::var("GIT_DIR") {
+        if git_dir.is_empty() {
+            // ignore empty GIT_DIR
+        }
     }
 
     if std::env::var("GRIT_INVOCATION_CWD")
@@ -4620,8 +4622,7 @@ fn collect_alias_command_names(config: &grit_lib::config::ConfigSet) -> Vec<Stri
             }
         } else if let Some(name) = key.strip_prefix("alias..") {
             names.push(name.to_string());
-        } else {
-            let rest = key.strip_prefix("alias.").unwrap();
+        } else if let Some(rest) = key.strip_prefix("alias.") {
             if !rest.contains('.') {
                 names.push(rest.to_string());
             }

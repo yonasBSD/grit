@@ -393,17 +393,15 @@ pub(crate) fn list_aliases_from_config(config: &ConfigSet) -> Vec<(String, Strin
             continue;
         }
         if key.ends_with(".command") {
-            let name = key
+            if let Some(name) = key
                 .strip_prefix("alias.")
-                .unwrap()
-                .strip_suffix(".command")
-                .unwrap();
+                .and_then(|s| s.strip_suffix(".command"))
+            {
+                out.push((name.to_string(), val.clone()));
+            }
+        } else if let Some(name) = key.strip_prefix("alias..") {
             out.push((name.to_string(), val.clone()));
-        } else if key.starts_with("alias..") {
-            let name = key.strip_prefix("alias..").unwrap();
-            out.push((name.to_string(), val.clone()));
-        } else {
-            let rest = key.strip_prefix("alias.").unwrap();
+        } else if let Some(rest) = key.strip_prefix("alias.") {
             if !rest.contains('.') {
                 out.push((rest.to_string(), val.clone()));
             }

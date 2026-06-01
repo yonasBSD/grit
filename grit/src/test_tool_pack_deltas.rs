@@ -16,11 +16,12 @@ fn encode_pack_object_header(typ: u32, size: u64) -> Vec<u8> {
     debug_assert!((1..=7).contains(&typ));
     let mut hdr = Vec::with_capacity(16);
     let mut s = size;
-    let mut c: u8 = ((typ << 4) as u8) | (u8::try_from(s & 0x0f).unwrap());
+    // `s & 0x0f` and `s & 0x7f` always fit in a u8, so these casts are lossless.
+    let mut c: u8 = ((typ << 4) as u8) | ((s & 0x0f) as u8);
     s >>= 4;
     while s != 0 {
         hdr.push(c | 0x80);
-        c = u8::try_from(s & 0x7f).unwrap();
+        c = (s & 0x7f) as u8;
         s >>= 7;
     }
     hdr.push(c);
