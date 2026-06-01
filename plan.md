@@ -54,8 +54,8 @@
 - [x] `t8610-checkout-index-modes` 27/27 — corrected synthetic checkout-index failure expectations.
 - [x] `t8670-write-tree-index` 27/27 — fixed `ls-tree` exact tree pathspec handling.
 - [x] `t8630-ls-tree-format` 29/29 — passed with the same `ls-tree` pathspec fix.
-- [ ] `t8700-init-bare-extra` 27/29 — tied next highest remaining t8 file.
-- [ ] `t8970-symbolic-ref-chains` 26/30 — next highest remaining t8 file.
+
+**t8 family complete:** 105/105 in-scope files fully passing (verified 2026-06-01 via `./scripts/run-tests.sh t8`).
 
 **Updated:** 2026-06-01 · Source of truth for counts: `data/test-files.csv`.
 

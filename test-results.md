@@ -104,3 +104,4 @@ Updated: 2026-06-01
 - Harness partial clone: `./scripts/run-tests.sh t5616-partial-clone.sh` is 34/47 after refetch maintenance and filtered clone fsck trace fixes.
 - Pre-commit: `cargo fmt` ran; `cargo check` passes with existing warnings; `cargo test -p grit-lib --lib` passes 204/204.
 - Pre-commit: `cargo clippy --fix --allow-dirty` completed after sandbox escalation; it still reports the existing warning backlog and failed auto-fixes in unrelated files (`bundle_uri_test_tool.rs`, `mergetool.rs`).
+- t8 family verification: `./scripts/run-tests.sh t8` passes 105/105 in-scope files (all subtests green). CSV/dashboard refreshed; stale failing counts from prior runs were corrected.
