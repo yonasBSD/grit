@@ -15,6 +15,7 @@
   - Completed: `t9410-show-ref-verify.sh` (31/31).
   - Completed: `t9120-diff-tree-merge.sh` (29/29).
   - Completed: `t9900-branch-verbose-all.sh` (33/33).
+  - Completed: `t9030-commit-tree-parents.sh` (25/25).
   - Next expected target: choose by refreshed CSV after commit.
   - Scope: current `in_scope=yes` t9 rows; skipped external-helper files remain excluded unless
     explicitly unskipped later.
