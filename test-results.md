@@ -59,6 +59,8 @@ Updated: 2026-06-01
   making setup explicitly initialize `master`, matching the test's hard-coded branch operations.
 - t9 focus: `./scripts/run-tests.sh t9450-merge-base-ancestor.sh --verbose` now passes 32/32 after
   making real-Git setup explicitly initialize `master`, matching the test's hard-coded branch operations.
+- t9 focus: `./scripts/run-tests.sh t9730-symbolic-ref-head.sh --verbose` now passes 31/31 after
+  making setup explicitly initialize `master`, matching the test's hard-coded HEAD refs.
 - Workspace cargo/unit tests: not re-run for the `t9040`/`t9060` harness-only cwd fixes.
 - `cargo build --release -p grit-cli`: pass.
 - `cargo fmt`: run. `cargo fmt --check` still reports pre-existing formatting drift in unrelated files; those mechanical edits were not included in this scoped commit.
