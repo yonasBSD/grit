@@ -1466,7 +1466,7 @@ t9157-git-svn-fetch-merge	t9	skip	3	0	0	false	ok	0
 t9158-git-svn-mergeinfo	t9	skip	6	0	0	false	ok	0
 t9159-git-svn-no-parent-mergeinfo	t9	skip	1	0	0	false	ok	0
 t9160-git-svn-preserve-empty-dirs	t9	skip	12	0	0	false	ok	0
-t9160-update-index-cacheinfo	t9	yes	25	24	1	false	ok	0
+t9160-update-index-cacheinfo	t9	yes	25	25	0	true	ok	0
 t9161-git-svn-mergeinfo-push	t9	skip	13	0	0	false	ok	0
 t9162-git-svn-dcommit-interactive	t9	skip	5	0	0	false	ok	0
 t9163-git-svn-reset-clears-caches	t9	skip	4	0	0	false	ok	0

@@ -87,6 +87,11 @@ Updated: 2026-06-01
 - t9 focus: `./scripts/run-tests.sh t9870-rev-list-reverse-count.sh --verbose` now passes 34/34 after
   making real-Git setup explicitly initialize `master`, matching hard-coded range checks.
 - t9 focus: `cargo build --release -p grit-cli` passed, then
+  `./scripts/run-tests.sh t9160-update-index-cacheinfo.sh --verbose` passed 25/25 after repeated
+  `--cacheinfo` handling was fixed.
+- t9160 validation: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`, and
+  `cargo test -p grit-lib --lib` all completed successfully; grit-lib unit tests passed 229/229.
+- t9 focus: `cargo build --release -p grit-cli` passed, then
   `./scripts/run-tests.sh t9790-write-tree-nested.sh --verbose` passed 29/29 after exact tree
   pathspec handling in `ls-tree`; `t9902-completion.sh` remains passing with failing=0.
 - t9790 validation: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`, and

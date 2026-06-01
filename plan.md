@@ -41,6 +41,7 @@
   - Completed: `t9790-write-tree-nested.sh` (29/29).
   - Completed: `t9870-rev-list-reverse-count.sh` (34/34).
   - Completed: `t9080-ls-tree-recursive.sh` (26/26).
+  - Completed: `t9160-update-index-cacheinfo.sh` (25/25).
   - Next expected target: choose by refreshed CSV after commit.
   - Scope: current `in_scope=yes` t9 rows; skipped external-helper files remain excluded unless
     explicitly unskipped later.

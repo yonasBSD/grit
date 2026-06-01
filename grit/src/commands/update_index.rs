@@ -612,6 +612,10 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
         let mut i = 0;
         while i < cacheinfo_vals.len() {
             let val = &cacheinfo_vals[i];
+            if val == "--cacheinfo" {
+                i += 1;
+                continue;
+            }
             let (mode_str, oid_str, path_bytes) = if val.contains(',') {
                 // New form: single comma-separated value
                 let parts: Vec<&str> = val.splitn(3, ',').collect();
