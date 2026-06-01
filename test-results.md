@@ -86,6 +86,8 @@ Updated: 2026-06-01
   making setup explicitly initialize `master`, matching hard-coded output/comparison assumptions.
 - t9 focus: `./scripts/run-tests.sh t9700-for-each-ref-sort-combined.sh --verbose` now passes 37/37
   after making setup explicitly initialize `master`, matching hard-coded refs.
+- t9 focus: `./scripts/run-tests.sh t9860-log-max-count-skip.sh --verbose` now passes 38/38 after
+  making real-Git setup explicitly initialize `master`, matching hard-coded branch operations.
 - t9 focus: `./scripts/run-tests.sh t9870-rev-list-reverse-count.sh --verbose` now passes 34/34 after
   making real-Git setup explicitly initialize `master`, matching hard-coded range checks.
 - t9 focus: `cargo build --release -p grit-cli` passed, then

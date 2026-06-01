@@ -1540,7 +1540,7 @@ t9604-cvsimport-timestamps	t9	skip	2	0	0	false	ok	0
 t9610-restore-staged-worktree	t9	yes	40	40	0	true	ok	0
 t9620-reset-path-commit	t9	yes	40	40	0	true	ok	0
 t9700-for-each-ref-sort-combined	t9	yes	37	37	0	true	ok	0
-t9700-perl-git	t9	yes	3	2	1	false	ok	0
+t9700-perl-git	t9	yes	3	3	0	true	ok	0
 t9710-show-ref-hash-abbrev	t9	yes	38	38	0	true	ok	0
 t9720-update-ref-create-verify	t9	yes	32	32	0	true	ok	0
 t9730-symbolic-ref-head	t9	yes	31	31	0	true	ok	0
@@ -1594,7 +1594,7 @@ t9836-git-p4-metadata-encoding-python3	t9	skip	12	0	0	false	ok	0
 t9840-diff-tree-no-commit-id	t9	yes	34	34	0	true	ok	0
 t9850-shell	t9	yes	5	5	0	true	ok	0
 t9850-status-ignored-patterns	t9	yes	36	36	0	true	ok	0
-t9860-log-max-count-skip	t9	yes	38	37	1	false	ok	0
+t9860-log-max-count-skip	t9	yes	38	38	0	true	ok	0
 t9870-rev-list-reverse-count	t9	yes	34	34	0	true	ok	0
 t9880-config-file-option	t9	yes	32	32	0	true	ok	0
 t9890-init-object-format	t9	yes	31	30	1	false	ok	0

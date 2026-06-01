@@ -14,7 +14,7 @@ REAL_GIT=$(command -v git)
 
 test_expect_success 'setup: create repository with 20 commits' '
 	(
-	"$REAL_GIT" init repo &&
+	"$REAL_GIT" init --initial-branch=master repo &&
 	cd repo &&
 	"$REAL_GIT" config user.name "Test User" &&
 	"$REAL_GIT" config user.email "test@example.com" &&
