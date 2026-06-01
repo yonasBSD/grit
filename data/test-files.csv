@@ -1348,7 +1348,7 @@ t8520-tag-message	t8	yes	31	29	2	false	ok	0
 t8530-config-edit	t8	yes	33	33	0	true	ok	0
 t8540-status-porcelain	t8	yes	28	26	2	false	ok	0
 t8550-diff-cached-stage	t8	yes	34	34	0	true	ok	0
-t8570-rev-parse-branch	t8	yes	35	28	7	false	ok	0
+t8570-rev-parse-branch	t8	yes	35	35	0	true	ok	0
 t8580-rev-list-limit	t8	yes	30	30	0	true	ok	0
 t8590-for-each-ref-filter	t8	yes	30	30	0	true	ok	0
 t8600-update-ref-symref	t8	yes	28	24	4	false	ok	0

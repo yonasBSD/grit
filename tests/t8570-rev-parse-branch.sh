@@ -2,6 +2,8 @@
 # Tests for rev-parse with branch names, HEAD, detached HEAD, tags, utility flags.
 
 test_description='rev-parse branch names, HEAD, detached, tags, utility'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
