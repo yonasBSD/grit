@@ -78,6 +78,8 @@ Updated: 2026-06-01
   making real-Git setup explicitly initialize `master`, matching the test's hard-coded status checks.
 - t9 focus: `./scripts/run-tests.sh t9330-add-update-all.sh --verbose` now passes 26/26 after
   explicit `master` setup and aligning verbose add output with real Git's stdout behavior.
+- t9 focus: `./scripts/run-tests.sh t9400-for-each-ref-contains.sh --verbose` now passes 25/25 after
+  making real-Git setup explicitly initialize `master`, matching the test's hard-coded filters.
 - t9 focus: `cargo build --release -p grit-cli` passed, then
   `./scripts/run-tests.sh t9240-diff-files-deleted.sh --verbose` passed 34/34 after diff-files
   learned to suppress content/mode-identical stat-dirty entries when index refresh is possible.
