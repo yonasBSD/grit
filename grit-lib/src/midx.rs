@@ -86,6 +86,42 @@ fn normalize_pack_idx_basename(raw: &str) -> Result<String> {
     }
 }
 
+/// Read a big-endian `u32` from `data` at byte offset `off`.
+///
+/// Returns [`Error::CorruptObject`] if `data` does not contain 4 bytes at `off`,
+/// replacing the previous fixed-width-slice `.try_into().unwrap()` with real
+/// bounds handling (the success-path value is unchanged).
+fn read_be_u32(data: &[u8], off: usize) -> Result<u32> {
+    let end = off.checked_add(4).filter(|&e| e <= data.len());
+    let Some(end) = end else {
+        return Err(Error::CorruptObject(
+            "truncated MIDX data reading u32".to_owned(),
+        ));
+    };
+    let bytes: [u8; 4] = data[off..end]
+        .try_into()
+        .map_err(|_| Error::CorruptObject("truncated MIDX data reading u32".to_owned()))?;
+    Ok(u32::from_be_bytes(bytes))
+}
+
+/// Read a big-endian `u64` from `data` at byte offset `off`.
+///
+/// Returns [`Error::CorruptObject`] if `data` does not contain 8 bytes at `off`,
+/// replacing the previous fixed-width-slice `.try_into().unwrap()` with real
+/// bounds handling (the success-path value is unchanged).
+fn read_be_u64(data: &[u8], off: usize) -> Result<u64> {
+    let end = off.checked_add(8).filter(|&e| e <= data.len());
+    let Some(end) = end else {
+        return Err(Error::CorruptObject(
+            "truncated MIDX data reading u64".to_owned(),
+        ));
+    };
+    let bytes: [u8; 8] = data[off..end]
+        .try_into()
+        .map_err(|_| Error::CorruptObject("truncated MIDX data reading u64".to_owned()))?;
+    Ok(u64::from_be_bytes(bytes))
+}
+
 struct MidxFileHeader {
     num_chunks: u8,
 }
@@ -94,7 +130,7 @@ fn parse_midx_header(data: &[u8]) -> Result<(MidxFileHeader, usize, u8)> {
     if data.len() < MIDX_HEADER_SIZE + 20 {
         return Err(Error::CorruptObject("midx file too small".to_owned()));
     }
-    let sig = u32::from_be_bytes(data[0..4].try_into().unwrap());
+    let sig = read_be_u32(data, 0)?;
     if sig != MIDX_SIGNATURE {
         return Err(Error::CorruptObject("bad MIDX signature".to_owned()));
     }
@@ -106,7 +142,7 @@ fn parse_midx_header(data: &[u8]) -> Result<(MidxFileHeader, usize, u8)> {
     }
     let object_hash_bytes = data[5];
     let num_chunks = data[6];
-    let _num_packs = u32::from_be_bytes(data[8..12].try_into().unwrap());
+    let _num_packs = read_be_u32(data, 8)?;
     Ok((
         MidxFileHeader { num_chunks },
         MIDX_HEADER_SIZE,
@@ -582,15 +618,15 @@ fn find_chunk(data: &[u8], header_end: usize, chunk_id: u32) -> Result<(usize, u
     }
     for i in 0..n {
         let base = pos + i * CHUNK_TOC_ENTRY_SIZE;
-        let id = u32::from_be_bytes(data[base..base + 4].try_into().unwrap());
-        let off = u64::from_be_bytes(data[base + 4..base + 12].try_into().unwrap()) as usize;
+        let id = read_be_u32(data, base)?;
+        let off = read_be_u64(data, base + 4)? as usize;
         if id == chunk_id {
             let next_off = if i + 1 < n {
                 let nb = pos + (i + 1) * CHUNK_TOC_ENTRY_SIZE;
-                u64::from_be_bytes(data[nb + 4..nb + 12].try_into().unwrap()) as usize
+                read_be_u64(data, nb + 4)? as usize
             } else {
                 let term = pos + n * CHUNK_TOC_ENTRY_SIZE;
-                u64::from_be_bytes(data[term + 4..term + 12].try_into().unwrap()) as usize
+                read_be_u64(data, term + 4)? as usize
             };
             return Ok((off, next_off.saturating_sub(off)));
         }
@@ -652,7 +688,7 @@ pub fn read_midx_objects(objects_dir: &Path) -> Result<(Vec<String>, Vec<MidxObj
         let oid = ObjectId::from_bytes(&data[oidl_off + i * 20..oidl_off + (i + 1) * 20])
             .map_err(|e| Error::CorruptObject(e.to_string()))?;
         let base = ooff_off + i * 8;
-        let pack_id = u32::from_be_bytes(data[base..base + 4].try_into().unwrap()) as usize;
+        let pack_id = read_be_u32(&data, base)? as usize;
         objects.push(MidxObjectRef {
             oid,
             pack_int_id: pack_id,
@@ -697,8 +733,8 @@ pub fn format_midx_show_objects(objects_dir: &Path) -> Result<String> {
         let oid = ObjectId::from_bytes(&data[oidl_off + i * 20..oidl_off + (i + 1) * 20])
             .map_err(|e| Error::CorruptObject(e.to_string()))?;
         let base = ooff_off + i * 8;
-        let pack_id = u32::from_be_bytes(data[base..base + 4].try_into().unwrap()) as usize;
-        let offset = u32::from_be_bytes(data[base + 4..base + 8].try_into().unwrap()) as u64;
+        let pack_id = read_be_u32(&data, base)? as usize;
+        let offset = u64::from(read_be_u32(&data, base + 4)?);
         let pack_name = names
             .get(pack_id)
             .ok_or_else(|| Error::CorruptObject("pack id out of range in MIDX".to_owned()))?;
@@ -713,11 +749,11 @@ pub fn format_midx_dump(objects_dir: &Path) -> Result<String> {
         .ok_or_else(|| Error::CorruptObject("no multi-pack-index found".to_owned()))?;
     let data = fs::read(&path).map_err(Error::Io)?;
     let (hdr, hdr_end, _) = parse_midx_header(&data)?;
-    let sig = u32::from_be_bytes(data[0..4].try_into().unwrap());
+    let sig = read_be_u32(&data, 0)?;
     let version = data[4];
     let hash_len = data[5];
     let num_chunks = hdr.num_chunks;
-    let num_packs = u32::from_be_bytes(data[8..12].try_into().unwrap());
+    let num_packs = read_be_u32(&data, 8)?;
 
     let mut chunk_tags: Vec<&'static str> = Vec::new();
     let n = num_chunks as usize;
@@ -730,7 +766,7 @@ pub fn format_midx_dump(objects_dir: &Path) -> Result<String> {
     }
     for i in 0..n {
         let base = pos + i * CHUNK_TOC_ENTRY_SIZE;
-        let id = u32::from_be_bytes(data[base..base + 4].try_into().unwrap());
+        let id = read_be_u32(&data, base)?;
         let tag = match id {
             x if x == MIDX_CHUNKID_PACKNAMES => "pack-names",
             x if x == MIDX_CHUNKID_OIDFANOUT => "oid-fanout",
@@ -825,15 +861,15 @@ pub fn load_midx_reuse_tables(objects_dir: &Path) -> Result<Option<MidxReuseTabl
     let mut pack_and_offset = Vec::with_capacity(num_objects);
     for i in 0..num_objects {
         let ob = ooff_off + i * 8;
-        let pack_id = u32::from_be_bytes(data[ob..ob + 4].try_into().unwrap());
-        let off32 = u32::from_be_bytes(data[ob + 4..ob + 8].try_into().unwrap());
+        let pack_id = read_be_u32(&data, ob)?;
+        let off32 = read_be_u32(&data, ob + 4)?;
         pack_and_offset.push((pack_id, u64::from(off32)));
     }
 
     let mut rid_order = Vec::with_capacity(num_objects);
     for i in 0..num_objects {
         let base = ridx_off + i * 4;
-        rid_order.push(u32::from_be_bytes(data[base..base + 4].try_into().unwrap()));
+        rid_order.push(read_be_u32(&data, base)?);
     }
 
     let mut oid_idx_to_rank = vec![0u32; num_objects];
@@ -895,7 +931,7 @@ pub fn read_midx_btmp_ranges(objects_dir: &Path) -> Result<Vec<MidxBtmpPackRange
             "invalid MIDX BTMP chunk length".to_owned(),
         ));
     }
-    let num_packs = u32::from_be_bytes(data[8..12].try_into().unwrap());
+    let num_packs = read_be_u32(&data, 8)?;
     let n_entries = btmp_len / 8;
     if u32::try_from(n_entries).ok() != Some(num_packs) {
         return Err(Error::CorruptObject(
@@ -905,8 +941,8 @@ pub fn read_midx_btmp_ranges(objects_dir: &Path) -> Result<Vec<MidxBtmpPackRange
     let mut out = Vec::with_capacity(n_entries);
     for i in 0..n_entries {
         let base = btmp_off + i * 8;
-        let bitmap_pos = u32::from_be_bytes(data[base..base + 4].try_into().unwrap());
-        let bitmap_nr = u32::from_be_bytes(data[base + 4..base + 8].try_into().unwrap());
+        let bitmap_pos = read_be_u32(&data, base)?;
+        let bitmap_nr = read_be_u32(&data, base + 4)?;
         out.push(MidxBtmpPackRange {
             pack_id: u32::try_from(i)
                 .map_err(|_| Error::CorruptObject("too many packs in MIDX BTMP".to_owned()))?,
@@ -935,17 +971,9 @@ pub fn midx_lookup_pack_and_offset(objects_dir: &Path, oid: &ObjectId) -> Result
     let j0 = if first == 0 {
         0usize
     } else {
-        u32::from_be_bytes(
-            data[fanout_off + (first - 1) * 4..fanout_off + first * 4]
-                .try_into()
-                .unwrap(),
-        ) as usize
+        read_be_u32(&data, fanout_off + (first - 1) * 4)? as usize
     };
-    let j1 = u32::from_be_bytes(
-        data[fanout_off + first * 4..fanout_off + (first + 1) * 4]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let j1 = read_be_u32(&data, fanout_off + first * 4)? as usize;
     let mut lo = j0;
     let mut hi = j1;
     while lo < hi {
@@ -972,8 +1000,8 @@ pub fn midx_lookup_pack_and_offset(objects_dir: &Path, oid: &ObjectId) -> Result
         )));
     }
     let ob = ooff_off + lo * 8;
-    let pack_id = u32::from_be_bytes(data[ob..ob + 4].try_into().unwrap());
-    let off32 = u32::from_be_bytes(data[ob + 4..ob + 8].try_into().unwrap());
+    let pack_id = read_be_u32(&data, ob)?;
+    let off32 = read_be_u32(&data, ob + 4)?;
     Ok((pack_id, u64::from(off32)))
 }
 
@@ -1019,17 +1047,9 @@ pub fn midx_oid_listed_in_tip(objects_dir: &Path, oid: &ObjectId) -> Result<Opti
     let lo = if first == 0 {
         0u32
     } else {
-        u32::from_be_bytes(
-            data[oidf_off + (first - 1) * 4..oidf_off + first * 4]
-                .try_into()
-                .unwrap(),
-        )
+        read_be_u32(&data, oidf_off + (first - 1) * 4)?
     };
-    let hi = u32::from_be_bytes(
-        data[oidf_off + first * 4..oidf_off + (first + 1) * 4]
-            .try_into()
-            .unwrap(),
-    );
+    let hi = read_be_u32(&data, oidf_off + first * 4)?;
     if lo > hi || hi as usize > num_objects {
         eprintln!(
             "error: oid fanout out of order: fanout[{}] = {:08x} > {:08x} = fanout[{}]",
@@ -1067,7 +1087,7 @@ pub fn try_read_object_via_midx(
     };
     let data = fs::read(&midx_path).map_err(Error::Io)?;
     let (_, hdr_end, hash_bytes) = parse_midx_header(&data)?;
-    let num_packs_hdr = u32::from_be_bytes(data[8..12].try_into().unwrap());
+    let num_packs_hdr = read_be_u32(&data, 8)?;
     if hash_bytes != 1 {
         eprintln!(
             "error: multi-pack-index hash version {} does not match version 1",
@@ -1120,17 +1140,9 @@ pub fn try_read_object_via_midx(
     let lo = if first == 0 {
         0u32
     } else {
-        u32::from_be_bytes(
-            data[oidf_off + (first - 1) * 4..oidf_off + first * 4]
-                .try_into()
-                .unwrap(),
-        )
+        read_be_u32(&data, oidf_off + (first - 1) * 4)?
     };
-    let hi = u32::from_be_bytes(
-        data[oidf_off + first * 4..oidf_off + (first + 1) * 4]
-            .try_into()
-            .unwrap(),
-    );
+    let hi = read_be_u32(&data, oidf_off + first * 4)?;
     if lo > hi || hi as usize > num_objects {
         eprintln!(
             "error: oid fanout out of order: fanout[{}] = {:08x} > {:08x} = fanout[{}]",
@@ -1161,8 +1173,8 @@ pub fn try_read_object_via_midx(
     };
 
     let obase = ooff_off + pos * 8;
-    let pack_id = u32::from_be_bytes(data[obase..obase + 4].try_into().unwrap());
-    let raw_off = u32::from_be_bytes(data[obase + 4..obase + 8].try_into().unwrap());
+    let pack_id = read_be_u32(&data, obase)?;
+    let raw_off = read_be_u32(&data, obase + 4)?;
     let _offset = if (raw_off & MIDX_LARGE_OFFSET_NEEDED) != 0 {
         let Some((loff_off, loff_len)) = loff else {
             return Err(Error::CorruptObject(
@@ -1176,13 +1188,9 @@ pub fn try_read_object_via_midx(
                 "multi-pack-index large offset out of bounds".to_owned(),
             ));
         }
-        u64::from_be_bytes(
-            data[loff_off + idx * 8..loff_off + (idx + 1) * 8]
-                .try_into()
-                .unwrap(),
-        )
+        read_be_u64(&data, loff_off + idx * 8)?
     } else {
-        raw_off as u64
+        u64::from(raw_off)
     };
 
     let idx_name = pack_names
@@ -1214,15 +1222,14 @@ pub fn read_midx_preferred_idx_name(objects_dir: &Path) -> Result<String> {
     if ridx_len < 4 || ooff_len < 8 {
         return Err(Error::CorruptObject("truncated MIDX RIDX/OOFF".to_owned()));
     }
-    let first_oid_idx =
-        u32::from_be_bytes(data[ridx_off..ridx_off + 4].try_into().unwrap()) as usize;
+    let first_oid_idx = read_be_u32(&data, ridx_off)? as usize;
     let entry_base = ooff_off + first_oid_idx * 8;
     if entry_base + 8 > data.len() || entry_base + 8 > ooff_off + ooff_len {
         return Err(Error::CorruptObject(
             "bad MIDX object-offsets index".to_owned(),
         ));
     }
-    let pack_id = u32::from_be_bytes(data[entry_base..entry_base + 4].try_into().unwrap());
+    let pack_id = read_be_u32(&data, entry_base)?;
     let idx = usize::try_from(pack_id)
         .map_err(|_| Error::CorruptObject("pack id overflow in multi-pack-index".to_owned()))?;
     names
