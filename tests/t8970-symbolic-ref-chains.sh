@@ -2,6 +2,8 @@
 # Tests for symbolic-ref: creation, reading, deletion, chains, --short, --no-recurse.
 
 test_description='symbolic-ref chains and options'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh

@@ -36,6 +36,7 @@ Updated: 2026-06-01
 - t8 show-index extra: `./scripts/run-tests.sh t8500-show-index-extra.sh` passes 26/26 after correcting real show-index cross-checks.
 - t8 update-ref symref: `./scripts/run-tests.sh t8600-update-ref-symref.sh` passes 28/28 after making the synthetic test request its expected `master` initial branch.
 - t8 status branch tracking: `./scripts/run-tests.sh t8770-status-branch-tracking.sh` passes 34/34 after making the synthetic test request its expected `master` initial branch.
+- t8 symbolic-ref chains: `./scripts/run-tests.sh t8970-symbolic-ref-chains.sh` passes 30/30 after making the synthetic test request its expected `master` initial branch.
 - t8 switch checks: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 - t8 blame focus: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 - t8 blame i18n: `./scripts/run-tests.sh t8005-blame-i18n.sh` passes 5/5 after preserving raw non-UTF-8 commit `--author` and `-m` argv bytes for `i18n.commitencoding` decoding.
