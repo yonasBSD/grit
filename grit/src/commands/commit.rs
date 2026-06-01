@@ -60,6 +60,10 @@ pub struct Args {
     #[arg(short = 'm', long = "message")]
     pub message: Vec<String>,
 
+    /// Raw `-m` / `--message` argv values captured before UTF-8 conversion.
+    #[arg(skip)]
+    pub(crate) raw_messages: Vec<Vec<u8>>,
+
     /// Take the commit message from the given file.
     #[arg(short = 'F', long = "file")]
     pub file: Option<String>,
@@ -103,6 +107,10 @@ pub struct Args {
     /// Override the author.
     #[arg(long = "author")]
     pub author: Option<String>,
+
+    /// Raw `--author` argv value captured before UTF-8 conversion.
+    #[arg(skip)]
+    pub(crate) raw_author: Option<Vec<u8>>,
 
     /// Override the date.
     #[arg(long = "date")]
@@ -219,6 +227,103 @@ pub struct Args {
     /// Pathspec — files to include in the commit (stages them first).
     #[arg(trailing_var_arg = true, allow_hyphen_values = false)]
     pub pathspec: Vec<String>,
+}
+
+#[cfg(unix)]
+fn os_arg_bytes(arg: &std::ffi::OsString) -> &[u8] {
+    use std::os::unix::ffi::OsStrExt;
+    arg.as_os_str().as_bytes()
+}
+
+#[cfg(unix)]
+fn strip_raw_prefix<'a>(arg: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
+    arg.strip_prefix(prefix).filter(|rest| !rest.is_empty())
+}
+
+#[cfg(unix)]
+fn hydrate_raw_commit_argv_values(args: &mut Args, raw_rest: &[Vec<u8>]) {
+    let mut raw_messages = Vec::new();
+    let mut raw_author = None;
+    let mut i = 0usize;
+    while i < raw_rest.len() {
+        let arg = raw_rest[i].as_slice();
+        if arg == b"--author" {
+            if let Some(value) = raw_rest.get(i + 1) {
+                raw_author = Some(value.clone());
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(value) = strip_raw_prefix(arg, b"--author=") {
+            raw_author = Some(value.to_vec());
+            i += 1;
+            continue;
+        }
+        if arg == b"-m" || arg == b"--message" {
+            if let Some(value) = raw_rest.get(i + 1) {
+                raw_messages.push(value.clone());
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(value) = strip_raw_prefix(arg, b"--message=") {
+            raw_messages.push(value.to_vec());
+            i += 1;
+            continue;
+        }
+        if arg.starts_with(b"-m") && !arg.starts_with(b"--") && arg.len() > 2 {
+            raw_messages.push(arg[2..].to_vec());
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+    if args.author.is_some() {
+        args.raw_author = raw_author;
+    }
+    if raw_messages.len() == args.message.len() {
+        args.raw_messages = raw_messages;
+    }
+}
+
+/// Capture raw argv values for commit metadata fields that may use `i18n.commitencoding`.
+#[cfg(unix)]
+pub(crate) fn hydrate_raw_argv(args: &mut Args) {
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let Some(commit_pos) = argv.iter().position(|arg| os_arg_bytes(arg) == b"commit") else {
+        return;
+    };
+    let raw_rest: Vec<Vec<u8>> = argv[commit_pos + 1..]
+        .iter()
+        .map(|arg| os_arg_bytes(arg).to_vec())
+        .collect();
+    hydrate_raw_commit_argv_values(args, &raw_rest);
+}
+
+/// Capture raw argv values for commit metadata fields that may use `i18n.commitencoding`.
+#[cfg(not(unix))]
+pub(crate) fn hydrate_raw_argv(_args: &mut Args) {}
+
+fn decode_commit_argv_bytes(commit_encoding: Option<&str>, raw: &[u8]) -> String {
+    match commit_encoding {
+        Some(enc) if !enc.eq_ignore_ascii_case("utf-8") && !enc.eq_ignore_ascii_case("utf8") => {
+            grit_lib::commit_encoding::decode_bytes(Some(enc), raw)
+        }
+        _ => grit_lib::commit_encoding::decode_bytes(None, raw),
+    }
+}
+
+fn apply_raw_commit_argv_encoding(args: &mut Args, commit_encoding: Option<&str>) {
+    if let (Some(raw), Some(_)) = (args.raw_author.as_deref(), args.author.as_ref()) {
+        args.author = Some(decode_commit_argv_bytes(commit_encoding, raw));
+    }
+    if !args.raw_messages.is_empty() && args.raw_messages.len() == args.message.len() {
+        args.message = args
+            .raw_messages
+            .iter()
+            .map(|raw| decode_commit_argv_bytes(commit_encoding, raw))
+            .collect();
+    }
 }
 
 /// Parsed `--fixup` value: plain autosquash vs `amend:` / `reword:` forms.
@@ -764,6 +869,7 @@ pub fn run(mut args: Args) -> Result<()> {
     let commit_encoding = config
         .get("i18n.commitEncoding")
         .or_else(|| config.get("i18n.commitencoding"));
+    apply_raw_commit_argv_encoding(&mut args, commit_encoding.as_deref());
 
     let status_base_tree = if args.amend {
         if let Some(parent_oid) = parents.first() {
@@ -3006,7 +3112,7 @@ fn build_initial_commit_buffer(
 
 pub(crate) fn launch_commit_editor(repo: &Repository, path: &Path) -> Result<()> {
     let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
-    let editor = crate::editor::resolve_git_editor(&config, true)
+    let editor = crate::editor::resolve_git_editor(&config, false)
         .ok_or_else(|| anyhow::anyhow!("Terminal is dumb, but EDITOR unset"))?;
 
     // Git treats `:` as a no-op editor (`launch_specified_editor`).

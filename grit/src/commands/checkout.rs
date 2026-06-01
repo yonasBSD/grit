@@ -5464,11 +5464,15 @@ pub(crate) fn maybe_setup_tracking(
     let start = start_name.as_str();
 
     let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let explicit_track = track_mode.is_some();
+    let auto_setup_merge = config
+        .get("branch.autoSetupMerge")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let effective_mode = if let Some(mode) = track_mode {
         mode.to_string()
     } else {
-        let auto = config.get("branch.autoSetupMerge").unwrap_or_default();
-        match auto.as_str() {
+        match auto_setup_merge.as_str() {
             "always" => "direct".to_string(),
             "inherit" => "inherit".to_string(),
             "false" | "never" => return Ok(()),
@@ -5561,14 +5565,25 @@ pub(crate) fn maybe_setup_tracking(
 
     let start_ref = format!("refs/heads/{start}");
     if refs::resolve_ref(&repo.git_dir, &start_ref).is_ok() {
+        if !explicit_track && auto_setup_merge != "always" {
+            return Ok(());
+        }
         let config_path = repo.git_dir.join("config");
         let mut config_content = std::fs::read_to_string(&config_path).unwrap_or_default();
+        let rebase_line = if config
+            .get("branch.autoSetupRebase")
+            .is_some_and(|value| value.eq_ignore_ascii_case("always"))
+        {
+            "\n\trebase = true"
+        } else {
+            ""
+        };
 
         let section = format!(
             "\n[branch \"{}\"]\
             \n\tremote = .\
-            \n\tmerge = {}\n",
-            branch_name, start_ref
+            \n\tmerge = {}{}\n",
+            branch_name, start_ref, rebase_line
         );
         config_content.push_str(&section);
         std::fs::write(&config_path, config_content)?;

@@ -2,6 +2,8 @@
 # Tests for show-ref pattern matching, --verify, --exists, --hash, --dereference, etc.
 
 test_description='show-ref pattern matching and options'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh

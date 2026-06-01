@@ -2,6 +2,8 @@
 # Tests for branch listing, creation, deletion, renaming, and verbose display.
 
 test_description='branch listing, tracking display, and management'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh

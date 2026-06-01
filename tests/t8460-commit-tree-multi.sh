@@ -252,13 +252,13 @@ test_expect_success 'build complex DAG: two merges sharing a base' '
 	)
 '
 
-test_expect_success 'duplicate parents are preserved' '
+test_expect_success 'duplicate parents are deduplicated' '
 	(
 	cd repo &&
 	p=$(echo "dup-parent" | git commit-tree $(get_tree)) &&
 	m=$(echo "dup" | git commit-tree $(get_tree) -p "$p" -p "$p") &&
 	git cat-file -p "$m" >out &&
-	test $(grep -c "^parent" out) = 2
+	test $(grep -c "^parent" out) = 1
 	)
 '
 

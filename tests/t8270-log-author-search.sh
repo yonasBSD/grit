@@ -302,7 +302,7 @@ test_expect_success 'log --author on empty repository produces no output' '
 	(
 	git init empty-repo &&
 	cd empty-repo &&
-	git log --author=Anyone --format="%an" >actual 2>/dev/null &&
+	test_must_fail git log --author=Anyone --format="%an" >actual 2>/dev/null &&
 	test_must_be_empty actual
 	)
 '

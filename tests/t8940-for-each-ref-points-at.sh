@@ -2,6 +2,8 @@
 # Tests for for-each-ref --points-at, --contains, --merged, pattern matching, and formatting.
 
 test_description='for-each-ref --points-at and related filters'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh

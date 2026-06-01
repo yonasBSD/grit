@@ -30,7 +30,7 @@ pub struct Args {
     pub quiet: bool,
 
     /// Set up tracking (optional mode: `direct` / `inherit`).
-    #[arg(long = "track", short = 't', value_name = "MODE", num_args = 0..=1)]
+    #[arg(long = "track", short = 't', value_name = "MODE", num_args = 0..=1, default_missing_value = "direct", require_equals = true)]
     pub track: Option<String>,
 
     #[arg(long = "no-track")]
@@ -72,6 +72,14 @@ pub fn run(args: Args) -> Result<()> {
         std::process::exit(128);
     }
 
+    let track = args.track.as_ref().map(|mode| {
+        if mode.is_empty() {
+            "direct".to_string()
+        } else {
+            mode.clone()
+        }
+    });
+
     let mut checkout_tail: Vec<String> = Vec::new();
 
     if let Some(b) = &args.create {
@@ -88,7 +96,7 @@ pub fn run(args: Args) -> Result<()> {
     if args.quiet {
         checkout_tail.push("-q".to_string());
     }
-    if let Some(mode) = &args.track {
+    if let Some(mode) = &track {
         checkout_tail.push("--track".to_string());
         checkout_tail.push(mode.clone());
     }
@@ -118,7 +126,7 @@ pub fn run(args: Args) -> Result<()> {
         checkout_tail.push(b.clone());
     }
 
-    checkout_tail.extend(args.rest);
+    checkout_tail.extend(args.rest.iter().cloned());
 
     if let Some(ambiguous) =
         detect_ambiguous_remote_tracking(&checkout_tail).map_err(|e| anyhow::anyhow!(e))?
@@ -146,7 +154,20 @@ pub fn run(args: Args) -> Result<()> {
     }
     checkout::run(checkout::Args {
         switch_mode: true,
-        rest: checkout_tail,
+        new_branch: args.create,
+        force_branch: args.force_create,
+        detach: args.detach,
+        quiet: args.quiet,
+        track,
+        no_track: args.no_track,
+        merge: args.merge,
+        force: args.discard_changes,
+        guess: args.guess,
+        no_guess: args.no_guess,
+        ignore_other_worktrees: args.ignore_other_worktrees,
+        recurse_submodules: args.recurse_submodules,
+        orphan: args.orphan,
+        rest: args.rest,
         ..Default::default()
     })
 }

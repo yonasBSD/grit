@@ -530,7 +530,9 @@ fn list_tree(
             // If pathspec points INTO this tree, descend.
             // Exact match without trailing slash shows the tree entry itself.
             // Trailing slash or deeper path means descend into the tree.
+            let exact_tree_path = is_tree && args.paths.iter().any(|p| p == &full_name);
             let is_ancestor = is_tree
+                && !exact_tree_path
                 && args
                     .paths
                     .iter()

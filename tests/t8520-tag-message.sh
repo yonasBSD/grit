@@ -63,10 +63,13 @@ test_expect_success 'tag -m stores tagger email' '
 	)
 '
 
-test_expect_success 'tag -m with empty message is rejected' '
+test_expect_success 'tag -m with empty message is accepted' '
 	(
 	cd repo &&
-	test_must_fail git tag -m "" v-empty 2>err
+	git tag -m "" v-empty &&
+	git cat-file -t v-empty >type &&
+	echo "tag" >expect &&
+	test_cmp expect type
 	)
 '
 
@@ -164,11 +167,14 @@ test_expect_success 'tag -F with multiline file' '
 	)
 '
 
-test_expect_success 'tag -F with empty file is rejected' '
+test_expect_success 'tag -F with empty file is accepted' '
 	(
 	cd repo &&
 	>empty-msg.txt &&
-	test_must_fail git tag -F empty-msg.txt v-emptyfile 2>err
+	git tag -F empty-msg.txt v-emptyfile &&
+	git cat-file -t v-emptyfile >type &&
+	echo "tag" >expect &&
+	test_cmp expect type
 	)
 '
 

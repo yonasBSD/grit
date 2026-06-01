@@ -2,6 +2,8 @@
 # Tests for ls-files -s (stage) and -u (unmerged) with merge conflicts.
 
 test_description='ls-files --stage and --unmerged with merge conflicts'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 # Capture real git before test-lib.sh overrides PATH
 REAL_GIT=$(command -v git)
@@ -67,19 +69,21 @@ test_expect_success 'ls-files -s shows stage 0 for non-conflicted files' '
 	)
 '
 
-test_expect_success 'ls-files -s does not list conflicted file (no stage 0)' '
+test_expect_success 'ls-files -s lists conflicted file stages' '
 	(
 	cd repo &&
 	git ls-files -s >actual &&
-	! grep "conflict.txt" actual
+	grep " 1	conflict.txt" actual &&
+	grep " 2	conflict.txt" actual &&
+	grep " 3	conflict.txt" actual
 	)
 '
 
-test_expect_success 'ls-files -s entries are all stage 0' '
+test_expect_success 'ls-files -s includes non-zero conflict stages' '
 	(
 	cd repo &&
 	git ls-files -s >actual &&
-	! grep -v " 0	" actual
+	grep " [123]	conflict.txt" actual
 	)
 '
 

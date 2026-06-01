@@ -1639,7 +1639,14 @@ fn checkout_index_entries(
             && checkout_entry_present_on_disk(&abs_path, entry.mode)
             && !worktree_matches_entry(repo, entry, &abs_path)?
         {
-            continue;
+            let clean_against_old = old_stage0
+                .get(&entry.path)
+                .map(|old| worktree_matches_entry(repo, old, &abs_path))
+                .transpose()?
+                .unwrap_or(false);
+            if !clean_against_old {
+                continue;
+            }
         }
 
         if let Some(parent) = abs_path.parent() {

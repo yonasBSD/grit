@@ -57,6 +57,12 @@ pub fn version_string() -> String {
     format!("2.47.0.grit-{}", env!("CARGO_PKG_VERSION"))
 }
 
+fn argv_lossy() -> Vec<String> {
+    std::env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
+}
+
 fn main() {
     let start = std::time::Instant::now();
     let trace2_path = std::env::var("GIT_TRACE2").ok().filter(|s| !s.is_empty());
@@ -71,7 +77,7 @@ fn main() {
     // Write trace2 version event at startup
     if let Some(ref path) = trace2_path {
         let _ = trace2_write_event(path, "version", env!("CARGO_PKG_VERSION"));
-        let cmd_line: Vec<String> = std::env::args().collect();
+        let cmd_line = argv_lossy();
         let _ = trace2_write_event(path, "start", &cmd_line.join(" "));
         let ancestry = get_process_ancestry();
         let _ = trace2_write_event(
@@ -81,7 +87,7 @@ fn main() {
         );
     }
     if let Some(ref path) = trace2_perf_path {
-        let cmd_line: Vec<String> = std::env::args().collect();
+        let cmd_line = argv_lossy();
         let _ = trace2_write_perf(path, "version", env!("CARGO_PKG_VERSION"));
         let _ = trace2_write_perf(path, "start", &cmd_line.join(" "));
         let ancestry = get_process_ancestry();
@@ -92,7 +98,7 @@ fn main() {
         );
     }
     if let Some(ref path) = trace2_event_path {
-        let cmd_line: Vec<String> = std::env::args().collect();
+        let cmd_line = argv_lossy();
         let _ = trace2_write_json_event(path, "version", env!("CARGO_PKG_VERSION"));
         let _ = trace2_write_json_event(path, "start", &cmd_line.join(" "));
         let ancestry = get_process_ancestry();
@@ -3503,7 +3509,7 @@ fn run() -> Result<()> {
         }
     }
 
-    let args: Vec<String> = std::env::args().collect();
+    let args = argv_lossy();
     let (opts, subcmd, rest) = extract_globals(&args)?;
 
     let subcmd = match subcmd {
@@ -5084,7 +5090,11 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         "clean" => commands::clean::run(parse_cmd_args(subcmd, rest)),
         "clone" => commands::clone::run(parse_cmd_args(subcmd, rest)),
         "column" => commands::column::run(parse_cmd_args(subcmd, rest)),
-        "commit" => commands::commit::run(parse_cmd_args(subcmd, rest)),
+        "commit" => {
+            let mut args: commands::commit::Args = parse_cmd_args(subcmd, rest);
+            commands::commit::hydrate_raw_argv(&mut args);
+            commands::commit::run(args)
+        }
         "commit-graph" => commands::commit_graph::run(parse_cmd_args(subcmd, rest)),
         "commit-tree" => commands::commit_tree::run(parse_cmd_args(subcmd, rest)),
         "config" => commands::config::run(parse_cmd_args(subcmd, &preprocess_config_argv(rest))),

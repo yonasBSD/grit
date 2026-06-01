@@ -2,6 +2,8 @@
 # Tests for for-each-ref with complex format strings.
 
 test_description='for-each-ref complex format strings and combinations'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh

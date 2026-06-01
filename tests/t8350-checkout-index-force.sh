@@ -27,11 +27,11 @@ test_expect_success 'setup repository' '
 
 # ── --force basics ──────────────────────────────────────────────────────────
 
-test_expect_success 'checkout-index without --force skips existing file' '
+test_expect_success 'checkout-index without --force refuses existing dirty file' '
 	(
 	cd repo &&
 	echo dirty >a.txt &&
-	grit checkout-index a.txt 2>err &&
+	test_must_fail grit checkout-index a.txt 2>err &&
 	test "$(cat a.txt)" = "dirty" &&
 	grep -i "already exists" err &&
 	echo alpha >a.txt

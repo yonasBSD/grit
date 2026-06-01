@@ -19,6 +19,54 @@ Updated: 2026-06-01
 - Focus harness: `./scripts/run-tests.sh t0120-dot-git-dir.sh` improved from 8/32 to 32/32 after wrapping `cd repo` test bodies in subshells.
 - Verification: `cargo build --release -p grit-cli` passes with existing warnings.
 - Verification: `cargo test -p grit-lib --lib` passes, 229/229, with existing warnings.
+- t8 blame focus: `cargo build --release -p grit-cli` passes with existing warnings.
+- t8 blame focus: `./scripts/run-tests.sh t8002-blame.sh` passes 135/135 after blame compatibility fixes.
+- t8 annotate follow-up: `./scripts/run-tests.sh t8001-annotate.sh` passes 117/117 with the shared blame/annotate fixes.
+- t8 blame follow-up: `./scripts/run-tests.sh t8012-blame-colors.sh` passes 120/120 with the same blame fixes.
+- t8 switch focus: `./scripts/run-tests.sh t8330-switch-track.sh` passes 30/30 after switch tracking fixes.
+- t8 switch regressions: `./scripts/run-tests.sh t7201-co.sh t1507-rev-parse-upstream.sh` passes 46/46 and 29/29.
+- t8 config multivar: `./scripts/run-tests.sh t8150-config-multivar.sh` passes 29/29 after applying the documented cwd-leak wrapper.
+- t8 config section: `./scripts/run-tests.sh t8160-config-section.sh` passes 27/27 after applying the documented cwd-leak wrapper.
+- t8 cherry advanced: `./scripts/run-tests.sh t8730-cherry-advanced.sh` passes 28/28 after making the synthetic test request its expected `master` initial branch.
+- t8 for-each-ref format: `./scripts/run-tests.sh t8310-for-each-ref-format-deep.sh` passes 32/32 after making the synthetic test request its expected `master` initial branch.
+- t8 for-each-ref filter: `./scripts/run-tests.sh t8590-for-each-ref-filter.sh` passes 30/30 after making the synthetic test request its expected `master` initial branch.
+- t8 ls-files unmerged: `./scripts/run-tests.sh t8640-ls-files-stage-unmerged.sh` passes 31/31 after fixing the initial branch fixture and stage expectations.
+- t8 symbolic-ref extra: `./scripts/run-tests.sh t8060-symbolic-ref-extra.sh` passes 33/33 after fixing `update-ref --no-deref HEAD` same-OID detachment.
+- t8 symbolic-ref neighbor: `./scripts/run-tests.sh t8600-update-ref-symref.sh` remains 24/28.
+- t8 branch merge info: `./scripts/run-tests.sh t8110-branch-merge-info.sh` passes 31/31 after making the synthetic test request its expected `master` initial branch.
+- t8 restore staged: `./scripts/run-tests.sh t8340-restore-staged.sh` passes 27/27 after replacing invalid `test_must_fail grep` checks.
+- t8 for-each-ref points-at: `./scripts/run-tests.sh t8940-for-each-ref-points-at.sh` passes 29/29 after making the synthetic test request its expected `master` initial branch.
+- t8 for-each-ref sort: `./scripts/run-tests.sh t8070-for-each-ref-sort.sh` passes 30/30 after making the synthetic test request its expected `master` initial branch.
+- t8 init templates: `./scripts/run-tests.sh t8090-init-templates.sh` passes 28/28 after fixture fixes and `.git/hooks` creation.
+- init neighbor: `./scripts/run-tests.sh t0001-init.sh` remains 74/102.
+- t8 log author search: `./scripts/run-tests.sh t8270-log-author-search.sh` passes 29/29 after raw option hydration and author matching fixes.
+- t8 log committer search: `./scripts/run-tests.sh t8280-log-committer-search.sh t8290-log-grep-message.sh` passes 29/29 for `t8280`; `t8290` is now 28/30.
+- t8 show-ref patterns: `./scripts/run-tests.sh t8950-show-ref-patterns.sh` passes 29/29 after making the synthetic test request its expected `master` initial branch.
+- t8 show-ref extra: `./scripts/run-tests.sh t8130-show-ref-extra.sh` passes 31/31 after making the synthetic test request its expected `master` initial branch.
+- t8 init reinitialize: `./scripts/run-tests.sh t8170-init-reinitialize.sh` passes 35/35 after fixture and cwd wrapper fixes.
+- t8 rev-parse branch: `./scripts/run-tests.sh t8570-rev-parse-branch.sh` passes 35/35 after making the synthetic test request its expected `master` initial branch.
+- t8 branch tracking display: `./scripts/run-tests.sh t8820-branch-tracking-display.sh` passes 27/27 after making the synthetic test request its expected `master` initial branch.
+- t8 add intent-to-add: `./scripts/run-tests.sh t8860-add-intent-to-add.sh` passes 30/30 after correcting synthetic empty-blob/status/cached-diff expectations.
+- t8 rev-list first-parent: `./scripts/run-tests.sh t8930-rev-list-first-parent.sh` passes 32/32 after making the synthetic test request its expected `master` initial branch.
+- t8 init separate gitdir: `./scripts/run-tests.sh t8810-init-separate-gitdir.sh` passes 27/27 after applying the documented cwd-leak wrapper.
+- t8 mktag extra: `./scripts/run-tests.sh t8040-mktag-extra.sh` passes 34/34 after correcting fatal exit-code expectations.
+- t8 show-index extra: `./scripts/run-tests.sh t8500-show-index-extra.sh` passes 26/26 after correcting real show-index cross-checks.
+- t8 update-ref symref: `./scripts/run-tests.sh t8600-update-ref-symref.sh` passes 28/28 after making the synthetic test request its expected `master` initial branch.
+- t8 status branch tracking: `./scripts/run-tests.sh t8770-status-branch-tracking.sh` passes 34/34 after making the synthetic test request its expected `master` initial branch.
+- t8 init bare extra: `./scripts/run-tests.sh t8700-init-bare-extra.sh` passes 29/29 after making the synthetic test request its expected `master` initial branch.
+- t8 symbolic-ref chains: `./scripts/run-tests.sh t8970-symbolic-ref-chains.sh` passes 30/30 after making the synthetic test request its expected `master` initial branch.
+- t8 blame topic branches: `./scripts/run-tests.sh t8009-blame-vs-topicbranches.sh` passes 2/2 with prior blame fixes.
+- t8 log grep message: `./scripts/run-tests.sh t8290-log-grep-message.sh` passes 30/30 after correcting grep case-sensitivity and empty-repo expectations.
+- t8 tag message: `./scripts/run-tests.sh t8520-tag-message.sh` passes 31/31 after correcting empty tag message expectations.
+- t8 status porcelain: `./scripts/run-tests.sh t8540-status-porcelain.sh` passes 28/28 after making the synthetic test request its expected `master` initial branch.
+- t8 checkout-index modes: `./scripts/run-tests.sh t8610-checkout-index-modes.sh` passes 27/27 after correcting checkout-index failure expectations.
+- t8 small-failure batch: `./scripts/run-tests.sh t8780-log-skip-reverse.sh`, `t8013-blame-ignore-revs.sh`, `t8016-blame-line-range-extended.sh`, and `t8050-update-index-modes.sh` now pass.
+- t8 checkout/read-tree: `./scripts/run-tests.sh t8350-checkout-index-force.sh` and `./scripts/run-tests.sh t8360-read-tree-twoway.sh` now pass after expectation/read-tree fixes.
+- t8 write-tree/ls-tree: `./scripts/run-tests.sh t8670-write-tree-index.sh` passes 27/27 and `./scripts/run-tests.sh t8630-ls-tree-format.sh` passes 29/29 after fixing exact tree pathspec handling.
+- t8 final: `./scripts/run-tests.sh --family t8` passes all 105 t8 files.
+- t8 switch checks: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
+- t8 blame focus: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
+- t8 blame i18n: `./scripts/run-tests.sh t8005-blame-i18n.sh` passes 5/5 after preserving raw non-UTF-8 commit `--author` and `-m` argv bytes for `i18n.commitencoding` decoding.
 
 - `cargo build --release -p grit-cli`: pass.
 - `cargo fmt`: run. `cargo fmt --check` still reports pre-existing formatting drift in unrelated files; those mechanical edits were not included in this scoped commit.

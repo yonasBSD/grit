@@ -115,8 +115,11 @@ pub fn run(mut args: Args) -> Result<()> {
     super::blame::run(super::blame::Args {
         line_range: args.line_range,
         long_hash: args.long_hash,
+        blank_boundary: false,
         suppress: args.suppress,
+        compatibility_output: false,
         email: args.email,
+        no_show_email: false,
         porcelain: args.porcelain,
         line_porcelain: args.line_porcelain,
         ignore_rev: args.ignore_rev,
@@ -140,6 +143,7 @@ pub fn run(mut args: Args) -> Result<()> {
         incremental: false,
         encoding: None,
         annotate_output: true,
+        boundary_revision: false,
         args: args.args,
     })
 }

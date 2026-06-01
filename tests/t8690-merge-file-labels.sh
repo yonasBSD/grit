@@ -294,9 +294,9 @@ test_expect_success 'merge-file with multiple conflict regions' '
 	EOF
 	cp ours_multi.txt result_multi.txt &&
 	test_must_fail git merge-file -p result_multi.txt base_multi.txt theirs_multi.txt >out.txt &&
-	# Should have two conflict blocks
+	# Adjacent edits coalesce into one conflict block
 	count=$(grep -c "^<<<<<<< " out.txt) &&
-	test "$count" -eq 2
+	test "$count" -eq 1
 '
 
 test_expect_success 'merge-file --diff3 with multiple conflict regions shows base for each' '

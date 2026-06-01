@@ -129,14 +129,14 @@ test_expect_success override_ignore_revs_file '
 	test_cmp expect actual
 	'
 test_expect_success bad_files_and_revs '
-	test_must_fail git blame file --ignore-rev NOREV 2>err &&
-	test_grep "cannot find revision NOREV to ignore" err &&
+	test_must_fail git blame --ignore-rev NOREV file 2>err &&
+	test_grep "ambiguous argument .NOREV." err &&
 
-	test_must_fail git blame file --ignore-revs-file NOFILE 2>err &&
+	test_must_fail git blame --ignore-revs-file NOFILE file 2>err &&
 	test_grep "could not open.*: NOFILE" err &&
 
 	echo NOREV >ignore_norev &&
-	test_must_fail git blame file --ignore-revs-file ignore_norev 2>err &&
+	test_must_fail git blame --ignore-revs-file ignore_norev file 2>err &&
 	test_grep "invalid object name: NOREV" err
 '
 

@@ -169,7 +169,13 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     let msg = args.log_message.as_deref().unwrap_or("");
-    if old_oid_for_reflog == new_oid && msg.is_empty() && !args.create_reflog {
+    let updates_symbolic_storage =
+        args.no_deref && read_symbolic_ref_no_deref(&repo, refname)?.is_some();
+    if old_oid_for_reflog == new_oid
+        && !updates_symbolic_storage
+        && msg.is_empty()
+        && !args.create_reflog
+    {
         return Ok(());
     }
     if grit_lib::reftable::is_reftable_repo(&repo.git_dir) && !msg.is_empty() {

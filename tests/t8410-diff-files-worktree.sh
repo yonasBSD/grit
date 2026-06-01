@@ -315,7 +315,7 @@ test_expect_success 'diff-files -p: deleted file shows removed content' '
 test_expect_success 'setup: restore deleted file' '
 	(
 	cd repo &&
-	"$SYS_GIT" checkout -- file2.txt
+	"$SYS_GIT" reset --hard HEAD
 	)
 '
 

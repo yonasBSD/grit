@@ -2,6 +2,8 @@
 # Tests for status with branch display, short/porcelain formats.
 
 test_description='status branch and tracking display'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh

@@ -168,10 +168,10 @@ test_expect_success '--no-skip-worktree does not error' '
 	)
 '
 
-test_expect_success '--refresh does not error on clean index' '
+test_expect_success '--refresh reports missing cacheinfo worktree files' '
 	(
 	cd repo &&
-	git update-index --refresh
+	test_must_fail git update-index --refresh
 	)
 '
 

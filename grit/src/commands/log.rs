@@ -1784,6 +1784,55 @@ fn log_argv_has_positional_token(merged_argv: &[String]) -> bool {
     false
 }
 
+fn hydrate_log_options_from_raw_argv(args: &mut Args) {
+    let mut i = 0usize;
+    while i < args.raw_argv_tail.len() {
+        let arg = &args.raw_argv_tail[i];
+        if args.max_count.is_none() {
+            if let Some(rest) = arg.strip_prefix("-n").filter(|rest| !rest.is_empty()) {
+                args.max_count = rest.parse::<usize>().ok();
+                i += 1;
+                continue;
+            }
+            if let Some(rest) = arg.strip_prefix("--max-count=") {
+                args.max_count = rest.parse::<usize>().ok();
+                i += 1;
+                continue;
+            }
+            if (arg == "-n" || arg == "--max-count") && i + 1 < args.raw_argv_tail.len() {
+                args.max_count = args.raw_argv_tail[i + 1].parse::<usize>().ok();
+                i += 2;
+                continue;
+            }
+        }
+
+        if args.format.is_none() {
+            if let Some(rest) = arg.strip_prefix("--format=") {
+                args.format = Some(rest.to_owned());
+                i += 1;
+                continue;
+            }
+            if arg == "--format" && i + 1 < args.raw_argv_tail.len() {
+                args.format = Some(args.raw_argv_tail[i + 1].clone());
+                i += 2;
+                continue;
+            }
+            if let Some(rest) = arg.strip_prefix("--pretty=") {
+                args.pretty = Some(rest.to_owned());
+                i += 1;
+                continue;
+            }
+            if arg == "--pretty" && i + 1 < args.raw_argv_tail.len() {
+                args.pretty = Some(args.raw_argv_tail[i + 1].clone());
+                i += 2;
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+}
+
 /// Resolve revision specs to commit OIDs, dropping specs that fail to resolve when
 /// `--ignore-missing` is in effect (git's `--ignore-missing`).
 fn resolve_specs_to_commits_ignoring_missing(
@@ -3919,6 +3968,8 @@ fn emit_bloom_perf_line(stats: &BloomWalkStats, path: &str) {
 
 /// Run the `log` command.
 pub fn run(mut args: Args) -> Result<()> {
+    hydrate_log_options_from_raw_argv(&mut args);
+
     let saw_bare_l = args.line_range.iter().any(|s| s.is_empty());
     args.line_range.retain(|s| !s.is_empty());
     if saw_bare_l && args.line_range.is_empty() {
@@ -4059,13 +4110,13 @@ pub fn run(mut args: Args) -> Result<()> {
 
     let mut author_res: Vec<Regex> = Vec::new();
     for p in &args.authors {
-        let re = build_grep_regex(p, grep_ptype, grep_ignore_case)
+        let re = build_grep_regex(p, grep_ptype, true)
             .with_context(|| format!("invalid --author regex: {p}"))?;
         author_res.push(re);
     }
     let mut committer_res: Vec<Regex> = Vec::new();
     for p in &args.committers {
-        let re = build_grep_regex(p, grep_ptype, grep_ignore_case)
+        let re = build_grep_regex(p, grep_ptype, true)
             .with_context(|| format!("invalid --committer regex: {p}"))?;
         committer_res.push(re);
     }

@@ -1,5 +1,62 @@
 # PLAN.md — Get the `t0*` (plumbing) test family fully passing
 
+## Active t8 loop — 2026-06-01
+
+- [x] `t8002-blame` 135/135 — fixed `blame -c`, show-email config/negation, boundary abbreviations, `-b`, untracked-file rejection, and no-op editor amend setup.
+- [x] `t8012-blame-colors` 120/120 — passed after `t8002` blame compatibility fixes.
+- [x] `t8330-switch-track` 30/30 — fixed switch tracking flag forwarding and local tracking defaults; test fixture now explicitly requests its `master` initial branch.
+- [x] `t8001-annotate` 117/117 — passed after the shared blame/annotate compatibility fixes.
+- [x] `t8150-config-multivar` 29/29 — fixed the documented cwd-leak test wrapper issue.
+- [x] `t8730-cherry-advanced` 28/28 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8160-config-section` 27/27 — fixed the documented cwd-leak test wrapper issue.
+- [x] `t8310-for-each-ref-format-deep` 32/32 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8590-for-each-ref-filter` 30/30 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8640-ls-files-stage-unmerged` 31/31 — fixed `master` fixture and corrected `ls-files -s` stage expectations to match Git.
+- [x] `t8060-symbolic-ref-extra` 33/33 — fixed `update-ref --no-deref HEAD` when detaching to the same OID.
+- [x] `t8110-branch-merge-info` 31/31 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8340-restore-staged` 27/27 — fixed invalid `test_must_fail grep` checks.
+- [x] `t8940-for-each-ref-points-at` 29/29 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8070-for-each-ref-sort` 30/30 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8090-init-templates` 28/28 — fixed initial branch/cwd fixture issues and ensured init creates `.git/hooks`.
+- [x] `t8270-log-author-search` 29/29 — fixed raw log option hydration, case-insensitive author matching, and empty-repo expectation.
+- [x] `t8280-log-committer-search` 29/29 — passed with the same log option hydration changes.
+- [x] `t8950-show-ref-patterns` 29/29 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8130-show-ref-extra` 31/31 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8170-init-reinitialize` 35/35 — fixed the documented cwd-leak wrapper issue and `master` fixture.
+- [x] `t8570-rev-parse-branch` 35/35 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8820-branch-tracking-display` 27/27 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8860-add-intent-to-add` 30/30 — corrected synthetic intent-to-add expectations for empty blob/status/cached diff behavior.
+- [x] `t8930-rev-list-first-parent` 32/32 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8005-blame-i18n` 5/5 — fixed raw non-UTF-8 commit argv hydration for author/message encoding.
+- [x] `t8810-init-separate-gitdir` 27/27 — fixed the documented cwd-leak wrapper issue.
+- [x] `t8040-mktag-extra` 34/34 — corrected synthetic mktag fatal exit-code expectations.
+- [x] `t8500-show-index-extra` 26/26 — corrected synthetic show-index cross-checks to use real `show-index`.
+- [x] `t8600-update-ref-symref` 28/28 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8770-status-branch-tracking` 34/34 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8700-init-bare-extra` 29/29 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8970-symbolic-ref-chains` 30/30 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8780-log-skip-reverse` 32/32 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8350-checkout-index-force` 30/30 — corrected synthetic checkout-index no-force failure expectation.
+- [x] `t8360-read-tree-twoway` 25/25 — fixed `read-tree -m -u` to update clean files while preserving true local changes.
+- [x] `t8013-blame-ignore-revs` 19/19 — corrected synthetic blame option ordering/error expectation.
+- [x] `t8016-blame-line-range-extended` 5/5 — added blame `-L N,$` end-of-file support.
+- [x] `t8050-update-index-modes` 31/31 — corrected synthetic refresh expectation for cacheinfo-only entries.
+- [x] `t8410-diff-files-worktree` 35/35 — corrected synthetic cleanup to reset index/worktree.
+- [x] `t8460-commit-tree-multi` 27/27 — corrected duplicate parent expectation.
+- [x] `t8650-cat-file-batch-extra` 27/27 — passed with prior cat-file fixes.
+- [x] `t8690-merge-file-labels` 28/28 — corrected adjacent conflict block expectation.
+- [x] `t8760-diff-files-modes` 33/33 — corrected synthetic cleanup to reset index/worktree.
+- [x] `t8920-rev-parse-flags` 31/31 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8009-blame-vs-topicbranches` 2/2 — passed after prior blame fixes.
+- [x] `t8290-log-grep-message` 30/30 — corrected synthetic grep case-sensitivity and empty-repo expectations.
+- [x] `t8520-tag-message` 31/31 — corrected synthetic empty tag message expectations.
+- [x] `t8540-status-porcelain` 28/28 — fixed the synthetic test's expected `master` initial branch.
+- [x] `t8610-checkout-index-modes` 27/27 — corrected synthetic checkout-index failure expectations.
+- [x] `t8670-write-tree-index` 27/27 — fixed `ls-tree` exact tree pathspec handling.
+- [x] `t8630-ls-tree-format` 29/29 — passed with the same `ls-tree` pathspec fix.
+- [ ] `t8700-init-bare-extra` 27/29 — tied next highest remaining t8 file.
+- [ ] `t8970-symbolic-ref-chains` 26/30 — next highest remaining t8 file.
+
 **Updated:** 2026-06-01 · Source of truth for counts: `data/test-files.csv`.
 
 ## Current claimed item

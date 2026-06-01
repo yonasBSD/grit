@@ -126,12 +126,11 @@ test_expect_success 'log --grep with exact phrase' '
 	)
 '
 
-test_expect_success 'log --grep is case-insensitive by default' '
+test_expect_success 'log --grep is case-sensitive by default' '
 	(
 	cd repo &&
-	git log --grep=FEAT --format="%s" >lower &&
-	git log --grep=feat --format="%s" >upper &&
-	test_cmp lower upper
+	git log --grep=FEAT --format="%s" >actual &&
+	test_must_be_empty actual
 	)
 '
 
@@ -275,7 +274,7 @@ test_expect_success 'log --grep on empty repository produces no output' '
 	(
 	git init empty-repo &&
 	cd empty-repo &&
-	git log --grep=anything --format="%s" >actual 2>/dev/null &&
+	test_must_fail git log --grep=anything --format="%s" >actual 2>/dev/null &&
 	test_must_be_empty actual
 	)
 '

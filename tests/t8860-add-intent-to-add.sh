@@ -39,19 +39,20 @@ test_expect_success 'add -N records intent-to-add for new file' '
 	)
 '
 
-test_expect_success 'intent-to-add entry shows all-zero blob hash' '
+test_expect_success 'intent-to-add entry shows empty blob hash' '
 	(
 	cd repo &&
+	empty_blob=$(printf "" | git hash-object --stdin) &&
 	git ls-files --stage new.txt >out &&
-	grep "0000000000000000000000000000000000000000" out
+	grep "$empty_blob" out
 	)
 '
 
-test_expect_success 'intent-to-add file shows in status as AM' '
+test_expect_success 'intent-to-add file shows in status as unstaged add' '
 	(
 	cd repo &&
 	git status --porcelain >out &&
-	grep "^AM" out | grep "new.txt"
+	grep "^ A" out | grep "new.txt"
 	)
 '
 
@@ -63,11 +64,11 @@ test_expect_success 'diff shows intent-to-add file content' '
 	)
 '
 
-test_expect_success 'diff --cached shows ita as new file' '
+test_expect_success 'diff --cached omits ita-only file' '
 	(
 	cd repo &&
 	git diff --cached --name-only >out &&
-	grep "new.txt" out
+	test_must_be_empty out
 	)
 '
 
@@ -114,13 +115,14 @@ test_expect_success 'status shows all intent-to-add files' '
 	)
 '
 
-test_expect_success 'all ita entries have zero blob hash' '
+test_expect_success 'all ita entries have empty blob hash' '
 	(
 	cd repo &&
+	empty_blob=$(printf "" | git hash-object --stdin) &&
 	git ls-files --stage alpha.txt >out &&
-	grep "0000000000000000000000000000000000000000" out &&
+	grep "$empty_blob" out &&
 	git ls-files --stage beta.txt >out &&
-	grep "0000000000000000000000000000000000000000" out
+	grep "$empty_blob" out
 	)
 '
 
@@ -255,13 +257,13 @@ test_expect_success 'add -N --force on ignored file works' '
 
 # -- add -N then diff --cached ------------------------------------------------
 
-test_expect_success 'diff --cached shows ita as new file entry' '
+test_expect_success 'diff --cached omits ita-only file entry' '
 	(
 	cd repo &&
 	echo "cached diff" >cdiff.txt &&
 	git add -N cdiff.txt &&
 	git diff --cached --name-only >out &&
-	grep "cdiff.txt" out
+	test_must_be_empty out
 	)
 '
 
@@ -299,8 +301,9 @@ test_expect_success 'ita entry alongside tracked update' '
 	cd repo &&
 	echo "ita update test" >ita-update.txt &&
 	git add -N ita-update.txt &&
+	empty_blob=$(printf "" | git hash-object --stdin) &&
 	git ls-files --stage ita-update.txt >out &&
-	grep "0000000000000000000000000000000000000000" out
+	grep "$empty_blob" out
 	)
 '
 

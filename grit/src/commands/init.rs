@@ -501,6 +501,7 @@ fn create_git_dir(git_dir: &Path, opts: CreateGitDirOptions<'_>) -> Result<()> {
         "objects",
         "objects/info",
         "objects/pack",
+        "hooks",
         "refs",
         "refs/heads",
         "refs/tags",
@@ -534,7 +535,7 @@ fn create_git_dir(git_dir: &Path, opts: CreateGitDirOptions<'_>) -> Result<()> {
             copy_template(tmpl, git_dir)?;
         }
     } else if !skip_default_templates {
-        // Create built-in default template content (`hooks/` comes from template install only).
+        // Create built-in default template content.
         fs::create_dir_all(git_dir.join("info"))?;
         // Write info/exclude (default template content)
         let exclude_path = git_dir.join("info").join("exclude");

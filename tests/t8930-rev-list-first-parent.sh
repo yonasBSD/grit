@@ -2,6 +2,8 @@
 # Tests for rev-list --first-parent and related traversal options.
 
 test_description='rev-list --first-parent and traversal'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh

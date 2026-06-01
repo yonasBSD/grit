@@ -42,13 +42,25 @@ pub struct Args {
     #[arg(short = 'l')]
     pub long_hash: bool,
 
+    /// Show blank object names for boundary commits.
+    #[arg(short = 'b')]
+    pub blank_boundary: bool,
+
     /// Suppress author name and timestamp.
     #[arg(short = 's')]
     pub suppress: bool,
 
+    /// Use git-annotate compatible output.
+    #[arg(short = 'c')]
+    pub compatibility_output: bool,
+
     /// Show author email instead of name.
     #[arg(short = 'e', long = "show-email")]
     pub email: bool,
+
+    /// Show author name even when blame.showEmail is enabled.
+    #[arg(long = "no-show-email")]
+    pub no_show_email: bool,
 
     /// Porcelain format for machine consumption.
     #[arg(short = 'p', long = "porcelain")]
@@ -156,6 +168,10 @@ pub struct Args {
     /// When true, emit git-annotate style output (tab-separated metadata).
     #[arg(skip)]
     pub annotate_output: bool,
+
+    /// When true, treat lines as coming from a revision boundary.
+    #[arg(skip)]
+    pub boundary_revision: bool,
 
     /// Revision to blame from (and optional file after `--`).
     #[arg()]
@@ -2269,10 +2285,21 @@ fn line_similarity_and_lcs(a: &str, b: &str) -> (f64, usize) {
 }
 
 pub fn run(mut args: Args) -> Result<()> {
+    if args.compatibility_output {
+        args.annotate_output = true;
+    }
+
     let repo = Repository::discover(None).context("not a git repository")?;
     let odb = Odb::new(&repo.git_dir.join("objects"));
     let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
     let grafts = load_graft_parents(&repo.git_dir);
+
+    if !args.email && config_bool(&config, "blame.showEmail") {
+        args.email = true;
+    }
+    if args.no_show_email {
+        args.email = false;
+    }
 
     let mut diff_algorithm = config
         .get("diff.algorithm")
@@ -2301,7 +2328,9 @@ pub fn run(mut args: Args) -> Result<()> {
         if let Some(work_tree) = repo.work_tree.as_deref() {
             let abs_path = work_tree.join(&file_path);
             if std::fs::symlink_metadata(&abs_path).is_err() {
-                bail!("fatal: Cannot lstat '{file_path}': No such file or directory");
+                ensure_index_knows_path(&repo, &file_path).map_err(|_| {
+                    anyhow::anyhow!("fatal: Cannot lstat '{file_path}': No such file or directory")
+                })?;
             }
         }
     }
@@ -2309,6 +2338,10 @@ pub fn run(mut args: Args) -> Result<()> {
     let use_textconv = !args.no_textconv;
     let copy_depth = args.copy_detection.len();
     let textconv_ctx = Some(BlameTextconvContext::new(&repo));
+
+    if rev.as_deref().is_some_and(|r| r.starts_with('^')) {
+        args.boundary_revision = true;
+    }
 
     let start_oid = match &rev {
         Some(r) => {
@@ -2413,6 +2446,8 @@ pub fn run(mut args: Args) -> Result<()> {
                 // tree (e.g. during a conflicted merge), fall back to reading the
                 // working tree (or index conflict stage) file and best-effort
                 // attribute against HEAD history.
+                ensure_index_knows_path(&repo, &file_path)
+                    .with_context(|| format!("file '{file_path}' not found in revision"))?;
                 let content = if let Some(work_tree) = repo.work_tree.as_deref() {
                     let abs_path = work_tree.join(&file_path);
                     if abs_path.exists() {
@@ -2712,10 +2747,20 @@ fn looks_like_object_id(s: &str) -> bool {
 
 /// True when `spec` resolves to an object that peels to a commit (not a lone blob/tree).
 fn spec_resolves_to_commit(odb: &Odb, repo: &Repository, spec: &str) -> bool {
-    let Ok(oid) = resolve_revision_without_index_dwim(repo, spec) else {
+    let normalized = spec.strip_prefix('^').unwrap_or(spec);
+    let Ok(oid) = resolve_revision_without_index_dwim(repo, normalized) else {
         return false;
     };
     peel_to_commit_oid(odb, oid).ok().flatten().is_some()
+}
+
+fn ensure_index_knows_path(repo: &Repository, file_path: &str) -> Result<()> {
+    let index = repo.load_index().context("loading index")?;
+    let path = file_path.as_bytes();
+    if index.entries.iter().any(|entry| entry.path == path) {
+        return Ok(());
+    }
+    bail!("file not in index");
 }
 
 fn parse_blame_args(
@@ -2755,6 +2800,10 @@ fn parse_blame_args(
 }
 
 fn resolve_blame_start_oid(repo: &Repository, rev_spec: &str) -> Result<ObjectId> {
+    if let Some(stripped) = rev_spec.strip_prefix('^') {
+        return resolve_blame_start_oid(repo, stripped);
+    }
+
     if let Some((lhs, rhs)) = rev_spec.split_once("..") {
         if rhs.is_empty() {
             return resolve_revision(repo, "HEAD").map_err(Into::into);
@@ -3242,6 +3291,10 @@ fn parse_loc_git<'a>(mut spec: &'a str, lines: &[String], begin: i64) -> Result<
         return Ok((rest, n));
     }
 
+    if let Some(rest) = spec.strip_prefix('$') {
+        return Ok((rest, lines_count));
+    }
+
     // Regex or remaining forms: resolve search start from `begin`.
     let mut search_1based = begin;
     if search_1based < 0 {
@@ -3684,7 +3737,7 @@ fn write_default(
     let hash_len = if args.no_abbrev || args.long_hash {
         40
     } else if let Some(n) = args.abbrev {
-        n.max(4)
+        n.saturating_add(1).clamp(4, 40)
     } else {
         8
     };
@@ -3694,28 +3747,38 @@ fn write_default(
 
     let mut prev_oid: Option<ObjectId> = None;
 
-    // Check if any blame line is a boundary (root commit)
-    let has_boundary = !args.root
-        && lines.iter().any(|l| {
-            commits
-                .get(&l.oid)
-                .map(|c| c.parents.is_empty())
-                .unwrap_or(false)
-        });
+    // Check if any blame line is a boundary (root commit or explicit ^REV start).
+    let has_boundary = args.boundary_revision
+        || (!args.root
+            && lines.iter().any(|l| {
+                commits
+                    .get(&l.oid)
+                    .map(|c| c.parents.is_empty())
+                    .unwrap_or(false)
+            }));
 
     for bl in lines {
         let hex = bl.oid.to_hex();
-        let is_boundary = !args.root
-            && commits
-                .get(&bl.oid)
-                .map(|c| c.parents.is_empty())
-                .unwrap_or(false);
+        let is_boundary = args.boundary_revision
+            || (!args.root
+                && commits
+                    .get(&bl.oid)
+                    .map(|c| c.parents.is_empty())
+                    .unwrap_or(false));
         let short = if has_boundary {
             if is_boundary {
-                format!("^{}", &hex[..hash_len.min(hex.len())])
+                if args.blank_boundary {
+                    " ".repeat(hash_len)
+                } else {
+                    let boundary_hex_len = match args.abbrev {
+                        Some(n) if n > 40 => hash_len,
+                        _ => hash_len.saturating_sub(1),
+                    };
+                    format!("^{}", &hex[..boundary_hex_len.min(hex.len())])
+                }
             } else {
                 // Extra char width to align with ^ prefix lines
-                hex[..(hash_len + 1).min(hex.len())].to_string()
+                hex[..hash_len.min(hex.len())].to_string()
             }
         } else {
             hex[..hash_len.min(hex.len())].to_string()
