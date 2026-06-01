@@ -3333,17 +3333,38 @@ fn resolve_submodule_git_dir(sub_path: &Path) -> Option<PathBuf> {
 fn run_deinit(args: &DeinitArgs, quiet: bool) -> Result<()> {
     let repo = Repository::discover(None).context("not a git repository")?;
     let work_tree = repo.work_tree.as_ref().context("bare repository")?;
+    let grit_bin = grit_exe::grit_executable();
+
+    // `--all` and explicit pathspecs are mutually exclusive.
+    if args.all && !args.paths.is_empty() {
+        eprintln!("error: pathspec and --all are incompatible");
+        eprintln!("usage: git submodule deinit [--quiet] [-f | --force] [--all | [--] [<path>...]]");
+        return Err(crate::explicit_exit::SilentNonZeroExit { code: 1 }.into());
+    }
+    // Without either, refuse to act (git: die "Use '--all'...").
+    if !args.all && args.paths.is_empty() {
+        bail!("Use '--all' if you really want to deinitialize all submodules");
+    }
+
+    // Build the work set from index gitlinks (git module_list_compute). `--all` selects all
+    // gitlinks; explicit paths are validated and select matching gitlinks.
+    let normalized = if args.all {
+        Vec::new()
+    } else {
+        validate_submodule_pathspecs(&repo, work_tree, &args.paths)?
+    };
+    let gitlinks = index_gitlink_paths(&repo);
     let modules = parse_gitmodules(work_tree)?;
 
-    let selected = if args.all {
-        modules.iter().collect::<Vec<_>>()
-    } else {
-        let sel = filter_submodules(&modules, &args.paths);
-        if sel.is_empty() {
-            bail!("Use '--all' flag if you really want to deinitialize all submodules");
-        }
-        sel
-    };
+    let selected_paths: Vec<String> = gitlinks
+        .into_iter()
+        .filter(|gl| {
+            args.all
+                || normalized.iter().any(|p| {
+                    p == "." || p == gl || gl.starts_with(&format!("{p}/")) || p.starts_with(':')
+                })
+        })
+        .collect();
 
     let config_path = repo.git_dir.join("config");
     let mut config = if config_path.exists() {
@@ -3353,41 +3374,78 @@ fn run_deinit(args: &DeinitArgs, quiet: bool) -> Result<()> {
         ConfigFile::parse(&config_path, "", ConfigScope::Local)?
     };
 
-    for m in &selected {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| work_tree.to_path_buf());
+
+    for gl in &selected_paths {
+        // Only deinit gitlinks that map to a `.gitmodules` entry (git: submodule_from_path).
+        let Some(m) = modules.iter().find(|m| &m.path == gl) else {
+            continue;
+        };
+        validate_submodule_path(work_tree, &m.path).map_err(|e| anyhow::anyhow!("{e}"))?;
         let sub_path = work_tree.join(&m.path);
+        let displaypath = rev_parse::to_relative_path(&sub_path, &cwd).replace('\\', "/");
 
-        // Check for local modifications if not forced.
-        if !args.force && sub_path.exists() {
-            // Simple check: if the working tree directory is not empty (beyond .git),
-            // we consider it "has local modifications" unless forced.
-            // For simplicity, just remove it — the real git checks for uncommitted changes.
-        }
+        // Remove the work tree (unless the user already removed it).
+        if sub_path.is_dir() {
+            // If the work tree still holds a real `.git` directory, absorb it first.
+            let _ = absorb_submodule_dot_git_dir_into_modules(&repo, &m.path);
 
-        // Remove the submodule working tree contents (but not the directory itself).
-        if sub_path.exists() {
-            // Remove everything inside the submodule directory.
-            for entry in fs::read_dir(&sub_path)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_dir() {
-                    fs::remove_dir_all(&path)?;
+            if !args.force {
+                // `git rm -qn <path>` checks for local modifications without changing anything.
+                let status = grit_subprocess(&grit_bin)
+                    .arg("rm")
+                    .arg("-qn")
+                    .arg(&m.path)
+                    .current_dir(work_tree)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                let ok = status.map(|s| s.success()).unwrap_or(false);
+                if !ok {
+                    bail!(
+                        "Submodule work tree '{displaypath}' contains local modifications; use '-f' to discard them"
+                    );
+                }
+            }
+
+            let removed = fs::remove_dir_all(&sub_path).is_ok();
+            if !quiet {
+                if removed {
+                    println!("Cleared directory '{displaypath}'");
                 } else {
-                    fs::remove_file(&path)?;
+                    println!("Could not remove submodule work tree '{displaypath}'");
+                }
+            }
+
+            // Unset core.worktree in the submodule's git dir config (git:
+            // submodule_unset_core_worktree).
+            let modules_dir = submodule_separate_git_dir(&repo, work_tree, &m.name, &m.path)?;
+            let sub_cfg = modules_dir.join("config");
+            if sub_cfg.exists() {
+                if let Ok(content) = fs::read_to_string(&sub_cfg) {
+                    if let Ok(mut c) = ConfigFile::parse(&sub_cfg, &content, ConfigScope::Local) {
+                        if c.unset("core.worktree").unwrap_or(0) > 0 {
+                            let _ = c.write();
+                        }
+                    }
                 }
             }
         }
 
-        // Remove submodule.<name>.url from config.
-        let url_key = format!("submodule.{}.url", m.name);
-        config.remove_section(&format!("submodule.{}", m.name))?;
+        // Recreate an empty submodule directory (git: mkdir(path)).
+        let _ = fs::create_dir(&sub_path);
 
-        let _ = url_key; // suppress unused warning
-
-        if !quiet {
-            eprintln!("Cleared directory '{}'", m.path);
-            eprintln!(
+        // Remove the `.git/config` section, printing "unregistered" only if it existed.
+        let section = format!("submodule.{}", m.name);
+        let had_config = config
+            .entries
+            .iter()
+            .any(|e| e.key.starts_with(&format!("{section}.")));
+        config.remove_section(&section)?;
+        if had_config && !quiet {
+            println!(
                 "Submodule '{}' ({}) unregistered for path '{}'",
-                m.name, m.url, m.path
+                m.name, m.url, displaypath
             );
         }
     }
