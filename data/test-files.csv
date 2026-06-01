@@ -1481,7 +1481,7 @@ t9180-checkout-index-stdin	t9	yes	25	25	0	true	ok	0
 t9190-for-each-ref-atoms	t9	yes	27	27	0	true	ok	0
 t9200-git-cvsexportcommit	t9	skip	17	0	0	false	ok	0
 t9200-merge-base-all	t9	yes	31	31	0	true	ok	0
-t9210-name-rev-tags	t9	yes	27	21	6	false	ok	0
+t9210-name-rev-tags	t9	yes	27	27	0	true	ok	0
 t9210-scalar	t9	skip	22	16	6	false	ok	0
 t9211-scalar-clone	t9	skip	14	10	4	false	ok	0
 t9220-diff-tree-pathspec	t9	yes	30	30	0	true	ok	0
