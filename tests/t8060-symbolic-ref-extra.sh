@@ -2,6 +2,8 @@
 # Tests for symbolic-ref create/read/delete and error cases.
 
 test_description='symbolic-ref create, read, delete, and error cases'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 . ./test-lib.sh
 

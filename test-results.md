@@ -14,6 +14,8 @@ Updated: 2026-06-01
 - t8 for-each-ref format: `./scripts/run-tests.sh t8310-for-each-ref-format-deep.sh` passes 32/32 after making the synthetic test request its expected `master` initial branch.
 - t8 for-each-ref filter: `./scripts/run-tests.sh t8590-for-each-ref-filter.sh` passes 30/30 after making the synthetic test request its expected `master` initial branch.
 - t8 ls-files unmerged: `./scripts/run-tests.sh t8640-ls-files-stage-unmerged.sh` passes 31/31 after fixing the initial branch fixture and stage expectations.
+- t8 symbolic-ref extra: `./scripts/run-tests.sh t8060-symbolic-ref-extra.sh` passes 33/33 after fixing `update-ref --no-deref HEAD` same-OID detachment.
+- t8 symbolic-ref neighbor: `./scripts/run-tests.sh t8600-update-ref-symref.sh` remains 24/28.
 - t8 switch checks: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 - t8 blame focus: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 

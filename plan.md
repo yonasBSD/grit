@@ -12,7 +12,8 @@
 - [x] `t8310-for-each-ref-format-deep` 32/32 — fixed the synthetic test's expected `master` initial branch.
 - [x] `t8590-for-each-ref-filter` 30/30 — fixed the synthetic test's expected `master` initial branch.
 - [x] `t8640-ls-files-stage-unmerged` 31/31 — fixed `master` fixture and corrected `ls-files -s` stage expectations to match Git.
-- [ ] `t8060-symbolic-ref-extra` 22/33 — tied next highest remaining t8 file.
+- [x] `t8060-symbolic-ref-extra` 33/33 — fixed `update-ref --no-deref HEAD` when detaching to the same OID.
+- [ ] `t8110-branch-merge-info` 20/31 — tied next highest remaining t8 file.
 
 **Updated:** 2026-06-01 · Source of truth for counts: `data/test-files.csv`.
 
