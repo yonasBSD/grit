@@ -63,6 +63,11 @@ Updated: 2026-06-01
   making setup explicitly initialize `master`, matching the test's hard-coded HEAD refs.
 - t9 focus: `./scripts/run-tests.sh t9740-check-ref-format-normalize.sh --verbose` now passes 51/51 after
   explicit `master` setup and documented subshell wrapping for cd-using test bodies.
+- t9 focus: `cargo build --release -p grit-cli` passed, then
+  `./scripts/run-tests.sh t9902-completion.sh --verbose` passed with failing=0 (259/263, known TODOs
+  excluded) after rev-parse gitfile, clone completion-helper, and ls-tree directory pathspec fixes.
+- t9902 validation: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`, and
+  `cargo test -p grit-lib --lib` all completed successfully; grit-lib unit tests passed 229/229.
 - Workspace cargo/unit tests: not re-run for the `t9040`/`t9060` harness-only cwd fixes.
 - `cargo build --release -p grit-cli`: pass.
 - `cargo fmt`: run. `cargo fmt --check` still reports pre-existing formatting drift in unrelated files; those mechanical edits were not included in this scoped commit.

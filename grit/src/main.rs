@@ -3749,6 +3749,16 @@ fn print_completion_helper(subcmd: &str, show_all: bool) -> Result<()> {
 /// Adjust `--git-completion-helper` output where Git's completion script expects a shape that
 /// differs slightly from clap's derived option list.
 fn postprocess_completion_options(subcmd: &str, options: Vec<String>) -> Vec<String> {
+    if subcmd == "clone" {
+        return options
+            .into_iter()
+            .map(|s| match s.as_str() {
+                "--recurse-submodules=" => "--recurse-submodules".to_string(),
+                "--recursive=" => "--recursive".to_string(),
+                _ => s,
+            })
+            .collect();
+    }
     if subcmd != "checkout" {
         return options;
     }
@@ -5508,8 +5518,6 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
                 "hexdump" => run_test_tool_hexdump(rest),
                 "chmtime" => run_test_tool_chmtime(&rest[1..]),
                 "read-cache" => run_test_tool_read_cache(rest),
-                "dump-cache-tree" => run_test_tool_dump_cache_tree(),
-                "scrap-cache-tree" => run_test_tool_scrap_cache_tree(),
                 "dump-untracked-cache" => run_test_tool_dump_untracked_cache(),
                 "dump-split-index" => run_test_tool_dump_split_index(&rest[1..]),
                 "dump-fsmonitor" => run_test_tool_dump_fsmonitor(),
@@ -6461,29 +6469,6 @@ fn run_test_tool_submodule(rest: &[String]) -> Result<()> {
         }
         other => bail!("test-tool submodule: unknown subcommand '{other}'"),
     }
-}
-
-fn run_test_tool_dump_cache_tree() -> Result<()> {
-    use grit_lib::index::Index;
-    use grit_lib::repo::Repository;
-
-    let repo = Repository::discover(None).context("not a git repository")?;
-    let index = Index::load(&repo.index_path()).context("read index")?;
-    print!("{}", index.format_cache_tree_dump());
-    Ok(())
-}
-
-fn run_test_tool_scrap_cache_tree() -> Result<()> {
-    use grit_lib::index::Index;
-    use grit_lib::repo::Repository;
-
-    let repo = Repository::discover(None).context("not a git repository")?;
-    let index_path = repo.index_path();
-    let mut index = Index::load(&index_path).context("read index")?;
-    index.clear_cache_tree();
-    repo.write_index_at(&index_path, &mut index)
-        .context("write index")?;
-    Ok(())
 }
 
 /// `test-tool dump-untracked-cache` — matches `git/t/helper/test-dump-untracked-cache.c`.

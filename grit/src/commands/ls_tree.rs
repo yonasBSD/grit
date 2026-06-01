@@ -331,20 +331,6 @@ pub fn run(mut args: Args) -> Result<()> {
         }
     }
 
-    let mut normalized_paths = Vec::with_capacity(args.paths.len());
-    for path in &args.paths {
-        let had_trailing_slash = path.ends_with('/');
-        let normalized = git_normalize_pathspec_no_prefix(path)?;
-        if normalized.is_empty() {
-            normalized_paths.push(normalized);
-        } else if had_trailing_slash {
-            normalized_paths.push(format!("{normalized}/"));
-        } else {
-            normalized_paths.push(normalized);
-        }
-    }
-    args.paths = normalized_paths;
-
     // `dir/../` from a subdirectory normalizes to `""`, which Git treats as "match everything".
     if args.paths.iter().any(|p| p.is_empty()) {
         args.paths.clear();
@@ -511,6 +497,21 @@ fn list_tree(
 
         // Apply path filter (Git pathspec semantics, including `:(exclude)` and literal `[` paths).
         if !args.paths.is_empty() {
+            // If pathspec points INTO this tree, descend.
+            // Exact match without trailing slash shows the tree entry itself.
+            // Trailing slash or deeper path means descend into the tree.
+            let is_ancestor = is_tree
+                && if args.only_trees {
+                    let dir_prefix = format!("{full_name}/");
+                    args.paths.iter().any(|p| {
+                        p == &dir_prefix
+                            || (p.starts_with(&dir_prefix) && p.len() > dir_prefix.len())
+                    })
+                } else {
+                    args.paths
+                        .iter()
+                        .any(|p| pathspec_wants_descent_into_tree(p, &full_name))
+                };
             let matches = matches_pathspec_set_for_object_ls_tree(
                 &args.paths,
                 &full_name,
@@ -524,17 +525,9 @@ fn list_tree(
                             .strip_prefix(base)
                             .is_some_and(|rest| rest.starts_with('/')))
             });
-            if !matches {
+            if !matches && !is_ancestor {
                 continue;
             }
-            // If pathspec points INTO this tree, descend.
-            // Exact match without trailing slash shows the tree entry itself.
-            // Trailing slash or deeper path means descend into the tree.
-            let is_ancestor = is_tree
-                && args
-                    .paths
-                    .iter()
-                    .any(|p| pathspec_wants_descent_into_tree(p, &full_name));
             if is_tree && is_ancestor && !args.recursive {
                 // Match Git's `read_tree` + `show_recursive`: with pathspecs we descend into prefix
                 // trees even without `-r`. `-t` then lists those intermediate trees (see t3100).

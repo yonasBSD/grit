@@ -28,6 +28,7 @@
   - Completed: `t9450-merge-base-ancestor.sh` (32/32).
   - Completed: `t9730-symbolic-ref-head.sh` (31/31).
   - Completed: `t9740-check-ref-format-normalize.sh` (51/51).
+  - Completed: `t9902-completion.sh` (259/263 with known TODO failures, failing=0).
   - Next expected target: choose by refreshed CSV after commit.
   - Scope: current `in_scope=yes` t9 rows; skipped external-helper files remain excluded unless
     explicitly unskipped later.
