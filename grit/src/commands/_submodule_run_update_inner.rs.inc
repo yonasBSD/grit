@@ -442,8 +442,13 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
 
             let checkout_force = args.force || needs_clone;
 
+            // When the submodule worktree is already at the recorded commit there is normally
+            // nothing to do. But `--force` must still re-check out the worktree to discard local
+            // changes / restore removed files (t7406 "update --force forcibly checks out
+            // submodules"), so do not take this fast path under `--force`.
             if !args.remote
                 && !needs_clone
+                && !args.force
                 && read_submodule_head(&sub_path).as_deref() == Some(recorded_oid)
             {
                 refresh_gitlink_index_stat(&repo, &m.path)?;
