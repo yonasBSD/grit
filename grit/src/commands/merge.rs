@@ -4209,13 +4209,11 @@ fn build_octopus_merge_message(
                 "Merge {kind_plural} '{}' and '{}'",
                 branch_names[0], branch_names[1]
             )
-        } else {
-            let last = branch_names.last().unwrap();
-            let rest: Vec<String> = branch_names[..branch_names.len() - 1]
-                .iter()
-                .map(|n| format!("'{n}'"))
-                .collect();
+        } else if let Some((last, rest_names)) = branch_names.split_last() {
+            let rest: Vec<String> = rest_names.iter().map(|n| format!("'{n}'")).collect();
             format!("Merge {kind_plural} {} and '{last}'", rest.join(", "))
+        } else {
+            format!("Merge {kind_plural}")
         }
     } else {
         // Mixed kinds
@@ -4226,10 +4224,11 @@ fn build_octopus_merge_message(
             .collect();
         if parts.len() == 2 {
             format!("Merge {} and {}", parts[0], parts[1])
-        } else {
-            let last = parts.last().unwrap().clone();
-            let rest = parts[..parts.len() - 1].join(", ");
+        } else if let Some((last, rest_parts)) = parts.split_last() {
+            let rest = rest_parts.join(", ");
             format!("Merge {rest} and {last}")
+        } else {
+            "Merge".to_string()
         }
     };
 
@@ -5377,7 +5376,7 @@ fn detect_merge_renames(
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000)
     };
-    let zero_oid = ObjectId::from_bytes(&[0u8; 20]).unwrap();
+    let zero_oid = ObjectId::zero();
 
     // Build diff entries from base to side, handling the "add-source" pattern:
     // If base has path P with OID X, and side has path P with a DIFFERENT OID Y,

@@ -1954,7 +1954,9 @@ fn worktree_has_untracked_under_path(
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-            let rel = path.strip_prefix(work_tree).unwrap();
+            let Ok(rel) = path.strip_prefix(work_tree) else {
+                continue;
+            };
             let rel_s = rel.to_string_lossy();
             let ft = entry.file_type()?;
             if ft.is_file() || ft.is_symlink() {

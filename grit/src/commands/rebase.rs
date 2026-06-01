@@ -6976,9 +6976,9 @@ fn read_rebase_author_script(git_dir: &Path) -> Result<String> {
         bail!("invalid author script");
     }
 
-    let name = name.expect("checked");
-    let email = email.expect("checked");
-    let date = date.expect("checked");
+    let (Some(name), Some(email), Some(date)) = (name, email, date) else {
+        bail!("invalid author script");
+    };
     Ok(format!("{name} <{email}> {date}"))
 }
 

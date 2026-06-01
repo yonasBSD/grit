@@ -1394,10 +1394,7 @@ fn create_revert_commit(
     let commit_bytes = serialize_commit(&commit_data);
     let commit_oid = repo.odb.write(ObjectKind::Commit, &commit_bytes)?;
 
-    let old_oid = head
-        .oid()
-        .copied()
-        .unwrap_or_else(|| ObjectId::from_bytes(&[0u8; 20]).unwrap());
+    let old_oid = head.oid().copied().unwrap_or_else(ObjectId::zero);
     update_head(git_dir, head, &commit_oid)?;
 
     let reflog_subject = message
