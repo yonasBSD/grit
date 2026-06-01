@@ -15,7 +15,7 @@ REAL_GIT=/usr/bin/git
 
 test_expect_success 'setup repository with commits' '
 	(
-	grit init repo &&
+	grit init --initial-branch=master repo &&
 	cd repo &&
 	grit config set user.name "Test" &&
 	grit config set user.email "test@test.com" &&

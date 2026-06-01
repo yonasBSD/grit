@@ -1526,7 +1526,7 @@ t9502-gitweb-standalone-parse-output	t9	skip	20	0	0	false	ok	0
 t9510-ls-files-error	t9	yes	32	32	0	true	ok	0
 t9520-config-scope-precedence	t9	yes	40	40	0	true	ok	0
 t9530-init-gitdir-structure	t9	yes	38	38	0	true	ok	0
-t9540-branch-rename-copy	t9	yes	38	25	13	false	ok	0
+t9540-branch-rename-copy	t9	yes	38	38	0	true	ok	0
 t9550-tag-annotated-deref	t9	yes	37	37	0	true	ok	0
 t9560-commit-message-variants	t9	yes	33	31	2	false	ok	0
 t9580-rm-cached-worktree	t9	yes	40	40	0	true	ok	0

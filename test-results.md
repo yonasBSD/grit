@@ -20,6 +20,8 @@ Updated: 2026-06-01
   after explicit `master` setup and documented subshell wrapping for cd-using test bodies.
 - t9 focus: `./scripts/run-tests.sh t9010-branch-list-sort.sh --verbose` now passes 26/26 after
   making real-Git setup explicitly initialize `master`, matching the test's hard-coded branch names.
+- t9 focus: `./scripts/run-tests.sh t9540-branch-rename-copy.sh --verbose` now passes 38/38 after
+  making grit setup explicitly initialize `master`, matching the test's hard-coded branch names.
 - Workspace cargo/unit tests: not re-run for the `t9040`/`t9060` harness-only cwd fixes.
 - `cargo build --release -p grit-cli`: pass.
 - `cargo fmt`: run. `cargo fmt --check` still reports pre-existing formatting drift in unrelated files; those mechanical edits were not included in this scoped commit.
