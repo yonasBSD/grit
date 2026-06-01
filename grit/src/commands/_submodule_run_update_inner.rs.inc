@@ -202,6 +202,27 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                     &m.url,
                 );
 
+                // git refuses to clone over an occupied path: a regular file, or a non-empty
+                // directory that is not itself the submodule checkout (t7400.52/53).
+                if let Ok(meta) = fs::symlink_metadata(&sub_path) {
+                    if !meta.is_dir() {
+                        eprintln!(
+                            "fatal: could not create directory '{}'",
+                            sub_path.display()
+                        );
+                        any_failure = true;
+                        continue;
+                    }
+                    let non_empty = fs::read_dir(&sub_path)
+                        .map(|mut it| it.next().is_some())
+                        .unwrap_or(false);
+                    if non_empty {
+                        eprintln!("fatal: directory not empty: '{}'", sub_path.display());
+                        any_failure = true;
+                        continue;
+                    }
+                }
+
                 if let Ok(meta) = fs::symlink_metadata(&sub_path) {
                     if meta.is_dir() {
                         let _ = fs::remove_dir_all(&sub_path);

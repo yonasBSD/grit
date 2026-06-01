@@ -1863,7 +1863,20 @@ fn run_status(args: &StatusArgs) -> Result<()> {
         .load_index()
         .context("load index for submodule status")?;
 
+    // git's status_submodule dies for any (selected) index gitlink that has no `.gitmodules`
+    // mapping ("no submodule mapping found in .gitmodules for path '<p>'").
     let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let gitlinks = index_gitlink_paths(&repo);
+    for gl in &gitlinks {
+        let selected_by_args = args.paths.is_empty()
+            || args.paths.iter().any(|p| {
+                p == "." || p == gl || gl.starts_with(&format!("{p}/")) || p.starts_with(':')
+            });
+        if selected_by_args && !modules.iter().any(|m| &m.path == gl) {
+            let display = rev_parse::to_relative_path(&work_tree.join(gl), &cwd).replace('\\', "/");
+            bail!("no submodule mapping found in .gitmodules for path '{display}'");
+        }
+    }
 
     // Flush after each line so `... | grep -q` closes the read end early and the next write
     // returns `EPIPE` → exit 141 (t7422-submodule-output).
