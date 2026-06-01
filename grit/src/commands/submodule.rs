@@ -3330,6 +3330,58 @@ fn resolve_submodule_git_dir(sub_path: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Whether a submodule work tree is unsafe to remove without `-f`, matching `git rm -qn <path>`,
+/// which combines `bad_to_remove_submodule` (status --porcelain dirtiness) with a HEAD-vs-index
+/// gitlink check. A missing/empty directory is always safe (t7400.104).
+fn submodule_is_dirty_for_removal(grit_bin: &Path, work_tree: &Path, rel_path: &str) -> bool {
+    let sub_path = work_tree.join(rel_path);
+    if !sub_path.exists() {
+        return false;
+    }
+    // Empty directory → nothing to lose.
+    let is_empty = fs::read_dir(&sub_path)
+        .map(|mut it| it.next().is_none())
+        .unwrap_or(true);
+    if is_empty {
+        return false;
+    }
+    // `git rm -qn <path>` rejects removal when the submodule HEAD differs from the recorded
+    // gitlink commit (t7400.107).
+    let rm_ok = grit_subprocess(grit_bin)
+        .arg("rm")
+        .arg("-qn")
+        .arg(rel_path)
+        .current_dir(work_tree)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !rm_ok {
+        return true;
+    }
+    // `bad_to_remove_submodule`: any `git status --porcelain` output in the submodule (tracked
+    // modifications or untracked/ignored files) means it is unsafe to remove (t7400.105/106).
+    if sub_path.join(".git").exists() {
+        let out = grit_subprocess(grit_bin)
+            .arg("status")
+            .arg("--porcelain")
+            .arg("--ignore-submodules=none")
+            .arg("-uall")
+            .arg("--ignored")
+            .current_dir(&sub_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        if let Ok(o) = out {
+            if o.stdout.len() > 2 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn run_deinit(args: &DeinitArgs, quiet: bool) -> Result<()> {
     let repo = Repository::discover(None).context("not a git repository")?;
     let work_tree = repo.work_tree.as_ref().context("bare repository")?;
@@ -3390,22 +3442,10 @@ fn run_deinit(args: &DeinitArgs, quiet: bool) -> Result<()> {
             // If the work tree still holds a real `.git` directory, absorb it first.
             let _ = absorb_submodule_dot_git_dir_into_modules(&repo, &m.path);
 
-            if !args.force {
-                // `git rm -qn <path>` checks for local modifications without changing anything.
-                let status = grit_subprocess(&grit_bin)
-                    .arg("rm")
-                    .arg("-qn")
-                    .arg(&m.path)
-                    .current_dir(work_tree)
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                let ok = status.map(|s| s.success()).unwrap_or(false);
-                if !ok {
-                    bail!(
-                        "Submodule work tree '{displaypath}' contains local modifications; use '-f' to discard them"
-                    );
-                }
+            if !args.force && submodule_is_dirty_for_removal(&grit_bin, work_tree, &m.path) {
+                bail!(
+                    "Submodule work tree '{displaypath}' contains local modifications; use '-f' to discard them"
+                );
             }
 
             let removed = fs::remove_dir_all(&sub_path).is_ok();
