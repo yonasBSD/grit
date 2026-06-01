@@ -3289,6 +3289,10 @@ fn parse_loc_git<'a>(mut spec: &'a str, lines: &[String], begin: i64) -> Result<
         return Ok((rest, n));
     }
 
+    if let Some(rest) = spec.strip_prefix('$') {
+        return Ok((rest, lines_count));
+    }
+
     // Regex or remaining forms: resolve search start from `begin`.
     let mut search_1based = begin;
     if search_1based < 0 {

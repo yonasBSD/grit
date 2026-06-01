@@ -2,6 +2,8 @@
 # Tests for log --skip, --reverse, --max-count, --oneline, --format, --graph.
 
 test_description='log skip and reverse options'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
