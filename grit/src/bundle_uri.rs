@@ -496,11 +496,10 @@ fn apply_creation_token_heuristic_clone(
     let mut expect: u64 = 1;
     let mut max_contiguous: Option<u64> = None;
 
-    for tok in &tokens {
+    for (tok, group) in &by_token {
         if *tok != expect {
             break;
         }
-        let group = by_token.get(tok).unwrap();
         let mut group_ok = true;
         for e in group {
             let resolved = resolve_bundle_entry_uri(list_uri, &e.uri);
@@ -845,31 +844,32 @@ fn fetch_bundles_by_token(
             let resolved = resolve_bundle_entry_uri(list_uri, &bundles[idx].uri);
             let dl = read_bundle_uri_bytes(&resolved).map_err(|_| ());
             bundles[idx].file = Some(dl);
-            if bundles[idx].file.as_ref().unwrap().is_err() {
-                bundles[idx].unbundled = true;
-                move_direction = 1;
-                cur += move_direction;
-                continue;
-            }
-            let data = bundles[idx].file.as_ref().unwrap().as_ref().unwrap();
-            if !is_bundle_v2(data) {
-                let resolved = resolve_bundle_entry_uri(list_uri, &bundles[idx].uri);
-                eprintln!(
-                    "warning: file downloaded from '{}' is not a bundle",
-                    resolved
-                );
-                break;
+            match bundles[idx].file.as_ref() {
+                Some(Ok(data)) => {
+                    if !is_bundle_v2(data) {
+                        let resolved = resolve_bundle_entry_uri(list_uri, &bundles[idx].uri);
+                        eprintln!(
+                            "warning: file downloaded from '{}' is not a bundle",
+                            resolved
+                        );
+                        break;
+                    }
+                }
+                _ => {
+                    bundles[idx].unbundled = true;
+                    move_direction = 1;
+                    cur += move_direction;
+                    continue;
+                }
             }
         }
 
-        if bundles[idx].file.as_ref().unwrap().is_ok() && !bundles[idx].unbundled {
-            let data = bundles[idx]
-                .file
-                .as_ref()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .as_slice();
+        let downloaded = matches!(bundles[idx].file.as_ref(), Some(Ok(_)));
+        if downloaded && !bundles[idx].unbundled {
+            let data = match bundles[idx].file.as_ref() {
+                Some(Ok(bytes)) => bytes.as_slice(),
+                _ => &[],
+            };
             if unbundle_from_bytes(git_dir, data) {
                 move_direction = 1;
             } else {

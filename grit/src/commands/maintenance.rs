@@ -332,8 +332,9 @@ fn resolve_auto_scheduler() -> SchedulerKind {
 
 fn cmd_stop() -> Result<()> {
     let repo = Repository::discover(None).context("not a git repository")?;
-    let lock_path = repo.git_dir.join("objects").join("schedule.lock");
-    fs::create_dir_all(lock_path.parent().unwrap())?;
+    let lock_dir = repo.git_dir.join("objects");
+    let lock_path = lock_dir.join("schedule.lock");
+    fs::create_dir_all(&lock_dir)?;
     let _lock = ScheduleLock::acquire(lock_path)?;
     update_background_schedule_locked(&repo, false, None)
 }
@@ -376,8 +377,9 @@ fn cmd_start(rest: &[String]) -> Result<()> {
     // availability first, but doing the lock first lets us surface the
     // "another process is running" error even when an unrelated scheduler env
     // mock claims the requested scheduler is unavailable.
-    let lock_path = repo.git_dir.join("objects").join("schedule.lock");
-    fs::create_dir_all(lock_path.parent().unwrap())?;
+    let lock_dir = repo.git_dir.join("objects");
+    let lock_path = lock_dir.join("schedule.lock");
+    fs::create_dir_all(&lock_dir)?;
     let _lock = ScheduleLock::acquire(lock_path)?;
 
     if !scheduler_available(sk) {
@@ -1327,16 +1329,14 @@ fn build_task_list(cfg: &ConfigSet, schedule: Option<SchedulePriority>) -> Resul
     }
 
     let mut out = Vec::new();
-    let want_sched = schedule.is_some();
 
     for t in all_tasks() {
         let i = t.idx();
         let f = strategy.flags[i].0;
-        if want_sched {
+        if let Some(need) = schedule {
             if f & MaintBits::SCH == 0 {
                 continue;
             }
-            let need = schedule.unwrap();
             // The task's effective schedule is the `maintenance.<task>.schedule`
             // config override when present, otherwise the strategy default. The
             // task runs when its effective schedule is at least as frequent as

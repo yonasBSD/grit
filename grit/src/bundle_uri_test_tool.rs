@@ -183,10 +183,9 @@ fn print_bundle_list(list: &BundleList) -> Result<()> {
         writeln!(out, "\theuristic = {name}")?;
     }
 
-    let mut ids: Vec<_> = list.bundles.keys().cloned().collect();
-    ids.sort();
-    for id in ids {
-        let info = list.bundles.get(&id).expect("key must exist");
+    let mut entries: Vec<_> = list.bundles.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (id, info) in entries {
         writeln!(out, "[bundle \"{id}\"]")?;
         if let Some(ref u) = info.uri {
             writeln!(out, "\turi = {u}")?;
@@ -467,11 +466,11 @@ fn unescape_config_value(s: &str) -> String {
     while let Some(ch) = chars.next() {
         if ch == '\\' {
             if let Some(&n) = chars.peek() {
+                chars.next();
                 if n == '\n' {
-                    chars.next();
                     continue;
                 }
-                out.push(chars.next().unwrap());
+                out.push(n);
                 continue;
             }
         }

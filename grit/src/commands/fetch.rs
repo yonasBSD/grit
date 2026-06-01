@@ -1247,23 +1247,17 @@ fn fetch_remote(
         && cli_refspecs.is_empty()
         && refspecs.is_empty();
 
-    let coalesced_remotes = if server_options.is_empty()
-        && url_override.is_none()
-        && legacy_remote.is_none()
-        && branches_remote.is_none()
-        && cli_refspecs.is_empty()
-        && remote_repo.is_some()
-    {
-        remotes_sharing_repository_url(
-            config,
-            git_dir,
-            remote_repo
-                .as_ref()
-                .expect("coalesced remotes need local repo"),
-            remote_name,
-        )
-    } else {
-        vec![remote_name.to_owned()]
+    let coalesced_remotes = match remote_repo.as_ref() {
+        Some(local_repo)
+            if server_options.is_empty()
+                && url_override.is_none()
+                && legacy_remote.is_none()
+                && branches_remote.is_none()
+                && cli_refspecs.is_empty() =>
+        {
+            remotes_sharing_repository_url(config, git_dir, local_repo, remote_name)
+        }
+        _ => vec![remote_name.to_owned()],
     };
     let fetch_head_refspecs = refspecs.clone();
 
@@ -1464,7 +1458,7 @@ fn fetch_remote(
         )?;
         let remote_repo_upload = remote_repo
             .as_ref()
-            .expect("upload-pack path requires local remote repository");
+            .ok_or_else(|| anyhow::anyhow!("upload-pack path requires local remote repository"))?;
         let cli_owned = if prefetch_left_no_positive {
             Vec::new()
         } else {
@@ -1528,7 +1522,7 @@ fn fetch_remote(
         // match Git's local fetch behavior (needed for submodule `origin/main` after `git fetch`).
         let remote_repo_upload = remote_repo
             .as_ref()
-            .expect("upload-pack path requires local remote repository");
+            .ok_or_else(|| anyhow::anyhow!("upload-pack path requires local remote repository"))?;
         if heads.is_empty() {
             heads = refs::list_refs(&remote_repo_upload.git_dir, "refs/heads/")?;
         }
@@ -1539,7 +1533,7 @@ fn fetch_remote(
     } else {
         let remote_repo = remote_repo
             .as_ref()
-            .expect("non-ext fetch has local remote repo");
+            .ok_or_else(|| anyhow::anyhow!("non-ext fetch has local remote repo"))?;
         let heads = refs::list_refs(&remote_repo.git_dir, "refs/heads/")?;
         let tags = refs::list_refs(&remote_repo.git_dir, "refs/tags/")?;
         let object_copy_roots = if prefetch_left_no_positive {
@@ -1744,18 +1738,23 @@ fn fetch_remote(
         let remote_repo = if is_http_url {
             None
         } else {
-            Some(ext_resolved_remote.as_ref().unwrap_or_else(|| {
-                remote_repo
-                    .as_ref()
-                    .expect("CLI refspec fetch requires a local remote repository")
-            }))
+            match ext_resolved_remote.as_ref() {
+                Some(r) => Some(r),
+                None => Some(remote_repo.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("CLI refspec fetch requires a local remote repository")
+                })?),
+            }
         };
         let remote_all_refs: Vec<(String, ObjectId)> = if is_http_url {
             remote_advertised.clone()
         } else {
             refs::list_refs(
                 &remote_repo
-                    .expect("non-HTTP CLI refspec fetch requires local remote repository")
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "non-HTTP CLI refspec fetch requires local remote repository"
+                        )
+                    })?
                     .git_dir,
                 "refs/",
             )?
@@ -3522,7 +3521,7 @@ fn read_loose_symbolic_ref_chain(git_dir: &Path, refname: &str) -> Option<String
 }
 
 fn zero_oid() -> ObjectId {
-    ObjectId::from_hex("0000000000000000000000000000000000000000").expect("null oid")
+    ObjectId::zero()
 }
 
 fn hook_update_for_pending_ref_op(op: &PendingRefOp) -> HookUpdate {

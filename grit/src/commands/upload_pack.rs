@@ -314,13 +314,14 @@ fn merge_ancestors_into(
     into: &mut HashSet<ObjectId>,
     shallow_boundaries: Option<&HashSet<ObjectId>>,
 ) -> Result<()> {
-    if shallow_boundaries.is_none() || shallow_boundaries.is_some_and(HashSet::is_empty) {
-        let anc = merge_base::ancestor_closure(repo, tip)?;
-        into.extend(anc);
-        return Ok(());
-    }
-
-    let boundaries = shallow_boundaries.expect("checked above");
+    let boundaries = match shallow_boundaries {
+        Some(b) if !b.is_empty() => b,
+        _ => {
+            let anc = merge_base::ancestor_closure(repo, tip)?;
+            into.extend(anc);
+            return Ok(());
+        }
+    };
     let mut stack = vec![tip];
     let mut seen = HashSet::new();
     while let Some(oid) = stack.pop() {

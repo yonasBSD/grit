@@ -4617,7 +4617,9 @@ fn resolve_push_src_for_refspec(
             Ok((src.to_owned(), oid, None))
         }
         1 => {
-            let (name, oid) = matches.into_iter().next().unwrap();
+            let (name, oid) = matches.into_iter().next().ok_or_else(|| {
+                anyhow::anyhow!("src refspec {src} resolution lost its single match")
+            })?;
             Ok((name, oid, None))
         }
         _ => {

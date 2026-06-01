@@ -384,9 +384,12 @@ fn cmd_clone(args: &[String]) -> Result<()> {
     set_scalar_config(&repo_dir)?;
 
     // Register for maintenance
-    let abs_repo = repo_dir
-        .canonicalize()
-        .unwrap_or_else(|_| std::env::current_dir().unwrap().join(&repo_dir));
+    let abs_repo = match repo_dir.canonicalize() {
+        Ok(p) => p,
+        Err(_) => std::env::current_dir()
+            .context("resolving current directory")?
+            .join(&repo_dir),
+    };
     register_repo(&abs_repo.display().to_string())?;
 
     // Start maintenance unless explicitly disabled.
@@ -493,9 +496,12 @@ fn cmd_register(args: &[String]) -> Result<()> {
     // Set scalar config
     set_scalar_config(&repo_path)?;
 
-    let abs_repo = repo_path
-        .canonicalize()
-        .unwrap_or_else(|_| std::env::current_dir().unwrap().join(&repo_path));
+    let abs_repo = match repo_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => std::env::current_dir()
+            .context("resolving current directory")?
+            .join(&repo_path),
+    };
     register_repo(&abs_repo.display().to_string())?;
 
     // Start maintenance unless --no-maintenance

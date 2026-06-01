@@ -539,8 +539,10 @@ fn cmd_remove(rest: &[String]) -> Result<()> {
     }
 
     if !skipped_branch_names.is_empty() {
-        if skipped_branch_names.len() == 1 {
-            let b = skipped_branch_names.iter().next().unwrap();
+        if let (1, Some(b)) = (
+            skipped_branch_names.len(),
+            skipped_branch_names.iter().next(),
+        ) {
             eprintln!(
                 "Note: A branch outside the refs/remotes/ hierarchy was not removed;\n\
                  to delete it, use:\n  git branch -d {b}"
@@ -748,7 +750,7 @@ fn cmd_rename(rest: &[String], _from_add: bool) -> Result<()> {
     };
 
     if old_dir.is_dir() {
-        std::fs::create_dir_all(new_dir.parent().unwrap())?;
+        std::fs::create_dir_all(git_dir.join("refs/remotes"))?;
         let _ = std::fs::rename(&old_dir, &new_dir);
     }
 
