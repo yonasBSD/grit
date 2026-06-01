@@ -11,6 +11,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	git init repo &&
 	cd repo &&
 	git config user.name "Test" &&
@@ -37,30 +38,39 @@ test_expect_success 'setup' '
 	EOF
 	git add file.txt &&
 	git commit -m "move block up"
+	)
 '
 
 test_expect_success 'diff --color-moved produces output' '
+	(
 	cd repo &&
 	git diff --color-moved HEAD~1 HEAD >out &&
 	test -s out
+	)
 '
 
 test_expect_success 'diff --color-moved=default produces output' '
+	(
 	cd repo &&
 	git diff --color-moved=default HEAD~1 HEAD >out &&
 	test -s out
+	)
 '
 
 test_expect_success 'diff --color-moved=no produces output' '
+	(
 	cd repo &&
 	git diff --color-moved=no HEAD~1 HEAD >out &&
 	test -s out
+	)
 '
 
 test_expect_success 'diff --color-moved with --stat works' '
+	(
 	cd repo &&
 	git diff --color-moved --stat HEAD~1 HEAD >out &&
 	grep "file.txt" out
+	)
 '
 
 test_done

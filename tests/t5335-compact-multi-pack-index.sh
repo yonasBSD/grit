@@ -58,6 +58,7 @@ test_midx_layer_object_uniqueness () {
 }
 
 test_expect_success 'MIDX compaction with lex-ordered pack names' '
+	(
 	git init midx-compact-lex-order &&
 	(
 		cd midx-compact-lex-order &&
@@ -78,9 +79,11 @@ test_expect_success 'MIDX compaction with lex-ordered pack names' '
 
 		test_midx_layer_object_uniqueness
 	)
+	)
 '
 
 test_expect_success 'MIDX compaction with non-lex-ordered pack names' '
+	(
 	git init midx-compact-non-lex-order &&
 	(
 		cd midx-compact-non-lex-order &&
@@ -101,9 +104,11 @@ test_expect_success 'MIDX compaction with non-lex-ordered pack names' '
 
 		test_midx_layer_object_uniqueness
 	)
+	)
 '
 
 test_expect_success 'setup for bogus MIDX compaction scenarios' '
+	(
 	git init midx-compact-bogus &&
 	(
 		cd midx-compact-bogus &&
@@ -111,6 +116,7 @@ test_expect_success 'setup for bogus MIDX compaction scenarios' '
 		git config maintenance.auto false &&
 
 		write_packs A B C
+	)
 	)
 '
 
@@ -182,6 +188,7 @@ tag_objs_from_pack () {
 }
 
 test_expect_success 'MIDX compaction preserves pack object selection' '
+	(
 	git init midx-compact-preserve-selection &&
 	(
 		cd midx-compact-preserve-selection &&
@@ -228,9 +235,11 @@ test_expect_success 'MIDX compaction preserves pack object selection' '
 		test_cmp AB.expect AB.actual &&
 		test_cmp C.expect C.actual
 	)
+	)
 '
 
 test_expect_success 'MIDX compaction with bitmaps' '
+	(
 	git init midx-compact-with-bitmaps &&
 	(
 		cd midx-compact-with-bitmaps &&
@@ -249,9 +258,11 @@ test_expect_success 'MIDX compaction with bitmaps' '
 
 		true
 	)
+	)
 '
 
 test_expect_success 'MIDX compaction with bitmaps (non-trivial)' '
+	(
 	git init midx-compact-with-bitmaps-non-trivial &&
 	(
 		cd midx-compact-with-bitmaps-non-trivial &&
@@ -287,6 +298,7 @@ test_expect_success 'MIDX compaction with bitmaps (non-trivial)' '
 		git multi-pack-index compact --incremental --bitmap \
 			"$(nth_line 4 "$midx_chain")" \
 			"$(nth_line 5 "$midx_chain")"
+	)
 	)
 '
 

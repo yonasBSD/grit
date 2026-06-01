@@ -11,6 +11,7 @@ export GIT_TEST_FATAL_REGISTER_SUBMODULE_ODB
 . ./test-lib.sh
 
 test_expect_success setup '
+	(
 	mkdir pub.git &&
 	GIT_DIR=pub.git git init --bare &&
 	GIT_DIR=pub.git git config receive.fsckobjects true &&
@@ -30,6 +31,7 @@ test_expect_success setup '
 		) &&
 		git add gar/bage &&
 		git commit -m "Initial superproject"
+	)
 	)
 '
 
@@ -356,6 +358,7 @@ test_expect_success 'push fails when commit on multiple branches if one branch h
 '
 
 test_expect_success 'push succeeds if submodule has no remote and is on the first superproject commit' '
+	(
 	git init --bare a &&
 	git clone a a1 &&
 	(
@@ -370,6 +373,7 @@ test_expect_success 'push succeeds if submodule has no remote and is on the firs
 		git add b &&
 		git commit -m "added submodule" &&
 		git push --recurse-submodules=check origin main
+	)
 	)
 '
 

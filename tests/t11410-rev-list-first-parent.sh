@@ -13,6 +13,7 @@ cd "$(dirname "$0")" || exit 1
 ###########################################################################
 
 test_expect_success 'setup: create repo with merges' '
+	(
 	"$REAL_GIT" init repo &&
 	cd repo &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -44,6 +45,7 @@ test_expect_success 'setup: create repo with merges' '
 	echo "final" >>file.txt &&
 	"$REAL_GIT" add file.txt &&
 	"$REAL_GIT" commit -m "final commit"
+	)
 '
 
 ###########################################################################
@@ -51,40 +53,50 @@ test_expect_success 'setup: create repo with merges' '
 ###########################################################################
 
 test_expect_success 'rev-list --first-parent HEAD produces output' '
+	(
 	cd repo &&
 	git rev-list --first-parent HEAD >output &&
 	test -s output
+	)
 '
 
 test_expect_success 'rev-list --first-parent has fewer commits than full' '
+	(
 	cd repo &&
 	git rev-list HEAD >full &&
 	git rev-list --first-parent HEAD >first_parent &&
 	test $(wc -l <first_parent) -lt $(wc -l <full)
+	)
 '
 
 test_expect_success 'rev-list --first-parent count is correct' '
+	(
 	cd repo &&
 	git rev-list --first-parent HEAD >output &&
 	git rev-list --first-parent --count HEAD >count_out &&
 	lines=$(wc -l <output | tr -d " ") &&
 	count=$(cat count_out | tr -d " ") &&
 	test "$lines" = "$count"
+	)
 '
 
 test_expect_success 'rev-list --first-parent excludes feature-a branch-only commits' '
+	(
 	cd repo &&
 	feature_a_hash=$("$REAL_GIT" rev-parse feature-a) &&
 	feature_a_parent=$("$REAL_GIT" rev-parse feature-a~1) &&
 	git rev-list --first-parent HEAD >output &&
 	! grep -q "$feature_a_hash" output || true
+	)
 '
 
 test_expect_success 'rev-list --first-parent includes merge commits' '
+	(
 	cd repo &&
 	git rev-list --first-parent HEAD >output &&
 	git rev-list HEAD >all &&
 	test $(wc -l <output) -ge 1
+	)
 '
 
 ###########################################################################
@@ -92,26 +104,32 @@ test_expect_success 'rev-list --first-parent includes merge commits' '
 ###########################################################################
 
 test_expect_success 'rev-list --first-parent --count returns numeric value' '
+	(
 	cd repo &&
 	git rev-list --first-parent --count HEAD >output &&
 	count=$(cat output | tr -d " ") &&
 	test "$count" -gt 0
+	)
 '
 
 test_expect_success 'rev-list --count without first-parent is higher' '
+	(
 	cd repo &&
 	git rev-list --count HEAD >full_count &&
 	git rev-list --first-parent --count HEAD >fp_count &&
 	test $(cat fp_count) -le $(cat full_count)
+	)
 '
 
 test_expect_success 'rev-list --first-parent --count matches line count' '
+	(
 	cd repo &&
 	git rev-list --first-parent HEAD >list &&
 	git rev-list --first-parent --count HEAD >count_out &&
 	lines=$(wc -l <list | tr -d " ") &&
 	count=$(cat count_out | tr -d " ") &&
 	test "$lines" = "$count"
+	)
 '
 
 ###########################################################################
@@ -119,22 +137,28 @@ test_expect_success 'rev-list --first-parent --count matches line count' '
 ###########################################################################
 
 test_expect_success 'rev-list --first-parent --max-count=3' '
+	(
 	cd repo &&
 	git rev-list --first-parent --max-count=3 HEAD >output &&
 	test $(wc -l <output) -eq 3
+	)
 '
 
 test_expect_success 'rev-list --first-parent --max-count=1' '
+	(
 	cd repo &&
 	git rev-list --first-parent --max-count=1 HEAD >output &&
 	test $(wc -l <output) -eq 1
+	)
 '
 
 test_expect_success 'rev-list --first-parent --max-count exceeding total returns all' '
+	(
 	cd repo &&
 	git rev-list --first-parent HEAD >full &&
 	git rev-list --first-parent --max-count=100 HEAD >limited &&
 	test $(wc -l <limited) -eq $(wc -l <full)
+	)
 '
 
 ###########################################################################
@@ -142,6 +166,7 @@ test_expect_success 'rev-list --first-parent --max-count exceeding total returns
 ###########################################################################
 
 test_expect_success 'rev-list --first-parent --skip=2' '
+	(
 	cd repo &&
 	git rev-list --first-parent HEAD >full &&
 	git rev-list --first-parent --skip=2 HEAD >skipped &&
@@ -149,20 +174,25 @@ test_expect_success 'rev-list --first-parent --skip=2' '
 	skip_count=$(wc -l <skipped | tr -d " ") &&
 	expected=$((full_count - 2)) &&
 	test "$skip_count" = "$expected"
+	)
 '
 
 test_expect_success 'rev-list --first-parent --skip and --max-count' '
+	(
 	cd repo &&
 	git rev-list --first-parent --skip=1 --max-count=3 HEAD >output &&
 	test $(wc -l <output) -eq 3
+	)
 '
 
 test_expect_success 'rev-list --first-parent --skip=all returns empty' '
+	(
 	cd repo &&
 	git rev-list --first-parent --count HEAD >count_out &&
 	total=$(cat count_out | tr -d " ") &&
 	git rev-list --first-parent --skip="$total" HEAD >output &&
 	test_must_be_empty output
+	)
 '
 
 ###########################################################################
@@ -170,19 +200,23 @@ test_expect_success 'rev-list --first-parent --skip=all returns empty' '
 ###########################################################################
 
 test_expect_success 'rev-list --first-parent --reverse works' '
+	(
 	cd repo &&
 	git rev-list --first-parent HEAD >forward &&
 	git rev-list --first-parent --reverse HEAD >reversed &&
 	test $(wc -l <forward) -eq $(wc -l <reversed)
+	)
 '
 
 test_expect_success 'rev-list --first-parent --reverse reverses order' '
+	(
 	cd repo &&
 	git rev-list --first-parent HEAD >forward &&
 	git rev-list --first-parent --reverse HEAD >reversed &&
 	head -1 forward >first_fwd &&
 	tail -1 reversed >last_rev &&
 	test_cmp first_fwd last_rev
+	)
 '
 
 ###########################################################################
@@ -190,6 +224,7 @@ test_expect_success 'rev-list --first-parent --reverse reverses order' '
 ###########################################################################
 
 test_expect_success 'setup: linear repo' '
+	(
 	"$REAL_GIT" init linear &&
 	cd linear &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -199,20 +234,25 @@ test_expect_success 'setup: linear repo' '
 		"$REAL_GIT" add "f$i.txt" &&
 		"$REAL_GIT" commit -m "linear $i" || return 1
 	done
+	)
 '
 
 test_expect_success 'rev-list --first-parent on linear repo returns all' '
+	(
 	cd linear &&
 	git rev-list HEAD >full &&
 	git rev-list --first-parent HEAD >fp &&
 	test $(wc -l <full) -eq $(wc -l <fp)
+	)
 '
 
 test_expect_success 'rev-list --first-parent --count on linear repo matches full' '
+	(
 	cd linear &&
 	git rev-list --count HEAD >full_count &&
 	git rev-list --first-parent --count HEAD >fp_count &&
 	test_cmp full_count fp_count
+	)
 '
 
 ###########################################################################
@@ -220,22 +260,28 @@ test_expect_success 'rev-list --first-parent --count on linear repo matches full
 ###########################################################################
 
 test_expect_success 'rev-list --first-parent from feature branch' '
+	(
 	cd repo &&
 	git rev-list --first-parent feature-a >output &&
 	test $(wc -l <output) -ge 1
+	)
 '
 
 test_expect_success 'rev-list --first-parent from feature-b' '
+	(
 	cd repo &&
 	git rev-list --first-parent feature-b >output &&
 	test $(wc -l <output) -ge 1
+	)
 '
 
 test_expect_success 'rev-list --first-parent feature-a count matches real git' '
+	(
 	cd repo &&
 	git rev-list --first-parent --count feature-a >grit_count &&
 	"$REAL_GIT" rev-list --first-parent --count feature-a >git_count &&
 	test_cmp grit_count git_count
+	)
 '
 
 ###########################################################################
@@ -243,27 +289,33 @@ test_expect_success 'rev-list --first-parent feature-a count matches real git' '
 ###########################################################################
 
 test_expect_success 'rev-list --first-parent is consistent across runs' '
+	(
 	cd repo &&
 	git rev-list --first-parent HEAD >run1 &&
 	git rev-list --first-parent HEAD >run2 &&
 	test_cmp run1 run2
+	)
 '
 
 test_expect_success 'rev-list --first-parent hashes are valid' '
+	(
 	cd repo &&
 	git rev-list --first-parent HEAD >output &&
 	while read hash; do
 		echo "$hash" | grep -qE "^[0-9a-f]{40}$" || return 1
 	done <output
+	)
 '
 
 test_expect_success 'rev-list --first-parent hashes are subset of full rev-list' '
+	(
 	cd repo &&
 	git rev-list HEAD >full &&
 	git rev-list --first-parent HEAD >fp &&
 	while read hash; do
 		grep -q "$hash" full || return 1
 	done <fp
+	)
 '
 
 ###########################################################################
@@ -271,6 +323,7 @@ test_expect_success 'rev-list --first-parent hashes are subset of full rev-list'
 ###########################################################################
 
 test_expect_success 'rev-list --first-parent on single commit repo' '
+	(
 	"$REAL_GIT" init single &&
 	cd single &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -280,12 +333,15 @@ test_expect_success 'rev-list --first-parent on single commit repo' '
 	"$REAL_GIT" commit -m "only" &&
 	git rev-list --first-parent HEAD >output &&
 	test $(wc -l <output) -eq 1
+	)
 '
 
 test_expect_success 'rev-list --first-parent --count on single commit' '
+	(
 	cd single &&
 	git rev-list --first-parent --count HEAD >output &&
 	test "$(cat output)" = "1"
+	)
 '
 
 ###########################################################################
@@ -293,22 +349,28 @@ test_expect_success 'rev-list --first-parent --count on single commit' '
 ###########################################################################
 
 test_expect_success 'rev-list --first-parent with --max-count=0 returns nothing' '
+	(
 	cd repo &&
 	git rev-list --first-parent --max-count=0 HEAD >output &&
 	test_must_be_empty output
+	)
 '
 
 test_expect_success 'rev-list --first-parent --count from feature branch matches real git' '
+	(
 	cd repo &&
 	git rev-list --first-parent --count feature-b >grit_count &&
 	"$REAL_GIT" rev-list --first-parent --count feature-b >git_count &&
 	test_cmp grit_count git_count
+	)
 '
 
 test_expect_success 'rev-list --first-parent --reverse --max-count=2 returns 2' '
+	(
 	cd repo &&
 	git rev-list --first-parent --reverse --max-count=2 HEAD >output &&
 	test $(wc -l <output) -eq 2
+	)
 '
 
 test_done

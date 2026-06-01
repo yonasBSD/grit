@@ -1,366 +1,103 @@
-# PLAN.md — Grit v1 Library Release
+# PLAN.md — Get the `t0*` (plumbing) test family fully passing
 
-**Updated:** 2026-05-22
+**Updated:** 2026-06-01 · Source of truth for counts: `data/test-files.csv`.
 
-## Goal
+The t0 family has **85 files: 47 fully green, 25 in-scope-not-full (~247 failing subtests),
+13 skipped**. This plan splits the 25 remaining in-scope files into **work lanes grouped by the
+source modules they touch**, so the lanes can run **in parallel** (one agent per lane, each in its
+own git worktree) with minimal cross-lane merge conflict. Within a lane the files share code, so a
+single agent should own the whole lane.
 
-Ship **`grit-lib`** as a fast, solid Git-compatible client engine that covers nearly all
-**commonly used, non-interactive** local and network workflows. **`grit-cli`** is a thin
-wrapper used to run the upstream harness (`./scripts/run-tests.sh`); **behavior and
-tests should be driven through library APIs**, not ad hoc logic in the binary.
-
-### Success criteria
-
-1. **Library-first:** New work lands in `grit-lib/` with small, typed public surfaces;
-   `grit/src/commands/` only parses argv, opens `Repository`, maps errors to exit codes.
-2. **Harness-backed:** Each milestone below names primary upstream test files to turn
-   green (in `./tests`, not `git/t/`). Full upstream parity is not required for v1.
-3. **Explicit non-goals for v1** (do not schedule work here):
-   - Interactive UX: `rebase -i`, `add -p`, `checkout -p`, `restore -p`, `clean -i`,
-     `commit -p`, `am --interactive`, etc.
-   - Complex HTTP authentication: Digest, NTLM, Negotiate/SPNEGO, OAuth device flows,
-     TLS client certificates, curl-grade multistage auth (Basic + credential helpers
-     already in scope is enough).
-   - **fsmonitor** / builtin fsmonitor daemon integration and status acceleration
-     that depends on it (`core.fsmonitor`, untracked-cache *for fsmonitor paths*).
-   - Shell completion, `git send-email`, `git shell`, Scalar, server/daemon parity.
-4. **Submodules:** last milestone before v1 tag—after worktrees, promisor,
-   signing, hooks, and sparse checkout are solid.
-
-### How to work
-
-1. Claim a task: change `[ ]` → `[~]` and add a line in `logs/YYYY-MM-DD-<topic>.md`.
-2. Implement in **`grit-lib`** first; wire CLI only when a command needs it.
-3. Validate: `cargo test -p grit-lib --lib`, then `./scripts/run-tests.sh <file>.sh`.
-4. Update `plan.md` whenever task state changes; it is the planning source of truth.
-5. Mark `[x]` when the listed harness files for that task are fully passing.
+> Each lane lists the test files (with current `pass/total`) and the **primary modules it owns**.
+> The disjointness of "owned modules" is what makes parallel execution safe.
 
 ---
 
-## Architecture: target library layout
+## Lane 1 — Conversion: CRLF / clean-smudge filters / working-tree-encoding
+**Owns:** `grit-lib/src/crlf.rs`, `grit-lib/src/filter_process.rs`, `grit-lib/src/attributes.rs`, `grit-lib/src/ws.rs`
+- `t0021-conversion` 27/42 — clean/smudge filter + `filter.<driver>.process` protocol
+- `t0028-working-tree-encoding` 8/22 — `working-tree-encoding` attr (iconv reencode on checkout/checkin)
+- `t0020-crlf` 35/36, `t0023-crlf-am` 1/2 — autocrlf / eol normalization
+- `t0027-auto-crlf` 0/0 — **runs 0 tests; investigate** (errors out or all-prereq-skip before summary)
+**Subtotal: ~31 failing.**
 
-Consolidate command-sized logic currently living in `grit/src/` into cohesive
-`grit-lib` modules. Suggested end state (modules may be merged or split as needed):
+## Lane 2 — Filesystem: case-insensitivity / precompose / symlinks
+**Owns:** `grit-lib/src/precompose_config.rs`, `grit-lib/src/unicode_normalization.rs`
+- `t0050-filesystem` 8/13 — `core.ignorecase`, NFC/NFD precompose, beyond-symlink behavior
+**Subtotal: ~5 failing.** *(May lightly touch index/dir case-handling — see shared-file note.)*
 
-| Module / area | Responsibility |
-|---------------|----------------|
-| `repo`, `odb`, `objects`, `pack` | Open repo, object store, pack read/write |
-| `refs`, `reflog`, `reftable`, `state` | Refs, HEAD, bisect state, worktree refs |
-| `index`, `split_index`, `sparse_checkout` | Index v2/v3, sparse patterns, checkout scope |
-| `worktree` (**new**) | Linked worktrees: add/list/remove/lock/repair/prune |
-| `promisor`, `shallow`, `fetch_negotiator` | Partial clone, lazy fetch, backfill |
-| `merge_*`, `diff`, `combined_*` | Merge, diff, conflict markers |
-| `hooks` | Multihook config + traditional `.git/hooks` execution |
-| `signing` (**new**) | Create/verify GPG and SSH-signed commits/tags |
-| `transport` (**new**) | upload-pack / receive-pack over bidirectional streams |
-| `submodule_*` | Gitlinks, `.gitmodules`, recursive fetch (last) |
+## Lane 3 — Refs: files backend (loose + packed)
+**Owns:** `grit-lib/src/refs.rs`, `grit-lib/src/reflog.rs`, `grit/src/commands/pack_refs.rs`
+- `t0600-reffiles-backend` 15/33 — files ref-store semantics, symref/loose/packed transitions
+- `t0601-reffiles-pack-refs` 45/47 — `pack-refs` edge cases
+**Subtotal: ~20 failing.**
 
-Public API style: **`Repository`** (or `GitDir` + work tree) as the entry handle;
-inject **time** and **environment** at boundaries; no `.unwrap()` in library code.
+## Lane 4 — Refs: reftable backend
+**Owns:** `grit-lib/src/reftable.rs`
+- `t0613-reftable-write-options` 4/11 — block size / restart / compaction write options
+- `t0610-reftable-basics` 89/91 — 2 remaining basics
+- `t0611-reftable-httpd` 0/1 — single test; likely httpd-env, confirm not-grit before chasing
+**Subtotal: ~10 failing.**
 
----
+## Lane 5 — Repository setup: init / discovery / env / safe-directory / gitfile / var (HEAVIEST)
+**Owns:** `grit-lib/src/repo.rs`, `grit/src/commands/init.rs`, `grit-lib/src/dotfile.rs`, `grit/src/commands/var.rs`, and the `safe.directory`/`GIT_*`-env read paths in `grit-lib/src/config.rs`
+- `t0110-environment` 3/31 — `GIT_*` env var precedence/handling (big gap)
+- `t0001-init` 74/102 — `git init` (`--bare`, `--separate-git-dir`, templates, reinit, `--shared`)
+- `t0120-dot-git-dir` 8/32 — `.git` dir/file discovery edge cases
+- `t0033-safe-directory` 20/22, `t0034-root-safe-directory` 0/0 (**sudo-gated**: runs only with `GIT_TEST_ALLOW_SUDO`)
+- `t0002-gitfile` 12/14 — `.git` gitfile indirection
+- `t0007-git-var` 26/27 — `git var` (1 failing)
+**Subtotal: ~85 failing.** Heaviest lane; do NOT split (everything here converges on `repo.rs`).
+Consider giving this lane a longer iteration budget.
 
-## Phase 0 — Foundation and CLI thinning (ongoing)
+## Lane 6 — Objects / tree-hash / cache-tree / oid-validation / pack (HEAVY)
+**Owns:** `grit-lib/src/objects.rs`, `grit-lib/src/odb.rs`, `grit-lib/src/write_tree.rs`, `grit-lib/src/index.rs` (cache-tree extension), `grit-lib/src/pack.rs`, `grit/src/commands/{mktree,hash_object}.rs`
+- `t0130-sha1-validation` 1/30 — object-id parse/validate, `GIT_TEST_BUILTIN_HASH`, fsck-ish id checks (big gap)
+- `t0080-tree-hash` 3/30 — `mktree` / tree object hashing (big gap)
+- `t0090-cache-tree` 2/22 — cache-tree index extension build/invalidate/write (big gap)
+- `t0081-find-pack` 3/4 — `cat-file --find-pack` (1 failing)
+**Subtotal: ~77 failing.** Grouped because they all touch `objects.rs`/`write_tree.rs`/`index.rs`.
 
-Keep existing strengths stable while moving logic down from the binary.
+## Lane 7 — Path utilities
+**Owns:** `grit-lib/src/git_path.rs` (+ path normalization helpers)
+- `t0060-path-utils` 206/219 — `test-tool path-utils` (normalize, relative, dirname, real_path, etc.)
+**Subtotal: ~13 failing.**
 
-- [x] **0.1 Repository session API** — Single `Repository::open` path with explicit
-  `GitDir`, common dir, work tree, commondir, and config load order documented.
-  - Harness: `t1510-repo-setup` **109/109**, `t1517-outside-repo` **191/191** (both green 2026-05-29).
-- [ ] **0.2 Move transport negotiation to lib** — `fetch_transport` / smart HTTP
-  session types live in `grit-lib::transport`; CLI calls `Repository::fetch_pack` /
-  `push_pack` style methods.
-  - Refactor plan written: `plans/phase0-0.2-transport-in-lib-assessment.md` (the move itself is still TODO).
-  - Harness: `t5551-http-fetch-smart` 29/37 (subtests 36/37 are run by the host's old system git, not grit — env-blocked, not a grit bug); `t5541-http-push-smart` 19/21 (subtests 14/15 fail at base too; CSV's "21/21" was stale).
-- [x] **0.3 Audit binary-only helpers** — List `grit/src/` modules that implement
-  domain rules (index, merge, checkout, signing) and file issues per module to relocate.
-  - Delivered: `plans/phase0-0.3-binary-relocation-audit.md` (top-level `grit/src/*.rs` domain modules + target `grit-lib` module for each).
+## Lane 8 — Docs vs help-synopsis consistency
+**Owns:** the `-h` synopsis strings / `grit/src/commands/upstream_synopsis_help.rs` and `git/Documentation/*.txt` alignment (text, not engine logic)
+- `t0450-txt-doc-vs-help` 537/542 — 5 commands whose `-h` synopsis doesn't match their doc
+**Subtotal: ~5 failing.** No engine overlap with any other lane.
 
----
-
-## Phase 1 — Worktrees (highest priority)
-
-Git-linked checkouts are required for real multi-branch workflows and many porcelain
-tests. Most logic belongs in a new **`grit-lib/src/worktree.rs`** (and friends).
-
-### 1.1 Core worktree filesystem model
-
-- [x] Create `worktrees/` registry under common git dir (`worktrees/<id>/gitdir`,
-  `commondir`, `locked`, `prunable`, `HEAD`, private refs).
-- [x] Resolve `git_dir` vs `common_dir` vs per-worktree refs (`refs/worktree/*`).
-- [x] `config.worktree` overlay and `extensions.worktreeConfig` behavior.
-
-### 1.2 Worktree lifecycle API
-
-- [x] `Worktree::add(branch, path, opts)` — checkout new or existing branch, write
-  `.git` / gitfile, seed `HEAD`, index, optionally fetch.
-- [x] `Worktree::list` / `remove` / `lock` / `unlock` / `move` / `repair` / `prune`.
-- [x] Prevent unsafe operations (checkout branch checked out elsewhere, orphan paths).
-
-### 1.3 Commands using worktree index and refs
-
-- [x] Index path: per-worktree `index` and shared vs private ref reads on
-  `status`, `diff`, `commit`, `reset`, `merge`, `checkout` (non-interactive).
-- [x] Hook env: correct `GIT_WORK_TREE`, `GIT_DIR`, `GIT_COMMON_DIR` per worktree.
-
-### 1.4 Harness targets (worktrees)
-
-- [x] `t2400-worktree-add`
-- [x] `t2402-worktree-list`
-- [x] `t2401-worktree-prune`, `t2406-worktree-repair`
-- [x] `t2404-worktree-config`, `t2407-worktree-heads`
-- [x] `t3908-stash-in-worktree`, `t2205-add-worktree-config` (non-interactive paths)
-- [x] `t1415-worktree-refs`, `t1407-worktree-ref-store` (plumbing)
+## Lane 9 — Basics (single failure)
+**Owns:** TBD — the failing subtest decides
+- `t0000-basic` 91/92 — one failing subtest; agent first identifies which subsystem it is, then fixes
+  it there. Likely object/index/`test_must_fail` plumbing. Keep small.
+**Subtotal: 1 failing.**
 
 ---
 
-## Phase 2 — Partial clone, promisor remotes, lazy objects
-
-Extend `promisor.rs`, `shallow.rs`, and ODB miss handling.
-
-### 2.1 Promisor ODB and packs
-
-- [~] Align promisor marker with Git (`promisor` remote config, `.promisor` pack sidecars,
-  `extensions.partialClone` / `core.promisorRemote`).
-- [~] `odb` miss → promisor remote fetch (single blob/tree/commit) without full clone.
-- [~] `rev-list --missing`, `--exclude-promisor-objects`, connectivity checks.
-
-### 2.2 Clone/fetch filters
-
-- [~] `filter=blob:none|tree:0|...` on clone/fetch; record filter in config.
-- [~] Lazy fetch in merge, checkout, `cat-file`, `apply` (blob touch paths).
-- [x] `backfill` / `promisor hydrate` as library API. (`t5620-backfill` 10/10, 2026-05-29.)
-
-### 2.3 Shallow + partial interaction
-
-- [~] Shallow boundary + promisor: fetch deepen, push shallow (non-interactive).
-  - `t5537-fetch-shallow` 14/16 — remaining: subtest 12 (shallow point with submodules, out of v1 scope) and 16 (connectivity check before writing shallow file).
-
-### 2.4 Harness targets (partial / promisor)
-
-- [x] `t0410-partial-clone` (38/38)
-- [x] `t1022-read-tree-partial-clone` (1/1), `t4067-diff-partial-clone` (9/9), `t6110-rev-list-sparse` (2/2), `t5620-backfill` (10/10) — all green 2026-05-29.
-- [~] `t5616-partial-clone` **44/47** (was 34) — tree:0/sparse/combine filters via upload-pack + `pack-objects --filter`, ref-tip blob skeleton, thin REF_DELTA base lazy-fetch.
-  - [ ] Remaining 2: subtest 43 (`restore --recurse-submodules`, out of v1 scope) and 47 (HTTP v2 multi-round thin-pack negotiation against one-time-script server).
-- [ ] `t6421-merge-partial-clone` (0/3) — blocked on merge-ort **relevant-rename pruning** so merge fetches the minimal object set (3/6/22 vs current 20/21/25). Needs basename-first rename relevance + rename-aware content-merge fetch in `grit-lib/src/diff.rs::detect_renames`.
-- [ ] `t5537-fetch-shallow` (14/16, see 2.3).
-
----
-
-## Phase 3 — Signing (GPG + SSH)
-
-New **`grit-lib/src/signing.rs`** (and small `gpg.rs` / `ssh_sign.rs` if needed).
-
-Implemented in **`grit-lib/src/signing.rs`** (GPG + SSH) and **`grit-lib/src/push_cert.rs`** (signed push). **Phase 3 complete (2026-05-30).**
-
-### 3.1 Commit signing
-
-- [x] Read `user.signingkey`, `gpg.program`, `gpg.format` (`openpgp` vs `ssh`); `gpg.<fmt>.program`, `gpg.minTrustLevel`.
-- [x] Produce `gpgsig` header on commit (`sign_buffer` GPG/SSH via `ssh-keygen -Y`); verify picks format from signature armor.
-- [x] `commit -S` / `--gpg-sign` / `--no-gpg-sign` + `commit.gpgsign`; merge/rebase replayed-commit signing.
-
-### 3.2 Tag signing
-
-- [x] Annotated tag signing (`tag -s`/`-u`, real armored sig, not pseudo); `verify-tag` / `verify-commit` in library; `log`/`rev-list` `%G?…`, `show --show-signature`.
-- [x] `push --signed` (client-side cert generation + verify, `GIT_PUSH_CERT*` env, HMAC nonce).
-
-### 3.3 Harness targets (signing) — all green
-
-- [x] `t7510-signed-commit` 28/28
-- [x] `t7528-signed-commit-ssh` 26/29 (+3 `test_expect_failure` known breakages)
-- [x] `t7031-verify-tag-signed-ssh` 14/14
-- [x] `t5534-push-signed` 13/13
-- Note: in this sandbox gpg-agent can't start (trash-dir socket path too long), so GPG/GPGSM subtests SKIP (harness scores skips as pass); the SSH paths run for real. Stack validated manually against real gpg.
-
----
-
-## Phase 4 — Hooks (multihook + porcelain integration)
-
-Extend existing **`grit-lib/src/hooks.rs`**.
-
-### 4.1 Hook runner completeness
-
-- [ ] `hook.<name>.*` multihook ordering, `hookPath`, `core.hooksPath`, `init.templateDir`.
-- [ ] All v1-required hook names wired with correct stdin/stdout/env:
-  `pre-commit`, `prepare-commit-msg`, `commit-msg`, `post-commit`,
-  `pre-merge-commit`, `pre-push`, `post-merge`, `post-checkout`, `post-rewrite`,
-  `update` / `pre-receive` (push path, client-side invocation of local hooks only).
-- [ ] `GIT_HOOK_INFO` for post-checkout; exit code propagation and `--no-verify`.
-
-### 4.2 Library call sites
-
-- [ ] `commit`, `merge`, `checkout`, `push`, `fetch` (where Git runs hooks) call
-  `hooks::run_*` with shared `CommitHookEnv`.
-- [ ] `git hook run` / `git hook list` delegate to library.
-
-### 4.3 Harness targets (hooks) — Phase 4 done (2026-05-30)
-
-- [x] `t1800-hook` 44/44
-- [x] `t7503-pre-commit-and-pre-merge-commit-hooks` 22/22
-- [x] `t7504-commit-msg-hook` 29/30, [~] `t7505-prepare-commit-msg-hook` 22/23 (last is rebase-i engine, not a hook bug)
-- [x] `t5571-pre-push-hook` 11/11, `t5402-post-merge-hook` 7/7, `t5403-post-checkout-hook` 14/14
-- [~] `t5407-post-rewrite-hook` 11/17 (16/17 in upstream-sanitized env; gap is tests/test-lib.sh not unsetting GIT_EDITOR/VISUAL), [x] `t5401-update-hooks` 13/13
-- Merge needed a semantic resolution (two branches added different merge-hook fns → unified to builtin/merge.c order) + a follow-up fix for 3 regressions (t3407 #5/#13, t3501 #12) whose real causes were in `merge_file.rs` + `checkout.rs --orphan`.
-
----
-
-## Phase 5 — Sparse checkout (cone + compatibility)
-
-Build on existing `sparse_checkout.rs` and index `sdir` extension support.
-
-### 5.1 Sparse index and read-tree integration
-
-- [ ] Cone/non-cone pattern load/save (`$GIT_DIR/info/sparse-checkout`,
-  `index.sparse` config).
-- [ ] `read-tree` / checkout: only materialize included paths; skip-worktree +
-  sparse directory entries in index v4.
-- [ ] `ls-files`, `add`, `rm`, `mv`, `clean`, `status` respect sparse specification
-  (no interactive modes).
-
-### 5.2 Merge and diff under sparse
-
-- [ ] `merge-recursive` / `merge-ort` path limiting vs sparse patterns.
-- [ ] `diff` / `diff-tree` skip out-of-cone paths unless `--sparse` / config says otherwise.
-
-### 5.3 Harness targets (sparse) — Phase 5 done (2026-05-30)
-
-- [x] `t1091-sparse-checkout-builtin` 76/77 (1 = upstream test_expect_failure)
-- [~] `t1092-sparse-checkout-compatibility` 47→64/106 (remaining: sparse-index lazy expansion / ensure_full_index trace, merge-OID determinism, diff sparse routing — design-scope)
-- [x] `t1011-read-tree-sparse-checkout` 23/23
-- [x] `t1090-sparse-checkout-scope` 7/7
-- [x] `t6428-merge-conflicts-sparse` 2/2
-- [x] `t6435-merge-sparse`
-- [x] `t3705-add-sparse-checkout` 20/20
-- [x] `t3602-rm-sparse-checkout` 13/13
-- [x] `t7002-mv-sparse-checkout` 22/22
-
----
-
-## Phase 6 — Core client workflows (non-interactive polish)
-
-Fill gaps in everyday commands **without** interactive modes. Prefer library APIs
-used by multiple commands.
-
-**Phase 6 done (2026-05-31)** — run in clusters (A cherry-pick, B checkout/reset/status, C+D maintenance/merge/log/push). All merged, zero regressions.
-
-### 6.1 Index + worktree + checkout
-
-- [x] Non-interactive `checkout`, `restore`, `reset`: `t7201-co` 46/46, `t7102-reset` 38/38.
-- [x] Untracked/overwrite rules: `t2021-checkout-overwrite` 9/9, `t2500-untracked-overwriting` 8/8 real (2 are `test_expect_failure`).
-
-### 6.2 Merge and sequencer (non-interactive only)
-
-- [~] Porcelain `merge`: `t7600-merge` 50→81/83 (remaining 2: env GIT_EDITOR leak + annotated-tag pull --no-ff, deferred).
-- [x] `cherry-pick`, `revert`, `rerere`: t3507 44/44, t3508 14/14, t3510-seq 55/55, t3504-rerere 9/9, t3502 12/12, t3506 11/11; t3501 20/21.
-- [x] Harness: `t7110-reset-merge` 21/21 (guard).
-
-### 6.3 Status, diff, log (no fsmonitor)
-
-- [x] `status` porcelain v1/v2: `t7508-status` 99→121/126, `t7064-wtstatus-pv2` 28/28.
-- [~] `log` formats: `t4202-log` skip→90/149 (further work possible).
-
-### 6.4 Transport hardening (simple auth only)
-
-- [x] Harness: `t5813-proto-disable-ssh` 81/81, `t5563-simple-http-auth` 17/17, `t5545-push-options` 13/13, `t5547-push-quarantine` 6/6 (all green; guards held).
-
-### 6.5 Maintenance
-
-- [x] `gc`, `repack`, `maintenance run`: `t6500-gc` 29→34/35, `t7700-repack` 17→39/47, `t7900-maintenance` 31→71/72 (full scheduler backends, incremental/geometric repack, midx expire). Bonus t5319-midx 26→45.
-
----
-
-## Phase 7 — Submodules (last)
-
-Only after Phases 1–6 are stable.
-
-### 7.1 Submodule library API
-
-- [ ] `.gitmodules` parse/cache (`submodule_config*`), gitdir/gitfile layout.
-- [ ] `submodule init/update/sync/deinit` without interactive prompts.
-- [ ] Recursive fetch/clone; superproject pointer updates on `commit` / `status`.
-
-### 7.2 Cross-command behavior
-
-- [ ] `diff`/`status`/`ls-files` recurse-submodules (non-interactive).
-- [ ] Merge/cherry-pick with gitlinks (no `rebase -i` with submodules).
-
-### 7.3 Harness targets (submodules) — Phase 7 in progress (2026-06-01)
-
-- [x] `t7400-submodule-basic` **49→111/124** (add/deinit/status/init/clone --recurse rework).
-- [x] `t7403-submodule-sync` 18/18, [~] `t7407-submodule-foreach` 21/23 (lifted by t7400's work).
-- [~] `t6437-submodule-merge` 20/22, [~] `t4059-diff-submodule-not-initialized` 7/8 (near-green).
-- [~] `t2013-checkout-submodule` (7→59/70 achievable solo) and `t7406-submodule-update` (34→57/70 solo) and `t7506-status-submodule` 28/40: **being reconciled onto the t7400 base.** Their original branches (`wf/p7b/t2013`, `wf/p7b/t7406`) regress t7400/t7506/t7407 when combined — they assume a different gitlink-in-worktree representation than t7400's. Reconciliation agent (`wf/p7c/submodule-reconcile`) is re-implementing them compatibly with no regression to t7400.
-
-**NOTE:** Submodule harness files run silently for minutes (nested clones) and trip the Workflow's 180s and Agent's 600s no-progress watchdogs — Phase 7 is run via individual background agents + manual consolidation, not the Workflow.
-
----
-
-## Phase 8 — v1 release gate
-
-- [ ] **Public API review** — Document stable `grit-lib` entry points in crate rustdoc;
-  hide or `#[doc(hidden)]` experimental modules.
-- [ ] **Performance** — Benchmark pack indexing, status, diff on large trees (no fsmonitor);
-  fix hot paths found in profiling.
-- [ ] **CI contract** — `cargo fmt`, `clippy`, `cargo test -p grit-lib --lib`, and
-  in-scope harness subset (Phases 1–7 file list) required green for release tag.
-- [ ] **Explicit v1 exclusions doc** — Short `docs/v1-scope.md` listing out-of-scope
-  interactive, auth, and fsmonitor features so users know what to expect.
-
----
-
-## Task checklist (execution order)
-
-Use this as the single queue for the next major step. Phases are sequential; tasks
-within a phase can be parallelized where noted.
-
-| ID | Phase | Task | Primary harness |
-|----|-------|------|-----------------|
-| 0.1 | 0 | Repository session API | `t1510-repo-setup` |
-| 0.2 | 0 | Transport in `grit-lib` | `t5551`, `t5541` |
-| 0.3 | 0 | Binary audit / relocation list | — |
-| 1.1 | 1 | Worktree filesystem model | `t1407`, `t1415` |
-| 1.2 | 1 | Worktree lifecycle API | `t2400`, `t2402` |
-| 1.3 | 1 | Per-worktree index/refs in commands | `t2404`, `t2407` |
-| 1.4 | 1 | Worktree repair/prune/lock | `t2401`, `t2406` |
-| 2.1 | 2 | Promisor ODB + packs | `t0410` |
-| 2.2 | 2 | Filter clone/fetch + lazy fetch | `t5616` |
-| 2.3 | 2 | Backfill + merge on partial | `t5620`, `t6421` |
-| 3.1 | 3 | GPG/SSH commit signing | `t7510`, `t7528` |
-| 3.2 | 3 | Tag verify + push signed | `t7031`, `t5534` |
-| 4.1 | 4 | Multihook runner complete | `t1800` |
-| 4.2 | 4 | Hook integration in commit/merge/push | `t7503`–`t7505`, `t5571` |
-| 4.3 | 4 | post-checkout/merge/rewrite hooks | `t5402`, `t5403`, `t5407` |
-| 5.1 | 5 | Sparse index + checkout | `t1091`, `t1011` |
-| 5.2 | 5 | Sparse merge/diff | `t1092`, `t6435` |
-| 5.3 | 5 | Sparse add/rm/mv/status | `t3705`, `t3602` |
-| 6.1 | 6 | Checkout/restore/reset polish | `t7201`, `t7102` |
-| 6.2 | 6 | Merge/pull/cherry-pick (no `-i`) | `t7600`, `t3500` |
-| 6.3 | 6 | Status/log/diff polish | `t7508`, `t4202` |
-| 6.4 | 6 | SSH `core.sshCommand` + push options | `t5813`, `t5545` |
-| 6.5 | 6 | gc/repack/maintenance | `t6500`, `t7900` |
-| 7.1 | 7 | Submodule init/update API | `t7406` |
-| 7.2 | 7 | Submodule status/diff/fetch | `t7506`, `t7400` |
-| 8.1 | 8 | API + docs + release gate | — |
-
----
-
-## Out of scope (do not block v1)
-
-- Interactive patch modes (`-p`, `-i`) for add/checkout/restore/clean/commit/rebase/am
-- `rebase -i`, `rebase --exec` todo editor flows
-- Digest/NTLM/Kerberos HTTP, TLS client certs, OAuth refresh in credential protocol
-- fsmonitor, `core.fsmonitor`, builtin-fsmonitor, fsmonitor-driven fast status
-- `git send-email`, tab completion, `git shell`, Scalar monorepo wizard
-- Full reftable-by-default, reftable migration UX
-- Server-side: `git daemon`, `http-backend`, `receive-pack` on server (client hooks only)
-
----
-
-## Tracking
-
-- **Planning source of truth:** use checkbox lines in this file (`- [x]` / `[~]` / `[ ]`).
-- **Harness dashboard:** `data/test-files.csv` after `./scripts/run-tests.sh`.
-- **Session logs:** `logs/` per AGENTS.md loop contract.
-
-When a phase completes, run the listed harness files together and refresh the dashboard
-before starting the next phase.
+## Shared-file caution (for the merge step)
+A few modules are touched lightly by more than one lane — primarily **`config.rs`** (lanes 1, 3, 4, 5
+all read config) and possibly **`index.rs`** (lanes 2 and 6). Lane *ownership* above is by **primary
+edit site**; secondary reads rarely conflict. When merging lane branches: merge the disjoint ones
+first, then any `config.rs`/`index.rs`-touching pair **with combined verification** (a clean
+text-merge is not proof — re-run both lanes' files and diff failing-sets against a true-base binary).
+
+## Running this as a parallel workflow
+- One agent per lane, each in its own `git worktree` off `HEAD`, **warm-cache seeded**
+  (`cp -a target/release <wt>/target/release`) so builds are ~1 min not cold.
+- Have each agent: reproduce its files' failures, fix only its owned modules, keep
+  `cargo test -p grit-lib --lib` green, build release, re-run its lane's files, commit on a
+  `wf/t0/<lane>` branch. **Do not run the harness via the Workflow tool's watchdog for slow files;**
+  t0 files are fast, so the standard workflow is fine here.
+- Orchestrator merges lane branches into `main` one at a time, building + re-running each lane's
+  files (and the shared-file neighbors) after each merge; revert any lane that regresses a sibling.
+- Lanes 5 and 6 are the heavy ones (~85 / ~77 failing); 8 and 9 are trivial. Expect lanes 1–4, 7 to
+  finish fast.
+
+## Not required for t0-green (skipped / out of scope)
+These 13 t0 files are `in_scope=skip` and excluded from the aggregate — deliberate v1 non-goals.
+Only unskip if pursuing literal 100%:
+- i18n: `t0200`–`t0204` (gettext)
+- tracing: `t0210`–`t0213` (trace2)
+- other: `t0013-sha1dc`, `t0029-core-unsetenvvars`, `t0051-windows-named-pipe`, `t0612-reftable-jgit-compatibility`

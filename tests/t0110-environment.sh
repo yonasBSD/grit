@@ -11,6 +11,7 @@ cd "$(dirname "$0")" || exit 1
 # ===========================================================================
 
 test_expect_success 'setup: init repo for env tests' '
+	(
 	git init repo &&
 	cd repo &&
 	git config user.name "Test User" &&
@@ -22,6 +23,7 @@ test_expect_success 'setup: init repo for env tests' '
 	echo hello >file.txt &&
 	git add file.txt &&
 	git commit -m "initial"
+	)
 '
 
 # ===========================================================================
@@ -29,11 +31,13 @@ test_expect_success 'setup: init repo for env tests' '
 # ===========================================================================
 
 test_expect_success 'GIT_DIR allows rev-parse HEAD from outside the repo' '
+	(
 	cd repo &&
 	git rev-parse HEAD >../expect &&
 	cd .. &&
 	GIT_DIR="$TRASH_DIRECTORY/repo/.git" git rev-parse HEAD >actual &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'GIT_DIR with log --oneline works from outside repo' '
@@ -42,20 +46,24 @@ test_expect_success 'GIT_DIR with log --oneline works from outside repo' '
 '
 
 test_expect_success 'GIT_DIR with cat-file works from outside repo' '
+	(
 	cd repo &&
 	oid=$(git rev-parse HEAD) &&
 	cd .. &&
 	GIT_DIR="$TRASH_DIRECTORY/repo/.git" git cat-file -t "$oid" >actual &&
 	echo commit >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'GIT_DIR with cat-file -p works from outside repo' '
+	(
 	cd repo &&
 	oid=$(git rev-parse HEAD) &&
 	cd .. &&
 	GIT_DIR="$TRASH_DIRECTORY/repo/.git" git cat-file -p "$oid" >actual &&
 	grep "initial" actual
+	)
 '
 
 test_expect_success 'GIT_DIR with symbolic-ref works from outside repo' '
@@ -91,12 +99,14 @@ test_expect_success 'GIT_DIR with for-each-ref works from outside repo' '
 # ===========================================================================
 
 test_expect_success 'GIT_DIR + GIT_WORK_TREE allows ls-files from work tree' '
+	(
 	cd repo &&
 	GIT_DIR="$TRASH_DIRECTORY/repo/.git" \
 	GIT_WORK_TREE="$TRASH_DIRECTORY/repo" \
 	git ls-files >actual &&
 	echo file.txt >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'GIT_DIR + GIT_WORK_TREE with status from outside' '
@@ -121,20 +131,24 @@ test_expect_success 'GIT_DIR + GIT_WORK_TREE diff detects changes' '
 # ===========================================================================
 
 test_expect_success '--git-dir flag works like GIT_DIR env' '
+	(
 	cd repo &&
 	oid=$(git rev-parse HEAD) &&
 	cd .. &&
 	git --git-dir="$TRASH_DIRECTORY/repo/.git" cat-file -t "$oid" >actual &&
 	echo commit >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success '--git-dir flag overrides env for rev-parse' '
+	(
 	git --git-dir="$TRASH_DIRECTORY/repo/.git" rev-parse HEAD >actual &&
 	cd repo &&
 	git rev-parse HEAD >../expect &&
 	cd .. &&
 	test_cmp expect actual
+	)
 '
 
 # ===========================================================================
@@ -142,6 +156,7 @@ test_expect_success '--git-dir flag overrides env for rev-parse' '
 # ===========================================================================
 
 test_expect_success 'GIT_AUTHOR_NAME overrides author name in commit' '
+	(
 	cd repo &&
 	echo "author-test" >author-test.txt &&
 	git add author-test.txt &&
@@ -153,23 +168,29 @@ test_expect_success 'GIT_AUTHOR_NAME overrides author name in commit' '
 	git log -n 1 --format="%an" >actual &&
 	echo "Custom Author" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'GIT_AUTHOR_EMAIL overrides author email in commit' '
+	(
 	cd repo &&
 	git log -n 1 --format="%ae" >actual &&
 	echo "custom@example.com" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'GIT_AUTHOR_NAME does not affect committer' '
+	(
 	cd repo &&
 	git log -n 1 --format="%cn" >actual &&
 	echo "Test User" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'GIT_AUTHOR_DATE overrides author date' '
+	(
 	cd repo &&
 	echo "date-test" >date-test.txt &&
 	git add date-test.txt &&
@@ -177,6 +198,7 @@ test_expect_success 'GIT_AUTHOR_DATE overrides author date' '
 	git commit -m "custom date commit" &&
 	git log -n 1 --format="%ai" >actual &&
 	grep "2005-04-07" actual
+	)
 '
 
 # ===========================================================================
@@ -184,6 +206,7 @@ test_expect_success 'GIT_AUTHOR_DATE overrides author date' '
 # ===========================================================================
 
 test_expect_success 'GIT_COMMITTER_NAME overrides committer name' '
+	(
 	cd repo &&
 	echo "committer-test" >committer-test.txt &&
 	git add committer-test.txt &&
@@ -195,23 +218,29 @@ test_expect_success 'GIT_COMMITTER_NAME overrides committer name' '
 	git log -n 1 --format="%cn" >actual &&
 	echo "Custom Committer" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'GIT_COMMITTER_EMAIL overrides committer email' '
+	(
 	cd repo &&
 	git log -n 1 --format="%ce" >actual &&
 	echo "committer@example.com" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'GIT_COMMITTER_NAME does not affect author' '
+	(
 	cd repo &&
 	git log -n 1 --format="%an" >actual &&
 	echo "Test User" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'GIT_COMMITTER_DATE overrides committer date' '
+	(
 	cd repo &&
 	echo "cdate-test" >cdate-test.txt &&
 	git add cdate-test.txt &&
@@ -219,6 +248,7 @@ test_expect_success 'GIT_COMMITTER_DATE overrides committer date' '
 	git commit -m "custom committer date" &&
 	git log -n 1 --format="%ci" >actual &&
 	grep "2010-01-01" actual
+	)
 '
 
 # ===========================================================================
@@ -226,6 +256,7 @@ test_expect_success 'GIT_COMMITTER_DATE overrides committer date' '
 # ===========================================================================
 
 test_expect_success 'both GIT_AUTHOR_* and GIT_COMMITTER_* can be set at once' '
+	(
 	cd repo &&
 	echo "both-test" >both-test.txt &&
 	git add both-test.txt &&
@@ -240,9 +271,11 @@ test_expect_success 'both GIT_AUTHOR_* and GIT_COMMITTER_* can be set at once' '
 	git log -n 1 --format="%cn <%ce>" >actual &&
 	echo "Committer Name <committer@test.org>" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'author and committer can be different people' '
+	(
 	cd repo &&
 	echo "diff-people" >diff-people.txt &&
 	git add diff-people.txt &&
@@ -257,6 +290,7 @@ test_expect_success 'author and committer can be different people' '
 	git log -n 1 --format="%cn" >committer_actual &&
 	echo "Bob" >committer_expect &&
 	test_cmp committer_expect committer_actual
+	)
 '
 
 # ===========================================================================
@@ -264,17 +298,21 @@ test_expect_success 'author and committer can be different people' '
 # ===========================================================================
 
 test_expect_success 'cat-file -p shows correct author from GIT_AUTHOR_* override' '
+	(
 	cd repo &&
 	oid=$(git rev-parse HEAD) &&
 	git cat-file -p "$oid" >actual &&
 	grep "Alice <alice@example.com>" actual
+	)
 '
 
 test_expect_success 'cat-file -p shows correct committer from GIT_COMMITTER_* override' '
+	(
 	cd repo &&
 	oid=$(git rev-parse HEAD) &&
 	git cat-file -p "$oid" >actual &&
 	grep "Bob <bob@example.com>" actual
+	)
 '
 
 # ===========================================================================
@@ -282,6 +320,7 @@ test_expect_success 'cat-file -p shows correct committer from GIT_COMMITTER_* ov
 # ===========================================================================
 
 test_expect_success 'GIT_AUTHOR_NAME with special characters' '
+	(
 	cd repo &&
 	echo "special-author" >special-author.txt &&
 	git add special-author.txt &&
@@ -291,16 +330,20 @@ test_expect_success 'GIT_AUTHOR_NAME with special characters' '
 	git log -n 1 --format="%an" >actual &&
 	echo "Ørjan Müller-Straße" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'cat-file confirms special character author' '
+	(
 	cd repo &&
 	oid=$(git rev-parse HEAD) &&
 	git cat-file -p "$oid" >actual &&
 	grep "Ørjan Müller-Straße" actual
+	)
 '
 
 test_expect_success 'GIT_COMMITTER_NAME with special characters' '
+	(
 	cd repo &&
 	echo "special-committer" >special-committer.txt &&
 	git add special-committer.txt &&
@@ -310,6 +353,7 @@ test_expect_success 'GIT_COMMITTER_NAME with special characters' '
 	git log -n 1 --format="%cn" >actual &&
 	echo "José García" >expect &&
 	test_cmp expect actual
+	)
 '
 
 # ===========================================================================
@@ -317,6 +361,7 @@ test_expect_success 'GIT_COMMITTER_NAME with special characters' '
 # ===========================================================================
 
 test_expect_success 'empty GIT_AUTHOR_NAME is rejected (matches git ident.c)' '
+	(
 	cd repo &&
 	echo "empty-author" >empty-author.txt &&
 	git add empty-author.txt &&
@@ -325,6 +370,7 @@ test_expect_success 'empty GIT_AUTHOR_NAME is rejected (matches git ident.c)' '
 		git commit -m "empty author name" 2>err &&
 	test_grep "empty ident name" err &&
 	test_grep "Author identity unknown" err
+	)
 '
 
 test_done

@@ -207,6 +207,7 @@ test_setup_repo () {
 #   Summary: 2 fetches (1 for 2 objects, 1 for 1 object)
 #
 test_expect_success 'Objects downloaded for single relevant rename' '
+	(
 	test_setup_repo &&
 	git clone --sparse --filter=blob:none "file://$(pwd)/server" objects-single &&
 	(
@@ -242,6 +243,7 @@ test_expect_success 'Objects downloaded for single relevant rename' '
 		test_must_be_empty new &&
 		# Fetched 2 + 1 = 3 objects
 		test_line_count = 3 old
+	)
 	)
 '
 
@@ -297,6 +299,7 @@ test_expect_success 'Objects downloaded for single relevant rename' '
 #   Summary: 1 fetches for 6 objects
 #
 test_expect_success 'Objects downloaded when a directory rename triggered' '
+	(
 	test_setup_repo &&
 	git clone --sparse --filter=blob:none "file://$(pwd)/server" objects-dir &&
 	(
@@ -331,6 +334,7 @@ test_expect_success 'Objects downloaded when a directory rename triggered' '
 		test_must_be_empty new &&
 		# Fetched 6 objects
 		test_line_count = 6 old
+	)
 	)
 '
 
@@ -399,6 +403,7 @@ test_expect_success 'Objects downloaded when a directory rename triggered' '
 #   Summary: 4 fetches (1 for 6 objects, 1 for 8, 1 for 3, 1 for 2)
 #
 test_expect_success 'Objects downloaded with lots of renames and modifications' '
+	(
 	test_setup_repo &&
 	git clone --sparse --filter=blob:none "file://$(pwd)/server" objects-many &&
 	(
@@ -436,6 +441,7 @@ test_expect_success 'Objects downloaded with lots of renames and modifications' 
 		test_must_be_empty new &&
 		# Fetched 12 + 5 + 3 + 2 = 22 objects
 		test_line_count = 22 old
+	)
 	)
 '
 

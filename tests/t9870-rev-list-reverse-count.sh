@@ -13,6 +13,7 @@ REAL_GIT=$(command -v git)
 ###########################################################################
 
 test_expect_success 'setup: create repository with linear history' '
+	(
 	"$REAL_GIT" init repo &&
 	cd repo &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -24,6 +25,7 @@ test_expect_success 'setup: create repository with linear history' '
 		GIT_COMMITTER_DATE="2024-01-$(printf "%02d" $i)T12:00:00+00:00" \
 		"$REAL_GIT" commit -m "commit $i" || return 1
 	done
+	)
 '
 
 ###########################################################################
@@ -31,29 +33,37 @@ test_expect_success 'setup: create repository with linear history' '
 ###########################################################################
 
 test_expect_success 'rev-list HEAD lists all commits' '
+	(
 	cd repo &&
 	"$REAL_GIT" rev-list HEAD >expected &&
 	"$GUST_BIN" rev-list HEAD >actual &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list HEAD shows 15 commits' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list HEAD >actual &&
 	test $(wc -l <actual) -eq 15
+	)
 '
 
 test_expect_success 'rev-list HEAD output is SHA-only' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list HEAD >actual &&
 	! grep " " actual
+	)
 '
 
 test_expect_success 'rev-list HEAD contains HEAD commit' '
+	(
 	cd repo &&
 	local head_sha=$("$REAL_GIT" rev-parse HEAD) &&
 	"$GUST_BIN" rev-list HEAD >actual &&
 	grep "$head_sha" actual
+	)
 '
 
 ###########################################################################
@@ -61,38 +71,48 @@ test_expect_success 'rev-list HEAD contains HEAD commit' '
 ###########################################################################
 
 test_expect_success 'rev-list --count HEAD shows 15' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list --count HEAD >actual &&
 	echo "15" >expected &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list --count matches git' '
+	(
 	cd repo &&
 	"$REAL_GIT" rev-list --count HEAD >expected &&
 	"$GUST_BIN" rev-list --count HEAD >actual &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list --count HEAD~5 shows 10' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list --count HEAD~5 >actual &&
 	echo "10" >expected &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list --count HEAD~5 matches git' '
+	(
 	cd repo &&
 	"$REAL_GIT" rev-list --count HEAD~5 >expected &&
 	"$GUST_BIN" rev-list --count HEAD~5 >actual &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list --count HEAD~14 shows 1' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list --count HEAD~14 >actual &&
 	echo "1" >expected &&
 	test_cmp expected actual
+	)
 '
 
 ###########################################################################
@@ -100,39 +120,49 @@ test_expect_success 'rev-list --count HEAD~14 shows 1' '
 ###########################################################################
 
 test_expect_success 'rev-list --reverse HEAD matches git' '
+	(
 	cd repo &&
 	"$REAL_GIT" rev-list --reverse HEAD >expected &&
 	"$GUST_BIN" rev-list --reverse HEAD >actual &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list --reverse shows oldest first' '
+	(
 	cd repo &&
 	local first=$("$REAL_GIT" rev-list HEAD | tail -1) &&
 	"$GUST_BIN" rev-list --reverse HEAD >actual &&
 	head -1 actual | grep "$first"
+	)
 '
 
 test_expect_success 'rev-list --reverse contains HEAD commit' '
+	(
 	cd repo &&
 	local head_sha=$("$REAL_GIT" rev-parse HEAD) &&
 	"$GUST_BIN" rev-list --reverse HEAD >actual &&
 	grep "$head_sha" actual
+	)
 '
 
 test_expect_success 'rev-list --reverse has same count as normal' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list HEAD >normal &&
 	"$GUST_BIN" rev-list --reverse HEAD >reversed &&
 	test $(wc -l <normal) -eq $(wc -l <reversed)
+	)
 '
 
 test_expect_success 'rev-list --reverse is exact reverse of normal' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list HEAD >normal &&
 	"$GUST_BIN" rev-list --reverse HEAD >reversed &&
 	tac normal >normal_reversed &&
 	test_cmp normal_reversed reversed
+	)
 '
 
 ###########################################################################
@@ -140,23 +170,29 @@ test_expect_success 'rev-list --reverse is exact reverse of normal' '
 ###########################################################################
 
 test_expect_success 'rev-list --reverse -n 5 matches git' '
+	(
 	cd repo &&
 	"$REAL_GIT" rev-list --reverse -n 5 HEAD >expected &&
 	"$GUST_BIN" rev-list --reverse -n 5 HEAD >actual &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list --reverse -n 5 shows 5 commits' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list --reverse -n 5 HEAD >actual &&
 	test $(wc -l <actual) -eq 5
+	)
 '
 
 test_expect_success 'rev-list --reverse -n 1 matches git' '
+	(
 	cd repo &&
 	"$REAL_GIT" rev-list --reverse -n 1 HEAD >expected &&
 	"$GUST_BIN" rev-list --reverse -n 1 HEAD >actual &&
 	test_cmp expected actual
+	)
 '
 
 ###########################################################################
@@ -164,37 +200,47 @@ test_expect_success 'rev-list --reverse -n 1 matches git' '
 ###########################################################################
 
 test_expect_success 'rev-list HEAD~5..HEAD matches git' '
+	(
 	cd repo &&
 	"$REAL_GIT" rev-list HEAD~5..HEAD >expected &&
 	"$GUST_BIN" rev-list HEAD~5..HEAD >actual &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list HEAD~5..HEAD shows 5 commits' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list HEAD~5..HEAD >actual &&
 	test $(wc -l <actual) -eq 5
+	)
 '
 
 test_expect_success 'rev-list --count HEAD~5..HEAD shows 5' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list --count HEAD~5..HEAD >actual &&
 	echo "5" >expected &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list --reverse HEAD~5..HEAD matches git' '
+	(
 	cd repo &&
 	"$REAL_GIT" rev-list --reverse HEAD~5..HEAD >expected &&
 	"$GUST_BIN" rev-list --reverse HEAD~5..HEAD >actual &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list --count HEAD~5..HEAD matches git' '
+	(
 	cd repo &&
 	"$REAL_GIT" rev-list --count HEAD~5..HEAD >expected &&
 	"$GUST_BIN" rev-list --count HEAD~5..HEAD >actual &&
 	test_cmp expected actual
+	)
 '
 
 ###########################################################################
@@ -202,6 +248,7 @@ test_expect_success 'rev-list --count HEAD~5..HEAD matches git' '
 ###########################################################################
 
 test_expect_success 'setup: create branch' '
+	(
 	cd repo &&
 	"$REAL_GIT" checkout -b feature HEAD~5 &&
 	echo "feature A" >feat.txt &&
@@ -210,34 +257,43 @@ test_expect_success 'setup: create branch' '
 	echo "feature B" >feat.txt &&
 	"$REAL_GIT" add feat.txt &&
 	"$REAL_GIT" commit -m "feature B"
+	)
 '
 
 test_expect_success 'rev-list --count feature matches git' '
+	(
 	cd repo &&
 	"$REAL_GIT" rev-list --count feature >expected &&
 	"$GUST_BIN" rev-list --count feature >actual &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list --reverse feature matches git' '
+	(
 	cd repo &&
 	"$REAL_GIT" rev-list --reverse feature >expected &&
 	"$GUST_BIN" rev-list --reverse feature >actual &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list master..feature matches git' '
+	(
 	cd repo &&
 	"$REAL_GIT" rev-list master..feature >expected &&
 	"$GUST_BIN" rev-list master..feature >actual &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list --count master..feature matches git' '
+	(
 	cd repo &&
 	"$REAL_GIT" rev-list --count master..feature >expected &&
 	"$GUST_BIN" rev-list --count master..feature >actual &&
 	test_cmp expected actual
+	)
 '
 
 ###########################################################################
@@ -245,45 +301,57 @@ test_expect_success 'rev-list --count master..feature matches git' '
 ###########################################################################
 
 test_expect_success 'rev-list HEAD~1..HEAD shows 1 commit' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list HEAD~1..HEAD >actual &&
 	test $(wc -l <actual) -eq 1
+	)
 '
 
 test_expect_success 'rev-list --count HEAD~1..HEAD shows 1' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list --count HEAD~1..HEAD >actual &&
 	echo "1" >expected &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list HEAD..HEAD shows nothing' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list HEAD..HEAD >actual &&
 	test_must_be_empty actual
+	)
 '
 
 test_expect_success 'rev-list --count HEAD..HEAD shows 0' '
+	(
 	cd repo &&
 	"$GUST_BIN" rev-list --count HEAD..HEAD >actual &&
 	echo "0" >expected &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list with specific SHA matches git' '
+	(
 	cd repo &&
 	local sha=$("$REAL_GIT" rev-parse HEAD~3) &&
 	"$REAL_GIT" rev-list "$sha" >expected &&
 	"$GUST_BIN" rev-list "$sha" >actual &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'rev-list --reverse with specific SHA matches git' '
+	(
 	cd repo &&
 	local sha=$("$REAL_GIT" rev-parse HEAD~3) &&
 	"$REAL_GIT" rev-list --reverse "$sha" >expected &&
 	"$GUST_BIN" rev-list --reverse "$sha" >actual &&
 	test_cmp expected actual
+	)
 '
 
 test_done

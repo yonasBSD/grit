@@ -7,6 +7,7 @@ test_description='Test shallow cloning of repos with submodules'
 pwd=$(pwd)
 
 test_expect_success 'setup' '
+	(
 	git checkout -b main &&
 	test_commit commit1 &&
 	test_commit commit2 &&
@@ -20,6 +21,7 @@ test_expect_success 'setup' '
 	) &&
 	git submodule add "file://$pwd/sub" sub &&
 	git commit -m "add submodule"
+	)
 '
 
 test_expect_success 'nonshallow clone implies nonshallow submodule' '
@@ -73,6 +75,7 @@ test_expect_success 'non shallow clone with shallow submodule' '
 '
 
 test_expect_success 'clone follows shallow recommendation' '
+	(
 	test_when_finished "rm -rf super_clone" &&
 	test_config_global protocol.file.allow always &&
 	git config -f .gitmodules submodule.sub.shallow true &&
@@ -89,9 +92,11 @@ test_expect_success 'clone follows shallow recommendation' '
 		git log --oneline >lines &&
 		test_line_count = 1 lines
 	)
+	)
 '
 
 test_expect_success 'get unshallow recommended shallow submodule' '
+	(
 	test_when_finished "rm -rf super_clone" &&
 	test_config_global protocol.file.allow always &&
 	git clone --no-local "file://$pwd/." super_clone &&
@@ -106,9 +111,11 @@ test_expect_success 'get unshallow recommended shallow submodule' '
 		git log --oneline >lines &&
 		test_line_count = 3 lines
 	)
+	)
 '
 
 test_expect_success 'clone follows non shallow recommendation' '
+	(
 	test_when_finished "rm -rf super_clone" &&
 	test_config_global protocol.file.allow always &&
 	git config -f .gitmodules submodule.sub.shallow false &&
@@ -124,6 +131,7 @@ test_expect_success 'clone follows non shallow recommendation' '
 		cd super_clone/sub &&
 		git log --oneline >lines &&
 		test_line_count = 3 lines
+	)
 	)
 '
 

@@ -32,6 +32,7 @@ doit () {
 }
 
 test_expect_success 'setup repo with branches' '
+	(
 	grit init repo &&
 	cd repo &&
 	first=$(doit 1 first) &&
@@ -43,9 +44,11 @@ test_expect_success 'setup repo with branches' '
 	echo "$first" >../oid_first &&
 	echo "$second" >../oid_second &&
 	echo "$third" >../oid_third
+	)
 '
 
 test_expect_success 'for-each-ref lists branches on detached HEAD' '
+	(
 	cd repo &&
 	third=$(cat ../oid_third) &&
 	echo "$third" >.git/HEAD &&
@@ -53,18 +56,22 @@ test_expect_success 'for-each-ref lists branches on detached HEAD' '
 	grep "refs/heads/master" actual &&
 	grep "refs/heads/other" actual &&
 	grep "refs/heads/feature" actual
+	)
 '
 
 test_expect_success 'for-each-ref count is correct on detached HEAD' '
+	(
 	cd repo &&
 	third=$(cat ../oid_third) &&
 	echo "$third" >.git/HEAD &&
 	git for-each-ref --format="%(refname)" refs/heads/ >actual &&
 	count=$(wc -l <actual | tr -d " ") &&
 	test "$count" = "3"
+	)
 '
 
 test_expect_success 'for-each-ref %(refname:short) on detached HEAD' '
+	(
 	cd repo &&
 	third=$(cat ../oid_third) &&
 	echo "$third" >.git/HEAD &&
@@ -72,9 +79,11 @@ test_expect_success 'for-each-ref %(refname:short) on detached HEAD' '
 	grep "master" actual &&
 	grep "other" actual &&
 	grep "feature" actual
+	)
 '
 
 test_expect_success 'for-each-ref %(objectname) on detached HEAD' '
+	(
 	cd repo &&
 	third=$(cat ../oid_third) &&
 	second=$(cat ../oid_second) &&
@@ -84,25 +93,31 @@ test_expect_success 'for-each-ref %(objectname) on detached HEAD' '
 	grep "master $third" actual &&
 	grep "other $second" actual &&
 	grep "feature $first" actual
+	)
 '
 
 test_expect_success '%(HEAD) marks the current branch' '
+	(
 	cd repo &&
 	git checkout master 2>/dev/null &&
 	git for-each-ref --format="%(HEAD) %(refname:short)" refs/heads/ >actual &&
 	grep "^\\* master$" actual &&
 	grep "^  other$" actual
+	)
 '
 
 test_expect_success '%(HEAD) shows no star on detached HEAD' '
+	(
 	cd repo &&
 	third=$(cat ../oid_third) &&
 	echo "$third" >.git/HEAD &&
 	git for-each-ref --format="%(HEAD) %(refname:short)" refs/heads/ >actual &&
 	! grep "^\\*" actual
+	)
 '
 
 test_expect_success 'for-each-ref --sort=refname on detached HEAD' '
+	(
 	cd repo &&
 	third=$(cat ../oid_third) &&
 	echo "$third" >.git/HEAD &&
@@ -110,24 +125,29 @@ test_expect_success 'for-each-ref --sort=refname on detached HEAD' '
 	head -1 actual >first_ref &&
 	echo "refs/heads/feature" >expect &&
 	test_cmp expect first_ref
+	)
 '
 
 test_expect_success 'for-each-ref with tags on detached HEAD' '
+	(
 	cd repo &&
 	third=$(cat ../oid_third) &&
 	echo "$third" >.git/HEAD &&
 	git update-ref refs/tags/v1.0 "$third" &&
 	git for-each-ref --format="%(refname)" refs/tags/ >actual &&
 	grep "refs/tags/v1.0" actual
+	)
 '
 
 test_expect_success '%(objectname:short) shows abbreviated hash' '
+	(
 	cd repo &&
 	git for-each-ref --format="%(objectname:short)" refs/heads/ >actual &&
 	count=$(wc -l <actual | tr -d " ") &&
 	test "$count" = "3" &&
 	len=$(head -1 actual | wc -c | tr -d " ") &&
 	test "$len" -le 12
+	)
 '
 
 test_done

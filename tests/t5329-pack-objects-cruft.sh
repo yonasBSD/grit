@@ -219,6 +219,7 @@ basic_cruft_pack_tests never
 basic_cruft_pack_tests 2.weeks.ago
 
 test_expect_success 'cruft tags rescue tagged objects' '
+	(
 	git init repo &&
 	test_when_finished "rm -fr repo" &&
 	(
@@ -256,9 +257,11 @@ test_expect_success 'cruft tags rescue tagged objects' '
 		test_cmp expect actual &&
 		cat actual
 	)
+	)
 '
 
 test_expect_success 'cruft commits rescue parents, trees' '
+	(
 	git init repo &&
 	test_when_finished "rm -fr repo" &&
 	(
@@ -290,9 +293,11 @@ test_expect_success 'cruft commits rescue parents, trees' '
 
 		test_cmp expect actual
 	)
+	)
 '
 
 test_expect_success 'cruft trees rescue sub-trees, blobs' '
+	(
 	git init repo &&
 	test_when_finished "rm -fr repo" &&
 	(
@@ -330,9 +335,11 @@ test_expect_success 'cruft trees rescue sub-trees, blobs' '
 
 		test_cmp expect actual
 	)
+	)
 '
 
 test_expect_success 'expired objects are pruned' '
+	(
 	git init repo &&
 	test_when_finished "rm -fr repo" &&
 	(
@@ -358,9 +365,11 @@ test_expect_success 'expired objects are pruned' '
 		test-tool pack-mtimes "pack-$cruft.mtimes" >actual &&
 		test_must_be_empty actual
 	)
+	)
 '
 
 test_expect_success 'loose objects mtimes upsert others' '
+	(
 	git init repo &&
 	test_when_finished "rm -fr repo" &&
 	(
@@ -392,9 +401,11 @@ test_expect_success 'loose objects mtimes upsert others' '
 		grep "$tip" actual.raw | cut -d" " -f2 >actual &&
 		test_cmp expect actual
 	)
+	)
 '
 
 test_expect_success 'expiring cruft objects with git gc' '
+	(
 	git init repo &&
 	test_when_finished "rm -fr repo" &&
 	(
@@ -431,9 +442,11 @@ test_expect_success 'expiring cruft objects with git gc' '
 		test_cmp unreachable removed &&
 		test_path_is_missing $mtimes
 	)
+	)
 '
 
 test_expect_success 'cruft --local drops unreachable objects' '
+	(
 	git init alternate &&
 	git init repo &&
 	test_when_finished "rm -fr alternate repo" &&
@@ -471,9 +484,11 @@ test_expect_success 'cruft --local drops unreachable objects' '
 		! grep $object objects &&
 		grep $cruft objects
 	)
+	)
 '
 
 test_expect_success 'MIDX bitmaps tolerate reachable cruft objects' '
+	(
 	git init repo &&
 	test_when_finished "rm -fr repo" &&
 	(
@@ -497,9 +512,11 @@ test_expect_success 'MIDX bitmaps tolerate reachable cruft objects' '
 
 		git repack --write-midx --write-bitmap-index --geometric=2 -d
 	)
+	)
 '
 
 test_expect_success 'cruft objects are freshend via loose' '
+	(
 	git init repo &&
 	test_when_finished "rm -fr repo" &&
 	(
@@ -522,9 +539,11 @@ test_expect_success 'cruft objects are freshend via loose' '
 
 		test_path_is_file "$loose"
 	)
+	)
 '
 
 test_expect_success 'gc.recentObjectsHook' '
+	(
 	git init repo &&
 	test_when_finished "rm -fr repo" &&
 	(
@@ -610,9 +629,11 @@ test_expect_success 'gc.recentObjectsHook' '
 			test_must_fail git cat-file -t $object || return 1
 		done
 	)
+	)
 '
 
 test_expect_success 'multi-valued gc.recentObjectsHook' '
+	(
 	git init repo &&
 	test_when_finished "rm -fr repo" &&
 	(
@@ -662,9 +683,11 @@ test_expect_success 'multi-valued gc.recentObjectsHook' '
 		# and that the existing cruft pack is left alone
 		test_path_is_file "$mtimes"
 	)
+	)
 '
 
 test_expect_success 'additional cruft blobs via gc.recentObjectsHook' '
+	(
 	git init repo &&
 	test_when_finished "rm -fr repo" &&
 	(
@@ -693,9 +716,11 @@ test_expect_success 'additional cruft blobs via gc.recentObjectsHook' '
 		echo $blob >expect &&
 		test_cmp expect actual
 	)
+	)
 '
 
 test_expect_success 'split cruft packs with --max-cruft-size' '
+	(
 	repo=cruft-with--max-cruft-size &&
 	test_when_finished "rm -fr $repo" &&
 
@@ -744,6 +769,7 @@ test_expect_success 'split cruft packs with --max-cruft-size' '
 		EOF
 
 		test_cmp expect actual
+	)
 	)
 '
 

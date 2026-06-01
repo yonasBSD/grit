@@ -90,6 +90,40 @@ When you fix known breakage, flip `test_expect_failure` → `test_expect_success
 
 **Do not** modify `tests/test-lib.sh` casually — past changes caused regressions.
 
+## Harness pitfall: cwd persists across tests (the `cd repo` trap)
+
+Before "fixing grit" for a failing file, rule this out first — it is a **test-file bug, not a grit bug**.
+
+**Symptom:** only the `setup` test passes (≈1/N) and every later test fails with
+`./test-lib.sh: line NNNN: cd: repo: No such file or directory`.
+
+**Cause:** `test-lib.sh` *persists* the working directory across top-level `test_expect_success`
+blocks (matching upstream `git/t`). If the setup test does `git init repo && cd repo && …` it
+leaves the shell **inside** `repo/`. Every later block that starts with a bare `cd repo` then runs
+*before* it is back at the trash root, so the `cd` fails and the block aborts before any `git`/`grit`
+command runs.
+
+**Fix:** wrap each test body in a subshell so the `cd` cannot leak:
+```sh
+test_expect_success 'desc' '
+	(
+	cd repo &&
+	…
+	)
+'
+```
+`scripts/_wrap_cd_subshell.py <files…>` does this mechanically (idempotent; only wraps bodies that
+contain a `cd`). After wrapping, **re-run only the files you changed** and diff pass counts against
+the previous CSV values — wrapping a body that a *currently-passing* test relied on for leaked cwd
+can cost a test, so confirm no file regressed before committing.
+
+**Spotting candidates:** low pass ratio **and** nearly every `test_expect_success` body starts with a
+bare `cd`. Quick scan:
+```bash
+grep -c "test_expect_success" tests/tXXXX-*.sh   # total blocks
+grep -cE "^[[:space:]]+cd [^&]*&&" tests/tXXXX-*.sh   # bare-cd blocks; ≈equal + low pass ⇒ this bug
+```
+
 ## Dashboards
 
 Regenerated automatically after every `run-tests.sh` run. To refresh HTML only (no test run):

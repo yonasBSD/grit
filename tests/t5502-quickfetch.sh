@@ -21,6 +21,7 @@ test_expect_success setup '
 '
 
 test_expect_success 'clone without alternate' '
+	(
 
 	(
 		mkdir cloned &&
@@ -33,6 +34,7 @@ test_expect_success 'clone without alternate' '
 		git count-objects | sed -e "s/ *objects,.*//"
 	) ) &&
 	test $cnt -eq 3
+	)
 '
 
 test_expect_success 'further commits in the original' '
@@ -48,6 +50,7 @@ test_expect_success 'further commits in the original' '
 '
 
 test_expect_success 'copy commit and tree but not blob by hand' '
+	(
 
 	git rev-list --objects HEAD |
 	git pack-objects --stdout |
@@ -72,9 +75,11 @@ test_expect_success 'copy commit and tree but not blob by hand' '
 	) ) &&
 	test $cnt -eq 5
 
+	)
 '
 
 test_expect_success 'quickfetch should not leave a corrupted repository' '
+	(
 
 	(
 		cd cloned &&
@@ -87,9 +92,11 @@ test_expect_success 'quickfetch should not leave a corrupted repository' '
 	) ) &&
 	test $cnt -eq 6
 
+	)
 '
 
 test_expect_success 'quickfetch should not copy from alternate' '
+	(
 
 	(
 		mkdir quickclone &&
@@ -120,9 +127,11 @@ test_expect_success 'quickfetch should not copy from alternate' '
 	test $pck_cnt -eq 0 &&
 	test z$origin_main = z$(git rev-parse main)
 
+	)
 '
 
 test_expect_success 'quickfetch should handle ~1000 refs (on Windows)' '
+	(
 
 	git gc &&
 	head=$(git rev-parse HEAD) &&
@@ -140,6 +149,7 @@ test_expect_success 'quickfetch should handle ~1000 refs (on Windows)' '
 		git fetch
 	)
 
+	)
 '
 
 test_done

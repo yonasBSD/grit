@@ -8,6 +8,7 @@ export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 
 	git init --bare upstream.git &&
 	git init --bare downstream.git &&
@@ -59,6 +60,7 @@ But keep the old version, too, in case some people prefer it." &&
 		git checkout main
 	)
 
+	)
 '
 
 test_expect_success 'setup: two scripts for reading pull requests' '
@@ -120,6 +122,7 @@ test_expect_success 'setup: two scripts for reading pull requests' '
 '
 
 test_expect_success 'pull request when forgot to push' '
+	(
 
 	rm -fr downstream.git &&
 	git init --bare downstream.git &&
@@ -133,9 +136,11 @@ test_expect_success 'pull request when forgot to push' '
 	grep "No match for commit .*" err &&
 	grep "Are you sure you pushed" err
 
+	)
 '
 
 test_expect_success 'pull request after push' '
+	(
 
 	rm -fr downstream.git &&
 	git init --bare downstream.git &&
@@ -160,9 +165,11 @@ test_expect_success 'pull request after push' '
 	test "$branch" = for-upstream &&
 	test_cmp local/mnemonic.txt upstream-private/mnemonic.txt
 
+	)
 '
 
 test_expect_success 'request asks HEAD to be pulled' '
+	(
 
 	rm -fr downstream.git &&
 	git init --bare downstream.git &&
@@ -182,9 +189,11 @@ test_expect_success 'request asks HEAD to be pulled' '
 	} <digest &&
 	test -z "$branch"
 
+	)
 '
 
 test_expect_success 'pull request format' '
+	(
 
 	rm -fr downstream.git &&
 	git init --bare downstream.git &&
@@ -231,9 +240,11 @@ test_expect_success 'pull request format' '
 		git request-pull initial "$downstream_url" full
 	) >request &&
 	grep " tags/full\$" request
+	)
 '
 
 test_expect_success 'request-pull ignores OPTIONS_KEEPDASHDASH poison' '
+	(
 
 	(
 		cd local &&
@@ -245,9 +256,11 @@ test_expect_success 'request-pull ignores OPTIONS_KEEPDASHDASH poison' '
 		git request-pull -- initial "$downstream_url" main:for-upstream >../request
 	)
 
+	)
 '
 
 test_expect_success 'request-pull quotes regex metacharacters properly' '
+	(
 
 	rm -fr downstream.git &&
 	git init --bare downstream.git &&
@@ -263,9 +276,11 @@ test_expect_success 'request-pull quotes regex metacharacters properly' '
 	grep "No match for commit .*" err &&
 	grep "Are you sure you pushed" err
 
+	)
 '
 
 test_expect_success 'pull request with mismatched object' '
+	(
 
 	rm -fr downstream.git &&
 	git init --bare downstream.git &&
@@ -280,9 +295,11 @@ test_expect_success 'pull request with mismatched object' '
 	grep "points to a different object" err &&
 	grep "Are you sure you pushed" err
 
+	)
 '
 
 test_expect_success 'pull request with stale object' '
+	(
 
 	rm -fr downstream.git &&
 	git init --bare downstream.git &&
@@ -298,6 +315,7 @@ test_expect_success 'pull request with stale object' '
 	grep "points to a different object" err &&
 	grep "Are you sure you pushed" err
 
+	)
 '
 
 test_done

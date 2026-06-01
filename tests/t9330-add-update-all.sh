@@ -18,6 +18,7 @@ REAL_GIT=/usr/bin/git
 # -- setup ------------------------------------------------------------------
 
 test_expect_success 'setup: init repo with tracked files' '
+	(
 	grit init repo &&
 	cd repo &&
 	echo "a" >tracked1.txt &&
@@ -27,59 +28,73 @@ test_expect_success 'setup: init repo with tracked files' '
 	grit add . &&
 	test_tick &&
 	grit commit -m "initial"
+	)
 '
 
 # -- basic add ---------------------------------------------------------------
 
 test_expect_success 'add stages a new file' '
+	(
 	cd repo &&
 	echo "new" >new.txt &&
 	grit add new.txt &&
 	grit status --porcelain >actual &&
 	grep "^A  new.txt" actual
+	)
 '
 
 test_expect_success 'add stages modified file' '
+	(
 	cd repo &&
 	echo "modified" >>tracked1.txt &&
 	grit add tracked1.txt &&
 	grit status --porcelain >actual &&
 	grep "^M  tracked1.txt" actual
+	)
 '
 
 test_expect_success 'add with dot stages everything' '
+	(
 	cd repo &&
 	echo "another" >another.txt &&
 	grit add . &&
 	grit status --porcelain >actual &&
 	grep "^A  another.txt" actual
+	)
 '
 
 # -- add -u / --update -------------------------------------------------------
 
 test_expect_success 'setup: commit current state for -u tests' '
+	(
 	cd repo &&
 	test_tick &&
 	grit commit -m "before update tests"
+	)
 '
 
 test_expect_success 'add -u stages modified tracked file' '
+	(
 	cd repo &&
 	echo "updated" >>tracked2.txt &&
 	grit add -u &&
 	grit status --porcelain >actual &&
 	grep "^M  tracked2.txt" actual
+	)
 '
 
 test_expect_success 'add -u does not add untracked files' '
+	(
 	cd repo &&
 	echo "untracked" >untracked-u.txt &&
 	grit add -u &&
 	grit status --porcelain >actual &&
 	grep "^?? untracked-u.txt" actual
+	)
 '
 
 test_expect_success 'add -u stages deleted tracked files' '
+	(
 	cd repo &&
 	test_tick &&
 	grit commit -m "before delete" &&
@@ -87,9 +102,11 @@ test_expect_success 'add -u stages deleted tracked files' '
 	grit add -u &&
 	grit status --porcelain >actual &&
 	grep "^D  tracked2.txt" actual
+	)
 '
 
 test_expect_success 'add --update is same as -u' '
+	(
 	cd repo &&
 	test_tick &&
 	grit commit -m "after delete" &&
@@ -101,11 +118,13 @@ test_expect_success 'add --update is same as -u' '
 	grit add --update &&
 	grit status --porcelain >actual &&
 	grep "^M  tracked1.txt" actual
+	)
 '
 
 # -- add -A / --all ----------------------------------------------------------
 
 test_expect_success 'add -A stages new, modified, and deleted files' '
+	(
 	cd repo &&
 	test_tick &&
 	grit commit -m "base for -A" &&
@@ -117,9 +136,11 @@ test_expect_success 'add -A stages new, modified, and deleted files' '
 	grep "^A  brandnew.txt" actual &&
 	grep "^M  tracked1.txt" actual &&
 	grep "^D  subdir/tracked3.txt" actual
+	)
 '
 
 test_expect_success 'add --all is same as -A' '
+	(
 	cd repo &&
 	test_tick &&
 	grit commit -m "after -A" &&
@@ -127,11 +148,13 @@ test_expect_success 'add --all is same as -A' '
 	grit add --all &&
 	grit status --porcelain >actual &&
 	grep "new2.txt" actual
+	)
 '
 
 # -- add -n / --dry-run ------------------------------------------------------
 
 test_expect_success 'add --dry-run does not actually stage' '
+	(
 	cd repo &&
 	test_tick &&
 	grit commit -m "clean state" &&
@@ -139,35 +162,43 @@ test_expect_success 'add --dry-run does not actually stage' '
 	grit add --dry-run dry.txt >output &&
 	grit status --porcelain >actual &&
 	grep "^?? dry.txt" actual
+	)
 '
 
 test_expect_success 'add -n is same as --dry-run' '
+	(
 	cd repo &&
 	grit add -n dry.txt >output &&
 	grit status --porcelain >actual &&
 	grep "^?? dry.txt" actual
+	)
 '
 
 # -- add -v / --verbose ------------------------------------------------------
 
 test_expect_success 'add -v produces output' '
+	(
 	cd repo &&
 	grit add -v dry.txt 2>actual &&
 	test -s actual
+	)
 '
 
 test_expect_success 'add --verbose produces output' '
+	(
 	cd repo &&
 	test_tick &&
 	grit commit -m "with dry" &&
 	echo "verbose" >verbose.txt &&
 	grit add --verbose verbose.txt 2>actual &&
 	test -s actual
+	)
 '
 
 # -- add -N / --intent-to-add -----------------------------------------------
 
 test_expect_success 'add -N marks file as intent-to-add' '
+	(
 	cd repo &&
 	test_tick &&
 	grit commit -m "before ita" &&
@@ -175,42 +206,52 @@ test_expect_success 'add -N marks file as intent-to-add' '
 	grit add -N intent.txt &&
 	grit status --porcelain >actual &&
 	grep "intent.txt" actual
+	)
 '
 
 test_expect_success 'add --intent-to-add is same as -N' '
+	(
 	cd repo &&
 	echo "intent2" >intent2.txt &&
 	grit add --intent-to-add intent2.txt &&
 	grit status --porcelain >actual &&
 	grep "intent2.txt" actual
+	)
 '
 
 # -- add -f / --force (ignored files) ----------------------------------------
 
 test_expect_success 'setup: create .gitignore' '
+	(
 	cd repo &&
 	echo "*.log" >.gitignore &&
 	grit add .gitignore &&
 	test_tick &&
 	grit commit -m "add gitignore"
+	)
 '
 
 test_expect_success 'add refuses ignored file without -f' '
+	(
 	cd repo &&
 	echo "log data" >debug.log &&
 	test_must_fail grit add debug.log 2>err &&
 	grep -i "ignored" err
+	)
 '
 
 test_expect_success 'add -f stages ignored files' '
+	(
 	cd repo &&
 	echo "forced" >forced.log &&
 	grit add -f forced.log &&
 	grit status --porcelain >actual &&
 	grep "forced.log" actual
+	)
 '
 
 test_expect_success 'add --force is same as -f' '
+	(
 	cd repo &&
 	test_tick &&
 	grit commit -m "with log" &&
@@ -218,11 +259,13 @@ test_expect_success 'add --force is same as -f' '
 	grit add --force other.log &&
 	grit status --porcelain >actual &&
 	grep "other.log" actual
+	)
 '
 
 # -- pathspec ----------------------------------------------------------------
 
 test_expect_success 'add with specific pathspec' '
+	(
 	cd repo &&
 	test_tick &&
 	grit commit -m "clean" &&
@@ -232,9 +275,11 @@ test_expect_success 'add with specific pathspec' '
 	grit status --porcelain >actual &&
 	grep "pathspec-a.txt" actual &&
 	grep "^?? pathspec-b.txt" actual
+	)
 '
 
 test_expect_success 'add with directory pathspec' '
+	(
 	cd repo &&
 	mkdir -p newdir &&
 	echo "d1" >newdir/d1.txt &&
@@ -243,11 +288,13 @@ test_expect_success 'add with directory pathspec' '
 	grit status --porcelain >actual &&
 	grep "newdir/d1.txt" actual &&
 	grep "newdir/d2.txt" actual
+	)
 '
 
 # -- comparison with real git ------------------------------------------------
 
 test_expect_success 'setup: comparison repos' '
+	(
 	$REAL_GIT init git-cmp &&
 	cd git-cmp &&
 	$REAL_GIT config user.email "t@t.com" &&
@@ -264,6 +311,7 @@ test_expect_success 'setup: comparison repos' '
 	test_tick &&
 	grit commit -m "init" &&
 	cd ..
+	)
 '
 
 test_expect_success 'add -u stages modified in both grit and real git' '

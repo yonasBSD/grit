@@ -8,6 +8,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup repository with three commits' '
+	(
 	grit init repo &&
 	cd repo &&
 	git config user.email "test@example.com" &&
@@ -37,34 +38,42 @@ test_expect_success 'setup repository with three commits' '
 	echo "$C1" >"$TRASH_DIRECTORY/oid_c1" &&
 	echo "$C2" >"$TRASH_DIRECTORY/oid_c2" &&
 	echo "$C3" >"$TRASH_DIRECTORY/oid_c3"
+	)
 '
 
 # --- --soft reset ---
 
 test_expect_success 'reset --soft moves HEAD but keeps index and worktree' '
+	(
 	cd repo &&
 	C2=$(cat "$TRASH_DIRECTORY/oid_c2") &&
 	grit reset --soft "$C2" &&
 	test "$(grit rev-parse HEAD)" = "$C2" &&
 	test "$(cat file.txt)" = "v3" &&
 	test "$(cat a.txt)" = "a3"
+	)
 '
 
 test_expect_success 'after --soft reset, diff --cached shows staged changes' '
+	(
 	cd repo &&
 	grit diff --cached --name-only >cached &&
 	grep "file.txt" cached &&
 	grep "a.txt" cached
+	)
 '
 
 test_expect_success 'reset --soft back to original' '
+	(
 	cd repo &&
 	C3=$(cat "$TRASH_DIRECTORY/oid_c3") &&
 	grit reset --soft "$C3" &&
 	test "$(grit rev-parse HEAD)" = "$C3"
+	)
 '
 
 test_expect_success 'reset --soft to grandparent' '
+	(
 	cd repo &&
 	C1=$(cat "$TRASH_DIRECTORY/oid_c1") &&
 	grit reset --soft "$C1" &&
@@ -72,17 +81,21 @@ test_expect_success 'reset --soft to grandparent' '
 	test "$(cat file.txt)" = "v3" &&
 	grit diff --cached --name-only >cached &&
 	grep "file.txt" cached
+	)
 '
 
 test_expect_success 'restore to C3 for next tests' '
+	(
 	cd repo &&
 	C3=$(cat "$TRASH_DIRECTORY/oid_c3") &&
 	grit reset --hard "$C3"
+	)
 '
 
 # --- --mixed reset (default) ---
 
 test_expect_success 'reset --mixed moves HEAD and resets index but keeps worktree' '
+	(
 	cd repo &&
 	C2=$(cat "$TRASH_DIRECTORY/oid_c2") &&
 	grit reset --mixed "$C2" &&
@@ -90,9 +103,11 @@ test_expect_success 'reset --mixed moves HEAD and resets index but keeps worktre
 	test "$(cat file.txt)" = "v3" &&
 	grit diff --name-only >unstaged &&
 	grep "file.txt" unstaged
+	)
 '
 
 test_expect_success 'reset without mode flag defaults to --mixed' '
+	(
 	cd repo &&
 	C3=$(cat "$TRASH_DIRECTORY/oid_c3") &&
 	grit reset "$C3" &&
@@ -100,55 +115,69 @@ test_expect_success 'reset without mode flag defaults to --mixed' '
 	grit reset "$C1" &&
 	test "$(grit rev-parse HEAD)" = "$C1" &&
 	test "$(cat file.txt)" = "v3"
+	)
 '
 
 test_expect_success 'restore to C3 for hard tests' '
+	(
 	cd repo &&
 	C3=$(cat "$TRASH_DIRECTORY/oid_c3") &&
 	grit reset --hard "$C3"
+	)
 '
 
 # --- --hard reset ---
 
 test_expect_success 'reset --hard moves HEAD, resets index and worktree' '
+	(
 	cd repo &&
 	C2=$(cat "$TRASH_DIRECTORY/oid_c2") &&
 	grit reset --hard "$C2" &&
 	test "$(grit rev-parse HEAD)" = "$C2" &&
 	test "$(cat file.txt)" = "v2" &&
 	test "$(cat a.txt)" = "a2"
+	)
 '
 
 test_expect_success 'reset --hard leaves no unstaged changes' '
+	(
 	cd repo &&
 	grit diff --name-only >unstaged &&
 	test ! -s unstaged
+	)
 '
 
 test_expect_success 'reset --hard leaves no staged changes' '
+	(
 	cd repo &&
 	grit diff --cached --name-only >cached &&
 	test ! -s cached
+	)
 '
 
 test_expect_success 'reset --hard to grandparent' '
+	(
 	cd repo &&
 	C1=$(cat "$TRASH_DIRECTORY/oid_c1") &&
 	grit reset --hard "$C1" &&
 	test "$(cat file.txt)" = "v1" &&
 	test "$(cat a.txt)" = "a1"
+	)
 '
 
 test_expect_success 'reset --hard forward to C3' '
+	(
 	cd repo &&
 	C3=$(cat "$TRASH_DIRECTORY/oid_c3") &&
 	grit reset --hard "$C3" &&
 	test "$(cat file.txt)" = "v3"
+	)
 '
 
 # --- path-based reset ---
 
 test_expect_success 'reset HEAD -- path unstages a file' '
+	(
 	cd repo &&
 	echo "changed" >file.txt &&
 	grit add file.txt &&
@@ -156,9 +185,11 @@ test_expect_success 'reset HEAD -- path unstages a file' '
 	grit diff --cached --name-only >cached &&
 	! grep "file.txt" cached &&
 	test "$(cat file.txt)" = "changed"
+	)
 '
 
 test_expect_success 'reset HEAD -- with multiple paths' '
+	(
 	cd repo &&
 	echo "ca" >a.txt &&
 	echo "cb" >b.txt &&
@@ -167,27 +198,33 @@ test_expect_success 'reset HEAD -- with multiple paths' '
 	grit diff --cached --name-only >cached &&
 	! grep "a.txt" cached &&
 	! grep "b.txt" cached
+	)
 '
 
 test_expect_success 'reset path does not move HEAD' '
+	(
 	cd repo &&
 	C3=$(cat "$TRASH_DIRECTORY/oid_c3") &&
 	echo "new" >file.txt &&
 	grit add file.txt &&
 	grit reset HEAD -- file.txt &&
 	test "$(grit rev-parse HEAD)" = "$C3"
+	)
 '
 
 test_expect_success 'reset parent -- path puts old version in index' '
+	(
 	cd repo &&
 	grit restore . &&
 	C2=$(cat "$TRASH_DIRECTORY/oid_c2") &&
 	grit reset "$C2" -- file.txt &&
 	grit diff --cached --name-only >cached &&
 	grep "file.txt" cached
+	)
 '
 
 test_expect_success 'reset HEAD -- path on nested file' '
+	(
 	cd repo &&
 	grit reset HEAD -- file.txt &&
 	echo "new-sub" >sub/s.txt &&
@@ -195,11 +232,13 @@ test_expect_success 'reset HEAD -- path on nested file' '
 	grit reset HEAD -- sub/s.txt &&
 	grit diff --cached --name-only >cached &&
 	! grep "sub/s.txt" cached
+	)
 '
 
 # --- reset with dirty worktree ---
 
 test_expect_success 'reset --hard discards uncommitted changes' '
+	(
 	cd repo &&
 	grit restore . &&
 	echo "dirty" >file.txt &&
@@ -210,25 +249,31 @@ test_expect_success 'reset --hard discards uncommitted changes' '
 	grit reset --hard "$C3" &&
 	test "$(cat file.txt)" = "v3" &&
 	test "$(cat a.txt)" = "a3"
+	)
 '
 
 test_expect_success 'reset --soft preserves dirty worktree' '
+	(
 	cd repo &&
 	echo "dirty-soft" >file.txt &&
 	C2=$(cat "$TRASH_DIRECTORY/oid_c2") &&
 	grit reset --soft "$C2" &&
 	test "$(cat file.txt)" = "dirty-soft"
+	)
 '
 
 test_expect_success 'restore to C3' '
+	(
 	cd repo &&
 	C3=$(cat "$TRASH_DIRECTORY/oid_c3") &&
 	grit reset --hard "$C3"
+	)
 '
 
 # --- reset to HEAD (re-baseline) ---
 
 test_expect_success 'reset HEAD with no mode unstages all' '
+	(
 	cd repo &&
 	echo "x" >file.txt &&
 	echo "y" >a.txt &&
@@ -236,40 +281,50 @@ test_expect_success 'reset HEAD with no mode unstages all' '
 	grit reset HEAD &&
 	grit diff --cached --name-only >cached &&
 	test ! -s cached
+	)
 '
 
 test_expect_success 'reset --hard HEAD restores all to committed state' '
+	(
 	cd repo &&
 	echo "messy" >file.txt &&
 	grit reset --hard HEAD &&
 	test "$(cat file.txt)" = "v3"
+	)
 '
 
 # --- quiet mode ---
 
 test_expect_success 'reset -q suppresses output' '
+	(
 	cd repo &&
 	echo "q" >file.txt &&
 	grit add file.txt &&
 	grit reset -q HEAD -- file.txt >out 2>&1 &&
 	test ! -s out
+	)
 '
 
 test_expect_success 'reset --quiet --hard suppresses output' '
+	(
 	cd repo &&
 	C2=$(cat "$TRASH_DIRECTORY/oid_c2") &&
 	grit reset --quiet --hard "$C2" >out 2>&1 &&
 	test ! -s out
+	)
 '
 
 # --- edge cases ---
 
 test_expect_success 'reset to invalid ref fails' '
+	(
 	cd repo &&
 	test_must_fail grit reset --hard invalid-ref 2>err
+	)
 '
 
 test_expect_success 'reset --hard with new untracked file preserves it' '
+	(
 	cd repo &&
 	C3=$(cat "$TRASH_DIRECTORY/oid_c3") &&
 	grit reset --hard "$C3" &&
@@ -277,14 +332,18 @@ test_expect_success 'reset --hard with new untracked file preserves it' '
 	C2=$(cat "$TRASH_DIRECTORY/oid_c2") &&
 	grit reset --hard "$C2" &&
 	test -f untracked.txt
+	)
 '
 
 test_expect_success 'reset path with nonexistent file fails' '
+	(
 	cd repo &&
 	test_must_fail grit reset HEAD -- nonexistent.txt 2>err
+	)
 '
 
 test_expect_success 'reset --mixed preserves new file in worktree' '
+	(
 	cd repo &&
 	C3=$(cat "$TRASH_DIRECTORY/oid_c3") &&
 	grit reset --hard "$C3" &&
@@ -293,9 +352,11 @@ test_expect_success 'reset --mixed preserves new file in worktree' '
 	grit reset HEAD &&
 	test -f new_file.txt &&
 	test "$(cat new_file.txt)" = "new-mixed"
+	)
 '
 
 test_expect_success 'reset --soft then commit effectively amends' '
+	(
 	cd repo &&
 	C3=$(cat "$TRASH_DIRECTORY/oid_c3") &&
 	grit reset --hard "$C3" &&
@@ -304,6 +365,7 @@ test_expect_success 'reset --soft then commit effectively amends' '
 	grit commit -m "amended commit3" &&
 	grit cat-file -p HEAD >log_out &&
 	grep "amended commit3" log_out
+	)
 '
 
 test_done

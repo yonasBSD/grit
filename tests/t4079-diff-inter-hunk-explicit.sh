@@ -10,6 +10,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	git init repo &&
 	cd repo &&
 	git config user.name "Test" &&
@@ -21,24 +22,31 @@ test_expect_success 'setup' '
 	mv tmp file.txt &&
 	git add file.txt &&
 	git commit -m "modify lines 5 and 10"
+	)
 '
 
 test_expect_success 'diff --inter-hunk-context=0 is accepted' '
+	(
 	cd repo &&
 	git diff --inter-hunk-context=0 HEAD~1 HEAD >out &&
 	test -s out
+	)
 '
 
 test_expect_success 'diff --inter-hunk-context=10 is accepted' '
+	(
 	cd repo &&
 	git diff --inter-hunk-context=10 HEAD~1 HEAD >out &&
 	test -s out
+	)
 '
 
 test_expect_success 'diff -U0 --inter-hunk-context=0 produces output' '
+	(
 	cd repo &&
 	git diff -U0 --inter-hunk-context=0 HEAD~1 HEAD >out &&
 	test -s out
+	)
 '
 
 test_done

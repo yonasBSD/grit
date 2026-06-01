@@ -10,6 +10,7 @@ cd "$(dirname "$0")" || exit 1
 REAL_GIT=/usr/bin/git
 
 test_expect_success 'setup repo with submodule' '
+	(
 	$REAL_GIT init sub &&
 	cd sub &&
 	$REAL_GIT config user.name "Test" &&
@@ -38,27 +39,34 @@ test_expect_success 'setup repo with submodule' '
 	cd .. &&
 	$REAL_GIT add sub &&
 	$REAL_GIT commit -m "update sub and file"
+	)
 '
 
 test_expect_success 'diff without --ignore-submodules shows submodule' '
+	(
 	cd super &&
 	grit diff --name-only HEAD~1 HEAD >out &&
 	grep "file.txt" out &&
 	grep "sub" out
+	)
 '
 
 test_expect_success 'diff --ignore-submodules hides submodule changes' '
+	(
 	cd super &&
 	grit diff --ignore-submodules --name-only HEAD~1 HEAD >out &&
 	grep "file.txt" out &&
 	! grep "^sub$" out
+	)
 '
 
 test_expect_success 'diff --ignore-submodules --name-status hides submodule' '
+	(
 	cd super &&
 	grit diff --ignore-submodules --name-status HEAD~1 HEAD >out &&
 	grep "file.txt" out &&
 	! grep "sub" out
+	)
 '
 
 test_done
