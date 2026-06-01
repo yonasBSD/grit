@@ -1411,11 +1411,11 @@ fn resolve_tree_path_rev_parse(
         let name = String::from_utf8_lossy(&entry.name);
         if name == first {
             if rest.is_empty() {
-                if entry.mode == crate::index::MODE_GITLINK {
-                    return Err(Error::InvalidRef(format!(
-                        "'{path}' is a gitlink, not a blob"
-                    )));
-                }
+                // Git's `rev-parse <treeish>:<path>` returns the entry OID for any leaf —
+                // blob, tree, symlink, or gitlink. For a gitlink the OID is the submodule's
+                // recorded commit SHA, which need not exist in this object store (it lives in
+                // the submodule); do not attempt to read it. (lib-submodule-update
+                // `test_submodule_content` relies on `rev-parse <commit>:sub1`.)
                 return Ok(entry.oid);
             }
             if entry.mode != crate::index::MODE_TREE {
