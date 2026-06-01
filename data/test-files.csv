@@ -1398,7 +1398,7 @@ t9040-hash-object-types	t9	yes	28	28	0	true	ok	0
 t9050-write-tree-verify	t9	yes	26	26	0	true	ok	0
 t9060-mktag-verify	t9	yes	28	28	0	true	ok	0
 t9070-ls-files-cached	t9	yes	29	29	0	true	ok	0
-t9080-ls-tree-recursive	t9	yes	26	25	1	false	ok	0
+t9080-ls-tree-recursive	t9	yes	26	26	0	true	ok	0
 t9090-cat-file-pretty	t9	yes	29	29	0	true	ok	0
 t9100-diff-stat-width	t9	yes	28	28	0	true	ok	0
 t9100-git-svn-basic	t9	skip	28	0	0	false	ok	0

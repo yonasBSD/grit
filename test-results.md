@@ -91,6 +91,8 @@ Updated: 2026-06-01
   pathspec handling in `ls-tree`; `t9902-completion.sh` remains passing with failing=0.
 - t9790 validation: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`, and
   `cargo test -p grit-lib --lib` all completed successfully; grit-lib unit tests passed 229/229.
+- t9 focus: `./scripts/run-tests.sh t9080-ls-tree-recursive.sh --verbose` now passes 26/26 after
+  the recent `ls-tree` pathspec fixes.
 - t9 focus: `cargo build --release -p grit-cli` passed, then
   `./scripts/run-tests.sh t9240-diff-files-deleted.sh --verbose` passed 34/34 after diff-files
   learned to suppress content/mode-identical stat-dirty entries when index refresh is possible.
