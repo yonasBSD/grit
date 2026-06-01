@@ -11,6 +11,7 @@ Updated: 2026-06-01
 - t8 config multivar: `./scripts/run-tests.sh t8150-config-multivar.sh` passes 29/29 after applying the documented cwd-leak wrapper.
 - t8 config section: `./scripts/run-tests.sh t8160-config-section.sh` passes 27/27 after applying the documented cwd-leak wrapper.
 - t8 cherry advanced: `./scripts/run-tests.sh t8730-cherry-advanced.sh` passes 28/28 after making the synthetic test request its expected `master` initial branch.
+- t8 for-each-ref format: `./scripts/run-tests.sh t8310-for-each-ref-format-deep.sh` passes 32/32 after making the synthetic test request its expected `master` initial branch.
 - t8 switch checks: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 - t8 blame focus: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 

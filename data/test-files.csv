@@ -1324,7 +1324,7 @@ t8270-log-author-search	t8	yes	29	21	8	false	ok	0
 t8280-log-committer-search	t8	yes	29	22	7	false	ok	0
 t8290-log-grep-message	t8	yes	30	24	6	false	ok	0
 t8300-rev-list-objects	t8	yes	34	34	0	true	ok	0
-t8310-for-each-ref-format-deep	t8	yes	32	18	14	false	ok	0
+t8310-for-each-ref-format-deep	t8	yes	32	32	0	true	ok	0
 t8320-config-global-local	t8	yes	34	34	0	true	ok	0
 t8330-switch-track	t8	yes	30	30	0	true	ok	0
 t8340-restore-staged	t8	yes	27	16	11	false	ok	0
