@@ -4,6 +4,7 @@ Updated: 2026-06-01
 
 - t8 blame focus: `cargo build --release -p grit-cli` passes with existing warnings.
 - t8 blame focus: `./scripts/run-tests.sh t8002-blame.sh` passes 135/135 after blame compatibility fixes.
+- t8 annotate follow-up: `./scripts/run-tests.sh t8001-annotate.sh` passes 117/117 with the shared blame/annotate fixes.
 - t8 blame follow-up: `./scripts/run-tests.sh t8012-blame-colors.sh` passes 120/120 with the same blame fixes.
 - t8 switch focus: `./scripts/run-tests.sh t8330-switch-track.sh` passes 30/30 after switch tracking fixes.
 - t8 switch regressions: `./scripts/run-tests.sh t7201-co.sh t1507-rev-parse-upstream.sh` passes 46/46 and 29/29.
