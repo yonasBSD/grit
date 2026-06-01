@@ -5428,6 +5428,8 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         "tag" => commands::tag::run(parse_cmd_args(subcmd, rest)),
         "unpack-file" => commands::unpack_file::run(parse_cmd_args(subcmd, rest)),
         "unpack-objects" => commands::unpack_objects::run(parse_cmd_args(subcmd, rest)),
+        // grit-specific (non-git) self-update command.
+        "update" => commands::update::run(parse_cmd_args(subcmd, rest)),
         "update-index" => {
             if rest.len() == 1 {
                 let a = rest[0].as_str();

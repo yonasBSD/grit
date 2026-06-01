@@ -27,7 +27,7 @@ pub fn run(args: Args) -> Result<()> {
 
     // Version
     report.push_str("[Version]\n");
-    report.push_str("git version 2.47.0.grit\n\n");
+    report.push_str(&format!("git version {}\n\n", crate::version_string()));
 
     // OS info
     report.push_str("[System]\n");

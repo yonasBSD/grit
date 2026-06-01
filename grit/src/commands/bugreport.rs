@@ -39,7 +39,7 @@ pub fn run(args: Args) -> Result<()> {
     report.push_str("You can delete any lines you don't wish to share.\n\n\n");
 
     report.push_str("[System Info]\n");
-    report.push_str("git version 2.47.0.grit\n");
+    report.push_str(&format!("git version {}\n", crate::version_string()));
     report.push_str(&format!("shell-path: {}\n", shell_path()));
     report.push_str(&format!("uname: {}\n", collect_uname()));
     report.push_str(&format!("compiler info: {}\n", compiler_info()));

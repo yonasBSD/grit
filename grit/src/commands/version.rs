@@ -17,7 +17,7 @@ pub struct Args {
 pub fn run(args: Args) -> Result<()> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    writeln!(out, "git version 2.47.0.grit")?;
+    writeln!(out, "git version {}", crate::version_string())?;
     if args.build_options {
         writeln!(out, "sizeof-long: {}", std::mem::size_of::<i64>())?;
         writeln!(out, "sizeof-size_t: {}", std::mem::size_of::<usize>())?;
