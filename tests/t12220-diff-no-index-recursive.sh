@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup repo with nested dirs' '
+	(
     grit init repo && cd repo &&
     git config user.email "t@t.com" && git config user.name "T" &&
     mkdir -p dir1/sub1 dir2/sub2 &&
@@ -16,6 +17,7 @@ test_expect_success 'setup repo with nested dirs' '
     echo "d" >dir2/sub2/d.txt &&
     grit add . &&
     grit commit -m "initial"
+	)
 '
 
 test_expect_success 'no diff when working tree matches HEAD' '

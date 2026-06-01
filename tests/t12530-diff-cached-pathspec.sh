@@ -11,6 +11,7 @@ cd "$(dirname "$0")" || exit 1
 REAL_GIT=$(command -v git)
 
 test_expect_success 'setup: repo with multiple files' '
+	(
 	grit init repo &&
 	cd repo &&
 	"$REAL_GIT" config user.email "t@t.com" &&
@@ -23,6 +24,7 @@ test_expect_success 'setup: repo with multiple files' '
 	echo "extra" >dir/e.txt &&
 	grit add . &&
 	grit commit -m "initial"
+	)
 '
 
 # ---- clean state ----

@@ -6,12 +6,14 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
     grit init repo && cd repo &&
     git config user.email "t@t.com" && git config user.name "T" &&
     echo "hello" >file.txt &&
     echo "world" >other.txt &&
     grit add . &&
     grit commit -m "initial"
+	)
 '
 
 test_expect_success 'porcelain shows nothing for clean repo' '

@@ -4,6 +4,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup linear history with 6 commits' '
+	(
     grit init repo &&
     cd repo &&
     git config user.email "t@t.com" &&
@@ -32,6 +33,7 @@ test_expect_success 'setup linear history with 6 commits' '
     grit add file.txt &&
     GIT_AUTHOR_DATE="1700005000 +0000" GIT_COMMITTER_DATE="1700005000 +0000" \
     grit commit -m "F"
+	)
 '
 
 # Save commit hashes for later

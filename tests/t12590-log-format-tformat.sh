@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
     grit init repo && cd repo &&
     git config user.email "alice@example.com" && git config user.name "Alice" &&
 	sane_unset GIT_AUTHOR_NAME &&
@@ -17,6 +18,7 @@ test_expect_success 'setup' '
     echo two >file2.txt && grit add file2.txt && grit commit -m "second commit" &&
     git config user.email "charlie@example.com" && git config user.name "Charlie" &&
     echo three >file3.txt && grit add file3.txt && grit commit -m "third commit"
+	)
 '
 
 test_expect_success 'format %H shows full commit hash' '

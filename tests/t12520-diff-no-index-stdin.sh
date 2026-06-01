@@ -10,6 +10,7 @@ cd "$(dirname "$0")" || exit 1
 REAL_GIT=$(command -v git)
 
 test_expect_success 'setup: create repo with history' '
+	(
 	grit init repo &&
 	cd repo &&
 	"$REAL_GIT" config user.email "t@t.com" &&
@@ -32,6 +33,7 @@ test_expect_success 'setup: create repo with history' '
 	echo "extra" >>file2.txt &&
 	grit add file2.txt &&
 	grit commit -m "modify file2"
+	)
 '
 
 # ---- basic stdin raw output ----

@@ -13,6 +13,7 @@ cd "$(dirname "$0")" || exit 1
 ###########################################################################
 
 test_expect_success 'setup: create repo with branches and tags' '
+	(
 	"$REAL_GIT" init repo &&
 	cd repo &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -29,6 +30,7 @@ test_expect_success 'setup: create repo with branches and tags' '
 	"$REAL_GIT" tag -a v1.0 -m "version 1.0" &&
 	"$REAL_GIT" tag lightweight-tag &&
 	"$REAL_GIT" tag -a v2.0 -m "version 2.0"
+	)
 '
 
 ###########################################################################

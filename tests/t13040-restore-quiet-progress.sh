@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	grit init repo && cd repo &&
 	git config user.email "t@t.com" && git config user.name "T" &&
 	echo hello >file.txt &&
@@ -13,6 +14,7 @@ test_expect_success 'setup' '
 	mkdir -p sub &&
 	echo s >sub/s.txt &&
 	grit add . && grit commit -m "initial"
+	)
 '
 
 test_expect_success 'restore working tree file to index version' '

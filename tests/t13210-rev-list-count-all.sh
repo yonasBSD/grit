@@ -6,11 +6,13 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	grit init repo && cd repo &&
 	git config user.email "t@t.com" && git config user.name "T" &&
 	echo A >a.txt && grit add a.txt && grit commit -m "A" &&
 	echo B >b.txt && grit add b.txt && grit commit -m "B" &&
 	echo C >c.txt && grit add c.txt && grit commit -m "C"
+	)
 '
 
 test_expect_success 'rev-list --count HEAD' '

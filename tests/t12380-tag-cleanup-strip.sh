@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	grit init repo &&
 	cd repo &&
 	git config user.email "t@t.com" &&
@@ -13,6 +14,7 @@ test_expect_success 'setup' '
 	echo hello >file.txt &&
 	grit add file.txt &&
 	grit commit -m "initial"
+	)
 '
 
 test_expect_success 'tag creates lightweight tag' '

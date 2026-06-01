@@ -2,6 +2,10 @@
 
 **Updated:** 2026-06-01 · Source of truth for counts: `data/test-files.csv`.
 
+## Current claimed item
+- [x] `t13190-log-format-body` — make the log format body/subject placeholder test pass.
+- [x] t1 one-pass setup-cwd sweep — wrap affected setup blocks so assertions run from the trash root.
+
 The t0 family has **85 files: 47 fully green, 25 in-scope-not-full (~247 failing subtests),
 13 skipped**. This plan splits the 25 remaining in-scope files into **work lanes grouped by the
 source modules they touch**, so the lanes can run **in parallel** (one agent per lane, each in its

@@ -11,10 +11,12 @@ current_branch () {
 }
 
 test_expect_success 'setup' '
+	(
 	grit init repo && cd repo &&
 	git config user.email "t@t.com" && git config user.name "T" &&
 	echo hello >file.txt && grit add file.txt && grit commit -m "initial" &&
 	echo second >file2.txt && grit add file2.txt && grit commit -m "second"
+	)
 '
 
 test_expect_success 'switch -c creates new branch' '

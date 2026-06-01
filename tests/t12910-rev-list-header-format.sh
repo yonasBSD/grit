@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	grit init repo && cd repo &&
 	git config user.email "dev@test.org" && git config user.name "Dev" &&
 	sane_unset GIT_AUTHOR_NAME &&
@@ -17,6 +18,7 @@ test_expect_success 'setup' '
 	echo three >three.txt && grit add three.txt && grit commit -m "third" &&
 	echo four >four.txt && grit add four.txt && grit commit -m "fourth" &&
 	echo five >five.txt && grit add five.txt && grit commit -m "fifth"
+	)
 '
 
 test_expect_success 'rev-list HEAD lists all commits' '

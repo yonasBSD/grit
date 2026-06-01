@@ -4,6 +4,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup linear history' '
+	(
     grit init repo &&
     cd repo &&
     git config user.email "t@t.com" &&
@@ -28,6 +29,7 @@ test_expect_success 'setup linear history' '
     grit add file.txt &&
     GIT_AUTHOR_DATE="1700004000 +0000" GIT_COMMITTER_DATE="1700004000 +0000" \
     grit commit -m "fifth"
+	)
 '
 
 test_expect_success 'rev-list HEAD lists all commits' '

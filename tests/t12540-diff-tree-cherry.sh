@@ -14,6 +14,7 @@ REAL_GIT=$(command -v git)
 # ================================================================
 
 test_expect_success 'setup: repo with several commits' '
+	(
 	grit init repo &&
 	cd repo &&
 	"$REAL_GIT" config user.email "t@t.com" &&
@@ -35,6 +36,7 @@ test_expect_success 'setup: repo with several commits' '
 	echo "changed" >sub/a.txt &&
 	grit add sub/a.txt &&
 	grit commit -m "modify sub/a.txt"
+	)
 '
 
 # ---- two-tree raw comparison ----

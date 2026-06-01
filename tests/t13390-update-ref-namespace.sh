@@ -13,6 +13,7 @@ cd "$(dirname "$0")" || exit 1
 ###########################################################################
 
 test_expect_success 'setup: create repo with initial commit' '
+	(
 	"$REAL_GIT" init repo &&
 	cd repo &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -23,6 +24,7 @@ test_expect_success 'setup: create repo with initial commit' '
 	echo "world" >>file.txt &&
 	"$REAL_GIT" add file.txt &&
 	"$REAL_GIT" commit -m "second commit"
+	)
 '
 
 ###########################################################################

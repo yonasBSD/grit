@@ -4,6 +4,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
     grit init repo &&
     cd repo &&
     git config user.email "t@t.com" &&
@@ -17,6 +18,7 @@ test_expect_success 'setup' '
     echo foo >file3.txt &&
     grit add file3.txt &&
     grit commit -m "third"
+	)
 '
 
 test_expect_success 'rev-parse HEAD resolves to 40-char hash' '

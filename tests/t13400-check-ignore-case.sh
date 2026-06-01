@@ -13,6 +13,7 @@ cd "$(dirname "$0")" || exit 1
 ###########################################################################
 
 test_expect_success 'setup: create repo with gitignore' '
+	(
 	"$REAL_GIT" init repo &&
 	cd repo &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -28,6 +29,7 @@ test_expect_success 'setup: create repo with gitignore' '
 	EOF
 	"$REAL_GIT" add .gitignore &&
 	"$REAL_GIT" commit -m "add gitignore"
+	)
 '
 
 ###########################################################################

@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup linear history' '
+	(
 	grit init repo && cd repo &&
 	git config user.email "bob@example.com" && git config user.name "Bob" &&
 	sane_unset GIT_AUTHOR_NAME &&
@@ -17,6 +18,7 @@ test_expect_success 'setup linear history' '
 	echo c >c.txt && grit add c.txt && grit commit -m "commit-C" &&
 	echo d >d.txt && grit add d.txt && grit commit -m "commit-D" &&
 	echo e >e.txt && grit add e.txt && grit commit -m "commit-E"
+	)
 '
 
 test_expect_success 'log shows all 5 commits' '

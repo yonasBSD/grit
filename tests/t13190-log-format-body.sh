@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	grit init repo && cd repo &&
 	git config user.email "t@t.com" && git config user.name "T" &&
 	sane_unset GIT_AUTHOR_NAME &&
@@ -20,6 +21,7 @@ test_expect_success 'setup' '
 	grit commit -m "third subject" &&
 	echo fourth >file4.txt && grit add file4.txt &&
 	grit commit -m "fourth subject" -m "multi line body"
+	)
 '
 
 test_expect_success 'format %s shows subject line' '

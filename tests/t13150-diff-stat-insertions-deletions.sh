@@ -11,6 +11,7 @@ cd "$(dirname "$0")" || exit 1
 REAL_GIT=/usr/bin/git
 
 test_expect_success 'setup' '
+	(
 	$REAL_GIT init repo &&
 	cd repo &&
 	$REAL_GIT config user.email "t@t.com" &&
@@ -20,6 +21,7 @@ test_expect_success 'setup' '
 	echo solo >solo.txt &&
 	$REAL_GIT add . &&
 	$REAL_GIT commit -m "initial"
+	)
 '
 
 # --- cached numstat for single line deletion ---

@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	grit init repo && cd repo &&
 	git config user.email "t@t.com" && git config user.name "T" &&
 	sane_unset GIT_AUTHOR_NAME &&
@@ -17,6 +18,7 @@ test_expect_success 'setup' '
 	echo third >file3.txt && grit add file3.txt && grit commit -m "third commit" &&
 	echo fourth >file4.txt && grit add file4.txt && grit commit -m "fourth commit" &&
 	echo fifth >file5.txt && grit add file5.txt && grit commit -m "fifth commit"
+	)
 '
 
 test_expect_success 'log --oneline shows abbreviated hash and subject' '

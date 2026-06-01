@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	grit init repo && cd repo &&
 	git config user.email "t@t.com" && git config user.name "T" &&
 	echo A >a.txt && grit add a.txt && grit commit -m "first" &&
@@ -14,6 +15,7 @@ test_expect_success 'setup' '
 	echo D >d.txt && grit add d.txt && grit commit -m "fourth" &&
 	grit tag v1.0 &&
 	grit tag -a v2.0 -m "annotated tag"
+	)
 '
 
 test_expect_success 'rev-parse v1.0 returns full hash' '

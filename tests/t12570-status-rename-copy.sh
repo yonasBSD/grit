@@ -11,6 +11,7 @@ cd "$(dirname "$0")" || exit 1
 REAL_GIT=$(command -v git)
 
 test_expect_success 'setup: initial repo with files' '
+	(
 	grit init repo &&
 	cd repo &&
 	"$REAL_GIT" config user.email "t@t.com" &&
@@ -26,6 +27,7 @@ test_expect_success 'setup: initial repo with files' '
 	echo "deep content" >dir/d.txt &&
 	grit add . &&
 	grit commit -m "initial"
+	)
 '
 
 # ---- clean state ----

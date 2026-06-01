@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
     grit init repo && cd repo &&
     git config user.email "t@t.com" && git config user.name "T" &&
     echo "a" >a.txt &&
@@ -16,6 +17,7 @@ test_expect_success 'setup' '
     echo "e" >dir/sub/e.txt &&
     grit add . &&
     grit commit -m "initial"
+	)
 '
 
 test_expect_success 'no diff between same commit' '

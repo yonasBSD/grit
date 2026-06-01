@@ -6,11 +6,13 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	grit init repo && cd repo &&
 	git config user.email "t@t.com" && git config user.name "T" &&
 	echo hello >file.txt && grit add file.txt && grit commit -m "initial" &&
 	echo second >file2.txt && grit add file2.txt && grit commit -m "second" &&
 	mkdir -p sub/deep
+	)
 '
 
 test_expect_success 'rev-parse --show-toplevel from root' '

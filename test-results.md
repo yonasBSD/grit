@@ -2,6 +2,11 @@
 
 Updated: 2026-06-01
 
+- t1 setup-cwd sweep: wrapped setup blocks in 41 one-pass t1 tests that entered `repo` before later `(cd repo && ...)` assertions. Verification via `./scripts/run-tests.sh` across those 41 files: 23 now fully pass; the remaining 18 improved beyond the setup failure and expose real command-specific gaps.
+- Focus harness: `./scripts/run-tests.sh t13190-log-format-body.sh` passes 36/36 after isolating the setup `cd repo` in a subshell so the log format assertions run from the expected trash root.
+- `cargo test --workspace`: skipped for this test-only harness correction; no Rust code changed.
+- `./tests/harness/run.sh`: skipped; project uses `./scripts/run-tests.sh` for CSV/dashboard updates.
+
 - Focus harness: `./scripts/run-tests.sh t0090-cache-tree.sh` improved from 2/22 to 16/22 after cache-tree index extension parsing/writing, invalidation, helper wiring, and cache-tree refreshes for commit/read-tree/write-tree/reset/checkout/merge paths. Remaining failures: interactive/patch/partial commit behavior plus checkout cache-tree shape edge cases.
 - Focus harness: `./scripts/run-tests.sh t0120-dot-git-dir.sh` improved from 8/32 to 32/32 after wrapping `cd repo` test bodies in subshells.
 - Verification: `cargo build --release -p grit-cli` passes with existing warnings.
