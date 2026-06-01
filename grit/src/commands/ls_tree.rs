@@ -508,9 +508,10 @@ fn list_tree(
                             || (p.starts_with(&dir_prefix) && p.len() > dir_prefix.len())
                     })
                 } else {
-                    args.paths
-                        .iter()
-                        .any(|p| pathspec_wants_descent_into_tree(p, &full_name))
+                    args.paths.iter().any(|p| {
+                        !(p == &full_name && !p.ends_with('/'))
+                            && pathspec_wants_descent_into_tree(p, &full_name)
+                    })
                 };
             let matches = matches_pathspec_set_for_object_ls_tree(
                 &args.paths,

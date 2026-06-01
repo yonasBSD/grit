@@ -1549,7 +1549,7 @@ t9750-merge-base-octopus	t9	yes	35	35	0	true	ok	0
 t9760-hash-object-blob-tree	t9	yes	32	32	0	true	ok	0
 t9770-cat-file-type-size	t9	yes	32	32	0	true	ok	0
 t9780-mktree-modes-roundtrip	t9	yes	24	24	0	true	ok	0
-t9790-write-tree-nested	t9	yes	29	27	2	false	ok	0
+t9790-write-tree-nested	t9	yes	29	29	0	true	ok	0
 t9800-git-p4-basic	t9	skip	27	0	0	false	ok	0
 t9800-ls-tree-format-atoms	t9	yes	31	31	0	true	ok	0
 t9801-git-p4-branch	t9	skip	32	0	0	false	ok	1
@@ -1600,7 +1600,7 @@ t9880-config-file-option	t9	yes	32	32	0	true	ok	0
 t9890-init-object-format	t9	yes	31	30	1	false	ok	0
 t9900-branch-verbose-all	t9	yes	33	33	0	true	ok	0
 t9901-git-web--browse	t9	yes	5	5	0	true	ok	0
-t9902-completion	t9	yes	259	259	0	true	ok	3
+t9902-completion	t9	yes	263	259	0	true	ok	3
 t9903-bash-prompt	t9	yes	67	66	1	false	ok	0
 t9910-tag-pattern-glob	t9	yes	32	32	0	true	ok	0
 t9920-commit-tree-author-env	t9	yes	26	26	0	true	ok	0
