@@ -531,6 +531,22 @@ pub struct AddArgs {
     #[arg(short = 'b', long = "branch")]
     pub branch: Option<String>,
 
+    /// Force cloning progress to be shown.
+    #[arg(long = "progress")]
+    pub progress: bool,
+
+    /// Create a shallow clone with the given depth.
+    #[arg(long = "depth", value_name = "DEPTH")]
+    pub depth: Option<i64>,
+
+    /// Use the given repository as a reference (alternate) for the clone.
+    #[arg(long = "reference", value_name = "REPO", action = clap::ArgAction::Append)]
+    pub reference: Vec<String>,
+
+    /// Borrow the objects from reference repositories.
+    #[arg(long = "dissociate")]
+    pub dissociate: bool,
+
     /// URL of the submodule repository.
     pub url: String,
 
@@ -2380,16 +2396,41 @@ fn is_writing_gitmodules_ok(repo: &Repository, work_tree: &Path) -> bool {
     blob_oid_at_path(&repo.odb, &c.tree, ".gitmodules").is_none()
 }
 
+/// Whether `dir` is a non-bare repository directory (has a `.git` directory or gitfile),
+/// mirroring git's `is_nonbare_repository_dir` for `submodule add`.
+fn is_nonbare_repository_dir(dir: &Path) -> bool {
+    let dot_git = dir.join(".git");
+    dot_git.is_dir() || dot_git.is_file()
+}
+
+/// Resolve the gitlink `HEAD` of a submodule work tree to a commit OID, returning `None` when the
+/// repository has no commit checked out (git: `repo_resolve_gitlink_ref(.., "HEAD") < 0`).
+fn submodule_resolve_gitlink_head(sub_path: &Path) -> Option<String> {
+    let head = read_submodule_head(sub_path)?;
+    let head = head.trim();
+    // An unborn branch resolves to a ref path that does not exist yet → no commit.
+    if head.is_empty() || head.starts_with("ref:") {
+        return None;
+    }
+    // 40-hex (sha1) or 64-hex (sha256) commit id.
+    if head.len() >= 40 && head.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(head.to_string())
+    } else {
+        None
+    }
+}
+
 fn run_add(args: &AddArgs) -> Result<()> {
     let repo = Repository::discover(None).context("not a git repository")?;
     let work_tree = repo.work_tree.as_ref().context("bare repository")?;
+    let grit_bin = grit_exe::grit_executable();
 
     if !is_writing_gitmodules_ok(&repo, work_tree) {
         bail!("please make sure that the .gitmodules file is in the working tree");
     }
 
     // Derive path from URL if not provided.
-    let path = match &args.path {
+    let mut path = match &args.path {
         Some(p) => p.clone(),
         None => {
             let url = &args.url;
@@ -2403,7 +2444,98 @@ fn run_add(args: &AddArgs) -> Result<()> {
         }
     };
 
+    // When invoked from a subdirectory, git prefixes a relative `sm_path` with the cwd prefix
+    // and rejects a relative repo URL ("Relative path can only be used from the toplevel").
+    let cwd = std::env::current_dir().context("current directory for submodule add")?;
+    let prefix = rev_parse::show_prefix(&repo, &cwd);
+    if !prefix.is_empty() {
+        let repo_url = args.url.trim();
+        if repo_url.starts_with("./") || repo_url.starts_with("../") {
+            bail!("Relative path can only be used from the toplevel of the working tree");
+        }
+        if !Path::new(&path).is_absolute() {
+            path = format!("{prefix}{path}");
+        }
+    }
+
+    // Normalize: collapse `//`, leading `./`, `/./`, `/../`, and strip trailing slashes
+    // (git: normalize_path_copy + strip_dir_trailing_slashes).
+    path = match grit_lib::git_path::normalize_path_copy(&path) {
+        Ok(p) => p.trim_end_matches('/').to_string(),
+        Err(_) => path.trim_end_matches('/').to_string(),
+    };
+    if path.is_empty() {
+        bail!("'{}' is not a valid submodule path", args.url);
+    }
+
+    // Reject paths that traverse a symlink (git: validate_submodule_path).
+    validate_submodule_path(work_tree, &path).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Fail if the path is already tracked in the index (git: die_on_index_match). When forced,
+    // a non-gitlink match is still fatal.
+    if let Some(idx) = repo.load_index().ok() {
+        let path_bytes = path.as_bytes();
+        if let Some(entry) = idx
+            .entries
+            .iter()
+            .find(|e| e.path.as_slice() == path_bytes && e.stage() == 0)
+        {
+            if !args.force {
+                bail!("'{path}' already exists in the index");
+            }
+            if entry.mode != MODE_GITLINK {
+                bail!("'{path}' already exists in the index and is not a submodule");
+            }
+        }
+    }
+
+    // Fail when the path is a non-bare repository that has no commit checked out
+    // (git: die_on_repo_without_commits).
+    let sub_abs = work_tree.join(&path);
+    if is_nonbare_repository_dir(&sub_abs) && submodule_resolve_gitlink_head(&sub_abs).is_none() {
+        bail!("'{path}' does not have a commit checked out");
+    }
+
+    // Without --force, mirror git's `add --dry-run --ignore-missing --no-warn-embedded-repo`
+    // probe so .gitignore and index-lock errors surface with git's wording.
+    if !args.force {
+        let out = grit_subprocess(&grit_bin)
+            .arg("add")
+            .arg("--dry-run")
+            .arg("--ignore-missing")
+            .arg("--no-warn-embedded-repo")
+            .arg("--")
+            .arg(&path)
+            .current_dir(work_tree)
+            .stderr(Stdio::piped())
+            .stdout(Stdio::null())
+            .output()
+            .context("failed to run add --dry-run probe")?;
+        if !out.status.success() {
+            let mut stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            if !stderr.is_empty() && !stderr.ends_with('\n') {
+                stderr.push('\n');
+            }
+            eprint!("{stderr}");
+            bail!("submodule add probe failed");
+        }
+    }
+
     let name = args.name.clone().unwrap_or_else(|| path.clone());
+
+    // A name already mapped in `.gitmodules` to a *different* path is fatal unless forced
+    // (git: "submodule name '%s' already used for path '%s'").
+    {
+        let existing = parse_gitmodules_with_repo(work_tree, Some(&repo)).unwrap_or_default();
+        if let Some(m) = existing.iter().find(|m| m.name == name) {
+            if m.path != path && !args.force {
+                bail!(
+                    "submodule name '{name}' already used for path '{}'",
+                    m.path
+                );
+            }
+        }
+    }
 
     let index_for_die = repo.load_index().ok();
     let store = refs::common_dir(&repo.git_dir).unwrap_or_else(|| repo.git_dir.clone());
@@ -2426,8 +2558,6 @@ fn run_add(args: &AddArgs) -> Result<()> {
             bail!("fatal: '{n}' is not a valid submodule name");
         }
     }
-
-    let grit_bin = grit_exe::grit_executable();
 
     let local_config_path = repo.git_dir.join("config");
     let mut local_config = if local_config_path.exists() {
@@ -2537,11 +2667,27 @@ fn run_add(args: &AddArgs) -> Result<()> {
         };
         let clone_source_str = clone_source.to_string_lossy().into_owned();
 
-        let status = grit_subprocess(&grit_bin)
+        let mut clone_cmd = grit_subprocess(&grit_bin);
+        clone_cmd
             .arg("clone")
             .arg("--no-checkout")
             .arg("--separate-git-dir")
-            .arg(&modules_dir)
+            .arg(&modules_dir);
+        if let Some(depth) = args.depth {
+            if depth > 0 {
+                clone_cmd.arg(format!("--depth={depth}"));
+            }
+        }
+        if args.progress {
+            clone_cmd.arg("--progress");
+        }
+        if args.dissociate {
+            clone_cmd.arg("--dissociate");
+        }
+        for r in &args.reference {
+            clone_cmd.arg("--reference").arg(r);
+        }
+        let status = clone_cmd
             .arg(&clone_source_str)
             .arg(&sub_path)
             .current_dir(work_tree)
