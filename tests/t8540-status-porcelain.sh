@@ -2,6 +2,8 @@
 # Tests for 'grit status --porcelain' — machine-parseable output.
 
 test_description='status --porcelain, -s, -z, machine-parseable output'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
