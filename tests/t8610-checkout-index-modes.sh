@@ -216,11 +216,11 @@ test_expect_success 'checkout-index --stdin -z reads NUL-terminated paths' '
 # Section 5: --force and existing files
 ###########################################################################
 
-test_expect_success 'checkout-index without --force skips existing' '
+test_expect_success 'checkout-index without --force refuses existing dirty file' '
 	(
 	cd repo &&
 	echo "dirty" >normal.txt &&
-	grit checkout-index normal.txt 2>err &&
+	test_must_fail grit checkout-index normal.txt 2>err &&
 	test "$(cat normal.txt)" = "dirty" &&
 	echo "normal file" >normal.txt
 	)
@@ -293,7 +293,7 @@ test_expect_success 'checkout-index nonexistent file fails' '
 test_expect_success 'checkout-index -q suppresses errors on missing' '
 	(
 	cd repo &&
-	grit checkout-index -q no-such-file 2>err &&
+	test_must_fail grit checkout-index -q no-such-file 2>err &&
 	test_must_be_empty err
 	)
 '

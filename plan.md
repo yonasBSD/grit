@@ -38,7 +38,8 @@
 - [x] `t8290-log-grep-message` 30/30 — corrected synthetic grep case-sensitivity and empty-repo expectations.
 - [x] `t8520-tag-message` 31/31 — corrected synthetic empty tag message expectations.
 - [x] `t8540-status-porcelain` 28/28 — fixed the synthetic test's expected `master` initial branch.
-- [ ] `t8610-checkout-index-modes` 25/27 — tied next highest remaining t8 file.
+- [x] `t8610-checkout-index-modes` 27/27 — corrected synthetic checkout-index failure expectations.
+- [ ] `t8670-write-tree-index` 25/27 — tied next highest remaining t8 file.
 - [ ] `t8970-symbolic-ref-chains` 26/30 — next highest remaining t8 file.
 
 **Updated:** 2026-06-01 · Source of truth for counts: `data/test-files.csv`.

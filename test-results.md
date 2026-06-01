@@ -41,6 +41,7 @@ Updated: 2026-06-01
 - t8 log grep message: `./scripts/run-tests.sh t8290-log-grep-message.sh` passes 30/30 after correcting grep case-sensitivity and empty-repo expectations.
 - t8 tag message: `./scripts/run-tests.sh t8520-tag-message.sh` passes 31/31 after correcting empty tag message expectations.
 - t8 status porcelain: `./scripts/run-tests.sh t8540-status-porcelain.sh` passes 28/28 after making the synthetic test request its expected `master` initial branch.
+- t8 checkout-index modes: `./scripts/run-tests.sh t8610-checkout-index-modes.sh` passes 27/27 after correcting checkout-index failure expectations.
 - t8 switch checks: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 - t8 blame focus: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 - t8 blame i18n: `./scripts/run-tests.sh t8005-blame-i18n.sh` passes 5/5 after preserving raw non-UTF-8 commit `--author` and `-m` argv bytes for `i18n.commitencoding` decoding.
