@@ -1541,7 +1541,7 @@ t9610-restore-staged-worktree	t9	yes	40	40	0	true	ok	0
 t9620-reset-path-commit	t9	yes	40	40	0	true	ok	0
 t9700-for-each-ref-sort-combined	t9	yes	37	35	2	false	ok	0
 t9700-perl-git	t9	yes	3	2	1	false	ok	0
-t9710-show-ref-hash-abbrev	t9	yes	38	32	6	false	ok	0
+t9710-show-ref-hash-abbrev	t9	yes	38	38	0	true	ok	0
 t9720-update-ref-create-verify	t9	yes	32	32	0	true	ok	0
 t9730-symbolic-ref-head	t9	yes	31	27	4	false	ok	0
 t9740-check-ref-format-normalize	t9	yes	51	47	4	false	ok	0
