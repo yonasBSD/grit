@@ -78,17 +78,21 @@ test_expect_success 'init --bare has no .git subdirectory' '
 '
 
 test_expect_success 'init --bare config shows bare = true' '
+	(
 	cd bare-repo &&
 	git config core.bare >out &&
 	echo true >expect &&
 	test_cmp expect out
+	)
 '
 
 test_expect_success 'normal init config shows bare = false' '
+	(
 	cd basic-repo &&
 	git config core.bare >out &&
 	echo false >expect &&
 	test_cmp expect out
+	)
 '
 
 # -- init with object-format ---------------------------------------------------
@@ -101,6 +105,7 @@ test_expect_success 'init --object-format=sha1 works' '
 # -- init multiple times -------------------------------------------------------
 
 test_expect_success 're-init preserves existing objects' '
+	(
 	git init reinit-obj &&
 	cd reinit-obj &&
 	git config user.email "t@t.com" &&
@@ -113,32 +118,40 @@ test_expect_success 're-init preserves existing objects' '
 	git init . &&
 	git log --oneline >after &&
 	test_cmp before after
+	)
 '
 
 test_expect_success 're-init does not remove objects directory' '
+	(
 	cd reinit-obj &&
 	test -d .git/objects
+	)
 '
 
 test_expect_success 're-init preserves branches' '
+	(
 	cd reinit-obj &&
 	git branch test-branch &&
 	git init . &&
 	git branch >out &&
 	grep test-branch out
+	)
 '
 
 test_expect_success 're-init preserves HEAD target' '
+	(
 	cd reinit-obj &&
 	head_before=$(cat .git/HEAD) &&
 	git init . &&
 	head_after=$(cat .git/HEAD) &&
 	test "$head_before" = "$head_after"
+	)
 '
 
 # -- working in initialized repo -----------------------------------------------
 
 test_expect_success 'can add and commit after init' '
+	(
 	git init work-repo &&
 	cd work-repo &&
 	git config user.email "t@t.com" &&
@@ -149,12 +162,15 @@ test_expect_success 'can add and commit after init' '
 	git commit -m "initial" &&
 	git log --oneline >out &&
 	grep initial out
+	)
 '
 
 test_expect_success 'log shows commit in new repo' '
+	(
 	cd work-repo &&
 	git log --oneline >out &&
 	test "$(wc -l <out)" -eq 1
+	)
 '
 
 # -- init with template --------------------------------------------------------
