@@ -28,6 +28,7 @@ Updated: 2026-06-01
 - t8 show-ref extra: `./scripts/run-tests.sh t8130-show-ref-extra.sh` passes 31/31 after making the synthetic test request its expected `master` initial branch.
 - t8 init reinitialize: `./scripts/run-tests.sh t8170-init-reinitialize.sh` passes 35/35 after fixture and cwd wrapper fixes.
 - t8 rev-parse branch: `./scripts/run-tests.sh t8570-rev-parse-branch.sh` passes 35/35 after making the synthetic test request its expected `master` initial branch.
+- t8 branch tracking display: `./scripts/run-tests.sh t8820-branch-tracking-display.sh` passes 27/27 after making the synthetic test request its expected `master` initial branch.
 - t8 switch checks: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 - t8 blame focus: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 
