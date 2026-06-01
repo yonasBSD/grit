@@ -61,7 +61,7 @@ pub fn write_abort_safety_file(git_dir: &Path) -> std::io::Result<()> {
 }
 
 fn null_oid() -> ObjectId {
-    ObjectId::from_hex("0000000000000000000000000000000000000000").unwrap()
+    ObjectId::zero()
 }
 
 /// Read the OID stored in `abort-safety`, or all-zero if missing/empty (matches Git).

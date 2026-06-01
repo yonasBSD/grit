@@ -745,8 +745,10 @@ pub fn run(args: Args) -> Result<()> {
                 if let Some(p) = dst_pos {
                     index.entries[p].set_skip_worktree(false);
                 }
-                if dst_abs.parent().is_some_and(|p| !p.exists()) {
-                    fs::create_dir_all(dst_abs.parent().unwrap())?;
+                if let Some(parent) = dst_abs.parent() {
+                    if !parent.exists() {
+                        fs::create_dir_all(parent)?;
+                    }
                 }
                 if let Some(ent) = index.get(row.dst.as_bytes(), 0).cloned() {
                     let data = repo.odb.read(&ent.oid)?.data;

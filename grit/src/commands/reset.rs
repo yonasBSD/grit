@@ -1161,7 +1161,10 @@ fn reset_paths(
     let mut index = repo.load_index_at(&index_path).context("loading index")?;
     let precompose_unicode =
         grit_lib::precompose_config::effective_core_precomposeunicode(Some(&repo.git_dir));
-    let work_tree = repo.work_tree.as_deref().expect("work tree checked above");
+    let work_tree = repo
+        .work_tree
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("work tree required"))?;
     let cwd = std::env::current_dir().context("resolving cwd")?;
     let cwd_prefix = cwd_prefix_relative_to_worktree(work_tree, &cwd)?;
     let prefix_opt = (!cwd_prefix.is_empty()).then_some(cwd_prefix.as_str());

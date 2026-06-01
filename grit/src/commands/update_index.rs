@@ -454,7 +454,10 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
         }
         bail!("cannot update-index in bare repository");
     }
-    let work_tree = repo.work_tree.as_deref().expect("checked work tree");
+    let work_tree = repo
+        .work_tree
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("work tree required"))?;
     let cwd = std::env::current_dir().context("resolving current directory")?;
 
     let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();

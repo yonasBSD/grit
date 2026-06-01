@@ -1084,10 +1084,12 @@ fn sanitize_set_paths(
     // Mirrors Git `sanitize_paths` (builtin/sparse-checkout.c). Prefix-prepend only happens in
     // cone mode (args are not pathspecs).
     if !prefix.is_empty() && cone {
+        let work_tree = repo
+            .work_tree
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("this operation must be run in a work tree"))?;
         for a in args.iter_mut() {
-            if let Some(p) =
-                grit_lib::git_path::prefix_path_gently(&prefix, a, repo.work_tree.as_ref().unwrap())
-            {
+            if let Some(p) = grit_lib::git_path::prefix_path_gently(&prefix, a, work_tree) {
                 *a = p;
             }
         }

@@ -2086,7 +2086,7 @@ fn switch_branch(
     // git checkout/switch tears down any in-progress cherry-pick/revert/merge after moving HEAD.
     remove_branch_state(&repo.git_dir);
 
-    let old_oid = old_head_commit.unwrap_or_else(|| ObjectId::from_bytes(&[0u8; 20]).unwrap());
+    let old_oid = old_head_commit.unwrap_or_else(ObjectId::zero);
     let from_desc = match &head {
         HeadState::Branch { short_name, .. } => short_name.clone(),
         HeadState::Detached { oid } => oid.to_hex()[..7].to_string(),
@@ -2262,10 +2262,7 @@ fn create_and_switch_branch(
 
     std::fs::write(repo.git_dir.join("HEAD"), format!("ref: {branch_ref}\n"))?;
 
-    let old_oid = head
-        .oid()
-        .copied()
-        .unwrap_or_else(|| ObjectId::from_bytes(&[0u8; 20]).unwrap());
+    let old_oid = head.oid().copied().unwrap_or_else(ObjectId::zero);
     let from_desc = match &head {
         HeadState::Branch { short_name, .. } => short_name.clone(),
         HeadState::Detached { oid } => oid.to_hex()[..7].to_string(),
@@ -2389,7 +2386,7 @@ fn force_create_and_switch_branch(
     }
 
     // Write reflog before updating refs
-    let old_oid = old_head_commit.unwrap_or_else(|| ObjectId::from_bytes(&[0u8; 20]).unwrap());
+    let old_oid = old_head_commit.unwrap_or_else(ObjectId::zero);
     let from_desc = match &head {
         HeadState::Branch { short_name, .. } => short_name.clone(),
         HeadState::Detached { oid } => oid.to_hex()[..7].to_string(),
@@ -2757,7 +2754,7 @@ fn detach_head_inner(repo: &Repository, oid: &ObjectId, force: bool, explicit: b
     }
 
     // Write reflog entries
-    let old_oid = old_head_commit.unwrap_or_else(|| ObjectId::from_bytes(&[0u8; 20]).unwrap());
+    let old_oid = old_head_commit.unwrap_or_else(ObjectId::zero);
     let from_desc = match &head {
         HeadState::Branch { short_name, .. } => short_name.clone(),
         HeadState::Detached { oid } => oid.to_hex()[..7].to_string(),
@@ -4549,10 +4546,9 @@ checking out of the index."
         }
         let trace_units = trace_parallel_units_from_index.max(updated_paths);
         trace2_emit_checkout_parallel_workers(checkout_parallel_worker_spawns(repo, trace_units));
-        return Err(path_errors
-            .into_iter()
-            .next()
-            .expect("path_errors non-empty"));
+        if let Some(first) = path_errors.into_iter().next() {
+            return Err(first);
+        }
     }
 
     let trace_units = trace_parallel_units_from_index.max(updated_paths);

@@ -485,7 +485,7 @@ fn run_commit_sequence(
     let default_orig = || -> Result<ObjectId> {
         match head.oid() {
             Some(oid) => Ok(*oid),
-            None => Ok(ObjectId::from_hex("0000000000000000000000000000000000000000").unwrap()),
+            None => Ok(ObjectId::zero()),
         }
     };
     let orig_head_oid = if let Some(o) = orig_head_override {
@@ -553,13 +553,7 @@ fn run_commit_sequence(
                         save_sequencer_state(git_dir, &orig_head_oid, remaining, args)?;
                         write_abort_safety_file(git_dir)?;
                     } else if oids.len() == 1 && head.oid().is_none() {
-                        save_sequencer_state(
-                            git_dir,
-                            &ObjectId::from_hex("0000000000000000000000000000000000000000")
-                                .unwrap(),
-                            &[],
-                            args,
-                        )?;
+                        save_sequencer_state(git_dir, &ObjectId::zero(), &[], args)?;
                         write_abort_safety_file(git_dir)?;
                     }
                     std::process::exit(1);
@@ -880,7 +874,7 @@ fn cherry_pick_one_commit(
         );
     } else if commit.parents.is_empty() {
         // Root commit: use empty tree as base (sentinel, handled below)
-        ObjectId::from_hex("0000000000000000000000000000000000000000").unwrap()
+        ObjectId::zero()
     } else {
         commit.parents[0]
     };
@@ -1393,7 +1387,7 @@ fn print_commit_summary(repo: &Repository, head: &HeadState, new_oid: ObjectId, 
     if let Ok(diff_entries) =
         grit_lib::diff::diff_trees(&repo.odb, parent_tree.as_ref(), Some(&commit.tree), "")
     {
-        let zero_oid = ObjectId::from_bytes(&[0u8; 20]).unwrap();
+        let zero_oid = ObjectId::zero();
         let mut total_files = 0usize;
         let mut total_ins = 0usize;
         let mut total_del = 0usize;
@@ -1761,7 +1755,7 @@ pub(crate) fn try_resume_pick_sequence_after_commit(repo: &Repository) -> Result
 // ── --abort ─────────────────────────────────────────────────────────
 
 fn null_oid() -> ObjectId {
-    ObjectId::from_hex("0000000000000000000000000000000000000000").unwrap()
+    ObjectId::zero()
 }
 
 pub(crate) fn abort_cherry_pick_or_revert() -> Result<()> {
@@ -2311,10 +2305,7 @@ fn create_cherry_pick_commit(
     let commit_bytes = serialize_commit(&commit_data);
     let commit_oid = repo.odb.write(ObjectKind::Commit, &commit_bytes)?;
 
-    let old_oid = head
-        .oid()
-        .copied()
-        .unwrap_or_else(|| ObjectId::from_bytes(&[0u8; 20]).unwrap());
+    let old_oid = head.oid().copied().unwrap_or_else(ObjectId::zero);
     update_head(git_dir, head, &commit_oid)?;
 
     let subject = message.lines().next().unwrap_or("");
