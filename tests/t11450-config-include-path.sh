@@ -13,8 +13,10 @@ cd "$(dirname "$0")" || exit 1
 ###########################################################################
 
 test_expect_success 'setup: create repo' '
+	(
 	"$REAL_GIT" init repo &&
 	cd repo
+	)
 '
 
 ###########################################################################
@@ -22,6 +24,7 @@ test_expect_success 'setup: create repo' '
 ###########################################################################
 
 test_expect_success 'include.path includes another config file' '
+	(
 	cd repo &&
 	cat >.git/other.config <<-EOF &&
 	[user]
@@ -29,9 +32,11 @@ test_expect_success 'include.path includes another config file' '
 	EOF
 	git config include.path other.config &&
 	test "$(git config user.name)" = "Included User"
+	)
 '
 
 test_expect_success 'include.path with absolute path' '
+	(
 	cd repo &&
 	cat >"$TRASH_DIRECTORY/abs.config" <<-EOF &&
 	[user]
@@ -39,9 +44,11 @@ test_expect_success 'include.path with absolute path' '
 	EOF
 	git config include.path "$TRASH_DIRECTORY/abs.config" &&
 	test "$(git config user.email)" = "abs@example.com"
+	)
 '
 
 test_expect_success 'include.path relative to config file' '
+	(
 	cd repo &&
 	mkdir -p .git/config.d &&
 	cat >.git/config.d/extra.config <<-EOF &&
@@ -50,9 +57,11 @@ test_expect_success 'include.path relative to config file' '
 	EOF
 	git config include.path config.d/extra.config &&
 	test "$(git config core.includetest)" = "works"
+	)
 '
 
 test_expect_success 'include.path values from included file are readable' '
+	(
 	cd repo &&
 	cat >.git/inc1.config <<-EOF &&
 	[test]
@@ -62,9 +71,11 @@ test_expect_success 'include.path values from included file are readable' '
 	git config include.path inc1.config &&
 	test "$(git config test.value1)" = "hello" &&
 	test "$(git config test.value2)" = "world"
+	)
 '
 
 test_expect_success 'include.path with tilde expands to HOME' '
+	(
 	cd repo &&
 	cat >"$HOME/home.config" <<-EOF &&
 	[home]
@@ -72,9 +83,11 @@ test_expect_success 'include.path with tilde expands to HOME' '
 	EOF
 	git config include.path "~/home.config" &&
 	test "$(git config home.key)" = "fromhome"
+	)
 '
 
 test_expect_success 'local value set after include also appears in get-all' '
+	(
 	cd repo &&
 	cat >.git/early.config <<-EOF &&
 	[over]
@@ -88,9 +101,11 @@ test_expect_success 'local value set after include also appears in get-all' '
 	git config --get-all over.ride >out &&
 	grep "local" out &&
 	grep "included" out
+	)
 '
 
 test_expect_success 'included values override earlier local values' '
+	(
 	cd repo &&
 	cat >.git/late.config <<-EOF &&
 	[over]
@@ -103,9 +118,11 @@ test_expect_success 'included values override earlier local values' '
 		path = late.config
 	EOF
 	test "$(git config over.ride2)" = "frominclude"
+	)
 '
 
 test_expect_success 'chained includes (A includes B)' '
+	(
 	cd repo &&
 	cat >.git/chain-b.config <<-EOF &&
 	[chain]
@@ -120,9 +137,11 @@ test_expect_success 'chained includes (A includes B)' '
 		path = chain-a.config
 	EOF
 	test "$(git config chain.depth)" = "two"
+	)
 '
 
 test_expect_success 'missing include.path file is silently ignored' '
+	(
 	cd repo &&
 	cat >.git/config <<-EOF &&
 	[include]
@@ -131,9 +150,11 @@ test_expect_success 'missing include.path file is silently ignored' '
 		key = present
 	EOF
 	test "$(git config fallback.key)" = "present"
+	)
 '
 
 test_expect_success 'multiple include.path directives' '
+	(
 	cd repo &&
 	cat >.git/inc-a.config <<-EOF &&
 	[multi]
@@ -150,6 +171,7 @@ test_expect_success 'multiple include.path directives' '
 	EOF
 	test "$(git config multi.a)" = "alpha" &&
 	test "$(git config multi.b)" = "beta"
+	)
 '
 
 ###########################################################################
@@ -157,6 +179,7 @@ test_expect_success 'multiple include.path directives' '
 ###########################################################################
 
 test_expect_success 'include.path with dot-relative path ./file' '
+	(
 	cd repo &&
 	cat >.git/dotrel.config <<-EOF &&
 	[dotrel]
@@ -167,9 +190,11 @@ test_expect_success 'include.path with dot-relative path ./file' '
 		path = ./dotrel.config
 	EOF
 	test "$(git config dotrel.key)" = "found"
+	)
 '
 
 test_expect_success 'include.path absolute path to .git subfile' '
+	(
 	cd repo &&
 	cat >.git/absrel.config <<-EOF &&
 	[absrel]
@@ -180,9 +205,11 @@ test_expect_success 'include.path absolute path to .git subfile' '
 		path = $TRASH_DIRECTORY/repo/.git/absrel.config
 	EOF
 	test "$(git config absrel.key)" = "found"
+	)
 '
 
 test_expect_success 'include of file that includes another file (3 deep)' '
+	(
 	cd repo &&
 	cat >.git/deep-c.config <<-EOF &&
 	[deep]
@@ -201,9 +228,11 @@ test_expect_success 'include of file that includes another file (3 deep)' '
 		path = deep-a.config
 	EOF
 	test "$(git config deep.level)" = "three"
+	)
 '
 
 test_expect_success 'include.path overridden by later include.path' '
+	(
 	cd repo &&
 	cat >.git/first.config <<-EOF &&
 	[prio]
@@ -220,6 +249,7 @@ test_expect_success 'include.path overridden by later include.path' '
 		path = second.config
 	EOF
 	test "$(git config prio.key)" = "second"
+	)
 '
 
 ###########################################################################
@@ -227,6 +257,7 @@ test_expect_success 'include.path overridden by later include.path' '
 ###########################################################################
 
 test_expect_success 'config --list shows values from includes' '
+	(
 	cd repo &&
 	cat >.git/list-inc.config <<-EOF &&
 	[listinc]
@@ -240,9 +271,11 @@ test_expect_success 'config --list shows values from includes' '
 	git config --list >out &&
 	grep "listinc.alpha=one" out &&
 	grep "listinc.beta=two" out
+	)
 '
 
 test_expect_success 'config --get-regexp finds included values' '
+	(
 	cd repo &&
 	cat >.git/regexp-inc.config <<-EOF &&
 	[regexp]
@@ -255,9 +288,11 @@ test_expect_success 'config --get-regexp finds included values' '
 	EOF
 	git config --get-regexp "regexp.fo" >out &&
 	test_line_count = 2 out
+	)
 '
 
 test_expect_success 'included config contributes to --get-all' '
+	(
 	cd repo &&
 	cat >.git/getall-inc.config <<-EOF &&
 	[getall]
@@ -271,9 +306,11 @@ test_expect_success 'included config contributes to --get-all' '
 	EOF
 	git config --get-all getall.val >out &&
 	test_line_count = 2 out
+	)
 '
 
 test_expect_success 'include.path with boolean values in included file' '
+	(
 	cd repo &&
 	cat >.git/bool-inc.config <<-EOF &&
 	[boolinc]
@@ -284,6 +321,7 @@ test_expect_success 'include.path with boolean values in included file' '
 		path = bool-inc.config
 	EOF
 	test "$(git config --type=bool boolinc.flag)" = "true"
+	)
 '
 
 ###########################################################################
@@ -291,6 +329,7 @@ test_expect_success 'include.path with boolean values in included file' '
 ###########################################################################
 
 test_expect_success 'global config include.path works' '
+	(
 	cd repo &&
 	cat >"$HOME/global-inc.config" <<-EOF &&
 	[globalinc]
@@ -301,9 +340,11 @@ test_expect_success 'global config include.path works' '
 		path = global-inc.config
 	EOF
 	test "$(git config globalinc.key)" = "fromglobal"
+	)
 '
 
 test_expect_success 'local config overrides global included config' '
+	(
 	cd repo &&
 	cat >"$HOME/global-over.config" <<-EOF &&
 	[over]
@@ -315,6 +356,7 @@ test_expect_success 'local config overrides global included config' '
 	EOF
 	git config over.global fromlocal &&
 	test "$(git config over.global)" = "fromlocal"
+	)
 '
 
 ###########################################################################
@@ -322,6 +364,7 @@ test_expect_success 'local config overrides global included config' '
 ###########################################################################
 
 test_expect_success 'include.path with empty file is okay' '
+	(
 	cd repo &&
 	>"$TRASH_DIRECTORY/empty.config" &&
 	cat >.git/config <<-EOF &&
@@ -331,9 +374,11 @@ test_expect_success 'include.path with empty file is okay' '
 		test = works
 	EOF
 	test "$(git config empty.test)" = "works"
+	)
 '
 
 test_expect_success 'include.path file with only comments' '
+	(
 	cd repo &&
 	cat >"$TRASH_DIRECTORY/comments.config" <<-EOF &&
 	# this is a comment
@@ -346,9 +391,11 @@ test_expect_success 'include.path file with only comments' '
 		test = works
 	EOF
 	test "$(git config comment.test)" = "works"
+	)
 '
 
 test_expect_success 'include.path with multiple sections in included file' '
+	(
 	cd repo &&
 	cat >.git/multi-section.config <<-EOF &&
 	[sec1]
@@ -365,9 +412,11 @@ test_expect_success 'include.path with multiple sections in included file' '
 	test "$(git config sec1.key)" = "val1" &&
 	test "$(git config sec2.key)" = "val2" &&
 	test "$(git config sec3.key)" = "val3"
+	)
 '
 
 test_expect_success 'include.path with subsections in included file' '
+	(
 	cd repo &&
 	cat >.git/subsec.config <<-\EOF &&
 	[remote "origin"]
@@ -378,9 +427,11 @@ test_expect_success 'include.path with subsections in included file' '
 		path = subsec.config
 	EOF
 	test "$(git config remote.origin.url)" = "https://example.com/repo.git"
+	)
 '
 
 test_expect_success 'config --list shows included values' '
+	(
 	cd repo &&
 	cat >.git/listed.config <<-EOF &&
 	[listed]
@@ -392,9 +443,11 @@ test_expect_success 'config --list shows included values' '
 	EOF
 	git config --list >output &&
 	grep "listed.key=visible" output
+	)
 '
 
 test_expect_success 'config --get-all with included multi-values' '
+	(
 	cd repo &&
 	cat >.git/multi-val.config <<-EOF &&
 	[multi]
@@ -408,9 +461,11 @@ test_expect_success 'config --get-all with included multi-values' '
 	EOF
 	git config --get-all multi.val >output &&
 	test_line_count = 2 output
+	)
 '
 
 test_expect_success 'include with different key types preserved' '
+	(
 	cd repo &&
 	cat >.git/types.config <<-EOF &&
 	[types]
@@ -425,6 +480,7 @@ test_expect_success 'include with different key types preserved' '
 	test "$(git config --type=bool types.boolval)" = "true" &&
 	test "$(git config --type=int types.intval)" = "42" &&
 	test "$(git config types.strval)" = "hello"
+	)
 '
 
 test_done

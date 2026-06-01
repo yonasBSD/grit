@@ -41,6 +41,7 @@ TEST_NO_CREATE_REPO=1
 #  -                  m/m (file)
 #
 test_expect_success 'setup repo for checkout with various types of changes' '
+	(
 	test_config_global protocol.file.allow always &&
 
 	git init sub &&
@@ -103,6 +104,7 @@ test_expect_success 'setup repo for checkout with various types of changes' '
 		git commit -m B2 &&
 
 		git checkout --recurse-submodules B1
+	)
 	)
 '
 
@@ -170,6 +172,7 @@ test_expect_success 'compare the working trees' '
 # these subprocesses must also be able to use parallel checkout workers to
 # write the submodules' entries.
 test_expect_success 'submodules can use parallel checkout' '
+	(
 	set_checkout_config 2 0 &&
 	git init super &&
 	(
@@ -182,9 +185,11 @@ test_expect_success 'submodules can use parallel checkout' '
 		rm sub/* &&
 		test_checkout_workers 2 git checkout --recurse-submodules .
 	)
+	)
 '
 
 test_expect_success 'parallel checkout respects --[no]-force' '
+	(
 	set_checkout_config 2 0 &&
 	git init dirty &&
 	(
@@ -208,9 +213,11 @@ test_expect_success 'parallel checkout respects --[no]-force' '
 		grep D/F D/F.t &&
 		grep F F.t
 	)
+	)
 '
 
 test_expect_success SYMLINKS 'parallel checkout checks for symlinks in leading dirs' '
+	(
 	set_checkout_config 2 0 &&
 	git init symlinks &&
 	(
@@ -227,6 +234,7 @@ test_expect_success SYMLINKS 'parallel checkout checks for symlinks in leading d
 		grep D/A D/A.t &&
 		grep D/B D/B.t
 	)
+	)
 '
 
 # This test is here (and not in e.g. t2022-checkout-paths.sh), because we
@@ -234,6 +242,7 @@ test_expect_success SYMLINKS 'parallel checkout checks for symlinks in leading d
 # all at the same time. So we must have finer control of the parallel checkout
 # variables.
 test_expect_success '"git checkout ." report should not include failed entries' '
+	(
 	test_config_global filter.delay.process \
 		"test-tool rot13-filter --always-delay --log=delayed.log clean smudge delay" &&
 	test_config_global filter.delay.required true &&
@@ -271,6 +280,7 @@ test_expect_success '"git checkout ." report should not include failed entries' 
 		grep "Updated 3 paths from the index" err &&
 		test_stdout_line_count = 3 ls *.b &&
 		! ls *.a
+	)
 	)
 '
 

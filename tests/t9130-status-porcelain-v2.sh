@@ -11,6 +11,7 @@ cd "$(dirname "$0")" || exit 1
 ###########################################################################
 
 test_expect_success 'setup repository' '
+	(
 	grit init repo &&
 	cd repo &&
 	git config user.email "test@test.com" &&
@@ -18,6 +19,7 @@ test_expect_success 'setup repository' '
 	echo "initial" >tracked.txt &&
 	grit add tracked.txt &&
 	grit commit -m "initial"
+	)
 '
 
 ###########################################################################
@@ -25,21 +27,27 @@ test_expect_success 'setup repository' '
 ###########################################################################
 
 test_expect_success 'status --porcelain on clean repo shows branch header' '
+	(
 	cd repo &&
 	grit status --porcelain >../out &&
 	grep "^## master" ../out
+	)
 '
 
 test_expect_success 'status -s on clean repo has no file entries' '
+	(
 	cd repo &&
 	grit status -s >../out &&
 	! grep "^[MADRCU?]" ../out
+	)
 '
 
 test_expect_success 'status --short on clean repo has no file entries' '
+	(
 	cd repo &&
 	grit status --short >../out &&
 	! grep "^[MADRCU?]" ../out
+	)
 '
 
 ###########################################################################
@@ -47,33 +55,41 @@ test_expect_success 'status --short on clean repo has no file entries' '
 ###########################################################################
 
 test_expect_success 'status --porcelain shows untracked file with ??' '
+	(
 	cd repo &&
 	echo "new" >untracked.txt &&
 	grit status --porcelain >../out &&
 	grep "^?? untracked.txt$" ../out
+	)
 '
 
 test_expect_success 'status -s shows untracked file with ??' '
+	(
 	cd repo &&
 	grit status -s >../out &&
 	grep "^?? untracked.txt$" ../out
+	)
 '
 
 test_expect_success 'status --porcelain shows multiple untracked files' '
+	(
 	cd repo &&
 	echo "a" >untracked_a.txt &&
 	echo "b" >untracked_b.txt &&
 	grit status --porcelain >../out &&
 	grep "^?? untracked_a.txt$" ../out &&
 	grep "^?? untracked_b.txt$" ../out
+	)
 '
 
 test_expect_success 'status --porcelain with untracked directory' '
+	(
 	cd repo &&
 	mkdir -p newdir &&
 	echo "inside" >newdir/file.txt &&
 	grit status --porcelain >../out &&
 	grep "newdir" ../out
+	)
 '
 
 ###########################################################################
@@ -81,14 +97,17 @@ test_expect_success 'status --porcelain with untracked directory' '
 ###########################################################################
 
 test_expect_success 'status --porcelain shows staged new file with A' '
+	(
 	cd repo &&
 	echo "staged" >staged.txt &&
 	grit add staged.txt &&
 	grit status --porcelain >../out &&
 	grep "^A  staged.txt$" ../out
+	)
 '
 
 test_expect_success 'status --porcelain shows staged modification with M' '
+	(
 	cd repo &&
 	grit commit -m "add staged" &&
 	rm -f untracked.txt untracked_a.txt untracked_b.txt &&
@@ -97,14 +116,17 @@ test_expect_success 'status --porcelain shows staged modification with M' '
 	grit add tracked.txt &&
 	grit status --porcelain >../out &&
 	grep "^M  tracked.txt$" ../out
+	)
 '
 
 test_expect_success 'status --porcelain shows staged deletion with D' '
+	(
 	cd repo &&
 	grit commit -m "modify" &&
 	grit rm staged.txt &&
 	grit status --porcelain >../out &&
 	grep "^D  staged.txt$" ../out
+	)
 '
 
 ###########################################################################
@@ -112,17 +134,21 @@ test_expect_success 'status --porcelain shows staged deletion with D' '
 ###########################################################################
 
 test_expect_success 'status --porcelain shows unstaged modification' '
+	(
 	cd repo &&
 	grit commit -m "del staged" &&
 	echo "unstaged change" >>tracked.txt &&
 	grit status --porcelain >../out &&
 	grep "^ M tracked.txt$" ../out
+	)
 '
 
 test_expect_success 'status -s shows unstaged modification same format' '
+	(
 	cd repo &&
 	grit status -s >../out &&
 	grep "^ M tracked.txt$" ../out
+	)
 '
 
 ###########################################################################
@@ -130,14 +156,17 @@ test_expect_success 'status -s shows unstaged modification same format' '
 ###########################################################################
 
 test_expect_success 'status --porcelain shows both staged and unstaged for same file' '
+	(
 	cd repo &&
 	grit add tracked.txt &&
 	echo "more changes" >>tracked.txt &&
 	grit status --porcelain >../out &&
 	grep "^MM tracked.txt$" ../out
+	)
 '
 
 test_expect_success 'status --porcelain with staged add and unstaged untracked' '
+	(
 	cd repo &&
 	grit commit -m "commit tracked" &&
 	echo "new_staged" >ns.txt &&
@@ -146,6 +175,7 @@ test_expect_success 'status --porcelain with staged add and unstaged untracked' 
 	grit status --porcelain >../out &&
 	grep "^A  ns.txt$" ../out &&
 	grep "^?? nu.txt$" ../out
+	)
 '
 
 ###########################################################################
@@ -153,21 +183,27 @@ test_expect_success 'status --porcelain with staged add and unstaged untracked' 
 ###########################################################################
 
 test_expect_success 'status --porcelain shows branch in header' '
+	(
 	cd repo &&
 	grit status --porcelain >../out &&
 	grep "^## master" ../out
+	)
 '
 
 test_expect_success 'status --porcelain -b shows branch header' '
+	(
 	cd repo &&
 	grit status --porcelain -b >../out &&
 	grep "^## master" ../out
+	)
 '
 
 test_expect_success 'status -s -b shows branch header' '
+	(
 	cd repo &&
 	grit status -s -b >../out &&
 	grep "^## master" ../out
+	)
 '
 
 ###########################################################################
@@ -175,15 +211,19 @@ test_expect_success 'status -s -b shows branch header' '
 ###########################################################################
 
 test_expect_success 'status --porcelain -u no hides untracked' '
+	(
 	cd repo &&
 	grit status --porcelain -u no >../out &&
 	! grep "^??" ../out
+	)
 '
 
 test_expect_success 'status --porcelain -u normal shows untracked' '
+	(
 	cd repo &&
 	grit status --porcelain -u normal >../out &&
 	grep "^?? nu.txt$" ../out
+	)
 '
 
 ###########################################################################
@@ -191,10 +231,12 @@ test_expect_success 'status --porcelain -u normal shows untracked' '
 ###########################################################################
 
 test_expect_success 'status --porcelain in fresh empty repo has branch header' '
+	(
 	grit init empty-repo &&
 	cd empty-repo &&
 	grit status --porcelain >../empty_out &&
 	grep "^## " ../empty_out
+	)
 '
 
 ###########################################################################
@@ -202,6 +244,7 @@ test_expect_success 'status --porcelain in fresh empty repo has branch header' '
 ###########################################################################
 
 test_expect_success 'status --porcelain shows files in subdirectories' '
+	(
 	cd repo &&
 	grit commit -m "ns" &&
 	rm -f nu.txt &&
@@ -210,15 +253,18 @@ test_expect_success 'status --porcelain shows files in subdirectories' '
 	grit add deep/ &&
 	grit status --porcelain >../out &&
 	grep "deep/nested/file.txt" ../out
+	)
 '
 
 test_expect_success 'status --porcelain with nested untracked dir' '
+	(
 	cd repo &&
 	grit commit -m "deep" &&
 	mkdir -p other/sub &&
 	echo "x" >other/sub/x.txt &&
 	grit status --porcelain >../out &&
 	grep "other" ../out
+	)
 '
 
 ###########################################################################
@@ -226,6 +272,7 @@ test_expect_success 'status --porcelain with nested untracked dir' '
 ###########################################################################
 
 test_expect_success 'status --porcelain with add, modify, delete, untracked' '
+	(
 	cd repo &&
 	echo "brand_new" >brand_new.txt &&
 	grit add brand_new.txt &&
@@ -239,20 +286,25 @@ test_expect_success 'status --porcelain with add, modify, delete, untracked' '
 	grep "tracked.txt" ../out &&
 	grep "ns.txt" ../out &&
 	grep "extra.txt" ../out
+	)
 '
 
 test_expect_success 'status --porcelain output is stable across consecutive runs' '
+	(
 	cd repo &&
 	grit status --porcelain >../out1 &&
 	grit status --porcelain >../out2 &&
 	test_cmp ../out1 ../out2
+	)
 '
 
 test_expect_success 'status --porcelain has correct entry count' '
+	(
 	cd repo &&
 	grit status --porcelain >../out &&
 	grep -v "^##" ../out >../entries &&
 	test -s ../entries
+	)
 '
 
 test_done

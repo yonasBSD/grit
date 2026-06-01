@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	git init blame-ignore-ext &&
 	cd blame-ignore-ext &&
 	git config user.name "Test" &&
@@ -23,25 +24,31 @@ test_expect_success 'setup' '
 	test_tick &&
 	git commit -m "reformatting" &&
 	git tag REFORMAT
+	)
 '
 
 test_expect_success 'blame --ignore-rev skips commit' '
+	(
 	cd blame-ignore-ext &&
 	REFORMAT_SHA=$(git rev-parse REFORMAT) &&
 	git blame --ignore-rev "$REFORMAT_SHA" --line-porcelain file >actual &&
 	INITIAL_SHA=$(git rev-parse INITIAL) &&
 	grep "^$INITIAL_SHA" actual
+	)
 '
 
 test_expect_success 'blame --ignore-revs-file skips commits' '
+	(
 	cd blame-ignore-ext &&
 	git rev-parse REFORMAT >ignore-file &&
 	git blame --ignore-revs-file ignore-file --line-porcelain file >actual &&
 	INITIAL_SHA=$(git rev-parse INITIAL) &&
 	grep "^$INITIAL_SHA" actual
+	)
 '
 
 test_expect_success 'ignore-revs-file supports comments and blank lines' '
+	(
 	cd blame-ignore-ext &&
 	{
 		echo "# this is a comment" &&
@@ -52,6 +59,7 @@ test_expect_success 'ignore-revs-file supports comments and blank lines' '
 	git blame --ignore-revs-file ignore-file2 --line-porcelain file >actual &&
 	INITIAL_SHA=$(git rev-parse INITIAL) &&
 	grep "^$INITIAL_SHA" actual
+	)
 '
 
 test_done

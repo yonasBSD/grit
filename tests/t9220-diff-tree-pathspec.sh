@@ -14,6 +14,7 @@ REAL_GIT=/usr/bin/git
 ###########################################################################
 
 test_expect_success 'setup repository with nested structure' '
+	(
 	grit init repo &&
 	cd repo &&
 	$REAL_GIT config user.email "test@test.com" &&
@@ -31,9 +32,11 @@ test_expect_success 'setup repository with nested structure' '
 	grit add . &&
 	grit commit -m "initial structure" &&
 	grit rev-parse HEAD >../SHA_INIT
+	)
 '
 
 test_expect_success 'setup second commit modifying multiple paths' '
+	(
 	cd repo &&
 	echo "main v2" >src/bin/main.rs &&
 	echo "lib v2" >src/lib/lib.rs &&
@@ -43,6 +46,7 @@ test_expect_success 'setup second commit modifying multiple paths' '
 	grit add . &&
 	grit commit -m "modify several files" &&
 	grit rev-parse HEAD >../SHA_MOD
+	)
 '
 
 ###########################################################################
@@ -50,6 +54,7 @@ test_expect_success 'setup second commit modifying multiple paths' '
 ###########################################################################
 
 test_expect_success 'diff-tree with src/ pathspec shows only src changes' '
+	(
 	cd repo &&
 	grit diff-tree -r $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- src/ >out &&
 	grep "src/bin/main.rs" out &&
@@ -57,35 +62,44 @@ test_expect_success 'diff-tree with src/ pathspec shows only src changes' '
 	! grep "docs/" out &&
 	! grep "tests/" out &&
 	! grep "root.txt" out
+	)
 '
 
 test_expect_success 'diff-tree with docs/ pathspec shows only docs changes' '
+	(
 	cd repo &&
 	grit diff-tree -r $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- docs/ >out &&
 	grep "docs/README.md" out &&
 	! grep "src/" out
+	)
 '
 
 test_expect_success 'diff-tree with tests/ pathspec shows only test changes' '
+	(
 	cd repo &&
 	grit diff-tree -r $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- tests/ >out &&
 	grep "tests/test1.rs" out &&
 	! grep "src/" out &&
 	! grep "docs/" out
+	)
 '
 
 test_expect_success 'diff-tree with nested dir src/lib/ pathspec' '
+	(
 	cd repo &&
 	grit diff-tree -r $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- src/lib/ >out &&
 	grep "src/lib/lib.rs" out &&
 	! grep "src/bin/" out
+	)
 '
 
 test_expect_success 'diff-tree with src/bin/ pathspec' '
+	(
 	cd repo &&
 	grit diff-tree -r $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- src/bin/ >out &&
 	grep "src/bin/main.rs" out &&
 	! grep "src/lib/" out
+	)
 '
 
 ###########################################################################
@@ -93,23 +107,29 @@ test_expect_success 'diff-tree with src/bin/ pathspec' '
 ###########################################################################
 
 test_expect_success 'diff-tree with exact file path' '
+	(
 	cd repo &&
 	grit diff-tree -r $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- root.txt >out &&
 	grep "root.txt" out &&
 	test_line_count = 1 out
+	)
 '
 
 test_expect_success 'diff-tree with exact nested file path' '
+	(
 	cd repo &&
 	grit diff-tree -r $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- src/bin/main.rs >out &&
 	grep "src/bin/main.rs" out &&
 	test_line_count = 1 out
+	)
 '
 
 test_expect_success 'diff-tree with non-matching pathspec produces empty output' '
+	(
 	cd repo &&
 	grit diff-tree -r $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- nonexistent/ >out &&
 	test_must_be_empty out
+	)
 '
 
 ###########################################################################
@@ -117,20 +137,24 @@ test_expect_success 'diff-tree with non-matching pathspec produces empty output'
 ###########################################################################
 
 test_expect_success 'diff-tree with two directory pathspecs' '
+	(
 	cd repo &&
 	grit diff-tree -r $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- src/ docs/ >out &&
 	grep "src/bin/main.rs" out &&
 	grep "docs/README.md" out &&
 	! grep "tests/" out &&
 	! grep "root.txt" out
+	)
 '
 
 test_expect_success 'diff-tree with mixed file and dir pathspecs' '
+	(
 	cd repo &&
 	grit diff-tree -r $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- root.txt docs/ >out &&
 	grep "root.txt" out &&
 	grep "docs/README.md" out &&
 	! grep "src/" out
+	)
 '
 
 ###########################################################################
@@ -138,18 +162,22 @@ test_expect_success 'diff-tree with mixed file and dir pathspecs' '
 ###########################################################################
 
 test_expect_success 'diff-tree --name-only with pathspec' '
+	(
 	cd repo &&
 	grit diff-tree -r --name-only $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- src/ >out &&
 	grep "^src/bin/main.rs$" out &&
 	grep "^src/lib/lib.rs$" out &&
 	! grep "docs" out
+	)
 '
 
 test_expect_success 'diff-tree --name-only with exact file pathspec' '
+	(
 	cd repo &&
 	grit diff-tree -r --name-only $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- root.txt >out &&
 	grep "^root.txt$" out &&
 	test_line_count = 1 out
+	)
 '
 
 ###########################################################################
@@ -157,13 +185,16 @@ test_expect_success 'diff-tree --name-only with exact file pathspec' '
 ###########################################################################
 
 test_expect_success 'diff-tree --name-status with pathspec shows status' '
+	(
 	cd repo &&
 	grit diff-tree -r --name-status $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- src/lib/ >out &&
 	grep "M" out &&
 	grep "lib.rs" out
+	)
 '
 
 test_expect_success 'diff-tree --name-status with pathspec for addition' '
+	(
 	cd repo &&
 	echo "new" >src/lib/new.rs &&
 	grit add src/lib/new.rs &&
@@ -171,15 +202,18 @@ test_expect_success 'diff-tree --name-status with pathspec for addition' '
 	grit diff-tree -r --name-status HEAD~1 HEAD -- src/lib/ >out &&
 	grep "A" out &&
 	grep "new.rs" out
+	)
 '
 
 test_expect_success 'diff-tree --name-status with pathspec for deletion' '
+	(
 	cd repo &&
 	grit rm src/lib/helper.c &&
 	grit commit -m "remove helper" &&
 	grit diff-tree -r --name-status HEAD~1 HEAD -- src/lib/ >out &&
 	grep "D" out &&
 	grep "helper.c" out
+	)
 '
 
 ###########################################################################
@@ -187,17 +221,21 @@ test_expect_success 'diff-tree --name-status with pathspec for deletion' '
 ###########################################################################
 
 test_expect_success 'diff-tree --stat with pathspec' '
+	(
 	cd repo &&
 	grit diff-tree -r --stat $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- src/ >out &&
 	grep "src" out &&
 	! grep "root.txt" out
+	)
 '
 
 test_expect_success 'diff-tree --stat with pathspec shows summary' '
+	(
 	cd repo &&
 	grit diff-tree -r --stat $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- src/ >out &&
 	grep "file" out &&
 	grep "changed" out
+	)
 '
 
 ###########################################################################
@@ -205,19 +243,23 @@ test_expect_success 'diff-tree --stat with pathspec shows summary' '
 ###########################################################################
 
 test_expect_success 'diff-tree -p with pathspec shows only matching diffs' '
+	(
 	cd repo &&
 	grit diff-tree -r -p $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- src/bin/ >out &&
 	grep "diff --git" out &&
 	grep "main.rs" out &&
 	! grep "lib.rs" out
+	)
 '
 
 test_expect_success 'diff-tree -p with docs/ pathspec' '
+	(
 	cd repo &&
 	grit diff-tree -r -p $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- docs/ >out &&
 	grep "diff --git" out &&
 	grep "README.md" out &&
 	! grep "main.rs" out
+	)
 '
 
 ###########################################################################
@@ -225,16 +267,20 @@ test_expect_success 'diff-tree -p with docs/ pathspec' '
 ###########################################################################
 
 test_expect_success 'diff-tree single commit with pathspec filters output' '
+	(
 	cd repo &&
 	grit diff-tree $(cat ../SHA_MOD) -- src/ >out &&
 	grep "src" out &&
 	! grep "root.txt" out
+	)
 '
 
 test_expect_success 'diff-tree single commit with non-matching pathspec is empty' '
+	(
 	cd repo &&
 	grit diff-tree $(cat ../SHA_MOD) -- nonexistent/ >out &&
 	test_must_be_empty out
+	)
 '
 
 ###########################################################################
@@ -242,6 +288,7 @@ test_expect_success 'diff-tree single commit with non-matching pathspec is empty
 ###########################################################################
 
 test_expect_success 'setup: add files in new dirs and remove in existing' '
+	(
 	cd repo &&
 	mkdir -p extra &&
 	echo "extra1" >extra/e1.txt &&
@@ -249,23 +296,28 @@ test_expect_success 'setup: add files in new dirs and remove in existing' '
 	grit rm tests/test2.rs &&
 	grit add extra/ &&
 	grit commit -m "add extra, remove test2"
+	)
 '
 
 test_expect_success 'diff-tree pathspec extra/ shows only additions' '
+	(
 	cd repo &&
 	grit diff-tree -r --name-status HEAD~1 HEAD -- extra/ >out &&
 	grep "A" out &&
 	grep "e1.txt" out &&
 	grep "e2.txt" out &&
 	! grep "test2" out
+	)
 '
 
 test_expect_success 'diff-tree pathspec tests/ shows only deletion' '
+	(
 	cd repo &&
 	grit diff-tree -r --name-status HEAD~1 HEAD -- tests/ >out &&
 	grep "D" out &&
 	grep "test2.rs" out &&
 	! grep "extra" out
+	)
 '
 
 ###########################################################################
@@ -273,28 +325,36 @@ test_expect_success 'diff-tree pathspec tests/ shows only deletion' '
 ###########################################################################
 
 test_expect_success 'diff-tree with pathspec matching unchanged file is empty' '
+	(
 	cd repo &&
 	grit diff-tree -r $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- src/lib/util.rs >out &&
 	test_must_be_empty out
+	)
 '
 
 test_expect_success 'diff-tree with root-level file pathspec' '
+	(
 	cd repo &&
 	grit diff-tree -r --name-only $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- root.txt >out &&
 	test_line_count = 1 out &&
 	grep "root.txt" out
+	)
 '
 
 test_expect_success 'diff-tree -r with pathspec across many commits' '
+	(
 	cd repo &&
 	grit diff-tree -r $(cat ../SHA_INIT) HEAD -- src/ >out &&
 	test -s out
+	)
 '
 
 test_expect_success 'diff-tree pathspec does not match partial directory names' '
+	(
 	cd repo &&
 	grit diff-tree -r $(cat ../SHA_INIT) $(cat ../SHA_MOD) -- doc >out &&
 	test_must_be_empty out
+	)
 '
 
 test_done

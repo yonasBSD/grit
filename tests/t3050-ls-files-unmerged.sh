@@ -11,6 +11,7 @@ cd "$(dirname "$0")" || exit 1
 ###########################################################################
 
 test_expect_success 'setup: create base/ours/theirs for single conflict' '
+	(
 	grit init repo &&
 	cd repo &&
 
@@ -34,12 +35,15 @@ test_expect_success 'setup: create base/ours/theirs for single conflict' '
 	grit update-index --add conflict.txt clean.txt &&
 	tree_theirs=$(grit write-tree) &&
 	echo "$tree_theirs" >../tree_theirs
+	)
 '
 
 test_expect_success 'create merge with conflict' '
+	(
 	cd repo &&
 	rm -f .git/index &&
 	grit read-tree -m "$(cat ../tree_base)" "$(cat ../tree_ours)" "$(cat ../tree_theirs)"
+	)
 '
 
 ###########################################################################
@@ -47,50 +51,62 @@ test_expect_success 'create merge with conflict' '
 ###########################################################################
 
 test_expect_success 'ls-files -u shows unmerged entries' '
+	(
 	cd repo &&
 	grit ls-files -u >actual &&
 	test -s actual
+	)
 '
 
 test_expect_success 'ls-files -u lists only conflicting file' '
+	(
 	cd repo &&
 	grit ls-files -u >actual &&
 	grep "conflict.txt" actual &&
 	! grep "clean.txt" actual
+	)
 '
 
 test_expect_success 'ls-files -u shows 3 entries for conflicted file' '
+	(
 	cd repo &&
 	grit ls-files -u >actual &&
 	count=$(wc -l <actual | tr -d " ") &&
 	test "$count" = "3"
+	)
 '
 
 test_expect_success 'ls-files -u entries have stages 1, 2, 3' '
+	(
 	cd repo &&
 	grit ls-files -u >actual &&
 	grep "	conflict.txt" actual >conflict_lines &&
 	awk "{print \$3}" conflict_lines | sort >stages &&
 	printf "1\n2\n3\n" >expect &&
 	test_cmp expect stages
+	)
 '
 
 test_expect_success 'ls-files -u entries have mode 100644' '
+	(
 	cd repo &&
 	grit ls-files -u >actual &&
 	while IFS= read -r line; do
 		mode=$(echo "$line" | awk "{print \$1}") &&
 		test "$mode" = "100644" || return 1
 	done <actual
+	)
 '
 
 test_expect_success 'ls-files -u entries have valid OIDs (40 hex chars)' '
+	(
 	cd repo &&
 	grit ls-files -u >actual &&
 	while IFS= read -r line; do
 		oid=$(echo "$line" | awk "{print \$2}") &&
 		echo "$oid" | grep -qE "^[0-9a-f]{40}$" || return 1
 	done <actual
+	)
 '
 
 ###########################################################################
@@ -98,19 +114,24 @@ test_expect_success 'ls-files -u entries have valid OIDs (40 hex chars)' '
 ###########################################################################
 
 test_expect_success 'ls-files -s shows only merged (stage 0) entries' '
+	(
 	cd repo &&
 	grit ls-files -s >actual &&
 	grep "clean.txt" actual &&
 	! grep "conflict.txt" actual
+	)
 '
 
 test_expect_success 'clean file shows stage 0 in -s output' '
+	(
 	cd repo &&
 	grit ls-files -s >actual &&
 	grep "0.clean.txt" actual
+	)
 '
 
 test_expect_success 'ls-files -u shows conflict entries with all 3 stages' '
+	(
 	cd repo &&
 	grit ls-files -u >actual &&
 	count=$(grep -c "conflict.txt" actual) &&
@@ -118,6 +139,7 @@ test_expect_success 'ls-files -u shows conflict entries with all 3 stages' '
 	grep "1.conflict.txt" actual &&
 	grep "2.conflict.txt" actual &&
 	grep "3.conflict.txt" actual
+	)
 '
 
 ###########################################################################
@@ -125,18 +147,22 @@ test_expect_success 'ls-files -u shows conflict entries with all 3 stages' '
 ###########################################################################
 
 test_expect_success 'ls-files -u on clean index is empty' '
+	(
 	cd repo &&
 	rm -f .git/index &&
 	grit read-tree "$(cat ../tree_base)" &&
 	grit ls-files -u >actual &&
 	test_must_be_empty actual
+	)
 '
 
 test_expect_success 'ls-files -u on freshly init repo is empty' '
+	(
 	grit init clean-repo &&
 	cd clean-repo &&
 	grit ls-files -u >actual &&
 	test_must_be_empty actual
+	)
 '
 
 ###########################################################################
@@ -144,6 +170,7 @@ test_expect_success 'ls-files -u on freshly init repo is empty' '
 ###########################################################################
 
 test_expect_success 'setup: trees with 3 conflicting files' '
+	(
 	cd repo &&
 
 	rm -f .git/index &&
@@ -172,9 +199,11 @@ test_expect_success 'setup: trees with 3 conflicting files' '
 	grit update-index --add a.txt b.txt c.txt d.txt &&
 	tree_multi_theirs=$(grit write-tree) &&
 	echo "$tree_multi_theirs" >../tree_multi_theirs
+	)
 '
 
 test_expect_success 'ls-files -u shows all 3 conflicting files' '
+	(
 	cd repo &&
 	rm -f .git/index &&
 	grit read-tree -m "$(cat ../tree_multi_base)" "$(cat ../tree_multi_ours)" "$(cat ../tree_multi_theirs)" &&
@@ -182,33 +211,42 @@ test_expect_success 'ls-files -u shows all 3 conflicting files' '
 	grep "a.txt" actual &&
 	grep "b.txt" actual &&
 	grep "c.txt" actual
+	)
 '
 
 test_expect_success 'ls-files -u has 9 entries for 3 conflicting files' '
+	(
 	cd repo &&
 	grit ls-files -u >actual &&
 	count=$(wc -l <actual | tr -d " ") &&
 	test "$count" = "9"
+	)
 '
 
 test_expect_success 'ls-files -u does not show clean file d.txt' '
+	(
 	cd repo &&
 	grit ls-files -u >actual &&
 	! grep "d.txt" actual
+	)
 '
 
 test_expect_success 'ls-files -u with pathspec filters to one file' '
+	(
 	cd repo &&
 	grit ls-files -u a.txt >actual &&
 	grep "a.txt" actual &&
 	! grep "b.txt" actual &&
 	! grep "c.txt" actual
+	)
 '
 
 test_expect_success 'ls-files -u pathspec on clean file is empty' '
+	(
 	cd repo &&
 	grit ls-files -u d.txt >actual &&
 	test_must_be_empty actual
+	)
 '
 
 ###########################################################################
@@ -216,6 +254,7 @@ test_expect_success 'ls-files -u pathspec on clean file is empty' '
 ###########################################################################
 
 test_expect_success 'setup: delete-vs-modify conflict' '
+	(
 	cd repo &&
 
 	rm -f .git/index &&
@@ -239,22 +278,27 @@ test_expect_success 'setup: delete-vs-modify conflict' '
 	grit update-index --add del.txt keep.txt &&
 	tree_del_theirs=$(grit write-tree) &&
 	echo "$tree_del_theirs" >../tree_del_theirs
+	)
 '
 
 test_expect_success 'delete-vs-modify creates unmerged entries' '
+	(
 	cd repo &&
 	rm -f .git/index &&
 	grit read-tree -m "$(cat ../tree_del_base)" "$(cat ../tree_del_ours)" "$(cat ../tree_del_theirs)" &&
 	grit ls-files -u >actual &&
 	grep "del.txt" actual
+	)
 '
 
 test_expect_success 'delete-vs-modify: stage 1 and 3 present, stage 2 absent' '
+	(
 	cd repo &&
 	grit ls-files -u >actual &&
 	grep "1.del.txt" actual &&
 	grep "3.del.txt" actual &&
 	! grep "2.del.txt" actual
+	)
 '
 
 ###########################################################################
@@ -262,6 +306,7 @@ test_expect_success 'delete-vs-modify: stage 1 and 3 present, stage 2 absent' '
 ###########################################################################
 
 test_expect_success 'read-tree --reset makes ls-files -u empty' '
+	(
 	cd repo &&
 	rm -f .git/index &&
 	grit read-tree -m "$(cat ../tree_multi_base)" "$(cat ../tree_multi_ours)" "$(cat ../tree_multi_theirs)" &&
@@ -270,6 +315,7 @@ test_expect_success 'read-tree --reset makes ls-files -u empty' '
 	grit read-tree --reset "$(cat ../tree_multi_base)" &&
 	grit ls-files -u >after &&
 	test_must_be_empty after
+	)
 '
 
 test_done

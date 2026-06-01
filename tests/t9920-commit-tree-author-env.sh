@@ -13,6 +13,7 @@ cd "$(dirname "$0")" || exit 1
 ###########################################################################
 
 test_expect_success 'setup: create repo with a tree' '
+	(
 	"$REAL_GIT" init repo &&
 	cd repo &&
 	"$REAL_GIT" config user.name "Default User" &&
@@ -22,6 +23,7 @@ test_expect_success 'setup: create repo with a tree' '
 	echo "nested" >sub/file.txt &&
 	"$REAL_GIT" add . &&
 	"$REAL_GIT" commit -m "initial"
+	)
 '
 
 ###########################################################################
@@ -29,35 +31,43 @@ test_expect_success 'setup: create repo with a tree' '
 ###########################################################################
 
 test_expect_success 'commit-tree creates a commit from tree' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(echo "test message" | grit commit-tree "$tree") &&
 	echo "$commit" | grep -qE "^[0-9a-f]{40}$"
+	)
 '
 
 test_expect_success 'commit-tree with -m flag' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(grit commit-tree "$tree" -m "message via flag") &&
 	grit cat-file -p "$commit" >actual &&
 	grep "message via flag" actual
+	)
 '
 
 test_expect_success 'commit-tree creates valid commit object' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(grit commit-tree "$tree" -m "valid commit") &&
 	grit cat-file -t "$commit" >actual &&
 	echo "commit" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'commit-tree commit references correct tree' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(grit commit-tree "$tree" -m "tree ref test") &&
 	grit cat-file -p "$commit" >actual &&
 	grep "^tree $tree" actual
+	)
 '
 
 ###########################################################################
@@ -65,6 +75,7 @@ test_expect_success 'commit-tree commit references correct tree' '
 ###########################################################################
 
 test_expect_success 'commit-tree respects GIT_AUTHOR_NAME' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(GIT_AUTHOR_NAME="Custom Author" \
@@ -73,9 +84,11 @@ test_expect_success 'commit-tree respects GIT_AUTHOR_NAME' '
 		grit commit-tree "$tree" -m "custom author") &&
 	grit cat-file -p "$commit" >actual &&
 	grep "author Custom Author <custom@author.com>" actual
+	)
 '
 
 test_expect_success 'commit-tree respects GIT_AUTHOR_EMAIL' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(GIT_AUTHOR_NAME="Test" \
@@ -84,9 +97,11 @@ test_expect_success 'commit-tree respects GIT_AUTHOR_EMAIL' '
 		grit commit-tree "$tree" -m "custom email") &&
 	grit cat-file -p "$commit" >actual &&
 	grep "special@email.org" actual
+	)
 '
 
 test_expect_success 'commit-tree respects GIT_AUTHOR_DATE' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(GIT_AUTHOR_NAME="Test" \
@@ -95,9 +110,11 @@ test_expect_success 'commit-tree respects GIT_AUTHOR_DATE' '
 		grit commit-tree "$tree" -m "custom date") &&
 	grit cat-file -p "$commit" >actual &&
 	grep "author Test <t@t.com> 1000000000 +0000" actual
+	)
 '
 
 test_expect_success 'commit-tree author env matches real git' '
+	(
 	cd repo &&
 	tree=$("$REAL_GIT" rev-parse HEAD^{tree}) &&
 	git_commit=$(GIT_AUTHOR_NAME="EnvAuth" \
@@ -119,6 +136,7 @@ test_expect_success 'commit-tree author env matches real git' '
 	grep "^author " expect >expect_author &&
 	grep "^author " actual >actual_author &&
 	test_cmp expect_author actual_author
+	)
 '
 
 ###########################################################################
@@ -126,6 +144,7 @@ test_expect_success 'commit-tree author env matches real git' '
 ###########################################################################
 
 test_expect_success 'commit-tree respects GIT_COMMITTER_NAME' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(GIT_COMMITTER_NAME="Custom Committer" \
@@ -134,9 +153,11 @@ test_expect_success 'commit-tree respects GIT_COMMITTER_NAME' '
 		grit commit-tree "$tree" -m "custom committer") &&
 	grit cat-file -p "$commit" >actual &&
 	grep "committer Custom Committer <custom@committer.com>" actual
+	)
 '
 
 test_expect_success 'commit-tree respects GIT_COMMITTER_DATE' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(GIT_COMMITTER_NAME="Test" \
@@ -145,9 +166,11 @@ test_expect_success 'commit-tree respects GIT_COMMITTER_DATE' '
 		grit commit-tree "$tree" -m "committer date") &&
 	grit cat-file -p "$commit" >actual &&
 	grep "committer Test <t@t.com> 1500000000 +0000" actual
+	)
 '
 
 test_expect_success 'commit-tree committer env matches real git' '
+	(
 	cd repo &&
 	tree=$("$REAL_GIT" rev-parse HEAD^{tree}) &&
 	git_commit=$(GIT_AUTHOR_NAME="A" \
@@ -169,6 +192,7 @@ test_expect_success 'commit-tree committer env matches real git' '
 	grep "^committer " expect >expect_comm &&
 	grep "^committer " actual >actual_comm &&
 	test_cmp expect_comm actual_comm
+	)
 '
 
 ###########################################################################
@@ -176,6 +200,7 @@ test_expect_success 'commit-tree committer env matches real git' '
 ###########################################################################
 
 test_expect_success 'commit-tree can have different author and committer' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(GIT_AUTHOR_NAME="Alice Author" \
@@ -188,9 +213,11 @@ test_expect_success 'commit-tree can have different author and committer' '
 	grit cat-file -p "$commit" >actual &&
 	grep "author Alice Author <alice@example.com>" actual &&
 	grep "committer Bob Committer <bob@example.com>" actual
+	)
 '
 
 test_expect_success 'commit-tree different author/committer matches real git' '
+	(
 	cd repo &&
 	tree=$("$REAL_GIT" rev-parse HEAD^{tree}) &&
 	git_c=$(GIT_AUTHOR_NAME="Auth" GIT_AUTHOR_EMAIL="auth@x.com" \
@@ -206,6 +233,7 @@ test_expect_success 'commit-tree different author/committer matches real git' '
 	"$REAL_GIT" cat-file -p "$git_c" | grep -E "^(author|committer) " >expect &&
 	grit cat-file -p "$grit_c" | grep -E "^(author|committer) " >actual &&
 	test_cmp expect actual
+	)
 '
 
 ###########################################################################
@@ -213,15 +241,18 @@ test_expect_success 'commit-tree different author/committer matches real git' '
 ###########################################################################
 
 test_expect_success 'commit-tree with -p parent' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	parent=$(grit rev-parse HEAD) &&
 	commit=$(grit commit-tree "$tree" -p "$parent" -m "with parent") &&
 	grit cat-file -p "$commit" >actual &&
 	grep "^parent $parent" actual
+	)
 '
 
 test_expect_success 'commit-tree with multiple parents' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	parent1=$(grit rev-parse HEAD) &&
@@ -230,14 +261,17 @@ test_expect_success 'commit-tree with multiple parents' '
 	grit cat-file -p "$merge" >actual &&
 	grep "^parent $parent1" actual &&
 	grep "^parent $parent2" actual
+	)
 '
 
 test_expect_success 'commit-tree no parent has no parent line' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(grit commit-tree "$tree" -m "orphan") &&
 	grit cat-file -p "$commit" >actual &&
 	! grep "^parent " actual
+	)
 '
 
 ###########################################################################
@@ -245,14 +279,17 @@ test_expect_success 'commit-tree no parent has no parent line' '
 ###########################################################################
 
 test_expect_success 'commit-tree reads message from stdin' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(echo "stdin message" | grit commit-tree "$tree") &&
 	grit cat-file -p "$commit" >actual &&
 	grep "stdin message" actual
+	)
 '
 
 test_expect_success 'commit-tree multiline stdin message' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(printf "line one\nline two\nline three" | grit commit-tree "$tree") &&
@@ -260,6 +297,7 @@ test_expect_success 'commit-tree multiline stdin message' '
 	grep "line one" actual &&
 	grep "line two" actual &&
 	grep "line three" actual
+	)
 '
 
 ###########################################################################
@@ -267,15 +305,18 @@ test_expect_success 'commit-tree multiline stdin message' '
 ###########################################################################
 
 test_expect_success 'commit-tree -F reads message from file' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	echo "file message" >msg.txt &&
 	commit=$(grit commit-tree "$tree" -F msg.txt) &&
 	grit cat-file -p "$commit" >actual &&
 	grep "file message" actual
+	)
 '
 
 test_expect_success 'commit-tree -F with multiline file' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	printf "subject\n\nbody paragraph" >multi-msg.txt &&
@@ -283,6 +324,7 @@ test_expect_success 'commit-tree -F with multiline file' '
 	grit cat-file -p "$commit" >actual &&
 	grep "subject" actual &&
 	grep "body paragraph" actual
+	)
 '
 
 ###########################################################################
@@ -290,6 +332,7 @@ test_expect_success 'commit-tree -F with multiline file' '
 ###########################################################################
 
 test_expect_success 'commit-tree preserves positive timezone offset' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(GIT_AUTHOR_NAME="TZ" GIT_AUTHOR_EMAIL="tz@test.com" \
@@ -297,9 +340,11 @@ test_expect_success 'commit-tree preserves positive timezone offset' '
 		grit commit-tree "$tree" -m "tz test") &&
 	grit cat-file -p "$commit" >actual &&
 	grep "+0530" actual
+	)
 '
 
 test_expect_success 'commit-tree preserves negative timezone offset' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	commit=$(GIT_AUTHOR_NAME="TZ" GIT_AUTHOR_EMAIL="tz@test.com" \
@@ -307,6 +352,7 @@ test_expect_success 'commit-tree preserves negative timezone offset' '
 		grit commit-tree "$tree" -m "neg tz") &&
 	grit cat-file -p "$commit" >actual &&
 	grep "\-0800" actual
+	)
 '
 
 ###########################################################################
@@ -314,6 +360,7 @@ test_expect_success 'commit-tree preserves negative timezone offset' '
 ###########################################################################
 
 test_expect_success 'commit-tree same input produces same hash' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	c1=$(GIT_AUTHOR_NAME="Same" GIT_AUTHOR_EMAIL="same@same.com" \
@@ -327,9 +374,11 @@ test_expect_success 'commit-tree same input produces same hash' '
 		GIT_COMMITTER_DATE="1400000000 +0000" \
 		grit commit-tree "$tree" -m "deterministic") &&
 	test "$c1" = "$c2"
+	)
 '
 
 test_expect_success 'commit-tree same input matches real git hash' '
+	(
 	cd repo &&
 	tree=$("$REAL_GIT" rev-parse HEAD^{tree}) &&
 	c_grit=$(GIT_AUTHOR_NAME="HashTest" GIT_AUTHOR_EMAIL="hash@test.com" \
@@ -343,9 +392,11 @@ test_expect_success 'commit-tree same input matches real git hash' '
 		GIT_COMMITTER_DATE="1400000000 +0000" \
 		"$REAL_GIT" commit-tree "$tree" -m "hash check") &&
 	test "$c_grit" = "$c_git"
+	)
 '
 
 test_expect_success 'commit-tree different message produces different hash' '
+	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
 	c1=$(GIT_AUTHOR_NAME="D" GIT_AUTHOR_EMAIL="d@d.com" \
@@ -359,6 +410,7 @@ test_expect_success 'commit-tree different message produces different hash' '
 		GIT_COMMITTER_DATE="1400000000 +0000" \
 		grit commit-tree "$tree" -m "message B") &&
 	test "$c1" != "$c2"
+	)
 '
 
 test_done

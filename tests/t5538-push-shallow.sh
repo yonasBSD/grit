@@ -14,6 +14,7 @@ commit() {
 }
 
 test_expect_success 'setup' '
+	(
 	git config --global transfer.fsckObjects true &&
 	commit 1 &&
 	commit 2 &&
@@ -41,6 +42,7 @@ c
 b
 EOF
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'push from shallow clone' '
@@ -72,6 +74,7 @@ test_expect_success 'push from shallow clone, with grafted roots' '
 '
 
 test_expect_success 'add new shallow root with receive.updateshallow on' '
+	(
 	test_config receive.shallowupdate true &&
 	(
 	cd shallow2 &&
@@ -84,6 +87,7 @@ c
 b
 EOF
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'push from shallow to shallow' '
@@ -107,6 +111,7 @@ EOF
 '
 
 test_expect_success 'push from full to shallow' '
+	(
 	! git --git-dir=shallow2/.git cat-file blob $(echo 1|git hash-object --stdin) &&
 	commit 1 &&
 	git push shallow2/.git +main:refs/remotes/top/main &&
@@ -121,6 +126,7 @@ test_expect_success 'push from full to shallow' '
 EOF
 	test_cmp expect actual &&
 	git cat-file blob $(echo 1|git hash-object --stdin) >/dev/null
+	)
 	)
 '
 

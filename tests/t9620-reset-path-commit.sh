@@ -25,6 +25,7 @@ grit_status_clean () {
 ###########################################################################
 
 test_expect_success 'setup: create repo with three commits' '
+	(
 	grit init repo &&
 	cd repo &&
 	echo "v1" >file.txt &&
@@ -39,6 +40,7 @@ test_expect_success 'setup: create repo with three commits' '
 	grit add file.txt &&
 	test_tick &&
 	grit commit -m "commit-3"
+	)
 '
 
 ###########################################################################
@@ -46,27 +48,35 @@ test_expect_success 'setup: create repo with three commits' '
 ###########################################################################
 
 test_expect_success 'reset --soft moves HEAD but keeps index and worktree' '
+	(
 	cd repo &&
 	prev=$(grit rev-parse HEAD~1) &&
 	grit reset --soft HEAD~1 &&
 	test "$(grit rev-parse HEAD)" = "$prev"
+	)
 '
 
 test_expect_success 'reset --soft: index still has new content' '
+	(
 	cd repo &&
 	grit_status_clean >actual &&
 	grep "^M  file.txt" actual
+	)
 '
 
 test_expect_success 'reset --soft: worktree has v3 content' '
+	(
 	cd repo &&
 	grep "v3" file.txt
+	)
 '
 
 test_expect_success 'restore to commit-3 for next tests' '
+	(
 	cd repo &&
 	test_tick &&
 	grit commit -m "re-commit-3"
+	)
 '
 
 ###########################################################################
@@ -74,44 +84,56 @@ test_expect_success 'restore to commit-3 for next tests' '
 ###########################################################################
 
 test_expect_success 'reset --mixed moves HEAD and resets index' '
+	(
 	cd repo &&
 	prev=$(grit rev-parse HEAD~1) &&
 	grit reset --mixed HEAD~1 &&
 	test "$(grit rev-parse HEAD)" = "$prev"
+	)
 '
 
 test_expect_success 'reset --mixed: changes are unstaged' '
+	(
 	cd repo &&
 	grit_status_clean >actual &&
 	grep "^ M file.txt" actual
+	)
 '
 
 test_expect_success 'reset --mixed: worktree still has v3' '
+	(
 	cd repo &&
 	grep "v3" file.txt
+	)
 '
 
 test_expect_success 'restore state' '
+	(
 	cd repo &&
 	grit add file.txt &&
 	test_tick &&
 	grit commit -m "re-commit-3b"
+	)
 '
 
 test_expect_success 'reset without mode flag defaults to --mixed' '
+	(
 	cd repo &&
 	prev=$(grit rev-parse HEAD~1) &&
 	grit reset HEAD~1 &&
 	test "$(grit rev-parse HEAD)" = "$prev" &&
 	grit_status_clean >actual &&
 	grep "^ M file.txt" actual
+	)
 '
 
 test_expect_success 'restore state again' '
+	(
 	cd repo &&
 	grit add file.txt &&
 	test_tick &&
 	grit commit -m "re-commit-3c"
+	)
 '
 
 ###########################################################################
@@ -119,29 +141,37 @@ test_expect_success 'restore state again' '
 ###########################################################################
 
 test_expect_success 'reset --hard moves HEAD, index, and worktree' '
+	(
 	cd repo &&
 	prev=$(grit rev-parse HEAD~1) &&
 	grit reset --hard HEAD~1 &&
 	test "$(grit rev-parse HEAD)" = "$prev"
+	)
 '
 
 test_expect_success 'reset --hard: working tree matches target commit' '
+	(
 	cd repo &&
 	grep "v2" file.txt
+	)
 '
 
 test_expect_success 'reset --hard: status is clean' '
+	(
 	cd repo &&
 	grit_status_clean >actual &&
 	! grep "file.txt" actual
+	)
 '
 
 test_expect_success 'reset --hard back to original state' '
+	(
 	cd repo &&
 	echo "v3" >file.txt &&
 	grit add file.txt &&
 	test_tick &&
 	grit commit -m "re-v3"
+	)
 '
 
 ###########################################################################
@@ -149,35 +179,44 @@ test_expect_success 'reset --hard back to original state' '
 ###########################################################################
 
 test_expect_success 'reset HEAD -- path unstages a file' '
+	(
 	cd repo &&
 	echo "new-content" >file.txt &&
 	grit add file.txt &&
 	grit reset HEAD -- file.txt &&
 	grit_status_clean >actual &&
 	grep "^ M file.txt" actual
+	)
 '
 
 test_expect_success 'reset path does not move HEAD' '
+	(
 	cd repo &&
 	head_before=$(grit rev-parse HEAD) &&
 	grit add file.txt &&
 	grit reset HEAD -- file.txt &&
 	head_after=$(grit rev-parse HEAD) &&
 	test "$head_before" = "$head_after"
+	)
 '
 
 test_expect_success 'reset path: worktree unchanged' '
+	(
 	cd repo &&
 	grep "new-content" file.txt
+	)
 '
 
 test_expect_success 'clean up path reset' '
+	(
 	cd repo &&
 	grit restore file.txt &&
 	grep "v3" file.txt
+	)
 '
 
 test_expect_success 'reset with specific commit and path' '
+	(
 	cd repo &&
 	echo "modified" >file.txt &&
 	grit add file.txt &&
@@ -185,12 +224,15 @@ test_expect_success 'reset with specific commit and path' '
 	grit reset $ancestor -- file.txt &&
 	grit ls-files --stage >actual &&
 	grep "file.txt" actual
+	)
 '
 
 test_expect_success 'clean up' '
+	(
 	cd repo &&
 	grit restore --staged file.txt &&
 	grit restore file.txt
+	)
 '
 
 ###########################################################################
@@ -198,15 +240,18 @@ test_expect_success 'clean up' '
 ###########################################################################
 
 test_expect_success 'setup: add more files' '
+	(
 	cd repo &&
 	echo "a" >a.txt &&
 	echo "b" >b.txt &&
 	grit add a.txt b.txt &&
 	test_tick &&
 	grit commit -m "add a and b"
+	)
 '
 
 test_expect_success 'reset HEAD -- with multiple paths' '
+	(
 	cd repo &&
 	echo "mod-a" >a.txt &&
 	echo "mod-b" >b.txt &&
@@ -215,11 +260,14 @@ test_expect_success 'reset HEAD -- with multiple paths' '
 	grit_status_clean >actual &&
 	grep "^ M a.txt" actual &&
 	grep "^ M b.txt" actual
+	)
 '
 
 test_expect_success 'clean up multi-file' '
+	(
 	cd repo &&
 	grit restore a.txt b.txt
+	)
 '
 
 ###########################################################################
@@ -227,23 +275,29 @@ test_expect_success 'clean up multi-file' '
 ###########################################################################
 
 test_expect_success 'reset -q suppresses output' '
+	(
 	cd repo &&
 	echo "x" >file.txt &&
 	grit add file.txt &&
 	grit reset -q HEAD -- file.txt 2>err &&
 	test_must_be_empty err
+	)
 '
 
 test_expect_success 'reset --quiet same as -q' '
+	(
 	cd repo &&
 	grit add file.txt &&
 	grit reset --quiet HEAD -- file.txt 2>err &&
 	test_must_be_empty err
+	)
 '
 
 test_expect_success 'clean up' '
+	(
 	cd repo &&
 	grit restore file.txt
+	)
 '
 
 ###########################################################################
@@ -251,38 +305,48 @@ test_expect_success 'clean up' '
 ###########################################################################
 
 test_expect_success 'save tip ref before reset' '
+	(
 	cd repo &&
 	grit rev-parse HEAD >"$TRASH_DIRECTORY/saved-tip"
+	)
 '
 
 test_expect_success 'reset --hard to older commit' '
+	(
 	cd repo &&
 	prev=$(grit rev-parse HEAD~1) &&
 	grit reset --hard $prev &&
 	test "$(grit rev-parse HEAD)" = "$prev"
+	)
 '
 
 test_expect_success 'restore to tip' '
+	(
 	cd repo &&
 	tip=$(cat "$TRASH_DIRECTORY/saved-tip") &&
 	grit reset --hard $tip &&
 	grep "v3" file.txt
+	)
 '
 
 test_expect_success 'reset --soft to current HEAD is no-op' '
+	(
 	cd repo &&
 	head_before=$(grit rev-parse HEAD) &&
 	grit reset --soft HEAD &&
 	head_after=$(grit rev-parse HEAD) &&
 	test "$head_before" = "$head_after"
+	)
 '
 
 test_expect_success 'reset --mixed to current HEAD is no-op' '
+	(
 	cd repo &&
 	head_before=$(grit rev-parse HEAD) &&
 	grit reset --mixed HEAD &&
 	head_after=$(grit rev-parse HEAD) &&
 	test "$head_before" = "$head_after"
+	)
 '
 
 ###########################################################################
@@ -290,6 +354,7 @@ test_expect_success 'reset --mixed to current HEAD is no-op' '
 ###########################################################################
 
 test_expect_success 'setup cross-check repos' '
+	(
 	$REAL_GIT init git-repo &&
 	cd git-repo &&
 	$REAL_GIT config user.email "t@t.com" &&
@@ -313,6 +378,7 @@ test_expect_success 'setup cross-check repos' '
 	grit add f.txt &&
 	test_tick &&
 	grit commit -m "c2"
+	)
 '
 
 test_expect_success 'reset --hard HEAD~1 matches real git' '

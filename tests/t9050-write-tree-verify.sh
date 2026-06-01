@@ -13,31 +13,40 @@ EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
 ###########################################################################
 
 test_expect_success 'setup repository' '
+	(
 	grit init repo &&
 	cd repo
+	)
 '
 
 test_expect_success 'write-tree on empty index produces empty tree OID' '
+	(
 	cd repo &&
 	tree=$(grit write-tree) &&
 	test "$tree" = "$EMPTY_TREE"
+	)
 '
 
 test_expect_success 'empty tree OID is a valid tree object' '
+	(
 	cd repo &&
 	grit cat-file -t "$EMPTY_TREE" >actual &&
 	echo tree >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'empty tree has zero size' '
+	(
 	cd repo &&
 	grit cat-file -s "$EMPTY_TREE" >actual &&
 	echo 0 >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'write-tree after adding one file' '
+	(
 	cd repo &&
 	echo "hello" >hello.txt &&
 	grit add hello.txt &&
@@ -46,19 +55,24 @@ test_expect_success 'write-tree after adding one file' '
 	grit cat-file -t "$tree" >actual &&
 	echo tree >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'write-tree OID is 40 hex chars' '
+	(
 	cd repo &&
 	tree=$(grit write-tree) &&
 	echo "$tree" | grep -qE "^[0-9a-f]{40}$"
+	)
 '
 
 test_expect_success 'write-tree is deterministic' '
+	(
 	cd repo &&
 	tree1=$(grit write-tree) &&
 	tree2=$(grit write-tree) &&
 	test "$tree1" = "$tree2"
+	)
 '
 
 ###########################################################################
@@ -66,28 +80,35 @@ test_expect_success 'write-tree is deterministic' '
 ###########################################################################
 
 test_expect_success 'write-tree tree contains added file' '
+	(
 	cd repo &&
 	tree=$(grit write-tree) &&
 	grit ls-tree "$tree" >listing &&
 	grep "hello.txt" listing
+	)
 '
 
 test_expect_success 'write-tree entry has blob type' '
+	(
 	cd repo &&
 	tree=$(grit write-tree) &&
 	grit ls-tree "$tree" >listing &&
 	grep "^100644 blob" listing | grep "hello.txt"
+	)
 '
 
 test_expect_success 'write-tree blob OID matches hash-object OID' '
+	(
 	cd repo &&
 	tree=$(grit write-tree) &&
 	blob_oid=$(grit ls-tree "$tree" | grep "hello.txt" | awk "{print \$3}") &&
 	expected_oid=$(grit hash-object hello.txt) &&
 	test "$blob_oid" = "$expected_oid"
+	)
 '
 
 test_expect_success 'write-tree with multiple files' '
+	(
 	cd repo &&
 	echo "world" >world.txt &&
 	echo "foo" >foo.txt &&
@@ -95,14 +116,17 @@ test_expect_success 'write-tree with multiple files' '
 	tree=$(grit write-tree) &&
 	grit ls-tree "$tree" >listing &&
 	test_line_count = 3 listing
+	)
 '
 
 test_expect_success 'write-tree entries are sorted alphabetically' '
+	(
 	cd repo &&
 	tree=$(grit write-tree) &&
 	grit ls-tree --name-only "$tree" >actual &&
 	sort actual >expected_sorted &&
 	test_cmp expected_sorted actual
+	)
 '
 
 ###########################################################################
@@ -110,6 +134,7 @@ test_expect_success 'write-tree entries are sorted alphabetically' '
 ###########################################################################
 
 test_expect_success 'write-tree with subdirectory' '
+	(
 	cd repo &&
 	mkdir -p subdir &&
 	echo "nested" >subdir/nested.txt &&
@@ -117,17 +142,21 @@ test_expect_success 'write-tree with subdirectory' '
 	tree=$(grit write-tree) &&
 	grit ls-tree "$tree" >listing &&
 	grep "^040000 tree" listing | grep "subdir"
+	)
 '
 
 test_expect_success 'write-tree subdirectory tree has correct contents' '
+	(
 	cd repo &&
 	tree=$(grit write-tree) &&
 	sub_tree_oid=$(grit ls-tree "$tree" | grep "subdir" | awk "{print \$3}") &&
 	grit ls-tree "$sub_tree_oid" >sub_listing &&
 	grep "nested.txt" sub_listing
+	)
 '
 
 test_expect_success 'write-tree with deeply nested directories' '
+	(
 	cd repo &&
 	mkdir -p a/b/c &&
 	echo "deep" >a/b/c/deep.txt &&
@@ -135,9 +164,11 @@ test_expect_success 'write-tree with deeply nested directories' '
 	tree=$(grit write-tree) &&
 	grit ls-tree -r "$tree" >listing &&
 	grep "a/b/c/deep.txt" listing
+	)
 '
 
 test_expect_success 'write-tree with multiple subdirectories' '
+	(
 	cd repo &&
 	mkdir -p dir1 dir2 &&
 	echo "one" >dir1/one.txt &&
@@ -147,6 +178,7 @@ test_expect_success 'write-tree with multiple subdirectories' '
 	grit ls-tree "$tree" | grep "^040000 tree" >trees &&
 	grep "dir1" trees &&
 	grep "dir2" trees
+	)
 '
 
 ###########################################################################
@@ -154,30 +186,37 @@ test_expect_success 'write-tree with multiple subdirectories' '
 ###########################################################################
 
 test_expect_success 'write-tree changes after modifying a file' '
+	(
 	cd repo &&
 	tree_before=$(grit write-tree) &&
 	echo "modified" >hello.txt &&
 	grit add hello.txt &&
 	tree_after=$(grit write-tree) &&
 	test "$tree_before" != "$tree_after"
+	)
 '
 
 test_expect_success 'write-tree changes after removing a file' '
+	(
 	cd repo &&
 	tree_before=$(grit write-tree) &&
 	grit rm -f foo.txt &&
 	tree_after=$(grit write-tree) &&
 	test "$tree_before" != "$tree_after"
+	)
 '
 
 test_expect_success 'write-tree after rm shows fewer entries' '
+	(
 	cd repo &&
 	tree=$(grit write-tree) &&
 	grit ls-tree "$tree" --name-only >listing &&
 	! grep "foo.txt" listing
+	)
 '
 
 test_expect_success 'write-tree after re-adding same content gives same tree' '
+	(
 	cd repo &&
 	echo "stable" >stable.txt &&
 	grit add stable.txt &&
@@ -188,6 +227,7 @@ test_expect_success 'write-tree after re-adding same content gives same tree' '
 	grit add stable.txt &&
 	tree2=$(grit write-tree) &&
 	test "$tree1" = "$tree2"
+	)
 '
 
 ###########################################################################
@@ -195,14 +235,17 @@ test_expect_success 'write-tree after re-adding same content gives same tree' '
 ###########################################################################
 
 test_expect_success 'write-tree with file in root and subdirectory' '
+	(
 	cd repo &&
 	tree=$(grit write-tree) &&
 	grit ls-tree "$tree" >listing &&
 	grep "hello.txt" listing &&
 	grep "subdir" listing
+	)
 '
 
 test_expect_success 'write-tree after adding symlink-like paths' '
+	(
 	cd repo &&
 	mkdir -p linkdir &&
 	echo "target" >linkdir/target.txt &&
@@ -210,6 +253,7 @@ test_expect_success 'write-tree after adding symlink-like paths' '
 	tree=$(grit write-tree) &&
 	grit ls-tree -r "$tree" >listing &&
 	grep "linkdir/target.txt" listing
+	)
 '
 
 ###########################################################################
@@ -217,19 +261,24 @@ test_expect_success 'write-tree after adding symlink-like paths' '
 ###########################################################################
 
 test_expect_success 'write-tree output is stored in ODB' '
+	(
 	cd repo &&
 	tree=$(grit write-tree) &&
 	grit cat-file -e "$tree"
+	)
 '
 
 test_expect_success 'write-tree tree object can be read back' '
+	(
 	cd repo &&
 	tree=$(grit write-tree) &&
 	grit cat-file -p "$tree" >output &&
 	test -s output
+	)
 '
 
 test_expect_success 'write-tree with executable file' '
+	(
 	cd repo &&
 	echo "#!/bin/sh" >script.sh &&
 	chmod +x script.sh &&
@@ -237,13 +286,16 @@ test_expect_success 'write-tree with executable file' '
 	tree=$(grit write-tree) &&
 	grit ls-tree "$tree" | grep "script.sh" >entry &&
 	grep "^100755" entry
+	)
 '
 
 test_expect_success 'fresh repo write-tree equals empty tree' '
+	(
 	grit init fresh_repo &&
 	cd fresh_repo &&
 	tree=$(grit write-tree) &&
 	test "$tree" = "$EMPTY_TREE"
+	)
 '
 
 test_done
