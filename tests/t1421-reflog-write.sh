@@ -92,6 +92,7 @@ test_expect_success 'simple writes' '
 	git init repo &&
 	(
 		cd repo &&
+		unset test_tick && rm -f "$_TICK_FILE" &&
 		test_commit initial &&
 		COMMIT_OID=$(git rev-parse HEAD) &&
 
@@ -102,8 +103,8 @@ test_expect_success 'simple writes' '
 
 		git reflog write refs/heads/something $COMMIT_OID $COMMIT_OID second &&
 		test_reflog_matches . refs/heads/something <<-EOF
-		$ZERO_OID $COMMIT_OID $SIGNATURE	first
 		$COMMIT_OID $COMMIT_OID $SIGNATURE	second
+		$ZERO_OID $COMMIT_OID $SIGNATURE	first
 		EOF
 	)
 '
@@ -132,6 +133,7 @@ test_expect_success 'environment variables take precedence over config' '
 	git init repo &&
 	(
 		cd repo &&
+		unset test_tick && rm -f "$_TICK_FILE" &&
 		test_commit initial &&
 		COMMIT_OID=$(git rev-parse HEAD) &&
 
@@ -149,6 +151,7 @@ test_expect_success 'can write to root ref' '
 	git init repo &&
 	(
 		cd repo &&
+		unset test_tick && rm -f "$_TICK_FILE" &&
 		test_commit initial &&
 		COMMIT_OID=$(git rev-parse HEAD) &&
 

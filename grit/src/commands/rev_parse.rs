@@ -96,18 +96,14 @@ fn print_rev_parse_path(
             }
             PathDefaultMode::RelativeIfShared => {
                 let prefix = cli_prefix.filter(|p| !p.as_os_str().is_empty());
-                match prefix {
-                    None => {
-                        println!("{}", path_abs.display());
-                    }
-                    Some(base) => {
-                        let base_abs = realpath_forgiving(base);
-                        if paths_share_root(&path_abs, &base_abs) {
-                            println!("{}", to_relative_path(&path_abs, &base_abs));
-                        } else {
-                            println!("{}", path_abs.display());
-                        }
-                    }
+                let base_abs = match prefix {
+                    Some(base) => realpath_forgiving(base),
+                    None => cwd_abs.clone(),
+                };
+                if paths_share_root(&path_abs, &base_abs) {
+                    println!("{}", to_relative_path(&path_abs, &base_abs));
+                } else {
+                    println!("{}", path_abs.display());
                 }
             }
         },

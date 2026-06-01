@@ -1435,6 +1435,9 @@ fn load_config(
         let pseudo = path.to_string_lossy();
         let is_stdin = pseudo == "-";
         if !is_stdin && !path.exists() {
+            if args.default_value.is_some() {
+                return Ok(ConfigSet::new());
+            }
             bail!(
                 "fatal: unable to read config file '{}': No such file or directory",
                 path.display()

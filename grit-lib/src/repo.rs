@@ -324,15 +324,23 @@ impl Repository {
 
         // Parse GIT_CEILING_DIRECTORIES — mirror Git `setup_git_directory_gently_1` +
         // `longest_ancestor_length` on the canonical cwd path.
-        let ceiling_dirs: Vec<String> = parse_ceiling_directories()
+        // A leading colon disables symlink resolution for both ceiling paths and cwd.
+        let (ceiling_paths, no_resolve_ceilings) = parse_ceiling_directories();
+        let ceiling_dirs: Vec<String> = ceiling_paths
             .into_iter()
             .map(|p| path_for_ceiling_compare(&p))
             .collect();
 
         let start_canon = start.canonicalize().unwrap_or_else(|_| start.clone());
+        // For ceiling comparison, use non-canonical path when leading colon disables resolution.
+        let ceil_cmp_buf = if no_resolve_ceilings {
+            path_for_ceiling_compare(&start)
+        } else {
+            path_for_ceiling_compare(&start_canon)
+        };
         let mut dir_buf = path_for_ceiling_compare(&start_canon);
         let min_offset = offset_1st_component(&dir_buf);
-        let mut ceil_offset: isize = longest_ancestor_length(&dir_buf, &ceiling_dirs)
+        let mut ceil_offset: isize = longest_ancestor_length(&ceil_cmp_buf, &ceiling_dirs)
             .map(|n| n as isize)
             .unwrap_or(-1);
         if ceil_offset < 0 {
@@ -1525,7 +1533,8 @@ fn try_open_at(dir: &Path) -> Result<Option<DiscoveredAt>> {
                     gitfile: None,
                 }));
             }
-            Err(Error::NotARepository(_)) => return Ok(None),
+            Err(Error::NotARepository(_)) | Err(Error::ConfigError(_)) => return Ok(None),
+            Err(Error::Message(ref msg)) if msg.contains("bad config") => return Ok(None),
             Err(e) => return Err(e),
         }
     }
@@ -2482,34 +2491,51 @@ fn copy_template(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Parse `GIT_CEILING_DIRECTORIES` into a list of canonical absolute paths.
+/// Parse `GIT_CEILING_DIRECTORIES` into a list of absolute paths and whether
+/// symlink resolution should be skipped.
 ///
 /// The variable is colon-separated (`:`) on Unix.  Empty entries and
 /// non-absolute paths are silently skipped, matching Git's behaviour.
-fn parse_ceiling_directories() -> Vec<PathBuf> {
+///
+/// A leading colon (`:path1:path2`) disables symlink resolution for all
+/// ceiling paths AND the cwd used for comparison (Git `resolve_symlinks` flag).
+fn parse_ceiling_directories() -> (Vec<PathBuf>, bool) {
     let raw = match env::var("GIT_CEILING_DIRECTORIES") {
         Ok(val) => val,
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), false),
     };
     if raw.is_empty() {
-        return Vec::new();
+        return (Vec::new(), false);
     }
-    raw.split(':')
+    // A leading colon means "don't resolve symlinks".
+    let (no_resolve, effective) = if raw.starts_with(':') {
+        (true, &raw[1..])
+    } else {
+        (false, raw.as_str())
+    };
+    let paths = effective
+        .split(':')
         .filter(|s| !s.is_empty())
         .filter_map(|s| {
             let p = PathBuf::from(s);
             if !p.is_absolute() {
                 return None;
             }
-            // Canonicalize to resolve symlinks; fall back to the raw path
-            // (with trailing slashes stripped) when the directory doesn't exist.
-            Some(p.canonicalize().unwrap_or_else(|_| {
-                // Strip trailing slashes for consistent comparison
+            if no_resolve {
+                // Strip trailing slashes for consistent comparison but don't resolve symlinks.
                 let s = s.trim_end_matches('/');
-                PathBuf::from(s)
-            }))
+                Some(PathBuf::from(s))
+            } else {
+                // Canonicalize to resolve symlinks; fall back to the raw path
+                // (with trailing slashes stripped) when the directory doesn't exist.
+                Some(p.canonicalize().unwrap_or_else(|_| {
+                    let s = s.trim_end_matches('/');
+                    PathBuf::from(s)
+                }))
+            }
         })
-        .collect()
+        .collect();
+    (paths, no_resolve)
 }
 
 /// Validate the repository format version from config text.

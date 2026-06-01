@@ -2925,13 +2925,32 @@ fn prepare_gitdir_pattern(condition: &str, file: &ConfigFile) -> Result<(String,
 }
 
 /// Git `include_by_gitdir` tries `strbuf_realpath` first, then `strbuf_add_absolute_path` if no match.
+///
+/// `text_abs` uses `$PWD` (which preserves symlinks) when available, matching Git's
+/// `strbuf_add_absolute_path` behaviour. This lets `gitdir:bar/` match when `bar` is a symlink.
 fn git_dir_match_texts(git_dir: &Path) -> (String, String) {
     let real = git_dir
         .canonicalize()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| git_dir.to_string_lossy().into_owned());
+    // Build the non-canonical absolute path using $PWD (symlink-preserving) when available.
+    // Git C uses `strbuf_add_absolute_path` which prefers $PWD over getcwd() to preserve symlinks.
     let abs = if git_dir.is_absolute() {
-        git_dir.to_string_lossy().into_owned()
+        // If git_dir is already canonical, try to reconstruct the symlink-preserving variant
+        // by replacing the canonical cwd prefix with $PWD.
+        let pwd_abs = std::env::var("PWD").ok().and_then(|pwd| {
+            let pwd_path = std::path::Path::new(&pwd);
+            if !pwd_path.is_absolute() {
+                return None;
+            }
+            let pwd_canon = pwd_path.canonicalize().ok()?;
+            let git_dir_str = git_dir.to_string_lossy();
+            let pwd_canon_str = pwd_canon.to_string_lossy();
+            // If git_dir starts with the canonical cwd, replace that prefix with $PWD
+            let suffix = git_dir_str.strip_prefix(pwd_canon_str.as_ref())?;
+            Some(format!("{pwd}{suffix}"))
+        });
+        pwd_abs.unwrap_or_else(|| git_dir.to_string_lossy().into_owned())
     } else if let Ok(cwd) = std::env::current_dir() {
         cwd.join(git_dir).to_string_lossy().into_owned()
     } else {

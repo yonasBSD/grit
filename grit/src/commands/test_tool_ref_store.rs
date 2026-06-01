@@ -341,7 +341,8 @@ fn cmd_for_each_reflog_ent(store: &RefStore, args: &[String]) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    for e in &entries {
+    // Git C's test-tool for-each-reflog-ent iterates newest-first (reverse file order).
+    for e in entries.iter().rev() {
         writeln!(
             out,
             "{} {} {}\t{}",
@@ -354,14 +355,15 @@ fn cmd_for_each_reflog_ent(store: &RefStore, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Print reflog entries in reverse order.
+/// Print reflog entries in forward (oldest-first) order, matching git C's
+/// `for_each_reflog_ent_reverse` which confusingly walks the file forward.
 fn cmd_for_each_reflog_ent_reverse(store: &RefStore, args: &[String]) -> Result<()> {
     let refname = args.first().map(String::as_str).unwrap_or("HEAD");
     let entries = grit_lib::reflog::read_reflog(&store.git_dir, refname)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    for e in entries.iter().rev() {
+    for e in &entries {
         writeln!(
             out,
             "{} {} {}\t{}",

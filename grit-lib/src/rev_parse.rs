@@ -1448,7 +1448,6 @@ pub struct TreeishBlobAtPath {
 /// target is a tree or gitlink rather than a blob/symlink blob.
 pub fn resolve_treeish_blob_at_path(repo: &Repository, spec: &str) -> Result<TreeishBlobAtPath> {
     let (before, after) = split_treeish_colon(spec)
-        .filter(|(_, path)| !path.is_empty())
         .ok_or_else(|| Error::InvalidRef(format!("'{spec}' is not a treeish:path revision")))?;
 
     let rev_oid =
@@ -1468,6 +1467,16 @@ pub fn resolve_treeish_blob_at_path(repo: &Repository, spec: &str) -> Result<Tre
         };
 
     let tree_oid = peel_to_tree(repo, rev_oid)?;
+
+    // Empty path means the root tree itself.
+    if after.is_empty() {
+        return Ok(TreeishBlobAtPath {
+            path: String::new(),
+            oid: tree_oid,
+            mode: "040000".to_string(),
+        });
+    }
+
     let clean_path = match normalize_colon_path_for_tree(repo, after) {
         Ok(p) => p,
         Err(Error::InvalidRef(msg)) if msg == "outside repository" => {
@@ -1486,11 +1495,6 @@ pub fn resolve_treeish_blob_at_path(repo: &Repository, spec: &str) -> Result<Tre
 
     let (oid, mode_str) = walk_tree_to_blob_entry(repo, &tree_oid, &clean_path)
         .map_err(|e| diagnose_tree_path_error(repo, before, after, &clean_path, e))?;
-    if mode_str == "160000" {
-        return Err(Error::InvalidRef(format!(
-            "'{clean_path}' is a gitlink, not a blob"
-        )));
-    }
     Ok(TreeishBlobAtPath {
         path: clean_path,
         oid,
@@ -1523,11 +1527,6 @@ fn walk_tree_to_blob_entry(
             if rest.is_empty() {
                 if entry.mode == crate::index::MODE_TREE {
                     return Err(Error::InvalidRef(format!("'{path}' is a tree, not a blob")));
-                }
-                if entry.mode == crate::index::MODE_GITLINK {
-                    return Err(Error::InvalidRef(format!(
-                        "'{path}' is a gitlink, not a blob"
-                    )));
                 }
                 return Ok((entry.oid, entry.mode_str()));
             }

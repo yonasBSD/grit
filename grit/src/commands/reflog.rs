@@ -716,7 +716,7 @@ fn resolve_reflog_write_identity(repo: &Repository) -> String {
         .clone()
         .or_else(|| config.as_ref().and_then(|c| c.get("user.email")))
         .unwrap_or_default();
-    let mut date = std::env::var("GIT_COMMITTER_DATE").ok().unwrap_or_else(|| {
+    let date = std::env::var("GIT_COMMITTER_DATE").ok().unwrap_or_else(|| {
         let now = time::OffsetDateTime::now_utc();
         let epoch = now.unix_timestamp();
         let offset = now.offset();
@@ -724,13 +724,6 @@ fn resolve_reflog_write_identity(repo: &Repository) -> String {
         let minutes = offset.minutes_past_hour().unsigned_abs();
         format!("{epoch} {hours:+03}{minutes:02}")
     });
-
-    if env_committer_name.as_deref() == Some("C O Mitter")
-        && env_committer_email.as_deref() == Some("committer@example.com")
-        && date == "1112354055 +0200"
-    {
-        date = "1112911993 -0700".to_owned();
-    }
 
     format!("{name} <{email}> {date}")
 }

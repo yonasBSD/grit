@@ -5564,6 +5564,8 @@ fn run_reflog_walk(
         let cli_date_for_reflog = args.date.as_deref().filter(|s| !s.is_empty());
         let selector = if use_date_sel {
             format_reflog_selector_date(&display_name, &entry, date_mode)
+        } else if let Some(dm) = cli_date_for_reflog {
+            format_reflog_selector_date(&display_name, &entry, Some(dm))
         } else {
             let idx_from_tip = nr - 1 - j;
             format!("{display_name}@{{{idx_from_tip}}}")
@@ -5613,14 +5615,8 @@ fn run_reflog_walk(
                     };
                     writeln!(out, "Reflog: {} ({})", selector, ident_display)?;
                     writeln!(out, "Reflog message: {}", entry.message)?;
-                    let author_name = if use_mailmap && !mailmap.is_empty() {
-                        let n = extract_name(&commit_data.author);
-                        let e = extract_email(&commit_data.author);
-                        mailmap.map_user(n, e).0
-                    } else {
-                        extract_name(&commit_data.author)
-                    };
-                    writeln!(out, "Author: {author_name}")?;
+                    let author_display = format_ident_display_mailmap(mailmap, &commit_data.author, use_mailmap);
+                    writeln!(out, "Author: {author_display}")?;
                     writeln!(out)?;
                     for line in commit_data.message.lines().take(1) {
                         writeln!(

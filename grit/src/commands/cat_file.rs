@@ -1160,7 +1160,7 @@ fn split_treeish_colon_path(spec: &str) -> Option<(&str, &str)> {
     let idx = spec.find(':')?;
     let treeish = &spec[..idx];
     let path = &spec[idx + 1..];
-    if treeish.is_empty() || path.is_empty() {
+    if treeish.is_empty() {
         None
     } else {
         Some((treeish, path))
