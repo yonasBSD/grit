@@ -34,7 +34,8 @@
 - [x] `t8600-update-ref-symref` 28/28 — fixed the synthetic test's expected `master` initial branch.
 - [x] `t8770-status-branch-tracking` 34/34 — fixed the synthetic test's expected `master` initial branch.
 - [x] `t8970-symbolic-ref-chains` 30/30 — fixed the synthetic test's expected `master` initial branch.
-- [ ] `t8009-blame-vs-topicbranches` 0/2 — tied next highest remaining t8 file.
+- [x] `t8009-blame-vs-topicbranches` 2/2 — passed after prior blame fixes.
+- [ ] `t8290-log-grep-message` 28/30 — tied next highest remaining t8 file.
 - [ ] `t8970-symbolic-ref-chains` 26/30 — next highest remaining t8 file.
 
 **Updated:** 2026-06-01 · Source of truth for counts: `data/test-files.csv`.
