@@ -18,6 +18,7 @@ Updated: 2026-06-01
 - t8 symbolic-ref neighbor: `./scripts/run-tests.sh t8600-update-ref-symref.sh` remains 24/28.
 - t8 branch merge info: `./scripts/run-tests.sh t8110-branch-merge-info.sh` passes 31/31 after making the synthetic test request its expected `master` initial branch.
 - t8 restore staged: `./scripts/run-tests.sh t8340-restore-staged.sh` passes 27/27 after replacing invalid `test_must_fail grep` checks.
+- t8 for-each-ref points-at: `./scripts/run-tests.sh t8940-for-each-ref-points-at.sh` passes 29/29 after making the synthetic test request its expected `master` initial branch.
 - t8 switch checks: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 - t8 blame focus: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 

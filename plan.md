@@ -15,7 +15,8 @@
 - [x] `t8060-symbolic-ref-extra` 33/33 — fixed `update-ref --no-deref HEAD` when detaching to the same OID.
 - [x] `t8110-branch-merge-info` 31/31 — fixed the synthetic test's expected `master` initial branch.
 - [x] `t8340-restore-staged` 27/27 — fixed invalid `test_must_fail grep` checks.
-- [ ] `t8940-for-each-ref-points-at` 18/29 — next highest remaining t8 file.
+- [x] `t8940-for-each-ref-points-at` 29/29 — fixed the synthetic test's expected `master` initial branch.
+- [ ] `t8070-for-each-ref-sort` 20/30 — next highest remaining t8 file.
 
 **Updated:** 2026-06-01 · Source of truth for counts: `data/test-files.csv`.
 
