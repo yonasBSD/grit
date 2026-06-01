@@ -294,7 +294,10 @@ pub fn run(args: Args) -> Result<()> {
         peel_committish_for_mode(&repo, onto_spec, "--onto")
             .map_err(|e| anyhow::anyhow!("{}", e.to_string().trim_end_matches('\n')))?
     } else {
-        let adv = parsed.advance.as_deref().expect("advance when no onto");
+        let adv = parsed
+            .advance
+            .as_deref()
+            .context("option --onto or --advance is mandatory")?;
         let full = try_dwim_single_branch_ref(&repo.git_dir, adv)?
             .ok_or_else(|| anyhow::anyhow!("fatal: argument to --advance must be a reference"))?;
         if positive_specs.len() > 1 {
@@ -314,12 +317,11 @@ pub fn run(args: Args) -> Result<()> {
         s
     };
 
-    let advance_full_ref = if has_advance {
+    let advance_full_ref = if let Some(adv) = parsed.advance.as_deref() {
         Some(
-            try_dwim_single_branch_ref(&repo.git_dir, parsed.advance.as_deref().expect("advance"))?
-                .ok_or_else(|| {
-                    anyhow::anyhow!("fatal: argument to --advance must be a reference")
-                })?,
+            try_dwim_single_branch_ref(&repo.git_dir, adv)?.ok_or_else(|| {
+                anyhow::anyhow!("fatal: argument to --advance must be a reference")
+            })?,
         )
     } else {
         None
@@ -375,11 +377,8 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
-    let reflog_msg = if has_advance {
-        format!(
-            "replay --advance {}",
-            parsed.advance.as_deref().expect("advance")
-        )
+    let reflog_msg = if let Some(adv) = parsed.advance.as_deref() {
+        format!("replay --advance {adv}")
     } else {
         format!("replay --onto {}", onto_oid.to_hex())
     };
@@ -1045,7 +1044,7 @@ fn detect_side_renames(
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000)
     };
-    let zero_oid = ObjectId::from_bytes(&[0u8; 20]).unwrap();
+    let zero_oid = ObjectId::zero();
 
     let mut side_oid_to_paths: HashMap<ObjectId, Vec<Vec<u8>>> = HashMap::new();
     for (path, entry) in side {

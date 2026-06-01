@@ -169,11 +169,9 @@ fn load_parsed_for_run(
         return load_gitattributes_from_index(&index, &repo.odb, wt).context("index attributes");
     }
 
-    if repo.work_tree.is_none() {
+    let Some(wt) = repo.work_tree.as_ref() else {
         return load_gitattributes_bare(repo).context("bare attributes");
-    }
-
-    let wt = repo.work_tree.as_ref().unwrap();
+    };
     load_gitattributes_stack(repo, wt).context("work tree attributes")
 }
 

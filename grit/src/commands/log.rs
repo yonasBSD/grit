@@ -1518,8 +1518,9 @@ fn parse_date_to_epoch(s: &str) -> Option<i64> {
             ) {
                 if let Ok(month) = time::Month::try_from(m) {
                     if let Ok(date) = time::Date::from_calendar_date(y, month, d) {
-                        let dt = date.with_hms(0, 0, 0).unwrap().assume_utc();
-                        return Some(dt.unix_timestamp());
+                        if let Ok(dt) = date.with_hms(0, 0, 0) {
+                            return Some(dt.assume_utc().unix_timestamp());
+                        }
                     }
                 }
             }
@@ -6768,10 +6769,8 @@ impl<'a> NotesMapCache<'a> {
     }
 
     fn map(&mut self) -> &std::collections::HashMap<ObjectId, Vec<u8>> {
-        if self.map.is_none() {
-            self.map = Some(load_notes_map(self.repo));
-        }
-        self.map.as_ref().unwrap()
+        let repo = self.repo;
+        self.map.get_or_insert_with(|| load_notes_map(repo))
     }
 }
 

@@ -1149,7 +1149,10 @@ fn parse_rev_list_date(s: &str) -> Result<i64> {
             ) {
                 if let Ok(month) = time::Month::try_from(m) {
                     if let Ok(date) = time::Date::from_calendar_date(y, month, d) {
-                        let dt = date.with_hms(0, 0, 0).unwrap().assume_utc();
+                        let dt = date
+                            .with_hms(0, 0, 0)
+                            .context("invalid midnight time for rev-list date")?
+                            .assume_utc();
                         return Ok(dt.unix_timestamp());
                     }
                 }

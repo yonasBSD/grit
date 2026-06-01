@@ -2,7 +2,7 @@
 //!
 //! Matches Git's `cmd_parseopt` in `builtin/rev-parse.c` and `parse_options` in `parse-options.c`.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use std::io::{self, BufRead, Write};
 
 const PARSE_OPT_NOARG: u8 = 1 << 1;
@@ -248,10 +248,13 @@ fn append_parsed(
         if let Some(ln) = entry.long_name.as_deref() {
             parsed.push_str(&format!(" --no-{ln}"));
         }
-    } else if entry.short_name.is_some() && (entry.long_name.is_none() || !stuck_long) {
+    } else if let Some(sn) = entry
+        .short_name
+        .filter(|_| entry.long_name.is_none() || !stuck_long)
+    {
         parsed.push(' ');
         parsed.push('-');
-        parsed.push(entry.short_name.unwrap());
+        parsed.push(sn);
     } else if let Some(ln) = entry.long_name.as_deref() {
         parsed.push_str(&format!(" --{ln}"));
     }
@@ -500,11 +503,18 @@ fn parse_spec(stdin_lines: &[String]) -> Result<(Vec<String>, Vec<OptEntry>)> {
             bail!("fatal: missing opt-spec before option flags");
         }
         let (short_name, long_name) = if flag_start == 1 {
-            (Some(name_field.chars().next().unwrap()), None::<String>)
+            let sc = name_field
+                .chars()
+                .next()
+                .context("empty opt-spec short name")?;
+            (Some(sc), None::<String>)
         } else if name_field.as_bytes().get(1) != Some(&b',') {
             (None, Some(name_field[..flag_start].to_string()))
         } else {
-            let sc = name_field.chars().next().unwrap();
+            let sc = name_field
+                .chars()
+                .next()
+                .context("empty opt-spec short name")?;
             (Some(sc), Some(name_field[2..flag_start].to_string()))
         };
         let mut flags: u8 = PARSE_OPT_NOARG;

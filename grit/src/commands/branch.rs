@@ -749,10 +749,11 @@ fn list_branches(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
             write!(out, "{prefix}{desc}")?;
         }
         if args.verbose > 0 {
-            let oid = head.oid().unwrap();
-            let short = abbrev_for_branch_verbose(repo, oid);
-            let subject = commit_subject(&repo.odb, oid).unwrap_or_default();
-            write!(out, " {short} {subject}")?;
+            if let Some(oid) = head.oid() {
+                let short = abbrev_for_branch_verbose(repo, oid);
+                let subject = commit_subject(&repo.odb, oid).unwrap_or_default();
+                write!(out, " {short} {subject}")?;
+            }
         }
         writeln!(out)?;
     }
@@ -1454,10 +1455,11 @@ fn format_branch(
     omit_empty: bool,
     emit_format_color: bool,
 ) -> Result<String, BranchListError> {
-    let refname_display = if branch.full_refname.is_none() {
-        detached_head_description(repo, head).map_err(|e| BranchListError::Other(e.into()))?
-    } else {
-        branch.full_refname.clone().unwrap()
+    let refname_display = match &branch.full_refname {
+        Some(refname) => refname.clone(),
+        None => {
+            detached_head_description(repo, head).map_err(|e| BranchListError::Other(e.into()))?
+        }
     };
     let ctx = BranchFormatContext {
         repo,

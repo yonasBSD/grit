@@ -927,8 +927,8 @@ fn add_note(
         }
         return Ok(());
     }
-    let note_oid = if only_minus_c {
-        resolve_revision(repo, reuse_message.expect("-C"))?
+    let note_oid = if let Some(reuse) = reuse_message.filter(|_| only_minus_c) {
+        resolve_revision(repo, reuse)?
     } else {
         if !combined.ends_with('\n') && !combined.is_empty() {
             combined.push('\n');
@@ -1658,13 +1658,12 @@ fn build_merge_pairs(
     }
 
     for (obj, old_b, new_b) in local_raw {
+        let local_state = match new_b {
+            Some(new_oid) => LocalNoteState::Present(new_oid),
+            None => LocalNoteState::Deleted,
+        };
         if let Some(p) = map.get_mut(&obj) {
-            if new_b.is_none() {
-                p.local = LocalNoteState::Deleted;
-            } else {
-                let new_oid = new_b.expect("add or modify has new blob");
-                p.local = LocalNoteState::Present(new_oid);
-            }
+            p.local = local_state;
         } else {
             map.insert(
                 obj,
@@ -1672,11 +1671,7 @@ fn build_merge_pairs(
                     obj,
                     base_blob: old_b,
                     remote_blob: old_b,
-                    local: if new_b.is_none() {
-                        LocalNoteState::Deleted
-                    } else {
-                        LocalNoteState::Present(new_b.expect("local add/modify"))
-                    },
+                    local: local_state,
                 },
             );
         }
@@ -2258,7 +2253,7 @@ fn merge_notes_dispatch(
     if do_commit {
         return merge_notes_commit_cmd(repo);
     }
-    let src_raw = source_ref.expect("checked");
+    let src_raw = source_ref.context("must specify a notes ref to merge")?;
     let remote_ref = expand_notes_ref(src_raw);
     let verbosity = i32::from(verbose).saturating_sub(i32::from(quiet));
     if verbosity > 0 {

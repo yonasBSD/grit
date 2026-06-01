@@ -1573,12 +1573,15 @@ fn cmd_run(repo: &Repository, args: &[String]) -> Result<()> {
             .with_context(|| format!("failed to execute: {display_cmd}"))?;
         let child_stdout = child.stdout.take().context("bisect run stdout")?;
         let mut child = child;
-        let (status, out) = std::thread::scope(|s| {
+        let (status, out) = std::thread::scope(|s| -> anyhow::Result<_> {
             let h = s.spawn(|| std::io::read_to_string(child_stdout));
-            let status = child.wait().expect("wait");
-            let out = h.join().expect("join").unwrap_or_default();
-            (status, out)
-        });
+            let status = child.wait().context("waiting for bisect run command")?;
+            let out = h
+                .join()
+                .map_err(|_| anyhow::anyhow!("bisect run stdout reader thread panicked"))?
+                .unwrap_or_default();
+            Ok((status, out))
+        })?;
         let code = status.code().unwrap_or(-1);
 
         if is_first && (code == 126 || code == 127) {

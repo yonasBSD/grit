@@ -1287,13 +1287,10 @@ pub fn run(mut args: Args) -> Result<()> {
     let commit_oid = repo.odb.write(ObjectKind::Commit, &commit_bytes)?;
 
     // Update HEAD
-    let old_oid = head
-        .oid()
-        .copied()
-        .unwrap_or_else(|| ObjectId::from_bytes(&[0u8; 20]).unwrap());
+    let old_oid = head.oid().copied().unwrap_or_else(ObjectId::zero);
     update_head(&repo.git_dir, &head, &commit_oid)?;
 
-    let zero_oid = ObjectId::from_bytes(&[0u8; 20]).unwrap();
+    let zero_oid = ObjectId::zero();
     let mut amend_reattached_ref: Option<String> = None;
 
     // `git commit --amend` with detached HEAD: if exactly one local branch still points at the
@@ -1498,7 +1495,7 @@ pub fn run(mut args: Args) -> Result<()> {
         if let Ok(diff_entries) =
             grit_lib::diff::diff_trees(&repo.odb, parent_tree.as_ref(), Some(&commit_data.tree), "")
         {
-            let zero_oid = ObjectId::from_bytes(&[0u8; 20]).unwrap();
+            let zero_oid = ObjectId::zero();
             let mut total_files = 0usize;
             let mut total_ins = 0usize;
             let mut total_del = 0usize;

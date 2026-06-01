@@ -660,15 +660,14 @@ fn cmd_get(
         };
         let entries =
             grit_lib::config::get_urlmatch_entries(config.entries(), section, variable, url);
-        if entries.is_empty() {
+        let Some(entry) = entries.last() else {
             if let Some(ref default) = get_args.default {
                 let val = format_default_value(args, default)?;
                 print!("{val}{terminator}");
                 return Ok(());
             }
             std::process::exit(1);
-        }
-        let entry = entries.last().unwrap();
+        };
         let val = entry.value.as_deref().unwrap_or("true");
         let val = format_typed_value(args, Some(&get_args.key), val)?;
         print!("{val}{terminator}");
@@ -1011,10 +1010,9 @@ fn cmd_get_urlmatch(args: &Args, key: &str, url: &str, git_dir: Option<&Path>) -
         let variable = &key[dot + 1..];
         let entries =
             grit_lib::config::get_urlmatch_entries(config.entries(), section, variable, url);
-        if entries.is_empty() {
+        let Some(entry) = entries.last() else {
             std::process::exit(1);
-        }
-        let entry = entries.last().unwrap();
+        };
         let val = entry.value.as_deref().unwrap_or("true");
         let val = format_typed_value(args, Some(key), val)?;
         print!("{val}{terminator}");

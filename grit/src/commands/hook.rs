@@ -106,18 +106,15 @@ fn list_cmd(rest: &[String]) -> Result<()> {
     let hook_event = pos[0];
 
     let repo_result = discover_repo();
-    let (repo_opt, git_dir_opt) = match repo_result {
-        Ok(r) => (Some(r), None),
+    let (repo_opt, config) = match repo_result {
+        Ok(r) => {
+            let cfg = load_config(Some(&r.git_dir))?;
+            (Some(r), cfg)
+        }
         Err(_) => {
             let cfg = load_config(None)?;
-            (None, Some(cfg))
+            (None, cfg)
         }
-    };
-
-    let config = if let Some(ref r) = repo_opt {
-        load_config(Some(&r.git_dir))?
-    } else {
-        git_dir_opt.expect("config loaded")
     };
 
     let lines = match list_hooks_display_lines(repo_opt.as_ref(), hook_event, &config) {
