@@ -10,7 +10,8 @@
 - [x] `t8730-cherry-advanced` 28/28 — fixed the synthetic test's expected `master` initial branch.
 - [x] `t8160-config-section` 27/27 — fixed the documented cwd-leak test wrapper issue.
 - [x] `t8310-for-each-ref-format-deep` 32/32 — fixed the synthetic test's expected `master` initial branch.
-- [ ] `t8590-for-each-ref-filter` 17/30 — tied next highest remaining t8 file.
+- [x] `t8590-for-each-ref-filter` 30/30 — fixed the synthetic test's expected `master` initial branch.
+- [ ] `t8640-ls-files-stage-unmerged` 18/31 — next highest remaining t8 file.
 
 **Updated:** 2026-06-01 · Source of truth for counts: `data/test-files.csv`.
 
