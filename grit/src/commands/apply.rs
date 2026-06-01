@@ -3150,6 +3150,11 @@ fn apply_hunks(
         let mut hunk_to_apply = hunk.clone();
         let p_ctx = ws_mode.context.unwrap_or(usize::MAX);
 
+        // Fuzz-retry scaffold: the per-hunk match below is structured as a loop so reduced-context
+        // retries can re-enter it, but every current path exits on the first iteration (the retry
+        // re-entry is not yet wired). Pre-existing; kept as-is to avoid changing patch-application
+        // behavior (covered by the t40xx apply suite).
+        #[allow(clippy::never_loop)]
         loop {
             let required_context = ws_mode
                 .context

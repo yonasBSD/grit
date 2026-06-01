@@ -5876,12 +5876,12 @@ fn read_current_final_fixup(rb_dir: &Path) -> bool {
 fn pop_first_nonempty_todo_line(repo: &Repository, rb_dir: &Path) -> Result<()> {
     let s = read_rebase_todo_file(repo, rb_dir)?;
     let mut lines: Vec<String> = s.lines().map(|l| l.to_owned()).collect();
-    while let Some(idx) = lines.iter().position(|l| {
+    // Pop only the first non-empty, non-comment line (the `break` made this single-shot already).
+    if let Some(idx) = lines.iter().position(|l| {
         let t = l.trim();
         !t.is_empty() && !t.starts_with('#')
     }) {
         lines.remove(idx);
-        break;
     }
     let mut out = lines.join("\n");
     if !out.is_empty() {
