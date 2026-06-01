@@ -21,7 +21,8 @@
 - [x] `t8270-log-author-search` 29/29 — fixed raw log option hydration, case-insensitive author matching, and empty-repo expectation.
 - [x] `t8280-log-committer-search` 29/29 — passed with the same log option hydration changes.
 - [x] `t8950-show-ref-patterns` 29/29 — fixed the synthetic test's expected `master` initial branch.
-- [ ] `t8130-show-ref-extra` 24/31 — tied next highest remaining t8 file.
+- [x] `t8130-show-ref-extra` 31/31 — fixed the synthetic test's expected `master` initial branch.
+- [ ] `t8170-init-reinitialize` 28/35 — tied next highest remaining t8 file.
 
 **Updated:** 2026-06-01 · Source of truth for counts: `data/test-files.csv`.
 
