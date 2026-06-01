@@ -12,7 +12,7 @@ cd "$(dirname "$0")" || exit 1
 
 test_expect_success 'setup repository' '
 	(
-	grit init repo &&
+	grit init --initial-branch=master repo &&
 	cd repo &&
 	git config user.email "test@test.com" &&
 	git config user.name "Tester" &&

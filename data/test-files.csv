@@ -1434,7 +1434,7 @@ t9127-git-svn-partial-rebuild	t9	skip	4	0	0	false	ok	0
 t9128-git-svn-cmd-branch	t9	skip	4	0	0	false	ok	0
 t9129-git-svn-i18n-commitencoding	t9	skip	5	0	0	false	ok	0
 t9130-git-svn-authors-file	t9	skip	10	0	0	false	ok	0
-t9130-status-porcelain-v2	t9	yes	26	21	5	false	ok	0
+t9130-status-porcelain-v2	t9	yes	26	26	0	true	ok	0
 t9131-git-svn-empty-symlink	t9	skip	15	0	0	false	ok	0
 t9132-git-svn-broken-symlink	t9	skip	5	0	0	false	ok	0
 t9133-git-svn-nested-git-repo	t9	skip	8	0	0	false	ok	0
