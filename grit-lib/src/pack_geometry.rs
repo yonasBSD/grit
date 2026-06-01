@@ -130,7 +130,7 @@ pub fn collect_geometry_packs(
         });
     }
 
-    out.sort_by(|a, b| a.object_count.cmp(&b.object_count));
+    out.sort_by_key(|a| a.object_count);
     Ok(out)
 }
 
@@ -195,7 +195,7 @@ pub fn collect_promisor_geometry_packs(
         });
     }
 
-    out.sort_by(|a, b| a.object_count.cmp(&b.object_count));
+    out.sort_by_key(|a| a.object_count);
     Ok(out)
 }
 

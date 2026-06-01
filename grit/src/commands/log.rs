@@ -5615,7 +5615,8 @@ fn run_reflog_walk(
                     };
                     writeln!(out, "Reflog: {} ({})", selector, ident_display)?;
                     writeln!(out, "Reflog message: {}", entry.message)?;
-                    let author_display = format_ident_display_mailmap(mailmap, &commit_data.author, use_mailmap);
+                    let author_display =
+                        format_ident_display_mailmap(mailmap, &commit_data.author, use_mailmap);
                     writeln!(out, "Author: {author_display}")?;
                     writeln!(out)?;
                     for line in commit_data.message.lines().take(1) {

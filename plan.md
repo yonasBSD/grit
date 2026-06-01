@@ -8,7 +8,8 @@
   - Completed: `t9040-hash-object-types.sh` (28/28).
   - Completed: `t9060-mktag-verify.sh` (28/28).
   - Completed: `t9300-branch-delete-force.sh` (25/25).
-  - Next expected target: `t9600-switch-branch-create.sh` (currently 20/40, 20 failing).
+  - Completed: `t9600-switch-branch-create.sh` (40/40).
+  - Next expected target: choose by refreshed CSV after commit.
   - Scope: current `in_scope=yes` t9 rows; skipped external-helper files remain excluded unless
     explicitly unskipped later.
   - Execution log: `logs/2026-06-01_0000-t9-family.md`.

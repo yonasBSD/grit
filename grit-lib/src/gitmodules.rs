@@ -962,15 +962,14 @@ pub fn validate_gitmodules_blob_line(data: &[u8]) -> Option<String> {
                         ));
                     }
                 }
-                "update" => {
-                    if submodule_update_is_command(value) {
+                "update"
+                    if submodule_update_is_command(value) => {
                         worst.get_or_insert_with(|| {
                             format!(
                                 "gitmodulesUpdate: disallowed submodule update setting: {value}"
                             )
                         });
                     }
-                }
                 _ => {}
             }
         }

@@ -11,6 +11,11 @@ Updated: 2026-06-01
   containing the setup test's `cd repo` in a subshell.
 - t9 focus: `./scripts/run-tests.sh t9300-branch-delete-force.sh --verbose` now passes 25/25 after
   making real-Git setup explicitly initialize `master`, matching the test's hard-coded branch names.
+- t9 focus: `cargo build --release -p grit-cli` passed with existing warnings, then
+  `./scripts/run-tests.sh t9600-switch-branch-create.sh --verbose` passed 40/40 after explicit
+  `master` setup plus a `grit switch` no-target error check.
+- t9600 validation: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`, and
+  `cargo test -p grit-lib --lib` all completed successfully; grit-lib unit tests passed 229/229.
 - Workspace cargo/unit tests: not re-run for the `t9040`/`t9060` harness-only cwd fixes.
 - `cargo build --release -p grit-cli`: pass.
 - `cargo fmt`: run. `cargo fmt --check` still reports pre-existing formatting drift in unrelated files; those mechanical edits were not included in this scoped commit.

@@ -1024,8 +1024,8 @@ fn walk_tree_attrs(
             0o040000 => {
                 walk_tree_attrs(odb, &e.oid, &path, merged)?;
             }
-            0o100644 | 0o100755 | 0o120000 => {
-                if name == ".gitattributes" {
+            0o100644 | 0o100755 | 0o120000
+                if name == ".gitattributes" => {
                     let oid = e.oid;
                     {
                         let blob = odb.read(&oid)?;
@@ -1049,7 +1049,6 @@ fn walk_tree_attrs(
                         merged.warnings.append(&mut p.warnings);
                     }
                 }
-            }
             _ => {}
         }
     }

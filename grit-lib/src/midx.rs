@@ -426,7 +426,7 @@ fn build_midx_bytes(
     }
 
     let mut entries: Vec<MidxEntry> = best.into_values().collect();
-    entries.sort_by(|a, b| a.oid.cmp(&b.oid));
+    entries.sort_by_key(|a| a.oid);
 
     let mut large_offsets: Vec<u64> = Vec::new();
     for e in &entries {

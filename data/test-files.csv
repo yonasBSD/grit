@@ -1532,7 +1532,7 @@ t9560-commit-message-variants	t9	yes	33	31	2	false	ok	0
 t9580-rm-cached-worktree	t9	yes	40	40	0	true	ok	0
 t9590-mv-cross-directory	t9	yes	40	40	0	true	ok	0
 t9600-cvsimport	t9	skip	15	0	0	false	ok	0
-t9600-switch-branch-create	t9	yes	40	20	20	false	ok	0
+t9600-switch-branch-create	t9	yes	40	40	0	true	ok	0
 t9601-cvsimport-vendor-branch	t9	skip	9	0	0	false	ok	1
 t9602-cvsimport-branches-tags	t9	skip	11	0	0	false	ok	6
 t9603-cvsimport-patchsets	t9	skip	1	0	0	false		1
