@@ -2891,6 +2891,27 @@ fn bail_if_merge_would_overwrite_local_changes(
         .map(|e| e.path.clone())
         .collect();
 
+    // On a case-insensitive filesystem (`core.ignorecase`), a merge-result path that differs from a
+    // tracked path only by case (e.g. `CamelCase` vs tracked `camelcase`) is the *same* file on
+    // disk. Build a case-folded view of the tracked paths so the untracked-collision check below
+    // does not flag such a path as an untracked file that would be overwritten (t0050 "merge (case
+    // change)").
+    let ignore_case = core_ignorecase(repo);
+    let current_tracked_paths_folded: BTreeSet<Vec<u8>> = if ignore_case {
+        current_tracked_paths
+            .iter()
+            .map(|p| path_ascii_lowercase_components(p))
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    let is_tracked_path = |path: &[u8]| -> bool {
+        if current_tracked_paths.contains(path) {
+            return true;
+        }
+        ignore_case && current_tracked_paths_folded.contains(&path_ascii_lowercase_components(path))
+    };
+
     // Merge-ort resolves submodule vs tree at the same path as index conflicts (t6437); do not
     // abort here — checked-out submodules are preserved on disk while conflict stages are written.
 
@@ -2975,7 +2996,7 @@ fn bail_if_merge_would_overwrite_local_changes(
 
     let mut overwrite_untracked: BTreeSet<String> = BTreeSet::new();
     for new_entry in new_index.entries.iter().filter(|e| e.stage() == 0) {
-        if current_tracked_paths.contains(&new_entry.path) {
+        if is_tracked_path(&new_entry.path) {
             continue;
         }
 
@@ -3031,7 +3052,7 @@ fn bail_if_merge_would_overwrite_local_changes(
         if new_entry.stage() != 0 {
             continue;
         }
-        if current_tracked_paths.contains(&new_entry.path) {
+        if is_tracked_path(&new_entry.path) {
             continue;
         }
 

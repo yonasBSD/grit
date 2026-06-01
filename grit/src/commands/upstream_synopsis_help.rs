@@ -11,9 +11,30 @@ mod upstream_help_builtin_synopsis {
 }
 
 /// Vendored synopsis string for `cmd`, if present in `upstream_help_synopsis.rs`.
+///
+/// A handful of commands (e.g. `imap-send`) are not part of the `--list-cmds=builtins`
+/// union the generator iterates over, so they never appear in the generated table even
+/// though `Documentation/git-<cmd>.adoc` has a SYNOPSIS block. Provide their adoc
+/// SYNOPSIS here so their `-h` output still agrees with the docs byte-for-byte (t0450).
 #[must_use]
 pub(crate) fn synopsis_for_builtin(cmd: &str) -> Option<&'static str> {
-    upstream_help_builtin_synopsis::synopsis_for_builtin(cmd)
+    if let Some(syn) = upstream_help_builtin_synopsis::synopsis_for_builtin(cmd) {
+        return Some(syn);
+    }
+    synopsis_for_non_builtin(cmd)
+}
+
+/// adoc SYNOPSIS for commands omitted from the generated `--list-cmds=builtins` table.
+/// Text mirrors `Documentation/git-<cmd>.adoc` after the t0450 `adoc_to_synopsis` rules.
+#[must_use]
+fn synopsis_for_non_builtin(cmd: &str) -> Option<&'static str> {
+    match cmd {
+        "imap-send" => Some(concat!(
+            "git imap-send [-v] [-q] [--[no-]curl] [(--folder|-f) <folder>]\n",
+            "git imap-send --list",
+        )),
+        _ => None,
+    }
 }
 
 /// Print synopsis to stdout (no trailer), blank line, then exit — used by `parse_cmd_args` and stash helpers.

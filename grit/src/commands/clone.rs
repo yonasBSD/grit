@@ -27,9 +27,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 
-use crate::commands::checkout::{
-    checkout_parallel_worker_spawns, trace2_emit_checkout_parallel_workers,
-};
 use crate::commands::submodule::{
     set_submodule_core_worktree_after_separate_clone, submodule_separate_git_dir,
 };
@@ -463,10 +460,9 @@ fn is_unborn_remote_default_checkout(
 
 /// Perform checkout of `HEAD` when it points at a missing branch (unborn), matching Git clone.
 fn checkout_head_allow_unborn(repo: &Repository) -> Result<()> {
-    let work_tree = match &repo.work_tree {
-        Some(wt) => wt,
-        None => return Ok(()),
-    };
+    if repo.work_tree.is_none() {
+        return Ok(());
+    }
 
     let head_content = fs::read_to_string(repo.git_dir.join("HEAD")).context("reading HEAD")?;
     let head = head_content.trim();
@@ -486,9 +482,30 @@ fn checkout_head_allow_unborn(repo: &Repository) -> Result<()> {
 
     let obj = repo.odb.read(&oid).context("reading HEAD commit")?;
     let commit = parse_commit(&obj.data).context("parsing HEAD commit")?;
-    checkout_tree(repo, &commit.tree, work_tree, "")?;
     write_index_from_tree(repo, &commit.tree)?;
+    checkout_index_into_clone_worktree(repo)?;
     Ok(())
+}
+
+/// Materialize the freshly written index into the clone's working tree.
+///
+/// Runs with the process CWD temporarily set to the new work tree, because long-running process
+/// filters (`filter.<name>.process`) and their relative arguments (e.g. `--log=a.log`) are resolved
+/// relative to the work-tree top-level, exactly like Git (which `chdir`s into the repo for
+/// checkout). The original CWD is restored afterwards so later clone steps are unaffected.
+fn checkout_index_into_clone_worktree(repo: &Repository) -> Result<()> {
+    let Some(work_tree) = repo.work_tree.clone() else {
+        return Ok(());
+    };
+    let prev_cwd = std::env::current_dir().ok();
+    std::env::set_current_dir(&work_tree)
+        .with_context(|| format!("entering work tree {}", work_tree.display()))?;
+    let result = crate::commands::checkout::checkout_head_to_worktree(repo)
+        .context("checking out work tree from index");
+    if let Some(prev) = prev_cwd {
+        let _ = std::env::set_current_dir(prev);
+    }
+    result
 }
 
 pub fn run(mut args: Args) -> Result<()> {
@@ -5790,10 +5807,9 @@ pub(crate) fn ensure_index_from_head_if_missing(repo: &Repository) -> Result<()>
 
 /// Perform a basic checkout of HEAD into the working tree.
 fn checkout_head(repo: &Repository) -> Result<()> {
-    let work_tree = match &repo.work_tree {
-        Some(wt) => wt,
-        None => return Ok(()), // Bare repo
-    };
+    if repo.work_tree.is_none() {
+        return Ok(()); // Bare repo
+    }
 
     // Read HEAD
     let head_content = fs::read_to_string(repo.git_dir.join("HEAD")).context("reading HEAD")?;
@@ -5812,108 +5828,13 @@ fn checkout_head(repo: &Repository) -> Result<()> {
     let obj = repo.odb.read(&oid).context("reading HEAD commit")?;
     let commit = parse_commit(&obj.data).context("parsing HEAD commit")?;
 
-    // Checkout the tree recursively
-    let work_units = checkout_tree(repo, &commit.tree, work_tree, "")?;
-    trace2_emit_checkout_parallel_workers(checkout_parallel_worker_spawns(repo, work_units));
-
-    // Write the index
-    // Use grit's checkout-index style — we'll build a simple index
-    // For now just write files; a proper index update would use the Index type
+    // Build the index from the tree first, then materialize the working tree from the index.
+    // Going through the index checkout path applies EOL/encoding/process-filter smudge (including
+    // delayed `status=delayed` filters), exactly like `git checkout .` after clone (t0021).
     write_index_from_tree(repo, &commit.tree)?;
+    checkout_index_into_clone_worktree(repo)?;
 
     Ok(())
-}
-
-/// Recursively checkout a tree object into the working directory.
-fn checkout_tree(
-    repo: &Repository,
-    tree_oid: &ObjectId,
-    work_tree: &Path,
-    prefix: &str,
-) -> Result<usize> {
-    use grit_lib::objects::parse_tree;
-
-    let odb = &repo.odb;
-    let obj = odb.read(tree_oid).context("reading tree")?;
-    let entries = parse_tree(&obj.data).context("parsing tree")?;
-
-    let mut work_units = 0usize;
-    for entry in &entries {
-        let name = String::from_utf8_lossy(&entry.name);
-        let path = if prefix.is_empty() {
-            name.to_string()
-        } else {
-            format!("{prefix}/{name}")
-        };
-        let full_path = work_tree.join(&path);
-
-        let is_tree = (entry.mode & 0o170000) == 0o040000;
-        let is_gitlink = entry.mode == 0o160000;
-        if is_gitlink {
-            // Gitlink (submodule): ensure an empty directory exists (Git does not
-            // check out submodule contents during clone).
-            if full_path.is_file() || full_path.is_symlink() {
-                let _ = fs::remove_file(&full_path);
-            } else if full_path.is_dir() && !full_path.join(".git").exists() {
-                let _ = fs::remove_dir_all(&full_path);
-            }
-            let _ = fs::create_dir_all(&full_path);
-            continue;
-        } else if is_tree {
-            fs::create_dir_all(&full_path)?;
-            work_units += checkout_tree(repo, &entry.oid, work_tree, &path)?;
-        } else {
-            // Regular file or symlink
-            if let Some(parent) = full_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            if odb.read(&entry.oid).is_err() {
-                let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
-                if repo_treats_promisor_packs(&repo.git_dir, &cfg) {
-                    let _ = crate::commands::promisor_hydrate::try_lazy_fetch_promisor_object(
-                        repo, entry.oid,
-                    );
-                }
-            }
-            let blob = odb
-                .read(&entry.oid)
-                .with_context(|| format!("reading blob for {path}"))?;
-
-            use grit_lib::index::MODE_SYMLINK;
-            if entry.mode == MODE_SYMLINK {
-                #[cfg(unix)]
-                {
-                    let target = std::str::from_utf8(&blob.data)
-                        .with_context(|| format!("symlink target for '{path}' is not UTF-8"))?;
-                    if let Ok(prev) = full_path.symlink_metadata() {
-                        let _ = if prev.is_dir() && !prev.file_type().is_symlink() {
-                            fs::remove_dir_all(&full_path)
-                        } else {
-                            fs::remove_file(&full_path)
-                        };
-                    }
-                    std::os::unix::fs::symlink(target, &full_path)
-                        .with_context(|| format!("creating symlink '{path}'"))?;
-                }
-                #[cfg(not(unix))]
-                {
-                    fs::write(&full_path, &blob.data)?;
-                }
-            } else {
-                fs::write(&full_path, &blob.data)?;
-                // Set executable bit if mode is 100755
-                #[cfg(unix)]
-                if entry.mode == 0o100755 {
-                    use std::os::unix::fs::PermissionsExt;
-                    let perms = fs::Permissions::from_mode(0o755);
-                    fs::set_permissions(&full_path, perms)?;
-                }
-            }
-            work_units += 1;
-        }
-    }
-
-    Ok(work_units)
 }
 
 /// Write the index file from a tree (simple version).

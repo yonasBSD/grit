@@ -99,16 +99,41 @@ fn git_dir_via_existing_link(work_tree: &Path) -> PathBuf {
     link
 }
 
+/// Resolve a work-tree's `.git` to the path git treats as the link (`original_git_dir =
+/// real_pathdup(git_dir)` in git/setup.c `init_db`). When `.git` is a symlink it is followed to
+/// its target (e.g. a `.git -> here` symlink resolves to `here`); a regular file or directory is
+/// returned as-is. The `.git` symlink itself is left intact, matching git rewriting the gitfile at
+/// the symlink *target* (t0001 #43 "re-init to move gitdir symlink").
+fn resolve_git_link_path(link_path: &Path) -> PathBuf {
+    match fs::symlink_metadata(link_path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            // Resolve the symlink target relative to its directory; the final component may be a
+            // directory (the real git dir) or a regular gitfile.
+            match fs::read_link(link_path) {
+                Ok(target) => {
+                    if target.is_absolute() {
+                        target
+                    } else {
+                        link_path.parent().unwrap_or(Path::new(".")).join(target)
+                    }
+                }
+                Err(_) => link_path.to_path_buf(),
+            }
+        }
+        _ => link_path.to_path_buf(),
+    }
+}
+
 /// Resolve the git directory a work-tree's `.git` link points at, for `--separate-git-dir`
 /// reinit (git/setup.c `separate_git_dir`). Returns the source git dir to relocate:
-/// the gitfile target when `.git` is a regular file, the directory itself when `.git` is a
-/// directory, or `None` when `.git` does not exist.
+/// the gitfile target when the link is a regular file, the directory itself when it is a
+/// directory, or `None` when it does not exist.
 fn resolve_existing_gitdir_link(link_path: &Path) -> Option<PathBuf> {
     let meta = fs::symlink_metadata(link_path).ok()?;
     if meta.file_type().is_dir() {
         return Some(link_path.to_path_buf());
     }
-    // Regular file or symlink-to-file: read it as a gitfile.
+    // Regular file: read it as a gitfile.
     let content = fs::read_to_string(link_path).ok()?;
     let base = link_path.parent().unwrap_or(Path::new("."));
     parse_gitfile_line(&content, base).ok()
@@ -406,7 +431,10 @@ pub fn run(args: Args, global_bare: bool) -> Result<()> {
     // (git/builtin/init-db.c relocates the common `.git/`, not `.git/worktrees/<id>/`).
     let mut sep_gitfile_link: Option<PathBuf> = None;
     if args.separate_git_dir.is_some() && !bare {
-        let wt_link = abs_path.join(".git");
+        // git/setup.c uses `original_git_dir = real_pathdup(.git)`: a `.git` symlink is followed to
+        // its target, and that target is both relocated and rewritten as the gitfile (the symlink
+        // itself stays). A regular `.git` file/dir is used unchanged.
+        let wt_link = resolve_git_link_path(&abs_path.join(".git"));
         if let Some(resolved) = resolve_existing_gitdir_link(&wt_link) {
             // If this work-tree's git dir is a linked-worktree admin dir, target the common dir
             // and the main worktree's `.git` instead.
@@ -473,10 +501,12 @@ pub fn run(args: Args, global_bare: bool) -> Result<()> {
 
     // Load config to get defaults. Fresh init must not read the current repo's local config
     // (t1301 "remote init does not use config from cwd"); reinit loads this repo only.
+    // A malformed config (including one pulled in via a matching `[includeIf]` from the command
+    // line) is fatal, mirroring Git's `git_config` abort (t0001 #102).
     let config = if is_reinit {
-        ConfigSet::load(Some(&real_git_dir), true).unwrap_or_else(|_| ConfigSet::new())
+        ConfigSet::load(Some(&real_git_dir), true).map_err(|e| anyhow::anyhow!("{e}"))?
     } else {
-        ConfigSet::load(None, true).unwrap_or_else(|_| ConfigSet::new())
+        ConfigSet::load(None, true).map_err(|e| anyhow::anyhow!("{e}"))?
     };
 
     // Determine initial branch name:
@@ -498,7 +528,9 @@ pub fn run(args: Args, global_bare: bool) -> Result<()> {
             b
         } else {
             branch_from_fallback = true;
-            "main".to_owned()
+            // git/refs.c `repo_default_branch_name`: the built-in default is `master` (changes to
+            // `main` only in a `WITH_BREAKING_CHANGES`/Git 3.0 build, which Grit is not). t0001 #94.
+            "master".to_owned()
         }
     } else {
         // On reinit, don't change HEAD

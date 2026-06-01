@@ -2091,8 +2091,20 @@ impl ConfigSet {
                     Err(Error::ConfigError(msg)) if msg.is_empty() => continue,
                     Err(e) => return Err(e),
                 };
-                if let Ok(Some(inc_file)) = ConfigFile::from_path(&resolved, file.scope) {
-                    Self::merge_with_includes(set, &inc_file, process_includes, depth + 1, ctx)?;
+                // Git's `git_config_from_file` surfaces parse errors in an included file as a
+                // fatal error (t0001 #102 `re-init reads matching includeIf.onbranch`). A missing
+                // include target is silently skipped (`from_path` -> `Ok(None)`).
+                match ConfigFile::from_path(&resolved, file.scope)? {
+                    Some(inc_file) => {
+                        Self::merge_with_includes(
+                            set,
+                            &inc_file,
+                            process_includes,
+                            depth + 1,
+                            ctx,
+                        )?;
+                    }
+                    None => {}
                 }
             }
         }

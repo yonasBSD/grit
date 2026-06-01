@@ -350,6 +350,12 @@ impl Repository {
         loop {
             let current = Path::new(&dir_buf);
             if let Some(DiscoveredAt { mut repo, gitfile }) = try_open_at(current)? {
+                // git/setup.c `setup_git_directory` runs `check_repository_format` on the resolved
+                // git dir and dies on a bad format (e.g. a v1-only `extensions.*` in a
+                // `repositoryformatversion = 0` repo; t0001 #60). Discovery itself opens with
+                // validation skipped so an empty `.git/` is walked past, but a *found* repository
+                // must satisfy the format check.
+                validate_repository_format(&repo.git_dir)?;
                 if let Some(ref wt) = env_work_tree {
                     repo.work_tree = Some(wt.canonicalize().unwrap_or_else(|_| wt.clone()));
                     repo.work_tree_from_env = true;
@@ -1388,31 +1394,59 @@ fn validate_repository_format(git_dir: &Path) -> Result<()> {
         return Err(Error::UnsupportedRepositoryFormatVersion(repo_version));
     }
 
+    // Mirror git/setup.c `check_repo_format` / `verify_repository_format`. Extensions split into:
+    //   * v0-compatible (`handle_extension_v0`): respected even in a v0 repository.
+    //   * v1-only (`handle_extension`): legal only when `core.repositoryformatversion >= 1`.
+    // A v0 repository that declares any v1-only extension is rejected (t0001 #60, #62); an
+    // unknown extension is rejected only in a v1 repository.
+    let mut v1_only_found: Vec<String> = Vec::new();
+    let mut unknown_found: Vec<String> = Vec::new();
     for extension in extensions {
-        if repo_version == 0 {
-            if extension.ends_with("-v1") {
-                return Err(Error::UnsupportedRepositoryExtension(extension));
+        match extension.as_str() {
+            // v0-compatible extensions — always allowed.
+            "noop" | "preciousobjects" | "partialclone" | "worktreeconfig" => {}
+            // v1-only extensions — only valid with repository format version >= 1.
+            "noop-v1"
+            | "objectformat"
+            | "compatobjectformat"
+            | "refstorage"
+            | "relativeworktrees"
+            | "submodulepathconfig" => {
+                if repo_version == 0 {
+                    v1_only_found.push(extension);
+                }
             }
-            continue;
+            // Unknown extension — rejected only in a v1 repository.
+            _ => {
+                if repo_version >= 1 {
+                    unknown_found.push(extension);
+                }
+            }
         }
+    }
 
-        if matches!(
-            extension.as_str(),
-            "noop"
-                | "noop-v1"
-                | "preciousobjects"
-                | "partialclone"
-                | "worktreeconfig"
-                | "objectformat"
-                | "compatobjectformat"
-                | "refstorage"
-                | "relativeworktrees"
-                | "submodulepathconfig"
-        ) {
-            continue;
+    if !unknown_found.is_empty() {
+        let mut msg = if unknown_found.len() == 1 {
+            "unknown repository extension found:".to_owned()
+        } else {
+            "unknown repository extensions found:".to_owned()
+        };
+        for ext in &unknown_found {
+            msg.push_str(&format!("\n\t{ext}"));
         }
+        return Err(Error::Message(msg));
+    }
 
-        return Err(Error::UnsupportedRepositoryExtension(extension));
+    if !v1_only_found.is_empty() {
+        let mut msg = if v1_only_found.len() == 1 {
+            "repo version is 0, but v1-only extension found:".to_owned()
+        } else {
+            "repo version is 0, but v1-only extensions found:".to_owned()
+        };
+        for ext in &v1_only_found {
+            msg.push_str(&format!("\n\t{ext}"));
+        }
+        return Err(Error::Message(msg));
     }
 
     Ok(())

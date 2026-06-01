@@ -5139,16 +5139,9 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         "fsck" => commands::fsck::run(parse_cmd_args(subcmd, rest)),
         "gc" => commands::gc::run(parse_cmd_args(subcmd, rest)),
         "get-tar-commit-id" => {
-            if rest.len() == 1 {
-                let a = rest[0].as_str();
-                if matches!(a, "-h" | "--help" | "--help-all") {
-                    // Trailing space matches t1517 `test_grep "[Uu]sage: git get-tar-commit-id "`.
-                    println!("usage: git get-tar-commit-id ");
-                    println!();
-                    let code = if a == "--help" { 0 } else { 129 };
-                    std::process::exit(code);
-                }
-            }
+            // `-h`/`--help`/`--help-all` are handled by `parse_cmd_args`, which prints the
+            // vendored adoc SYNOPSIS (`git get-tar-commit-id`, no trailing space) so the `-h`
+            // output agrees with Documentation/git-get-tar-commit-id.adoc byte-for-byte (t0450).
             commands::get_tar_commit_id::run(parse_cmd_args(subcmd, rest))
         }
         "grep" => {
@@ -5224,7 +5217,24 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         "http-backend" => commands::http_backend::run(parse_cmd_args(subcmd, rest)),
         "http-fetch" => commands::http_fetch::run(parse_cmd_args(subcmd, rest)),
         "http-push" => commands::http_push::run(parse_cmd_args(subcmd, rest)),
-        "imap-send" => commands::imap_send::run_from_argv(rest),
+        "imap-send" => {
+            if rest.len() == 1 {
+                let a = rest[0].as_str();
+                if matches!(a, "-h" | "--help" | "--help-all") {
+                    // Print the vendored adoc SYNOPSIS so `-h` agrees with
+                    // Documentation/git-imap-send.adoc byte-for-byte (t0450).
+                    if let Some(syn) =
+                        commands::upstream_synopsis_help::synopsis_for_builtin(subcmd)
+                    {
+                        let code = if a == "--help" { 0 } else { 129 };
+                        commands::upstream_synopsis_help::print_upstream_synopsis_stdout_and_exit(
+                            subcmd, syn, code,
+                        );
+                    }
+                }
+            }
+            commands::imap_send::run_from_argv(rest)
+        }
         "index-pack" => {
             let mut argv = rest.to_vec();
             commands::index_pack::preprocess_argv(&mut argv);
@@ -5279,15 +5289,9 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         "merge-tree" => commands::merge_tree::run_from_argv(rest),
         "mergetool" => commands::mergetool::run(parse_cmd_args(subcmd, rest)),
         "mktag" => {
-            if rest.len() == 1 {
-                let a = rest[0].as_str();
-                if matches!(a, "-h" | "--help" | "--help-all") {
-                    println!("usage: git mktag ");
-                    println!();
-                    let code = if a == "--help" { 0 } else { 129 };
-                    std::process::exit(code);
-                }
-            }
+            // `-h`/`--help`/`--help-all` are handled by `parse_cmd_args`, which prints the
+            // vendored adoc SYNOPSIS (`git mktag`, no trailing space) so the `-h` output agrees
+            // with Documentation/git-mktag.adoc byte-for-byte (t0450).
             commands::mktag::run(parse_cmd_args(subcmd, rest))
         }
         "mktree" => commands::mktree::run(parse_cmd_args(subcmd, rest)),
@@ -5461,14 +5465,11 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         // grit-specific (non-git) self-update command.
         "update" => commands::update::run(parse_cmd_args(subcmd, rest)),
         "update-index" => {
-            if rest.len() == 1 {
-                let a = rest[0].as_str();
-                if matches!(a, "-h" | "--help" | "--help-all") {
-                    print!("{}", include_str!("../upstream_update_index_help.txt"));
-                    let code = if a == "--help" { 0 } else { 129 };
-                    std::process::exit(code);
-                }
-            }
+            // `-h`/`--help`/`--help-all` are handled by `parse_cmd_args`, which prints the
+            // multi-line vendored adoc SYNOPSIS so the `-h` output agrees with
+            // Documentation/git-update-index.adoc byte-for-byte (t0450). The synopsis is emitted
+            // before any index access, so `update-index -h` still works with a corrupt index
+            // (t2107).
             commands::update_index::run(parse_cmd_args(subcmd, rest), rest)
         }
         "update-ref" => commands::update_ref::run(parse_cmd_args(subcmd, rest)),

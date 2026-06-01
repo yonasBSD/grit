@@ -270,10 +270,12 @@ fn git_default_branch(config: &ConfigSet) -> String {
             return b;
         }
     }
+    // git/refs.c `repo_default_branch_name`: the built-in default is `master` (only a
+    // `WITH_BREAKING_CHANGES`/Git 3.0 build defaults to `main`).
     config
         .get("init.defaultbranch")
         .or_else(|| config.get("init.defaultBranch"))
-        .unwrap_or_else(|| "main".to_owned())
+        .unwrap_or_else(|| "master".to_owned())
 }
 
 /// Return the path to a POSIX-compatible shell.

@@ -7,7 +7,7 @@
 //! - `checkout [<tree-ish>] -- <paths>` — restore specific files.
 //! - `-f` / `--force` — discard local changes when switching.
 
-use crate::explicit_exit::ExplicitExit;
+use crate::explicit_exit::{ExplicitExit, SilentNonZeroExit};
 use crate::grit_exe;
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
@@ -22,7 +22,7 @@ use grit_lib::crlf::{self, MergeAttr};
 use grit_lib::diff::{diff_index_to_worktree, zero_oid};
 use grit_lib::diff::{read_submodule_head_oid, stat_matches};
 use grit_lib::error::Error as LibError;
-use grit_lib::filter_process::{self, DelayedProcessCheckout};
+use grit_lib::filter_process::{self, DelayedCheckoutError, DelayedProcessCheckout};
 use grit_lib::hooks::{run_hook, run_reference_transaction_committed_for_head_update, HookResult};
 use grit_lib::index::{
     entry_from_stat, normalize_mode, Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_SYMLINK,
@@ -1004,6 +1004,8 @@ pub fn run(mut args: Args) -> Result<()> {
             args.ours,
             args.theirs,
             args.ignore_skip_worktree_bits,
+            // Git: `count_checkout_paths = !quiet && !has_dash_dash` (builtin/checkout.c).
+            !args.quiet && !has_separator,
             &merge_cli,
         );
     }
@@ -1023,6 +1025,8 @@ pub fn run(mut args: Args) -> Result<()> {
                     args.ours,
                     args.theirs,
                     args.ignore_skip_worktree_bits,
+                    // `checkout .` has no `--`, so Git counts the paths (when not quiet).
+                    !args.quiet,
                     &merge_cli,
                 );
             }
@@ -1354,6 +1358,8 @@ pub fn run(mut args: Args) -> Result<()> {
                 args.ours,
                 args.theirs,
                 args.ignore_skip_worktree_bits,
+                // `checkout <file>` without `--`: Git counts paths (when not quiet).
+                !args.quiet,
                 &merge_cli,
             ) {
                 Ok(()) => Ok(()),
@@ -2718,8 +2724,7 @@ fn force_reset_to_head(repo: &Repository) -> Result<()> {
                 write_to_worktree(&work_tree, path, data, ie.mode).map_err(|e| e.to_string())
             },
         )
-        .map_err(|e| anyhow::anyhow!("{e}"))
-        .context("finishing delayed process filter checkout")?;
+        .map_err(map_delayed_checkout_error)?;
 
     // Refresh stat cache so `git diff` agrees with the index (t0020: checkout -f).
     for entry in &mut new_index.entries {
@@ -3968,6 +3973,90 @@ fn unmerge_paths_in_index(index: &mut Index, rel: &str) {
     }
 }
 
+/// Materialize the whole working tree for `HEAD`, building the index from HEAD's tree and applying
+/// EOL/encoding/process-filter smudge (with `ref=`/`treeish=`/`blob=` metadata) plus any delayed
+/// (`status=delayed`) process-filter checkouts.
+///
+/// Used by `clone` for the initial checkout so it goes through the same branch-checkout smudge and
+/// delayed-checkout path as `git checkout <branch>` (t0021 delayed checkout in process filter on
+/// clone). The caller is responsible for setting CWD to the work tree so a filter's relative log
+/// paths resolve correctly.
+///
+/// Unlike `force_reset_to_head`, each entry is smudged exactly once (with `can-delay`), so a
+/// delayed process filter sees one delayed smudge + one retry per path (t0021 exact filter log),
+/// and no "Already on '<branch>'" message is printed.
+pub fn checkout_head_to_worktree(repo: &Repository) -> Result<()> {
+    let work_tree = match &repo.work_tree {
+        Some(p) => p.clone(),
+        None => return Ok(()),
+    };
+    let head = resolve_head(&repo.git_dir)?;
+    let head_oid = match head.oid() {
+        Some(oid) => *oid,
+        None => return Ok(()), // unborn HEAD: nothing to check out
+    };
+    let target_tree = commit_to_tree(repo, &head_oid)?;
+
+    let mut new_index = repo.load_index().unwrap_or_else(|_| Index::new());
+    new_index.entries = tree_to_flat_entries(repo, &target_tree, "")?;
+    new_index.sort();
+
+    let work_units = new_index
+        .entries
+        .iter()
+        .filter(|e| e.stage() == 0 && e.mode != MODE_GITLINK)
+        .count();
+
+    let mut delayed = DelayedProcessCheckout::default();
+    for entry in &new_index.entries {
+        if entry.stage() != 0 {
+            continue;
+        }
+        let path_str = String::from_utf8_lossy(&entry.path).into_owned();
+        write_blob_to_worktree(
+            repo,
+            &work_tree,
+            &path_str,
+            &entry.oid,
+            entry.mode,
+            &new_index,
+            true,
+            Some(&mut delayed),
+        )?;
+    }
+
+    finish_delayed_path_checkout(repo, &work_tree, &mut delayed)?;
+
+    // Refresh stat cache so `git status`/`git diff` agree with the index after clone.
+    for entry in &mut new_index.entries {
+        if entry.stage() != 0 {
+            continue;
+        }
+        let path_str = String::from_utf8_lossy(&entry.path);
+        let abs = work_tree.join(path_str.as_ref());
+        if let Ok(meta) = std::fs::symlink_metadata(&abs) {
+            use std::os::unix::fs::MetadataExt as _;
+            entry.ctime_sec = meta.ctime() as u32;
+            entry.ctime_nsec = meta.ctime_nsec() as u32;
+            entry.mtime_sec = meta.mtime() as u32;
+            entry.mtime_nsec = meta.mtime_nsec() as u32;
+            entry.dev = meta.dev() as u32;
+            entry.ino = meta.ino() as u32;
+            entry.size = meta.size() as u32;
+        }
+    }
+
+    let index_path = repo
+        .index_path_for_env()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    set_checkout_cache_tree(repo, &mut new_index)?;
+    repo.write_index_at(&index_path, &mut new_index)
+        .context("writing index")?;
+
+    trace2_emit_checkout_parallel_workers(checkout_parallel_worker_spawns(repo, work_units));
+    Ok(())
+}
+
 /// Checkout specific paths from the index or a tree-ish.
 fn checkout_paths(
     repo: &Repository,
@@ -3979,6 +4068,7 @@ fn checkout_paths(
     ours: bool,
     theirs: bool,
     ignore_skip_worktree_bits: bool,
+    count_paths: bool,
     merge_cli: &CheckoutMergeCli,
 ) -> Result<()> {
     if source.is_some() && merge_mode {
@@ -4001,6 +4091,9 @@ checking out of the index."
     let cwd = std::env::current_dir().context("resolving cwd")?;
     let mut updated_paths = 0usize;
     let mut path_errors: Vec<anyhow::Error> = Vec::new();
+    // Process filters may defer smudge with `status=delayed`; queue those paths and materialize
+    // them after the main loop (Git `finish_delayed_checkout`, t0021 delayed checkout).
+    let mut delayed = DelayedProcessCheckout::default();
     // `GIT_TRACE2` parallel worker count: full index restore may only increment `updated_paths` for
     // paths actually written; nested submodule checkouts strip trace — use index size (t2080).
     let mut trace_parallel_units_from_index = 0usize;
@@ -4067,8 +4160,14 @@ checking out of the index."
                         if let Some(entry) = index.get(path_bytes, 0) {
                             checkout_record_index_result(
                                 write_blob_to_worktree(
-                                    repo, work_tree, &rel, &entry.oid, entry.mode, &index, false,
-                                    None,
+                                    repo,
+                                    work_tree,
+                                    &rel,
+                                    &entry.oid,
+                                    entry.mode,
+                                    &index,
+                                    false,
+                                    Some(&mut delayed),
                                 ),
                                 &rel,
                                 &mut updated_paths,
@@ -4093,7 +4192,14 @@ checking out of the index."
                         let p = String::from_utf8_lossy(&ie.path).to_string();
                         if glob_matches(&rel, &p) {
                             let w = write_blob_to_worktree(
-                                repo, work_tree, &p, &ie.oid, ie.mode, &index, false, None,
+                                repo,
+                                work_tree,
+                                &p,
+                                &ie.oid,
+                                ie.mode,
+                                &index,
+                                false,
+                                Some(&mut delayed),
                             );
                             if w.is_ok() {
                                 matched = true;
@@ -4138,8 +4244,14 @@ checking out of the index."
                                         if !skip_for_sparse(entry) {
                                             checkout_record_index_result(
                                                 write_blob_to_worktree(
-                                                    repo, work_tree, &p, &entry.oid, entry.mode,
-                                                    &index, false, None,
+                                                    repo,
+                                                    work_tree,
+                                                    &p,
+                                                    &entry.oid,
+                                                    entry.mode,
+                                                    &index,
+                                                    false,
+                                                    Some(&mut delayed),
                                                 ),
                                                 &p,
                                                 &mut updated_paths,
@@ -4171,7 +4283,7 @@ checking out of the index."
                                             entry_src.mode,
                                             &index,
                                             false,
-                                            None,
+                                            Some(&mut delayed),
                                         ),
                                         &p,
                                         &mut updated_paths,
@@ -4182,8 +4294,14 @@ checking out of the index."
                                     if !skip_for_sparse(entry) {
                                         checkout_record_index_result(
                                             write_blob_to_worktree(
-                                                repo, work_tree, &p, &entry.oid, entry.mode,
-                                                &index, false, None,
+                                                repo,
+                                                work_tree,
+                                                &p,
+                                                &entry.oid,
+                                                entry.mode,
+                                                &index,
+                                                false,
+                                                Some(&mut delayed),
                                             ),
                                             &p,
                                             &mut updated_paths,
@@ -4216,8 +4334,14 @@ checking out of the index."
                                     if !skip_for_sparse(entry) {
                                         checkout_record_index_result(
                                             write_blob_to_worktree(
-                                                repo, work_tree, &p, &entry.oid, entry.mode,
-                                                &index, false, None,
+                                                repo,
+                                                work_tree,
+                                                &p,
+                                                &entry.oid,
+                                                entry.mode,
+                                                &index,
+                                                false,
+                                                Some(&mut delayed),
                                             ),
                                             &p,
                                             &mut updated_paths,
@@ -4258,7 +4382,14 @@ checking out of the index."
                             let p = String::from_utf8_lossy(&ie.path).to_string();
                             checkout_record_index_result(
                                 write_blob_to_worktree(
-                                    repo, work_tree, &p, &ie.oid, ie.mode, &index, false, None,
+                                    repo,
+                                    work_tree,
+                                    &p,
+                                    &ie.oid,
+                                    ie.mode,
+                                    &index,
+                                    false,
+                                    Some(&mut delayed),
                                 ),
                                 &p,
                                 &mut updated_paths,
@@ -4272,7 +4403,14 @@ checking out of the index."
                     if !skip_for_sparse(&entry) {
                         checkout_record_index_result(
                             write_blob_to_worktree(
-                                repo, work_tree, &rel, &entry.oid, entry.mode, &index, false, None,
+                                repo,
+                                work_tree,
+                                &rel,
+                                &entry.oid,
+                                entry.mode,
+                                &index,
+                                false,
+                                Some(&mut delayed),
                             ),
                             &rel,
                             &mut updated_paths,
@@ -4303,7 +4441,7 @@ checking out of the index."
                             entry_src.mode,
                             &index,
                             false,
-                            None,
+                            Some(&mut delayed),
                         ),
                         &rel,
                         &mut updated_paths,
@@ -4350,7 +4488,14 @@ checking out of the index."
                         let p = String::from_utf8_lossy(&ie.path).to_string();
                         if p.starts_with(&prefix) {
                             let w = write_blob_to_worktree(
-                                repo, work_tree, &p, &ie.oid, ie.mode, &index, false, None,
+                                repo,
+                                work_tree,
+                                &p,
+                                &ie.oid,
+                                ie.mode,
+                                &index,
+                                false,
+                                Some(&mut delayed),
                             );
                             if w.is_ok() {
                                 matched = true;
@@ -4416,7 +4561,7 @@ checking out of the index."
                             flat_entry.mode,
                             &index,
                             false,
-                            None,
+                            Some(&mut delayed),
                         );
                         if w.is_ok() {
                             // Collapse any leftover conflict stages (1/2/3) so the
@@ -4508,7 +4653,7 @@ checking out of the index."
                             flat_entry.mode,
                             &index,
                             false,
-                            None,
+                            Some(&mut delayed),
                         );
                         if w.is_ok() {
                             // Collapse any leftover conflict stages (1/2/3) so the
@@ -4634,7 +4779,14 @@ checking out of the index."
 
                     // Write to working tree with CRLF conversion
                     let w = write_blob_to_worktree(
-                        repo, work_tree, &rel, &blob_oid, mode, &index, false, None,
+                        repo,
+                        work_tree,
+                        &rel,
+                        &blob_oid,
+                        mode,
+                        &index,
+                        false,
+                        Some(&mut delayed),
                     );
                     if w.is_ok() {
                         // Read blob size for index entry
@@ -4693,6 +4845,10 @@ checking out of the index."
         }
     }
 
+    // Materialize any paths a process filter deferred with `status=delayed`
+    // (Git `finish_delayed_checkout`, called before the "Updated N paths" report).
+    finish_delayed_path_checkout(repo, work_tree, &mut delayed)?;
+
     if !path_errors.is_empty() {
         for e in &path_errors {
             eprintln!("error: {e:#}");
@@ -4709,6 +4865,25 @@ checking out of the index."
         if let Some(first) = path_errors.into_iter().next() {
             return Err(first);
         }
+    }
+
+    // Git: `if (count_checkout_paths) ... Updated %d path[s] from {the index|<tree>}`
+    // (builtin/checkout.c). Emitted on success; suppressed by `--quiet` and by `--`.
+    if count_paths {
+        let from = match source {
+            Some(src) => resolve_revision(repo, src)
+                .and_then(|oid| peel_to_tree(repo, oid))
+                .ok()
+                .and_then(|tree| abbreviate_object_id(repo, tree, 7).ok())
+                .unwrap_or_else(|| "the index".to_string()),
+            None => "the index".to_string(),
+        };
+        checkout_eprintln!(
+            "Updated {} path{} from {}",
+            updated_paths,
+            if updated_paths == 1 { "" } else { "s" },
+            from
+        );
     }
 
     let trace_units = trace_parallel_units_from_index.max(updated_paths);
@@ -6267,6 +6442,64 @@ fn git_dir_is_nested_modules_repo(git_dir: &Path) -> bool {
         .parent()
         .and_then(|p| p.file_name())
         .is_some_and(|n| n == "modules")
+}
+
+/// Complete delayed (`status=delayed`) process-filter smudges queued during a path/tree checkout.
+///
+/// Mirrors Git `finish_delayed_checkout`: query each filter's `list_available_blobs`, then re-run
+/// smudge for each ready path (empty input + cached blob, no `can-delay`) and write the result.
+/// Path lookups reload the on-disk index, which by this point holds the checked-out entries.
+/// Translate a [`DelayedCheckoutError`] into the right anyhow error.
+///
+/// `DelayedCheckoutError::Reported` means per-path errors were already written to stderr in Git's
+/// `error: ...` format, so we exit non-zero silently (code 128, like Git's failed checkout) without
+/// wrapping/re-printing. Transport errors keep their message and bubble up with `context`.
+fn map_delayed_checkout_error(err: DelayedCheckoutError) -> anyhow::Error {
+    match err {
+        DelayedCheckoutError::Reported => anyhow::Error::new(SilentNonZeroExit { code: 128 }),
+        DelayedCheckoutError::Transport(msg) => {
+            anyhow::anyhow!("{msg}").context("finishing delayed process filter checkout")
+        }
+    }
+}
+
+fn finish_delayed_path_checkout(
+    repo: &Repository,
+    work_tree: &std::path::Path,
+    delayed: &mut DelayedProcessCheckout,
+) -> Result<()> {
+    if delayed.entries.is_empty() {
+        return Ok(());
+    }
+    let index = repo.load_index().unwrap_or_else(|_| Index::new());
+    delayed
+        .finish(
+            |path, meta| {
+                let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+                let conv = crlf::ConversionConfig::from_config(&config);
+                let attrs =
+                    crlf::load_gitattributes_for_checkout(work_tree, path, &index, &repo.odb);
+                let file_attrs = crlf::get_file_attrs(&attrs, path, false, &config);
+                let oid_hex = meta.blob_hex.clone().unwrap_or_default();
+                let data = crlf::convert_to_worktree(
+                    b"",
+                    path,
+                    &conv,
+                    &file_attrs,
+                    Some(&oid_hex),
+                    Some(meta),
+                    None,
+                )
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("delayed checkout retry still delayed for '{path}'"))?;
+                Ok(data)
+            },
+            |path, data| {
+                let mode = index.get(path.as_bytes(), 0).map_or(0o100644, |ie| ie.mode);
+                write_to_worktree(work_tree, path, data, mode).map_err(|e| e.to_string())
+            },
+        )
+        .map_err(map_delayed_checkout_error)
 }
 
 /// Write a blob object to the working tree.

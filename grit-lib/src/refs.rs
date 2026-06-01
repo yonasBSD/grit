@@ -671,6 +671,21 @@ pub fn write_ref(git_dir: &Path, refname: &str, oid: &ObjectId) -> Result<()> {
     // directory". Non-empty directories (containing files or `*.lock`) are left in place so the
     // subsequent write surfaces the conflict, matching Git's behaviour.
     remove_empty_ref_directory(&path);
+    // If a *non-empty* directory still sits where the ref file must go, locking cannot
+    // proceed. Git reports this as a "non-empty directory ... blocking reference" rather
+    // than letting the rename fail with a raw "Is a directory" I/O error (see t0600
+    // "non-empty directory blocks create"). Mirror that message so callers display it
+    // verbatim. This only applies to direct (non-deref) writes where `refname` is also the
+    // user-visible ref; indirect symref writes are handled by the caller.
+    if fs::symlink_metadata(&path)
+        .map(|m| m.file_type().is_dir())
+        .unwrap_or(false)
+    {
+        let display = ref_path_for_display(&path);
+        return Err(Error::Message(format!(
+            "fatal: cannot lock ref '{refname}': there is a non-empty directory '{display}' blocking reference '{refname}'"
+        )));
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -680,6 +695,27 @@ pub fn write_ref(git_dir: &Path, refname: &str, oid: &ObjectId) -> Result<()> {
     fs::write(&lock, &content)?;
     fs::rename(&lock, &path)?;
     Ok(())
+}
+
+/// Render a ref-store path for user-facing diagnostics the way Git does: relative to the
+/// current working directory when possible (e.g. `.git/refs/foo/bar`), otherwise the full
+/// path. Git builds these paths relative to the worktree root, so under the normal in-tree
+/// case this yields the `.git/...` form that the upstream tests expect.
+fn ref_path_for_display(path: &Path) -> String {
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(rel) = path.strip_prefix(&cwd) {
+            return rel.to_string_lossy().into_owned();
+        }
+        // On platforms where the cwd and the (canonicalized) ref path disagree only by a
+        // symlinked prefix (e.g. macOS `/tmp` -> `/private/tmp`), retry with both sides
+        // canonicalized so the relative form is still recovered.
+        if let (Ok(cwd_c), Ok(path_c)) = (cwd.canonicalize(), path.canonicalize()) {
+            if let Ok(rel) = path_c.strip_prefix(&cwd_c) {
+                return rel.to_string_lossy().into_owned();
+            }
+        }
+    }
+    path.to_string_lossy().into_owned()
 }
 
 /// Remove the directory at `path` if it is an empty directory tree (contains only empty

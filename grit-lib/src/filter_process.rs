@@ -529,42 +529,117 @@ impl DelayedProcessCheckout {
 
     /// Complete delayed checkouts: query filters for available paths and materialize each file.
     ///
+    /// Matches Git `finish_delayed_checkout` (entry.c): keep a list of the filters that delayed at
+    /// least one path, and repeatedly ask each filter `list_available_blobs` until it returns an
+    /// empty list (one final empty query per filter, which the t0021 log expects). A path the
+    /// filter reports that we never delayed is the "is now available ... has not been delayed
+    /// earlier" error (t0021 invalid file); any path still pending once every filter is done is the
+    /// "was not filtered properly" error (t0021 missing file).
+    ///
+    /// Like Git, every such error is reported to stderr in the `error: ...` format as it is found
+    /// (not bundled into one bubbled-up message), and the call returns
+    /// [`DelayedCheckoutError`] so the caller can exit non-zero without re-printing. Git's
+    /// `error("external filter '%s' ...")` quotes the filter command, and a buggy filter that
+    /// offers an undelayed path is dropped immediately (it is not queried again).
+    ///
     /// `convert_retry` matches Git `CE_RETRY`: empty blob through ident/encoding/eol then a
     /// second smudge without `can-delay` (filter returns cached output).
     pub fn finish(
         &mut self,
         mut convert_retry: impl FnMut(&str, &FilterSmudgeMeta) -> Result<Vec<u8>, String>,
         mut write_out: impl FnMut(&str, &[u8]) -> Result<(), String>,
-    ) -> Result<(), String> {
-        while !self.entries.is_empty() {
-            let mut made_progress = false;
-            let cmds: HashSet<String> = self.entries.iter().map(|e| e.filter_cmd.clone()).collect();
-            for cmd in cmds {
-                let available = list_available_blobs(&cmd)?;
+    ) -> Result<(), DelayedCheckoutError> {
+        // Active filters: every distinct filter command that delayed at least one path. Filters are
+        // removed once they report no more available blobs (matching Git `dco->filters`).
+        let mut filters: Vec<String> = Vec::new();
+        for e in &self.entries {
+            if !filters.contains(&e.filter_cmd) {
+                filters.push(e.filter_cmd.clone());
+            }
+        }
+
+        let mut had_error = false;
+
+        while !filters.is_empty() {
+            let mut still_active: Vec<String> = Vec::new();
+            for cmd in filters.drain(..).collect::<Vec<_>>() {
+                let available = match list_available_blobs(&cmd) {
+                    Ok(paths) => paths,
+                    Err(_) => {
+                        // Filter reported an error: drop it and do not query it again.
+                        had_error = true;
+                        continue;
+                    }
+                };
+                if available.is_empty() {
+                    // Filter is done; remove it from the active list.
+                    continue;
+                }
+                let mut drop_filter = false;
                 for path in available {
                     let Some(pos) = self
                         .entries
                         .iter()
                         .position(|e| e.filter_cmd == cmd && e.path == path)
                     else {
+                        // The filter offered a path we never delayed (or already wrote). Match
+                        // Git: report it and stop querying this (likely buggy) filter.
+                        eprintln!(
+                            "error: external filter '{cmd}' signaled that '{path}' is now \
+available although it has not been delayed earlier"
+                        );
+                        had_error = true;
+                        drop_filter = true;
                         continue;
                     };
                     let entry = self.entries.swap_remove(pos);
-                    let data = convert_retry(&entry.path, &entry.smudge_meta)?;
-                    write_out(&entry.path, &data)?;
-                    made_progress = true;
+                    let data = convert_retry(&entry.path, &entry.smudge_meta)
+                        .map_err(DelayedCheckoutError::Transport)?;
+                    write_out(&entry.path, &data).map_err(DelayedCheckoutError::Transport)?;
+                }
+                // Keep querying this filter until it returns an empty list, unless it just sent us
+                // an undelayed path (Git drops such a filter from the active list).
+                if !drop_filter {
+                    still_active.push(cmd);
                 }
             }
-            if !made_progress {
-                return Err(format!(
-                    "delayed process filter checkout stalled with {} pending path(s)",
-                    self.entries.len()
-                ));
-            }
+            filters = still_active;
+        }
+
+        // Any path the filters never made available was not filtered properly.
+        for entry in &self.entries {
+            eprintln!("error: '{}' was not filtered properly", entry.path);
+            had_error = true;
+        }
+        self.entries.clear();
+
+        if had_error {
+            return Err(DelayedCheckoutError::Reported);
         }
         Ok(())
     }
 }
+
+/// Failure from [`DelayedProcessCheckout::finish`].
+#[derive(Debug)]
+pub enum DelayedCheckoutError {
+    /// One or more per-path errors were already printed to stderr in Git's `error: ...` format;
+    /// the caller should exit non-zero without printing anything further.
+    Reported,
+    /// A transport/conversion error (not a per-path filter error) with a message to bubble up.
+    Transport(String),
+}
+
+impl std::fmt::Display for DelayedCheckoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DelayedCheckoutError::Reported => f.write_str("delayed checkout failed"),
+            DelayedCheckoutError::Transport(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for DelayedCheckoutError {}
 
 /// True when `cmd` is running (or can be started) and advertises the `delay` capability.
 pub fn process_filter_supports_delay(cmd: &str) -> bool {
