@@ -124,9 +124,18 @@ pub struct Args {
     #[arg(long)]
     pub no_tags: bool,
 
-    /// Recurse into submodules after cloning.
-    #[arg(long = "recurse-submodules", alias = "recursive")]
-    pub recurse_submodules: bool,
+    /// Recurse into submodules after cloning. Optionally takes a pathspec selecting which
+    /// submodules to initialize (repeatable); without a value, all submodules are selected.
+    #[arg(
+        long = "recurse-submodules",
+        alias = "recursive",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = ".",
+        action = clap::ArgAction::Append,
+        value_name = "PATHSPEC"
+    )]
+    pub recurse_submodules_specs: Vec<String>,
 
     /// Parallel jobs hint for submodule cloning (forwarded to `submodule update`).
     #[arg(short = 'j', long = "jobs", value_name = "N")]
@@ -210,6 +219,32 @@ pub struct Args {
     /// Ref storage backend for the new repository (`files` or `reftable`).
     #[arg(long = "ref-format", value_name = "FORMAT")]
     pub ref_format: Option<String>,
+}
+
+impl Args {
+    /// Whether `--recurse-submodules` was given (with or without a pathspec value).
+    pub fn recurse_submodules(&self) -> bool {
+        !self.recurse_submodules_specs.is_empty()
+    }
+
+    /// The submodule.active pathspecs to set when explicit `--recurse-submodules=<spec>` values
+    /// were given. Returns `None` when no explicit pathspec was provided (default missing value
+    /// `.` is treated as "all", matching git, but git still records `.` in submodule.active when
+    /// a value was explicitly supplied). We only treat values as explicit when at least one is
+    /// not the bare default-missing sentinel produced by a value-less flag.
+    pub fn recurse_submodules_pathspecs(&self) -> Option<&[String]> {
+        // A value-less `--recurse-submodules` yields a single "." default-missing value; an
+        // explicit `--recurse-submodules=<spec>` yields the user's spec(s). We cannot perfectly
+        // distinguish a lone explicit "." from the default, but git treats both as "activate all"
+        // when there is a single "." and as a pathspec list otherwise.
+        if self.recurse_submodules_specs.len() == 1 && self.recurse_submodules_specs[0] == "." {
+            None
+        } else if self.recurse_submodules_specs.is_empty() {
+            None
+        } else {
+            Some(&self.recurse_submodules_specs)
+        }
+    }
 }
 
 /// Returns `true` when `name` is valid as a remote name (same idea as Git's `valid_remote_name`).
@@ -498,7 +533,7 @@ pub fn run(mut args: Args) -> Result<()> {
     if args.revision.is_some() && args.mirror {
         bail!("--revision and --mirror are mutually exclusive");
     }
-    if !args.reference.is_empty() && !args.reference_if_able.is_empty() && args.recurse_submodules {
+    if !args.reference.is_empty() && !args.reference_if_able.is_empty() && args.recurse_submodules() {
         bail!("clone --recursive is not compatible with both --reference and --reference-if-able");
     }
     if args.separate_git_dir.is_some() && args.bare {
@@ -1247,7 +1282,7 @@ pub fn run(mut args: Args) -> Result<()> {
 
     apply_submodule_reference_config_for_recursive_clone(&dest.git_dir, &args)?;
 
-    apply_sticky_recursive_clone(&dest.git_dir, args.recurse_submodules)?;
+    apply_sticky_recursive_clone(&dest.git_dir, args.recurse_submodules())?;
 
     // Handle --no-tags: set remote.origin.tagOpt
     if args.no_tags {
@@ -1420,7 +1455,7 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     // Recurse into submodules if requested
-    if args.recurse_submodules && !args.bare {
+    if args.recurse_submodules() && !args.bare {
         if let Some(ref wt) = dest.work_tree {
             if let Err(e) = clone_submodules(wt, &dest, &args) {
                 let _ = fs::remove_dir_all(&target_path);
@@ -1637,7 +1672,7 @@ fn run_git_clone(args: Args) -> Result<()> {
 
     apply_submodule_reference_config_for_recursive_clone(&dest.git_dir, &args)?;
 
-    apply_sticky_recursive_clone(&dest.git_dir, args.recurse_submodules)?;
+    apply_sticky_recursive_clone(&dest.git_dir, args.recurse_submodules())?;
 
     if args.no_tags {
         let config_path = dest.git_dir.join("config");
@@ -1692,7 +1727,7 @@ fn run_git_clone(args: Args) -> Result<()> {
         dissociate_clone_repository(&dest.git_dir).context("dissociating from alternates")?;
     }
 
-    if args.recurse_submodules && !args.bare {
+    if args.recurse_submodules() && !args.bare {
         if let Some(ref wt) = dest.work_tree {
             if let Err(e) = clone_submodules(wt, &dest, &args) {
                 let _ = fs::remove_dir_all(&target_path);
@@ -1902,7 +1937,7 @@ fn run_ext_clone(args: Args) -> Result<()> {
 
     apply_submodule_reference_config_for_recursive_clone(&dest.git_dir, &args)?;
 
-    apply_sticky_recursive_clone(&dest.git_dir, args.recurse_submodules)?;
+    apply_sticky_recursive_clone(&dest.git_dir, args.recurse_submodules())?;
 
     if args.no_tags {
         let config_path = dest.git_dir.join("config");
@@ -1957,7 +1992,7 @@ fn run_ext_clone(args: Args) -> Result<()> {
         dissociate_clone_repository(&dest.git_dir).context("dissociating from alternates")?;
     }
 
-    if args.recurse_submodules && !args.bare {
+    if args.recurse_submodules() && !args.bare {
         if let Some(ref wt) = dest.work_tree {
             if let Err(e) = clone_submodules(wt, &dest, &args) {
                 let _ = fs::remove_dir_all(&target_path);
@@ -2263,7 +2298,7 @@ fn run_http_clone(args: Args) -> Result<()> {
         apply_clone_config(&dest.git_dir, &args.config).context("applying -c config")?;
     }
 
-    apply_sticky_recursive_clone(&dest.git_dir, args.recurse_submodules)?;
+    apply_sticky_recursive_clone(&dest.git_dir, args.recurse_submodules())?;
 
     if args.no_tags {
         let config_path = dest.git_dir.join("config");
@@ -2360,7 +2395,7 @@ fn run_http_clone(args: Args) -> Result<()> {
         eprintln!("done.");
     }
 
-    if args.recurse_submodules && !args.bare {
+    if args.recurse_submodules() && !args.bare {
         if let Some(ref wt) = dest.work_tree {
             clone_submodules(wt, &dest, &args).context("cloning submodules")?;
         }
@@ -2980,7 +3015,7 @@ fn run_ssh_clone(args: Args) -> Result<()> {
 
     apply_submodule_reference_config_for_recursive_clone(&dest.git_dir, &args)?;
 
-    apply_sticky_recursive_clone(&dest.git_dir, args.recurse_submodules)?;
+    apply_sticky_recursive_clone(&dest.git_dir, args.recurse_submodules())?;
 
     if args.no_tags {
         let config_path = dest.git_dir.join("config");
@@ -3110,7 +3145,7 @@ fn run_ssh_clone(args: Args) -> Result<()> {
         dissociate_clone_repository(&dest.git_dir).context("dissociating from alternates")?;
     }
 
-    if args.recurse_submodules && !args.bare {
+    if args.recurse_submodules() && !args.bare {
         if let Some(ref wt) = dest.work_tree {
             if let Err(e) = clone_submodules(wt, &dest, &args) {
                 let _ = fs::remove_dir_all(&target_path);
@@ -3363,7 +3398,7 @@ fn run_ssh_network_clone(args: Args, spec: &crate::ssh_transport::SshUrl) -> Res
     if !args.config.is_empty() {
         apply_clone_config(&dest.git_dir, &args.config).context("applying -c config")?;
     }
-    apply_sticky_recursive_clone(&dest.git_dir, args.recurse_submodules)?;
+    apply_sticky_recursive_clone(&dest.git_dir, args.recurse_submodules())?;
     if args.no_tags {
         let config_path = dest.git_dir.join("config");
         let mut config = match ConfigFile::from_path(&config_path, ConfigScope::Local)? {
@@ -3390,7 +3425,7 @@ fn run_ssh_network_clone(args: Args, spec: &crate::ssh_transport::SshUrl) -> Res
     if !args.quiet && !args.no_checkout {
         eprintln!("done.");
     }
-    if args.recurse_submodules && !args.bare {
+    if args.recurse_submodules() && !args.bare {
         if let Some(ref wt) = dest.work_tree {
             clone_submodules(wt, &dest, &args).context("cloning submodules")?;
         }
@@ -3586,6 +3621,27 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
         ConfigFile::parse(&config_path, &content, ConfigScope::Local)?
     };
 
+    // `git clone --recurse-submodules=<pathspec>` records the pathspec(s) in `submodule.active`
+    // and only initializes the submodules that match. Persist them before deciding what to clone.
+    if let Some(specs) = clone_args.recurse_submodules_pathspecs() {
+        for (i, spec) in specs.iter().enumerate() {
+            if i == 0 {
+                super_cfg.set("submodule.active", spec)?;
+            } else {
+                super_cfg.add_value("submodule.active", spec)?;
+            }
+        }
+        super_cfg
+            .write()
+            .context("writing submodule.active during clone")?;
+        super_cfg = {
+            let config_path = repo.git_dir.join("config");
+            let content = fs::read_to_string(&config_path).unwrap_or_default();
+            ConfigFile::parse(&config_path, &content, ConfigScope::Local)?
+        };
+    }
+    let active_filter = clone_args.recurse_submodules_pathspecs().is_some();
+
     // Only clone paths that are submodules at the checked-out commit. `.gitmodules` can list paths
     // that are plain files on this branch (e.g. `f` as submodule on B1 but `f/f` as file on B2);
     // cloning would delete the checked-out tree (`t2080` clone + verify_checkout).
@@ -3596,6 +3652,12 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
 
     for sm in &modules {
         if !gitlink_paths.contains(&sm.path) {
+            continue;
+        }
+        // With explicit `--recurse-submodules=<pathspec>`, only clone active submodules.
+        if active_filter
+            && !crate::commands::submodule::submodule_path_is_active(repo, &sm.path)
+        {
             continue;
         }
 
@@ -4235,7 +4297,7 @@ fn dissociate_clone_repository(git_dir: &Path) -> Result<()> {
 /// When cloning recursively with `--reference` or `--reference-if-able`, record how nested
 /// submodule clones should derive alternates from the superproject (Git `clone.c`).
 fn apply_submodule_reference_config_for_recursive_clone(git_dir: &Path, args: &Args) -> Result<()> {
-    if !args.recurse_submodules {
+    if !args.recurse_submodules() {
         return Ok(());
     }
     if args.reference.is_empty() && args.reference_if_able.is_empty() {

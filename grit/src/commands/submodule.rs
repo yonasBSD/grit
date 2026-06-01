@@ -1288,6 +1288,12 @@ pub(crate) fn submodule_modules_git_dir_for_worktree_path(
 }
 
 /// Filter submodules by path args (empty = all).
+/// Whether a submodule path is active in `repo` (git `is_submodule_active`); used by
+/// `clone --recurse-submodules=<pathspec>` to decide which submodules to initialize.
+pub fn submodule_path_is_active(repo: &Repository, path: &str) -> bool {
+    grit_lib::submodule_active::is_submodule_active(repo, path).unwrap_or(false)
+}
+
 /// Collect all gitlink (`160000`) stage-0 paths recorded in the index, worktree-relative,
 /// using forward slashes. This mirrors `git`'s `module_list_compute`, which derives the set
 /// of submodules from index gitlink entries (not from `.gitmodules`).
