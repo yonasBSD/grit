@@ -864,6 +864,16 @@ pub fn run(args: Args) -> Result<()> {
                     } else if current.work_tree.as_ref().is_some_and(|wt| {
                         cwd_a == realpath_forgiving(wt) && !is_linked_worktree_git_dir(git_dir)
                     }) {
+                        if cwd.join(".git").is_file() {
+                            print_rev_parse_path(
+                                git_dir,
+                                &cwd,
+                                cli_prefix_path.as_deref(),
+                                *fmt,
+                                PathDefaultMode::Canonical,
+                            );
+                            continue;
+                        }
                         match fmt {
                             Some(true) => {
                                 println!("{}", git_a.display());

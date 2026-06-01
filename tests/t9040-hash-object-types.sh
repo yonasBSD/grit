@@ -17,7 +17,9 @@ setup_repo () {
 ###########################################################################
 
 test_expect_success 'setup test repository' '
+	(
 	setup_repo
+	)
 '
 
 test_expect_success 'hash-object defaults to blob type' '

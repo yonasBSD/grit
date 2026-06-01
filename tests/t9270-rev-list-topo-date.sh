@@ -15,7 +15,7 @@ REAL_GIT=/usr/bin/git
 
 test_expect_success 'setup linear history' '
 	(
-	grit init repo &&
+	grit init --initial-branch=master repo &&
 	cd repo &&
 	$REAL_GIT config user.email "test@test.com" &&
 	$REAL_GIT config user.name "Tester" &&

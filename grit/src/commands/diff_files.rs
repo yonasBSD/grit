@@ -902,6 +902,21 @@ fn index_stat_is_trusted(entry: &IndexEntry) -> bool {
         || entry.ino != 0
 }
 
+fn git_dir_allows_index_refresh(git_dir: &Path) -> bool {
+    let lock = git_dir.join("index.lock");
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(lock);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// Build the list of changes between the index and the working tree.
 fn collect_changes(
     repo: &Repository,
@@ -962,6 +977,13 @@ fn collect_changes(
                     if content_matches
                         && index_stat_is_trusted(idx_entry)
                         && stat_agrees
+                        && !idx_entry.intent_to_add()
+                    {
+                        continue;
+                    }
+                    if content_matches
+                        && index_stat_is_trusted(idx_entry)
+                        && git_dir_allows_index_refresh(&repo.git_dir)
                         && !idx_entry.intent_to_add()
                     {
                         continue;

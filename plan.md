@@ -1,4 +1,60 @@
-# PLAN.md — Get the `t0*` (plumbing) test family fully passing
+# PLAN.md — Current execution queue
+
+## Active task — t9 family 100% pass
+
+- [x] Make current in-scope `t9` family tests fully pass. Work one file at a time, always choosing
+  the non-green in-scope `t9` row with the largest `failing` count in `data/test-files.csv`, then
+  re-running that file until it has `failing=0` before moving on.
+  - Completed: `t9040-hash-object-types.sh` (28/28).
+  - Completed: `t9060-mktag-verify.sh` (28/28).
+  - Completed: `t9300-branch-delete-force.sh` (25/25).
+  - Completed: `t9600-switch-branch-create.sh` (40/40).
+  - Completed: `t9440-check-ref-format-branch.sh` (34/34).
+  - Completed: `t9010-branch-list-sort.sh` (26/26).
+  - Completed: `t9540-branch-rename-copy.sh` (38/38).
+  - Completed: `t9410-show-ref-verify.sh` (31/31).
+  - Completed: `t9120-diff-tree-merge.sh` (29/29).
+  - Completed: `t9900-branch-verbose-all.sh` (33/33).
+  - Completed: `t9030-commit-tree-parents.sh` (25/25).
+  - Completed: `t9190-for-each-ref-atoms.sh` (27/27).
+  - Completed: `t9200-merge-base-all.sh` (31/31).
+  - Completed: `t9351-fast-export-anonymize.sh` (17/17).
+  - Completed: `t9210-name-rev-tags.sh` (27/27).
+  - Completed: `t9250-status-short-branch.sh` (33/33).
+  - Completed: `t9270-rev-list-topo-date.sh` (31/31).
+  - Completed: `t9710-show-ref-hash-abbrev.sh` (38/38).
+  - Completed: `t9130-status-porcelain-v2.sh` (26/26).
+  - Completed: `t9150-rev-list-all-count.sh` (33/33).
+  - Completed: `t9450-merge-base-ancestor.sh` (32/32).
+  - Completed: `t9730-symbolic-ref-head.sh` (31/31).
+  - Completed: `t9740-check-ref-format-normalize.sh` (51/51).
+  - Completed: `t9902-completion.sh` (259/263 with known TODO failures, failing=0).
+  - Completed: `t9170-read-tree-prefix.sh` (25/25).
+  - Completed: `t9260-log-oneline-format.sh` (33/33).
+  - Completed: `t9430-symbolic-ref-delete.sh` (28/28).
+  - Completed: `t9850-status-ignored-patterns.sh` (36/36).
+  - Completed: `t9240-diff-files-deleted.sh` (34/34).
+  - Completed: `t9330-add-update-all.sh` (26/26).
+  - Completed: `t9400-for-each-ref-contains.sh` (25/25).
+  - Completed: `t9560-commit-message-variants.sh` (33/33).
+  - Completed: `t9700-for-each-ref-sort-combined.sh` (37/37).
+  - Completed: `t9790-write-tree-nested.sh` (29/29).
+  - Completed: `t9870-rev-list-reverse-count.sh` (34/34).
+  - Completed: `t9080-ls-tree-recursive.sh` (26/26).
+  - Completed: `t9160-update-index-cacheinfo.sh` (25/25).
+  - Completed: `t9230-diff-index-modes.sh` (38/38).
+  - Completed: `t9420-update-ref-delete.sh` (24/24).
+  - Completed: `t9860-log-max-count-skip.sh` (38/38).
+  - Completed: `t9890-init-object-format.sh` (31/31).
+  - Completed: `t9903-bash-prompt.sh` (67/67).
+  - Final verification: `./scripts/run-tests.sh t9 --verbose` completed with no failing t9 tests.
+  - Scope: current `in_scope=yes` t9 rows; skipped external-helper files remain excluded unless
+    explicitly unskipped later.
+  - Execution log: `logs/2026-06-01_0000-t9-family.md`.
+
+---
+
+# Previous plan — Get the `t0*` (plumbing) test family fully passing
 
 ## Active t8 loop — 2026-06-01
 
@@ -108,7 +164,7 @@ single agent should own the whole lane.
 **Owns:** `grit-lib/src/repo.rs`, `grit/src/commands/init.rs`, `grit-lib/src/dotfile.rs`, `grit/src/commands/var.rs`, and the `safe.directory`/`GIT_*`-env read paths in `grit-lib/src/config.rs`
 - `t0110-environment` 3/31 — `GIT_*` env var precedence/handling (big gap)
 - `t0001-init` 74/102 — `git init` (`--bare`, `--separate-git-dir`, templates, reinit, `--shared`)
-- [x] `t0120-dot-git-dir` 32/32 — `.git` dir/file discovery edge cases
+- `t0120-dot-git-dir` 8/32 — `.git` dir/file discovery edge cases
 - `t0033-safe-directory` 20/22, `t0034-root-safe-directory` 0/0 (**sudo-gated**: runs only with `GIT_TEST_ALLOW_SUDO`)
 - `t0002-gitfile` 12/14 — `.git` gitfile indirection
 - `t0007-git-var` 26/27 — `git var` (1 failing)

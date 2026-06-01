@@ -14,7 +14,8 @@ REAL_GIT=/usr/bin/git
 # Setup (needed for @{-N} expansion)
 # ---------------------------------------------------------------------------
 test_expect_success 'setup: repo with branch history' '
-	$REAL_GIT init repo &&
+	(
+	$REAL_GIT init --initial-branch=master repo &&
 	cd repo &&
 	$REAL_GIT config user.name "Test User" &&
 	$REAL_GIT config user.email "test@example.com" &&
@@ -27,80 +28,105 @@ test_expect_success 'setup: repo with branch history' '
 	$REAL_GIT checkout feature &&
 	$REAL_GIT checkout develop &&
 	$REAL_GIT checkout master
+	)
 '
 
 # ---------------------------------------------------------------------------
 # --branch with simple names
 # ---------------------------------------------------------------------------
 test_expect_success 'check-ref-format --branch master outputs master' '
+	(
 	cd repo &&
 	grit check-ref-format --branch master >actual &&
 	echo "master" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'check-ref-format --branch feature outputs feature' '
+	(
 	cd repo &&
 	grit check-ref-format --branch feature >actual &&
 	echo "feature" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'check-ref-format --branch my-branch outputs my-branch' '
+	(
 	cd repo &&
 	grit check-ref-format --branch my-branch >actual &&
 	echo "my-branch" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'check-ref-format --branch topic/sub outputs topic/sub' '
+	(
 	cd repo &&
 	grit check-ref-format --branch topic/sub >actual &&
 	echo "topic/sub" >expect &&
 	test_cmp expect actual
+	)
 '
 
 # ---------------------------------------------------------------------------
 # --branch rejects invalid names
 # ---------------------------------------------------------------------------
 test_expect_success 'check-ref-format --branch rejects name with ..' '
+	(
 	cd repo &&
 	test_must_fail grit check-ref-format --branch "foo..bar" 2>err
+	)
 '
 
 test_expect_success 'check-ref-format --branch rejects name with space' '
+	(
 	cd repo &&
 	test_must_fail grit check-ref-format --branch "foo bar" 2>err
+	)
 '
 
 test_expect_success 'check-ref-format --branch rejects name with ~' '
+	(
 	cd repo &&
 	test_must_fail grit check-ref-format --branch "foo~1" 2>err
+	)
 '
 
 test_expect_success 'check-ref-format --branch rejects name with ^' '
+	(
 	cd repo &&
 	test_must_fail grit check-ref-format --branch "foo^bar" 2>err
+	)
 '
 
 test_expect_success 'check-ref-format --branch rejects name with colon' '
+	(
 	cd repo &&
 	test_must_fail grit check-ref-format --branch "foo:bar" 2>err
+	)
 '
 
 test_expect_success 'check-ref-format --branch rejects name ending with .lock' '
+	(
 	cd repo &&
 	test_must_fail grit check-ref-format --branch "foo.lock" 2>err
+	)
 '
 
 test_expect_success 'check-ref-format --branch rejects @{' '
+	(
 	cd repo &&
 	test_must_fail grit check-ref-format --branch "foo@{bar" 2>err
+	)
 '
 
 test_expect_success 'check-ref-format --branch rejects backslash' '
+	(
 	cd repo &&
 	test_must_fail grit check-ref-format --branch "foo\\bar" 2>err
+	)
 '
 
 # ---------------------------------------------------------------------------
@@ -195,10 +221,12 @@ test_expect_success 'check-ref-format --normalize still rejects invalid' '
 # Compare with real git
 # ---------------------------------------------------------------------------
 test_expect_success 'check-ref-format --branch master matches real git' '
+	(
 	cd repo &&
 	grit check-ref-format --branch master >actual &&
 	$REAL_GIT check-ref-format --branch master >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'check-ref-format --normalize /refs/heads/x matches real git' '

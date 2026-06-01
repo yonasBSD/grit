@@ -15,7 +15,7 @@ REAL_GIT=/usr/bin/git
 
 test_expect_success 'setup repository with branches' '
 	(
-	grit init repo &&
+	grit init --initial-branch=master repo &&
 	cd repo &&
 	git config user.email "t@t.com" &&
 	git config user.name "T" &&
@@ -311,7 +311,7 @@ test_expect_success 'symbolic-ref set and delete cycle' '
 
 test_expect_success 'setup cross-check repo' '
 	(
-	$REAL_GIT init cross &&
+	$REAL_GIT init --initial-branch=master cross &&
 	cd cross &&
 	$REAL_GIT config user.email "t@t.com" &&
 	$REAL_GIT config user.name "T" &&

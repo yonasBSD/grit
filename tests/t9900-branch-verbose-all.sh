@@ -14,7 +14,7 @@ cd "$(dirname "$0")" || exit 1
 
 test_expect_success 'setup: create repo with branches' '
 	(
-	"$REAL_GIT" init repo &&
+	"$REAL_GIT" init --initial-branch=master repo &&
 	cd repo &&
 	"$REAL_GIT" config user.name "Test User" &&
 	"$REAL_GIT" config user.email "test@example.com" &&
@@ -305,7 +305,7 @@ test_expect_success 'branch --show-current matches real git' '
 
 test_expect_success 'setup: single-branch repo' '
 	(
-	"$REAL_GIT" init single-repo &&
+	"$REAL_GIT" init --initial-branch=master single-repo &&
 	cd single-repo &&
 	"$REAL_GIT" config user.name "T" &&
 	"$REAL_GIT" config user.email "t@t.com" &&

@@ -14,13 +14,15 @@ REAL_GIT=/usr/bin/git
 ###########################################################################
 
 test_expect_success 'setup repository for --branch tests' '
-	grit init repo &&
+	(
+	grit init --initial-branch=master repo &&
 	cd repo &&
 	git config user.email "t@t.com" &&
 	git config user.name "T" &&
 	echo x >x.txt &&
 	grit add . &&
 	grit commit -m "initial"
+	)
 '
 
 ###########################################################################
@@ -214,22 +216,28 @@ test_expect_success 'normalize: rejects dot-started component' '
 ###########################################################################
 
 test_expect_success 'branch: master expands to master' '
+	(
 	cd repo &&
 	grit check-ref-format --branch master >actual &&
 	echo "master" >expected &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'branch: feature-branch is valid' '
+	(
 	cd repo &&
 	grit check-ref-format --branch feature-branch >actual &&
 	echo "feature-branch" >expected &&
 	test_cmp expected actual
+	)
 '
 
 test_expect_success 'branch: invalid branch name fails' '
+	(
 	cd repo &&
 	test_must_fail grit check-ref-format --branch "a..b"
+	)
 '
 
 ###########################################################################
@@ -273,10 +281,12 @@ test_expect_success 'cross-check: space in name both reject' '
 '
 
 test_expect_success 'cross-check: branch mode matches real git' '
+	(
 	cd repo &&
 	grit check-ref-format --branch master >grit_out &&
 	$REAL_GIT check-ref-format --branch master >git_out &&
 	test_cmp grit_out git_out
+	)
 '
 
 test_done

@@ -50,6 +50,7 @@ test_expect_success 'init --object-format=sha1 succeeds' '
 '
 
 test_expect_success 'init --object-format=sha1 can commit and produce sha1 hashes' '
+	(
 	cd sha1-repo &&
 	"$REAL_GIT" config user.name "Test" &&
 	"$REAL_GIT" config user.email "t@t.com" &&
@@ -59,14 +60,17 @@ test_expect_success 'init --object-format=sha1 can commit and produce sha1 hashe
 	grit log --oneline >log_out &&
 	head -1 log_out | awk "{print \$1}" >hash &&
 	grep -qE "^[0-9a-f]{7,40}$" hash
+	)
 '
 
 test_expect_success 'init --object-format=sha1 hash matches real git' '
+	(
 	cd sha1-repo &&
 	echo "test-blob" >blob.txt &&
 	grit hash-object blob.txt >grit_hash &&
 	"$REAL_GIT" hash-object blob.txt >git_hash &&
 	test_cmp git_hash grit_hash
+	)
 '
 
 test_expect_success 'init --object-format sha1 (space separated) works' '
@@ -183,6 +187,7 @@ test_expect_success 'init on existing repo succeeds (reinit)' '
 '
 
 test_expect_success 'reinit preserves existing objects' '
+	(
 	grit init reinit2 &&
 	cd reinit2 &&
 	"$REAL_GIT" config user.name "T" &&
@@ -196,6 +201,7 @@ test_expect_success 'reinit preserves existing objects' '
 	cd reinit2 &&
 	grit log --oneline >after &&
 	test_cmp before after
+	)
 '
 
 test_expect_success 'reinit preserves HEAD ref' '

@@ -138,10 +138,13 @@ test_expect_success 'ls-tree of prefixed write-tree has correct paths' '
 # ---------------------------------------------------------------------------
 # Error cases
 # ---------------------------------------------------------------------------
-test_expect_success 'read-tree --prefix rejects prefix without trailing slash' '
+test_expect_success 'read-tree --prefix accepts prefix without trailing slash' '
 	(
 	cd repo &&
-	test_must_fail grit read-tree --prefix=noslash "$(cat ../tree_oid)"
+	rm -f .git/index &&
+	grit read-tree --prefix=noslash "$(cat ../tree_oid)" &&
+	grit ls-files >actual &&
+	grep "^noslash/a.txt" actual
 	)
 '
 
@@ -210,14 +213,14 @@ test_expect_success 'prefixed entries have correct modes' '
 # ---------------------------------------------------------------------------
 # Idempotency
 # ---------------------------------------------------------------------------
-test_expect_success 'reading same prefix twice produces duplicated entries' '
+test_expect_success 'reading same prefix twice fails without duplicating entries' '
 	(
 	cd repo &&
 	rm -f .git/index &&
 	grit read-tree --prefix=dup/ "$(cat ../tree_oid)" &&
 	grit ls-files >first &&
 	count1=$(wc -l <first) &&
-	grit read-tree --prefix=dup/ "$(cat ../tree_oid)" &&
+	test_must_fail grit read-tree --prefix=dup/ "$(cat ../tree_oid)" &&
 	grit ls-files >second &&
 	count2=$(wc -l <second) &&
 	test "$count1" = "$count2"

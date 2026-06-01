@@ -4899,6 +4899,14 @@ fn replay_remaining(
 
                             let remaining: Vec<&str> = todo[i + 1..].to_vec();
                             write_rebase_todo_slice(rb_dir, &remaining)?;
+                            if rebase_interactive {
+                                let total = fs::read_to_string(rb_dir.join("total-cmds"))
+                                    .unwrap_or_else(|_| remaining.len().to_string());
+                                let completed = fs::read_to_string(rb_dir.join("completed-cmds"))
+                                    .unwrap_or_else(|_| (i + 1).to_string());
+                                fs::write(rb_dir.join("end"), total)?;
+                                fs::write(rb_dir.join("msgnum"), completed)?;
+                            }
                             let _ = fs::write(
                                 rb_dir.join("stopped-sha"),
                                 format!("{}\n", commit_oid.to_hex()),

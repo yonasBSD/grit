@@ -22,7 +22,7 @@ REAL_GIT=/usr/bin/git
 
 test_expect_success 'setup: create repo with initial commit' '
 	(
-	$REAL_GIT init repo &&
+	$REAL_GIT init --initial-branch=master repo &&
 	cd repo &&
 	$REAL_GIT config user.email "t@t.com" &&
 	$REAL_GIT config user.name "T" &&
@@ -356,7 +356,7 @@ test_expect_success 'switch back to master from orphan' '
 
 test_expect_success 'setup cross-check repos' '
 	(
-	$REAL_GIT init git-cmp &&
+	$REAL_GIT init --initial-branch=master git-cmp &&
 	cd git-cmp &&
 	$REAL_GIT config user.email "t@t.com" &&
 	$REAL_GIT config user.name "T" &&
@@ -365,7 +365,7 @@ test_expect_success 'setup cross-check repos' '
 	test_tick &&
 	$REAL_GIT commit -m "init" &&
 	cd .. &&
-	grit init grit-cmp &&
+	grit init --initial-branch=master grit-cmp &&
 	cd grit-cmp &&
 	echo "a" >a.txt &&
 	grit add a.txt &&

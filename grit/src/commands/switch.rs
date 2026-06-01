@@ -5,7 +5,7 @@
 //! `git switch` flags, then delegates with the remaining positional arguments.
 
 use crate::commands::checkout;
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Args as ClapArgs;
 use std::collections::BTreeSet;
 
@@ -67,6 +67,15 @@ pub struct Args {
 
 /// Run `grit switch`.
 pub fn run(args: Args) -> Result<()> {
+    if args.create.is_none()
+        && args.force_create.is_none()
+        && !args.detach
+        && args.orphan.is_none()
+        && args.rest.is_empty()
+    {
+        bail!("missing branch or commit argument");
+    }
+
     if args.orphan.is_some() && (args.create.is_some() || args.force_create.is_some()) {
         eprintln!("fatal: options '-c', '-C', and '--orphan' cannot be used together");
         std::process::exit(128);

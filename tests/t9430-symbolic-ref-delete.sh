@@ -15,7 +15,7 @@ REAL_GIT=/usr/bin/git
 # ---------------------------------------------------------------------------
 test_expect_success 'setup: repo with branches' '
 	(
-	$REAL_GIT init repo &&
+	$REAL_GIT init --initial-branch=master repo &&
 	cd repo &&
 	$REAL_GIT config user.name "Test User" &&
 	$REAL_GIT config user.email "test@example.com" &&

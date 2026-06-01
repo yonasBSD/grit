@@ -395,6 +395,9 @@ pub fn run(mut args: Args) -> Result<()> {
             }
         }
     }
+    if args.porcelain.as_deref() == Some("v1") && !args.no_branch {
+        args.branch = true;
+    }
     let repo = Repository::discover(None).context("not a git repository")?;
     let work_tree = repo
         .work_tree

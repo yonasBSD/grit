@@ -930,7 +930,7 @@ fn parse_alternate_env(val: &str) -> Vec<PathBuf> {
             if !properly_closed {
                 // Broken quoting: fall back to treating raw value (with leading ")
                 // as a literal path.
-                let raw: String = std::iter::once('"').chain(saved.into_iter()).collect();
+                let raw: String = std::iter::once('"').chain(saved).collect();
                 // Extract up to ':' or end
                 let raw_path = raw.split(':').next().unwrap_or(&raw);
                 if !raw_path.is_empty() {

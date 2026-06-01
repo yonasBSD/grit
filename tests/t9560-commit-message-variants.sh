@@ -15,7 +15,7 @@ REAL_GIT=/usr/bin/git
 
 test_expect_success 'setup repository' '
 	(
-	grit init repo &&
+	grit init --initial-branch=master repo &&
 	cd repo &&
 	grit config set user.name "Test User" &&
 	grit config set user.email "test@test.com"
@@ -307,8 +307,8 @@ test_expect_success 'commit shows message in output' '
 
 test_expect_success 'grit and git produce same tree for same content' '
 	(
-	grit init grit-cmp &&
-	$REAL_GIT init git-cmp &&
+	grit init --initial-branch=master grit-cmp &&
+	$REAL_GIT init --initial-branch=master git-cmp &&
 	cd grit-cmp &&
 	grit config set user.name "Test" &&
 	grit config set user.email "t@t.com" &&

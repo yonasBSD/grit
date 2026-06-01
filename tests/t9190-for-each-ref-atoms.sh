@@ -13,7 +13,7 @@ cd "$(dirname "$0")" || exit 1
 # ---------------------------------------------------------------------------
 test_expect_success 'setup: repo with branches and tags' '
 	(
-	git init repo &&
+	git init --initial-branch=master repo &&
 	cd repo &&
 	git config user.name "Test User" &&
 	git config user.email "test@example.com" &&

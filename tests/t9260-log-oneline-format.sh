@@ -15,7 +15,7 @@ REAL_GIT=/usr/bin/git
 
 test_expect_success 'setup repository with five commits' '
 	(
-	grit init repo &&
+	grit init --initial-branch=master repo &&
 	cd repo &&
 	$REAL_GIT config user.email "alice@example.com" &&
 	$REAL_GIT config user.name "Alice Author" &&
@@ -356,11 +356,11 @@ test_expect_success 'log --format with empty string shows blank lines' '
 	)
 '
 
-test_expect_success 'log --oneline --graph --reverse combines' '
+test_expect_success 'log --oneline --graph --reverse is rejected' '
 	(
 	cd repo &&
-	grit log --oneline --graph --reverse >out &&
-	test -s out
+	test_must_fail grit log --oneline --graph --reverse >out 2>err &&
+	grep "reverse.*graph\\|graph.*reverse" err
 	)
 '
 

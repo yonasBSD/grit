@@ -38,7 +38,9 @@ setup_commit () {
 ###########################################################################
 
 test_expect_success 'setup repository with commit' '
+	(
 	setup_commit
+	)
 '
 
 test_expect_success 'mktag creates a valid tag object' '

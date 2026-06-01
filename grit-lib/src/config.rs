@@ -2613,7 +2613,7 @@ pub fn get_urlmatch_entries<'a>(
             }
         }
     }
-    matches.sort_by(|a, b| a.0.cmp(&b.0));
+    matches.sort_by_key(|a| a.0);
     matches.into_iter().map(|(_, e)| e).collect()
 }
 

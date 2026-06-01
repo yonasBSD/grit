@@ -244,12 +244,19 @@ fn ref_source_for_commit(
     oid: ObjectId,
     head_branches: &[(String, ObjectId)],
 ) -> Result<String> {
-    let mut best: Option<(&str, usize)> = None;
+    let mut best: Option<(&str, (u8, usize))> = None;
     for (name, tip) in head_branches {
         if *tip != oid {
             continue;
         }
-        let score = name.len();
+        let score = (
+            if name.starts_with("refs/heads/") {
+                0
+            } else {
+                1
+            },
+            name.len(),
+        );
         if best.is_none_or(|(_, s)| score < s) {
             best = Some((name.as_str(), score));
         }

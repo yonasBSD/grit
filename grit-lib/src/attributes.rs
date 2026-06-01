@@ -1024,30 +1024,31 @@ fn walk_tree_attrs(
             0o040000 => {
                 walk_tree_attrs(odb, &e.oid, &path, merged)?;
             }
-            0o100644 | 0o100755 | 0o120000 => {
-                if name == ".gitattributes" {
-                    let oid = e.oid;
-                    {
-                        let blob = odb.read(&oid)?;
-                        if blob.kind != ObjectKind::Blob {
-                            continue;
-                        }
-                        if blob.data.len() > MAX_ATTR_FILE_BYTES {
-                            merged.warnings.push("warning: ignoring overly large gitattributes blob '.gitattributes'".to_string());
-                            continue;
-                        }
-                        let content = String::from_utf8_lossy(&blob.data).into_owned();
-                        let display = format!("{path} (tree)");
-                        let attr_base = Path::new(&path)
-                            .parent()
-                            .map(|p| p.to_string_lossy().replace('\\', "/"))
-                            .unwrap_or_default();
-                        let mut p =
-                            parse_gitattributes_content_impl(&content, &display, true, &attr_base);
-                        merged.rules.append(&mut p.rules);
-                        merged.macros.defs.extend(p.macros.defs.drain());
-                        merged.warnings.append(&mut p.warnings);
+            0o100644 | 0o100755 | 0o120000 if name == ".gitattributes" => {
+                let oid = e.oid;
+                {
+                    let blob = odb.read(&oid)?;
+                    if blob.kind != ObjectKind::Blob {
+                        continue;
                     }
+                    if blob.data.len() > MAX_ATTR_FILE_BYTES {
+                        merged.warnings.push(
+                            "warning: ignoring overly large gitattributes blob '.gitattributes'"
+                                .to_string(),
+                        );
+                        continue;
+                    }
+                    let content = String::from_utf8_lossy(&blob.data).into_owned();
+                    let display = format!("{path} (tree)");
+                    let attr_base = Path::new(&path)
+                        .parent()
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_default();
+                    let mut p =
+                        parse_gitattributes_content_impl(&content, &display, true, &attr_base);
+                    merged.rules.append(&mut p.rules);
+                    merged.macros.defs.extend(p.macros.defs.drain());
+                    merged.warnings.append(&mut p.warnings);
                 }
             }
             _ => {}

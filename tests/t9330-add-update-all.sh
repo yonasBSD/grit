@@ -179,7 +179,7 @@ test_expect_success 'add -n is same as --dry-run' '
 test_expect_success 'add -v produces output' '
 	(
 	cd repo &&
-	grit add -v dry.txt 2>actual &&
+	grit add -v dry.txt >actual &&
 	test -s actual
 	)
 '
@@ -190,7 +190,7 @@ test_expect_success 'add --verbose produces output' '
 	test_tick &&
 	grit commit -m "with dry" &&
 	echo "verbose" >verbose.txt &&
-	grit add --verbose verbose.txt 2>actual &&
+	grit add --verbose verbose.txt >actual &&
 	test -s actual
 	)
 '
