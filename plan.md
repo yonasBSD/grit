@@ -12,6 +12,7 @@
   - Completed: `t9440-check-ref-format-branch.sh` (34/34).
   - Completed: `t9010-branch-list-sort.sh` (26/26).
   - Completed: `t9540-branch-rename-copy.sh` (38/38).
+  - Completed: `t9410-show-ref-verify.sh` (31/31).
   - Next expected target: choose by refreshed CSV after commit.
   - Scope: current `in_scope=yes` t9 rows; skipped external-helper files remain excluded unless
     explicitly unskipped later.
