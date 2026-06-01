@@ -4427,6 +4427,54 @@ checking out of the index."
                         )
                     })?;
 
+                    // Gitlink path: `git checkout <tree> -- <submodule>` updates only the index
+                    // gitlink OID (and leaves/creates the submodule directory placeholder); the
+                    // recorded commit lives in the submodule, not this object store, so it must not
+                    // be read as a blob (t2013 "checkout <submodule> updates the index only").
+                    if mode == MODE_GITLINK {
+                        let abs_path = work_tree.join(&rel);
+                        if let Ok(meta) = std::fs::symlink_metadata(&abs_path) {
+                            if meta.file_type().is_symlink() || meta.is_file() {
+                                let _ = std::fs::remove_file(&abs_path);
+                            }
+                        }
+                        if !abs_path.exists() {
+                            let _ = std::fs::create_dir_all(&abs_path);
+                        }
+                        let path_bytes = rel.as_bytes().to_vec();
+                        let mut entry = IndexEntry {
+                            ctime_sec: 0,
+                            ctime_nsec: 0,
+                            mtime_sec: 0,
+                            mtime_nsec: 0,
+                            dev: 0,
+                            ino: 0,
+                            mode,
+                            uid: 0,
+                            gid: 0,
+                            size: 0,
+                            oid: blob_oid,
+                            flags: path_bytes.len().min(0xFFF) as u16,
+                            flags_extended: None,
+                            path: path_bytes.clone(),
+                            base_index_pos: 0,
+                        };
+                        if let Ok(m) = std::fs::symlink_metadata(&abs_path) {
+                            use std::os::unix::fs::MetadataExt as _;
+                            entry.ctime_sec = m.ctime() as u32;
+                            entry.ctime_nsec = m.ctime_nsec() as u32;
+                            entry.mtime_sec = m.mtime() as u32;
+                            entry.mtime_nsec = m.mtime_nsec() as u32;
+                            entry.dev = m.dev() as u32;
+                            entry.ino = m.ino() as u32;
+                        }
+                        index.remove_path_all_stages(&path_bytes);
+                        index.add_or_replace(entry);
+                        index_modified = true;
+                        checkout_record_path_result(Ok(true), &mut updated_paths, &mut path_errors);
+                        continue;
+                    }
+
                     // Write to working tree with CRLF conversion
                     let w = write_blob_to_worktree(
                         repo, work_tree, &rel, &blob_oid, mode, &index, false, None,
