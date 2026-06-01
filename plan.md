@@ -9,6 +9,7 @@
   - Completed: `t9060-mktag-verify.sh` (28/28).
   - Completed: `t9300-branch-delete-force.sh` (25/25).
   - Completed: `t9600-switch-branch-create.sh` (40/40).
+  - Completed: `t9440-check-ref-format-branch.sh` (34/34).
   - Next expected target: choose by refreshed CSV after commit.
   - Scope: current `in_scope=yes` t9 rows; skipped external-helper files remain excluded unless
     explicitly unskipped later.
