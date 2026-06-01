@@ -37,7 +37,7 @@ test_expect_success 'restore --staged unstages a modified file' '
 	git add a.txt &&
 	git restore --staged a.txt &&
 	git diff --cached --name-only >staged &&
-	test_must_fail grep "a.txt" staged
+	! grep "a.txt" staged
 	)
 '
 
@@ -59,7 +59,7 @@ test_expect_success 'restore --staged unstages a newly added file' '
 	git add new.txt &&
 	git restore --staged new.txt &&
 	git diff --cached --name-only >staged &&
-	test_must_fail grep "new.txt" staged &&
+	! grep "new.txt" staged &&
 	rm -f new.txt
 	)
 '
@@ -99,8 +99,8 @@ test_expect_success 'restore --staged with multiple pathspecs' '
 	git add a.txt b.txt c.txt &&
 	git restore --staged a.txt c.txt &&
 	git diff --cached --name-only >staged &&
-	test_must_fail grep "a.txt" staged &&
-	test_must_fail grep "c.txt" staged &&
+	! grep "a.txt" staged &&
+	! grep "c.txt" staged &&
 	grep "b.txt" staged &&
 	git restore --staged . &&
 	git checkout -- a.txt b.txt c.txt
@@ -114,7 +114,7 @@ test_expect_success 'restore --staged on file in subdirectory' '
 	git add sub/d.txt &&
 	git restore --staged sub/d.txt &&
 	git diff --cached --name-only >staged &&
-	test_must_fail grep "sub/d.txt" staged &&
+	! grep "sub/d.txt" staged &&
 	git checkout -- sub/d.txt
 	)
 '
@@ -128,7 +128,7 @@ test_expect_success 'restore --staged --source=HEAD is default (no-op on clean)'
 	git add a.txt &&
 	git restore --staged --source=HEAD a.txt &&
 	git diff --cached --name-only >staged &&
-	test_must_fail grep "a.txt" staged &&
+	! grep "a.txt" staged &&
 	git checkout -- a.txt
 	)
 '
@@ -177,7 +177,7 @@ test_expect_success 'restore --staged --worktree restores both' '
 	git add a.txt &&
 	git restore --staged --worktree a.txt &&
 	git diff --cached --name-only >staged &&
-	test_must_fail grep "a.txt" staged &&
+	! grep "a.txt" staged &&
 	HEAD_BLOB=$(git rev-parse HEAD:a.txt) &&
 	WORKTREE_BLOB=$(git hash-object a.txt) &&
 	test "$WORKTREE_BLOB" = "$HEAD_BLOB"
@@ -253,7 +253,7 @@ test_expect_success 'restore --staged after staging executable file' '
 	git add a.txt &&
 	git restore --staged a.txt &&
 	git diff --cached --name-only >staged &&
-	test_must_fail grep "a.txt" staged &&
+	! grep "a.txt" staged &&
 	chmod -x a.txt
 	)
 '
@@ -279,7 +279,7 @@ test_expect_success 'restore --staged with explicit subdirectory file' '
 	git add sub/d.txt &&
 	git restore --staged sub/d.txt &&
 	git diff --cached --name-only >staged &&
-	test_must_fail grep "sub/d.txt" staged &&
+	! grep "sub/d.txt" staged &&
 	git checkout -- sub/d.txt
 	)
 '
@@ -305,7 +305,7 @@ test_expect_success 'restore --staged works with full path from root' '
 	git add sub/d.txt &&
 	git restore --staged sub/d.txt &&
 	git diff --cached --name-only >staged &&
-	test_must_fail grep "d.txt" staged &&
+	! grep "d.txt" staged &&
 	git checkout -- sub/d.txt
 	)
 '
@@ -350,7 +350,7 @@ test_expect_success 'restore --staged on binary file' '
 	git add binary.bin &&
 	git restore --staged binary.bin &&
 	git diff --cached --name-only >staged &&
-	test_must_fail grep "binary.bin" staged &&
+	! grep "binary.bin" staged &&
 	git checkout -- binary.bin
 	)
 '
@@ -363,7 +363,7 @@ test_expect_success 'restore --staged preserves other staged changes' '
 	git add a.txt b.txt &&
 	git restore --staged a.txt &&
 	git diff --cached --name-only >staged &&
-	test_must_fail grep "a.txt" staged &&
+	! grep "a.txt" staged &&
 	grep "b.txt" staged &&
 	git restore --staged . &&
 	git checkout -- a.txt b.txt
