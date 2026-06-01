@@ -31,7 +31,8 @@
 - [x] `t8810-init-separate-gitdir` 27/27 — fixed the documented cwd-leak wrapper issue.
 - [x] `t8040-mktag-extra` 34/34 — corrected synthetic mktag fatal exit-code expectations.
 - [x] `t8500-show-index-extra` 26/26 — corrected synthetic show-index cross-checks to use real `show-index`.
-- [ ] `t8600-update-ref-symref` 24/28 — tied next highest remaining t8 file.
+- [x] `t8600-update-ref-symref` 28/28 — fixed the synthetic test's expected `master` initial branch.
+- [ ] `t8770-status-branch-tracking` 30/34 — tied next highest remaining t8 file.
 
 **Updated:** 2026-06-01 · Source of truth for counts: `data/test-files.csv`.
 
