@@ -36,6 +36,7 @@
   - Completed: `t9240-diff-files-deleted.sh` (34/34).
   - Completed: `t9330-add-update-all.sh` (26/26).
   - Completed: `t9400-for-each-ref-contains.sh` (25/25).
+  - Completed: `t9560-commit-message-variants.sh` (33/33).
   - Next expected target: choose by refreshed CSV after commit.
   - Scope: current `in_scope=yes` t9 rows; skipped external-helper files remain excluded unless
     explicitly unskipped later.
