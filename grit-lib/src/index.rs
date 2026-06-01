@@ -1376,10 +1376,9 @@ impl Index {
                 0 => {
                     last_stage0 = Some(e.path.as_slice());
                 }
-                1
-                    if last_stage0.is_some_and(|p| p == e.path.as_slice()) => {
-                        e.set_overlay_tree_skip_output(true);
-                    }
+                1 if last_stage0.is_some_and(|p| p == e.path.as_slice()) => {
+                    e.set_overlay_tree_skip_output(true);
+                }
                 _ => {}
             }
         }

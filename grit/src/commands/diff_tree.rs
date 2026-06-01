@@ -853,7 +853,23 @@ fn run_one_commit(repo: &Repository, opts: &Options, out: &mut impl Write) -> Re
                 }
                 has_diff = any_diff;
             } else if commit.parents.len() > 1 {
-                // Merge commit without `-m` / `-c` / `--cc`: no diff output (matches `git diff-tree`).
+                let parent_tree = commit_tree(&repo.odb, &commit.parents[0])?;
+                let entries =
+                    diff_with_opts(&repo.odb, Some(&parent_tree), Some(&commit.tree), opts)?;
+                let filtered = filter_entries(&repo.odb, &repo, entries, opts)?;
+                has_diff = !filtered.is_empty();
+                if opts.check {
+                    let prepared =
+                        prepare_diff_tree_entries(&repo.odb, filtered, opts, Some(&parent_tree));
+                    run_diff_tree_whitespace_check(repo, &prepared, opts)?;
+                    return Ok(has_diff);
+                }
+                if !opts.quiet && (has_diff || opts.pretty.is_some()) {
+                    write_commit_header(out, &oid, &obj.data, opts, None)?;
+                    if !opts.suppress_diff {
+                        print_diff(out, repo, &filtered, opts, Some(&parent_tree))?;
+                    }
+                }
             } else {
                 let parent_tree = commit_tree(&repo.odb, &commit.parents[0])?;
                 let entries =

@@ -24,6 +24,11 @@ Updated: 2026-06-01
   making grit setup explicitly initialize `master`, matching the test's hard-coded branch names.
 - t9 focus: `./scripts/run-tests.sh t9410-show-ref-verify.sh --verbose` now passes 31/31 after
   making real-Git setup explicitly initialize `master`, matching the test's hard-coded refs.
+- t9 focus: `cargo build --release -p grit-cli` passed, then
+  `./scripts/run-tests.sh t9120-diff-tree-merge.sh --verbose` passed 29/29 after explicit `master`
+  setup plus single-commit merge diff-tree output against the first parent.
+- t9120 validation: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`, and
+  `cargo test -p grit-lib --lib` all completed successfully; grit-lib unit tests passed 229/229.
 - Workspace cargo/unit tests: not re-run for the `t9040`/`t9060` harness-only cwd fixes.
 - `cargo build --release -p grit-cli`: pass.
 - `cargo fmt`: run. `cargo fmt --check` still reports pre-existing formatting drift in unrelated files; those mechanical edits were not included in this scoped commit.

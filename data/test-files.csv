@@ -1422,7 +1422,7 @@ t9116-git-svn-log	t9	skip	17	0	0	false	ok	0
 t9117-git-svn-init-clone	t9	skip	12	0	0	false	ok	0
 t9118-git-svn-funky-branch-names	t9	skip	5	0	0	false	ok	0
 t9119-git-svn-info	t9	skip	41	0	0	false	ok	0
-t9120-diff-tree-merge	t9	yes	29	19	10	false	ok	0
+t9120-diff-tree-merge	t9	yes	29	29	0	true	ok	0
 t9120-git-svn-clone-with-percent-escapes	t9	skip	8	0	0	false	ok	0
 t9121-git-svn-fetch-renamed-dir	t9	skip	2	0	0	false	ok	0
 t9122-git-svn-author	t9	skip	2	0	0	false	ok	0
