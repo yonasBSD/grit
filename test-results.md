@@ -32,6 +32,7 @@ Updated: 2026-06-01
 - t8 add intent-to-add: `./scripts/run-tests.sh t8860-add-intent-to-add.sh` passes 30/30 after correcting synthetic empty-blob/status/cached-diff expectations.
 - t8 rev-list first-parent: `./scripts/run-tests.sh t8930-rev-list-first-parent.sh` passes 32/32 after making the synthetic test request its expected `master` initial branch.
 - t8 init separate gitdir: `./scripts/run-tests.sh t8810-init-separate-gitdir.sh` passes 27/27 after applying the documented cwd-leak wrapper.
+- t8 mktag extra: `./scripts/run-tests.sh t8040-mktag-extra.sh` passes 34/34 after correcting fatal exit-code expectations.
 - t8 switch checks: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 - t8 blame focus: `cargo check` and `cargo test -p grit-lib --lib` pass; `cargo clippy --fix --allow-dirty` completes with the existing workspace clippy warning backlog.
 - t8 blame i18n: `./scripts/run-tests.sh t8005-blame-i18n.sh` passes 5/5 after preserving raw non-UTF-8 commit `--author` and `-m` argv bytes for `i18n.commitencoding` decoding.

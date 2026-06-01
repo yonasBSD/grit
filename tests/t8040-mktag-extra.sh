@@ -228,7 +228,7 @@ type tree
 tag wrong-type
 tagger T <t@t.com> 1000000000 +0000
 
-wrong type" | test_expect_code 1 git mktag
+wrong type" | test_expect_code 128 git mktag
 	)
 '
 
@@ -241,7 +241,7 @@ type commit
 tag wrong-type2
 tagger T <t@t.com> 1000000000 +0000
 
-wrong type" | test_expect_code 1 git mktag
+wrong type" | test_expect_code 128 git mktag
 	)
 '
 
@@ -254,7 +254,7 @@ type commit
 tag wrong-type3
 tagger T <t@t.com> 1000000000 +0000
 
-wrong type" | test_expect_code 1 git mktag
+wrong type" | test_expect_code 128 git mktag
 	)
 '
 
@@ -268,7 +268,7 @@ type commit
 tag bad-obj
 tagger T <t@t.com> 1000000000 +0000
 
-bad object" | test_expect_code 1 git mktag
+bad object" | test_expect_code 128 git mktag
 	)
 '
 
