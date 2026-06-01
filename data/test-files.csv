@@ -1270,7 +1270,7 @@ t7701-repack-unpack-unreachable	t7	yes	9	2	7	false	ok	0
 t7702-repack-cyclic-alternate	t7	yes	2	2	0	true	ok	0
 t7703-repack-geometric	t7	yes	18	3	15	false	ok	0
 t7704-repack-cruft	t7	skip	25	5	20	false	ok	0
-t7800-difftool	t7	yes	95	13	82	false	ok	0
+t7800-difftool	t7	yes	95	54	41	false	ok	0
 t7810-grep	t7	yes	263	236	27	false	ok	0
 t7811-grep-open	t7	yes	10	10	0	true	ok	0
 t7812-grep-icase-non-ascii	t7	yes	18	18	0	true	ok	0

@@ -1,143 +1,91 @@
 //! `grit difftool` — launch an external diff tool.
 //!
-//! Opens an external diff viewer for each changed file.  Reads the
-//! `diff.tool` config key (falling back to `vimdiff`), generates
-//! temporary copies of the old versions, and invokes the tool.
+//! Parses difftool-specific options, then delegates to [`grit_lib::difftool`].
 
+use crate::explicit_exit::SilentNonZeroExit;
 use anyhow::{Context, Result};
-use clap::Args as ClapArgs;
 use grit_lib::config::ConfigSet;
-use grit_lib::diff::{diff_index_to_worktree, DiffEntry, DiffStatus};
+use grit_lib::difftool::{parse_difftool_argv, run_difftool, DifftoolEnv};
 use grit_lib::error::Error;
 use grit_lib::repo::Repository;
-use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
-use std::process::Command;
 
-/// Arguments for `grit difftool`.
-#[derive(Debug, ClapArgs)]
-#[command(about = "Launch an external diff tool")]
-pub struct Args {
-    /// Commit or ref to diff against (default: index vs worktree).
-    pub commit: Option<String>,
-
-    /// Restrict diff to these paths.
-    #[arg(last = true)]
-    pub paths: Vec<String>,
-
-    /// Don't prompt before each file.
-    #[arg(short = 'y', long = "no-prompt")]
-    pub no_prompt: bool,
-
-    /// Specify the diff tool to use.
-    #[arg(short = 't', long = "tool")]
-    pub tool: Option<String>,
-}
-
-pub fn run(args: Args) -> Result<()> {
-    let repo = Repository::discover(None).context("not a git repository")?;
-    let work_tree = repo
-        .work_tree
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("this operation must be run in a work tree"))?;
-
-    let config = ConfigSet::load(Some(&repo.git_dir), true)?;
-
-    // Determine which tool to use: --tool flag > diff.tool config > vimdiff
-    let tool_name = args
-        .tool
-        .clone()
-        .or_else(|| config.get("diff.tool"))
-        .unwrap_or_else(|| "vimdiff".to_string());
-
-    let index = match repo.load_index() {
-        Ok(idx) => idx,
-        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(());
+/// Run `grit difftool` from raw argv (after the subcommand name).
+pub fn run_from_argv(argv: Vec<String>) -> Result<()> {
+    if argv.len() == 1 {
+        match argv[0].as_str() {
+            "-h" | "--help" | "--help-all" => {
+                if let Some(syn) =
+                    crate::commands::upstream_synopsis_help::synopsis_for_builtin("difftool")
+                {
+                    crate::commands::upstream_synopsis_help::print_upstream_synopsis_stdout_and_exit(
+                        "difftool",
+                        syn,
+                        if argv[0] == "--help" { 0 } else { 129 },
+                    );
+                }
+            }
+            _ => {}
         }
-        Err(e) => return Err(e.into()),
-    };
+    }
 
-    // Get diff entries (index vs worktree)
-    let entries = diff_index_to_worktree(&repo.odb, &index, work_tree, false, false)?;
+    let opts = parse_difftool_argv(&argv).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    // Filter by paths if specified
-    let entries: Vec<&DiffEntry> = if args.paths.is_empty() {
-        entries.iter().collect()
-    } else {
-        entries
-            .iter()
-            .filter(|e| {
-                let p = e.path();
-                args.paths.iter().any(|filter| p.starts_with(filter))
-            })
-            .collect()
-    };
-
-    if entries.is_empty() {
+    if opts.tool_help {
+        let config = ConfigSet::new();
+        let mut stdout = io::stdout().lock();
+        grit_lib::difftool::print_tool_help(&config, &mut stdout)?;
         return Ok(());
     }
 
-    let tmp_dir = tempfile::tempdir().context("failed to create temp directory")?;
+    let env = DifftoolEnv {
+        git_diff_tool: std::env::var("GIT_DIFF_TOOL")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        git_difftool_no_prompt: std::env::var("GIT_DIFFTOOL_NO_PROMPT")
+            .ok()
+            .is_some_and(|s| !s.is_empty()),
+        git_difftool_prompt: std::env::var("GIT_DIFFTOOL_PROMPT")
+            .ok()
+            .is_some_and(|s| !s.is_empty()),
+        git_mergetool_gui: match std::env::var("GIT_MERGETOOL_GUI").ok().as_deref() {
+            Some("true") => Some(true),
+            Some("false") => Some(false),
+            _ => None,
+        },
+        display: std::env::var("DISPLAY").ok(),
+    };
 
-    for entry in &entries {
-        if entry.status == DiffStatus::Added {
-            // New file — diff /dev/null against worktree
-            if !args.no_prompt {
-                eprint!("View diff for '{}' in {}? [Y/n] ", entry.path(), tool_name);
-                io::stderr().flush()?;
-                let mut answer = String::new();
-                io::stdin().read_line(&mut answer)?;
-                let answer = answer.trim().to_lowercase();
-                if answer == "n" || answer == "no" {
-                    continue;
-                }
-            }
-            let wt_path = work_tree.join(entry.path());
-            Command::new(&tool_name)
-                .arg("/dev/null")
-                .arg(&wt_path)
-                .status()
-                .with_context(|| format!("failed to launch {tool_name}"))?;
-            continue;
+    let repo = if opts.no_index {
+        None
+    } else {
+        Some(Repository::discover(None).context("not a git repository")?)
+    };
+
+    let config = if let Some(ref r) = repo {
+        ConfigSet::load(Some(&r.git_dir), true)?
+    } else {
+        ConfigSet::new()
+    };
+
+    let mut stdin = io::stdin().lock();
+    let mut stdout = io::stdout().lock();
+    let result = run_difftool(repo.as_ref(), &opts, &env, &config, &mut stdin, &mut stdout)
+        .map_err(|e| match e {
+            Error::Message(msg) => anyhow::anyhow!("{msg}"),
+            other => anyhow::anyhow!("{other}"),
+        })?;
+
+    if result.exit_code != 0 {
+        return Err(SilentNonZeroExit {
+            code: result.exit_code,
         }
-
-        // Write old version to a temp file
-        {
-            let data = repo
-                .odb
-                .read(&entry.old_oid)
-                .with_context(|| format!("failed to read object {}", entry.old_oid))?;
-            let old_path = tmp_dir
-                .path()
-                .join(format!("a_{}", entry.path().replace('/', "_")));
-            fs::write(&old_path, &data.data)?;
-
-            let new_path = if entry.status == DiffStatus::Deleted {
-                PathBuf::from("/dev/null")
-            } else {
-                work_tree.join(entry.path())
-            };
-
-            if !args.no_prompt {
-                eprint!("View diff for '{}' in {}? [Y/n] ", entry.path(), tool_name);
-                io::stderr().flush()?;
-                let mut answer = String::new();
-                io::stdin().read_line(&mut answer)?;
-                let answer = answer.trim().to_lowercase();
-                if answer == "n" || answer == "no" {
-                    continue;
-                }
-            }
-
-            Command::new(&tool_name)
-                .arg(&old_path)
-                .arg(&new_path)
-                .status()
-                .with_context(|| format!("failed to launch {tool_name}"))?;
-        }
+        .into());
     }
-
     Ok(())
+}
+
+/// Legacy clap entry — forwards raw argv captured by main.
+pub fn run(args: Vec<String>) -> Result<()> {
+    run_from_argv(args)
 }

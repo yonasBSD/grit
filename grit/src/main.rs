@@ -5090,7 +5090,7 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         "diff-index" => commands::diff_index::run(parse_cmd_args(subcmd, rest)),
         "diff-pairs" => commands::diff_pairs::run(parse_cmd_args(subcmd, rest)),
         "diff-tree" => commands::diff_tree::run(parse_cmd_args(subcmd, rest)),
-        "difftool" => commands::difftool::run(parse_cmd_args(subcmd, rest)),
+        "difftool" => commands::difftool::run_from_argv(rest.to_vec()),
         "fast-export" => commands::fast_export::run(parse_cmd_args(subcmd, rest)),
         "fast-import" => commands::fast_import::run(parse_cmd_args(subcmd, rest)),
         "fetch" => commands::fetch::run(parse_cmd_args(subcmd, &preprocess_fetch_argv(rest))),

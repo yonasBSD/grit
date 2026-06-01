@@ -34,6 +34,7 @@ pub mod delta_encode;
 pub mod diff;
 mod diff_indent_heuristic;
 pub mod diffstat;
+pub mod difftool;
 pub mod dotfile;
 pub mod error;
 mod ewah_bitmap;
