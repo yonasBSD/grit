@@ -1,6 +1,9 @@
 # Test Results
 
 Updated: 2026-06-01
+- Final t9 verification: `./scripts/run-tests.sh t9 --verbose` ran 90 in-scope t9 files with zero
+  failing tests; files with executable tests all passed. `t9832-unshelve.sh` and `t9833-errors.sh`
+  reported 0/0 due unavailable git-p4 external prereqs.
 
 - t9 sweep setup: `cargo build --release -p grit-cli` passed with existing warnings in
   `grit-lib/src/ignore.rs`, `grit-lib/src/refs.rs`, `grit/src/commands/sparse_checkout.rs`, and

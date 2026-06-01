@@ -2,7 +2,7 @@
 
 ## Active task — t9 family 100% pass
 
-- [~] Make current in-scope `t9` family tests fully pass. Work one file at a time, always choosing
+- [x] Make current in-scope `t9` family tests fully pass. Work one file at a time, always choosing
   the non-green in-scope `t9` row with the largest `failing` count in `data/test-files.csv`, then
   re-running that file until it has `failing=0` before moving on.
   - Completed: `t9040-hash-object-types.sh` (28/28).
@@ -47,7 +47,7 @@
   - Completed: `t9860-log-max-count-skip.sh` (38/38).
   - Completed: `t9890-init-object-format.sh` (31/31).
   - Completed: `t9903-bash-prompt.sh` (67/67).
-  - Next expected target: final t9 verification.
+  - Final verification: `./scripts/run-tests.sh t9 --verbose` completed with no failing t9 tests.
   - Scope: current `in_scope=yes` t9 rows; skipped external-helper files remain excluded unless
     explicitly unskipped later.
   - Execution log: `logs/2026-06-01_0000-t9-family.md`.
