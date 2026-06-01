@@ -2328,7 +2328,9 @@ pub fn run(mut args: Args) -> Result<()> {
         if let Some(work_tree) = repo.work_tree.as_deref() {
             let abs_path = work_tree.join(&file_path);
             if std::fs::symlink_metadata(&abs_path).is_err() {
-                bail!("fatal: Cannot lstat '{file_path}': No such file or directory");
+                ensure_index_knows_path(&repo, &file_path).map_err(|_| {
+                    anyhow::anyhow!("fatal: Cannot lstat '{file_path}': No such file or directory")
+                })?;
             }
         }
     }
@@ -3776,7 +3778,7 @@ fn write_default(
                 }
             } else {
                 // Extra char width to align with ^ prefix lines
-                hex[..(hash_len + 1).min(hex.len())].to_string()
+                hex[..hash_len.min(hex.len())].to_string()
             }
         } else {
             hex[..hash_len.min(hex.len())].to_string()

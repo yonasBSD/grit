@@ -208,8 +208,7 @@ test_expect_success 'diff-files still shows only deleted file' '
 test_expect_success 'restore deleted file clears diff-files output' '
 	(
 	cd repo &&
-	git checkout -- a.txt &&
-	git checkout -- . &&
+	git reset --hard HEAD &&
 	git diff-files >../restore-out &&
 	test_line_count = 0 ../restore-out
 	)

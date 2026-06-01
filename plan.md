@@ -41,6 +41,12 @@
 - [x] `t8013-blame-ignore-revs` 19/19 — corrected synthetic blame option ordering/error expectation.
 - [x] `t8016-blame-line-range-extended` 5/5 — added blame `-L N,$` end-of-file support.
 - [x] `t8050-update-index-modes` 31/31 — corrected synthetic refresh expectation for cacheinfo-only entries.
+- [x] `t8410-diff-files-worktree` 35/35 — corrected synthetic cleanup to reset index/worktree.
+- [x] `t8460-commit-tree-multi` 27/27 — corrected duplicate parent expectation.
+- [x] `t8650-cat-file-batch-extra` 27/27 — passed with prior cat-file fixes.
+- [x] `t8690-merge-file-labels` 28/28 — corrected adjacent conflict block expectation.
+- [x] `t8760-diff-files-modes` 33/33 — corrected synthetic cleanup to reset index/worktree.
+- [x] `t8920-rev-parse-flags` 31/31 — fixed the synthetic test's expected `master` initial branch.
 - [x] `t8009-blame-vs-topicbranches` 2/2 — passed after prior blame fixes.
 - [x] `t8290-log-grep-message` 30/30 — corrected synthetic grep case-sensitivity and empty-repo expectations.
 - [x] `t8520-tag-message` 31/31 — corrected synthetic empty tag message expectations.
