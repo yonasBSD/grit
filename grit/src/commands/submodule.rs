@@ -1247,11 +1247,14 @@ pub(crate) fn parse_gitmodules_with_repo(
 
     let mut result = Vec::new();
     for (name, f) in modules {
-        if let (Some(path), Some(url)) = (f.path, f.url) {
+        // A `.gitmodules` section defines a submodule as long as it has a `path`; the `url` may
+        // be absent (git's `submodule_from_path` still returns it, with a null url). Callers that
+        // need a url handle the empty case (e.g. "cannot clone submodule without a URL").
+        if let Some(path) = f.path {
             result.push(SubmoduleInfo {
                 name,
                 path,
-                url,
+                url: f.url.unwrap_or_default(),
                 shallow: f.shallow,
                 update: f.update,
                 branch: f.branch,
