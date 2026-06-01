@@ -72,6 +72,8 @@ Updated: 2026-06-01
   aligning prefix/no-duplicate expectations with real Git behavior.
 - t9 focus: `./scripts/run-tests.sh t9260-log-oneline-format.sh --verbose` now passes 33/33 after
   explicit `master` setup and aligning `--graph --reverse` with real Git rejection behavior.
+- t9 focus: `./scripts/run-tests.sh t9430-symbolic-ref-delete.sh --verbose` now passes 28/28 after
+  making real-Git setup explicitly initialize `master`, matching the test's hard-coded HEAD refs.
 - Workspace cargo/unit tests: not re-run for the `t9040`/`t9060` harness-only cwd fixes.
 - `cargo build --release -p grit-cli`: pass.
 - `cargo fmt`: run. `cargo fmt --check` still reports pre-existing formatting drift in unrelated files; those mechanical edits were not included in this scoped commit.
