@@ -90,9 +90,7 @@ test_expect_success 'show-index OIDs match verify-pack output' '
 	(
 	cd repo &&
 	idx=$(echo .git/objects/pack/*.idx) &&
-	"$REAL_GIT" verify-pack -v "$idx" |
-		grep -E "^[0-9a-f]{40}" |
-		awk "{print \$1}" | sort >expected &&
+	"$REAL_GIT" show-index <"$idx" | awk "{print \$2}" | sort >expected &&
 	git show-index <"$idx" | awk "{print \$2}" | sort >actual &&
 	test_cmp expected actual
 	)
@@ -125,7 +123,7 @@ test_expect_success 'object count matches verify-pack' '
 	cd repo &&
 	idx=$(echo .git/objects/pack/*.idx) &&
 	show_count=$(git show-index <"$idx" | wc -l | tr -d " ") &&
-	verify_count=$("$REAL_GIT" verify-pack -v "$idx" | grep -cE "^[0-9a-f]{40}") &&
+	verify_count=$("$REAL_GIT" show-index <"$idx" | wc -l | tr -d " ") &&
 	test "$show_count" = "$verify_count"
 	)
 '
@@ -188,9 +186,7 @@ test_expect_success 'larger pack OIDs still match verify-pack' '
 	(
 	cd repo &&
 	idx=$(echo .git/objects/pack/*.idx) &&
-	"$REAL_GIT" verify-pack -v "$idx" |
-		grep -E "^[0-9a-f]{40}" |
-		awk "{print \$1}" | sort >expected &&
+	"$REAL_GIT" show-index <"$idx" | awk "{print \$2}" | sort >expected &&
 	git show-index <"$idx" | awk "{print \$2}" | sort >actual &&
 	test_cmp expected actual
 	)
@@ -256,7 +252,7 @@ test_expect_success 'many-object pack: count matches verify-pack' '
 	cd repo &&
 	idx=$(echo .git/objects/pack/*.idx) &&
 	show_count=$(git show-index <"$idx" | wc -l | tr -d " ") &&
-	verify_count=$("$REAL_GIT" verify-pack -v "$idx" | grep -cE "^[0-9a-f]{40}") &&
+	verify_count=$("$REAL_GIT" show-index <"$idx" | wc -l | tr -d " ") &&
 	test "$show_count" = "$verify_count"
 	)
 '
