@@ -157,7 +157,7 @@ t10550-mv-verbose-dry-run	t1	yes	28	1	27	false	ok	0
 t10560-switch-create-detach	t1	yes	28	1	27	false	ok	0
 t10570-restore-worktree-only	t1	yes	28	1	27	false	ok	0
 t10580-reset-path-mixed	t1	yes	25	1	24	false	ok	0
-t1060-object-corruption	t1	yes	17	16	0	true	ok	1
+t1060-object-corruption	t1	yes	16	16	0	true	ok	1
 t1060-object-types	t1	yes	35	1	34	false	ok	0
 t10600-for-each-ref-exclude	t1	yes	35	2	33	false	ok	0
 t10610-show-ref-dereference-extra	t1	yes	40	1	39	false	ok	0
@@ -190,7 +190,7 @@ t10880-reset-hard-soft-path	t1	yes	31	1	30	false	ok	0
 t10890-cherry-pick-message	t1	yes	30	2	28	false	ok	0
 t1090-sparse-checkout-scope	t1	yes	7	7	0	true	ok	0
 t10900-for-each-ref-pattern-sort	t1	yes	34	2	32	false	ok	0
-t1091-sparse-checkout-builtin	t1	yes	77	76	0	true	ok	1
+t1091-sparse-checkout-builtin	t1	yes	76	76	0	true	ok	1
 t10910-show-ref-tags-branches	t1	yes	35	3	32	false	ok	0
 t1092-sparse-checkout-compatibility	t1	yes	106	65	41	false	ok	0
 t10920-update-ref-create-delete	t1	yes	29	2	27	false	ok	0
@@ -425,7 +425,7 @@ t1420-lost-found	t1	yes	2	2	0	true	ok	0
 t1421-reflog-write	t1	yes	10	7	3	false	ok	0
 t1422-show-ref-exists	t1	yes	12	1	11	false	ok	0
 t1423-ref-backend	t1	skip	9	0	0	false	ok	0
-t1430-bad-ref-name	t1	yes	42	9	31	false	ok	2
+t1430-bad-ref-name	t1	yes	40	9	31	false	ok	2
 t1450-fsck	t1	skip	74	0	0	false	ok	0
 t1450-fsck-basic	t1	yes	31	4	27	false	ok	0
 t1450-fsck-flags	t1	yes	10	10	0	true	ok	0
@@ -472,7 +472,7 @@ t2009-checkout-statinfo	t2	yes	3	3	0	true	ok	0
 t2010-checkout-ambiguous	t2	yes	10	10	0	true	ok	0
 t2011-checkout-invalid-head	t2	yes	10	10	0	true	ok	0
 t2012-checkout-last	t2	yes	22	21	1	false	ok	0
-t2013-checkout-submodule	t2	yes	70	7	63	false	ok	0
+t2013-checkout-submodule	t2	yes	74	16	54	false	ok	0
 t2014-checkout-switch	t2	yes	4	4	0	true	ok	0
 t2015-checkout-unborn	t2	yes	6	3	3	false	ok	0
 t2016-checkout-patch	t2	yes	19	15	4	false	ok	0
@@ -1137,7 +1137,7 @@ t6434-merge-with-no-common-ancestor	t6	yes	3	1	2	false	ok	0
 t6435-merge-sparse	t6	yes	6	6	0	true	ok	0
 t6435-merge-sparse-directory	t6	yes	2	1	1	false	ok	0
 t6436-merge-overwrite	t6	yes	0	0	0	false	timeout	0
-t6437-submodule-merge	t6	yes	22	20	2	false	ok	0
+t6437-submodule-merge	t6	yes	22	21	1	false	ok	0
 t6438-submodule-directory-file-conflicts	t6	yes	56	4	52	false	ok	0
 t6439-merge-co-error-msgs	t6	yes	6	4	2	false	ok	0
 t6500-gc	t6	yes	35	34	1	false	ok	0
@@ -1199,7 +1199,7 @@ t7400-submodule-basic	t7	yes	124	111	13	false	ok	0
 t7401-submodule-summary	t7	yes	25	8	17	false	ok	0
 t7402-submodule-rebase	t7	yes	6	3	3	false	ok	0
 t7403-submodule-sync	t7	yes	18	18	0	true	ok	0
-t7406-submodule-update	t7	yes	70	34	36	false	ok	0
+t7406-submodule-update	t7	yes	70	43	27	false	ok	0
 t7407-submodule-foreach	t7	yes	23	21	2	false	ok	0
 t7408-submodule-reference	t7	yes	16	5	11	false	ok	0
 t7409-submodule-detached-work-tree	t7	yes	3	1	2	false	ok	0
