@@ -1,7 +1,7 @@
 file	group	in_scope	tests_total	passed_last	failing	fully_passing	status	expect_failure
 t0-version	t0	yes	1	1	0	true	ok	0
 t0000-basic	t0	yes	92	92	0	true	ok	8
-t0001-init	t0	yes	102	74	28	false	ok	0
+t0001-init	t0	yes	102	89	13	false	ok	0
 t0002-gitfile	t0	yes	14	12	2	false	ok	0
 t0003-attributes	t0	yes	55	55	0	true	ok	0
 t0004-unwritable	t0	yes	9	9	0	true	ok	0
@@ -34,7 +34,7 @@ t0034-root-safe-directory	t0	yes	0	0	0	false	ok	0
 t0035-safe-bare-repository	t0	yes	12	12	0	true	ok	0
 t0040-parse-options	t0	yes	94	94	0	true	ok	0
 t0041-usage	t0	yes	16	16	0	true	ok	0
-t0050-filesystem	t0	yes	11	8	3	false	ok	2
+t0050-filesystem	t0	yes	13	9	2	false	ok	2
 t0051-windows-named-pipe	t0	skip	1	0	0	false	ok	0
 t0052-simple-ipc	t0	yes	9	9	0	true	ok	0
 t0055-beyond-symlinks	t0	yes	3	3	0	true	ok	0
@@ -74,10 +74,10 @@ t0302-credential-store	t0	yes	65	65	0	true	ok	0
 t0303-credential-external	t0	yes	23	23	0	true	ok	0
 t0410-partial-clone	t0	yes	38	38	0	true	ok	0
 t0411-clone-from-partial	t0	yes	7	7	0	true	ok	0
-t0450-txt-doc-vs-help	t0	yes	542	537	5	false	ok	0
+t0450-txt-doc-vs-help	t0	yes	542	538	4	false	ok	0
 t0500-progress-display	t0	yes	16	16	0	true	ok	0
-t0600-reffiles-backend	t0	yes	33	15	18	false	ok	0
-t0601-reffiles-pack-refs	t0	yes	47	45	2	false	ok	0
+t0600-reffiles-backend	t0	yes	33	24	9	false	ok	0
+t0601-reffiles-pack-refs	t0	yes	47	47	0	true	ok	0
 t0602-reffiles-fsck	t0	yes	23	23	0	true	ok	0
 t0610-reftable-basics	t0	yes	91	89	2	false	ok	0
 t0611-reftable-httpd	t0	yes	1	0	1	false	ok	0
@@ -411,7 +411,7 @@ t1406-submodule-ref-store	t1	yes	15	8	7	false	ok	0
 t1407-worktree-ref-store	t1	skip	4	1	3	false	ok	0
 t1408-packed-refs	t1	yes	3	3	0	true	ok	0
 t1409-avoid-packing-refs	t1	yes	11	11	0	true	ok	0
-t1410-reflog	t1	yes	41	20	21	false	ok	0
+t1410-reflog	t1	yes	41	22	19	false	ok	0
 t1411-reflog-show	t1	yes	17	14	3	false	ok	0
 t1412-reflog-loop	t1	yes	3	3	0	true	ok	0
 t1413-reflog-detach	t1	yes	7	7	0	true	ok	0
@@ -559,7 +559,7 @@ t3102-ls-tree-wildcards	t3	yes	4	4	0	true	ok	0
 t3103-ls-tree-misc	t3	yes	10	10	0	true	ok	0
 t3104-ls-tree-format	t3	yes	19	19	0	true	ok	0
 t3105-ls-tree-output	t3	yes	60	14	46	false	ok	0
-t3200-branch	t3	yes	167	103	64	false	ok	0
+t3200-branch	t3	yes	167	106	61	false	ok	0
 t3201-branch-contains	t3	yes	24	23	1	false	ok	0
 t3202-show-branch	t3	yes	27	27	0	true	ok	0
 t3203-branch-output	t3	yes	41	30	11	false	ok	0
@@ -1145,7 +1145,7 @@ t6501-freshen-objects	t6	yes	42	36	6	false	ok	0
 t6600-test-reach	t6	yes	47	16	31	false	ok	0
 t6601-path-walk	t6	yes	15	15	0	true	ok	0
 t6700-tree-depth	t6	yes	10	10	0	true	ok	0
-t7001-mv	t7	yes	54	52	2	false	ok	0
+t7001-mv	t7	yes	54	51	3	false	ok	0
 t7002-mv-sparse-checkout	t7	yes	22	22	0	true	ok	0
 t7003-filter-branch	t7	skip	48	0	0	false	ok	0
 t7004-tag	t7	skip	219	0	0	false	ok	0
@@ -1270,7 +1270,7 @@ t7701-repack-unpack-unreachable	t7	yes	9	2	7	false	ok	0
 t7702-repack-cyclic-alternate	t7	yes	2	2	0	true	ok	0
 t7703-repack-geometric	t7	yes	18	3	15	false	ok	0
 t7704-repack-cruft	t7	skip	25	5	20	false	ok	0
-t7800-difftool	t7	yes	95	13	82	false	ok	0
+t7800-difftool	t7	yes	95	54	41	false	ok	0
 t7810-grep	t7	yes	263	236	27	false	ok	0
 t7811-grep-open	t7	yes	10	10	0	true	ok	0
 t7812-grep-icase-non-ascii	t7	yes	18	18	0	true	ok	0
