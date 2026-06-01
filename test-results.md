@@ -82,6 +82,8 @@ Updated: 2026-06-01
   making real-Git setup explicitly initialize `master`, matching the test's hard-coded filters.
 - t9 focus: `./scripts/run-tests.sh t9560-commit-message-variants.sh --verbose` now passes 33/33 after
   making setup explicitly initialize `master`, matching hard-coded output/comparison assumptions.
+- t9 focus: `./scripts/run-tests.sh t9700-for-each-ref-sort-combined.sh --verbose` now passes 37/37
+  after making setup explicitly initialize `master`, matching hard-coded refs.
 - t9 focus: `cargo build --release -p grit-cli` passed, then
   `./scripts/run-tests.sh t9240-diff-files-deleted.sh --verbose` passed 34/34 after diff-files
   learned to suppress content/mode-identical stat-dirty entries when index refresh is possible.
