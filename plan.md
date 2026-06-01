@@ -284,12 +284,14 @@ Only after Phases 1–6 are stable.
 - [ ] `diff`/`status`/`ls-files` recurse-submodules (non-interactive).
 - [ ] Merge/cherry-pick with gitlinks (no `rebase -i` with submodules).
 
-### 7.3 Harness targets (submodules)
+### 7.3 Harness targets (submodules) — Phase 7 in progress (2026-06-01)
 
-- [ ] `t7406-submodule-update`, `t7403-submodule-sync`, `t7407-submodule-foreach`
-- [ ] `t7506-status-submodule`, `t2013-checkout-submodule` (non-interactive)
-- [ ] `t6437-submodule-merge`, `t4059-diff-submodule-not-initialized`
-- [ ] Keep `t7400-submodule-basic` green as regression guard
+- [x] `t7400-submodule-basic` **49→111/124** (add/deinit/status/init/clone --recurse rework).
+- [x] `t7403-submodule-sync` 18/18, [~] `t7407-submodule-foreach` 21/23 (lifted by t7400's work).
+- [~] `t6437-submodule-merge` 20/22, [~] `t4059-diff-submodule-not-initialized` 7/8 (near-green).
+- [~] `t2013-checkout-submodule` (7→59/70 achievable solo) and `t7406-submodule-update` (34→57/70 solo) and `t7506-status-submodule` 28/40: **being reconciled onto the t7400 base.** Their original branches (`wf/p7b/t2013`, `wf/p7b/t7406`) regress t7400/t7506/t7407 when combined — they assume a different gitlink-in-worktree representation than t7400's. Reconciliation agent (`wf/p7c/submodule-reconcile`) is re-implementing them compatibly with no regression to t7400.
+
+**NOTE:** Submodule harness files run silently for minutes (nested clones) and trip the Workflow's 180s and Agent's 600s no-progress watchdogs — Phase 7 is run via individual background agents + manual consolidation, not the Workflow.
 
 ---
 
