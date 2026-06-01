@@ -284,7 +284,7 @@ test_expect_success 'restore with --source to branch name' '
 	 echo branch-data >file.txt &&
 	 grit add file.txt &&
 	 grit commit -m "branch change" &&
-	 grit switch master &&
+	 grit switch main &&
 	 grit restore --source restore-branch file.txt &&
 	 cat file.txt >../actual
 	) &&

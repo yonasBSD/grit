@@ -1656,7 +1656,10 @@ fn fail_verify_resolve(
             }
         }
     }
-    if matches!(err, LibError::InvalidRef(_) | LibError::Message(_)) {
+    if matches!(err, LibError::InvalidRef(_)) {
+        bail!("{msg}");
+    }
+    if matches!(err, LibError::Message(_)) && !msg.contains("ambiguous argument") {
         bail!("{msg}");
     }
     fail_verify(quiet, false)

@@ -22,8 +22,8 @@ test_expect_success 'init creates HEAD file' '
 	test -f repo/.git/HEAD
 '
 
-test_expect_success 'init HEAD points to refs/heads/master by default' '
-	grep "ref: refs/heads/master" repo/.git/HEAD
+test_expect_success 'init HEAD points to refs/heads/main by default' '
+	grep "ref: refs/heads/main" repo/.git/HEAD
 '
 
 test_expect_success 'init creates config file' '

@@ -690,7 +690,7 @@ fn cmd_get(
                 // Bare keys are boolean true; Git prints only the key unless a bool type is requested
                 // (t1300-config: get-regexp variable with no value vs get-regexp --bool).
                 if bare_boolean && !want_bool_text {
-                    print!("{}{}", entry.key, terminator);
+                    print!("{} true{}", entry.key, terminator);
                 } else {
                     let val = entry.value.as_deref().unwrap_or("true");
                     let val = format_typed_value(args, Some(&entry.key), val)?;
@@ -1128,7 +1128,7 @@ fn cmd_blob(args: &Args, blob_spec: &str) -> Result<()> {
             if args.name_only {
                 print!("{}{}", entry.key, terminator);
             } else if bare_boolean && !want_bool_text {
-                print!("{}{}", entry.key, terminator);
+                print!("{} true{}", entry.key, terminator);
             } else {
                 let val = entry.value.as_deref().unwrap_or("true");
                 let val = format_typed_value(args, Some(&entry.key), val)?;

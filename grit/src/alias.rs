@@ -248,10 +248,16 @@ pub(crate) fn run_command_with_aliases(
         Err(e) => {
             let s = e.to_string();
             if s.starts_with("fatal: bad config line ") {
-                eprintln!("{s}");
-                std::process::exit(128);
+                // A broken repo config is only fatal for commands that actually need to read
+                // it. For alias lookup we can proceed without the local config — if the repo
+                // config is unparseable there are no aliases in it anyway. The command itself
+                // (e.g. `test-tool config read_early_config`) will handle the broken config
+                // gracefully (Git C's read_early_config silently skips invalid repo configs).
+                // Fall back to global+system config only for alias resolution.
+                grit_lib::config::ConfigSet::load(None, true).unwrap_or_default()
+            } else {
+                return Err(e.into());
             }
-            return Err(e.into());
         }
     };
 

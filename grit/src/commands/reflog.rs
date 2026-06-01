@@ -805,7 +805,8 @@ fn resolve_delete_selectors_to_indices(
         match sel {
             ReflogDeleteSelector::Index(i) => {
                 if *i >= n {
-                    bail!("invalid reflog entry spec: '{refname}@{{{i}}}'");
+                    // Git C silently ignores out-of-bounds reflog entries
+                    continue;
                 }
                 out.push(*i);
             }

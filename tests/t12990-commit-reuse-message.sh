@@ -265,8 +265,8 @@ test_expect_success 'side branch commit message correct' '
     test_cmp expect actual
 '
 
-test_expect_success 'switch back and verify master unchanged' '
-    (cd repo && grit switch master &&
+test_expect_success 'switch back and verify main unchanged' '
+    (cd repo && grit switch main &&
      grit log -n 1 --format="%s" >../actual) &&
     echo "empty amend" >expect &&
     test_cmp expect actual

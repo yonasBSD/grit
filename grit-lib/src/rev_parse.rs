@@ -2518,15 +2518,7 @@ fn resolve_reflog_oid(
                     "fatal: log for '{display}' is empty"
                 )));
             }
-            if index > len {
-                return Err(Error::Message(format!(
-                    "fatal: log for '{display}' only has {len} entries"
-                )));
-            }
-            if index == len {
-                if len == 1 {
-                    return Ok(entries[0].old_oid);
-                }
+            if index >= len {
                 return Err(Error::Message(format!(
                     "fatal: log for '{display}' only has {len} entries"
                 )));

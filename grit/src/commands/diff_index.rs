@@ -1199,22 +1199,17 @@ fn diff_tree_vs_index(
                 let old_type = old.mode & 0o170_000;
                 let new_type = new.mode & 0o170_000;
                 let is_blob_pair = blobish_object_kind(old.mode) && blobish_object_kind(new.mode);
-                // Same blob OID: ignore chmod-only noise (t4038), but still report tree↔blob type
-                // flips when the OID happens to match (t4008).
-                if old.oid == new.oid && !(is_blob_pair && old_type != new_type) {
+                let status = if is_blob_pair && old_type != new_type {
+                    'T'
                 } else {
-                    let status = if is_blob_pair && old_type != new_type {
-                        'T'
-                    } else {
-                        'M'
-                    };
-                    changes.push(RawChange {
-                        path,
-                        status,
-                        old: Some(old),
-                        new: Some(new),
-                    });
-                }
+                    'M'
+                };
+                changes.push(RawChange {
+                    path,
+                    status,
+                    old: Some(old),
+                    new: Some(new),
+                });
             }
             (Some(old), None) => changes.push(RawChange {
                 path,

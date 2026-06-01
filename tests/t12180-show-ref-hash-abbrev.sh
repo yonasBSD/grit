@@ -195,10 +195,10 @@ test_expect_success 'show-ref -d --hash shows both hashes for annotated' '
     test_line_count = 2 actual
 '
 
-test_expect_success 'show-ref master ref matches rev-parse' '
+test_expect_success 'show-ref main ref matches rev-parse' '
     (cd repo &&
-     grit show-ref --hash refs/heads/master >../show_hash &&
-     grit rev-parse master >../rev_hash) &&
+     grit show-ref --hash refs/heads/main >../show_hash &&
+     grit rev-parse main >../rev_hash) &&
     test_cmp show_hash rev_hash
 '
 

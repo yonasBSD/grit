@@ -195,7 +195,6 @@ test_expect_success 'second repo sees global config' '
 '
 
 test_expect_success 'second repo local config is independent' '
-	cd repo2 &&
 	git config user.name "Repo2 User" &&
 	git config user.name >actual &&
 	echo "Repo2 User" >expect &&
