@@ -46,6 +46,8 @@ Updated: 2026-06-01
   making setup explicitly initialize `master`, matching the test's hard-coded names.
 - t9 focus: `./scripts/run-tests.sh t9250-status-short-branch.sh --verbose` now passes 33/33 after
   making setup explicitly initialize `master`, matching the test's hard-coded status headers.
+- t9 focus: `./scripts/run-tests.sh t9270-rev-list-topo-date.sh --verbose` now passes 31/31 after
+  making setup explicitly initialize `master`, matching the test's hard-coded merge target.
 - Workspace cargo/unit tests: not re-run for the `t9040`/`t9060` harness-only cwd fixes.
 - `cargo build --release -p grit-cli`: pass.
 - `cargo fmt`: run. `cargo fmt --check` still reports pre-existing formatting drift in unrelated files; those mechanical edits were not included in this scoped commit.
