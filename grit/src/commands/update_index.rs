@@ -1279,7 +1279,7 @@ fn refresh_index(
                 None => true, // uninitialized / no checkout — do not block refresh (matches Git)
             };
             if !submodule_matches {
-                eprintln!("{path_str2}: needs update");
+                println!("{path_str2}: needs update");
                 all_uptodate = false;
             }
             continue;
@@ -1301,7 +1301,7 @@ fn refresh_index(
                     );
                     let stat_changed = !stat_matches_refresh(entry, &meta, trust_ctime);
                     if actual_oid != entry.oid {
-                        eprintln!("{path_str}: needs update");
+                        println!("{path_str}: needs update");
                         all_uptodate = false;
                     } else if stat_changed {
                         refresh_entry_stat(entry, &meta);
@@ -1320,19 +1320,28 @@ fn refresh_index(
                         true
                     };
                     if content_changed {
-                        eprintln!("{path_str}: needs update");
+                        println!("{path_str}: needs update");
                         all_uptodate = false;
                     } else {
                         // Update stat info
                         refresh_entry_stat(entry, &meta);
                         index_modified = true;
                     }
+                } else if let Ok(data) = std::fs::read(&abs) {
+                    let actual_oid = grit_lib::odb::Odb::hash_object_data(
+                        grit_lib::objects::ObjectKind::Blob,
+                        &data,
+                    );
+                    if actual_oid != entry.oid {
+                        println!("{path_str}: needs update");
+                        all_uptodate = false;
+                    }
                 }
             }
             Err(_) => {
                 // File missing
                 if !ignore_missing {
-                    eprintln!("{path_str}: does not exist and --remove not set");
+                    println!("{path_str}: does not exist and --remove not set");
                     all_uptodate = false;
                 }
             }

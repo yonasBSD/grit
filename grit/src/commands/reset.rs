@@ -2954,7 +2954,7 @@ fn checkout_index_to_worktree(
                     )?;
                 }
                 continue;
-            } else if abs_path.is_dir() {
+            } else if entry.mode != MODE_GITLINK && abs_path.is_dir() {
                 // Avoid `remove_dir_all` for thousands of fresh empty placeholder dirs (synthetic
                 // submodule fixtures): an empty directory is already the desired state.
                 let mut has_entries = false;
