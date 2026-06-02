@@ -162,7 +162,7 @@ fn rollback_reset_after_failed_submodule_update(
 ///
 /// Git keeps `CE_SKIP_WORKTREE` and `CE_VALID` (assume-unchanged) across this rebuild so sparse
 /// checkout state is not lost (`t7011-skip-worktree-reading`).
-fn preserve_index_cache_flags_from(old: &Index, new: &mut Index) {
+pub(crate) fn preserve_index_cache_flags_from(old: &Index, new: &mut Index) {
     for ne in new.entries.iter_mut() {
         if ne.stage() != 0 {
             continue;
@@ -809,6 +809,13 @@ fn tree_oid_for_treeish(repo: &Repository, oid: ObjectId) -> Result<ObjectId> {
 
 /// Resolve the tree OID for `git reset -p [<treeish>]`. Rejects `rev:path` blob forms.
 fn validate_reset_patch_treeish(repo: &Repository, treeish_spec: &str) -> Result<ObjectId> {
+    if treeish_spec == "HEAD" || treeish_spec == "@" {
+        let head = resolve_head(&repo.git_dir)?;
+        if head.oid().is_none() {
+            return ObjectId::from_hex("4b825dc642cb6eb9a060e54bf8d69288fbee4904")
+                .map_err(|e| anyhow::anyhow!("{e}"));
+        }
+    }
     if let Some((lhs, rhs)) = split_treeish_colon(treeish_spec) {
         if !lhs.is_empty() && !rhs.is_empty() {
             let oid = resolve_revision(repo, treeish_spec)
@@ -1139,7 +1146,7 @@ fn reset_paths(
     _quiet: bool,
     intent_to_add: bool,
 ) -> Result<()> {
-    if repo.work_tree.is_none() {
+    if repo.is_bare() {
         bail!("fatal: mixed reset is not allowed in a bare repository");
     }
     // On an unborn branch, the tree is empty (no commit exists yet). Otherwise accept any
@@ -1388,7 +1395,7 @@ Use '--' to separate paths from revisions, like this:\n\
                     return Ok(());
                 }
                 ResetMode::Mixed => {
-                    if repo.work_tree.is_none() {
+                    if repo.is_bare() {
                         bail!("fatal: mixed reset is not allowed in a bare repository");
                     }
                     // Mixed on unborn: clear the index
@@ -1428,7 +1435,7 @@ Use '--' to separate paths from revisions, like this:\n\
         Err(e) => return Err(e),
     };
 
-    if mode == ResetMode::Mixed && repo.work_tree.is_none() {
+    if mode == ResetMode::Mixed && repo.is_bare() {
         bail!("fatal: mixed reset is not allowed in a bare repository");
     }
 
@@ -1901,7 +1908,7 @@ fn merge_reset_verify_worktree_matches_index(
 }
 
 /// Build the post-`reset --merge` index using Git's `oneway_merge` rules.
-fn build_merge_reset_index(
+pub(crate) fn build_merge_reset_index(
     repo: &Repository,
     old_index: &Index,
     head_oid: ObjectId,
@@ -2651,7 +2658,7 @@ fn tree_to_flat_entries(
 /// Like [`checkout_index_to_worktree`] but for `reset --merge` after sequencer
 /// rollback: keep local modifications to paths whose staged (target) blob is
 /// unchanged from the pre-reset index, matching Git's twoway merge behavior.
-fn checkout_merge_reset_worktree(
+pub(crate) fn checkout_merge_reset_worktree(
     repo: &Repository,
     old_index: &Index,
     new_index: &mut Index,

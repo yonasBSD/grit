@@ -1316,27 +1316,15 @@ pub fn refresh_index_stat_content_verified(index: &mut Index, work_tree: &Path) 
         let Ok(meta) = fs::symlink_metadata(&abs) else {
             continue;
         };
+        let content_matches = worktree_content_matches_index_oid(ie, &abs, &meta);
         if stat_matches(ie, &meta) {
+            // Stat can be refreshed from the work tree without matching the indexed blob (e.g.
+            // after merge stat refresh while local edits remain). Invalidate so diff/status re-hash.
+            if !content_matches {
+                invalidate_index_stat_cache(ie);
+            }
             continue;
         }
-        let content_matches = if ie.mode == MODE_SYMLINK {
-            if !meta.file_type().is_symlink() {
-                continue;
-            }
-            use std::os::unix::ffi::OsStrExt as _;
-            fs::read_link(&abs)
-                .map(|t| {
-                    Odb::hash_object_data(ObjectKind::Blob, t.as_os_str().as_bytes()) == ie.oid
-                })
-                .unwrap_or(false)
-        } else {
-            if !meta.file_type().is_file() {
-                continue;
-            }
-            fs::read(&abs)
-                .map(|bytes| Odb::hash_object_data(ObjectKind::Blob, &bytes) == ie.oid)
-                .unwrap_or(false)
-        };
         if !content_matches {
             continue;
         }
@@ -1351,6 +1339,40 @@ pub fn refresh_index_stat_content_verified(index: &mut Index, work_tree: &Path) 
         ie.gid = refreshed.gid;
         ie.size = refreshed.size;
     }
+}
+
+/// Whether the work tree blob at `abs` matches the index entry OID (raw bytes, no CRLF smudge).
+fn worktree_content_matches_index_oid(ie: &IndexEntry, abs: &Path, meta: &fs::Metadata) -> bool {
+    use crate::index::{MODE_EXECUTABLE, MODE_REGULAR, MODE_SYMLINK};
+    if ie.mode == MODE_SYMLINK {
+        if !meta.file_type().is_symlink() {
+            return false;
+        }
+        use std::os::unix::ffi::OsStrExt as _;
+        fs::read_link(abs)
+            .map(|t| Odb::hash_object_data(ObjectKind::Blob, t.as_os_str().as_bytes()) == ie.oid)
+            .unwrap_or(false)
+    } else if ie.mode == MODE_REGULAR || ie.mode == MODE_EXECUTABLE {
+        if !meta.file_type().is_file() {
+            return false;
+        }
+        fs::read(abs)
+            .map(|bytes| Odb::hash_object_data(ObjectKind::Blob, &bytes) == ie.oid)
+            .unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Clear cached stat fields so the next diff/status pass re-reads the work tree.
+fn invalidate_index_stat_cache(ie: &mut IndexEntry) {
+    ie.ctime_sec = 0;
+    ie.ctime_nsec = 0;
+    ie.mtime_sec = 0;
+    ie.mtime_nsec = 0;
+    ie.dev = 0;
+    ie.ino = 0;
+    ie.size = 0;
 }
 
 /// Hash a working tree file as a blob to get its OID.

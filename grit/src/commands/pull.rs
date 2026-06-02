@@ -8,6 +8,7 @@ use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
 use grit_lib::config::ConfigSet;
 use grit_lib::merge_base::{is_ancestor, merge_bases_first_vs_rest};
+use grit_lib::objects::ObjectId;
 use grit_lib::push_submodules::submodule_gitlinks_touched_in_range;
 use grit_lib::refs;
 use grit_lib::repo::Repository;
@@ -278,58 +279,51 @@ pub fn run(args: Args) -> Result<()> {
     };
 
     if let Some(remote_path) = local_remote_path {
-        // protocol.version ≥ 1: use `grit fetch` so packet traces match upstream (t5700).
-        if client_proto == 0 {
-            let remote_repo = open_repository_at_path(&remote_path)?;
-            super::fetch::copy_objects_for_pull(&remote_repo.git_dir, &repo.git_dir)?;
+        // Local path remotes (`..`, `./upstream`): copy objects directly and write FETCH_HEAD
+        // without updating `refs/tags/*`. Git keeps annotated tags only in FETCH_HEAD for
+        // `git pull $path $tag` so throwaway-tag merges default to --no-ff (t7600).
+        let remote_repo = open_repository_at_path(&remote_path)?;
+        super::fetch::copy_objects_for_pull(&remote_repo.git_dir, &repo.git_dir)?;
 
-            let lines = if args.refspecs.is_empty() {
-                let remote_oid = if let Ok(oid) =
-                    refs::resolve_ref(&remote_repo.git_dir, &format!("refs/heads/{merge_branch}"))
-                {
-                    oid
-                } else if let Ok(oid) = refs::resolve_ref(&remote_repo.git_dir, "HEAD") {
-                    oid
-                } else {
-                    bail!("bad revision '{merge_branch}': could not resolve in remote");
-                };
-                let tracking_ref = format!("refs/remotes/{remote_name}/{merge_branch}");
-                refs::write_ref(&repo.git_dir, &tracking_ref, &remote_oid)
-                    .with_context(|| format!("update remote-tracking ref {tracking_ref}"))?;
-                if let Ok(Some(sym)) = refs::read_symbolic_ref(&remote_repo.git_dir, "HEAD") {
-                    let short = sym.strip_prefix("refs/heads/").unwrap_or(&sym);
-                    if short == merge_branch.as_str() {
-                        let remote_head_ref = format!("refs/remotes/{remote_name}/HEAD");
-                        let _ = refs::write_symbolic_ref(
-                            &repo.git_dir,
-                            &remote_head_ref,
-                            &tracking_ref,
-                        );
-                    }
-                }
-                vec![format!(
-                    "{}\t\tbranch 'refs/heads/{merge_branch}' of .\n",
-                    remote_oid.to_hex()
-                )]
+        let lines = if args.refspecs.is_empty() {
+            let remote_oid = if let Ok(oid) =
+                refs::resolve_ref(&remote_repo.git_dir, &format!("refs/heads/{merge_branch}"))
+            {
+                oid
+            } else if let Ok(oid) = refs::resolve_ref(&remote_repo.git_dir, "HEAD") {
+                oid
             } else {
-                let mut out = Vec::new();
-                for spec in &effective_refspecs {
-                    let oid = grit_lib::rev_parse::resolve_revision(&remote_repo, spec)
-                        .with_context(|| format!("bad revision '{spec}'"))?;
-                    out.push(format!(
-                        "{}\t\tbranch 'refs/heads/{spec}' of .\n",
-                        oid.to_hex()
-                    ));
-                }
-                out
+                bail!("bad revision '{merge_branch}': could not resolve in remote");
             };
-            fs::write(repo.git_dir.join("FETCH_HEAD"), lines.concat())?;
+            let tracking_ref = format!("refs/remotes/{remote_name}/{merge_branch}");
+            refs::write_ref(&repo.git_dir, &tracking_ref, &remote_oid)
+                .with_context(|| format!("update remote-tracking ref {tracking_ref}"))?;
+            if let Ok(Some(sym)) = refs::read_symbolic_ref(&remote_repo.git_dir, "HEAD") {
+                let short = sym.strip_prefix("refs/heads/").unwrap_or(&sym);
+                if short == merge_branch.as_str() {
+                    let remote_head_ref = format!("refs/remotes/{remote_name}/HEAD");
+                    let _ =
+                        refs::write_symbolic_ref(&repo.git_dir, &remote_head_ref, &tracking_ref);
+                }
+            }
+            vec![format!(
+                "{}\t\tbranch 'refs/heads/{merge_branch}' of .\n",
+                remote_oid.to_hex()
+            )]
+        } else {
+            let mut out = Vec::new();
+            for spec in &effective_refspecs {
+                let (oid, desc) = pull_fetch_head_line(&remote_repo, spec)?;
+                out.push(format!("{}\t\t{desc}\n", oid.to_hex()));
+            }
+            out
+        };
+        fs::write(repo.git_dir.join("FETCH_HEAD"), lines.concat())?;
 
-            grit_lib::pack::clear_pack_cache();
-            let kind = do_merge_or_rebase_after_fetch(&args, &config, &repo, &head)?;
-            maybe_update_submodules_after_pull(&args, &config, kind)?;
-            return Ok(());
-        }
+        grit_lib::pack::clear_pack_cache();
+        let kind = do_merge_or_rebase_after_fetch(&args, &config, &repo, &head)?;
+        maybe_update_submodules_after_pull(&args, &config, kind)?;
+        return Ok(());
     }
 
     if is_local_dot {
@@ -343,12 +337,8 @@ pub fn run(args: Args) -> Result<()> {
         } else {
             let mut out = Vec::new();
             for spec in &args.refspecs {
-                let oid = resolve_revision(&repo, spec)
-                    .with_context(|| format!("bad revision '{spec}'"))?;
-                out.push(format!(
-                    "{}\t\tbranch 'refs/heads/{spec}' of .\n",
-                    oid.to_hex()
-                ));
+                let (oid, desc) = pull_fetch_head_line(&repo, spec)?;
+                out.push(format!("{}\t\t{desc}\n", oid.to_hex()));
             }
             out
         };
@@ -501,6 +491,20 @@ fn parse_rebase_value(key: &str, value: &str) -> Result<RebaseTri> {
     }
 }
 
+fn pull_fetch_head_line(remote: &Repository, spec: &str) -> Result<(ObjectId, String)> {
+    use grit_lib::objects::ObjectKind;
+    use grit_lib::refs::resolve_ref;
+
+    let tag_ref = format!("refs/tags/{spec}");
+    if let Ok(tag_oid) = resolve_ref(&remote.git_dir, &tag_ref) {
+        if remote.odb.read(&tag_oid)?.kind == ObjectKind::Tag {
+            return Ok((tag_oid, format!("tag '{spec}' of .")));
+        }
+    }
+    let oid = resolve_revision(remote, spec).with_context(|| format!("bad revision '{spec}'"))?;
+    Ok((oid, format!("branch 'refs/heads/{spec}' of .")))
+}
+
 fn config_pull_rebase(
     config: &ConfigSet,
     current_branch: Option<&str>,
@@ -514,9 +518,9 @@ fn config_pull_rebase(
     if let Some(v) = config.get("pull.rebase") {
         return Ok((parse_rebase_value("pull.rebase", &v)?, false));
     }
-    // When `pull.rebase` is not configured, behave like merge (Git ≤2.26 and tests such as
-    // t7102-reset that run `git pull` without advising on divergent branches).
-    Ok((RebaseTri::False, false))
+    // When `pull.rebase` is not configured, refuse to pick merge vs rebase on divergent
+    // branches until the user sets `pull.rebase` or passes `--rebase` / `--no-rebase` (t7601).
+    Ok((RebaseTri::False, true))
 }
 
 fn pull_ff_from_config(config: &ConfigSet) -> Result<Option<(bool, bool, bool)>> {
@@ -892,7 +896,7 @@ fn build_pull_merge_args(
 }
 
 fn remote_token_looks_like_path(token: &str) -> bool {
-    token == "." || token.contains('/') || token.starts_with("file://")
+    token == "." || token == ".." || token.contains('/') || token.starts_with("file://")
 }
 
 fn resolve_local_remote_path(

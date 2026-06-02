@@ -1078,6 +1078,23 @@ pub fn run(mut args: Args) -> Result<()> {
             bail_if_index_tree_differs_from_head(&repo, head_oid, args.autostash)?;
             return do_strategy_ours(&repo, &head, head_oid, merge_oid, &args);
         }
+        if !args.ff_only && merging_throwaway_tag(&repo, &args.commits[0])? {
+            bail_if_index_tree_differs_from_head(&repo, head_oid, args.autostash)?;
+            let eff_shift = effective_subtree_shift(primary_merge_strategy(&args), &subtree_shift);
+            return do_real_merge(
+                &repo,
+                &head,
+                head_oid,
+                merge_oid,
+                &args,
+                favor,
+                diff_algorithm.as_deref(),
+                &eff_shift,
+                merge_renormalize,
+                false,
+                true,
+            );
+        }
         return do_fast_forward(&repo, &head, head_oid, merge_oid, &args);
     }
 
@@ -3906,6 +3923,9 @@ fn do_octopus_merge(
             )?;
 
             if merge_result.has_conflicts {
+                if i + 1 < merge_oids.len() {
+                    return die_octopus_merge_program_failed(repo, &pre_merge_index);
+                }
                 return finish_octopus_merge_on_conflict(
                     repo,
                     head,
@@ -4001,6 +4021,9 @@ fn do_octopus_merge(
         )?;
 
         if merge_result.has_conflicts {
+            if i + 1 < merge_oids.len() {
+                return die_octopus_merge_program_failed(repo, &pre_merge_index);
+            }
             return finish_octopus_merge_on_conflict(
                 repo,
                 head,
@@ -4750,7 +4773,8 @@ fn merge_abort() -> Result<()> {
         bail!("There is no merge to abort (MERGE_HEAD missing).");
     }
 
-    // Restore to ORIG_HEAD if available, otherwise HEAD
+    let autostash_oid = crate::commands::stash::take_pseudo_ref_oid(git_dir, MERGE_AUTOSTASH_REF);
+
     let restore_oid = if let Some(orig) = grit_lib::state::read_orig_head(git_dir)? {
         orig
     } else {
@@ -4761,42 +4785,35 @@ fn merge_abort() -> Result<()> {
         }
     };
 
-    // Restore index and working tree from the restore commit
-    let commit_obj = repo.odb.read(&restore_oid)?;
-    let commit = parse_commit(&commit_obj.data)?;
-    let entries = tree_to_index_entries(&repo, &commit.tree, "")?;
-    let mut index = Index::new();
-    index.entries = entries;
-    index.sort();
-    apply_sparse_checkout_skip_worktree(
-        &repo.git_dir,
-        repo.work_tree.as_deref(),
-        &mut index,
-        false,
-    );
+    let index_path = repo.index_path();
+    let old_index = repo.load_index_at(&index_path).context("loading index")?;
+    let head = resolve_head(git_dir)?;
+    let head_oid = head
+        .oid()
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine HEAD for merge --abort"))?;
 
-    let sparse_on = sparse_checkout_enabled(&repo.git_dir);
-    if let Some(ref wt) = repo.work_tree {
-        checkout_entries(&repo, wt, &index, None, sparse_on)?;
-        // `checkout_entries` skips skip-worktree paths, so conflict markers left in the work tree
-        // (e.g. t7817 file `b` outside the sparse cone) are not overwritten. Remove them so
-        // `git checkout main` and later `git grep --cached` see a consistent tree (matches Git).
-        if sparse_on {
-            remove_skip_worktree_paths_from_worktree(wt, &index)?;
-        }
+    let mut new_index =
+        crate::commands::reset::build_merge_reset_index(&repo, &old_index, head_oid, &restore_oid)
+            .context("building merge-abort index")?;
+    crate::commands::reset::preserve_index_cache_flags_from(&old_index, &mut new_index);
+    if repo.work_tree.is_some() {
+        crate::commands::reset::checkout_merge_reset_worktree(&repo, &old_index, &mut new_index)?;
     }
-    refresh_index_stat_cache_from_worktree(&repo, &mut index)?;
-    repo.write_index(&mut index)?;
+    if let Some(wt) = repo.work_tree.as_deref() {
+        grit_lib::diff::refresh_index_stat_content_verified(&mut new_index, wt);
+    }
+    repo.write_index(&mut new_index)?;
 
-    // Clean up merge state files
     let _ = fs::remove_file(git_dir.join("MERGE_HEAD"));
     let _ = fs::remove_file(git_dir.join("MERGE_RR"));
     let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
     let _ = fs::remove_file(git_dir.join("MERGE_MODE"));
+    let _ = fs::remove_file(git_dir.join("AUTO_MERGE"));
 
-    // Git's `--abort` re-applies a pending MERGE_AUTOSTASH after `reset --merge`
-    // (builtin/merge.c:1437 apply_autostash_oid), printing "Applied autostash.".
-    apply_merge_autostash(&repo)?;
+    if let Some(oid) = autostash_oid {
+        crate::commands::stash::apply_autostash_oid(&repo, &oid)?;
+    }
 
     Ok(())
 }
@@ -4913,6 +4930,16 @@ struct MergeResult {
     submodule_merge_stdout: Vec<String>,
     /// `(path, abbrev)` for recursive-submodule advice on stderr.
     submodule_merge_advice: Vec<(String, String)>,
+}
+
+/// Octopus merge cannot recover after a failed intermediate head (`git-merge-octopus.sh`).
+fn die_octopus_merge_program_failed(repo: &Repository, pre_merge_index: &Index) -> Result<()> {
+    restore_index_and_worktree(repo, pre_merge_index)?;
+    let _ = fs::remove_file(repo.git_dir.join("ORIG_HEAD"));
+    eprintln!("Automated merge did not work.");
+    eprintln!("Should not be doing an octopus.");
+    eprintln!("fatal: merge program failed");
+    std::process::exit(2);
 }
 
 /// Multi-head merge hit conflicts: stage unmerged entries, write `MERGE_HEAD` with every merge
@@ -8811,22 +8838,7 @@ pub(crate) fn refresh_index_stat_cache_from_worktree(
     let Some(work_tree) = repo.work_tree.as_deref() else {
         return Ok(());
     };
-    for entry in &mut index.entries {
-        if entry.stage() != 0 {
-            continue;
-        }
-        let path_str = String::from_utf8_lossy(&entry.path);
-        let abs = work_tree.join(path_str.as_ref());
-        if let Ok(meta) = fs::symlink_metadata(&abs) {
-            entry.ctime_sec = meta.ctime() as u32;
-            entry.ctime_nsec = meta.ctime_nsec() as u32;
-            entry.mtime_sec = meta.mtime() as u32;
-            entry.mtime_nsec = meta.mtime_nsec() as u32;
-            entry.dev = meta.dev() as u32;
-            entry.ino = meta.ino() as u32;
-            entry.size = meta.len() as u32;
-        }
-    }
+    grit_lib::diff::refresh_index_stat_content_verified(index, work_tree);
     Ok(())
 }
 
@@ -9058,6 +9070,36 @@ fn restore_merge_result_spelling(result: &mut MergeResult, table: &OriginalSpell
         if let Some(p) = desc.auto_merge_hint_path.take() {
             desc.auto_merge_hint_path = Some(restore_string_path_spelling(&p, table));
         }
+    }
+}
+
+/// Whether merging `spec` is an annotated tag that is not recorded locally at `refs/tags/<name>`.
+///
+/// Git forbids fast-forwarding such "throwaway" tags so the signed tag object remains in history
+/// (builtin/merge.c `merging_a_throwaway_tag`).
+fn merging_throwaway_tag(repo: &Repository, spec: &str) -> Result<bool> {
+    use grit_lib::refs::resolve_ref;
+
+    let tag_oid = if spec.len() == 40 && spec.chars().all(|c| c.is_ascii_hexdigit()) {
+        ObjectId::from_hex(spec).ok()
+    } else if !spec.contains(['~', '^', ':', '@']) && spec != "HEAD" && spec != "FETCH_HEAD" {
+        let tag_ref = format!("refs/tags/{spec}");
+        resolve_ref(&repo.git_dir, &tag_ref).ok()
+    } else {
+        None
+    };
+    let Some(tag_oid) = tag_oid else {
+        return Ok(false);
+    };
+    let obj = repo.odb.read(&tag_oid)?;
+    if obj.kind != ObjectKind::Tag {
+        return Ok(false);
+    }
+    let tag = parse_tag(&obj.data)?;
+    let local_ref = format!("refs/tags/{}", tag.tag);
+    match resolve_ref(&repo.git_dir, &local_ref) {
+        Ok(local_oid) if local_oid == tag_oid => Ok(false),
+        _ => Ok(true),
     }
 }
 
