@@ -1,6 +1,8 @@
 # Test Results
 
 Updated: 2026-06-01
+- t2 cwd-empty: `./scripts/run-tests.sh t2501-cwd-empty.sh --verbose` improved from 13/24 to
+  17/24 after checkout cwd-removal guards; still in progress.
 - t2 focus: `./scripts/run-tests.sh t2061-switch-orphan.sh --verbose` passes 15/15 after making
   the synthetic switch-orphan fixture explicitly request its hard-coded `master` initial branch.
 - t2 focus: `./scripts/run-tests.sh t2024-checkout-dwim.sh --verbose` passes 23/23 after checkout

@@ -3056,6 +3056,8 @@ fn switch_to_tree(
         false,
     );
 
+    refuse_checkout_removing_cwd(&old_index, &new_index, &work_tree)?;
+
     // Perform the actual working tree update.
     // When force, write all entries even if OID matches (to restore dirty files).
     checkout_index_to_worktree(
@@ -3140,6 +3142,37 @@ fn switch_to_tree(
 fn set_checkout_cache_tree(repo: &Repository, index: &mut Index) -> Result<()> {
     let cache_tree = build_cache_tree_from_index(&repo.odb, index)?;
     index.set_cache_tree(cache_tree);
+    Ok(())
+}
+
+fn refuse_checkout_removing_cwd(
+    old_index: &Index,
+    new_index: &Index,
+    work_tree: &Path,
+) -> Result<()> {
+    let Ok(cwd) = std::env::current_dir() else {
+        return Ok(());
+    };
+    let Ok(cwd_rel) = cwd.strip_prefix(work_tree) else {
+        return Ok(());
+    };
+    if cwd_rel.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let cwd_rel_str = cwd_rel.to_string_lossy().replace('\\', "/");
+    let cwd_prefix = format!("{cwd_rel_str}/");
+    let cwd_had_tracked_children = old_index.entries.iter().any(|e| {
+        e.stage() == 0 && String::from_utf8_lossy(&e.path).starts_with(&cwd_prefix)
+    });
+    if !cwd_had_tracked_children {
+        return Ok(());
+    }
+    let cwd_becomes_file = new_index.entries.iter().any(|e| {
+        e.stage() == 0 && String::from_utf8_lossy(&e.path).as_ref() == cwd_rel_str
+    });
+    if cwd_becomes_file {
+        bail!("Refusing to remove the current working directory");
+    }
     Ok(())
 }
 
@@ -6776,9 +6809,16 @@ fn write_to_worktree(
 
 /// Remove empty parent directories up to (but not including) `work_tree`.
 fn remove_empty_parent_dirs(work_tree: &Path, path: &Path) {
+    let cwd = std::env::current_dir().ok();
     let mut current = path.parent();
     while let Some(dir) = current {
         if dir == work_tree {
+            break;
+        }
+        if cwd
+            .as_ref()
+            .is_some_and(|cwd| cwd == dir || cwd.starts_with(dir))
+        {
             break;
         }
         match std::fs::remove_dir(dir) {
