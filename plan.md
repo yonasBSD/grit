@@ -41,6 +41,8 @@
     Also fixed GC/prune reachability for index/resolve-undo objects and fsck unreachable output.
   - Completed: `t2206-add-submodule-ignored.sh` (8/8). Status/add now honor submodule
     `ignore=all` for unstaged gitlinks while explicit `git add --force` can stage the pointer.
+  - Completed: `t2300-cd-to-toplevel.sh` (5/5). Added a test exec-path `git-sh-setup` helper
+    exposing `cd_to_toplevel`.
   - Execution log: `logs/2026-06-01_2000-t2-family.md`.
 
 ---
