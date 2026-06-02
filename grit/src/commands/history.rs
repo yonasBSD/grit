@@ -1,8 +1,6 @@
 //! `grit history` — history rewriting (reword, split, etc.).
 
-use crate::commands::commit::{
-    cleanup_edited_commit_message, comment_line_prefix_full, launch_commit_editor,
-};
+use crate::commands::commit::{cleanup_edited_commit_message, comment_line_prefix_full};
 use crate::commands::replay::replay_commits_onto;
 use crate::commands::update_ref::resolve_reflog_identity;
 use anyhow::{bail, Context, Result};
@@ -24,9 +22,51 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{self, BufRead, Write};
+use std::path::Path;
+use std::process::Command;
 use time::OffsetDateTime;
 
 const EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// Launch the configured editor on `path`, matching Git's `launch_editor`.
+///
+/// Unlike [`crate::commands::commit::launch_commit_editor`], this resolves the editor with
+/// `for_launch = true` so harness placeholders (`EDITOR=:` / `VISUAL=:`) are ignored and the
+/// real fake editor installed via `test_set_editor` is honoured.
+fn launch_history_editor(repo: &Repository, path: &Path) -> Result<()> {
+    let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let editor = match crate::editor::resolve_git_editor(&config, true) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    // Git treats `:` as a no-op editor (`launch_specified_editor`).
+    if editor.trim() == ":" {
+        return Ok(());
+    }
+
+    // Match Git: the editor command is run under `sh -c` with the path as `$1` (not `$@`),
+    // so `test_set_editor` patterns like `EDITOR='"$FAKE_EDITOR"'` expand and receive the file.
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c")
+        .arg(format!("{editor} \"$1\""))
+        .arg("sh")
+        .arg(path);
+    // Run from the work tree so editor scripts that use relative paths (e.g. `fake-input` in
+    // t3452-history-split) see the same cwd as `git commit`.
+    if let Some(wt) = repo.work_tree.as_ref() {
+        cmd.current_dir(wt);
+    } else {
+        cmd.current_dir(&repo.git_dir);
+    }
+    let status = cmd
+        .status()
+        .with_context(|| format!("failed to launch editor '{editor}'"))?;
+    if !status.success() {
+        bail!("editor exited with non-zero status");
+    }
+    Ok(())
+}
 
 /// Arguments for `grit history`.
 #[derive(Debug, Parser)]
@@ -92,8 +132,13 @@ pub fn run(args: Args) -> Result<()> {
 
 /// Parse `argv` after the `history` token (e.g. `["reword", "HEAD"]`) and run.
 pub fn run_from_argv(rest: &[String]) -> Result<()> {
-    if rest.is_empty() {
-        bail!("need a subcommand");
+    // Match Git's `parse_options` subcommand handling so the error messages
+    // line up with the upstream tests.
+    let first = rest.iter().find(|a| !a.starts_with('-'));
+    match first.map(String::as_str) {
+        None => bail!("need a subcommand"),
+        Some("reword") | Some("split") => {}
+        Some(other) => bail!("unknown subcommand: `{other}'"),
     }
     let mut argv = vec!["grit-history".to_owned()];
     argv.extend(rest.iter().cloned());
@@ -675,7 +720,7 @@ fn fill_split_commit_message(
         append_tree_diff_status(repo, old_tree, new_tree, &mut f)?;
     }
 
-    launch_commit_editor(repo, &edit_path)?;
+    launch_history_editor(repo, &edit_path)?;
 
     let edited = fs::read_to_string(&edit_path).context("reading COMMIT_EDITMSG")?;
     Ok(cleanup_edited_commit_message(&edited, "#"))
@@ -929,7 +974,7 @@ fn edit_reword_message(repo: &Repository, commit: &CommitData) -> Result<String>
         append_tree_diff_status(repo, &parent_tree, &commit.tree, &mut f)?;
     }
 
-    launch_commit_editor(repo, &edit_path)?;
+    launch_history_editor(repo, &edit_path)?;
 
     let edited = fs::read_to_string(&edit_path).context("reading COMMIT_EDITMSG")?;
     let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
