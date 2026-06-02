@@ -1237,7 +1237,7 @@ fn visit_untracked_directory(
     if sub_untracked.is_empty()
         && sub_ignored.is_empty()
         && !rel.is_empty()
-        && !directory_has_non_git_entries(abs)
+        && directory_contains_only_dot_git(abs)
     {
         untracked_out.push(format!("{rel}/"));
         return Ok(());
@@ -1246,15 +1246,15 @@ fn visit_untracked_directory(
     Ok(())
 }
 
-fn directory_has_non_git_entries(dir: &Path) -> bool {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
+fn directory_contains_only_dot_git(dir: &Path) -> bool {
+    let entries: Vec<_> = match fs::read_dir(dir) {
+        Ok(entries) => entries.filter_map(|e| e.ok()).collect(),
         Err(_) => return false,
     };
-    entries
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .any(|name| name != ".git")
+    !entries.is_empty()
+        && entries
+            .iter()
+            .all(|e| e.file_name().to_string_lossy() == ".git")
 }
 
 /// Full tree scan: true when every file under `abs` is ignored and nothing untracked is present.
