@@ -519,12 +519,15 @@ fn checkout_entry(
             if unchanged {
                 return Ok(outcome);
             }
+            if meta.is_dir() {
+                if !args.quiet {
+                    eprintln!("{rel_path} already exists, no checkout");
+                }
+                return Err(anyhow::anyhow!("{rel_path} already exists, no checkout"));
+            }
             // Without --force, leave an existing changed path alone.
             if !args.quiet {
                 eprintln!("{rel_path} already exists, no checkout");
-            }
-            if args.all {
-                return Err(anyhow::anyhow!("{rel_path} already exists, no checkout"));
             }
             return Ok(outcome);
         }
@@ -537,6 +540,12 @@ fn checkout_entry(
         // tmp -> tmp1 with --prefix=tmp/orary- so checkout goes under tmp1/orary-path*).
         let keep_symlink = should_keep_symlink_parent_for_prefix(parent, work_tree, prefix);
         if let Ok(meta) = std::fs::symlink_metadata(parent) {
+            if !args.force && (meta.file_type().is_symlink() || meta.is_file()) && !keep_symlink {
+                if !args.quiet {
+                    eprintln!("{rel_path} already exists, no checkout");
+                }
+                return Err(anyhow::anyhow!("{rel_path} already exists, no checkout"));
+            }
             if meta.file_type().is_symlink() {
                 if !keep_symlink {
                     let _ = std::fs::remove_file(parent);

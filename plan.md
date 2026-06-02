@@ -81,6 +81,9 @@
   - Completed: `t2205-add-worktree-config.sh` (13/13). Adjusted the synthetic ignored-output
     expectation for this harness and verified add/list behavior with worktree config.
   - Completed: `t2030-checkout-index-basic.sh` (27/27). Passed with prior checkout-index fixes.
+  - Re-verified: `t2000-conflict-when-checking-files-out.sh` (14/14) after checkout-index
+    no-force semantics were narrowed to fail on D/F conflicts while preserving explicit no-op
+    behavior for ordinary changed files.
   - Completed: `t2031-checkout-index-symlink.sh` (25/25). Passed with prior checkout-index fixes.
   - Completed: `t2082-parallel-checkout-attributes.sh` (5/5). Passed with prior checkout/filter
     fixes.

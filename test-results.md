@@ -9,6 +9,9 @@ Updated: 2026-06-01
   after update-index refresh output/content checks and reset gitlink preservation were fixed.
 - t2 focus: `./scripts/run-tests.sh t2004-checkout-cache-temp.sh --verbose` passes 23/23 after
   checkout-index stage-specific temp path classification was fixed.
+- t2 regression check: `./scripts/run-tests.sh t2000-conflict-when-checking-files-out.sh
+  t2030-checkout-index-basic.sh --verbose` passes after checkout-index no-force conflict semantics
+  were narrowed.
 - t2 focus: `./scripts/run-tests.sh t2012-checkout-last.sh --verbose` passes 22/22 after rebase
   editor resolution began honoring the harness no-op `EDITOR=:`.
 - t2 focus: `./scripts/run-tests.sh t2015-checkout-unborn.sh --verbose` passes 6/6 after bare
