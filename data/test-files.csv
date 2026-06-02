@@ -1176,7 +1176,7 @@ t7068-commit-amend	t7	yes	28	28	0	true	ok	0
 t7069-commit-empty	t7	yes	30	30	0	true	ok	0
 t7070-commit-tree-extra	t7	yes	26	26	0	true	ok	0
 t7071-commit-message-file	t7	yes	27	27	0	true	ok	0
-t7072-commit-tree-orphan	t7	yes	25	20	5	false	ok	0
+t7072-commit-tree-orphan	t7	yes	25	25	0	true	ok	0
 t7080-mv-advanced	t7	yes	29	29	0	true	ok	0
 t7090-rm-advanced	t7	yes	31	31	0	true	ok	0
 t7101-reset	t7	yes	11	11	0	true	ok	0

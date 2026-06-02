@@ -23,7 +23,7 @@ test_expect_success 'setup repository with multiple commits' '
 	echo file3 >c.txt &&
 	git add c.txt &&
 	grit commit -m "commit C" &&
-	git checkout master
+	git checkout main
 	)
 '
 
@@ -143,7 +143,7 @@ test_expect_success 'commit-tree with two -p creates merge commit' '
 	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
-	p1=$(grit rev-parse master) &&
+	p1=$(grit rev-parse main) &&
 	p2=$(grit rev-parse side) &&
 	oid=$(echo "merge" | grit commit-tree "$tree" -p "$p1" -p "$p2") &&
 	git cat-file -p "$oid" >out &&
@@ -155,7 +155,7 @@ test_expect_success 'merge commit lists parents in order' '
 	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
-	p1=$(grit rev-parse master) &&
+	p1=$(grit rev-parse main) &&
 	p2=$(grit rev-parse side) &&
 	oid=$(echo "ordered merge" | grit commit-tree "$tree" -p "$p1" -p "$p2") &&
 	git cat-file -p "$oid" >out &&
@@ -173,9 +173,9 @@ test_expect_success 'commit-tree with three parents (octopus)' '
 	(
 	cd repo &&
 	tree=$(grit rev-parse HEAD^{tree}) &&
-	p1=$(grit rev-parse master) &&
+	p1=$(grit rev-parse main) &&
 	p2=$(grit rev-parse side) &&
-	p3=$(grit rev-parse master~1) &&
+	p3=$(grit rev-parse main~1) &&
 	oid=$(echo "octopus" | grit commit-tree "$tree" -p "$p1" -p "$p2" -p "$p3") &&
 	git cat-file -p "$oid" >out &&
 	test $(grep -c "^parent " out) -eq 3
@@ -225,7 +225,7 @@ test_expect_success 'commit-tree -F with multiline file' '
 test_expect_success 'commit-tree with different trees produces different commits' '
 	(
 	cd repo &&
-	tree1=$(grit rev-parse master^{tree}) &&
+	tree1=$(grit rev-parse main^{tree}) &&
 	tree2=$(grit rev-parse side^{tree}) &&
 	test "$tree1" != "$tree2" &&
 	oid1=$(echo "tree1" | grit commit-tree "$tree1") &&
