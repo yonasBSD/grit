@@ -182,8 +182,8 @@ pub struct Args {
     #[arg(short = 'f', long = "force", hide = true)]
     pub force: bool,
 
-    /// Overwrite ignored files (allow checkout to clobber ignored files).
-    #[arg(long = "overwrite-ignore", hide = true)]
+    /// Overwrite ignored files (allow checkout to clobber ignored files; Git's default).
+    #[arg(long = "overwrite-ignore", hide = true, default_value_t = true)]
     pub overwrite_ignore: bool,
 
     /// Suppress feedback messages.
@@ -6029,6 +6029,10 @@ pub(crate) fn checkout_index_to_worktree(
         .map(|e| (e.path.as_slice(), e))
         .collect();
 
+    if preserve_dropped_gitlink_dirs {
+        refuse_populated_submodule_tree_replacement(old_index, new_index, work_tree)?;
+    }
+
     // Remove paths that are no longer present in the new index.
     for old_path in old_stage0.difference(&new_stage0) {
         if preserve_dropped_gitlink_dirs {
@@ -6088,6 +6092,7 @@ pub(crate) fn checkout_index_to_worktree(
                         crate::commands::submodule::unset_submodule_core_worktree_config(
                             &modules_git,
                         );
+                    let _ = unset_nested_submodule_core_worktrees(&modules_git);
                 }
                 let _ = std::fs::remove_dir_all(&abs);
             } else if old_map.get(old_path.as_slice()).is_some_and(|e| {
@@ -6244,16 +6249,20 @@ pub(crate) fn checkout_index_to_worktree(
             let rel = String::from_utf8_lossy(&entry.path).into_owned();
             let abs_path = work_tree.join(&rel);
             if populate_gitlinks {
-                let force_populate = match old_map.get(entry.path.as_slice()) {
-                    None => true,
-                    Some(old) => old.mode != MODE_GITLINK || old.oid != entry.oid,
-                };
+                let force_populate = force_write_all
+                    || match old_map.get(entry.path.as_slice()) {
+                        None => true,
+                        Some(old) => old.mode != MODE_GITLINK || old.oid != entry.oid,
+                    };
                 checkout_gitlink_worktree_entry(repo, work_tree, &rel, &entry.oid, force_populate)?;
                 // `checkout_gitlink_worktree_entry` returns early (no dir) for uninitialized
                 // submodules; mirror Git's `write_entry`/`S_IFGITLINK` which always `mkdir`s the
                 // (empty) placeholder directory (lib-submodule-update "added submodule creates
                 // empty directory", t2013).
-                if !abs_path.exists() {
+                if abs_path.is_file() || abs_path.is_symlink() {
+                    let _ = std::fs::remove_file(&abs_path);
+                    std::fs::create_dir_all(&abs_path)?;
+                } else if !abs_path.exists() {
                     std::fs::create_dir_all(&abs_path)?;
                 }
             } else {
@@ -6295,6 +6304,30 @@ pub(crate) fn checkout_index_to_worktree(
 
     let _ = crate::commands::submodule::refresh_submodule_gitfiles(repo);
 
+    Ok(())
+}
+
+fn unset_nested_submodule_core_worktrees(modules_git: &Path) -> Result<()> {
+    let nested_root = modules_git.join("modules");
+    if !nested_root.is_dir() {
+        return Ok(());
+    }
+    let mut stack = vec![nested_root];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if path.join("config").is_file() {
+                crate::commands::submodule::unset_submodule_core_worktree_config(&path)?;
+            }
+            stack.push(path);
+        }
+    }
     Ok(())
 }
 

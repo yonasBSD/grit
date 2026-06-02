@@ -8,10 +8,12 @@
   pass, audit skipped t240x worktree rows so literal t2 completion is not hidden behind skips.
   - Completed: `t2050-checkout.sh` (80/80). Root cause was a synthetic fixture hard-coding
     `master` while `grit init` defaults to `main`; the file now explicitly requests `master`.
-  - In progress: `t2013-checkout-submodule.sh` improved from 16/74 to 51/74 by allowing checkout
+  - In progress: `t2013-checkout-submodule.sh` improved from 16/74 to 66/74 by allowing checkout
     to reuse populated submodule directories, resolving nested relative submodule add URLs against
     the current repo's origin, preserving `.git/modules` across `git rm`, and removing/absorbing
-    dropped submodule worktrees during recursive checkout.
+    dropped submodule worktrees during recursive checkout. Additional fixes now handle default
+    ignored-file overwrite behavior, forced gitlink population, uninitialized gitlink placeholders,
+    and non-recursive refusal to replace populated submodules with ordinary paths.
   - Execution log: `logs/2026-06-01_2000-t2-family.md`.
 
 ---

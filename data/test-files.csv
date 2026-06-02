@@ -472,7 +472,7 @@ t2009-checkout-statinfo	t2	yes	3	3	0	true	ok	0
 t2010-checkout-ambiguous	t2	yes	10	10	0	true	ok	0
 t2011-checkout-invalid-head	t2	yes	10	10	0	true	ok	0
 t2012-checkout-last	t2	yes	22	21	1	false	ok	0
-t2013-checkout-submodule	t2	yes	74	51	19	false	ok	0
+t2013-checkout-submodule	t2	yes	74	66	4	false	ok	0
 t2014-checkout-switch	t2	yes	4	4	0	true	ok	0
 t2015-checkout-unborn	t2	yes	6	5	1	false	ok	0
 t2016-checkout-patch	t2	yes	19	15	4	false	ok	0

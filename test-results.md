@@ -2,7 +2,7 @@
 
 Updated: 2026-06-01
 - t2 submodule checkout: `./scripts/run-tests.sh t2013-checkout-submodule.sh --verbose` improved
-  from 16/74 to 51/74 after submodule checkout/rm/recurse handling fixes; still in progress.
+  from 16/74 to 66/74 after submodule checkout/rm/recurse handling fixes; still in progress.
 - t2 focus: `./scripts/run-tests.sh t2050-checkout.sh --verbose` passes 80/80 after making the
   synthetic checkout fixture explicitly request its hard-coded `master` initial branch.
 - Final t9 verification: `./scripts/run-tests.sh t9 --verbose` ran 90 in-scope t9 files with zero
