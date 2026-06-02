@@ -2035,8 +2035,10 @@ fn rename_branch(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
     let old_ref = format!("refs/heads/{old_name}");
     let new_ref = format!("refs/heads/{new_name}");
 
-    if let Some(wt_path) = branch_used_by_other_worktree(repo, old_name)? {
-        bail!("fatal: cannot rename the branch '{old_name}' used by worktree at '{wt_path}'");
+    // Git only rejects a rename when a worktree is mid-rebase/bisect on the branch; a branch that
+    // is merely checked out in another worktree CAN be renamed (its HEAD symref is rewritten).
+    if let Some((kind, wt_path)) = worktree_rebasing_or_bisecting_branch(repo, old_name) {
+        bail!("fatal: branch {old_name} is being {kind} at {wt_path}");
     }
 
     // Resolve old branch - check both loose and packed refs
@@ -2186,8 +2188,65 @@ fn rename_branch(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
 }
 
 /// Update HEAD in linked worktrees after branch rename.
+/// Returns `Some((kind, path))` if any worktree (main or linked) is mid-rebase or mid-bisect on
+/// `branch` (Git `reject_rebase_or_bisect_branch`). `kind` is `"rebased"` or `"bisected"`.
+fn worktree_rebasing_or_bisecting_branch(
+    repo: &Repository,
+    branch: &str,
+) -> Option<(&'static str, String)> {
+    let common = grit_lib::refs::common_dir(&repo.git_dir).unwrap_or_else(|| repo.git_dir.clone());
+    let target = format!("refs/heads/{branch}");
+
+    // Build (admin_dir, worktree_path) pairs for the main repo and each linked worktree.
+    let mut entries: Vec<(std::path::PathBuf, String)> = Vec::new();
+    let main_path = repo
+        .work_tree
+        .as_deref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| common.display().to_string());
+    entries.push((common.clone(), main_path));
+    if let Ok(rd) = fs::read_dir(common.join("worktrees")) {
+        for e in rd.flatten() {
+            let admin = e.path();
+            let path = fs::read_to_string(admin.join("gitdir"))
+                .ok()
+                .map(|s| {
+                    let t = s.trim();
+                    t.strip_suffix("/.git").unwrap_or(t).to_owned()
+                })
+                .unwrap_or_else(|| admin.display().to_string());
+            entries.push((admin, path));
+        }
+    }
+
+    for (admin, path) in entries {
+        // rebase: rebase-merge/head-name or rebase-apply/head-name names the branch being rebased.
+        for sub in ["rebase-merge", "rebase-apply"] {
+            let hn = admin.join(sub).join("head-name");
+            if let Ok(content) = fs::read_to_string(&hn) {
+                if content.trim() == target {
+                    return Some(("rebased", path));
+                }
+            }
+        }
+        // bisect: BISECT_START names the branch bisecting was started from.
+        if admin.join("BISECT_LOG").exists() {
+            if let Ok(start) = fs::read_to_string(admin.join("BISECT_START")) {
+                let s = start.trim();
+                let s = s.strip_prefix("refs/heads/").unwrap_or(s);
+                if s == branch {
+                    return Some(("bisected", path));
+                }
+            }
+        }
+    }
+    None
+}
+
 fn update_worktree_heads(repo: &Repository, old_name: &str, new_name: &str) -> Result<()> {
-    let worktrees_dir = repo.git_dir.join("worktrees");
+    let worktrees_dir =
+        grit_lib::refs::common_dir(&repo.git_dir).unwrap_or_else(|| repo.git_dir.clone());
+    let worktrees_dir = worktrees_dir.join("worktrees");
     if let Ok(entries) = fs::read_dir(&worktrees_dir) {
         for entry in entries.flatten() {
             let head_path = entry.path().join("HEAD");
