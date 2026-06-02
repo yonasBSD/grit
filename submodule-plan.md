@@ -28,7 +28,9 @@ Rows marked `skip` remain out of aggregate scope until explicitly audited.
 - [x] `t7407-submodule-foreach.sh` - 23/23 passing. Focus: foreach traversal/env/output.
   - Fixed this iteration: plain CLI `submodule update --init` no longer recurses into nested
     submodules unless `--recursive` is explicitly requested.
-- [ ] `t7403-submodule-sync.sh` - 1/18 passing, 17 failing. Focus: sync URL propagation.
+- [x] `t7403-submodule-sync.sh` - 18/18 passing. Focus: sync URL propagation.
+  - Verified this iteration: previously fixed sync behavior now passes the full file; no Rust
+    changes were needed beyond refreshing harness metadata.
 - [ ] `t7401-submodule-summary.sh` - 10/25 passing, 15 failing. Focus: submodule summary output.
 - [ ] `t7814-grep-recurse-submodules.sh` - 17/27 passing, 10 failing. Focus: grep recursion.
 - [ ] `t7422-submodule-output.sh` - 9/18 passing, 9 failing. Focus: submodule command output.

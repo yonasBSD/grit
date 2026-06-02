@@ -3,7 +3,7 @@
 ## Active task — t7 submodule tests 100% pass
 
 - [~] Make all in-scope t7 submodule tests fully pass. Detailed queue and per-file status are in
-  `submodule-plan.md`; work one file at a time. Next unclaimed file is `t7403-submodule-sync.sh`.
+  `submodule-plan.md`; work one file at a time. Next unclaimed file is `t7401-submodule-summary.sh`.
   - Completed: `t7406-submodule-update.sh` improved from 10/70 to 70/70.
   - Completed: `t7400-submodule-basic.sh` improved from 96/124 to 124/124.
   - Completed: `t7112-reset-submodule.sh` improved from 34/82 to 78/78 aggregate passing, with 4 upstream TODO known breakages omitted from the failing count; log:
@@ -13,7 +13,9 @@
   - Completed: `t7407-submodule-foreach.sh` improved from 4/23 to 23/23 by keeping plain
     `submodule update --init` nonrecursive; log:
     `logs/2026-06-02_1949-t7407-submodule-foreach.md`.
-  - Next focus: `t7403-submodule-sync.sh` at 1/18.
+  - Completed: `t7403-submodule-sync.sh` improved from 1/18 to 18/18 after harness refresh; log:
+    `logs/2026-06-02_2004-t7403-submodule-sync.md`.
+  - Next focus: `t7401-submodule-summary.sh` at 10/25.
 
 ## Active task — t2 family 100% pass
 

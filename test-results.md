@@ -6,6 +6,10 @@
 # Test Results
 
 Updated: 2026-06-02
+- t7 submodule focus: `./scripts/run-tests.sh t7403-submodule-sync.sh --verbose` improved
+  `t7403` from the stale 1/18 CSV baseline to 18/18. No Rust changes were needed; the harness
+  run refreshed `data/test-files.csv` and dashboards. Rust validation was skipped for this
+  metadata-only checkpoint.
 - t7 submodule focus: `./scripts/run-tests.sh t7407-submodule-foreach.sh --verbose` improved
   `t7407` from 4/23 to 23/23 by keeping plain CLI `submodule update --init` nonrecursive while
   preserving explicit `--recursive` behavior. Regression check:
