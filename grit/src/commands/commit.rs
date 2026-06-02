@@ -3271,7 +3271,7 @@ pub(crate) fn cleanup_edited_commit_message(message: &str, comment_prefix: &str)
 }
 
 fn git_vertical_stripspace(s: &str) -> String {
-    let trimmed_start = s.trim_start_matches(['\n', '\r', ' ', '\t']);
+    let trimmed_start = s.trim_start_matches(['\n', '\r']);
     trimmed_start
         .trim_end_matches(['\n', '\r', ' ', '\t'])
         .to_string()

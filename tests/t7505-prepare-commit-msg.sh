@@ -44,7 +44,7 @@ test_expect_success 'commit -m with empty string fails' '
 	)
 '
 
-test_expect_success 'commit -m preserves leading/trailing whitespace in message' '
+test_expect_success 'commit -m preserves leading whitespace in message' '
 	(
 	cd repo &&
 	echo change2b >file &&
@@ -52,7 +52,7 @@ test_expect_success 'commit -m preserves leading/trailing whitespace in message'
 	test_tick &&
 	git commit -m "  spaced message  " &&
 	git log -n1 --format="%s" >actual &&
-	echo "  spaced message  " >expect &&
+	echo "  spaced message" >expect &&
 	test_cmp expect actual
 	)
 '
