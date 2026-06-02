@@ -80,7 +80,7 @@ test_expect_success 'setup branches for multi-parent test' '
 	git add b.txt &&
 	git commit -m "branch b" &&
 	B=$(git rev-parse HEAD) &&
-	git checkout master
+	git checkout main
 	)
 '
 
@@ -88,7 +88,7 @@ test_expect_success 'commit-tree with two parents' '
 	(
 	cd repo &&
 	tree=$(git rev-parse HEAD^{tree}) &&
-	A=$(git rev-parse master) &&
+	A=$(git rev-parse main) &&
 	B=$(git rev-parse branch-b) &&
 	oid=$(echo "merge" | git commit-tree "$tree" -p "$A" -p "$B") &&
 	git cat-file -p "$oid" >out &&
@@ -105,9 +105,9 @@ test_expect_success 'commit-tree with three parents' '
 	git add c.txt &&
 	git commit -m "branch c" &&
 	C=$(git rev-parse HEAD) &&
-	git checkout master &&
+	git checkout main &&
 	tree=$(git rev-parse HEAD^{tree}) &&
-	A=$(git rev-parse master) &&
+	A=$(git rev-parse main) &&
 	B=$(git rev-parse branch-b) &&
 	oid=$(echo "octopus" | git commit-tree "$tree" -p "$A" -p "$B" -p "$C") &&
 	git cat-file -p "$oid" >out &&
@@ -120,7 +120,7 @@ test_expect_success 'multi-parent commit preserves parent order' '
 	(
 	cd repo &&
 	tree=$(git rev-parse HEAD^{tree}) &&
-	A=$(git rev-parse master) &&
+	A=$(git rev-parse main) &&
 	B=$(git rev-parse branch-b) &&
 	C=$(git rev-parse branch-c) &&
 	oid=$(echo "ordered" | git commit-tree "$tree" -p "$C" -p "$A" -p "$B") &&

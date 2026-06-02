@@ -21,12 +21,11 @@ test_expect_success 'setup base repo' '
 
 # === --porcelain ===
 
-test_expect_success 'porcelain on clean repo shows only branch header' '
+test_expect_success 'porcelain on clean repo is empty' '
 	(
 	cd repo &&
 	git status --porcelain >../actual &&
-	grep "^##" ../actual &&
-	! grep -v "^##" ../actual
+	test_must_be_empty ../actual
 	)
 '
 
@@ -158,7 +157,7 @@ test_expect_success 'branch flag shows branch in short output' '
 	(
 	cd repo &&
 	git status -s -b >../actual &&
-	head -1 ../actual | grep "##.*master"
+	head -1 ../actual | grep "##.*main"
 	)
 '
 
@@ -176,7 +175,7 @@ test_expect_success 'branch flag on detached HEAD' '
 	git checkout --detach HEAD &&
 	git status -s -b >../actual &&
 	head -1 ../actual | grep "HEAD" &&
-	git checkout master
+	git checkout main
 	)
 '
 
@@ -256,12 +255,12 @@ test_expect_success 'porcelain output has no color codes' '
 	)
 '
 
-test_expect_success 'porcelain clean after commit shows only branch header' '
+test_expect_success 'porcelain clean after commit is empty' '
 	(
 	cd repo &&
 	git commit -m "add combo" &&
 	git status --porcelain >../actual &&
-	! grep -v "^##" ../actual
+	test_must_be_empty ../actual
 	)
 '
 

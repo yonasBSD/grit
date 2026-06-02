@@ -21,7 +21,7 @@ test_expect_success 'initial commit' '
 	cd repo &&
 	echo "hello" >file.txt &&
 	git add file.txt &&
-	git commit -m "initial commit" 2>stderr &&
+	git commit -m "initial commit" >stderr 2>&1 &&
 	grep "root-commit" stderr &&
 	git cat-file -t HEAD >type &&
 	echo "commit" >expected &&
@@ -42,7 +42,7 @@ test_expect_success 'second commit has parent' '
 	cd repo &&
 	echo "world" >>file.txt &&
 	git add file.txt &&
-	git commit -m "second commit" 2>stderr &&
+	git commit -m "second commit" >stderr 2>&1 &&
 	! grep "root-commit" stderr &&
 	git cat-file -p HEAD >actual &&
 	grep "^parent " actual
@@ -327,7 +327,7 @@ test_expect_success 'initial commit output mentions root-commit' '
 	git config user.email "t@t.com" &&
 	echo "x" >x.txt &&
 	git add x.txt &&
-	git commit -m "first" 2>stderr &&
+	git commit -m "first" >stderr 2>&1 &&
 	grep "root-commit" stderr
 	)
 '
@@ -337,7 +337,7 @@ test_expect_success 'second commit output does not mention root-commit' '
 	cd fresh-repo &&
 	echo "y" >>x.txt &&
 	git add x.txt &&
-	git commit -m "second" 2>stderr &&
+	git commit -m "second" >stderr 2>&1 &&
 	! grep "root-commit" stderr
 	)
 '
@@ -347,8 +347,8 @@ test_expect_success 'commit output shows branch name' '
 	cd fresh-repo &&
 	echo "z" >>x.txt &&
 	git add x.txt &&
-	git commit -m "third" 2>stderr &&
-	grep "master" stderr
+	git commit -m "third" >stderr 2>&1 &&
+	grep "main" stderr
 	)
 '
 
@@ -566,7 +566,7 @@ test_expect_success 'commit on detached HEAD' '
 	git commit -m "detached commit" 2>/dev/null &&
 	git cat-file -p HEAD >actual &&
 	grep "detached commit" actual &&
-	git checkout master 2>/dev/null
+	git checkout main 2>/dev/null
 	)
 '
 
@@ -836,7 +836,7 @@ test_expect_success 'commit output includes short hash' '
 	cd repo &&
 	echo "outputhash" >>file.txt &&
 	git add file.txt &&
-	git commit -m "hash in output" 2>stderr &&
+	git commit -m "hash in output" >stderr 2>&1 &&
 	HASH=$(git rev-parse --short HEAD) &&
 	grep "$HASH" stderr
 	)
@@ -920,7 +920,7 @@ test_expect_success 'commit on new branch preserves parent' '
 	git commit -m "branch commit" 2>/dev/null &&
 	actual_parent=$(git cat-file -p HEAD | sed -n "s/^parent //p") &&
 	test "$actual_parent" = "$parent" &&
-	git checkout master 2>/dev/null
+	git checkout main 2>/dev/null
 	)
 '
 
@@ -1395,7 +1395,7 @@ test_expect_success 'commit on detached HEAD works' '
 	head_sha=$(grit rev-parse HEAD) &&
 	git checkout "$head_sha" 2>/dev/null &&
 	grit commit --allow-empty -m "detached commit" &&
-	git checkout master 2>/dev/null
+	git checkout main 2>/dev/null
 	)
 '
 
