@@ -290,12 +290,9 @@ fn read_patches_from_log(
         .arg("--date-order")
         .arg("--decorate=no")
         .arg("--no-prefix")
-        .arg("--output-indicator-new")
-        .arg(">")
-        .arg("--output-indicator-old")
-        .arg("<")
-        .arg("--output-indicator-context")
-        .arg("#")
+        .arg("--output-indicator-new=>")
+        .arg("--output-indicator-old=<")
+        .arg("--output-indicator-context=#")
         .arg("--pretty=medium")
         .arg("-p");
     for arg in rev_args {
@@ -713,8 +710,107 @@ fn write_stat_summary(out: &mut impl Write, diff: &str) -> Result<()> {
     Ok(())
 }
 
+/// Inner diff between two normalized patch texts, formatted like Git `range-diff`:
+/// a real unified diff (Myers, 3 context lines) with `--- /+++ ` headers suppressed,
+/// hunk-header line counts suppressed (`@@ <funcname>` instead of `@@ -a,b +c,d @@`),
+/// and the `range-diff` section-header function-name driver.
 fn diff_patches(x: &str, y: &str) -> String {
-    line_diff_inner(x, y)
+    use grit_lib::diff::unified_diff_with_prefix_and_funcname;
+
+    // Full unified diff with empty prefixes; we strip the file headers and rebuild
+    // each hunk header ourselves (Git suppresses line counts and uses a custom funcname).
+    let raw = unified_diff_with_prefix_and_funcname(
+        x, y, "a", "b", 3, 0, "", "", None, /* indent_heuristic */ true,
+        /* quote_path_fully */ false,
+    );
+
+    let old_lines: Vec<&str> = x.lines().collect();
+    let mut out = String::new();
+    for line in raw.lines() {
+        if line.starts_with("--- ") || line.starts_with("+++ ") {
+            continue;
+        }
+        if line.starts_with("@@ ") || line == "@@" {
+            // Parse the old start line from "@@ -<start>[,<count>] +..." and rebuild the
+            // header with line counts suppressed plus the section-header funcname.
+            let start = parse_hunk_old_start(line);
+            out.push_str("@@");
+            if let Some(s) = start {
+                if let Some(func) = section_funcname(&old_lines, s) {
+                    out.push(' ');
+                    out.push_str(&func);
+                }
+            }
+            out.push('\n');
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Parse the 1-based old-file start line from a unified-diff hunk header
+/// (`@@ -<start>[,<count>] +... @@`). Returns `None` if it cannot be parsed.
+fn parse_hunk_old_start(header: &str) -> Option<usize> {
+    let minus = header.find('-')?;
+    let rest = &header[minus + 1..];
+    let end = rest.find([',', ' '])?;
+    rest[..end].parse::<usize>().ok()
+}
+
+/// Reproduce Git `range-diff`'s `section_headers` funcname driver:
+/// `^ ## (.*) ##$` and `^.?@@ (.*)$`. Scans the old patch text backward from the
+/// hunk start for the nearest line matching either rule, returning the captured name.
+fn section_funcname(old_lines: &[&str], old_start_1based: usize) -> Option<String> {
+    if old_start_1based <= 1 {
+        return None;
+    }
+    let search_end = (old_start_1based - 1).min(old_lines.len());
+    for i in (0..search_end).rev() {
+        let line = old_lines[i];
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(name) = match_section_header(line) {
+            return Some(truncate_funcname(&name));
+        }
+    }
+    None
+}
+
+/// Match a single line against the two `range-diff` section-header rules.
+fn match_section_header(line: &str) -> Option<String> {
+    // Rule 1: ` ## <name> ##`
+    if let Some(inner) = line.strip_prefix(" ## ") {
+        if let Some(name) = inner.strip_suffix(" ##") {
+            return Some(name.trim_end_matches(char::is_whitespace).to_owned());
+        }
+    }
+    // Rule 2: `.?@@ <name>` — an optional leading byte, then "@@ ", then the name.
+    let after = if let Some(a) = line.strip_prefix("@@ ") {
+        a
+    } else {
+        let bytes = line.as_bytes();
+        if bytes.len() >= 4 && &bytes[1..4] == b"@@ " {
+            &line[4..]
+        } else {
+            return None;
+        }
+    };
+    Some(after.trim_end_matches(char::is_whitespace).to_owned())
+}
+
+fn truncate_funcname(text: &str) -> String {
+    if text.len() > 80 {
+        let mut end = 80;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text[..end].to_owned()
+    } else {
+        text.to_owned()
+    }
 }
 
 /// Git-style line diff (one prefix character per output line).
