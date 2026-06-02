@@ -8,6 +8,7 @@ Updated: 2026-06-02
 - t4 rename raw focus: `./scripts/run-tests.sh t4005-diff-rename-2.sh --verbose` passes 4/4 after preserving diff-family `-C` as copy detection instead of post-subcommand chdir.
 - t4 mode/stat focus: `./scripts/run-tests.sh t4006-diff-mode.sh --verbose` passes 7/7 after rendering binary mode-only diffstat rows as plain `Bin`.
 - t4 stat validation: `./scripts/run-tests.sh t4052-stat-output.sh --verbose` passes 89/89 with the current diffstat fixes.
+- t4 abbrev focus: `./scripts/run-tests.sh t4044-diff-index-unique-abbrev.sh --verbose` passes 2/2 after disambiguating old/new patch index-line abbreviations.
 - `cargo check -p grit-cli`: passes with the same existing warning backlog.
 - `cargo test --workspace`: not run for this focused t4 iteration.
 - `./tests/harness/run.sh`: skipped; project uses `./scripts/run-tests.sh` for CSV/dashboard updates.
