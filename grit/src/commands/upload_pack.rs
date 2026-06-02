@@ -396,7 +396,7 @@ fn write_ref_advertisement(w: &mut impl Write, git_dir: &Path) -> Result<()> {
 
     let mut first = true;
     if let Ok(head_oid) = refs::resolve_ref(git_dir, "HEAD") {
-        let line = format!("{}\tHEAD\0{}\n", head_oid.to_hex(), caps);
+        let line = format!("{} HEAD\0{}\n", head_oid.to_hex(), caps);
         let len = 4 + line.len();
         write!(w, "{:04x}{}", len, line)?;
         first = false;
@@ -411,21 +411,21 @@ fn write_ref_advertisement(w: &mut impl Write, git_dir: &Path) -> Result<()> {
         if !non_standard.is_empty() {
             for (i, (refname, oid)) in non_standard.iter().enumerate() {
                 let line = if i == 0 {
-                    format!("{}\t{}\0{}\n", oid.to_hex(), refname, caps)
+                    format!("{} {}\0{}\n", oid.to_hex(), refname, caps)
                 } else {
-                    format!("{}\t{}\n", oid.to_hex(), refname)
+                    format!("{} {}\n", oid.to_hex(), refname)
                 };
                 let len = 4 + line.len();
                 write!(w, "{:04x}{}", len, line)?;
             }
             first = false;
         } else if let Ok(HeadState::Detached { oid }) = resolve_head(git_dir) {
-            let line = format!("{}\tHEAD\0{}\n", oid.to_hex(), caps);
+            let line = format!("{} HEAD\0{}\n", oid.to_hex(), caps);
             let len = 4 + line.len();
             write!(w, "{:04x}{}", len, line)?;
             first = false;
         } else if let Ok(HeadState::Branch { oid: Some(oid), .. }) = resolve_head(git_dir) {
-            let line = format!("{}\tHEAD\0{}\n", oid.to_hex(), caps);
+            let line = format!("{} HEAD\0{}\n", oid.to_hex(), caps);
             let len = 4 + line.len();
             write!(w, "{:04x}{}", len, line)?;
             first = false;
@@ -434,7 +434,7 @@ fn write_ref_advertisement(w: &mut impl Write, git_dir: &Path) -> Result<()> {
             // object format (64 hex zeros for SHA-256, 40 for SHA-1) so a hash-aware client can
             // detect the format from an empty repository (`t5551` empty SHA-256 clone, proto v0).
             let z = zero_oid_hex_for_format(&object_format);
-            let line = format!("{z}\tHEAD\0{caps}\n");
+            let line = format!("{z} HEAD\0{caps}\n");
             let len = 4 + line.len();
             write!(w, "{:04x}{}", len, line)?;
             first = false;
@@ -444,12 +444,12 @@ fn write_ref_advertisement(w: &mut impl Write, git_dir: &Path) -> Result<()> {
     let all_refs = list_all_refs(git_dir)?;
     for (refname, oid) in &all_refs {
         if first {
-            let line = format!("{}\t{}\0{}\n", oid.to_hex(), refname, caps);
+            let line = format!("{} {}\0{}\n", oid.to_hex(), refname, caps);
             let len = 4 + line.len();
             write!(w, "{:04x}{}", len, line)?;
             first = false;
         } else {
-            let line = format!("{}\t{}\n", oid.to_hex(), refname);
+            let line = format!("{} {}\n", oid.to_hex(), refname);
             let len = 4 + line.len();
             write!(w, "{:04x}{}", len, line)?;
         }
