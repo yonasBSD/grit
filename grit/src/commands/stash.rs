@@ -3942,13 +3942,20 @@ pub fn create_autostash_ref(repo: &Repository, refname: &str) -> Result<Option<O
 }
 
 /// Read the OID recorded under `<git_dir>/<refname>`, if present.
-fn read_pseudo_ref_oid(git_dir: &Path, refname: &str) -> Option<ObjectId> {
+pub fn read_pseudo_ref_oid(git_dir: &Path, refname: &str) -> Option<ObjectId> {
     let raw = std::fs::read_to_string(git_dir.join(refname)).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
     ObjectId::from_hex(trimmed).ok()
+}
+
+/// Read and remove the pseudo-ref `<git_dir>/<refname>`, returning its OID when present.
+pub fn take_pseudo_ref_oid(git_dir: &Path, refname: &str) -> Option<ObjectId> {
+    let oid = read_pseudo_ref_oid(git_dir, refname)?;
+    let _ = std::fs::remove_file(git_dir.join(refname));
+    Some(oid)
 }
 
 /// Write an OID to `<git_dir>/<refname>` as a plain (non-symbolic) pseudo-ref.
@@ -3974,6 +3981,24 @@ pub fn autostash_ref_exists(git_dir: &Path, refname: &str) -> bool {
 /// "safe in the stash" guidance. The pseudo-ref is always removed afterwards.
 pub fn apply_autostash_ref(repo: &Repository, refname: &str) -> Result<()> {
     apply_or_save_autostash_ref(repo, refname, true)
+}
+
+/// Apply an autostash commit by OID (git `apply_autostash_oid`), printing Git's stderr messages.
+pub fn apply_autostash_oid(repo: &Repository, stash_oid: &ObjectId) -> Result<()> {
+    let work_tree = repo
+        .work_tree
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("cannot apply autostash in a bare repository"))?;
+    let conflicted = apply_stash_impl(repo, work_tree, stash_oid, false, true)?;
+    if !conflicted {
+        eprintln!("Applied autostash.");
+    } else {
+        update_stash_ref(repo, stash_oid, "autostash")?;
+        eprintln!("Applying autostash resulted in conflicts.");
+        eprintln!("Your changes are safe in the stash.");
+        eprintln!("You can run \"git stash pop\" or \"git stash drop\" at any time.");
+    }
+    Ok(())
 }
 
 /// Store the autostash recorded under `<git_dir>/<refname>` back to `refs/stash` without applying

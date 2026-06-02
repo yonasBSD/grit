@@ -162,7 +162,7 @@ fn rollback_reset_after_failed_submodule_update(
 ///
 /// Git keeps `CE_SKIP_WORKTREE` and `CE_VALID` (assume-unchanged) across this rebuild so sparse
 /// checkout state is not lost (`t7011-skip-worktree-reading`).
-fn preserve_index_cache_flags_from(old: &Index, new: &mut Index) {
+pub(crate) fn preserve_index_cache_flags_from(old: &Index, new: &mut Index) {
     for ne in new.entries.iter_mut() {
         if ne.stage() != 0 {
             continue;
@@ -1908,7 +1908,7 @@ fn merge_reset_verify_worktree_matches_index(
 }
 
 /// Build the post-`reset --merge` index using Git's `oneway_merge` rules.
-fn build_merge_reset_index(
+pub(crate) fn build_merge_reset_index(
     repo: &Repository,
     old_index: &Index,
     head_oid: ObjectId,
@@ -2658,7 +2658,7 @@ fn tree_to_flat_entries(
 /// Like [`checkout_index_to_worktree`] but for `reset --merge` after sequencer
 /// rollback: keep local modifications to paths whose staged (target) blob is
 /// unchanged from the pre-reset index, matching Git's twoway merge behavior.
-fn checkout_merge_reset_worktree(
+pub(crate) fn checkout_merge_reset_worktree(
     repo: &Repository,
     old_index: &Index,
     new_index: &mut Index,
