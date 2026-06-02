@@ -1871,6 +1871,27 @@ fn create_branch(
         } else {
             None
         };
+        // `--track=inherit` (or `branch.autoSetupMerge=inherit` for an untracked create) copies the
+        // start point's own `branch.<sp>.remote` / `.merge` config verbatim onto the new branch
+        // (Git `inherit_tracking`). Handle it before the regular DWIM tracking path. (t3200 164/165)
+        let inherit_requested = args.track.as_deref() == Some("inherit")
+            || (args.track.is_none() && !args.no_track && autosetupmerge_is_inherit(repo));
+        if inherit_requested {
+            if let Some(bare) = symbolic_full_name(repo, sp)
+                .and_then(|f| f.strip_prefix("refs/heads/").map(str::to_owned))
+                .or_else(|| {
+                    grit_lib::refs::resolve_ref(&repo.git_dir, &format!("refs/heads/{sp}"))
+                        .ok()
+                        .map(|_| sp.to_owned())
+                })
+            {
+                if let Some((remote, merge)) = inherited_tracking(repo, &bare) {
+                    write_branch_tracking_config(repo, name, &remote, &merge)?;
+                }
+            }
+            return Ok(());
+        }
+
         let want_tracking = args.track.is_some() || (!args.no_track && remote_ref.is_some());
         if want_tracking {
             // Resolve the tracking pair (remote, merge-ref). `.` denotes a local-branch upstream.
@@ -1994,6 +2015,28 @@ fn validate_autosetuprebase_config(repo: &Repository) {
 /// validated this way.
 fn track_is_explicit(args: &Args) -> bool {
     matches!(args.track.as_deref(), Some("direct") | Some("override"))
+}
+
+/// True when `branch.autoSetupMerge` is set to `inherit`.
+fn autosetupmerge_is_inherit(repo: &Repository) -> bool {
+    ConfigSet::load(Some(&repo.git_dir), true)
+        .ok()
+        .and_then(|c| c.get("branch.autosetupmerge"))
+        .map(|v| v.eq_ignore_ascii_case("inherit"))
+        .unwrap_or(false)
+}
+
+/// The `(remote, merge)` tracking config of `branch_short`, read verbatim from
+/// `branch.<branch_short>.remote` / `.merge` (Git `inherit_tracking`). Returns `None` if either is
+/// unset, so a start point with no upstream simply contributes nothing to inherit.
+fn inherited_tracking(repo: &Repository, branch_short: &str) -> Option<(String, String)> {
+    let cfg = ConfigSet::load(Some(&repo.git_dir), true).ok()?;
+    let remote = cfg.get(&format!("branch.{branch_short}.remote"))?;
+    let merge = cfg.get(&format!("branch.{branch_short}.merge"))?;
+    if remote.is_empty() || merge.is_empty() {
+        return None;
+    }
+    Some((remote, merge))
 }
 
 /// Write `branch.<name>.remote`/`.merge` (and `.rebase = true` per `branch.autosetuprebase`).
