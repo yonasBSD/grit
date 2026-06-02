@@ -1174,7 +1174,7 @@ t7066-status-ignored	t7	yes	32	32	0	true	ok	0
 t7067-status-untracked-dir	t7	yes	33	33	0	true	ok	0
 t7068-commit-amend	t7	yes	28	28	0	true	ok	0
 t7069-commit-empty	t7	yes	30	30	0	true	ok	0
-t7070-commit-tree-extra	t7	yes	26	22	4	false	ok	0
+t7070-commit-tree-extra	t7	yes	26	26	0	true	ok	0
 t7071-commit-message-file	t7	yes	27	27	0	true	ok	0
 t7072-commit-tree-orphan	t7	yes	25	20	5	false	ok	0
 t7080-mv-advanced	t7	yes	29	29	0	true	ok	0
