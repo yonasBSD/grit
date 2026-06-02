@@ -1074,7 +1074,7 @@ done
 
 post_checkout_hook () {
 	test_when_finished "rm -rf .git/hooks" &&
-	mkdir .git/hooks &&
+	mkdir -p .git/hooks &&
 	test_hook -C "$1" post-checkout <<-\EOF
 	{
 		echo $*

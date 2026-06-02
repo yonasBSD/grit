@@ -2373,7 +2373,8 @@ fn validate_patch_headers(patches: &[FilePatch], strip: usize) -> Result<()> {
             if let (Some(diff_old), Some(old)) =
                 (fp.diff_old_path.as_deref(), fp.old_path.as_deref())
             {
-                if old != "/dev/null" && path_after_strip(diff_old, strip) != old {
+                if old != "/dev/null" && path_after_strip(diff_old, strip) != old && diff_old != old
+                {
                     bail!("inconsistent old filename");
                 }
             }
@@ -2383,7 +2384,8 @@ fn validate_patch_headers(patches: &[FilePatch], strip: usize) -> Result<()> {
             if let (Some(diff_new), Some(new)) =
                 (fp.diff_new_path.as_deref(), fp.new_path.as_deref())
             {
-                if new != "/dev/null" && path_after_strip(diff_new, strip) != new {
+                if new != "/dev/null" && path_after_strip(diff_new, strip) != new && diff_new != new
+                {
                     bail!("inconsistent new filename");
                 }
             }
@@ -4592,8 +4594,15 @@ fn read_worktree_blob_as_text(path: &Path) -> io::Result<String> {
 
 /// Remove empty directories upward from path.
 fn remove_empty_dirs_up(dir: &Path) {
+    let cwd = std::env::current_dir().ok();
     let mut current = dir.to_path_buf();
     while current.as_os_str() != "." && !current.as_os_str().is_empty() {
+        if cwd
+            .as_ref()
+            .is_some_and(|cwd| cwd == &current || cwd.starts_with(&current))
+        {
+            break;
+        }
         if fs::remove_dir(&current).is_err() {
             break;
         }
@@ -6083,6 +6092,9 @@ fn reconcile_filepatch_preimage_modes(
 fn prepare_patch_modes_for_apply(patches: &mut [FilePatch], args: &Args) -> Result<()> {
     let repo_ok = Repository::discover(None).ok();
     let index = repo_ok.as_ref().and_then(|r| r.load_index().ok());
+    let work_tree = repo_ok.as_ref().and_then(|r| r.work_tree.clone());
+    let work_tree_ref = work_tree.as_deref();
+    let setup_prefix = apply_setup_prefix();
     let trust_file_mode = repo_ok
         .as_ref()
         .map(|r| {
@@ -6105,9 +6117,10 @@ fn prepare_patch_modes_for_apply(patches: &mut [FilePatch], args: &Args) -> Resu
             continue;
         }
         let adjusted = adjust_path(source, args.directory.as_deref());
+        let operational = fp.worktree_rel_operational(&adjusted, &setup_prefix);
         let ce_mode = index
             .as_ref()
-            .and_then(|ix| ix.get(adjusted.as_bytes(), 0))
+            .and_then(|ix| ix.get(operational.as_bytes(), 0))
             .map(|e| e.mode);
 
         if args.cached {
@@ -6126,8 +6139,8 @@ fn prepare_patch_modes_for_apply(patches: &mut [FilePatch], args: &Args) -> Resu
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let path = Path::new(&adjusted);
-            let st_stat = match fs::symlink_metadata(path) {
+            let path = apply_fs_path(&operational, work_tree_ref);
+            let st_stat = match fs::symlink_metadata(&path) {
                 Ok(meta) => Some(meta.permissions().mode()),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                     if can_apply_with_empty_preimage(fp) {

@@ -1002,6 +1002,22 @@ fn do_push(mut opts: PushOpts) -> Result<()> {
                     f,
                 ) {
                     let _ = fs::remove_dir(&path);
+                } else if let Ok(children) = fs::read_dir(&path) {
+                    let cwd = std::env::current_dir().ok();
+                    for child in children.flatten() {
+                        let child_path = child.path();
+                        if cwd
+                            .as_ref()
+                            .is_some_and(|cwd| cwd == &child_path || cwd.starts_with(&child_path))
+                        {
+                            continue;
+                        }
+                        if child_path.is_dir() {
+                            let _ = fs::remove_dir_all(&child_path);
+                        } else {
+                            let _ = fs::remove_file(&child_path);
+                        }
+                    }
                 }
             } else {
                 let _ = fs::remove_file(&path);
@@ -4707,7 +4723,7 @@ fn find_untracked_for_stash(
     repo: &Repository,
     work_tree: &Path,
     index: &Index,
-    cwd: &Path,
+    _cwd: &Path,
     include_all: bool,
     pathspecs: &[String],
 ) -> Result<Vec<String>> {
@@ -4718,16 +4734,8 @@ fn find_untracked_for_stash(
         .map(|ie| String::from_utf8_lossy(&ie.path).to_string())
         .collect();
 
-    let cwd_prefix = super::clean::pathdiff(cwd, work_tree);
-    let walk_root = match &cwd_prefix {
-        Some(p) if !p.is_empty() => work_tree.join(p),
-        _ => work_tree.to_path_buf(),
-    };
-    let walk_prefix_for_specs = if pathspecs.is_empty() {
-        cwd_prefix.as_deref()
-    } else {
-        None
-    };
+    let walk_root = work_tree.to_path_buf();
+    let walk_prefix_for_specs = None;
 
     let mut matcher = IgnoreMatcher::from_repository(repo).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut out = Vec::new();

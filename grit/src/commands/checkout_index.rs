@@ -4,7 +4,6 @@ use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
 use grit_lib::config::ConfigSet;
 use grit_lib::crlf;
-use grit_lib::diff::stat_matches;
 use grit_lib::index::Index;
 use grit_lib::objects::{ObjectId, ObjectKind};
 use grit_lib::odb::Odb;
@@ -222,7 +221,12 @@ pub fn run(args: Args) -> Result<()> {
             // Git `index_name_pos` expands the sparse index on lookup; mirror that by
             // resolving the path against sparse-directory placeholders. The classification
             // (has_same_name / is_file / is_skipped) reproduces git's checkout_file().
-            let class = classify_checkout_index_path(&index, &sparse_dir_prefixes, &path_bytes);
+            let class = classify_checkout_index_path(
+                &index,
+                &sparse_dir_prefixes,
+                &path_bytes,
+                target_stage,
+            );
             match class {
                 PathClass::File { skip_worktree } => {
                     if skip_worktree && !args.ignore_skip_worktree_bits {
@@ -309,6 +313,7 @@ fn classify_checkout_index_path(
     index: &Index,
     sparse_dir_prefixes: &[Vec<u8>],
     path: &[u8],
+    stage: u8,
 ) -> PathClass {
     // A request for a path that the (collapsed) on-disk index represented as a
     // sparse-directory placeholder is reported as a sparse directory by git, even though
@@ -319,7 +324,7 @@ fn classify_checkout_index_path(
             return PathClass::SparseDirectory;
         }
     }
-    if let Some(e) = index.get(path, 0) {
+    if let Some(e) = index.get(path, stage) {
         return PathClass::File {
             skip_worktree: e.skip_worktree(),
         };
@@ -506,8 +511,6 @@ fn checkout_entry(
                 let wt_mode = worktree_mode_from_metadata(meta);
                 if wt_mode != entry.mode {
                     false
-                } else if stat_matches(entry, meta) {
-                    true
                 } else {
                     worktree_clean_blob_oid_matches(
                         repo, index, work_tree, &path_str, &abs_path, &entry.oid,
@@ -520,12 +523,17 @@ fn checkout_entry(
             if unchanged {
                 return Ok(outcome);
             }
-            // Git `entry.c:write_entry`: a changed file present on disk without --force is
-            // an error (`<path> already exists, no checkout`), not a silent skip.
+            if meta.is_dir() {
+                if !args.quiet {
+                    eprintln!("{rel_path} already exists, no checkout");
+                }
+                return Err(anyhow::anyhow!("{rel_path} already exists, no checkout"));
+            }
+            // Without --force, leave an existing changed path alone.
             if !args.quiet {
                 eprintln!("{rel_path} already exists, no checkout");
             }
-            return Err(anyhow::anyhow!("{rel_path} already exists, no checkout"));
+            return Ok(outcome);
         }
     }
 
@@ -536,6 +544,12 @@ fn checkout_entry(
         // tmp -> tmp1 with --prefix=tmp/orary- so checkout goes under tmp1/orary-path*).
         let keep_symlink = should_keep_symlink_parent_for_prefix(parent, work_tree, prefix);
         if let Ok(meta) = std::fs::symlink_metadata(parent) {
+            if !args.force && (meta.file_type().is_symlink() || meta.is_file()) && !keep_symlink {
+                if !args.quiet {
+                    eprintln!("{rel_path} already exists, no checkout");
+                }
+                return Err(anyhow::anyhow!("{rel_path} already exists, no checkout"));
+            }
             if meta.file_type().is_symlink() {
                 if !keep_symlink {
                     let _ = std::fs::remove_file(parent);

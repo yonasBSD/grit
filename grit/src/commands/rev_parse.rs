@@ -669,6 +669,16 @@ pub fn run(args: Args) -> Result<()> {
                 Err(_) => return fail_verify(quiet, false),
             }
         } else {
+            if spec.contains("@{") {
+                if let Ok(Some(log_ref)) = grit_lib::rev_parse::reflog_walk_refname(current, spec) {
+                    if grit_lib::reflog::read_reflog(&current.git_dir, &log_ref)
+                        .map(|entries| entries.is_empty())
+                        .unwrap_or(true)
+                    {
+                        return fail_verify(quiet, true);
+                    }
+                }
+            }
             match grit_lib::rev_parse::resolve_revision_for_verify(current, spec) {
                 Ok(oid) => oid,
                 Err(e) => return fail_verify_resolve(quiet, &e, Some(current)),
@@ -1132,7 +1142,15 @@ pub fn run(args: Args) -> Result<()> {
                                 .iter()
                                 .any(|p| path_arg == p || path_arg.starts_with(&format!("{}/", p)));
                             if is_common {
-                                println!("{}/{}", common_dir, path_arg_out);
+                                let common_path = std::path::PathBuf::from(&common_dir);
+                                let common_path = if common_path.is_absolute() {
+                                    common_path
+                                } else {
+                                    current.git_dir.join(common_path)
+                                };
+                                let common_display =
+                                    common_path.canonicalize().unwrap_or(common_path);
+                                println!("{}/{}", common_display.display(), path_arg_out);
                                 continue;
                             }
                         }
@@ -1200,11 +1218,25 @@ pub fn run(args: Args) -> Result<()> {
                         if use_common {
                             let common = refs::common_dir(&current.git_dir)
                                 .unwrap_or_else(|| current.git_dir.clone());
-                            common.join(original_component)
+                            if common != current.git_dir {
+                                let p = common.join(path_arg);
+                                println!("{}", p.canonicalize().unwrap_or(p).display());
+                                continue;
+                            }
+                            common.join(path_arg)
                         } else {
                             current.git_dir.join(original_component)
                         }
                     };
+                    if is_worktree_local
+                        && current
+                            .git_dir
+                            .components()
+                            .any(|c| c.as_os_str() == std::ffi::OsStr::new("worktrees"))
+                    {
+                        println!("{}", resolved.canonicalize().unwrap_or(resolved).display());
+                        continue;
+                    }
                     print_rev_parse_path(
                         &resolved,
                         &cwd,

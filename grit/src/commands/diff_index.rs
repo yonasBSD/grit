@@ -680,9 +680,7 @@ fn blobish_object_kind(mode: u32) -> bool {
 }
 
 fn typechange_between_snapshots(old: Snapshot, new_mode: u32) -> bool {
-    blobish_object_kind(old.mode)
-        && blobish_object_kind(new_mode)
-        && (old.mode & 0o170_000) != (new_mode & 0o170_000)
+    (old.mode & 0o170_000) != (new_mode & 0o170_000)
 }
 
 #[derive(Debug, Clone)]
@@ -1259,6 +1257,7 @@ fn diff_tree_vs_worktree(
     // the recorded "new" side is the index blob if the work tree still matches the index; if the
     // work tree has diverged further, the new side is the work tree (placeholder zero OID in raw,
     // content read from disk for `-p`). See t9231-diff-index-patch and `git diff-index -p HEAD`.
+    let mut remove_merged_paths = Vec::new();
     for change in merged.values_mut() {
         if !matches!(change.status, 'A' | 'M') {
             continue;
@@ -1289,6 +1288,9 @@ fn diff_tree_vs_worktree(
             Err(e) => return Err(e.into()),
         };
         let Some(wt_snapshot) = read_worktree_snapshot_from_meta(repo, &abs, &meta)? else {
+            if change.status == 'A' && meta.is_dir() {
+                remove_merged_paths.push(change.path.clone());
+            }
             continue;
         };
         if let Some(tree_side) = change.old {
@@ -1300,6 +1302,9 @@ fn diff_tree_vs_worktree(
             mode: wt_snapshot.mode,
             oid: zero_oid(),
         });
+    }
+    for path in remove_merged_paths {
+        merged.remove(&path);
     }
 
     for (path, index_snapshot) in index_map {
@@ -1319,6 +1324,22 @@ fn diff_tree_vs_worktree(
         }
 
         let abs = work_tree.join(path);
+        if path_has_symlink_parent(work_tree, &abs) {
+            if match_missing {
+                continue;
+            }
+            let old = tree_map.get(path).copied().or(Some(*index_snapshot));
+            merged.insert(
+                path.clone(),
+                RawChange {
+                    path: path.clone(),
+                    status: 'D',
+                    old,
+                    new: None,
+                },
+            );
+            continue;
+        }
 
         // Git `diff-lib.c:do_oneway_diff`: do not examine the work tree for skip-worktree or
         // assume-unchanged entries.
@@ -1403,6 +1424,9 @@ fn diff_tree_vs_worktree(
         match read_worktree_snapshot_from_meta(repo, &abs, &meta)? {
             Some(worktree_snapshot) => {
                 if worktree_snapshot == *index_snapshot {
+                    if worktree_snapshot.mode == MODE_SYMLINK {
+                        continue;
+                    }
                     // Index stat cache is stale (e.g. after `read-tree` zeroed stat fields) while
                     // tree, index OID, and work tree content still agree — Git reports `M` with a
                     // zero OID on the work-tree side (`t3700-add.sh` refresh tests).
@@ -1468,6 +1492,19 @@ fn diff_tree_vs_worktree(
             }
             None => {
                 // Not a regular file or symlink — treat as missing
+                if !match_missing {
+                    if let Some(old) = tree_map.get(path).copied() {
+                        merged.insert(
+                            path.clone(),
+                            RawChange {
+                                path: path.clone(),
+                                status: 'D',
+                                old: Some(old),
+                                new: None,
+                            },
+                        );
+                    }
+                }
             }
         }
     }
@@ -1500,10 +1537,37 @@ fn read_worktree_snapshot_from_meta(
     // still records a blob from a parent commit). Treat as mismatch without reading the path as a
     // file (`EISDIR`); matches Git and unblocks `merge` pre-checks (`t6437`).
     if metadata.is_dir() {
+        if abs_path.join(".git").exists() {
+            return Ok(Some(Snapshot {
+                mode: MODE_GITLINK,
+                oid: zero_oid(),
+            }));
+        }
         return Ok(None);
     }
 
     Ok(None)
+}
+
+fn path_has_symlink_parent(work_tree: &Path, abs_path: &Path) -> bool {
+    let Ok(rel) = abs_path.strip_prefix(work_tree) else {
+        return false;
+    };
+    let mut cur = work_tree.to_path_buf();
+    let mut comps = rel.components().peekable();
+    while let Some(component) = comps.next() {
+        if comps.peek().is_none() {
+            break;
+        }
+        cur.push(component.as_os_str());
+        if fs::symlink_metadata(&cur)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn canonicalize_mode(raw_mode: u32) -> u32 {

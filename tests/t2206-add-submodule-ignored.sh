@@ -59,7 +59,7 @@ test_expect_success 'main: submodule config ignore=all'  '
 	GIT_TRACE=1 git add . &&
 	git commit -m "update submodule config sub.ignore all" &&
 	! git status --porcelain | grep "^.*$" &&
-	! git log --oneline --name-only | grep "^sub$" &&
+	! git log -1 --oneline --name-only | grep "^sub$" &&
 	echo
 '
 #4

@@ -191,6 +191,13 @@ pub fn run(args: Args) -> Result<()> {
 
     run_repack_for_gc(&repo, &cfg, quiet_effective, &args)?;
 
+    if !args.skip_foreground_tasks && !args.auto {
+        // Expire reflogs before pruning so unreachable objects that are retained only by old
+        // reflog entries can be removed during `gc --prune=now`.
+        run_reflog_expire_for_gc(&repo, &cfg)?;
+        run_reflog_expire_unreachable_for_gc(&repo, &cfg)?;
+    }
+
     if !args.no_prune {
         if let Some(expire) = gc_prune_expire_cli(&args, &cfg) {
             if quiet_effective {
@@ -203,6 +210,10 @@ pub fn run(args: Args) -> Result<()> {
             } else {
                 trace_run_command_git_invocation(&["prune", "--expire", expire.as_str()]);
             }
+            let old_ignore_reflogs = std::env::var_os("GRIT_PRUNE_IGNORE_REFLOGS");
+            if expire == "now" {
+                std::env::set_var("GRIT_PRUNE_IGNORE_REFLOGS", "1");
+            }
             prune::run(prune::Args {
                 dry_run: false,
                 verbose: false,
@@ -211,15 +222,11 @@ pub fn run(args: Args) -> Result<()> {
                 progress: false,
             })
             .context("git prune during gc")?;
+            match old_ignore_reflogs {
+                Some(v) => std::env::set_var("GRIT_PRUNE_IGNORE_REFLOGS", v),
+                None => std::env::remove_var("GRIT_PRUNE_IGNORE_REFLOGS"),
+            }
         }
-    }
-
-    if !args.skip_foreground_tasks && !args.auto {
-        // `gc --auto` must not aggressively expire reflogs using wall-clock "now": harness
-        // commits often use fixed `GIT_COMMITTER_DATE` / `test_tick` timestamps far in the past,
-        // and expiring against real time would erase `logs/refs/heads/*` (breaks t3202, etc.).
-        run_reflog_expire_for_gc(&repo, &cfg)?;
-        run_reflog_expire_unreachable_for_gc(&repo, &cfg)?;
     }
     // Git enables the commit-graph progress meter when `!quiet && !daemonized`
     // (git/builtin/gc.c:1056-1058). For a foreground auto gc (`--no-detach` / `gc.autodetach=false`)

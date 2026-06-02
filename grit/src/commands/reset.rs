@@ -1575,7 +1575,7 @@ fn reset_commit(
                     &mut new_index,
                     Some((&target_oid, Some(commit_spec))),
                     recurse_submodules,
-                    allow_gitlink_overwrite,
+                    true,
                 ) {
                     if recurse_submodules {
                         let _ = rollback_reset_after_failed_submodule_update(
@@ -2954,7 +2954,7 @@ fn checkout_index_to_worktree(
                     )?;
                 }
                 continue;
-            } else if abs_path.is_dir() {
+            } else if entry.mode != MODE_GITLINK && abs_path.is_dir() {
                 // Avoid `remove_dir_all` for thousands of fresh empty placeholder dirs (synthetic
                 // submodule fixtures): an empty directory is already the desired state.
                 let mut has_entries = false;

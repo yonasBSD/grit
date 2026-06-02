@@ -301,7 +301,10 @@ pub fn read_worktree_path(admin: &Path) -> Result<PathBuf> {
         return Ok(admin.to_path_buf());
     }
     let raw = fs::read_to_string(&gitdir_path).map_err(Error::Io)?;
-    let p = PathBuf::from(raw.trim());
+    let mut p = PathBuf::from(raw.trim());
+    if p.is_relative() {
+        p = admin.join(p);
+    }
     let parent = p.parent().unwrap_or(&p).to_path_buf();
     Ok(parent.canonicalize().unwrap_or(parent))
 }

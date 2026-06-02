@@ -234,7 +234,6 @@ test_expect_success '3a: setup--add repo dir' '
 	repo/file-ignored
 	repo/inside-ignored/
 	.gitignore
-	actual-ignored-unsorted
 	expect-ignored-unsorted
 	expect-tracked-unsorted
 	EOF

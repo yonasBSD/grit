@@ -253,7 +253,7 @@ and have {ahead} and {behind} different commits each, respectively.\n"
                     }
                 } else {
                     out.push_str(&format!(
-                        "Your branch is behind of '{display_name}' by {behind} commit{}, and can be fast-forwarded.\n",
+                        "Your branch is behind '{display_name}' by {behind} commit{}, and can be fast-forwarded.\n",
                         if *behind == 1 { "" } else { "s" }
                     ));
                     if is_upstream {

@@ -178,7 +178,7 @@ fn run_with_top_opts(top: SubmoduleTopOpts, args: Args) -> Result<()> {
         }
     }
 }
-use grit_lib::config::{canonical_key, ConfigFile, ConfigScope};
+use grit_lib::config::{canonical_key, ConfigFile, ConfigScope, ConfigSet};
 use grit_lib::diff::{diff_index_to_tree, DiffEntry, DiffStatus};
 use grit_lib::error::Error as LibError;
 use grit_lib::gitmodules::check_submodule_name;
@@ -1629,6 +1629,18 @@ fn checkout_submodule_worktree(
     Ok(())
 }
 
+fn submodule_worktree_clean_for_update(modules_dir: &Path, sub_path: &Path) -> bool {
+    let Ok(sub_repo) = Repository::open(modules_dir, Some(sub_path)) else {
+        return false;
+    };
+    let Ok(index) = sub_repo.load_index() else {
+        return false;
+    };
+    grit_lib::diff::diff_index_to_worktree(&sub_repo.odb, &index, sub_path, false, false)
+        .map(|diff| diff.is_empty())
+        .unwrap_or(false)
+}
+
 fn attach_submodule_head_to_default_branch(
     sub_git_dir: &Path,
     checked_out_oid: &str,
@@ -2754,13 +2766,31 @@ fn run_add(args: &AddArgs) -> Result<()> {
                 )
             })?
         } else if args.url.starts_with("./") || args.url.starts_with("../") {
-            cwd.join(&args.url).canonicalize().with_context(|| {
-                format!(
-                    "cannot resolve relative submodule URL '{}' from '{}'",
-                    args.url,
-                    cwd.display()
-                )
-            })?
+            let relative_base = ConfigSet::load(Some(&repo.git_dir), true)
+                .ok()
+                .and_then(|cfg| cfg.get("remote.origin.url"))
+                .and_then(|origin| {
+                    let origin_path = Path::new(&origin);
+                    if origin.contains("://") {
+                        return None;
+                    }
+                    Some(if origin_path.is_absolute() {
+                        origin_path.to_path_buf()
+                    } else {
+                        work_tree.join(origin_path)
+                    })
+                })
+                .unwrap_or_else(|| cwd.clone());
+            relative_base
+                .join(&args.url)
+                .canonicalize()
+                .with_context(|| {
+                    format!(
+                        "cannot resolve relative submodule URL '{}' from '{}'",
+                        args.url,
+                        relative_base.display()
+                    )
+                })?
         } else {
             PathBuf::from(&args.url)
         };

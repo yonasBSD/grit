@@ -3063,7 +3063,7 @@ fn reset_index_to_head(repo: &Repository, git_dir: &Path) -> Result<()> {
 
 /// Matches Git's `git_editor()` (see [`crate::editor::resolve_git_editor`]).
 fn git_editor_cmd(config: &ConfigSet) -> Result<String> {
-    crate::editor::resolve_git_editor(config, true)
+    crate::editor::resolve_git_editor(config, false)
         .ok_or_else(|| anyhow::anyhow!("Terminal is dumb, but EDITOR unset"))
 }
 
@@ -4036,6 +4036,7 @@ Use '--' to separate paths from revisions, like this:\n\
             // Fail before touching the work tree: `checkout_index_to_worktree` may apply partial
             // updates before refusal deep inside (t3426 `test_superproject_content` after failed rebase).
             refuse_populated_submodule_tree_replacement(&old_index, &idx, wt)?;
+            preflight_cherry_pick_cwd_obstruction(&repo, wt, &idx, &BTreeMap::new(), None)?;
         }
 
         // Update the work tree before moving HEAD or writing the new index so a failure (e.g.

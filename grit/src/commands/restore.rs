@@ -104,7 +104,7 @@ pub fn run(args: Args) -> Result<()> {
         };
         pathspecs = parse_pathspecs_from_file(&content, args.pathspec_file_nul)?;
     }
-    if pathspecs.is_empty() {
+    if pathspecs.is_empty() && !args.patch {
         bail!("you must specify path(s) to restore");
     }
 
@@ -114,7 +114,7 @@ pub fn run(args: Args) -> Result<()> {
         }
         let repo = Repository::discover(None).context("not a git repository")?;
         let source = args.source.as_deref();
-        return crate::commands::checkout::checkout_patch(&repo, source, &pathspecs);
+        return crate::commands::checkout::restore_patch_worktree_only(&repo, source, &pathspecs);
     }
 
     let repo = Repository::discover(None).context("not a git repository")?;

@@ -20,7 +20,7 @@ use grit_lib::index::{Index, MODE_GITLINK, MODE_SYMLINK, MODE_TREE};
 use grit_lib::mailmap::load_mailmap_table;
 use grit_lib::objects::{parse_commit, serialize_commit, CommitData, ObjectId, ObjectKind};
 use grit_lib::reflog::read_reflog;
-use grit_lib::refs::{append_reflog, list_refs, write_ref};
+use grit_lib::refs::{append_reflog, list_refs, should_autocreate_reflog, write_ref};
 use grit_lib::repo::Repository;
 use grit_lib::rev_list::{rev_list, RevListOptions};
 use grit_lib::rev_parse::resolve_revision;
@@ -1448,15 +1448,25 @@ pub fn run(mut args: Args) -> Result<()> {
 
     match &head {
         HeadState::Branch { refname, .. } => {
-            append_reflog(
-                &repo.git_dir,
-                refname,
-                &old_oid,
-                &commit_oid,
-                &commit_data.committer,
-                &reflog_msg,
-                false,
-            )?;
+            if repo
+                .git_dir
+                .join("logs")
+                .join(refname)
+                .metadata()
+                .map(|_| true)
+                .unwrap_or(false)
+                || should_autocreate_reflog(&repo.git_dir, refname)
+            {
+                append_reflog(
+                    &repo.git_dir,
+                    refname,
+                    &old_oid,
+                    &commit_oid,
+                    &commit_data.committer,
+                    &reflog_msg,
+                    false,
+                )?;
+            }
             // Append the same entry to `logs/HEAD` instead of replacing it with a copy of
             // `logs/refs/heads/<branch>` — mirroring would drop `checkout: moving from …`
             // lines and break `git switch -` / `@{-1}` (t3452-history-split).
@@ -1519,7 +1529,15 @@ pub fn run(mut args: Args) -> Result<()> {
             .ok()
             .and_then(|e| e.last().map(|l| l.new_oid == commit_oid))
             .unwrap_or(false);
-        if head_ok && !branch_ok {
+        let branch_log_wants_entry = repo
+            .git_dir
+            .join("logs")
+            .join(refname)
+            .metadata()
+            .map(|_| true)
+            .unwrap_or(false)
+            || should_autocreate_reflog(&repo.git_dir, refname);
+        if head_ok && !branch_ok && branch_log_wants_entry {
             append_reflog(
                 &repo.git_dir,
                 refname,
@@ -2607,6 +2625,11 @@ fn auto_stage_tracked(repo: &Repository, work_tree: &Path) -> Result<()> {
     for raw_path in path_keys {
         let path_str = String::from_utf8_lossy(&raw_path).to_string();
         let abs_path = work_tree.join(&path_str);
+        if path_has_symlink_parent_for_commit(work_tree, &abs_path) {
+            index.remove(&raw_path);
+            changed = true;
+            continue;
+        }
 
         let unmerged = index
             .entries
@@ -2727,6 +2750,35 @@ fn auto_stage_tracked(repo: &Repository, work_tree: &Path) -> Result<()> {
             }
             use std::os::unix::fs::MetadataExt;
             let meta = fs::symlink_metadata(&abs_path)?;
+            if meta.is_dir() && !meta.file_type().is_symlink() {
+                if abs_path.join(".git").exists() {
+                    if let Some(oid) = grit_lib::diff::read_submodule_head_oid(&abs_path) {
+                        let entry = grit_lib::index::IndexEntry {
+                            ctime_sec: meta.ctime() as u32,
+                            ctime_nsec: meta.ctime_nsec() as u32,
+                            mtime_sec: meta.mtime() as u32,
+                            mtime_nsec: meta.mtime_nsec() as u32,
+                            dev: meta.dev() as u32,
+                            ino: meta.ino() as u32,
+                            mode: 0o160000,
+                            uid: meta.uid(),
+                            gid: meta.gid(),
+                            size: 0,
+                            oid,
+                            flags: path_str.len().min(0xFFF) as u16,
+                            flags_extended: None,
+                            path: raw_path.clone(),
+                            base_index_pos: 0,
+                        };
+                        index.stage_file(entry);
+                        changed = true;
+                    }
+                } else {
+                    index.remove(&raw_path);
+                    changed = true;
+                }
+                continue;
+            }
             let data = if meta.file_type().is_symlink() {
                 let target = fs::read_link(&abs_path)?;
                 target.to_string_lossy().into_owned().into_bytes()
@@ -2764,6 +2816,27 @@ fn auto_stage_tracked(repo: &Repository, work_tree: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn path_has_symlink_parent_for_commit(work_tree: &Path, abs_path: &Path) -> bool {
+    let Ok(rel) = abs_path.strip_prefix(work_tree) else {
+        return false;
+    };
+    let mut cur = work_tree.to_path_buf();
+    let mut comps = rel.components().peekable();
+    while let Some(component) = comps.next() {
+        if comps.peek().is_none() {
+            break;
+        }
+        cur.push(component.as_os_str());
+        if fs::symlink_metadata(&cur)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Result of building a commit message — may be UTF-8 or raw bytes.

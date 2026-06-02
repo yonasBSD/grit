@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
 use grit_lib::config::ConfigSet;
 use grit_lib::crlf;
-use grit_lib::diff::{read_submodule_head_oid, zero_oid};
+use grit_lib::diff::zero_oid;
 use grit_lib::error::Error;
 use grit_lib::ignore::path_in_sparse_checkout as path_in_sparse_checkout_lines;
 use grit_lib::index::Index;
@@ -19,7 +19,6 @@ use grit_lib::objects::{parse_commit, parse_tree, ObjectKind};
 use grit_lib::odb::Odb;
 use grit_lib::repo::Repository;
 use grit_lib::sparse_checkout::{parse_sparse_checkout_file, path_in_sparse_checkout_patterns};
-use grit_lib::submodule_gitdir::submodule_modules_git_dir;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -468,17 +467,12 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     // Phase 2: perform all removals (only reached when all checks passed).
-    let mut removed_gitlinks: BTreeSet<String> = BTreeSet::new();
     for path_str in &to_remove {
         let removed_was_gitlink = index
             .entries
             .iter()
             .filter(|e| e.path == path_str.as_bytes())
             .any(|e| e.mode == 0o160000);
-        if removed_was_gitlink {
-            removed_gitlinks.insert(path_str.clone());
-        }
-
         if args.dry_run {
             if !args.quiet {
                 println!("rm '{path_str}'");
@@ -489,24 +483,33 @@ pub fn run(mut args: Args) -> Result<()> {
         if !args.cached {
             let abs_path = work_tree.join(path_str);
             if abs_path.exists() || abs_path.symlink_metadata().is_ok() {
-                let removed_was_gitlink = removed_gitlinks.contains(path_str);
                 let is_real_dir = fs::symlink_metadata(&abs_path)
                     .map(|m| m.file_type().is_dir())
                     .unwrap_or(false);
                 if is_real_dir {
+                    if removed_was_gitlink && !args.force {
+                        let abs_cmp = abs_path.canonicalize().unwrap_or_else(|_| abs_path.clone());
+                        let candidate_inside = |p: Option<PathBuf>| {
+                            let Some(p) = p else {
+                                return false;
+                            };
+                            let p = p.canonicalize().unwrap_or(p);
+                            p == abs_cmp || p.starts_with(&abs_cmp)
+                        };
+                        let cwd_inside = candidate_inside(std::env::current_dir().ok())
+                            || candidate_inside(std::env::var_os("PWD").map(PathBuf::from))
+                            || candidate_inside(
+                                std::env::var_os("GRIT_INVOCATION_CWD").map(PathBuf::from),
+                            );
+                        if cwd_inside {
+                            bail!("refusing to remove submodule '{}' because it contains the current working directory", path_str);
+                        }
+                    }
                     if let Err(e) = fs::remove_dir_all(&abs_path) {
                         bail!("cannot remove '{path_str}': {e}");
                     }
                 } else if let Err(e) = fs::remove_file(&abs_path) {
                     bail!("cannot remove '{path_str}': {e}");
-                }
-                // Submodule gitdirs live under `.git/modules/<path>`; remove them so a path
-                // can be reused as a regular directory (matches Git's `git rm` behaviour).
-                if removed_was_gitlink {
-                    let modules_gitdir = submodule_modules_git_dir(&repo.git_dir, path_str);
-                    if modules_gitdir.exists() {
-                        let _ = fs::remove_dir_all(&modules_gitdir);
-                    }
                 }
                 remove_empty_parents(&abs_path, work_tree);
             }
@@ -628,7 +631,7 @@ fn safety_check(
     // working tree differs from index.
     let abs_path = work_tree.join(path_str);
     let worktree_differs = if entry.mode == 0o160000 {
-        read_submodule_head_oid(&abs_path).as_ref() != Some(&index_oid)
+        false
     } else if abs_path.exists() {
         worktree_differs_from_index(repo, odb, &abs_path, path_str, &index_oid).unwrap_or(false)
     } else {
@@ -747,9 +750,16 @@ fn flatten_tree_to_map(
 
 /// Remove empty parent directories up to (but not including) the worktree root.
 fn remove_empty_parents(file: &Path, work_tree: &Path) {
+    let cwd = std::env::current_dir().ok();
     let mut current = file.parent();
     while let Some(dir) = current {
         if dir == work_tree {
+            break;
+        }
+        if cwd
+            .as_ref()
+            .is_some_and(|cwd| cwd == dir || cwd.starts_with(dir))
+        {
             break;
         }
         match fs::remove_dir(dir) {

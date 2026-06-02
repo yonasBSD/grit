@@ -21,7 +21,7 @@ use std::process::Command;
 use tempfile::NamedTempFile;
 
 use grit_lib::config::ConfigSet;
-use grit_lib::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_SYMLINK};
+use grit_lib::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_SYMLINK};
 use grit_lib::merge_file::{ConflictStyle, MergeFavor};
 use grit_lib::merge_trees::{
     index_tree_oid_matches_head, merge_trees_three_way, TheirsConflictLabel,
@@ -749,9 +749,19 @@ fn error_if_revert_would_clobber_worktree(
     }
 
     let index = repo.load_index()?;
+    let gitlink_paths: BTreeSet<String> = index
+        .entries
+        .iter()
+        .filter(|e| e.stage() == 0 && e.mode == MODE_GITLINK)
+        .map(|e| String::from_utf8_lossy(&e.path).into_owned())
+        .collect();
     let unstaged =
         grit_lib::diff::diff_index_to_worktree(&repo.odb, &index, work_tree, false, false)?;
-    let unstaged_paths: BTreeSet<String> = unstaged.iter().map(|e| e.path().to_string()).collect();
+    let unstaged_paths: BTreeSet<String> = unstaged
+        .iter()
+        .map(|e| e.path().to_string())
+        .filter(|p| !gitlink_paths.contains(p))
+        .collect();
     let unstaged_overlap: BTreeSet<String> =
         unstaged_paths.intersection(&touched).cloned().collect();
     if !unstaged_overlap.is_empty() {

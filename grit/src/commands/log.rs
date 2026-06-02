@@ -257,6 +257,10 @@ pub struct Args {
     #[arg(long = "name-only")]
     pub name_only: bool,
 
+    /// Accepted for diff/log compatibility; submodule diffs are represented as gitlink paths.
+    #[arg(long = "ignore-submodules")]
+    pub ignore_submodules: Option<String>,
+
     /// Show status letter + filename per commit.
     #[arg(long = "name-status")]
     pub name_status: bool,

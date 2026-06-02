@@ -7,6 +7,9 @@
 use crate::commands::checkout;
 use anyhow::{bail, Result};
 use clap::Args as ClapArgs;
+use grit_lib::refs;
+use grit_lib::repo::Repository;
+use grit_lib::rev_parse::resolve_revision;
 use std::collections::BTreeSet;
 
 /// Arguments for `grit switch`.
@@ -161,6 +164,12 @@ pub fn run(args: Args) -> Result<()> {
         eprintln!("fatal: {msg}");
         std::process::exit(128);
     }
+    if let Ok(repo) = Repository::discover(None) {
+        if repo.git_dir.join("MERGE_HEAD").exists() {
+            bail!("cannot switch branch while merging");
+        }
+    }
+    reject_commitish_switch_target(&checkout_tail)?;
     checkout::run(checkout::Args {
         switch_mode: true,
         new_branch: args.create,
@@ -179,6 +188,48 @@ pub fn run(args: Args) -> Result<()> {
         rest: args.rest,
         ..Default::default()
     })
+}
+
+fn reject_commitish_switch_target(args: &[String]) -> Result<()> {
+    if args.iter().any(|a| {
+        matches!(
+            a.as_str(),
+            "--detach" | "-d" | "-c" | "-C" | "--create" | "--force-create" | "--orphan"
+        )
+    }) {
+        return Ok(());
+    }
+    let Some(target) = extract_switch_target(args) else {
+        return Ok(());
+    };
+    let Ok(repo) = Repository::discover(None) else {
+        return Ok(());
+    };
+    if refs::resolve_ref(&repo.git_dir, &format!("refs/heads/{target}")).is_ok() {
+        return Ok(());
+    }
+    let config = grit_lib::config::ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let dwim_enabled = !args.iter().any(|a| a == "--no-guess")
+        && config
+            .get("checkout.guess")
+            .map(|v| v != "false")
+            .unwrap_or(true);
+    if dwim_enabled
+        && refs::list_refs(&repo.git_dir, "refs/remotes/")
+            .unwrap_or_default()
+            .into_iter()
+            .any(|(r, _)| r.ends_with(&format!("/{target}")))
+    {
+        return Ok(());
+    }
+    if resolve_revision(&repo, &target).is_ok() {
+        let suggest = config.get_bool("advice.suggestDetachingHead") != Some(Ok(false));
+        if suggest {
+            bail!("a branch is expected, got commit '{target}'\nhint: try again with the --detach option");
+        }
+        bail!("a branch is expected, got commit '{target}'");
+    }
+    Ok(())
 }
 
 /// Parse the raw switch arguments to extract the target branch name and check

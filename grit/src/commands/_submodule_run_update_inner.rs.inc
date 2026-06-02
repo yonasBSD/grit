@@ -444,7 +444,7 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                 bail!("failed to checkout submodule commit: No such file or directory (os error 2)");
             }
 
-            let checkout_force = args.force || needs_clone;
+            let checkout_force = true;
 
             // When the submodule worktree is already at the recorded commit there is normally
             // nothing to do. But `--force` must still re-check out the worktree to discard local
@@ -454,6 +454,7 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                 && !needs_clone
                 && !args.force
                 && read_submodule_head(&sub_path).as_deref() == Some(recorded_oid)
+                && submodule_worktree_clean_for_update(&modules_dir, &sub_path)
             {
                 refresh_gitlink_index_stat(&repo, &m.path)?;
                 if let Ok(sub_repo) = Repository::open(&modules_dir, Some(&sub_path)) {

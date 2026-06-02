@@ -1101,12 +1101,16 @@ fn collect_changes(
             let abs = work_tree.join(path);
             match read_worktree_info(repo, &abs)? {
                 Some((wt_mode, wt_oid)) => {
+                    let idx_mode = canonicalize_mode(*idx_mode);
+                    if idx_mode == wt_mode && *idx_oid == wt_oid {
+                        continue;
+                    }
                     changes.insert(
                         path.clone(),
                         Change {
                             path: path.clone(),
                             status: 'M',
-                            old_mode: canonicalize_mode(*idx_mode),
+                            old_mode: idx_mode,
                             new_mode: wt_mode,
                             old_oid: *idx_oid,
                             new_oid: wt_oid,
@@ -1336,10 +1340,9 @@ fn print_patch_from_diff_entry(
                 entry.new_oid
             };
             header.push_str(&format!(
-                "\nindex {}..{} {}",
+                "\nindex {}..{}",
                 abbrev_oid_for_patch(&entry.old_oid, abbrev),
-                abbrev_oid_for_patch(&new_for_index, abbrev),
-                entry.new_mode
+                abbrev_oid_for_patch(&new_for_index, abbrev)
             ));
         }
         DiffStatus::Renamed => {
@@ -1791,6 +1794,10 @@ fn read_worktree_info_fast(
         return Ok(WorktreeStatus::Unchanged);
     }
 
+    if path_has_symlink_parent(super_worktree, abs_path) {
+        return Ok(WorktreeStatus::Missing);
+    }
+
     let meta = match fs::symlink_metadata(abs_path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1868,6 +1875,9 @@ fn read_worktree_info_fast(
     if meta.file_type().is_symlink() {
         let target = fs::read_link(abs_path)?;
         let oid = Odb::hash_object_data(ObjectKind::Blob, target.as_os_str().as_bytes());
+        if oid == index_entry.oid && canonicalize_mode(index_entry.mode) == MODE_SYMLINK {
+            return Ok(WorktreeStatus::Unchanged);
+        }
         return Ok(WorktreeStatus::Modified(MODE_SYMLINK, oid));
     }
 
@@ -1930,6 +1940,11 @@ fn read_submodule_head(path: &Path) -> Result<ObjectId> {
 /// The OID is computed by hashing the file content so we can detect
 /// modifications.  The mode is canonicalized to one of the four Git modes.
 fn read_worktree_info(repo: &Repository, abs_path: &Path) -> Result<Option<(u32, ObjectId)>> {
+    if let Some(wt) = repo.work_tree.as_deref() {
+        if path_has_symlink_parent(wt, abs_path) {
+            return Ok(None);
+        }
+    }
     let meta = match fs::symlink_metadata(abs_path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -1957,6 +1972,27 @@ fn read_worktree_info(repo: &Repository, abs_path: &Path) -> Result<Option<(u32,
     }
 
     Ok(None)
+}
+
+fn path_has_symlink_parent(work_tree: &Path, abs_path: &Path) -> bool {
+    let Ok(rel) = abs_path.strip_prefix(work_tree) else {
+        return false;
+    };
+    let mut cur = work_tree.to_path_buf();
+    let mut comps = rel.components().peekable();
+    while let Some(component) = comps.next() {
+        if comps.peek().is_none() {
+            break;
+        }
+        cur.push(component.as_os_str());
+        if fs::symlink_metadata(&cur)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Canonicalize a raw file mode to one of the four Git modes.

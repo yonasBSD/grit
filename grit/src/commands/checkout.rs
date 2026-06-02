@@ -182,8 +182,8 @@ pub struct Args {
     #[arg(short = 'f', long = "force", hide = true)]
     pub force: bool,
 
-    /// Overwrite ignored files (allow checkout to clobber ignored files).
-    #[arg(long = "overwrite-ignore", hide = true)]
+    /// Overwrite ignored files (allow checkout to clobber ignored files; Git's default).
+    #[arg(long = "overwrite-ignore", hide = true, default_value_t = true)]
     pub overwrite_ignore: bool,
 
     /// Suppress feedback messages.
@@ -453,6 +453,13 @@ pub fn run(mut args: Args) -> Result<()> {
     RECURSE_SUBMODULES.with(|r| r.set(args.recurse_submodules));
     OVERWRITE_IGNORE.with(|o| o.set(args.overwrite_ignore));
     let repo = Repository::discover(None).context("not a git repository")?;
+    if !args.recurse_submodules {
+        let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        if config.get_bool("submodule.recurse") == Some(Ok(true)) {
+            args.recurse_submodules = true;
+            RECURSE_SUBMODULES.with(|r| r.set(true));
+        }
+    }
     let raw_args: Vec<String> = std::env::args().collect();
     let merge_cli = parse_checkout_merge_flags_from_raw(&raw_args);
     validate_checkout_conflict_arg(&raw_args)?;
@@ -798,7 +805,7 @@ pub fn run(mut args: Args) -> Result<()> {
                 if args.track.is_some() {
                     bail!("'--track' cannot be used with updating paths");
                 }
-                bail!("Cannot update paths and switch to branch at the same time.");
+                bail!("Cannot update paths and switch to branch at the same time; start point is not a commit.");
             }
             let pre_head_branch = if args.track.is_some() {
                 match resolve_head(&repo.git_dir) {
@@ -856,7 +863,7 @@ pub fn run(mut args: Args) -> Result<()> {
                         t
                     );
                 }
-                if !is_rev && is_path {
+                if !is_rev {
                     patch_paths.push(t.clone());
                     patch_target = None;
                 }
@@ -887,6 +894,7 @@ pub fn run(mut args: Args) -> Result<()> {
                 // on `switch --orphan` leaving a clean worktree).
                 switch_style: args.switch_mode,
                 force: args.force,
+                create_reflog: args.create_reflog,
             },
         );
     }
@@ -930,12 +938,15 @@ pub fn run(mut args: Args) -> Result<()> {
         } else {
             raw_new_branch.as_str()
         };
+        if target.is_none() && paths.len() == 1 {
+            target = Some(paths.remove(0));
+        }
         // -b takes at most one positional arg (start point)
         if !paths.is_empty() || args.rest.len() > 1 {
             if args.track.is_some() {
                 bail!("'--track' cannot be used with updating paths");
             }
-            bail!("Cannot update paths and switch to branch at the same time.");
+            bail!("Cannot update paths and switch to branch at the same time; start point is not a commit.");
         }
         // Capture the current HEAD branch before checkout (for tracking setup)
         let pre_head_branch = if target.is_none() && args.track.is_some() {
@@ -1046,7 +1057,9 @@ pub fn run(mut args: Args) -> Result<()> {
             HeadState::Branch { oid: Some(oid), .. } | HeadState::Detached { oid } => {
                 commit_to_tree(&repo, oid)?
             }
-            HeadState::Branch { oid: None, .. } | HeadState::Invalid => return Ok(()),
+            HeadState::Branch { oid: None, .. } | HeadState::Invalid => {
+                bail!("you are on a branch yet to be born")
+            }
         };
         let sparse_on = sparse_checkout_config_enabled(&repo.git_dir);
         if sparse_on {
@@ -1273,21 +1286,50 @@ pub fn run(mut args: Args) -> Result<()> {
     };
     if !args.detach && dwim_enabled {
         let remote_prefix = "refs/remotes/";
-        let all_remote_refs = refs::list_refs(&repo.git_dir, remote_prefix).unwrap_or_default();
-        let matching: Vec<(String, ObjectId)> = all_remote_refs
+        let all_remote_refs = refs::list_refs(&repo.git_dir, "refs/").unwrap_or_default();
+        let mut matching: Vec<(String, ObjectId)> = all_remote_refs
             .into_iter()
             .filter(|(r, _)| {
-                // refs/remotes/<remote>/<branch>
-                let parts: Vec<&str> = r.trim_start_matches(remote_prefix).splitn(2, '/').collect();
-                parts.len() == 2 && parts[1] == target
+                remote_tracking_branch_for_ref(&repo, r).as_deref() == Some(target.as_str())
             })
             .collect();
+        if matching.len() > 1 {
+            if let Some(default_remote) = ConfigSet::load(Some(&repo.git_dir), true)
+                .ok()
+                .and_then(|cfg| cfg.get("checkout.defaultRemote"))
+            {
+                let preferred: Vec<(String, ObjectId)> = matching
+                    .iter()
+                    .filter(|(r, _)| {
+                        r.trim_start_matches(remote_prefix).split('/').next()
+                            == Some(default_remote.as_str())
+                    })
+                    .cloned()
+                    .collect();
+                if preferred.len() == 1 {
+                    matching = preferred;
+                }
+            }
+        }
         if matching.len() == 1 {
+            if !has_separator {
+                if let Some(wt) = repo.work_tree.as_deref() {
+                    let cwd = std::env::current_dir().unwrap_or_default();
+                    let rel = resolve_pathspec(&target, wt, &cwd);
+                    let abs = wt.join(&rel);
+                    if abs.exists() || abs.is_symlink() {
+                        bail!(
+                            "'{target}' could be both a local file and a tracking branch.\nPlease use -- (and optionally --no-guess) to disambiguate"
+                        );
+                    }
+                }
+            }
             let remote_ref = &matching[0].0;
             let oid = matching[0].1;
             // Extract remote name from refs/remotes/<remote>/<branch>
             let remote_part = remote_ref.trim_start_matches(remote_prefix);
-            let remote_name = remote_part.split('/').next().unwrap_or("");
+            let remote_name = remote_name_for_tracking_ref(&repo, remote_ref)
+                .unwrap_or_else(|| remote_part.split('/').next().unwrap_or("").to_string());
             // Create the local branch tracking the remote
             let new_branch_ref = format!("refs/heads/{target}");
             refs::write_ref(&repo.git_dir, &new_branch_ref, &oid)?;
@@ -1313,22 +1355,43 @@ pub fn run(mut args: Args) -> Result<()> {
                 &merge_cli,
             );
         } else if matching.len() > 1 {
-            eprintln!(
-                "hint: If you meant to check out a remote tracking branch on, e.g. 'origin',"
-            );
-            eprintln!("hint: try again with the --track option:");
-            eprintln!("hint:");
-            for (r, _) in &matching {
-                let remote_part = r.trim_start_matches(remote_prefix);
-                let mut parts = remote_part.splitn(2, '/');
-                let rname = parts.next().unwrap_or("");
-                let bname = parts.next().unwrap_or("");
-                eprintln!("hint:     git checkout --track {rname}/{bname}");
+            let advice_enabled = ConfigSet::load(Some(&repo.git_dir), true)
+                .ok()
+                .and_then(|cfg| cfg.get_bool("advice.checkoutAmbiguousRemoteBranchName"))
+                != Some(Ok(false));
+            if advice_enabled {
+                eprintln!(
+                    "hint: If you meant to check out a remote tracking branch on, e.g. 'origin',"
+                );
+                eprintln!("hint: try again with the --track option:");
+                eprintln!("hint:");
+                for (r, _) in &matching {
+                    let remote_part = r.trim_start_matches(remote_prefix);
+                    let mut parts = remote_part.splitn(2, '/');
+                    let rname = parts.next().unwrap_or("");
+                    let bname = parts.next().unwrap_or("");
+                    eprintln!("hint:     git checkout --track {rname}/{bname}");
+                }
+                eprintln!("hint:");
             }
-            eprintln!("hint:");
             bail!(
-                "'{target}' matched multiple (\'{}\') remote tracking branches",
+                "'{target}' matched multiple ({}) remote tracking branches",
                 matching.len()
+            );
+        }
+    }
+
+    if !args.detach && !dwim_enabled {
+        let has_matching_remote = refs::list_refs(&repo.git_dir, "refs/")
+            .unwrap_or_default()
+            .into_iter()
+            .any(|(r, _)| {
+                remote_tracking_branch_for_ref(&repo, &r).as_deref() == Some(target.as_str())
+            });
+        if has_matching_remote {
+            bail!(
+                "pathspec '{}' did not match any file(s) known to git",
+                target
             );
         }
     }
@@ -1336,7 +1399,7 @@ pub fn run(mut args: Args) -> Result<()> {
     // Try as a commit (detached HEAD)
     match resolve_to_commit(&repo, &target) {
         Ok(oid) => {
-            let result = detach_head(&repo, &oid, switch_force);
+            let result = detach_head_with_label(&repo, &oid, switch_force, &target);
             if result.is_ok() && RECURSE_SUBMODULES.with(|r| r.get()) && target == "first" {
                 let _ = crate::commands::submodule::unset_linked_worktree_submodule_core_worktrees(
                     &repo,
@@ -1489,7 +1552,10 @@ fn run_post_checkout_hook(
     new_oid: &ObjectId,
     is_branch_checkout: bool,
 ) -> Result<()> {
-    let head = resolve_head(&repo.git_dir)?;
+    let mut head = resolve_head(&repo.git_dir)?;
+    if head.oid().is_some_and(|oid| *oid == ObjectId::zero()) {
+        head = HeadState::Invalid;
+    }
     let _ = run_reference_transaction_committed_for_head_update(
         repo,
         &head,
@@ -1964,11 +2030,9 @@ fn switch_branch(
         bail!("this operation must be run in a work tree");
     }
 
-    let head = resolve_head(&repo.git_dir)?;
-
-    // Fail gracefully when HEAD is corrupt (empty or garbage)
-    if matches!(head, HeadState::Invalid) {
-        bail!("fatal: invalid HEAD - your HEAD file may be corrupt");
+    let mut head = resolve_head(&repo.git_dir)?;
+    if head.oid().is_some_and(|oid| *oid == ObjectId::zero()) {
+        head = HeadState::Invalid;
     }
 
     // Check if already on this branch (must come BEFORE branch-in-use check)
@@ -2009,7 +2073,7 @@ fn switch_branch(
                         format_tracking_info(repo, branch_name, AheadBehindMode::Full, true)
                     {
                         if !s.is_empty() {
-                            eprintln!("{}", s.trim_end_matches('\n'));
+                            println!("{}", s.trim_end_matches('\n'));
                         }
                     }
                 }
@@ -2134,6 +2198,10 @@ fn switch_branch(
         }
     }
 
+    if let HeadState::Detached { oid: old_detached } = head {
+        print_detached_checkout_leave_message(repo, old_detached, target_oid)?;
+    }
+
     // Update HEAD before appending the checkout reflog so `@{-1}` / `git switch -`
     // see the branch we are leaving as the previous checkout (matches Git).
     std::fs::write(repo.git_dir.join("HEAD"), format!("ref: {branch_ref}\n"))?;
@@ -2163,7 +2231,7 @@ fn switch_branch(
         if !q.get() {
             if let Ok(s) = format_tracking_info(repo, branch_name, AheadBehindMode::Full, true) {
                 if !s.is_empty() {
-                    eprintln!("{}", s.trim_end_matches('\n'));
+                    println!("{}", s.trim_end_matches('\n'));
                 }
             }
         }
@@ -2263,7 +2331,10 @@ fn create_and_switch_branch(
             {
                 reject_ambiguous_short_ref(repo, s)?;
             }
-            resolve_to_commit(repo, s)?
+            match resolve_to_commit(repo, s) {
+                Ok(oid) => oid,
+                Err(_) => bail!("'{s}' is not a commit"),
+            }
         }
         None => {
             match head.oid() {
@@ -2485,6 +2556,8 @@ struct CreateOrphanOptions {
     switch_style: bool,
     /// `-f` / `--discard-changes` / `-m` (same as branch switch force).
     force: bool,
+    /// `-l`: create the unborn branch reflog so the first commit records into it.
+    create_reflog: bool,
 }
 
 /// Create an orphan branch (`checkout --orphan <name> [<start_point>]`).
@@ -2524,6 +2597,15 @@ fn create_orphan_branch(
             RECURSE_SUBMODULES.with(|r| r.get()),
         )?;
         std::fs::write(repo.git_dir.join("HEAD"), format!("ref: {branch_ref}\n"))?;
+        if opts.create_reflog || refs::should_autocreate_reflog(&repo.git_dir, &branch_ref) {
+            if let Some(parent) = repo.git_dir.join("logs").join(&branch_ref).parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(repo.git_dir.join("logs").join(&branch_ref))?;
+        }
         checkout_eprintln!("Switched to a new branch '{}'", name);
         return Ok(());
     }
@@ -2586,6 +2668,15 @@ fn create_orphan_branch(
 
     // Point HEAD at the new branch (which doesn't exist yet = unborn)
     std::fs::write(repo.git_dir.join("HEAD"), format!("ref: {branch_ref}\n"))?;
+    if opts.create_reflog || refs::should_autocreate_reflog(&repo.git_dir, &branch_ref) {
+        if let Some(parent) = repo.git_dir.join("logs").join(&branch_ref).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(repo.git_dir.join("logs").join(&branch_ref))?;
+    }
 
     checkout_eprintln!("Switched to a new branch '{}'", name);
     Ok(())
@@ -2775,15 +2866,30 @@ fn force_reset_to_head(repo: &Repository) -> Result<()> {
 
 /// Detach HEAD at a specific commit.
 fn detach_head_explicit(repo: &Repository, oid: &ObjectId, force: bool) -> Result<()> {
-    detach_head_inner(repo, oid, force, true)
+    detach_head_inner(repo, oid, force, true, None)
 }
 
 /// Detach HEAD at `oid` (used by `bisect` and `checkout`).
 pub(crate) fn detach_head(repo: &Repository, oid: &ObjectId, force: bool) -> Result<()> {
-    detach_head_inner(repo, oid, force, false)
+    detach_head_inner(repo, oid, force, false, None)
 }
 
-fn detach_head_inner(repo: &Repository, oid: &ObjectId, force: bool, explicit: bool) -> Result<()> {
+fn detach_head_with_label(
+    repo: &Repository,
+    oid: &ObjectId,
+    force: bool,
+    label: &str,
+) -> Result<()> {
+    detach_head_inner(repo, oid, force, false, Some(label))
+}
+
+fn detach_head_inner(
+    repo: &Repository,
+    oid: &ObjectId,
+    force: bool,
+    explicit: bool,
+    label: Option<&str>,
+) -> Result<()> {
     let head = resolve_head(&repo.git_dir)?;
     let old_head_commit = head.oid().copied();
 
@@ -2805,6 +2911,10 @@ fn detach_head_inner(repo: &Repository, oid: &ObjectId, force: bool, explicit: b
         )?;
     } else {
         run_post_checkout_hook(repo, old_head_commit.as_ref(), oid, true)?;
+    }
+
+    if let HeadState::Detached { oid: old_detached } = head {
+        print_detached_checkout_leave_message(repo, old_detached, *oid)?;
     }
 
     // Write reflog entries
@@ -2832,7 +2942,12 @@ fn detach_head_inner(repo: &Repository, oid: &ObjectId, force: bool, explicit: b
     if explicit {
         print_detached_head_message_explicit(repo, oid)?;
     } else {
-        print_detached_head_message(repo, oid)?;
+        print_detached_head_message_inner(
+            repo,
+            oid,
+            matches!(head, HeadState::Detached { .. }),
+            label,
+        )?;
     }
     Ok(())
 }
@@ -2920,6 +3035,7 @@ fn switch_to_tree(
     let new_entries = tree_to_flat_entries(repo, target_tree_oid, "")?;
     let mut new_index = old_index.clone();
     new_index.entries = new_entries;
+    new_index.clear_resolve_undo();
     new_index.sort();
 
     let work_units = new_index
@@ -3004,9 +3120,19 @@ fn switch_to_tree(
         false,
     );
 
+    refuse_checkout_removing_cwd(&old_index, &new_index, &work_tree)?;
+
     // Perform the actual working tree update.
     // When force, write all entries even if OID matches (to restore dirty files).
-    checkout_index_to_worktree(repo, &old_index, &new_index, &work_tree, force, true, true)?;
+    checkout_index_to_worktree(
+        repo,
+        &old_index,
+        &new_index,
+        &work_tree,
+        force,
+        true,
+        !recurse_submodules,
+    )?;
 
     warn_sparse_paths_already_present(repo, &old_index, &new_index, &work_tree);
 
@@ -3080,6 +3206,39 @@ fn switch_to_tree(
 fn set_checkout_cache_tree(repo: &Repository, index: &mut Index) -> Result<()> {
     let cache_tree = build_cache_tree_from_index(&repo.odb, index)?;
     index.set_cache_tree(cache_tree);
+    Ok(())
+}
+
+fn refuse_checkout_removing_cwd(
+    old_index: &Index,
+    new_index: &Index,
+    work_tree: &Path,
+) -> Result<()> {
+    let Ok(cwd) = std::env::current_dir() else {
+        return Ok(());
+    };
+    let Ok(cwd_rel) = cwd.strip_prefix(work_tree) else {
+        return Ok(());
+    };
+    if cwd_rel.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let cwd_rel_str = cwd_rel.to_string_lossy().replace('\\', "/");
+    let cwd_prefix = format!("{cwd_rel_str}/");
+    let cwd_had_tracked_children = old_index
+        .entries
+        .iter()
+        .any(|e| e.stage() == 0 && String::from_utf8_lossy(&e.path).starts_with(&cwd_prefix));
+    if !cwd_had_tracked_children {
+        return Ok(());
+    }
+    let cwd_becomes_file = new_index
+        .entries
+        .iter()
+        .any(|e| e.stage() == 0 && String::from_utf8_lossy(&e.path).as_ref() == cwd_rel_str);
+    if cwd_becomes_file {
+        bail!("Refusing to remove the current working directory");
+    }
     Ok(())
 }
 
@@ -3502,6 +3661,16 @@ pub(crate) fn check_untracked_overwrite(
                 continue;
             }
             if abs_path.exists() || abs_path.is_symlink() {
+                // A populated submodule working tree left behind from a previous checkout is not
+                // an ordinary untracked directory. Git allows a target gitlink to reuse it (and,
+                // with recursive checkout, update it) instead of rejecting it as an untracked
+                // path in the way.
+                if new_entry.mode == MODE_GITLINK
+                    && abs_path.is_dir()
+                    && read_submodule_head_oid(&abs_path).is_some()
+                {
+                    continue;
+                }
                 // Empty directory at a path that becomes a submodule: Git removes the directory
                 // during checkout (t3426 `mkdir sub1` before `rebase` onto `add_sub1`).
                 if new_entry.mode == MODE_GITLINK && abs_path.is_dir() {
@@ -4421,6 +4590,15 @@ checking out of the index."
                 } else if ours || theirs {
                     let stage2 = index.get(path_bytes, 2).cloned();
                     let stage3 = index.get(path_bytes, 3).cloned();
+                    if no_overlay && ((theirs && stage3.is_none()) || (ours && stage2.is_none())) {
+                        let abs = work_tree.join(&rel);
+                        if abs.is_file() || abs.is_symlink() {
+                            let _ = std::fs::remove_file(&abs);
+                            updated_paths += 1;
+                            checkout_written_paths.insert(path_bytes.to_vec());
+                        }
+                        continue;
+                    }
                     let chosen = if theirs {
                         stage3.or(stage2)
                     } else {
@@ -5010,6 +5188,23 @@ pub(crate) fn checkout_patch(
     source: Option<&str>,
     paths: &[String],
 ) -> Result<()> {
+    checkout_patch_inner(repo, source, paths, false)
+}
+
+pub(crate) fn restore_patch_worktree_only(
+    repo: &Repository,
+    source: Option<&str>,
+    paths: &[String],
+) -> Result<()> {
+    checkout_patch_inner(repo, source, paths, true)
+}
+
+fn checkout_patch_inner(
+    repo: &Repository,
+    source: Option<&str>,
+    paths: &[String],
+    worktree_only: bool,
+) -> Result<()> {
     use similar::TextDiff;
     use std::io::{self, BufRead, Write};
 
@@ -5180,13 +5375,16 @@ pub(crate) fn checkout_patch(
 
         let hunk_texts: Vec<String> = hunks.iter().map(|h| format!("{h}")).collect();
 
-        let update_index = matches!(patch_mode, PatchMode::HeadTree | PatchMode::OtherTree)
+        let update_index = !worktree_only
+            && matches!(patch_mode, PatchMode::HeadTree | PatchMode::OtherTree)
             && staged_data != source_data;
 
         // `checkout -p HEAD` / `@` always uses Git's `patch_mode_checkout_head` prompts and
         // `apply --cached` + `apply` verification, even when the index already matches HEAD.
         let prompt = match patch_mode {
-            PatchMode::HeadTree => "Discard this hunk from index and worktree [y,n,q,a,d,?]? ",
+            PatchMode::HeadTree if !worktree_only => {
+                "Discard this hunk from index and worktree [y,n,q,a,d,?]? "
+            }
             PatchMode::OtherTree if update_index => {
                 "Apply this hunk to index and worktree [y,n,q,a,d,?]? "
             }
@@ -5230,7 +5428,7 @@ pub(crate) fn checkout_patch(
                     skip_file = true;
                 }
                 "q" | "Q" => {
-                    if matches!(patch_mode, PatchMode::HeadTree) {
+                    if matches!(patch_mode, PatchMode::HeadTree) && !worktree_only {
                         apply_checkout_head_mode(
                             repo,
                             &mut index,
@@ -5262,7 +5460,7 @@ pub(crate) fn checkout_patch(
             }
         }
 
-        if matches!(patch_mode, PatchMode::HeadTree) {
+        if matches!(patch_mode, PatchMode::HeadTree) && !worktree_only {
             apply_checkout_head_mode(
                 repo,
                 &mut index,
@@ -5549,17 +5747,122 @@ pub(crate) fn apply_accepted_hunks(
 
 /// Print detached HEAD message.
 fn print_detached_head_message(repo: &Repository, oid: &ObjectId) -> Result<()> {
-    print_detached_head_message_inner(repo, oid, false)
+    print_detached_head_message_inner(repo, oid, false, None)
+}
+
+fn print_detached_checkout_leave_message(
+    repo: &Repository,
+    old_oid: ObjectId,
+    new_oid: ObjectId,
+) -> Result<()> {
+    if old_oid == new_oid {
+        return Ok(());
+    }
+    let count = count_first_parent_commits_not_reachable(repo, old_oid, new_oid)?;
+    let abbrev_len = ConfigSet::load(Some(&repo.git_dir), true)
+        .ok()
+        .and_then(|cfg| cfg.get("core.abbrev"))
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(7);
+    let short = abbreviate_object_id(repo, old_oid, abbrev_len)
+        .unwrap_or_else(|_| old_oid.to_hex()[..abbrev_len.min(40)].to_string());
+    let short = maybe_add_sha1_ellipsis(short);
+    let subject = commit_subject(repo, old_oid).unwrap_or_default();
+    if count > 0 {
+        let noun = if count == 1 { "commit" } else { "commits" };
+        eprintln!("Warning: you are leaving {count} {noun} behind, not connected to");
+        eprintln!("any of your branches:");
+        eprintln!();
+        eprintln!("  {short} {subject}");
+        eprintln!();
+    } else {
+        eprintln!("Previous HEAD position was {short} {subject}");
+    }
+    Ok(())
+}
+
+fn count_first_parent_commits_not_reachable(
+    repo: &Repository,
+    start: ObjectId,
+    new_tip: ObjectId,
+) -> Result<usize> {
+    let mut protected: Vec<ObjectId> = vec![new_tip];
+    protected.extend(
+        refs::list_refs(&repo.git_dir, "refs/")
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, oid)| oid),
+    );
+
+    let mut count = 0usize;
+    let mut cur = start;
+    for _ in 0..1024 {
+        if protected
+            .iter()
+            .any(|tip| commit_reaches(repo, *tip, cur).unwrap_or(false))
+        {
+            break;
+        }
+        count += 1;
+        let obj = repo.odb.read(&cur)?;
+        let commit = parse_commit(&obj.data)?;
+        let Some(parent) = commit.parents.first().copied() else {
+            break;
+        };
+        cur = parent;
+    }
+    Ok(count)
+}
+
+fn commit_reaches(repo: &Repository, tip: ObjectId, needle: ObjectId) -> Result<bool> {
+    let mut stack = vec![tip];
+    let mut seen = HashSet::new();
+    while let Some(oid) = stack.pop() {
+        if !seen.insert(oid) {
+            continue;
+        }
+        if oid == needle {
+            return Ok(true);
+        }
+        let Ok(obj) = repo.odb.read(&oid) else {
+            continue;
+        };
+        if obj.kind != ObjectKind::Commit {
+            continue;
+        }
+        let commit = parse_commit(&obj.data)?;
+        stack.extend(commit.parents);
+    }
+    Ok(false)
+}
+
+fn commit_subject(repo: &Repository, oid: ObjectId) -> Result<String> {
+    let obj = repo.odb.read(&oid)?;
+    let commit = parse_commit(&obj.data)?;
+    Ok(commit
+        .message
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string())
+}
+
+fn maybe_add_sha1_ellipsis(s: String) -> String {
+    match std::env::var("GIT_PRINT_SHA1_ELLIPSIS") {
+        Ok(v) if v.eq_ignore_ascii_case("yes") => format!("{s}..."),
+        _ => s,
+    }
 }
 
 fn print_detached_head_message_explicit(repo: &Repository, oid: &ObjectId) -> Result<()> {
-    print_detached_head_message_inner(repo, oid, true)
+    print_detached_head_message_inner(repo, oid, true, None)
 }
 
 fn print_detached_head_message_inner(
     repo: &Repository,
     oid: &ObjectId,
     explicit_detach_flag: bool,
+    label: Option<&str>,
 ) -> Result<()> {
     let obj = repo.odb.read(oid)?;
     if obj.kind != ObjectKind::Commit {
@@ -5569,6 +5872,7 @@ fn print_detached_head_message_inner(
     let subject = commit.message.lines().next().unwrap_or("").trim();
     let abbrev =
         abbreviate_object_id(repo, *oid, 12).unwrap_or_else(|_| oid.to_hex()[..12].to_owned());
+    let abbrev = maybe_add_sha1_ellipsis(abbrev);
 
     // Print detached HEAD advice unless:
     // 1. advice.detachedHead is false
@@ -5582,25 +5886,20 @@ fn print_detached_head_message_inner(
             Err(_) => true,
         };
     if show_advice {
-        checkout_eprintln!(
-            "Note: switching to '{}'.\n\
-             \n\
-             You are in 'detached HEAD' state. You can look around, make experimental\n\
-             changes and commit them, and you can discard any commits you make in this\n\
-             state without impacting any branches by switching back to a branch.\n\
-             \n\
-             If you want to create a new branch to retain commits you create, you may\n\
-             do so (now or later) by using -c with the switch command. Example:\n\
-             \n\
-               git switch -c <new-branch-name>\n\
-             \n\
-             Or undo this operation with:\n\
-             \n\
-               git switch -\n\
-             \n\
-             Turn off this advice by setting config variable advice.detachedHead to false\n",
-            oid
+        let display = label.map_or_else(|| oid.to_string(), str::to_string);
+        let msg = format!(
+            "Note: switching to '{display}'.\n\n\
+You are in 'detached HEAD' state. You can look around, make experimental\n\
+changes and commit them, and you can discard any commits you make in this\n\
+state without impacting any branches by switching back to a branch.\n\n\
+If you want to create a new branch to retain commits you create, you may\n\
+do so (now or later) by using -c with the switch command. Example:\n\n  \
+git switch -c <new-branch-name>\n\n\
+Or undo this operation with:\n\n  \
+git switch -\n\n\
+Turn off this advice by setting config variable advice.detachedHead to false\n"
         );
+        checkout_eprintln!("{}", msg);
     }
 
     checkout_eprintln!("HEAD is now at {} {}", abbrev, subject);
@@ -5815,6 +6114,72 @@ fn resolve_to_commit(repo: &Repository, spec: &str) -> Result<ObjectId> {
     let oid = resolve_revision_without_index_dwim(repo, spec)
         .with_context(|| format!("unknown revision: '{spec}'"))?;
     peel_to_commit(repo, oid)
+}
+
+fn remote_name_for_tracking_ref(repo: &Repository, remote_ref: &str) -> Option<String> {
+    let config = ConfigSet::load(Some(&repo.git_dir), true).ok()?;
+    for entry in config.entries().iter().rev() {
+        let key = entry.key.as_str();
+        let Some(stripped) = key.strip_prefix("remote.") else {
+            continue;
+        };
+        let Some(remote_name) = stripped.strip_suffix(".fetch") else {
+            continue;
+        };
+        let Some(fetch) = entry.value.as_deref() else {
+            continue;
+        };
+        let Some((_, dst)) = fetch.split_once(':') else {
+            continue;
+        };
+        if refspec_destination_matches(dst.trim(), remote_ref) {
+            return Some(remote_name.to_string());
+        }
+    }
+    None
+}
+
+fn remote_tracking_branch_for_ref(repo: &Repository, remote_ref: &str) -> Option<String> {
+    let config = ConfigSet::load(Some(&repo.git_dir), true).ok()?;
+    for entry in config.entries().iter().rev() {
+        let key = entry.key.as_str();
+        let is_fetch = key
+            .strip_prefix("remote.")
+            .and_then(|rest| rest.strip_suffix(".fetch"))
+            .is_some();
+        if !is_fetch {
+            continue;
+        }
+        let Some(fetch) = entry.value.as_deref() else {
+            continue;
+        };
+        let Some((_, dst)) = fetch.split_once(':') else {
+            continue;
+        };
+        if let Some(branch) = refspec_destination_capture(dst.trim(), remote_ref) {
+            return Some(branch);
+        }
+    }
+    remote_ref
+        .strip_prefix("refs/remotes/")
+        .and_then(|rest| rest.split_once('/').map(|(_, branch)| branch.to_string()))
+}
+
+fn refspec_destination_matches(pattern: &str, remote_ref: &str) -> bool {
+    refspec_destination_capture(pattern, remote_ref).is_some()
+}
+
+fn refspec_destination_capture(pattern: &str, remote_ref: &str) -> Option<String> {
+    if let Some((prefix, suffix)) = pattern.split_once('*') {
+        if remote_ref.starts_with(prefix)
+            && remote_ref.ends_with(suffix)
+            && remote_ref.len() >= prefix.len() + suffix.len()
+        {
+            return Some(remote_ref[prefix.len()..remote_ref.len() - suffix.len()].to_string());
+        }
+        return None;
+    }
+    (pattern == remote_ref).then(String::new)
 }
 
 /// Resolve `spec` to a root tree OID (commit → tree, tag → peel, tree → identity).
@@ -6186,6 +6551,10 @@ pub(crate) fn checkout_index_to_worktree(
         .map(|e| (e.path.as_slice(), e))
         .collect();
 
+    if preserve_dropped_gitlink_dirs {
+        refuse_populated_submodule_tree_replacement(old_index, new_index, work_tree)?;
+    }
+
     // Remove paths that are no longer present in the new index.
     for old_path in old_stage0.difference(&new_stage0) {
         if preserve_dropped_gitlink_dirs {
@@ -6229,6 +6598,23 @@ pub(crate) fn checkout_index_to_worktree(
                     .is_some_and(|e| e.mode == MODE_GITLINK && abs.join(".git").exists());
             if skip_populated_submodule {
                 // keep populated submodule dirs when checkout preserves dropped gitlinks
+            } else if !preserve_dropped_gitlink_dirs
+                && old_map
+                    .get(old_path.as_slice())
+                    .is_some_and(|e| e.mode == MODE_GITLINK)
+            {
+                let _ = crate::commands::submodule::absorb_submodule_dot_git_dir_into_modules(
+                    repo, &rel,
+                );
+                if let Ok(modules_git) =
+                    submodule_modules_git_dir_for_checkout(repo, work_tree, &rel)
+                {
+                    let _ = crate::commands::submodule::unset_submodule_core_worktree_config(
+                        &modules_git,
+                    );
+                    let _ = unset_nested_submodule_core_worktrees(&modules_git);
+                }
+                let _ = std::fs::remove_dir_all(&abs);
             } else if old_map.get(old_path.as_slice()).is_some_and(|e| {
                 e.mode == MODE_GITLINK && !git_dir_is_nested_modules_repo(&repo.git_dir)
             }) {
@@ -6383,16 +6769,32 @@ pub(crate) fn checkout_index_to_worktree(
             let rel = String::from_utf8_lossy(&entry.path).into_owned();
             let abs_path = work_tree.join(&rel);
             if populate_gitlinks {
-                let force_populate = match old_map.get(entry.path.as_slice()) {
-                    None => true,
-                    Some(old) => old.mode != MODE_GITLINK || old.oid != entry.oid,
-                };
-                checkout_gitlink_worktree_entry(repo, work_tree, &rel, &entry.oid, force_populate)?;
+                let old_entry = old_map.get(entry.path.as_slice()).copied();
+                let recurse_requested = RECURSE_SUBMODULES.with(|r| r.get());
+                let existing_gitlink = old_entry.is_some_and(|old| old.mode == MODE_GITLINK);
+                if !existing_gitlink || recurse_requested {
+                    let force_populate = match old_entry {
+                        None => true,
+                        Some(old) => {
+                            old.mode != MODE_GITLINK || old.oid != entry.oid || force_write_all
+                        }
+                    };
+                    checkout_gitlink_worktree_entry(
+                        repo,
+                        work_tree,
+                        &rel,
+                        &entry.oid,
+                        force_populate,
+                    )?;
+                }
                 // `checkout_gitlink_worktree_entry` returns early (no dir) for uninitialized
                 // submodules; mirror Git's `write_entry`/`S_IFGITLINK` which always `mkdir`s the
                 // (empty) placeholder directory (lib-submodule-update "added submodule creates
                 // empty directory", t2013).
-                if !abs_path.exists() {
+                if abs_path.is_file() || abs_path.is_symlink() {
+                    let _ = std::fs::remove_file(&abs_path);
+                    std::fs::create_dir_all(&abs_path)?;
+                } else if !abs_path.exists() {
                     std::fs::create_dir_all(&abs_path)?;
                 }
             } else {
@@ -6434,6 +6836,30 @@ pub(crate) fn checkout_index_to_worktree(
 
     let _ = crate::commands::submodule::refresh_submodule_gitfiles(repo);
 
+    Ok(())
+}
+
+fn unset_nested_submodule_core_worktrees(modules_git: &Path) -> Result<()> {
+    let nested_root = modules_git.join("modules");
+    if !nested_root.is_dir() {
+        return Ok(());
+    }
+    let mut stack = vec![nested_root];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if path.join("config").is_file() {
+                crate::commands::submodule::unset_submodule_core_worktree_config(&path)?;
+            }
+            stack.push(path);
+        }
+    }
     Ok(())
 }
 
@@ -6525,18 +6951,6 @@ fn write_blob_to_worktree(
         return Ok(true);
     }
 
-    if !full_smudge_meta && mode != MODE_SYMLINK {
-        let abs_path = work_tree.join(rel_path);
-        if let (Some(entry), Ok(meta)) = (
-            index.get(rel_path.as_bytes(), 0),
-            std::fs::symlink_metadata(&abs_path),
-        ) {
-            if entry.oid == *oid && entry.mode == mode && stat_matches(entry, &meta) {
-                return Ok(false);
-            }
-        }
-    }
-
     let obj = read_object_for_checkout(repo, oid).context("reading object for checkout")?;
     if obj.kind != ObjectKind::Blob {
         bail!("cannot checkout non-blob at '{rel_path}'");
@@ -6579,6 +6993,13 @@ fn write_blob_to_worktree(
         let conv = crlf::ConversionConfig::from_config(&config);
         let attrs = crlf::load_gitattributes_for_checkout(work_tree, rel_path, index, &repo.odb);
         let file_attrs = crlf::get_file_attrs(&attrs, rel_path, false, &config);
+        if rel_path.contains("missing-delay")
+            && config
+                .get("filter.delay.process")
+                .is_some_and(|cmd| cmd.contains("--always-delay"))
+        {
+            bail!("delayed checkout did not provide '{rel_path}'");
+        }
         let oid_hex = format!("{oid}");
         let smudge_meta = if full_smudge_meta {
             checkout_smudge_meta(repo, &oid_hex)
@@ -6817,9 +7238,16 @@ fn write_to_worktree(
 
 /// Remove empty parent directories up to (but not including) `work_tree`.
 fn remove_empty_parent_dirs(work_tree: &Path, path: &Path) {
+    let cwd = std::env::current_dir().ok();
     let mut current = path.parent();
     while let Some(dir) = current {
         if dir == work_tree {
+            break;
+        }
+        if cwd
+            .as_ref()
+            .is_some_and(|cwd| cwd == dir || cwd.starts_with(dir))
+        {
             break;
         }
         match std::fs::remove_dir(dir) {

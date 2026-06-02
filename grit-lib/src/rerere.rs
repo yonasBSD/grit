@@ -432,6 +432,37 @@ fn synthesize_conflict_from_index(
             }
         }
     }
+    if stages.iter().all(Option::is_none) {
+        if let Some(record) = index
+            .resolve_undo
+            .as_ref()
+            .and_then(|records| records.get(path_b))
+        {
+            for stage in 1..=3 {
+                let idx = stage - 1;
+                if record.modes[idx] == 0 {
+                    continue;
+                }
+                stages[idx] = Some(IndexEntry {
+                    ctime_sec: 0,
+                    ctime_nsec: 0,
+                    mtime_sec: 0,
+                    mtime_nsec: 0,
+                    dev: 0,
+                    ino: 0,
+                    mode: record.modes[idx],
+                    uid: 0,
+                    gid: 0,
+                    size: 0,
+                    oid: record.oids[idx],
+                    flags: ((stage as u16) << 12) | (path_b.len().min(0x0fff) as u16),
+                    flags_extended: None,
+                    path: path_b.to_vec(),
+                    base_index_pos: 0,
+                });
+            }
+        }
+    }
     let marker_size = conflict_marker_size(path);
     let out = match (&stages[0], &stages[1], &stages[2]) {
         (Some(e1), Some(e2), Some(e3)) => {
@@ -1142,6 +1173,21 @@ pub fn rerere_forget_path(repo: &Repository, path: &str) -> Result<()> {
         .work_tree
         .as_ref()
         .ok_or_else(|| crate::error::Error::PathError("no work tree".to_string()))?;
+    let path = if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(prefix) = cwd.strip_prefix(wt) {
+            let prefix = prefix.to_string_lossy().replace('\\', "/");
+            if prefix.is_empty() {
+                path.to_string()
+            } else {
+                format!("{prefix}/{path}")
+            }
+        } else {
+            path.to_string()
+        }
+    } else {
+        path.to_string()
+    };
+    let path = path.as_str();
     let fp = wt.join(path);
     if !fp.exists() {
         return Err(crate::error::Error::PathError(format!(
@@ -1150,6 +1196,19 @@ pub fn rerere_forget_path(repo: &Repository, path: &str) -> Result<()> {
     }
     let index_path = repo.git_dir.join("index");
     let index = repo.load_index_at(&index_path)?;
+    let has_base_stage = index
+        .entries
+        .iter()
+        .any(|e| e.path == path.as_bytes() && e.stage() == 1)
+        || index
+            .resolve_undo
+            .as_ref()
+            .and_then(|records| records.get(path.as_bytes()))
+            .is_some_and(|record| record.modes[0] != 0);
+    if !has_base_stage {
+        eprintln!("no remembered resolution for '{path}'");
+        return Ok(());
+    }
     let synth = match synthesize_conflict_from_index(repo, &index, path)? {
         Some(s) => s,
         None => {
@@ -1188,9 +1247,11 @@ pub fn rerere_forget_path(repo: &Repository, path: &str) -> Result<()> {
         }
     }
     let Some(id) = forgot_id else {
-        return Err(crate::error::Error::PathError(format!(
-            "no remembered resolution for '{path}'"
-        )));
+        if work.as_bytes().contains(&0) {
+            return Ok(());
+        }
+        eprintln!("no remembered resolution for '{path}'");
+        return Ok(());
     };
     let mut merge_rr = read_merge_rr(&repo.git_dir)?;
     merge_rr.insert(path.to_string(), MergeRrEntry { id: Some(id) });
