@@ -5,6 +5,13 @@
 
 # Test Results
 
+Updated: 2026-06-02
+- t7 submodule focus: `./scripts/run-tests.sh t7406-submodule-update.sh --verbose` improved
+  `t7406` from 10/70 to 70/70. The run refreshed `data/test-files.csv` and generated dashboards.
+- t7 submodule focus: `./scripts/run-tests.sh t7400-submodule-basic.sh --verbose` improved
+  `t7400` from 96/124 to 120/124. Remaining failures: 91, 96, 122, 123.
+- Verification: `cargo build --release -p grit-cli` passed with the existing warning backlog.
+
 Updated: 2026-06-01
 - Final t2 verification: `./scripts/run-tests.sh t2 --verbose` ran all 70 in-scope t2 files with
   zero failing tests. All t2 rows are now in scope and `failing=0`.

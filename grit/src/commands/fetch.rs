@@ -3939,7 +3939,19 @@ pub(crate) fn copy_reachable_objects(
     dst_git_dir: &Path,
     roots: &[ObjectId],
 ) -> Result<()> {
-    copy_reachable_objects_internal(src_git_dir, dst_git_dir, roots, false)
+    copy_reachable_objects_internal(src_git_dir, dst_git_dir, roots, false, false)
+}
+
+/// Copy objects reachable from `roots`, skipping gitlink tree entries.
+///
+/// Used by submodule local fetches where a superproject tree may contain gitlink commit IDs that
+/// live in a nested submodule repository, not in the superproject object database.
+pub(crate) fn copy_reachable_objects_skipping_gitlinks(
+    src_git_dir: &Path,
+    dst_git_dir: &Path,
+    roots: &[ObjectId],
+) -> Result<()> {
+    copy_reachable_objects_internal(src_git_dir, dst_git_dir, roots, false, true)
 }
 
 fn copy_reachable_objects_filtered(
@@ -4027,6 +4039,7 @@ fn copy_reachable_objects_internal(
     dst_git_dir: &Path,
     roots: &[ObjectId],
     respect_remote_shallow_boundaries: bool,
+    skip_gitlinks: bool,
 ) -> Result<()> {
     let src_odb = Odb::new(&src_git_dir.join("objects"));
     let dst_odb = Odb::new(&dst_git_dir.join("objects"));
@@ -4060,6 +4073,9 @@ fn copy_reachable_objects_internal(
             }
             ObjectKind::Tree => {
                 for e in parse_tree(&obj.data)? {
+                    if skip_gitlinks && e.mode == 0o160000 {
+                        continue;
+                    }
                     stack.push(e.oid);
                 }
             }
@@ -4079,7 +4095,7 @@ fn copy_reachable_objects_respecting_source_shallow(
     dst_git_dir: &Path,
     roots: &[ObjectId],
 ) -> Result<()> {
-    copy_reachable_objects_internal(src_git_dir, dst_git_dir, roots, true)
+    copy_reachable_objects_internal(src_git_dir, dst_git_dir, roots, true, false)
 }
 
 fn copy_objects(src_git_dir: &Path, dst_git_dir: &Path, refetch: bool) -> Result<()> {

@@ -1774,13 +1774,14 @@ fn index_file_mtime_pair(index_path: &Path) -> Option<(u32, u32)> {
 }
 
 fn index_entry_is_racy(index_entry: &IndexEntry, index_mtime: Option<(u32, u32)>) -> bool {
-    let Some((index_mtime_sec, _index_mtime_nsec)) = index_mtime else {
+    let Some((index_mtime_sec, index_mtime_nsec)) = index_mtime else {
         return false;
     };
     if index_mtime_sec == 0 {
         return false;
     }
-    index_mtime_sec <= index_entry.mtime_sec
+    index_mtime_sec < index_entry.mtime_sec
+        || (index_mtime_sec == index_entry.mtime_sec && index_mtime_nsec <= index_entry.mtime_nsec)
 }
 
 fn read_worktree_info_fast(

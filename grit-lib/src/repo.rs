@@ -1260,7 +1260,15 @@ pub fn early_config_ignore_repo_reason(common_dir: &Path) -> Option<String> {
 }
 
 fn path_for_ceiling_compare(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        path.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        path.into_owned()
+    }
 }
 
 fn offset_1st_component(path: &str) -> usize {

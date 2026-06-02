@@ -1252,12 +1252,14 @@ pub fn run(mut args: Args) -> Result<()> {
             // `None` but init used `initial_fallback`. If the preferred name has no
             // remote-tracking ref but exactly one exists under `refs/remotes/<remote>/`, use
             // that (sole-branch clone when names disagree).
+            let source_head_detached =
+                source_head_symref.is_none() && source_head_oid.is_some() && head_branch.is_none();
             let preferred_branch = head_branch.as_deref().unwrap_or(initial_fallback.as_str());
             let source_unborn_preferred = source_head_symref.as_deref().is_some_and(|sr| {
                 let expected = format!("refs/heads/{preferred_branch}");
                 sr == expected && !clone_ref_file_exists(&source.git_dir, sr)
             });
-            let resolved_branch = if source_unborn_preferred {
+            let resolved_branch = if source_unborn_preferred || source_head_detached {
                 None
             } else {
                 resolve_remote_tracked_branch_name(&dest.git_dir, &remote_name, preferred_branch)
@@ -1285,6 +1287,8 @@ pub fn run(mut args: Args) -> Result<()> {
                             .context("setting up branch tracking")?;
                     }
                 }
+            } else if let Some(ref oid) = source_head_oid {
+                fs::write(dest.git_dir.join("HEAD"), format!("{oid}\n"))?;
             }
         }
     }
@@ -3625,6 +3629,7 @@ struct SubmoduleCloneJob {
 
 fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> Result<()> {
     let quiet = clone_args.quiet;
+    crate::commands::submodule::trace_submodule_job_tasks_if_needed(Some(repo), clone_args.jobs);
     let gitmodules_path = work_tree.join(".gitmodules");
     if !gitmodules_path.exists() {
         return Ok(());

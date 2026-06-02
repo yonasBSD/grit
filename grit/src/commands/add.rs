@@ -2257,7 +2257,8 @@ fn add_path(
     // Only reject when a *proper* parent directory is a gitlink;
     // adding the submodule entry itself (e.g. `git add embed`) is fine.
     {
-        let components: Vec<&str> = path.split('/').collect();
+        let path_for_parent_check = path.trim_end_matches('/');
+        let components: Vec<&str> = path_for_parent_check.split('/').collect();
         let mut prefix = String::new();
         for &component in &components[..components.len().saturating_sub(1)] {
             if !prefix.is_empty() {

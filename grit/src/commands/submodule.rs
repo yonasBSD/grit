@@ -182,7 +182,7 @@ use grit_lib::config::{canonical_key, ConfigFile, ConfigScope, ConfigSet};
 use grit_lib::diff::{diff_index_to_tree, DiffEntry, DiffStatus};
 use grit_lib::error::Error as LibError;
 use grit_lib::gitmodules::check_submodule_name;
-use grit_lib::index::{Index, MODE_GITLINK};
+use grit_lib::index::{Index, IndexEntry, MODE_GITLINK};
 use grit_lib::merge_diff::blob_oid_at_path;
 use grit_lib::objects::{parse_commit, parse_tree, ObjectId, ObjectKind};
 use grit_lib::refs;
@@ -276,9 +276,15 @@ fn grit_subprocess(grit_bin: &Path) -> Command {
 
 static SUBMODULE_JOBS_TRACE_EMITTED: AtomicBool = AtomicBool::new(false);
 
-/// Best-effort `GIT_TRACE` line for `submodule update --jobs` (t7406 greps for `N tasks`).
-fn trace_submodule_job_tasks_if_needed(jobs: Option<usize>) {
-    let Some(n) = jobs else {
+/// Best-effort `GIT_TRACE` line for submodule worker counts (t7406 greps for `N tasks`).
+pub(crate) fn trace_submodule_job_tasks_if_needed(repo: Option<&Repository>, jobs: Option<usize>) {
+    let configured = repo.and_then(|r| {
+        ConfigSet::load(Some(&r.git_dir), true)
+            .ok()
+            .and_then(|cfg| cfg.get("submodule.fetchJobs"))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+    });
+    let Some(n) = jobs.or(configured) else {
         return;
     };
     let Ok(trace_target) = std::env::var("GIT_TRACE") else {
@@ -1694,6 +1700,96 @@ fn attach_submodule_head_to_default_branch(
     Ok(())
 }
 
+fn local_origin_head_branch(local_cfg: &ConfigFile, sub_path: &Path) -> Option<String> {
+    let url = config_last_value(local_cfg, "remote.origin.url")?;
+    let url = url.trim();
+    if url.is_empty()
+        || url.starts_with("ext::")
+        || url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("git://")
+        || crate::ssh_transport::is_configured_ssh_url(url)
+    {
+        return None;
+    }
+
+    let mut remote_path = if let Some(stripped) = url.strip_prefix("file://") {
+        PathBuf::from(stripped)
+    } else {
+        PathBuf::from(url)
+    };
+    if remote_path.is_relative() {
+        remote_path = sub_path.join(remote_path);
+    }
+    let remote_repo = Repository::open(&remote_path, None)
+        .or_else(|_| Repository::discover(Some(&remote_path)))
+        .ok()?;
+    match resolve_head(&remote_repo.git_dir).ok()? {
+        HeadState::Branch { short_name, .. } => Some(short_name),
+        _ => None,
+    }
+}
+
+fn local_repo_from_url(url: &str, base: &Path) -> Option<Repository> {
+    let url = url.trim();
+    if url.is_empty()
+        || url.starts_with("ext::")
+        || url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("git://")
+        || crate::ssh_transport::is_configured_ssh_url(url)
+    {
+        return None;
+    }
+    let mut path = if let Some(stripped) = url.strip_prefix("file://") {
+        PathBuf::from(stripped)
+    } else {
+        PathBuf::from(url)
+    };
+    if path.is_relative() {
+        path = base.join(path);
+    }
+    Repository::open(&path, None)
+        .or_else(|_| Repository::discover(Some(&path)))
+        .ok()
+}
+
+fn uploadpack_allows_reachable_sha1_in_want(git_dir: &Path) -> bool {
+    ConfigSet::load(Some(git_dir), true)
+        .ok()
+        .and_then(|cfg| cfg.get_bool("uploadpack.allowReachableSHA1InWant"))
+        .and_then(Result::ok)
+        .unwrap_or(false)
+}
+
+fn sync_remote_update_branch_for_decoration(
+    sub_git_dir: &Path,
+    branch: &str,
+    checked_out_oid: &str,
+    local_cfg: &ConfigFile,
+    sub_path: &Path,
+) -> Result<()> {
+    let oid = ObjectId::from_hex(checked_out_oid.trim())
+        .with_context(|| format!("invalid submodule checkout oid '{checked_out_oid}'"))?;
+    let branch_ref = format!("refs/heads/{branch}");
+    refs::write_ref(sub_git_dir, &branch_ref, &oid)?;
+
+    if local_origin_head_branch(local_cfg, sub_path).as_deref() == Some(branch) {
+        refs::write_symbolic_ref(sub_git_dir, "HEAD", &branch_ref)?;
+    }
+
+    let config_path = sub_git_dir.join("config");
+    let mut config = if config_path.exists() {
+        let content = fs::read_to_string(&config_path)?;
+        ConfigFile::parse(&config_path, &content, ConfigScope::Local)?
+    } else {
+        ConfigFile::parse(&config_path, "", ConfigScope::Local)?
+    };
+    config.set("grit.submoduleUpdateRemoteDecorations", "true")?;
+    config.write()?;
+    Ok(())
+}
+
 // ── Subcommand implementations ───────────────────────────────────────
 
 /// Matches Git's `compute_rev_name` in `submodule--helper.c`: try `describe` with several
@@ -2040,6 +2136,10 @@ fn submodule_fetch_origin_local_path(
             );
         }
     }
+    for (refname, oid) in refs::list_refs(remote_git, "refs/tags/")? {
+        refs::write_ref(&sub_git_dir, &refname, &oid)?;
+        roots.push(oid);
+    }
     roots.sort_by_key(|o| o.to_hex());
     roots.dedup();
 
@@ -2056,7 +2156,11 @@ fn submodule_fetch_origin_local_path(
         }
     }
 
-    crate::commands::fetch::copy_reachable_objects(remote_git, &sub_git_dir, &roots)?;
+    crate::commands::fetch::copy_reachable_objects_skipping_gitlinks(
+        remote_git,
+        &sub_git_dir,
+        &roots,
+    )?;
 
     Ok(true)
 }
@@ -2766,7 +2870,7 @@ fn run_add(args: &AddArgs) -> Result<()> {
                 )
             })?
         } else if args.url.starts_with("./") || args.url.starts_with("../") {
-            let relative_base = ConfigSet::load(Some(&repo.git_dir), true)
+            let origin_base = ConfigSet::load(Some(&repo.git_dir), true)
                 .ok()
                 .and_then(|cfg| cfg.get("remote.origin.url"))
                 .and_then(|origin| {
@@ -2779,18 +2883,24 @@ fn run_add(args: &AddArgs) -> Result<()> {
                     } else {
                         work_tree.join(origin_path)
                     })
-                })
-                .unwrap_or_else(|| cwd.clone());
-            relative_base
-                .join(&args.url)
-                .canonicalize()
-                .with_context(|| {
-                    format!(
+                });
+            let cwd_candidate = cwd.join(&args.url);
+            let origin_candidate = origin_base.as_ref().map(|base| base.join(&args.url));
+            match origin_candidate
+                .as_ref()
+                .and_then(|candidate| candidate.canonicalize().ok())
+                .or_else(|| cwd_candidate.canonicalize().ok())
+            {
+                Some(path) => path,
+                None => {
+                    let display_base = origin_base.as_ref().unwrap_or(&cwd);
+                    bail!(
                         "cannot resolve relative submodule URL '{}' from '{}'",
                         args.url,
-                        relative_base.display()
-                    )
-                })?
+                        display_base.display()
+                    );
+                }
+            }
         } else {
             PathBuf::from(&args.url)
         };
@@ -2829,6 +2939,24 @@ fn run_add(args: &AddArgs) -> Result<()> {
         set_separate_gitdir_worktree(&grit_bin, &modules_dir, &sub_path);
     }
 
+    if let Some(ref branch) = args.branch {
+        let modules_dir = submodule_separate_git_dir(&repo, work_tree, &name, &path)?;
+        let remote_branch = format!("refs/remotes/origin/{branch}");
+        if let Ok(remote_tip) = refs::resolve_ref(&modules_dir, &remote_branch) {
+            checkout_submodule_worktree(
+                &grit_bin,
+                &repo,
+                work_tree,
+                &name,
+                &path,
+                &name,
+                &remote_tip.to_hex(),
+                args.quiet,
+            )?;
+            let _ = attach_submodule_head_to_named_branch(&modules_dir, branch);
+        }
+    }
+
     // Update .gitmodules.
     let gitmodules_path = work_tree.join(".gitmodules");
     let mut config = if gitmodules_path.exists() {
@@ -2840,6 +2968,9 @@ fn run_add(args: &AddArgs) -> Result<()> {
 
     config.set(&format!("submodule.{name}.path"), &path)?;
     config.set(&format!("submodule.{name}.url"), &args.url)?;
+    if let Some(ref branch) = args.branch {
+        config.set(&format!("submodule.{name}.branch"), branch)?;
+    }
     config.write()?;
 
     // Also register the submodule in the local .git/config (like git does).
@@ -2867,7 +2998,24 @@ fn run_add(args: &AddArgs) -> Result<()> {
         .context("failed to stage submodule")?;
 
     if !status.success() {
-        bail!("failed to stage submodule");
+        if let Some(oid) = read_submodule_head(&sub_path) {
+            let mut add_gitmodules = Command::new(&grit_bin);
+            add_gitmodules
+                .arg("add")
+                .arg("--")
+                .arg(".gitmodules")
+                .current_dir(work_tree);
+            if !add_gitmodules
+                .status()
+                .context("failed to stage .gitmodules")?
+                .success()
+            {
+                bail!("failed to stage submodule");
+            }
+            stage_new_gitlink_in_super_index(&repo, work_tree, &path, &oid)?;
+        } else {
+            bail!("failed to stage submodule");
+        }
     }
 
     // `clone --no-checkout` leaves an empty work tree; populate it from the staged gitlink
@@ -2884,6 +3032,42 @@ fn run_add(args: &AddArgs) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn stage_new_gitlink_in_super_index(
+    repo: &Repository,
+    work_tree: &Path,
+    rel_path: &str,
+    oid_hex: &str,
+) -> Result<()> {
+    let oid = ObjectId::from_hex(oid_hex.trim())
+        .with_context(|| format!("invalid submodule OID '{oid_hex}' for path '{rel_path}'"))?;
+    let abs = work_tree.join(rel_path);
+    let meta = std::fs::metadata(&abs)
+        .with_context(|| format!("stat submodule path '{}'", abs.display()))?;
+    let index_path = repo.index_path();
+    let mut index = repo.load_index_at(&index_path)?;
+    index.remove_descendants_under_path(rel_path);
+    let entry = IndexEntry {
+        ctime_sec: meta.ctime() as u32,
+        ctime_nsec: meta.ctime_nsec() as u32,
+        mtime_sec: meta.mtime() as u32,
+        mtime_nsec: meta.mtime_nsec() as u32,
+        dev: meta.dev() as u32,
+        ino: meta.ino() as u32,
+        mode: MODE_GITLINK,
+        uid: meta.uid(),
+        gid: meta.gid(),
+        size: 0,
+        oid,
+        flags: rel_path.len().min(0xFFF) as u16,
+        flags_extended: None,
+        path: rel_path.as_bytes().to_vec(),
+        base_index_pos: 0,
+    };
+    index.add_or_replace(entry);
+    repo.write_index_at(&index_path, &mut index)?;
     Ok(())
 }
 

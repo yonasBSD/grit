@@ -1185,7 +1185,15 @@ fn reset_paths(
 
     let resolved_specs: Vec<String> = paths
         .iter()
-        .map(|p| crate::pathspec::resolve_pathspec(p, work_tree, prefix_opt))
+        .map(|p| {
+            let resolved = crate::pathspec::resolve_pathspec(p, work_tree, prefix_opt);
+            let trimmed = resolved.trim_end_matches('/');
+            if trimmed.is_empty() {
+                resolved
+            } else {
+                trimmed.to_owned()
+            }
+        })
         .collect();
 
     let expanded_paths: Vec<String> = if paths.is_empty() {

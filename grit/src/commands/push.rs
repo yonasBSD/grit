@@ -1037,9 +1037,7 @@ fn push_to_url(
             &negs,
             refspec_force,
         )?;
-        if matched == 0 {
-            bail!("No refs in common and none specified; doing nothing.\nPerhaps you should specify a branch.");
-        }
+        let _ = matched;
     } else if push_all {
         // Push all branches (refs/heads/*)
         let mut local_branches = refs::list_refs(&repo.git_dir, "refs/heads/")?;

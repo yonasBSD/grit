@@ -1,5 +1,14 @@
 # PLAN.md — Current execution queue
 
+## Active task — t7 submodule tests 100% pass
+
+- [~] Make all in-scope t7 submodule tests fully pass. Detailed queue and per-file status are in
+  `submodule-plan.md`; work one file at a time, currently `t7400-submodule-basic.sh`.
+  - Completed: `t7406-submodule-update.sh` improved from 10/70 to 70/70.
+  - Current focus: `t7400-submodule-basic.sh` improved from 96/124 to 120/124; remaining
+    failures are 91, 96, 122, and 123.
+  - Current log: `logs/2026-06-02_1810-t7400-submodule-basic.md`.
+
 ## Active task — t2 family 100% pass
 
 - [x] Make all `t2` family tests fully pass. Work one file at a time, always choosing the

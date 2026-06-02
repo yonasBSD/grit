@@ -6564,7 +6564,11 @@ pub(crate) fn checkout_index_to_worktree(
                 // still use normal removal so `git checkout` can refresh the nested worktree.
                 if old_entry.mode == MODE_GITLINK && !git_dir_is_nested_modules_repo(&repo.git_dir)
                 {
-                    continue;
+                    let rel = String::from_utf8_lossy(old_path).into_owned();
+                    let abs = work_tree.join(&rel);
+                    if submodule_dir_has_non_dotgit_content(&abs) {
+                        continue;
+                    }
                 }
             }
         }
@@ -6593,9 +6597,9 @@ pub(crate) fn checkout_index_to_worktree(
             let _ = std::fs::remove_file(&abs);
         } else if abs.is_dir() {
             let skip_populated_submodule = preserve_dropped_gitlink_dirs
-                && old_map
-                    .get(old_path.as_slice())
-                    .is_some_and(|e| e.mode == MODE_GITLINK && abs.join(".git").exists());
+                && old_map.get(old_path.as_slice()).is_some_and(|e| {
+                    e.mode == MODE_GITLINK && submodule_dir_has_non_dotgit_content(&abs)
+                });
             if skip_populated_submodule {
                 // keep populated submodule dirs when checkout preserves dropped gitlinks
             } else if !preserve_dropped_gitlink_dirs
@@ -6837,6 +6841,13 @@ pub(crate) fn checkout_index_to_worktree(
     let _ = crate::commands::submodule::refresh_submodule_gitfiles(repo);
 
     Ok(())
+}
+
+fn submodule_dir_has_non_dotgit_content(path: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+    entries.flatten().any(|entry| entry.file_name() != ".git")
 }
 
 fn unset_nested_submodule_core_worktrees(modules_git: &Path) -> Result<()> {
