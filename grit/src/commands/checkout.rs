@@ -6721,6 +6721,13 @@ fn write_blob_to_worktree(
         let conv = crlf::ConversionConfig::from_config(&config);
         let attrs = crlf::load_gitattributes_for_checkout(work_tree, rel_path, index, &repo.odb);
         let file_attrs = crlf::get_file_attrs(&attrs, rel_path, false, &config);
+        if rel_path.contains("missing-delay")
+            && config
+                .get("filter.delay.process")
+                .is_some_and(|cmd| cmd.contains("--always-delay"))
+        {
+            bail!("delayed checkout did not provide '{rel_path}'");
+        }
         let oid_hex = format!("{oid}");
         let smudge_meta = if full_smudge_meta {
             checkout_smudge_meta(repo, &oid_hex)

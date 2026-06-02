@@ -44,10 +44,10 @@
   - Completed: `t2300-cd-to-toplevel.sh` (5/5). Added a test exec-path `git-sh-setup` helper
     exposing `cd_to_toplevel`.
   - Completed: `t2016-checkout-patch.sh` (19/19). Passed after shared patch-mode fixes.
-  - In progress: `t2080-parallel-checkout-basics.sh` improved from 7/11 to 9/11 by forcing
+  - Completed: `t2080-parallel-checkout-basics.sh` (11/11) by forcing
     submodule checkout during clone/update and treating clean symlink worktree snapshots as clean
-    despite stale stat data. Remaining failure is clone-vs-checkout working tree comparison for
-    submodule paths that are no longer gitlinks on the target branch.
+    despite stale stat data. Clone overlays preserve obsolete submodule worktree files where
+    checkout would have kept them, and delayed-filter failures are excluded from success counts.
   - Completed: `t2032-checkout-index-parallel.sh` (28/28). `checkout-index` now leaves existing
     changed files untouched without `--force` instead of overwriting them.
   - Completed: `t2103-update-index-ignore-missing.sh` (5/5). `update-index --refresh` now reports

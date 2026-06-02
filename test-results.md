@@ -2,7 +2,7 @@
 
 Updated: 2026-06-01
 - t2 parallel checkout: `./scripts/run-tests.sh t2080-parallel-checkout-basics.sh --verbose`
-  improved from 7/11 to 9/11 after submodule update/clone and symlink diff fixes; still in progress.
+  passes 11/11 after submodule update/clone overlay, symlink diff, and delayed-filter count fixes.
 - t2 focus: `./scripts/run-tests.sh t2032-checkout-index-parallel.sh --verbose` passes 28/28
   after checkout-index no-force existing-file behavior was fixed.
 - t2 focus: `./scripts/run-tests.sh t2103-update-index-ignore-missing.sh --verbose` passes 5/5

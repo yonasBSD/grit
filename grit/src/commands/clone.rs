@@ -3602,6 +3602,7 @@ struct SubmoduleCloneJob {
     modules_dir: PathBuf,
     sub_dest: PathBuf,
     depth: Option<usize>,
+    overlay_existing: bool,
 }
 
 fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> Result<()> {
@@ -3652,15 +3653,18 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
     let mut jobs: Vec<SubmoduleCloneJob> = Vec::new();
 
     for sm in &modules {
-        if !gitlink_paths.contains(&sm.path) {
+        let sub_dest = work_tree.join(&sm.path);
+        let overlay_existing = !gitlink_paths.contains(&sm.path)
+            && fs::symlink_metadata(&sub_dest)
+                .map(|m| m.is_dir() && !m.file_type().is_symlink())
+                .unwrap_or(false);
+        if !gitlink_paths.contains(&sm.path) && !overlay_existing {
             continue;
         }
         // With explicit `--recurse-submodules=<pathspec>`, only clone active submodules.
         if active_filter && !crate::commands::submodule::submodule_path_is_active(repo, &sm.path) {
             continue;
         }
-
-        let sub_dest = work_tree.join(&sm.path);
 
         let resolved_url = crate::commands::submodule::resolve_submodule_super_url(
             work_tree,
@@ -3695,12 +3699,14 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
             eprintln!("Cloning into '{}'...", sub_dest.display());
         }
 
-        // Remove placeholder path (directory, empty dir, or symlink left from a type-change branch).
-        if let Ok(meta) = fs::symlink_metadata(&sub_dest) {
-            if meta.file_type().is_symlink() || meta.is_file() {
-                let _ = fs::remove_file(&sub_dest);
-            } else {
-                let _ = fs::remove_dir_all(&sub_dest);
+        if !overlay_existing {
+            // Remove placeholder path (directory, empty dir, or symlink left from a type-change branch).
+            if let Ok(meta) = fs::symlink_metadata(&sub_dest) {
+                if meta.file_type().is_symlink() || meta.is_file() {
+                    let _ = fs::remove_file(&sub_dest);
+                } else {
+                    let _ = fs::remove_dir_all(&sub_dest);
+                }
             }
         }
 
@@ -3720,6 +3726,7 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
             modules_dir,
             sub_dest,
             depth,
+            overlay_existing,
         });
     }
 
@@ -3730,6 +3737,16 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
     let n_workers = clone_args.jobs.unwrap_or(1).max(1).min(jobs.len());
     if n_workers <= 1 {
         for j in jobs {
+            if j.overlay_existing {
+                overlay_clone_submodule_contents(
+                    &grit_bin,
+                    &j.resolved_url,
+                    &j.sub_dest,
+                    quiet,
+                    j.depth,
+                )?;
+                continue;
+            }
             let status = clone_with_optional_superproject_refs(
                 &grit_bin,
                 &j.resolved_url,
@@ -3762,6 +3779,17 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
             let quiet_c = quiet;
             handles.push(thread::spawn(move || -> Result<(), String> {
                 for j in chunk {
+                    if j.overlay_existing {
+                        overlay_clone_submodule_contents(
+                            &grit,
+                            &j.resolved_url,
+                            &j.sub_dest,
+                            quiet_c,
+                            j.depth,
+                        )
+                        .map_err(|e| e.to_string())?;
+                        continue;
+                    }
                     let st = clone_with_optional_superproject_refs(
                         &grit,
                         &j.resolved_url,
@@ -3838,6 +3866,51 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
         bail!("submodule update failed after clone");
     }
 
+    Ok(())
+}
+
+fn overlay_clone_submodule_contents(
+    grit_bin: &Path,
+    resolved_url: &str,
+    sub_dest: &Path,
+    quiet: bool,
+    depth: Option<usize>,
+) -> Result<()> {
+    let parent = sub_dest.parent().unwrap_or_else(|| Path::new("."));
+    let name = sub_dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "submodule".to_string());
+    let tmp = parent.join(format!(".grit-submodule-overlay-{}-{name}", std::process::id()));
+    let _ = fs::remove_dir_all(&tmp);
+    let status =
+        clone_with_optional_superproject_refs(grit_bin, resolved_url, &tmp, &[], quiet, None, false, depth)?;
+    if !status.success() {
+        let _ = fs::remove_dir_all(&tmp);
+        anyhow::bail!("clone of '{resolved_url}' into temporary submodule overlay failed");
+    }
+    copy_overlay_contents(&tmp, sub_dest)?;
+    let _ = fs::remove_dir_all(&tmp);
+    Ok(())
+}
+
+fn copy_overlay_contents(src: &Path, dst: &Path) -> Result<()> {
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let meta = fs::symlink_metadata(&from)?;
+        if meta.file_type().is_symlink() {
+            let target = fs::read_link(&from)?;
+            let _ = fs::remove_file(&to);
+            std::os::unix::fs::symlink(target, &to)?;
+        } else if meta.is_dir() {
+            fs::create_dir_all(&to)?;
+            copy_overlay_contents(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
     Ok(())
 }
 

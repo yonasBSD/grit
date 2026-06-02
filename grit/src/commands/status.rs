@@ -39,6 +39,9 @@ use crate::git_column::{merge_column_config, print_columns, ColOpts, ColumnOptio
 /// untracked when the index only records paths like `b/b`, not a gitlink at `b`; t2080).
 fn dir_is_nested_submodule_worktree(super_git_dir: &Path, dir: &Path) -> bool {
     let gitfile = dir.join(".git");
+    if gitfile.is_dir() {
+        return true;
+    }
     let Ok(content) = fs::read_to_string(&gitfile) else {
         return false;
     };
