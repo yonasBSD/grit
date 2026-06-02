@@ -71,6 +71,49 @@ pub fn upstream_tracking_full_ref(repo: &Repository, branch_short: &str) -> Opti
     }
 }
 
+/// Whether `tracking_ref` (a full `refs/remotes/<remote>/<branch>` ref) is the destination of some
+/// remote's fetch refspec — i.e. a genuine remote-tracking branch (Git `check_tracking_branch` /
+/// `validate_remote_tracking_branch`). A `refs/remotes/...` ref left over after its remote's fetch
+/// refspec was narrowed is NOT a valid tracking branch and must not be used for `--track`.
+#[must_use]
+pub fn remote_tracking_ref_is_mapped(repo: &Repository, tracking_ref: &str) -> bool {
+    let Ok(config) = ConfigSet::load(Some(&repo.git_dir), true) else {
+        return false;
+    };
+    for entry in config.entries() {
+        // Match keys of the form `remote.<name>.fetch`.
+        let Some(rest) = entry.key.strip_prefix("remote.") else {
+            continue;
+        };
+        if !rest.ends_with(".fetch") {
+            continue;
+        }
+        let Some(spec) = entry.value.as_deref() else {
+            continue;
+        };
+        if refspec_dst_matches(spec, tracking_ref) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Does the destination half of a fetch refspec (`[+]<src>:<dst>`) match `target`?
+/// Supports a single trailing `*` glob, mirroring Git's refspec matching for the common case.
+fn refspec_dst_matches(spec: &str, target: &str) -> bool {
+    let spec = spec.strip_prefix('+').unwrap_or(spec);
+    let Some((_src, dst)) = spec.split_once(':') else {
+        return false;
+    };
+    let dst = dst.trim();
+    if let Some(prefix) = dst.strip_suffix('*') {
+        // Glob: dst = `refs/remotes/<remote>/*`; match any ref under that prefix.
+        target.starts_with(prefix) && target.len() > prefix.len()
+    } else {
+        dst == target
+    }
+}
+
 /// Compare local branch tip to `base_ref` (full ref like `refs/remotes/origin/main`).
 pub fn stat_branch_pair(
     repo: &Repository,

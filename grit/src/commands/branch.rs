@@ -1874,8 +1874,8 @@ fn create_branch(
         let want_tracking = args.track.is_some() || (!args.no_track && remote_ref.is_some());
         if want_tracking {
             // Resolve the tracking pair (remote, merge-ref). `.` denotes a local-branch upstream.
-            let pair: Option<(String, String)> = if let Some(rref) = remote_ref {
-                let stripped = rref.strip_prefix("refs/remotes/").unwrap_or(&rref);
+            let pair: Option<(String, String)> = if let Some(rref) = remote_ref.as_deref() {
+                let stripped = rref.strip_prefix("refs/remotes/").unwrap_or(rref);
                 stripped.find('/').map(|slash| {
                     (
                         stripped[..slash].to_owned(),
@@ -1904,6 +1904,27 @@ fn create_branch(
             } else {
                 None
             };
+
+            // With EXPLICIT tracking (`-t` / `--track[=direct]`), Git's `dwim_branch_start`
+            // requires the start point to be a real branch: a local head, or a remote-tracking
+            // branch that some remote's fetch refspec actually maps (`validate_remote_tracking_
+            // branch`). If it does not, the command fails rather than silently creating an
+            // untracked branch (t3200 87, 98).
+            if track_is_explicit(args) {
+                let resolves_to_branch = if let Some(rref) = remote_ref.as_deref() {
+                    grit_lib::branch_tracking::remote_tracking_ref_is_mapped(repo, rref)
+                } else {
+                    symbolic_full_name(repo, sp)
+                        .map(|f| f.starts_with("refs/heads/"))
+                        .unwrap_or(false)
+                };
+                if !resolves_to_branch {
+                    eprintln!(
+                        "fatal: cannot set up tracking information; starting point '{sp}' is not a branch"
+                    );
+                    std::process::exit(128);
+                }
+            }
 
             if let Some((remote, merge_ref)) = pair {
                 write_branch_tracking_config(repo, name, &remote, &merge_ref)?;
@@ -1965,6 +1986,14 @@ fn validate_autosetuprebase_config(repo: &Repository) {
             }
         }
     }
+}
+
+/// Whether the user requested EXPLICIT tracking, i.e. `-t` / `--track` / `--track=direct` (or the
+/// `override` mode). Git treats these as `BRANCH_TRACK_EXPLICIT`/`OVERRIDE`, which require the
+/// start point to be a real branch. `inherit`/`simple`/`always` have other semantics and are not
+/// validated this way.
+fn track_is_explicit(args: &Args) -> bool {
+    matches!(args.track.as_deref(), Some("direct") | Some("override"))
 }
 
 /// Write `branch.<name>.remote`/`.merge` (and `.rebase = true` per `branch.autosetuprebase`).
@@ -2620,8 +2649,9 @@ fn copy_branch(repo: &Repository, head: &HeadState, args: &Args) -> Result<()> {
         return Ok(());
     }
 
-    // Check if dst already exists (unless force copy)
-    if !args.force_copy && grit_lib::refs::resolve_ref(&repo.git_dir, &dst_ref).is_ok() {
+    // Check if dst already exists. Force can come from `-C` (force_copy) or `-c -f` (force).
+    let force = args.force_copy || args.force;
+    if !force && grit_lib::refs::resolve_ref(&repo.git_dir, &dst_ref).is_ok() {
         bail!("A branch named '{dst_name}' already exists.");
     }
 
