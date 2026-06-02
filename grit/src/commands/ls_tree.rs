@@ -8,9 +8,7 @@ use std::path::Path;
 use grit_lib::config::ConfigSet;
 use grit_lib::crlf::AttrRule;
 use grit_lib::objects::{parse_commit, parse_tag, parse_tree, ObjectId, ObjectKind, TreeEntry};
-use grit_lib::pathspec::{
-    matches_pathspec_set_for_object_ls_tree, pathspec_wants_descent_into_tree,
-};
+use grit_lib::pathspec::matches_pathspec_set_for_object_ls_tree;
 use grit_lib::refs::resolve_ref;
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse::abbreviate_object_id;
@@ -266,6 +264,52 @@ fn only_trees_pathspec_wants_descent(spec: &str, full_name: &str) -> bool {
         || (normalized.starts_with(&dir_prefix) && normalized.len() > dir_prefix.len())
 }
 
+/// Git-canonical match string for a (non-magic) pathspec: collapses `.`/`..`/empty path
+/// components and runs of `/`, preserving at most one trailing slash (mirrors
+/// `normalize_path_copy` as used by `prefix_path_gently`). Magic pathspecs (`:(...)`, `:!`, ...)
+/// are left untouched so their parsing in `pathspec.rs` still applies.
+fn ls_tree_spec_match_string(spec: &str) -> String {
+    if spec.starts_with(':') {
+        return spec.to_string();
+    }
+    git_normalize_pathspec_preserve_trailing_slash(spec).unwrap_or_else(|_| spec.to_string())
+}
+
+/// Mirror Git's `show_recursive` (`builtin/ls-tree.c`) using only the pathspec list — the `-r`
+/// short-circuit is applied separately by the caller. `base_with_slash` is the directory prefix
+/// being walked (empty at the tree root, otherwise ending in `/`); `name` is the entry's own name.
+///
+/// Returns true when some pathspec reaches strictly *below* this entry, i.e. Git would descend
+/// into it rather than show it as a leaf.
+fn ls_tree_show_recursive(specs: &[String], base_with_slash: &str, name: &str) -> bool {
+    let base = base_with_slash.as_bytes();
+    let baselen = base.len();
+    let name_b = name.as_bytes();
+    let len = name_b.len();
+    for raw in specs {
+        let spec = ls_tree_spec_match_string(raw);
+        let spec_b = spec.as_bytes();
+        // strncmp(base, spec, baselen): spec must agree with the base prefix.
+        if spec_b.len() < baselen || spec_b[..baselen] != base[..] {
+            continue;
+        }
+        let rest = &spec_b[baselen..];
+        // The spec (relative to base) must be strictly longer than the entry name to descend.
+        if rest.len() <= len {
+            continue;
+        }
+        // The character after the matched name must be a path separator.
+        if rest[len] != b'/' {
+            continue;
+        }
+        if rest[..len] != name_b[..] {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
 /// Run `grit ls-tree`.
 pub fn run(mut args: Args) -> Result<()> {
     // Validate incompatible display-mode options
@@ -347,6 +391,14 @@ pub fn run(mut args: Args) -> Result<()> {
                 args.paths = resolved;
             }
         }
+    }
+
+    // Canonicalize each (non-magic) pathspec the way Git's `prefix_path_gently` does: collapse
+    // `.`/`..`/empty components and runs of `/`, keeping at most one trailing slash. This makes
+    // `path3/2.txt///` behave like `path3/2.txt/` (directory-only) and `path3//23.txt` like
+    // `path3/23.txt`.
+    for p in args.paths.iter_mut() {
+        *p = ls_tree_spec_match_string(p);
     }
 
     // `dir/../` from a subdirectory normalizes to `""`, which Git treats as "match everything".
@@ -513,64 +565,48 @@ fn list_tree(
         let is_tree = entry.mode == 0o040000;
         let is_submodule = file_type_mask(entry.mode) == 0o160000;
 
+        // `base` is the directory prefix as Git's tree walk sees it: empty at the tree root,
+        // otherwise ending in `/`. Used by `ls_tree_show_recursive` (mirrors `show_recursive`).
+        let base_with_slash = if prefix.is_empty() {
+            String::new()
+        } else {
+            format!("{prefix}/")
+        };
+
+        // Whether some pathspec reaches strictly below this entry (Git's `show_recursive`, sans
+        // the `-r` short-circuit). For `-d` the comparison is dir-prefix based (`-d` may pair with
+        // a deeper pathspec; see `only_trees_pathspec_wants_descent`).
+        let pathspec_descends = is_tree
+            && !args.paths.is_empty()
+            && if args.only_trees {
+                args.paths
+                    .iter()
+                    .any(|p| only_trees_pathspec_wants_descent(p, &full_name))
+            } else {
+                ls_tree_show_recursive(&args.paths, &base_with_slash, &name)
+            };
+
         // Apply path filter (Git pathspec semantics, including `:(exclude)` and literal `[` paths).
+        // An entry is "interesting" (Git's `tree_entry_interesting`) when it matches a pathspec as
+        // a leaf, or when it is a tree some pathspec descends into.
         if !args.paths.is_empty() {
-            // If pathspec points INTO this tree, descend.
-            // Exact match without trailing slash shows the tree entry itself.
-            // Trailing slash or deeper path means descend into the tree.
-            let is_ancestor = is_tree
-                && if args.only_trees {
-                    args.paths
-                        .iter()
-                        .any(|p| only_trees_pathspec_wants_descent(p, &full_name))
-                } else {
-                    args.paths.iter().any(|p| {
-                        !(p == &full_name && !p.ends_with('/'))
-                            && pathspec_wants_descent_into_tree(p, &full_name)
-                    })
-                };
             let matches = matches_pathspec_set_for_object_ls_tree(
                 &args.paths,
                 &full_name,
                 entry.mode,
                 attr_rules,
-            ) || args.paths.iter().any(|path| {
-                let base = path.trim_end_matches('/');
-                !base.is_empty()
-                    && (full_name == base
-                        || full_name
-                            .strip_prefix(base)
-                            .is_some_and(|rest| rest.starts_with('/')))
-            });
-            if !matches && !is_ancestor {
-                continue;
-            }
-            if is_tree && is_ancestor && !args.recursive {
-                // Match Git's `read_tree` + `show_recursive`: with pathspecs we descend into prefix
-                // trees even without `-r`. `-t` then lists those intermediate trees (see t3100).
-                if args.show_trees {
-                    let display_name = make_cwd_relative(&full_name, cwd_prefix);
-                    print_entry(repo, entry, &display_name, args, out, term, quote_fully)?;
-                }
-                let sub_obj = repo.odb.read(&entry.oid)?;
-                list_tree(
-                    repo,
-                    &sub_obj.data,
-                    &full_name,
-                    depth + 1,
-                    max_tree_depth,
-                    args,
-                    out,
-                    term,
-                    cwd_prefix,
-                    quote_fully,
-                    attr_rules,
-                )?;
+            );
+            if !matches && !pathspec_descends {
                 continue;
             }
         }
 
-        if args.recursive && is_tree && !is_submodule {
+        // Git's `show_tree_fmt`: descend into a tree when `-r` is set, or when a pathspec reaches
+        // below it. A tree that is itself the leaf match (no deeper pathspec) is shown, not walked.
+        let recurse = is_tree && !is_submodule && (args.recursive || pathspec_descends);
+
+        if recurse {
+            // Suppress the intermediate tree node unless `-t`/`-d` asks to show trees.
             if args.show_trees || args.only_trees {
                 let display_name = make_cwd_relative(&full_name, cwd_prefix);
                 print_entry(repo, entry, &display_name, args, out, term, quote_fully)?;
