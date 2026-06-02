@@ -48,6 +48,8 @@
     submodule checkout during clone/update and treating clean symlink worktree snapshots as clean
     despite stale stat data. Remaining failure is clone-vs-checkout working tree comparison for
     submodule paths that are no longer gitlinks on the target branch.
+  - Completed: `t2032-checkout-index-parallel.sh` (28/28). `checkout-index` now leaves existing
+    changed files untouched without `--force` instead of overwriting them.
   - Completed: `t2201-add-update-typechange.sh` (6/6) by treating index paths under symlinked
     parents as deleted in diff/add/commit flows and by reporting worktree gitlink typechanges in
     `diff-index`.

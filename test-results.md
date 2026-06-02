@@ -3,6 +3,8 @@
 Updated: 2026-06-01
 - t2 parallel checkout: `./scripts/run-tests.sh t2080-parallel-checkout-basics.sh --verbose`
   improved from 7/11 to 9/11 after submodule update/clone and symlink diff fixes; still in progress.
+- t2 focus: `./scripts/run-tests.sh t2032-checkout-index-parallel.sh --verbose` passes 28/28
+  after checkout-index no-force existing-file behavior was fixed.
 - t2 add/update typechange: `./scripts/run-tests.sh t2201-add-update-typechange.sh --verbose`
   passes 6/6 after symlink-parent deletion and gitlink typechange handling in diff/add/commit.
 - t2 focus: `./scripts/run-tests.sh t2016-checkout-patch.sh --verbose` passes 19/19 with the

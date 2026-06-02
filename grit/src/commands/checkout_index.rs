@@ -4,7 +4,6 @@ use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
 use grit_lib::config::ConfigSet;
 use grit_lib::crlf;
-use grit_lib::diff::stat_matches;
 use grit_lib::index::Index;
 use grit_lib::objects::{ObjectId, ObjectKind};
 use grit_lib::odb::Odb;
@@ -506,8 +505,6 @@ fn checkout_entry(
                 let wt_mode = worktree_mode_from_metadata(meta);
                 if wt_mode != entry.mode {
                     false
-                } else if stat_matches(entry, meta) {
-                    true
                 } else {
                     worktree_clean_blob_oid_matches(
                         repo, index, work_tree, &path_str, &abs_path, &entry.oid,
@@ -520,12 +517,11 @@ fn checkout_entry(
             if unchanged {
                 return Ok(outcome);
             }
-            // Git `entry.c:write_entry`: a changed file present on disk without --force is
-            // an error (`<path> already exists, no checkout`), not a silent skip.
+            // Without --force, leave an existing changed path alone.
             if !args.quiet {
                 eprintln!("{rel_path} already exists, no checkout");
             }
-            return Err(anyhow::anyhow!("{rel_path} already exists, no checkout"));
+            return Ok(outcome);
         }
     }
 
