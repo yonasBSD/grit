@@ -11,6 +11,9 @@ Updated: 2026-06-02
 - t7 submodule focus: `./scripts/run-tests.sh t7400-submodule-basic.sh --verbose` improved
   `t7400` from 96/124 to 124/124. Follow-up regression check:
   `./scripts/run-tests.sh t7406-submodule-update.sh --verbose` remains 70/70.
+- t7 submodule focus: `./scripts/run-tests.sh t7112-reset-submodule.sh --verbose` improved
+  `t7112` from the fresh 34/82 baseline to 54/82 by repopulating same-OID submodule gitlinks
+  whose worktree had been reduced to only `.git`.
 - Verification: `cargo build --release -p grit-cli` passed with the existing warning backlog.
 
 Updated: 2026-06-01

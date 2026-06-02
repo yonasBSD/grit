@@ -6776,11 +6776,18 @@ pub(crate) fn checkout_index_to_worktree(
                 let old_entry = old_map.get(entry.path.as_slice()).copied();
                 let recurse_requested = RECURSE_SUBMODULES.with(|r| r.get());
                 let existing_gitlink = old_entry.is_some_and(|old| old.mode == MODE_GITLINK);
-                if !existing_gitlink || recurse_requested {
+                let empty_populated_gitlink = existing_gitlink
+                    && abs_path.is_dir()
+                    && abs_path.join(".git").exists()
+                    && !submodule_dir_has_non_dotgit_content(&abs_path);
+                if !existing_gitlink || recurse_requested || empty_populated_gitlink {
                     let force_populate = match old_entry {
                         None => true,
                         Some(old) => {
-                            old.mode != MODE_GITLINK || old.oid != entry.oid || force_write_all
+                            old.mode != MODE_GITLINK
+                                || old.oid != entry.oid
+                                || force_write_all
+                                || empty_populated_gitlink
                         }
                     };
                     checkout_gitlink_worktree_entry(
