@@ -6,6 +6,16 @@
 # Test Results
 
 Updated: 2026-06-02
+- t7 submodule focus: `./scripts/run-tests.sh t7409-submodule-detached-work-tree.sh` improved
+  `t7409` from 1/3 to 3/3 by keeping explicit superproject `GIT_DIR`/`GIT_WORK_TREE` for
+  `submodule add` staging/probe commands and by stripping client repo env from local upload-pack
+  server processes. Direct `sh t7409-submodule-detached-work-tree.sh -v` also passed all 3 tests
+  after the release rebuild.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+  Clippy's unrelated auto-fixes in `grit-lib/src/config.rs` and
+  `grit-lib/src/filter_process.rs` were reverted.
 - t7 submodule focus: `./scripts/run-tests.sh t7402-submodule-rebase.sh` improved `t7402` from
   4/6 to 6/6 by making rebase's initial clean-worktree preflight ignore gitlink differences like
   upstream `require_clean_work_tree(..., ignore_submodules=1)`. Direct

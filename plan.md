@@ -4,7 +4,7 @@
 
 - [~] Make all in-scope t7 submodule tests fully pass. Detailed queue and per-file status are in
   `submodule-plan.md`; work one file at a time, currently
-  `t7409-submodule-detached-work-tree.sh`.
+  `t7412-submodule-absorbgitdirs.sh`.
   - Completed: `t7406-submodule-update.sh` improved from 10/70 to 70/70.
   - Completed: `t7400-submodule-basic.sh` improved from 96/124 to 124/124.
   - Completed: `t7112-reset-submodule.sh` improved from 34/82 to 78/78 aggregate passing, with 4 upstream TODO known breakages omitted from the failing count; log:
@@ -36,7 +36,11 @@
     clean-worktree preflight ignore gitlink differences like upstream
     `require_clean_work_tree(..., ignore_submodules=1)`; log:
     `logs/2026-06-02_2110-t7402-submodule-rebase.md`.
-  - Next focus: `t7409-submodule-detached-work-tree.sh` at 1/3.
+  - Completed: `t7409-submodule-detached-work-tree.sh` improved from 1/3 to 3/3 by preserving
+    explicit superproject env for `submodule add` staging and stripping client repo env from
+    local upload-pack server processes; log:
+    `logs/2026-06-02_2124-t7409-submodule-detached-work-tree.md`.
+  - Next focus: `t7412-submodule-absorbgitdirs.sh` at 10/12.
 
 ## Active task — t2 family 100% pass
 

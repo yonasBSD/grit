@@ -62,7 +62,11 @@ Rows marked `skip` remain out of aggregate scope until explicitly audited.
   - Fixed this iteration: rebase's initial clean-worktree preflight now ignores gitlink
     differences like upstream `require_clean_work_tree(..., ignore_submodules=1)`, allowing dirty
     submodules to survive rebase while real dirty files still block it.
-- [ ] `t7409-submodule-detached-work-tree.sh` - 1/3 passing, 2 failing. Focus: detached work tree handling.
+- [x] `t7409-submodule-detached-work-tree.sh` - 3/3 passing. Focus: detached work tree handling.
+  - Fixed this iteration: `submodule add` superproject staging commands now run with explicit
+    `GIT_DIR`/`GIT_WORK_TREE` for detached worktrees, and local upload-pack server processes strip
+    the caller's repository env so pulls from explicit-worktree repos serve the remote object
+    store instead of the client one.
 - [ ] `t7412-submodule-absorbgitdirs.sh` - 10/12 passing, 2 failing. Focus: absorbgitdirs.
 - [ ] `t7423-submodule-symlinks.sh` - 4/6 passing, 2 failing. Focus: symlink safety.
 - [ ] `t7418-submodule-sparse-gitmodules.sh` - 8/9 passing, 1 failing. Focus: sparse `.gitmodules`.

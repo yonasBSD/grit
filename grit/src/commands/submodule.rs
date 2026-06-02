@@ -270,6 +270,15 @@ fn grit_subprocess(grit_bin: &Path) -> Command {
     cmd
 }
 
+/// Spawn grit for a superproject operation from an explicit git-dir/work-tree pair.
+fn superproject_subprocess(grit_bin: &Path, repo: &Repository, work_tree: &Path) -> Command {
+    let mut cmd = Command::new(grit_bin);
+    cmd.env("GIT_DIR", &repo.git_dir)
+        .env("GIT_WORK_TREE", work_tree);
+    grit_exe::strip_trace2_env(&mut cmd);
+    cmd
+}
+
 static SUBMODULE_JOBS_TRACE_EMITTED: AtomicBool = AtomicBool::new(false);
 
 /// Best-effort `GIT_TRACE` line for submodule worker counts (t7406 greps for `N tasks`).
@@ -2778,7 +2787,7 @@ fn run_add(args: &AddArgs) -> Result<()> {
     // Without --force, mirror git's `add --dry-run --ignore-missing --no-warn-embedded-repo`
     // probe so .gitignore and index-lock errors surface with git's wording.
     if !args.force {
-        let out = grit_subprocess(&grit_bin)
+        let out = superproject_subprocess(&grit_bin, &repo, work_tree)
             .arg("add")
             .arg("--dry-run")
             .arg("--ignore-missing")
@@ -3073,7 +3082,7 @@ fn run_add(args: &AddArgs) -> Result<()> {
     // the add doesn't warn about the embedded git repository we just cloned on purpose. With
     // --force, pass `add --force` so an "ignore everything" .gitignore does not block staging
     // the submodule / `.gitmodules` (git's configure_added_submodule forces the gitlink add).
-    let mut add_cmd = Command::new(&grit_bin);
+    let mut add_cmd = superproject_subprocess(&grit_bin, &repo, work_tree);
     add_cmd.arg("add").arg("--no-warn-embedded-repo");
     if args.force {
         add_cmd.arg("--force");
@@ -3088,7 +3097,7 @@ fn run_add(args: &AddArgs) -> Result<()> {
 
     if !status.success() {
         if let Some(oid) = read_submodule_head(&sub_path) {
-            let mut add_gitmodules = Command::new(&grit_bin);
+            let mut add_gitmodules = superproject_subprocess(&grit_bin, &repo, work_tree);
             add_gitmodules
                 .arg("add")
                 .arg("--")
