@@ -1320,10 +1320,9 @@ fn print_patch_from_diff_entry(
                 entry.new_oid
             };
             header.push_str(&format!(
-                "\nindex {}..{} {}",
+                "\nindex {}..{}",
                 abbrev_oid_for_patch(&entry.old_oid, abbrev),
-                abbrev_oid_for_patch(&new_for_index, abbrev),
-                entry.new_mode
+                abbrev_oid_for_patch(&new_for_index, abbrev)
             ));
         }
         DiffStatus::Renamed => {
