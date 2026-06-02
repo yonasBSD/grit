@@ -34,6 +34,78 @@ fn encode_latin1_lossy(unicode: &str) -> Vec<u8> {
         .collect()
 }
 
+/// Find the offset of the first byte that is not part of a strictly valid UTF-8
+/// sequence, mirroring Git's `find_invalid_utf8` (commit.c).
+///
+/// This is stricter than [`core::str::from_utf8`]: in addition to rejecting
+/// malformed/overlong sequences and surrogates, it also rejects the Unicode
+/// non-characters `U+xxFFFE`, `U+xxFFFF`, and the range `U+FDD0..=U+FDEF`, which
+/// Rust's standard library accepts. Returns `None` when the whole buffer is valid.
+#[must_use]
+pub fn find_invalid_utf8(buf: &[u8]) -> Option<usize> {
+    const MAX_CODEPOINT: [u32; 4] = [0x7f, 0x7ff, 0xffff, 0x10ffff];
+    let mut i = 0usize;
+    while i < buf.len() {
+        let c = buf[i];
+        let bad_offset = i;
+        i += 1;
+        // Simple US-ASCII? No worries.
+        if c < 0x80 {
+            continue;
+        }
+        // Count how many more high bits are set: that's how many more bytes
+        // this sequence should have.
+        let mut bytes = 0usize;
+        let mut cc = c;
+        while cc & 0x40 != 0 {
+            cc <<= 1;
+            bytes += 1;
+        }
+        // Must be between 1 and 3 more bytes.
+        if !(1..=3).contains(&bytes) {
+            return Some(bad_offset);
+        }
+        // Do we have that many bytes?
+        if buf.len() - i < bytes {
+            return Some(bad_offset);
+        }
+        let mut codepoint = (u32::from(cc) & 0x7f) >> bytes;
+        let min_val = MAX_CODEPOINT[bytes - 1] + 1;
+        let max_val = MAX_CODEPOINT[bytes];
+        // Verify that they are good continuation bytes.
+        for _ in 0..bytes {
+            let b = buf[i];
+            codepoint = (codepoint << 6) | (u32::from(b) & 0x3f);
+            if b & 0xc0 != 0x80 {
+                return Some(bad_offset);
+            }
+            i += 1;
+        }
+        if codepoint < min_val || codepoint > max_val {
+            return Some(bad_offset);
+        }
+        // Surrogates are only for UTF-16 and cannot be encoded in UTF-8.
+        if codepoint & 0x1f_f800 == 0xd800 {
+            return Some(bad_offset);
+        }
+        // U+xxFFFE and U+xxFFFF are guaranteed non-characters.
+        if codepoint & 0xfffe == 0xfffe {
+            return Some(bad_offset);
+        }
+        // So is anything in the range U+FDD0..=U+FDEF.
+        if (0xfdd0..=0xfdef).contains(&codepoint) {
+            return Some(bad_offset);
+        }
+    }
+    None
+}
+
+/// Whether `buf` is strictly valid UTF-8 per Git's rules (see [`find_invalid_utf8`]).
+#[must_use]
+pub fn is_strict_utf8(buf: &[u8]) -> bool {
+    find_invalid_utf8(buf).is_none()
+}
+
 /// Git stores the commit message body with a trailing newline when non-empty.
 #[must_use]
 pub fn ensure_body_trailing_newline(mut bytes: Vec<u8>) -> Vec<u8> {
@@ -292,5 +364,51 @@ pub fn commit_message_unicode_for_display(
         decode_bytes(encoding, raw)
     } else {
         message.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_utf8_accepts_plain_ascii_and_multibyte() {
+        assert!(is_strict_utf8(b"Commit message\n"));
+        // Valid multi-byte UTF-8 (Latin small letter a with acute, CJK).
+        assert!(is_strict_utf8("Ábçdèfg はれひほふ".as_bytes()));
+        // ISO-2022-JP is a 7-bit encoding using ESC control bytes; valid UTF-8.
+        assert!(is_strict_utf8(b"\x1b$B$O$l$R$[$U\x1b(B"));
+    }
+
+    #[test]
+    fn strict_utf8_rejects_surrogates() {
+        // Encoded surrogate U+D800 (ED A0 80) — invalid in UTF-8.
+        assert_eq!(find_invalid_utf8(b"abc\xed\xa0\x80"), Some(3));
+        assert!(!is_strict_utf8(b"\xed\xa0\x80"));
+    }
+
+    #[test]
+    fn strict_utf8_rejects_overlong_sequences() {
+        // Overlong encoding of U+0029 and the C0 A0 "fake space".
+        assert!(!is_strict_utf8(b"\xe0\x82\xa9"));
+        assert!(!is_strict_utf8(b"\xc0\xa0"));
+    }
+
+    #[test]
+    fn strict_utf8_rejects_noncharacters_rust_would_accept() {
+        // U+10FFFE non-character: F4 8F BF BE.
+        assert!(core::str::from_utf8(b"\xf4\x8f\xbf\xbe").is_ok());
+        assert!(!is_strict_utf8(b"\xf4\x8f\xbf\xbe"));
+        // U+FDD0 (in the U+FDD0..=U+FDEF non-character block): EF B7 90.
+        assert!(core::str::from_utf8(b"\xef\xb7\x90").is_ok());
+        assert!(!is_strict_utf8(b"\xef\xb7\x90"));
+    }
+
+    #[test]
+    fn latin1_round_trips_through_encode_and_decode() {
+        let unicode = "Áéí óú";
+        let encoded = encode_header_text("ISO8859-1", unicode).expect("latin1 encodes");
+        assert_eq!(encoded, vec![0xC1, 0xE9, 0xED, 0x20, 0xF3, 0xFA]);
+        assert_eq!(decode_bytes(Some("ISO8859-1"), &encoded), unicode);
     }
 }

@@ -1092,10 +1092,19 @@ pub fn run(mut args: Args) -> Result<()> {
             bail!("prepare-commit-msg hook exited with status {code}");
         }
         let new_raw = fs::read(&msg_file)?;
+        // Preserve the verbatim bytes when the source message carried raw bytes
+        // (a `-F` file or non-UTF-8 content); the commit body must be stored as-is
+        // and never transcoded. Only fall back to a plain UTF-8 string when the
+        // message had no raw representation to begin with.
+        let had_raw = raw_message.is_some();
         match String::from_utf8(new_raw.clone()) {
-            Ok(s) => {
+            Ok(s) if !had_raw => {
                 message = s;
                 raw_message = None;
+            }
+            Ok(s) => {
+                message = s;
+                raw_message = Some(new_raw);
             }
             Err(_) => {
                 message = String::from_utf8_lossy(&new_raw).to_string();
@@ -1356,18 +1365,60 @@ pub fn run(mut args: Args) -> Result<()> {
     };
     let mut committer_raw = Vec::new();
     if let Some(ref enc_label) = encoding {
-        author_raw = grit_lib::commit_encoding::encode_header_text(enc_label, &author)
-            .ok_or_else(|| anyhow::anyhow!("unsupported i18n.commitencoding: {enc_label}"))?;
-        committer_raw = grit_lib::commit_encoding::encode_header_text(enc_label, &committer)
-            .ok_or_else(|| anyhow::anyhow!("unsupported i18n.commitencoding: {enc_label}"))?;
-        if raw_message.is_none() {
-            raw_message = Some(
-                grit_lib::commit_encoding::encode_unicode(
-                    enc_label,
-                    message.trim_end_matches('\n'),
-                )
-                .ok_or_else(|| anyhow::anyhow!("unsupported i18n.commitencoding: {enc_label}"))?,
-            );
+        // Git stores the identity lines verbatim and never transcodes them; the
+        // raw author/committer name bytes are written exactly as configured (in
+        // the same charset as i18n.commitEncoding). We only re-encode when the
+        // resolved identity actually contains non-ASCII characters — for ASCII
+        // (the common case) the UTF-8 string is already the correct byte
+        // sequence, and encoding_rs's ISO-2022-JP encoder would otherwise mangle
+        // control bytes via HTML entity escaping.
+        if author_raw.is_empty() && !author.is_ascii() {
+            author_raw = grit_lib::commit_encoding::encode_header_text(enc_label, &author)
+                .ok_or_else(|| anyhow::anyhow!("unsupported i18n.commitencoding: {enc_label}"))?;
+        }
+        if !committer.is_ascii() {
+            committer_raw = grit_lib::commit_encoding::encode_header_text(enc_label, &committer)
+                .ok_or_else(|| anyhow::anyhow!("unsupported i18n.commitencoding: {enc_label}"))?;
+        }
+        // The commit message body is stored verbatim when it already has a raw
+        // byte representation (e.g. a `-F` file already in this charset). When the
+        // message originates from a Unicode source (`-m`, an editor, or a `-s`
+        // sign-off trailer built from a non-ASCII committer name), its bytes must
+        // match the declared encoding: encode the Unicode body to the charset so a
+        // Latin-1 / EUC-JP committer name in the trailer is stored in that charset
+        // rather than as mislabeled UTF-8.
+        if raw_message.is_none() && !message.is_ascii() {
+            let body = message.trim_end_matches('\n');
+            if let Some(encoded) = grit_lib::commit_encoding::encode_unicode(enc_label, body) {
+                raw_message = Some(encoded);
+            }
+        }
+    }
+
+    // Git refuses a NUL byte anywhere in the commit log message (commit.c:
+    // commit_tree_extended). A UTF-16 message file, for example, is rejected here.
+    {
+        let body_bytes: &[u8] = match raw_message {
+            Some(ref r) => r.as_slice(),
+            None => message.as_bytes(),
+        };
+        if body_bytes.contains(&0) {
+            bail!("a NUL byte in commit log message not allowed.");
+        }
+    }
+
+    // When the effective encoding is UTF-8 (no encoding header), Git still
+    // validates the assembled message body and warns when it is not strictly
+    // valid UTF-8 (see commit.c:verify_utf8). Replicate that warning here.
+    if encoding.is_none() {
+        let body_bytes: &[u8] = match raw_message {
+            Some(ref r) => r.as_slice(),
+            None => message.as_bytes(),
+        };
+        if !grit_lib::commit_encoding::is_strict_utf8(body_bytes) {
+            eprintln!("Warning: commit message did not conform to UTF-8.");
+            eprintln!("You may want to amend it after fixing the message, or set the config");
+            eprintln!("variable i18n.commitEncoding to the encoding your project uses.");
         }
     }
     let commit_data = CommitData {
@@ -3073,25 +3124,22 @@ fn read_message_file_raw(file_path: &str) -> Result<Vec<u8>> {
 }
 
 fn raw_to_message_result(raw: Vec<u8>) -> Result<MessageResult> {
-    match String::from_utf8(raw.clone()) {
-        Ok(s) => Ok(MessageResult {
-            message: ensure_trailing_newline(&s),
-            raw_bytes: None,
-            from_merge_msg: false,
-        }),
-        Err(_) => {
-            let lossy = String::from_utf8_lossy(&raw).to_string();
-            let mut raw_nl = raw;
-            if !raw_nl.ends_with(b"\n") {
-                raw_nl.push(b'\n');
-            }
-            Ok(MessageResult {
-                message: ensure_trailing_newline(&lossy),
-                raw_bytes: Some(raw_nl),
-                from_merge_msg: false,
-            })
-        }
+    // Git stores the `-F` file content verbatim and never transcodes it; the
+    // raw bytes flow through to the commit object unchanged. We always retain
+    // the raw bytes (not only when they are non-UTF-8) so that messages already
+    // in a non-UTF-8 `i18n.commitEncoding` (or 7-bit encodings like ISO-2022-JP
+    // that happen to be valid UTF-8) are preserved exactly. The lossy string is
+    // kept only for cleanup/empty-detection bookkeeping.
+    let lossy = String::from_utf8_lossy(&raw).to_string();
+    let mut raw_nl = raw;
+    if !raw_nl.is_empty() && !raw_nl.ends_with(b"\n") {
+        raw_nl.push(b'\n');
     }
+    Ok(MessageResult {
+        message: ensure_trailing_newline(&lossy),
+        raw_bytes: Some(raw_nl),
+        from_merge_msg: false,
+    })
 }
 
 fn build_initial_commit_buffer(
