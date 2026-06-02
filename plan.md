@@ -213,6 +213,7 @@
 **Updated:** 2026-06-01 · Source of truth for counts: `data/test-files.csv`.
 
 ## Current claimed item
+- [x] `t7300-clean` — made clean porcelain fully pass by preserving harness global config and surfacing unreadable-dir failures.
 - [x] `t13190-log-format-body` — make the log format body/subject placeholder test pass.
 - [x] t1 one-pass setup-cwd sweep — wrap affected setup blocks so assertions run from the trash root.
 - [x] `t0081-find-pack` — print pack paths like upstream `test-tool find-pack`.

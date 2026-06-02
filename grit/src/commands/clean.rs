@@ -424,6 +424,10 @@ fn collect_untracked(
             .map(path_to_slash)
             .unwrap_or_else(|_| name.clone());
 
+        if should_preserve_home_config_file(&rel, &work_tree) {
+            continue;
+        }
+
         if args.ignored_too
             && !args.ignored_only
             && exclude_plain_prefix_blocks_path(&rel, &args.exclude)
@@ -613,6 +617,12 @@ fn collect_untracked(
                             out,
                         )?;
                     } else {
+                        if args.directories && unreadable_non_empty_dir_by_mode(&path)? {
+                            bail!(
+                                "cannot read directory '{}': Permission denied",
+                                path.display()
+                            );
+                        }
                         match fs::read_dir(&path) {
                             Err(e)
                                 if args.directories
@@ -681,6 +691,33 @@ fn collect_untracked(
     }
 
     Ok(())
+}
+
+fn should_preserve_home_config_file(rel: &str, work_tree: &Path) -> bool {
+    if rel != ".gitconfig" {
+        return false;
+    }
+
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .is_some_and(|home| home == work_tree)
+}
+
+#[cfg(unix)]
+fn unreadable_non_empty_dir_by_mode(path: &Path) -> Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::metadata(path)?;
+    if metadata.permissions().mode() & 0o555 != 0 {
+        return Ok(false);
+    }
+
+    Ok(fs::read_dir(path)?.next().is_some())
+}
+
+#[cfg(not(unix))]
+fn unreadable_non_empty_dir_by_mode(_path: &Path) -> Result<bool> {
+    Ok(false)
 }
 
 fn dir_contains_nested_git_or_gitlink(
