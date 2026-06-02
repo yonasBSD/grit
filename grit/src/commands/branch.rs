@@ -2,6 +2,10 @@
 
 use crate::branch_ref_format::{expand_branch_format, BranchFormatContext, BranchFormatError};
 use crate::commands::worktree_refs;
+use crate::git_column::{
+    apply_column_cli_arg, finalize_colopts, parse_column_tokens_into, print_columns,
+    term_columns_minus_one, ColOpts, ColumnOptions,
+};
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
 use grit_lib::config::{ConfigFile, ConfigScope, ConfigSet};
@@ -216,6 +220,13 @@ pub fn run(args: Args) -> Result<()> {
         eprintln!("error: unknown option `no-all'");
         eprintln!("usage: git branch [<options>] [-r | -a] [--merged] [--no-merged]");
         std::process::exit(129);
+    }
+
+    // `git branch --column` (explicitly enabled on the command line) is incompatible with `-v`
+    // (Git `die("options '%s' and '%s' cannot be used together", "--column", "--verbose")`).
+    if args.verbose > 0 && args.column.is_some() && !args.no_column {
+        eprintln!("fatal: options '--column' and '--verbose' cannot be used together");
+        std::process::exit(128);
     }
 
     // `git branch -v <pattern>` without `--list` is not a pattern listing mode; a glob is invalid
@@ -454,12 +465,73 @@ fn is_glob_branch_pattern(s: &str) -> bool {
     s.contains('*') || s.contains('?') || s.contains('[')
 }
 
-fn abbrev_for_branch_verbose(repo: &Repository, oid: &ObjectId) -> String {
-    let n = ConfigSet::load(Some(&repo.git_dir), true)
-        .ok()
-        .and_then(|c| c.get("core.abbrev"))
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(7);
+/// Resolve the abbreviation length for `git branch -v` listings.
+///
+/// Returns `None` to mean "do not abbreviate" (full 40-hex). `--abbrev`/`--no-abbrev`/
+/// `core.abbrev` follow Git's rules: `--abbrev=0`, `--no-abbrev`, and `core.abbrev=no`
+/// disable abbreviation; an explicit `--abbrev` length wins over `core.abbrev`.
+fn resolve_abbrev_len(repo: &Repository, args: &Args) -> Option<usize> {
+    if args.no_abbrev {
+        return None;
+    }
+    if let Some(ref raw) = args.abbrev {
+        // `--abbrev` with no value defaults (clap) to "7"; `--abbrev=0` disables.
+        return match raw.parse::<usize>() {
+            Ok(0) => None,
+            Ok(n) => Some(n),
+            Err(_) => Some(7),
+        };
+    }
+    // Fall back to core.abbrev; `no`/`false`/`0` disable abbreviation.
+    let cfg = ConfigSet::load(Some(&repo.git_dir), true).ok();
+    match cfg.and_then(|c| c.get("core.abbrev")) {
+        Some(v) => {
+            let v = v.trim();
+            if v.eq_ignore_ascii_case("no") || v.eq_ignore_ascii_case("false") || v == "0" {
+                None
+            } else {
+                v.parse::<usize>().ok().or(Some(7))
+            }
+        }
+        None => Some(7),
+    }
+}
+
+/// Build the column options for `git branch` listings (`git_column_config` for "branch" plus the
+/// `--column`/`--no-column` CLI flags), then resolve `auto` against stdout.
+fn build_branch_colopts(repo: &Repository, args: &Args) -> ColOpts {
+    let mut colopts = ColOpts::new();
+    if let Ok(cfg) = ConfigSet::load(Some(&repo.git_dir), true) {
+        if let Some(v) = cfg.get("column.ui") {
+            let _ = parse_column_tokens_into(&v, &mut colopts);
+        }
+        if let Some(v) = cfg.get("column.branch") {
+            let _ = parse_column_tokens_into(&v, &mut colopts);
+        }
+    }
+    if args.no_column {
+        let _ = parse_column_tokens_into("never", &mut colopts);
+    } else if let Some(ref style) = args.column {
+        // clap supplies "always" when `--column` is given with no value.
+        let arg = if style == "always" {
+            None
+        } else {
+            Some(style.as_str())
+        };
+        let _ = apply_column_cli_arg(&mut colopts, arg);
+    }
+    finalize_colopts(&mut colopts, None);
+    colopts
+}
+
+fn abbrev_for_branch_verbose(
+    repo: &Repository,
+    oid: &ObjectId,
+    abbrev_len: Option<usize>,
+) -> String {
+    let Some(n) = abbrev_len else {
+        return oid.to_hex();
+    };
     abbreviate_object_id(repo, *oid, n).unwrap_or_else(|_| {
         let h = oid.to_hex();
         let take = n.clamp(4, 40).min(h.len());
@@ -718,6 +790,45 @@ fn list_branches(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
         )
     };
 
+    let abbrev_len = resolve_abbrev_len(repo, args);
+
+    // Column layout (`--column` / `column.ui` / `column.branch`). Only applies to non-verbose,
+    // non-`--format` listing; each item carries its `* `/`+ `/`  ` prefix so `print_columns`
+    // aligns them the way Git does.
+    let colopts = build_branch_colopts(repo, args);
+    if colopts.is_active() && args.verbose == 0 {
+        let mut items: Vec<String> = Vec::new();
+        for b in &branches {
+            let is_current = !b.is_remote && b.name == current_branch;
+            let in_other_wt = b.full_refname.as_ref().is_some_and(|r| {
+                occupied.get(r).is_some_and(|p| {
+                    if let Some(wt) = repo.work_tree.as_deref() {
+                        p != &wt.display().to_string()
+                    } else {
+                        true
+                    }
+                })
+            });
+            let prefix = if is_current {
+                "* "
+            } else if in_other_wt {
+                "+ "
+            } else {
+                "  "
+            };
+            let sym = b.symref_suffix.as_deref().unwrap_or("");
+            items.push(format!("{prefix}{}{sym}", b.name));
+        }
+        let copts = ColumnOptions {
+            width: Some(term_columns_minus_one()),
+            padding: 1,
+            indent: String::new(),
+            nl: "\n".to_owned(),
+        };
+        print_columns(&mut out, &items, colopts, &copts)?;
+        return Ok(());
+    }
+
     // Verbose listing: Git `calc_maxwidth` includes detached HEAD description width so the OID
     // column lines up with `* (HEAD detached ...)`.
     let max_name_len = if args.verbose > 0 {
@@ -750,7 +861,7 @@ fn list_branches(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
         }
         if args.verbose > 0 {
             if let Some(oid) = head.oid() {
-                let short = abbrev_for_branch_verbose(repo, oid);
+                let short = abbrev_for_branch_verbose(repo, oid, abbrev_len);
                 let subject = commit_subject(&repo.odb, oid).unwrap_or_default();
                 write!(out, " {short} {subject}")?;
             }
@@ -801,7 +912,7 @@ fn list_branches(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
         let display_name = format!("{}{}", b.name, sym_out);
 
         if args.verbose > 0 {
-            let short = abbrev_for_branch_verbose(repo, &b.oid);
+            let short = abbrev_for_branch_verbose(repo, &b.oid, abbrev_len);
             let subject = commit_subject(&repo.odb, &b.oid).unwrap_or_default();
 
             if !b.is_remote {
@@ -1951,7 +2062,7 @@ fn rename_branch(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
     if !force && grit_lib::refs::resolve_ref(&repo.git_dir, &new_ref).is_ok() {
         bail!("A branch named '{new_name}' already exists.");
     }
-    if let Some(conflict) = ref_namespace_conflict(repo, &new_ref) {
+    if let Some(conflict) = ref_namespace_conflict_excluding(repo, &new_ref, Some(&old_ref)) {
         eprintln!("error: '{conflict}' exists; cannot create '{new_ref}'");
         bail!("fatal: branch rename failed");
     }
@@ -2106,14 +2217,36 @@ fn get_reflog_identity() -> String {
     let name = std::env::var("GIT_COMMITTER_NAME").unwrap_or_else(|_| "Test User".to_string());
     let email =
         std::env::var("GIT_COMMITTER_EMAIL").unwrap_or_else(|_| "test@example.com".to_string());
-    let date = std::env::var("GIT_COMMITTER_DATE").unwrap_or_else(|_| {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        format!("{now} +0000")
-    });
+    let date = reflog_committer_date();
     format!("{name} <{email}> {date}")
+}
+
+/// Reflog timestamp as `<unix-epoch> <±HHMM>`. A `GIT_COMMITTER_DATE` may be in any human form
+/// (e.g. `2005-05-26 23:30`); Git parses it to epoch+tz before writing the reflog, otherwise
+/// `git reflog show` cannot parse the line. Falls back to the current time.
+fn reflog_committer_date() -> String {
+    if let Ok(raw) = std::env::var("GIT_COMMITTER_DATE") {
+        let raw = raw.trim();
+        // Already in `<epoch> <tz>` form? keep it.
+        if let Some((secs, tz)) = raw.split_once(' ') {
+            if secs.parse::<i64>().is_ok()
+                && tz.len() == 5
+                && (tz.starts_with('+') || tz.starts_with('-'))
+            {
+                return raw.to_owned();
+            }
+        }
+        if let Ok((ts, off_min)) = grit_lib::git_date::parse::parse_date_basic(raw) {
+            let sign = if off_min < 0 { '-' } else { '+' };
+            let abs = off_min.abs();
+            return format!("{ts} {sign}{:02}{:02}", abs / 60, abs % 60);
+        }
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("{now} +0000")
 }
 
 /// Rename branch config sections.
@@ -2285,9 +2418,23 @@ fn copy_branch(repo: &Repository, head: &HeadState, args: &Args) -> Result<()> {
 }
 
 fn ref_namespace_conflict(repo: &Repository, refname: &str) -> Option<String> {
+    ref_namespace_conflict_excluding(repo, refname, None)
+}
+
+/// Like [`ref_namespace_conflict`] but ignores `exclude` (the ref being renamed/copied away),
+/// which Git removes as part of the same transaction so it never counts as a D/F conflict
+/// (e.g. `git branch -m m m/m`, `git branch -m n/n n`).
+fn ref_namespace_conflict_excluding(
+    repo: &Repository,
+    refname: &str,
+    exclude: Option<&str>,
+) -> Option<String> {
     let components: Vec<&str> = refname.split('/').collect();
     for i in 1..components.len() {
         let prefix = components[..i].join("/");
+        if Some(prefix.as_str()) == exclude {
+            continue;
+        }
         if prefix.starts_with("refs/")
             && grit_lib::refs::resolve_ref(&repo.git_dir, &prefix).is_ok()
         {
@@ -2300,7 +2447,7 @@ fn ref_namespace_conflict(repo: &Repository, refname: &str) -> Option<String> {
         .ok()?
         .into_iter()
         .map(|(name, _)| name)
-        .find(|name| name.starts_with(&prefix))
+        .find(|name| name.starts_with(&prefix) && Some(name.as_str()) != exclude)
 }
 
 /// Collect branch names from a refs directory.
