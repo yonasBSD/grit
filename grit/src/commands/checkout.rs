@@ -4449,6 +4449,15 @@ checking out of the index."
                 } else if ours || theirs {
                     let stage2 = index.get(path_bytes, 2).cloned();
                     let stage3 = index.get(path_bytes, 3).cloned();
+                    if no_overlay && ((theirs && stage3.is_none()) || (ours && stage2.is_none())) {
+                        let abs = work_tree.join(&rel);
+                        if abs.is_file() || abs.is_symlink() {
+                            let _ = std::fs::remove_file(&abs);
+                            updated_paths += 1;
+                            checkout_written_paths.insert(path_bytes.to_vec());
+                        }
+                        continue;
+                    }
                     let chosen = if theirs {
                         stage3.or(stage2)
                     } else {
