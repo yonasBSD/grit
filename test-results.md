@@ -15,6 +15,8 @@ Updated: 2026-06-01
   checkout in an unborn repository was made a failure.
 - t2 focus: `./scripts/run-tests.sh t2017-checkout-orphan.sh --verbose` passes 13/13 after orphan
   branch reflog handling and missing reflog selector verification were fixed.
+- t2 focus: `./scripts/run-tests.sh t2018-checkout-branch.sh --verbose` passes 25/25 after invalid
+  branch start-point reporting was fixed.
 - t2 add/update typechange: `./scripts/run-tests.sh t2201-add-update-typechange.sh --verbose`
   passes 6/6 after symlink-parent deletion and gitlink typechange handling in diff/add/commit.
 - t2 focus: `./scripts/run-tests.sh t2016-checkout-patch.sh --verbose` passes 19/19 with the

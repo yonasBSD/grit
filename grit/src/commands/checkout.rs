@@ -805,7 +805,7 @@ pub fn run(mut args: Args) -> Result<()> {
                 if args.track.is_some() {
                     bail!("'--track' cannot be used with updating paths");
                 }
-                bail!("Cannot update paths and switch to branch at the same time.");
+                bail!("Cannot update paths and switch to branch at the same time; start point is not a commit.");
             }
             let pre_head_branch = if args.track.is_some() {
                 match resolve_head(&repo.git_dir) {
@@ -938,12 +938,15 @@ pub fn run(mut args: Args) -> Result<()> {
         } else {
             raw_new_branch.as_str()
         };
+        if target.is_none() && paths.len() == 1 {
+            target = Some(paths.remove(0));
+        }
         // -b takes at most one positional arg (start point)
         if !paths.is_empty() || args.rest.len() > 1 {
             if args.track.is_some() {
                 bail!("'--track' cannot be used with updating paths");
             }
-            bail!("Cannot update paths and switch to branch at the same time.");
+            bail!("Cannot update paths and switch to branch at the same time; start point is not a commit.");
         }
         // Capture the current HEAD branch before checkout (for tracking setup)
         let pre_head_branch = if target.is_none() && args.track.is_some() {
@@ -2321,7 +2324,10 @@ fn create_and_switch_branch(
             {
                 reject_ambiguous_short_ref(repo, s)?;
             }
-            resolve_to_commit(repo, s)?
+            match resolve_to_commit(repo, s) {
+                Ok(oid) => oid,
+                Err(_) => bail!("'{s}' is not a commit"),
+            }
         }
         None => {
             match head.oid() {
