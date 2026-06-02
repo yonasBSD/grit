@@ -47,6 +47,140 @@ fn write_eol_record<W: Write + ?Sized>(
     write!(out, "{index_field:<8}{wt_field:<8}{attr_field:<22}\t{name}")
 }
 
+/// Object type name for an index entry mode (Git `object_type`): gitlink → commit,
+/// directory → tree, everything else (regular/exec/symlink) → blob.
+fn ls_format_objecttype(mode: u32) -> &'static str {
+    match mode & 0o170000 {
+        0o160000 => "commit",
+        0o040000 => "tree",
+        _ => "blob",
+    }
+}
+
+/// Object size for `%(objectsize)` (Git `expand_objectsize`): blob size, or `-` for non-blobs.
+/// `padded` right-justifies in a 7-wide field.
+fn ls_format_objectsize(entry: &IndexEntry, repo: &Repository, padded: bool) -> String {
+    let is_blob = matches!(entry.mode & 0o170000, 0o100000 | 0o120000);
+    let value = if is_blob {
+        match repo.odb.read(&entry.oid) {
+            Ok(obj) => obj.data.len().to_string(),
+            Err(_) => "-".to_string(),
+        }
+    } else {
+        "-".to_string()
+    };
+    if padded {
+        format!("{value:>7}")
+    } else {
+        value
+    }
+}
+
+/// Expand a `git ls-files --format` template for one index entry (Git `show_ce_fmt`).
+///
+/// Supports `%%`, `%n`, `%xXX` literal escapes and the `%(...)` atoms:
+/// objectmode, objectname, objecttype, objectsize[:padded], stage, eolinfo:index,
+/// eolinfo:worktree, eolattr, path. Output is byte-oriented to preserve the path encoding.
+#[allow(clippy::too_many_arguments)]
+fn expand_ls_format(
+    fmt: &str,
+    entry: &IndexEntry,
+    display_name: &str,
+    repo_rel_path: &str,
+    work_tree: &Path,
+    repo: &Repository,
+    attrs_for_eol: &[grit_lib::crlf::AttrRule],
+    config: &grit_lib::config::ConfigSet,
+) -> Result<Vec<u8>> {
+    let bytes = fmt.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(fmt.len());
+    let is_regular = matches!(entry.mode & 0o170000, 0o100000);
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        let rest = &fmt[i + 1..];
+        if let Some(after) = rest.strip_prefix('%') {
+            out.push(b'%');
+            i = fmt.len() - after.len();
+            continue;
+        }
+        if let Some(after) = rest.strip_prefix('n') {
+            out.push(b'\n');
+            i = fmt.len() - after.len();
+            continue;
+        }
+        if let Some(hex) = rest.strip_prefix('x') {
+            let hb = hex.as_bytes();
+            if hb.len() >= 2 {
+                if let Ok(byte) = u8::from_str_radix(&hex[..2], 16) {
+                    out.push(byte);
+                    i = (i + 1) + 3; // consume "%xHH"
+                    continue;
+                }
+            }
+        }
+        let atom = |name: &str| rest.strip_prefix(name);
+        if let Some(after) = atom("(objectmode)") {
+            out.extend_from_slice(format!("{:06o}", entry.mode).as_bytes());
+            i = fmt.len() - after.len();
+        } else if let Some(after) = atom("(objectname)") {
+            out.extend_from_slice(entry.oid.to_hex().as_bytes());
+            i = fmt.len() - after.len();
+        } else if let Some(after) = atom("(objecttype)") {
+            out.extend_from_slice(ls_format_objecttype(entry.mode).as_bytes());
+            i = fmt.len() - after.len();
+        } else if let Some(after) = atom("(objectsize:padded)") {
+            out.extend_from_slice(ls_format_objectsize(entry, repo, true).as_bytes());
+            i = fmt.len() - after.len();
+        } else if let Some(after) = atom("(objectsize)") {
+            out.extend_from_slice(ls_format_objectsize(entry, repo, false).as_bytes());
+            i = fmt.len() - after.len();
+        } else if let Some(after) = atom("(stage)") {
+            out.extend_from_slice(format!("{}", entry.stage()).as_bytes());
+            i = fmt.len() - after.len();
+        } else if let Some(after) = atom("(eolinfo:index)") {
+            if is_regular && entry.oid != grit_lib::diff::zero_oid() {
+                if let Ok(obj) = repo.odb.read(&entry.oid) {
+                    out.extend_from_slice(
+                        grit_lib::crlf::gather_convert_stats_ascii(&obj.data).as_bytes(),
+                    );
+                }
+            }
+            i = fmt.len() - after.len();
+        } else if let Some(after) = atom("(eolinfo:worktree)") {
+            let wt_path = work_tree.join(repo_rel_path);
+            if let Ok(meta) = std::fs::symlink_metadata(&wt_path) {
+                if meta.file_type().is_file() {
+                    if let Ok(data) = std::fs::read(&wt_path) {
+                        out.extend_from_slice(
+                            grit_lib::crlf::gather_convert_stats_ascii(&data).as_bytes(),
+                        );
+                    }
+                }
+            }
+            i = fmt.len() - after.len();
+        } else if let Some(after) = atom("(eolattr)") {
+            let attr_str = grit_lib::crlf::convert_attr_ascii_for_ls_files(
+                attrs_for_eol,
+                repo_rel_path,
+                config,
+            );
+            out.extend_from_slice(attr_str.as_bytes());
+            i = fmt.len() - after.len();
+        } else if let Some(after) = atom("(path)") {
+            out.extend_from_slice(display_name.as_bytes());
+            i = fmt.len() - after.len();
+        } else {
+            anyhow::bail!("fatal: bad ls-files format: {fmt}");
+        }
+    }
+    Ok(out)
+}
+
 /// Arguments for `grit ls-files`.
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -235,10 +369,25 @@ pub fn run(args: Args) -> Result<()> {
         anyhow::bail!("fatal: ls-files --recurse-submodules does not support --error-unmatch");
     }
 
-    if args.resolve_undo && args.format.is_some() {
-        anyhow::bail!(
-            "fatal: --format cannot be used with -s, -o, -k, -t, --resolve-undo, --deduplicate, --eol"
-        );
+    // `--format` is incompatible with several output modes (Git `cmd_ls_files`): -s/-u (stage),
+    // -o (others), -k (killed), -t (tag/-v/-f), --resolve-undo, --deduplicate, --eol.
+    // Git reports this as a usage error (exit code 129).
+    if args.format.is_some()
+        && (args.stage
+            || args.unmerged
+            || args.others
+            || args.killed
+            || args.resolve_undo
+            || args.deduplicate
+            || args.eol
+            || args.show_tag
+            || args.show_untracked_cache_tag
+            || args.show_fsmonitor_valid_tag)
+    {
+        return Err(anyhow::Error::new(ExplicitExit {
+            code: 129,
+            message: "fatal: --format cannot be used with -s, -o, -k, -t, --resolve-undo, --deduplicate, --eol".to_string(),
+        }));
     }
 
     let stdout = io::stdout();
@@ -330,15 +479,25 @@ pub fn run(args: Args) -> Result<()> {
         || !args.exclude.is_empty()
         || !args.exclude_from.is_empty()
         || args.exclude_per_directory.is_some();
-    let use_standard_ignores = args.exclude_standard || args.ignored;
-    let need_matcher =
-        use_standard_ignores || !args.exclude.is_empty() || !args.exclude_from.is_empty();
+    // `--ignored` only changes *which* files are shown (the excluded ones); it does NOT by itself
+    // pull in the standard exclude sources. Git requires an explicit `--exclude-standard`, `-x`,
+    // `-X`, or `--exclude-per-directory` to populate the exclude lists.
+    let use_standard_ignores = args.exclude_standard;
+    let need_matcher = use_standard_ignores
+        || !args.exclude.is_empty()
+        || !args.exclude_from.is_empty()
+        || args.exclude_per_directory.is_some();
     let mut matcher = if need_matcher {
         let mut m = if use_standard_ignores {
             IgnoreMatcher::from_repository(&repo).unwrap_or_default()
         } else {
             IgnoreMatcher::default()
         };
+        // `--exclude-per-directory=<file>` enables per-directory excludes from <file> (Git
+        // `EXC_DIRS`) without pulling in the standard global/info sources.
+        if let Some(ref per_dir) = args.exclude_per_directory {
+            m.set_per_directory_name(per_dir);
+        }
         if !args.exclude_from.is_empty() {
             m.add_exclude_from_files(&args.exclude_from, &cwd)?;
         }
@@ -528,8 +687,10 @@ pub fn run(args: Args) -> Result<()> {
                 let name = String::from_utf8_lossy(display.as_ref());
                 let path_str = std::str::from_utf8(&entry.path).unwrap_or("");
 
-                // Index / worktree EOL stats: match Git `convert.c` `gather_convert_stats_ascii`.
-                let index_eol = if entry.oid != grit_lib::diff::zero_oid() {
+                // Index / worktree EOL stats: match Git `write_eolinfo`, which only computes
+                // stats for **regular** files (`S_ISREG`); symlinks/gitlinks/dirs show empty.
+                let index_is_regular = matches!(entry.mode & 0o170000, 0o100000);
+                let index_eol = if index_is_regular && entry.oid != grit_lib::diff::zero_oid() {
                     if let Ok(obj) = repo.odb.read(&entry.oid) {
                         grit_lib::crlf::gather_convert_stats_ascii(&obj.data).to_string()
                     } else {
@@ -540,10 +701,12 @@ pub fn run(args: Args) -> Result<()> {
                 };
 
                 let wt_path = work_tree.join(path_str);
-                let wt_eol = if let Ok(data) = std::fs::read(&wt_path) {
-                    grit_lib::crlf::gather_convert_stats_ascii(&data).to_string()
-                } else {
-                    String::new()
+                let wt_eol = match std::fs::symlink_metadata(&wt_path) {
+                    Ok(meta) if meta.file_type().is_file() => match std::fs::read(&wt_path) {
+                        Ok(data) => grit_lib::crlf::gather_convert_stats_ascii(&data).to_string(),
+                        Err(_) => String::new(),
+                    },
+                    _ => String::new(),
                 };
 
                 let attr_str = grit_lib::crlf::convert_attr_ascii_for_ls_files(
@@ -568,21 +731,18 @@ pub fn run(args: Args) -> Result<()> {
                     &config,
                 )?;
                 let name = String::from_utf8_lossy(display.as_ref());
-                let hex = entry.oid.to_hex();
-                let line = fmt
-                    .replace("%(objectmode)", &format!("{:06o}", entry.mode))
-                    .replace("%(objectname)", &hex)
-                    .replace(
-                        "%(objecttype)",
-                        if entry.mode & 0o170000 == 0o040000 {
-                            "tree"
-                        } else {
-                            "blob"
-                        },
-                    )
-                    .replace("%(stage)", &format!("{}", entry.stage()))
-                    .replace("%(path)", &name);
-                write!(out, "{}", line)?;
+                let path_str = std::str::from_utf8(&entry.path).unwrap_or("");
+                let line = expand_ls_format(
+                    fmt,
+                    entry,
+                    &name,
+                    path_str,
+                    work_tree,
+                    &repo,
+                    &attrs_for_eol,
+                    &config,
+                )?;
+                out.write_all(&line)?;
                 out.write_all(&[term])?;
                 if args.debug {
                     write_ls_files_debug(&mut out, entry)?;
@@ -706,13 +866,22 @@ pub fn run(args: Args) -> Result<()> {
         let indexed_paths: BTreeSet<Vec<u8>> =
             index.entries.iter().map(|e| e.path.clone()).collect();
         let mut untracked = Vec::new();
+        // With `--ignored --directory`, Git collapses a directory to `dir/` only when the
+        // directory itself is ignored; directories that merely *contain* ignored files are
+        // recursed into so the individual ignored files are listed (t3001 "** patterns and
+        // --directory"). We still emit a `dir/` marker for genuinely empty directories (t3001
+        // "show empty ignored directory"), so we keep empty-directory emission on but force the
+        // walk to recurse into every non-empty directory, then decide the ignored-directory
+        // collapse afterwards from the ignore matcher.
+        let walk_emit_empty = args.directory;
+        let recurse_nonempty_dirs = args.directory && args.ignored;
         walk_worktree(
             work_tree,
             work_tree,
             &indexed_paths,
             &mut untracked,
             true,
-            args.directory,
+            walk_emit_empty,
             args.no_empty_directory,
             precompose_walk,
             if pathspec_filter.is_empty() {
@@ -722,6 +891,7 @@ pub fn run(args: Args) -> Result<()> {
             },
             &own_git_dir,
             args.directory && !args.ignored,
+            recurse_nonempty_dirs,
         )?;
         untracked.sort();
 
@@ -746,6 +916,11 @@ pub fn run(args: Args) -> Result<()> {
                 }
             }
 
+            // When `--ignored --directory` collapses an ignored file to the `dir/` of its
+            // shallowest ignored ancestor directory, this holds the repo-relative directory
+            // path (with trailing `/`) to emit instead of the file itself.
+            let mut ignored_dir_collapse: Option<Vec<u8>> = None;
+
             // Apply exclude filtering (always when matcher is loaded)
             if has_excludes || args.ignored || matcher.is_some() {
                 let path_str = String::from_utf8_lossy(path_bytes);
@@ -764,6 +939,51 @@ pub fn run(args: Args) -> Result<()> {
                 if !args.ignored && is_excluded {
                     continue; // --others with excludes: hide excluded files
                 }
+
+                // `--ignored --directory`: Git shows a directory as `dir/` only when the
+                // directory itself is ignored *and* has no tracked content under it (Git's
+                // `treat_directory` only collapses untracked-as-a-whole directories). Find the
+                // shallowest such ancestor directory and collapse the entry onto it. A directory
+                // that holds a tracked file (t3001 "empty ignored sub-directory") is not
+                // collapsed, so a deeper empty ignored subdirectory below it is shown instead;
+                // entries with no qualifying ignored ancestor are listed individually.
+                if args.ignored && args.directory {
+                    if let Some(ref mut m) = matcher {
+                        let trimmed = path_str.trim_end_matches('/');
+                        let segments: Vec<&str> = trimmed.split('/').collect();
+                        // For a file the last segment is the file name; for a `dir/` marker the
+                        // directory itself is a collapse candidate, so include all segments.
+                        let dir_segments = if is_dir {
+                            segments.len()
+                        } else {
+                            segments.len().saturating_sub(1)
+                        };
+                        let mut acc = String::new();
+                        for seg in segments.iter().take(dir_segments) {
+                            if !acc.is_empty() {
+                                acc.push('/');
+                            }
+                            acc.push_str(seg);
+                            let prefix_slash = format!("{acc}/");
+                            let has_tracked_under = indexed_paths
+                                .iter()
+                                .any(|t| t.starts_with(prefix_slash.as_bytes()));
+                            if has_tracked_under {
+                                continue;
+                            }
+                            let dir_ignored = m
+                                .check_path(&repo, Some(&index), &acc, true)
+                                .map(|(ig, _)| ig)
+                                .unwrap_or(false);
+                            if dir_ignored {
+                                let mut dir_bytes = acc.clone().into_bytes();
+                                dir_bytes.push(b'/');
+                                ignored_dir_collapse = Some(dir_bytes);
+                                break;
+                            }
+                        }
+                    }
+                }
             }
 
             if !pathspec_filter.is_empty() {
@@ -777,23 +997,33 @@ pub fn run(args: Args) -> Result<()> {
                 }
             }
 
+            let emit_bytes: &[u8] = ignored_dir_collapse.as_deref().unwrap_or(path_bytes);
             let display = format_ls_display_path(
                 args.full_name,
                 &cwd,
                 work_tree,
-                path_bytes,
+                emit_bytes,
                 &cwd_prefix,
                 &config,
             )?;
             let mut display = display.into_owned();
-            if path_bytes.ends_with(b"/") && !display.ends_with(b"/") {
+            if emit_bytes.ends_with(b"/") && !display.ends_with(b"/") {
                 display.push(b'/');
             }
             filtered_untracked.push(display);
         }
+        // The ignored-directory collapse above can emit the same `dir/` for many files; keep the
+        // first occurrence of each path so the directory is listed once (the list is already
+        // sorted by repo-relative path, so duplicates are adjacent).
+        if args.ignored && args.directory {
+            filtered_untracked.dedup();
+        }
 
-        // Collapse to directories if --directory (after making paths cwd-relative)
-        let output_paths = if args.directory {
+        // Collapse to directories if --directory (after making paths cwd-relative).
+        // In `--ignored` mode the per-file ignored-ancestor collapse above has already produced
+        // the final `dir/` vs individual-file shape, so the generic untracked-directory collapse
+        // is skipped (it would wrongly fold the individually-listed ignored files together).
+        let output_paths = if args.directory && !args.ignored {
             let mut collapsed = collapse_to_directories(&filtered_untracked);
             if args.no_empty_directory {
                 // Remove directory entries that have no file children
@@ -889,6 +1119,87 @@ pub fn run(args: Args) -> Result<()> {
                 write_eol_record(&mut out, "", &wt_eol, &attr_str, &qname)?;
             } else if args.show_tag {
                 write!(out, "? {qname}")?;
+            } else {
+                write!(out, "{qname}")?;
+            }
+            out.write_all(&[term])?;
+        }
+    }
+
+    // --killed: untracked working-tree paths that would be clobbered by a checkout because a
+    // leading directory of the path (or the path itself, expected to be a directory) is a tracked
+    // *file* in the index (Git `show_killed_files`).
+    if args.killed {
+        let indexed_paths: BTreeSet<Vec<u8>> =
+            index.entries.iter().map(|e| e.path.clone()).collect();
+        // Sorted list of stage-0 tracked names for prefix / immediate-successor lookups.
+        let mut cache_names: Vec<&[u8]> = index
+            .entries
+            .iter()
+            .filter(|e| e.stage() == 0)
+            .map(|e| e.path.as_slice())
+            .collect();
+        cache_names.sort_unstable();
+
+        let mut untracked = Vec::new();
+        walk_worktree(
+            work_tree,
+            work_tree,
+            &indexed_paths,
+            &mut untracked,
+            true,
+            false, // no --directory collapsing: killed needs the full file list
+            false,
+            precompose_walk,
+            if pathspec_filter.is_empty() {
+                None
+            } else {
+                Some(pathspec_filter.as_slice())
+            },
+            &own_git_dir,
+            false,
+            false,
+        )?;
+        untracked.sort();
+
+        for path_bytes in &untracked {
+            if path_bytes.ends_with(b"/") {
+                continue;
+            }
+            if !pathspec_filter.is_empty() {
+                let path_str = String::from_utf8_lossy(path_bytes);
+                if !grit_lib::pathspec::matches_pathspec_set_for_object_ls_tree(
+                    &pathspec_lib_strings,
+                    path_str.as_ref(),
+                    0o100644,
+                    &attrs_for_eol,
+                ) {
+                    continue;
+                }
+            }
+            if !path_is_killed(path_bytes, &cache_names) {
+                continue;
+            }
+            for (i, spec) in pathspec_filter.iter().enumerate() {
+                if grit_lib::pathspec::pathspec_is_exclude(&pathspec_lib_strings[i]) {
+                    continue;
+                }
+                if spec.matches(path_bytes) {
+                    matched_others[i] = true;
+                }
+            }
+            let display = format_ls_display_path(
+                args.full_name,
+                &cwd,
+                work_tree,
+                path_bytes,
+                &cwd_prefix,
+                &config,
+            )?;
+            let name = String::from_utf8_lossy(display.as_ref());
+            let qname = format_ls_path(&name, use_nul, quote_fully);
+            if args.show_tag {
+                write!(out, "K {qname}")?;
             } else {
                 write!(out, "{qname}")?;
             }
@@ -1125,7 +1436,8 @@ fn ls_files_recurse_submodules(
                 super_config,
             )?;
             let name = String::from_utf8_lossy(display.as_ref());
-            let index_eol = if entry.oid != grit_lib::diff::zero_oid() {
+            let index_is_regular = matches!(entry.mode & 0o170000, 0o100000);
+            let index_eol = if index_is_regular && entry.oid != grit_lib::diff::zero_oid() {
                 if let Ok(obj) = repo.odb.read(&entry.oid) {
                     grit_lib::crlf::gather_convert_stats_ascii(&obj.data).to_string()
                 } else {
@@ -1135,10 +1447,12 @@ fn ls_files_recurse_submodules(
                 String::new()
             };
             let wt_path = work_tree.join(path_str);
-            let wt_eol = if let Ok(data) = std::fs::read(&wt_path) {
-                grit_lib::crlf::gather_convert_stats_ascii(&data).to_string()
-            } else {
-                String::new()
+            let wt_eol = match std::fs::symlink_metadata(&wt_path) {
+                Ok(meta) if meta.file_type().is_file() => match std::fs::read(&wt_path) {
+                    Ok(data) => grit_lib::crlf::gather_convert_stats_ascii(&data).to_string(),
+                    Err(_) => String::new(),
+                },
+                _ => String::new(),
             };
             let attr_str =
                 grit_lib::crlf::convert_attr_ascii_for_ls_files(p.attrs_for_eol, path_str, config);
@@ -1157,21 +1471,17 @@ fn ls_files_recurse_submodules(
                 super_config,
             )?;
             let name = String::from_utf8_lossy(display.as_ref());
-            let hex = entry.oid.to_hex();
-            let line = fmt
-                .replace("%(objectmode)", &format!("{:06o}", entry.mode))
-                .replace("%(objectname)", &hex)
-                .replace(
-                    "%(objecttype)",
-                    if entry.mode & 0o170000 == 0o040000 {
-                        "tree"
-                    } else {
-                        "blob"
-                    },
-                )
-                .replace("%(stage)", &format!("{}", entry.stage()))
-                .replace("%(path)", &name);
-            write!(out, "{}", line)?;
+            let line = expand_ls_format(
+                fmt,
+                entry,
+                &name,
+                path_str,
+                work_tree,
+                repo,
+                p.attrs_for_eol,
+                config,
+            )?;
+            out.write_all(&line)?;
             out.write_all(&[p.term])?;
             if p.debug {
                 write_ls_files_debug(out, entry)?;
@@ -1270,6 +1580,10 @@ fn recurse_submodules_path_matches(
     } else {
         pathspec_filter.iter().any(|p| match p {
             Pathspec::Magic(_) => false,
+            // Glob pathspecs use Git fnmatch semantics where `?`/`*` cross `/` (e.g. `s???file`
+            // matches `sib/file`); route through the lib matcher rather than the path-aware
+            // local `glob_match`.
+            Pathspec::Glob(pat) => grit_lib::pathspec::pathspec_matches(pat, path),
             other => other.matches(path_bytes),
         })
     };
@@ -1286,7 +1600,8 @@ fn recurse_submodules_mark_pathspec_hits(
     for (i, spec) in pathspec_filter.iter().enumerate() {
         let hit = match spec {
             Pathspec::Magic(s) => grit_lib::pathspec::pathspec_contributes_match(s, path),
-            Pathspec::Glob(_) | Pathspec::Literal(_) => spec.matches(path_bytes),
+            Pathspec::Glob(pat) => grit_lib::pathspec::pathspec_matches(pat, path),
+            Pathspec::Literal(_) => spec.matches(path_bytes),
         };
         if hit {
             matched_index[i] = true;
@@ -1416,6 +1731,7 @@ fn walk_worktree(
     pathspecs: Option<&[Pathspec]>,
     own_git_dir: &std::path::Path,
     opaque_own_git_dir: bool,
+    recurse_nonempty_dirs: bool,
 ) -> Result<bool> {
     let mut rel_bytes = path_to_bytes(dir.strip_prefix(root).unwrap_or(dir));
     if precompose_unicode {
@@ -1504,6 +1820,7 @@ fn walk_worktree(
                 || hide_empty_directories
                 || has_tracked_under
                 || is_own_git_dir
+                || recurse_nonempty_dirs
                 || pathspecs.is_some_and(|ps| pathspec_requires_recurse_into_dir(&rel_bytes, ps));
             if emit_empty_directories && !must_recurse {
                 let mut dir_entry = rel_bytes.clone();
@@ -1524,6 +1841,7 @@ fn walk_worktree(
                 pathspecs,
                 own_git_dir,
                 opaque_own_git_dir,
+                recurse_nonempty_dirs,
             )? {
                 added = true;
             }
@@ -2192,9 +2510,72 @@ fn collapse_to_directories(paths: &[Vec<u8>]) -> Vec<Vec<u8>> {
     out
 }
 
+/// Whether an untracked working-tree file `name` would be "killed" by a checkout (Git
+/// `show_killed_files`). `cache_names` is the sorted list of stage-0 tracked paths.
+///
+/// A path is killed when either:
+/// - a leading directory component of `name` is registered in the index as a file, or
+/// - `name` itself (with no further `/`) is an exact prefix-directory of some cache entry
+///   (i.e. the cache expects `name/...`, so the file `name` must be removed).
+fn path_is_killed(name: &[u8], cache_names: &[&[u8]]) -> bool {
+    let index_has = |needle: &[u8]| cache_names.binary_search(&needle).is_ok();
+
+    let mut start = 0usize;
+    while start < name.len() {
+        match name[start..].iter().position(|&b| b == b'/') {
+            Some(off) => {
+                let dir = &name[..start + off];
+                if index_has(dir) {
+                    // A leading directory is a tracked file → this path is killed.
+                    return true;
+                }
+                start += off + 1;
+            }
+            None => {
+                // Final component: does the cache expect `name` to be a directory?
+                // Find the first cache entry sorting after `name`; if it is `name/...`, killed.
+                let pos = cache_names.partition_point(|c| *c <= name);
+                if let Some(next) = cache_names.get(pos) {
+                    if next.len() > name.len() && next.starts_with(name) && next[name.len()] == b'/'
+                    {
+                        return true;
+                    }
+                }
+                break;
+            }
+        }
+    }
+    false
+}
+
+/// Resolve the HEAD commit object id of a checked-out submodule at `path` (work tree directory).
+/// Returns `None` if `path/.git` does not resolve to a repository or HEAD cannot be read.
+fn submodule_head_oid(path: &std::path::Path) -> Option<grit_lib::objects::ObjectId> {
+    let dot_git = path.join(".git");
+    let git_dir = resolve_dot_git(&dot_git).ok()?;
+    grit_lib::refs::resolve_ref(&git_dir, "HEAD").ok()
+}
+
 /// Check whether an index entry's file has been modified on disk.
 fn is_modified(entry: &IndexEntry, path: &std::path::Path) -> bool {
     use std::os::unix::fs::MetadataExt;
+
+    // Gitlink (submodule): Git's `ce_match_stat_basic` first lstats the worktree path. If the
+    // path is missing or is not a directory, the gitlink is TYPE_CHANGED (modified) — e.g. a
+    // mode-160000 entry added via `update-index --cacheinfo` with nothing checked out (t3013).
+    // Only when the path is a directory does Git compare the submodule HEAD against the recorded
+    // gitlink oid; a populated-but-missing-.git checkout is treated as matching (ce_compare_gitlink).
+    if entry.mode == grit_lib::index::MODE_GITLINK {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_dir() => {
+                return match submodule_head_oid(path) {
+                    Some(head) => head != entry.oid,
+                    None => false,
+                };
+            }
+            _ => return true,
+        }
+    }
 
     let meta = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
