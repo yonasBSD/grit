@@ -1,6 +1,8 @@
 # Test Results
 
 Updated: 2026-06-01
+- t2 focus: `./scripts/run-tests.sh t2108-update-index-refresh-racy.sh --verbose` passes 6/6
+  after `core.trustctime=false` refresh stat comparison was fixed.
 - t2 focus: `./scripts/run-tests.sh t2020-checkout-detach.sh --verbose` passes 26/26 after
   detached HEAD warning/advice/tracking formatting fixes.
 - t2 focus: `./scripts/run-tests.sh t2060-switch.sh --verbose` passes 16/16 after switch

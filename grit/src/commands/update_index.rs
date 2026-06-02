@@ -1248,6 +1248,11 @@ fn refresh_index(
     // Returns (all_uptodate, index_modified)
     // all_uptodate: true if no files need updating
     // index_modified: true if index stat data was changed
+    let trust_ctime = ConfigSet::load(Some(&work_tree.join(".git")), true)
+        .ok()
+        .and_then(|cfg| cfg.get_bool("core.trustctime"))
+        .and_then(|v| v.ok())
+        .unwrap_or(true);
     if !allow_unmerged {
         if let Some(entry) = index.entries.iter().find(|entry| entry.stage() != 0) {
             let rel = std::str::from_utf8(&entry.path)
@@ -1294,7 +1299,7 @@ fn refresh_index(
                         grit_lib::objects::ObjectKind::Blob,
                         data,
                     );
-                    let stat_changed = !grit_lib::diff::stat_matches(entry, &meta);
+                    let stat_changed = !stat_matches_refresh(entry, &meta, trust_ctime);
                     if actual_oid != entry.oid {
                         eprintln!("{path_str}: needs update");
                         all_uptodate = false;
@@ -1305,7 +1310,7 @@ fn refresh_index(
                     continue;
                 }
                 // Check if stat data differs from index
-                let stat_changed = !grit_lib::diff::stat_matches(entry, &meta);
+                let stat_changed = !stat_matches_refresh(entry, &meta, trust_ctime);
                 if stat_changed {
                     // Check if content actually changed
                     let content_changed = if let Ok(data) = std::fs::read(&abs) {
@@ -1347,6 +1352,24 @@ fn refresh_entry_stat(entry: &mut IndexEntry, meta: &std::fs::Metadata) {
     entry.uid = refreshed.uid;
     entry.gid = refreshed.gid;
     entry.size = refreshed.size;
+}
+
+fn stat_matches_refresh(
+    entry: &IndexEntry,
+    meta: &std::fs::Metadata,
+    trust_ctime: bool,
+) -> bool {
+    if trust_ctime {
+        return grit_lib::diff::stat_matches(entry, meta);
+    }
+    use std::os::unix::fs::MetadataExt as _;
+    entry.mtime_sec == meta.mtime() as u32
+        && entry.mtime_nsec == meta.mtime_nsec() as u32
+        && entry.dev == meta.dev() as u32
+        && entry.ino == meta.ino() as u32
+        && entry.uid == meta.uid()
+        && entry.gid == meta.gid()
+        && entry.size == meta.size() as u32
 }
 
 /// CWD-relative prefix for pathspec matching (Git `PATHSPEC_PREFER_CWD` / `prefix_path`).

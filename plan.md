@@ -34,6 +34,8 @@
     branch guessing with `checkout.guess`, and refusal while a merge is in progress.
   - Completed: `t2020-checkout-detach.sh` (26/26). Added detached HEAD orphan warnings,
     previous-HEAD descriptions, tracking output parity, and `GIT_PRINT_SHA1_ELLIPSIS` formatting.
+  - Completed: `t2108-update-index-refresh-racy.sh` (6/6). `update-index --refresh` now honors
+    `core.trustctime=false` when deciding whether stat-only differences require rewriting.
   - Execution log: `logs/2026-06-01_2000-t2-family.md`.
 
 ---
