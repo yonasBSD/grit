@@ -25,6 +25,8 @@ Updated: 2026-06-01
   prior checkout-index fixes.
 - t2 focus: `./scripts/run-tests.sh t2031-checkout-index-symlink.sh --verbose` passes 25/25 with
   prior checkout-index fixes.
+- t2 focus: `./scripts/run-tests.sh t2082-parallel-checkout-attributes.sh --verbose` passes 5/5
+  with prior checkout/filter fixes.
 - t2 add/update typechange: `./scripts/run-tests.sh t2201-add-update-typechange.sh --verbose`
   passes 6/6 after symlink-parent deletion and gitlink typechange handling in diff/add/commit.
 - t2 focus: `./scripts/run-tests.sh t2016-checkout-patch.sh --verbose` passes 19/19 with the

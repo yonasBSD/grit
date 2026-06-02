@@ -69,6 +69,8 @@
     the path when the requested conflict side is absent.
   - Completed: `t2030-checkout-index-basic.sh` (27/27). Passed with prior checkout-index fixes.
   - Completed: `t2031-checkout-index-symlink.sh` (25/25). Passed with prior checkout-index fixes.
+  - Completed: `t2082-parallel-checkout-attributes.sh` (5/5). Passed with prior checkout/filter
+    fixes.
   - Completed: `t2201-add-update-typechange.sh` (6/6) by treating index paths under symlinked
     parents as deleted in diff/add/commit flows and by reporting worktree gitlink typechanges in
     `diff-index`.
