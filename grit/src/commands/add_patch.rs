@@ -41,6 +41,68 @@ fn blend_for_stage_hunks(
     )
 }
 
+/// Which prompt verb to use for the current file, mirroring Git's `prompt_mode_type`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HunkKind {
+    ModeChange,
+    Deletion,
+    Addition,
+    Hunk,
+}
+
+/// Build the bracketed permitted-letter suffix used in the interactive prompt, matching
+/// `add-patch.c`: navigation letters appear with multiple hunks, `,s` when the hunk can split,
+/// `,e` unless the file is a deletion, and `,p,P` always.
+fn prompt_suffix(n_hunks: usize, splittable: bool, is_deletion: bool) -> String {
+    let mut s = String::new();
+    if n_hunks > 1 {
+        // ,k / ,K (previous), ,j / ,J (next), ,g,/ for goto/search.
+        s.push_str(",k,K,j,J,g,/");
+    }
+    if splittable {
+        s.push_str(",s");
+    }
+    if !is_deletion {
+        s.push_str(",e");
+    }
+    s.push_str(",p,P");
+    s
+}
+
+/// 7-character abbreviated blob OID for `data` (Git's default short hash in patch headers).
+fn short_oid_of(odb: &Odb, data: &[u8]) -> String {
+    let _ = odb;
+    let oid = Odb::hash_object_data(ObjectKind::Blob, data);
+    oid.to_hex().chars().take(7).collect()
+}
+
+/// Number of sub-hunks the op range `start..end` would split into (gap-based, matching
+/// [`split_hunk_at_first_gap`]): one more than the count of internal equal-runs flanked by changes.
+fn splittable_into(ops: &[similar::DiffOp], start: usize, end: usize) -> usize {
+    let is_eq = |i: usize| matches!(ops.get(i), Some(similar::DiffOp::Equal { .. }));
+    let mut count = 1usize;
+    let mut i = start;
+    // Skip leading context.
+    while i < end && is_eq(i) {
+        i += 1;
+    }
+    while i < end {
+        // Consume a run of changes.
+        while i < end && !is_eq(i) {
+            i += 1;
+        }
+        // Consume the following equal run; if more changes follow, this is a split point.
+        let eq_start = i;
+        while i < end && is_eq(i) {
+            i += 1;
+        }
+        if eq_start < i && i < end {
+            count += 1;
+        }
+    }
+    count
+}
+
 /// Tunables for `git add -p` that come from `-U`/`--inter-hunk-context`/`--no-auto-advance`
 /// (or the corresponding `diff.*` config). Resolved in [`crate::commands::add`].
 pub(crate) struct PatchOptions {
@@ -185,14 +247,18 @@ pub(crate) fn run_add_patch(
             continue;
         }
 
-        let mode_differs = parse_mode_u32(&entry.old_mode) != parse_mode_u32(&entry.new_mode);
+        // An intent-to-add path (or a `DiffStatus::Added` entry) is rendered as a *new file*: the
+        // index side is empty and the prompt verb is "Stage addition", with no mode-change prompt.
+        let is_addition = entry.status == DiffStatus::Added || ie.intent_to_add();
+        let mode_differs =
+            !is_addition && parse_mode_u32(&entry.old_mode) != parse_mode_u32(&entry.new_mode);
         let content_differs = index_blob != work_blob;
 
         let mut effective_mode = ie.mode;
         let index_side_bytes = index_blob.clone();
 
         if mode_differs {
-            write!(out, "(1/1) Stage mode change [y,n,q,a,d,s,e,p,P,?]? ").ok();
+            write!(out, "(1/1) Stage mode change [y,n,q,a,d,e,p,P,?]? ").ok();
             out.flush().ok();
             match read_one_command(&mut reader, &mut out)? {
                 ReadCmd::Eof => {
@@ -200,7 +266,7 @@ pub(crate) fn run_add_patch(
                     return Ok(());
                 }
                 ReadCmd::Invalid => {}
-                ReadCmd::Char(c) => match c {
+                ReadCmd::Char { lower, .. } => match lower {
                     'y' => effective_mode = mode_from_metadata(&meta),
                     'q' => {
                         repo.write_index_at(&index_path, &mut index)?;
@@ -255,6 +321,9 @@ pub(crate) fn run_add_patch(
             let mut hunk_ranges: Vec<(usize, usize)> = vec![(0, n_ops)];
             let mut accepted = vec![false; hunk_ranges.len()];
             let mut hunk_cursor = 0usize;
+            // Render the file header + hunk body when arriving at a hunk; an invalid command or
+            // `?`/split-failure only re-prints the prompt (matching `add-patch.c`).
+            let mut render = true;
 
             'hunk_loop: loop {
                 let n_hunks = hunk_ranges.len();
@@ -264,27 +333,60 @@ pub(crate) fn run_add_patch(
 
                 let display_idx = hunk_cursor + 1;
                 let (s, e) = hunk_ranges[hunk_cursor];
-                let hunk_only = partial_unified_for_op_range(
-                    path_str.as_str(),
-                    &index_side_bytes,
-                    &cur_work,
-                    &ops[s..e],
-                    context,
-                    true,
-                );
 
-                writeln!(out, "diff --git a/{path_str} b/{path_str}").ok();
-                write!(out, "--- a/{path_str}\n+++ b/{path_str}\n").ok();
-                write!(out, "{hunk_only}").ok();
+                if render {
+                    let hunk_only = partial_unified_for_op_range(
+                        path_str.as_str(),
+                        &index_side_bytes,
+                        &cur_work,
+                        &ops[s..e],
+                        context,
+                        true,
+                    );
+
+                    // File header. An addition shows `new file mode`/`index 000..`/`--- /dev/null`,
+                    // matching `git diff` for an intent-to-add path; everything else uses `a/`,`b/`.
+                    writeln!(out, "diff --git a/{path_str} b/{path_str}").ok();
+                    if is_addition {
+                        let short = short_oid_of(odb, &cur_work);
+                        let new_mode = mode_from_metadata(&meta);
+                        writeln!(out, "new file mode {new_mode:06o}").ok();
+                        writeln!(out, "index 0000000..{short}").ok();
+                        write!(out, "--- /dev/null\n+++ b/{path_str}\n").ok();
+                    } else {
+                        write!(out, "--- a/{path_str}\n+++ b/{path_str}\n").ok();
+                    }
+                    write!(out, "{hunk_only}").ok();
+                }
+                render = true;
+
+                let kind = if is_addition {
+                    HunkKind::Addition
+                } else if mode_differs && hunk_cursor == 0 {
+                    HunkKind::ModeChange
+                } else {
+                    HunkKind::Hunk
+                };
+                let verb = match kind {
+                    HunkKind::ModeChange => "Stage mode change",
+                    HunkKind::Deletion => "Stage deletion",
+                    HunkKind::Addition => "Stage addition",
+                    HunkKind::Hunk => "Stage this hunk",
+                };
+                let splittable = splittable_into(&ops, s, e) > 1;
+                let suffix = prompt_suffix(n_hunks, splittable, false);
                 write!(
                     out,
-                    "({display_idx}/{n_hunks}) Stage this hunk [y,n,q,a,d,s,e,p,P,?]? "
+                    "({display_idx}/{n_hunks}) {verb} [y,n,q,a,d{suffix},?]? "
                 )
                 .ok();
                 out.flush().ok();
 
                 match read_one_command(&mut reader, &mut out)? {
                     ReadCmd::Eof => {
+                        // Git prints a trailing newline when leaving `patch_update_file` (the EOF
+                        // `break` falls through to `putchar('\n')`).
+                        writeln!(out).ok();
                         let blended = blend_for_stage_hunks(
                             &index_side_bytes,
                             &cur_work,
@@ -302,8 +404,11 @@ pub(crate) fn run_add_patch(
                         repo.write_index_at(&index_path, &mut index)?;
                         return Ok(());
                     }
-                    ReadCmd::Invalid => continue 'hunk_loop,
-                    ReadCmd::Char(c) => match c {
+                    ReadCmd::Invalid => {
+                        render = false;
+                        continue 'hunk_loop;
+                    }
+                    ReadCmd::Char { lower, raw } => match lower {
                         'y' => {
                             accepted[hunk_cursor] = true;
                             hunk_cursor += 1;
@@ -339,6 +444,7 @@ pub(crate) fn run_add_patch(
                         's' => {
                             if !split_hunk_at_first_gap(&mut hunk_ranges, hunk_cursor, &ops) {
                                 writeln!(out, "Sorry, cannot split this hunk").ok();
+                                render = false;
                                 continue 'hunk_loop;
                             }
                             let n = hunk_ranges.len();
@@ -350,7 +456,10 @@ pub(crate) fn run_add_patch(
                                 cur_work = edited;
                                 continue 'rediff;
                             }
-                            Err(_) => continue 'hunk_loop,
+                            Err(_) => {
+                                render = false;
+                                continue 'hunk_loop;
+                            }
                         },
                         '?' => {
                             writeln!(
@@ -364,9 +473,19 @@ pub(crate) fn run_add_patch(
                                  e - manually edit the current hunk\n"
                             )
                             .ok();
+                            render = false;
                             continue 'hunk_loop;
                         }
-                        _ => continue 'hunk_loop,
+                        ' ' => {
+                            render = false;
+                            continue 'hunk_loop;
+                        }
+                        _ => {
+                            // Git: `err(s, _("Unknown command '%s' ..."))`.
+                            writeln!(out, "Unknown command '{raw}' (use '?' for help)").ok();
+                            render = false;
+                            continue 'hunk_loop;
+                        }
                     },
                 }
             }
@@ -397,7 +516,18 @@ pub(crate) fn run_add_patch(
 enum ReadCmd {
     Eof,
     Invalid,
-    Char(char),
+    /// A single-character command. `lower` is folded for matching; `raw` keeps the original case
+    /// for the "Unknown command '<x>'" diagnostic.
+    Char {
+        lower: char,
+        raw: char,
+    },
+}
+
+impl ReadCmd {
+    fn ch(lower: char, raw: char) -> Self {
+        ReadCmd::Char { lower, raw }
+    }
 }
 
 fn read_one_command(reader: &mut impl BufRead, out: &mut impl Write) -> Result<ReadCmd> {
@@ -408,14 +538,15 @@ fn read_one_command(reader: &mut impl BufRead, out: &mut impl Write) -> Result<R
     let trimmed = line.trim_end_matches(['\n', '\r']);
     let t = trimmed.trim();
     if t.is_empty() {
-        return Ok(ReadCmd::Char(' '));
+        return Ok(ReadCmd::ch(' ', ' '));
     }
-    if t.len() > 1 {
-        writeln!(out, "Sorry, only one letter is expected, got '{t}'")?;
+    if t.chars().count() > 1 {
+        // Git: `err(s, _("Only one letter is expected, got '%s'"), ...)`.
+        writeln!(out, "Only one letter is expected, got '{t}'")?;
         return Ok(ReadCmd::Invalid);
     }
     let c = t.chars().next().unwrap_or(' ');
-    Ok(ReadCmd::Char(c.to_ascii_lowercase()))
+    Ok(ReadCmd::ch(c.to_ascii_lowercase(), c))
 }
 
 fn parse_mode_u32(m: &str) -> u32 {
@@ -482,7 +613,7 @@ fn handle_deleted_file(
                 return Ok(());
             }
             ReadCmd::Invalid => continue,
-            ReadCmd::Char(c) => match c {
+            ReadCmd::Char { lower, .. } => match lower {
                 'y' => {
                     accepted[hunk_cursor] = true;
                     hunk_cursor += 1;
