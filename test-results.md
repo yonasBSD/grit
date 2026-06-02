@@ -1,3 +1,8 @@
+## 2026-06-02 — t7300-clean
+
+- Focus harness: `./scripts/run-tests.sh t7300-clean.sh` passes 55/55 after updating clean behavior for unreadable non-empty directories and preserving the harness global config file.
+- `cargo check` completed with the existing warning backlog. `cargo test -p grit-lib --lib` passed (233 tests). `cargo clippy --fix --allow-dirty` completed with the known warning backlog and failed auto-fixes in unrelated files (`bundle_uri_test_tool.rs`, `mergetool.rs`, `reset.rs`, `sparse_checkout.rs`, `worktree.rs`); unrelated auto-fixes were not kept.
+
 # Test Results
 
 Updated: 2026-06-01
