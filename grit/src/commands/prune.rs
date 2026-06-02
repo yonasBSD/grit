@@ -215,8 +215,27 @@ fn collect_reachable(
         }
     }
 
-    // Seed from reflogs.
-    collect_reflog_oids(&repo.git_dir, &mut queue);
+    // Seed from reflogs unless gc is doing an aggressive `--prune=now` pass after reflog expiry.
+    if std::env::var_os("GRIT_PRUNE_IGNORE_REFLOGS").is_none() {
+        collect_reflog_oids(&repo.git_dir, &mut queue);
+    }
+
+    if let Ok(index) = repo.load_index() {
+        for entry in &index.entries {
+            if !entry.oid.is_zero() {
+                queue.push_back(entry.oid);
+            }
+        }
+        if let Some(records) = &index.resolve_undo {
+            for record in records.values() {
+                for (mode, oid) in record.modes.iter().zip(record.oids.iter()) {
+                    if *mode != 0 && !oid.is_zero() {
+                        queue.push_back(*oid);
+                    }
+                }
+            }
+        }
+    }
 
     // Match `git/reachable.c` `add_rebase_files`: OIDs recorded in in-progress rebase state
     // must stay reachable so `git prune` cannot delete `orig-head` before `rebase --abort`

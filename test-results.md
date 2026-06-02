@@ -1,8 +1,8 @@
 # Test Results
 
 Updated: 2026-06-01
-- t2 unresolve: `./scripts/run-tests.sh t2030-unresolve-info.sh --verbose` improved from 8/14 to
-  13/14 after checkout resolve-undo and rerere forget fixes; still in progress.
+- t2 unresolve: `./scripts/run-tests.sh t2030-unresolve-info.sh --verbose` passes 14/14 after
+  checkout resolve-undo, rerere forget, prune/gc, and fsck output fixes.
 - t2 focus: `./scripts/run-tests.sh t2108-update-index-refresh-racy.sh --verbose` passes 6/6
   after `core.trustctime=false` refresh stat comparison was fixed.
 - t2 focus: `./scripts/run-tests.sh t2020-checkout-detach.sh --verbose` passes 26/26 after

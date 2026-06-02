@@ -490,7 +490,7 @@ pub fn run(args: Args) -> Result<()> {
                 } else {
                     String::new()
                 };
-                eprintln!("dangling {} {}{}", kind.as_str(), oid.to_hex(), name_suffix);
+                println!("dangling {} {}{}", kind.as_str(), oid.to_hex(), name_suffix);
             }
             Issue::Unreachable { oid, kind } => {
                 let name_suffix = if name_objects {
@@ -501,7 +501,7 @@ pub fn run(args: Args) -> Result<()> {
                 } else {
                     String::new()
                 };
-                eprintln!(
+                println!(
                     "unreachable {} {}{}",
                     kind.as_str(),
                     oid.to_hex(),

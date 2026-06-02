@@ -36,10 +36,9 @@
     previous-HEAD descriptions, tracking output parity, and `GIT_PRINT_SHA1_ELLIPSIS` formatting.
   - Completed: `t2108-update-index-refresh-racy.sh` (6/6). `update-index --refresh` now honors
     `core.trustctime=false` when deciding whether stat-only differences require rewriting.
-  - In progress: `t2030-unresolve-info.sh` improved from 8/14 to 13/14 by clearing resolve-undo
+  - Completed: `t2030-unresolve-info.sh` (14/14) by clearing resolve-undo
     records on checkout tree switches and teaching `rerere forget` to use resolve-undo/subdir paths.
-    Remaining failure is `resolve-undo keeps blobs from gc`; initial cleanup still leaves
-    unreachable cruft after `gc --prune=now`.
+    Also fixed GC/prune reachability for index/resolve-undo objects and fsck unreachable output.
   - Execution log: `logs/2026-06-01_2000-t2-family.md`.
 
 ---
