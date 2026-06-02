@@ -809,6 +809,13 @@ fn tree_oid_for_treeish(repo: &Repository, oid: ObjectId) -> Result<ObjectId> {
 
 /// Resolve the tree OID for `git reset -p [<treeish>]`. Rejects `rev:path` blob forms.
 fn validate_reset_patch_treeish(repo: &Repository, treeish_spec: &str) -> Result<ObjectId> {
+    if treeish_spec == "HEAD" || treeish_spec == "@" {
+        let head = resolve_head(&repo.git_dir)?;
+        if head.oid().is_none() {
+            return ObjectId::from_hex("4b825dc642cb6eb9a060e54bf8d69288fbee4904")
+                .map_err(|e| anyhow::anyhow!("{e}"));
+        }
+    }
     if let Some((lhs, rhs)) = split_treeish_colon(treeish_spec) {
         if !lhs.is_empty() && !rhs.is_empty() {
             let oid = resolve_revision(repo, treeish_spec)
@@ -1139,7 +1146,7 @@ fn reset_paths(
     _quiet: bool,
     intent_to_add: bool,
 ) -> Result<()> {
-    if repo.work_tree.is_none() {
+    if repo.is_bare() {
         bail!("fatal: mixed reset is not allowed in a bare repository");
     }
     // On an unborn branch, the tree is empty (no commit exists yet). Otherwise accept any
@@ -1388,7 +1395,7 @@ Use '--' to separate paths from revisions, like this:\n\
                     return Ok(());
                 }
                 ResetMode::Mixed => {
-                    if repo.work_tree.is_none() {
+                    if repo.is_bare() {
                         bail!("fatal: mixed reset is not allowed in a bare repository");
                     }
                     // Mixed on unborn: clear the index
@@ -1428,7 +1435,7 @@ Use '--' to separate paths from revisions, like this:\n\
         Err(e) => return Err(e),
     };
 
-    if mode == ResetMode::Mixed && repo.work_tree.is_none() {
+    if mode == ResetMode::Mixed && repo.is_bare() {
         bail!("fatal: mixed reset is not allowed in a bare repository");
     }
 

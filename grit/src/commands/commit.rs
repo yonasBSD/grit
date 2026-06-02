@@ -703,7 +703,7 @@ pub fn run(mut args: Args) -> Result<()> {
             Err(e) => return Err(e.into()),
         };
 
-        if idx.entries.iter().any(|e| e.stage() != 0) {
+        if !args.dry_run && idx.entries.iter().any(|e| e.stage() != 0) {
             eprintln!("error: Committing is not possible because you have unmerged files.");
             eprintln!("hint: Fix them up in the work tree, and then use 'git add/rm <file>'");
             eprintln!("hint: as appropriate to mark resolution and make a commit.");
