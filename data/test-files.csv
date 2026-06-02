@@ -56,7 +56,7 @@ t0092-diagnose	t0	yes	4	4	0	true	ok	0
 t0095-bloom	t0	yes	11	11	0	true	ok	0
 t0100-previous	t0	yes	6	6	0	true	ok	0
 t0101-at-syntax	t0	yes	8	8	0	true	ok	0
-t0110-environment	t0	yes	31	26	5	false	ok	0
+t0110-environment	t0	yes	31	31	0	true	ok	0
 t0120-dot-git-dir	t0	yes	32	32	0	true	ok	0
 t0130-sha1-validation	t0	yes	30	30	0	true	ok	0
 t0200-gettext-basic	t0	skip	16	0	0	false	ok	0
