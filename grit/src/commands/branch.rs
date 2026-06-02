@@ -2261,18 +2261,21 @@ fn rename_branch(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
         bail!("fatal: branch rename failed");
     }
 
-    // Check if the new name is checked out in any worktree (including main)
-    let new_branch_current = head.branch_name() == Some(new_name)
-        || branch_checked_out_in_other_worktree(repo, new_name).is_some();
-    if new_branch_current {
-        bail!(
-            "fatal: cannot force update the branch '{}' used by worktree at '{}'",
-            new_name,
-            repo.work_tree
-                .as_deref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| ".".to_owned())
-        );
+    // The "cannot force update ... used by worktree" check only applies when the destination
+    // branch ref ACTUALLY EXISTS (Git `validate_new_branchname` short-circuits via
+    // `validate_branchname` when the ref is absent). A worktree whose HEAD points at a now-orphan
+    // symref (e.g. after a partial rename) must therefore NOT block a recovery rename. (t3200 33)
+    if grit_lib::refs::resolve_ref(&repo.git_dir, &new_ref).is_ok() {
+        let new_branch_worktree = if head.branch_name() == Some(new_name) {
+            repo.work_tree.as_deref().map(|p| p.display().to_string())
+        } else {
+            branch_checked_out_in_other_worktree(repo, new_name)
+        };
+        if let Some(wt_path) = new_branch_worktree {
+            bail!(
+                "fatal: cannot force update the branch '{new_name}' used by worktree at '{wt_path}'"
+            );
+        }
     }
 
     // Capture reflog bytes before `delete_ref`: that helper removes `logs/<refname>` too.
@@ -2320,8 +2323,10 @@ fn rename_branch(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
         fs::write(repo.git_dir.join("HEAD"), head_content)?;
     }
 
-    // Also update HEAD in worktrees that have the old branch checked out
-    update_worktree_heads(repo, old_name, new_name)?;
+    // Also update HEAD in worktrees that have the old branch checked out. Git updates each
+    // worktree HEAD that it can; if any cannot be updated (e.g. a stale HEAD.lock), the ones that
+    // succeeded stay updated but the command still fails (t3200 33).
+    let head_update_failed = update_worktree_heads(repo, old_name, new_name)?;
 
     // Rename reflog: migrate content captured before `delete_ref`, then append rename entry.
     let new_log = reflog_dir.join(&new_ref);
@@ -2375,6 +2380,13 @@ fn rename_branch(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
 
     // Rename config sections
     rename_branch_config(repo, old_name, new_name)?;
+
+    // The branch ref (and every reachable worktree HEAD) is renamed, but one or more worktree
+    // HEADs could not be updated (locked). Git still reports failure in this case (t3200 33).
+    if head_update_failed {
+        eprintln!("fatal: branch renamed to {new_name}, but HEAD is not updated");
+        std::process::exit(128);
+    }
 
     Ok(())
 }
@@ -2435,24 +2447,40 @@ fn worktree_rebasing_or_bisecting_branch(
     None
 }
 
-fn update_worktree_heads(repo: &Repository, old_name: &str, new_name: &str) -> Result<()> {
+/// Rewrite the HEAD symref of every linked worktree that has `old_name` checked out so it points
+/// at `new_name`. Git updates each worktree HEAD under a per-worktree ref lock; a worktree whose
+/// HEAD cannot be locked (a stale `HEAD.lock` exists) is left untouched and the rename reports
+/// failure afterward (Git `replace_each_worktree_head_symref`, t3200 33).
+///
+/// Returns `Ok(true)` when at least one worktree HEAD could not be updated.
+fn update_worktree_heads(repo: &Repository, old_name: &str, new_name: &str) -> Result<bool> {
     let worktrees_dir =
         grit_lib::refs::common_dir(&repo.git_dir).unwrap_or_else(|| repo.git_dir.clone());
     let worktrees_dir = worktrees_dir.join("worktrees");
+    let expected = format!("ref: refs/heads/{old_name}");
+    let mut any_failed = false;
     if let Ok(entries) = fs::read_dir(&worktrees_dir) {
         for entry in entries.flatten() {
-            let head_path = entry.path().join("HEAD");
+            let wt_dir = entry.path();
+            let head_path = wt_dir.join("HEAD");
             if let Ok(content) = fs::read_to_string(&head_path) {
-                let trimmed = content.trim();
-                let expected = format!("ref: refs/heads/{old_name}");
-                if trimmed == expected {
-                    let new_content = format!("ref: refs/heads/{new_name}\n");
-                    let _ = fs::write(&head_path, new_content);
+                if content.trim() != expected {
+                    continue;
+                }
+                // A pre-existing HEAD.lock means another process holds the ref lock; we cannot
+                // update this worktree's HEAD. Skip it and signal overall failure.
+                if wt_dir.join("HEAD.lock").exists() {
+                    any_failed = true;
+                    continue;
+                }
+                let new_content = format!("ref: refs/heads/{new_name}\n");
+                if fs::write(&head_path, new_content).is_err() {
+                    any_failed = true;
                 }
             }
         }
     }
-    Ok(())
+    Ok(any_failed)
 }
 
 fn branch_used_by_other_worktree(repo: &Repository, branch: &str) -> Result<Option<String>> {
