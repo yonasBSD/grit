@@ -1821,7 +1821,7 @@ fn delete_branch(repo: &Repository, head: &HeadState, args: &Args, name_input: &
         (name_input.to_owned(), format!("refs/heads/{name_input}"))
     };
 
-    if let Some(path) = branch_checked_out_in_other_worktree(repo, &name) {
+    if let Some(path) = crate::commands::worktree_refs::branch_occupied_any_worktree(repo, &name) {
         bail!(
             "cannot delete branch '{}' used by worktree at '{}'",
             name,

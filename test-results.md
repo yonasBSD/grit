@@ -19,6 +19,8 @@ Updated: 2026-06-01
   branch start-point reporting was fixed.
 - t2 focus: `./scripts/run-tests.sh t2402-worktree-list.sh --verbose` passes 27/27 after linked
   worktree common-path and relative-gitdir path handling was fixed.
+- t2 focus: `./scripts/run-tests.sh t2400-worktree-add.sh --verbose` passes 232/232 after unskipping
+  and fixing linked worktree git-path, rebase branch-occupancy, and hook setup behavior.
 - t2 focus: `./scripts/run-tests.sh t2022-checkout-paths.sh --verbose` passes 5/5 with prior
   checkout path fixes.
 - t2 focus: `./scripts/run-tests.sh t2025-checkout-no-overlay.sh --verbose` passes 6/6 after

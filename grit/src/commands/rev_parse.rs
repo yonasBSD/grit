@@ -1212,6 +1212,15 @@ pub fn run(args: Args) -> Result<()> {
                             current.git_dir.join(path_arg)
                         }
                     };
+                    if is_worktree_local
+                        && current
+                            .git_dir
+                            .components()
+                            .any(|c| c.as_os_str() == std::ffi::OsStr::new("worktrees"))
+                    {
+                        println!("{}", resolved.canonicalize().unwrap_or(resolved).display());
+                        continue;
+                    }
                     print_rev_parse_path(
                         &resolved,
                         &cwd,
