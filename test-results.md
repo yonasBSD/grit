@@ -14,6 +14,10 @@ Updated: 2026-06-02
 - t7 submodule focus: `./scripts/run-tests.sh t7112-reset-submodule.sh --verbose` improved
   `t7112` from the fresh 34/82 baseline to 54/82 by repopulating same-OID submodule gitlinks
   whose worktree had been reduced to only `.git`.
+- t7 submodule focus: `./scripts/run-tests.sh t7112-reset-submodule.sh --verbose` improved
+  `t7112` from 54/82 to 61/82 by allowing explicit recursive reset to remove clean gitlinks,
+  cleaning dropped submodule worktrees, writing replacement blobs after gitlink removal, and
+  materializing non-recursive gitlink targets as empty directories.
 - Verification: `cargo build --release -p grit-cli` passed with the existing warning backlog.
 
 Updated: 2026-06-01

@@ -1499,6 +1499,7 @@ Use '--' to separate paths from revisions, like this:\n\
                 &old_index,
                 head_tree_oid,
                 target_tree_oid,
+                recurse_submodules,
             )?;
             preserve_index_cache_flags_from(&old_index, &mut phase1);
             if repo.work_tree.is_some() {
@@ -1512,7 +1513,13 @@ Use '--' to separate paths from revisions, like this:\n\
                 }
                 // Selective checkout like Git's single `unpack_trees` pass: when the twoway result
                 // keeps the same blob as the pre-reset index, do not overwrite a dirty work tree.
-                checkout_merge_reset_worktree(repo, &old_index, &mut phase1)?;
+                checkout_merge_reset_worktree(
+                    repo,
+                    &old_index,
+                    &mut phase1,
+                    recurse_submodules,
+                    recurse_submodules,
+                )?;
             }
             build_merge_reset_index(repo, &phase1, head_oid, &target_oid)?
         }
@@ -1593,7 +1600,13 @@ Use '--' to separate paths from revisions, like this:\n\
                         bail!("Updating '{}' would lose untracked files.", path);
                     }
                 }
-                checkout_merge_reset_worktree(repo, &old_index, &mut new_index)?;
+                checkout_merge_reset_worktree(
+                    repo,
+                    &old_index,
+                    &mut new_index,
+                    recurse_submodules,
+                    recurse_submodules,
+                )?;
             }
             ResetMode::Keep => {
                 // Working tree was synced to the twoway-merge index inside the `Keep` arm
@@ -2663,6 +2676,8 @@ fn checkout_merge_reset_worktree(
     repo: &Repository,
     old_index: &Index,
     new_index: &mut Index,
+    recurse_submodules: bool,
+    force_submodule_removal: bool,
 ) -> Result<()> {
     let work_tree = match &repo.work_tree {
         Some(p) => p.clone(),
@@ -2682,6 +2697,21 @@ fn checkout_merge_reset_worktree(
     for old_path in old_paths.difference(&new_paths) {
         let rel = String::from_utf8_lossy(old_path).into_owned();
         let abs = work_tree.join(&rel);
+        if let Some(oe) = old_stage0.get(old_path) {
+            if oe.mode == MODE_GITLINK {
+                if force_submodule_removal {
+                    remove_submodule_worktree_for_reset(
+                        repo,
+                        &work_tree,
+                        &rel,
+                        recurse_submodules,
+                        true,
+                    )?;
+                    remove_empty_parent_dirs(&work_tree, &abs);
+                }
+                continue;
+            }
+        }
         if abs.is_file() || abs.is_symlink() {
             let _ = std::fs::remove_file(&abs);
         } else if abs.is_dir() {
@@ -2714,7 +2744,16 @@ fn checkout_merge_reset_worktree(
         if entry.mode == 0o160000 || entry.mode == MODE_GITLINK {
             let path_str = String::from_utf8_lossy(&entry.path).into_owned();
             let submodule_dir = work_tree.join(&path_str);
-            let _ = std::fs::create_dir_all(&submodule_dir);
+            if submodule_dir.is_file() || submodule_dir.is_symlink() {
+                let _ = std::fs::remove_file(&submodule_dir);
+            } else if submodule_dir.is_dir()
+                && old_stage0
+                    .get(&entry.path)
+                    .is_some_and(|old| old.mode != MODE_GITLINK)
+            {
+                let _ = std::fs::remove_dir_all(&submodule_dir);
+            }
+            std::fs::create_dir_all(&submodule_dir)?;
             continue;
         }
 
@@ -2984,7 +3023,6 @@ fn checkout_index_to_worktree(
                         false,
                     )?;
                 }
-                continue;
             } else if entry.mode != MODE_GITLINK && abs_path.is_dir() {
                 // Avoid `remove_dir_all` for thousands of fresh empty placeholder dirs (synthetic
                 // submodule fixtures): an empty directory is already the desired state.

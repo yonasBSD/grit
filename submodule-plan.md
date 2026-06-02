@@ -23,7 +23,7 @@ Rows marked `skip` remain out of aggregate scope until explicitly audited.
     checkout removal of `.git`-only submodule placeholders, resolved local-config URLs for
     relative `submodule add`, logical-name reuse handling with `--force`, recursive clone quiet
     propagation, and clone honoring `init.templateDir` for submodule add hooks.
-- [~] `t7112-reset-submodule.sh` - 54/82 passing, 24 failing. Focus: reset recursion and gitlinks.
+- [~] `t7112-reset-submodule.sh` - 61/82 passing, 17 failing. Focus: reset recursion and gitlinks.
 - [ ] `t7506-status-submodule.sh` - 20/40 passing, 20 failing. Focus: status submodule reporting.
 - [ ] `t7407-submodule-foreach.sh` - 4/23 passing, 19 failing. Focus: foreach traversal/env/output.
 - [ ] `t7403-submodule-sync.sh` - 1/18 passing, 17 failing. Focus: sync URL propagation.

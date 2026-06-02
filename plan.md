@@ -6,7 +6,7 @@
   `submodule-plan.md`; work one file at a time, currently `t7112-reset-submodule.sh`.
   - Completed: `t7406-submodule-update.sh` improved from 10/70 to 70/70.
   - Completed: `t7400-submodule-basic.sh` improved from 96/124 to 124/124.
-  - Current focus: `t7112-reset-submodule.sh` at 54/82; log:
+  - Current focus: `t7112-reset-submodule.sh` at 61/82; log:
     `logs/2026-06-02_2220-t7112-reset-submodule.md`.
 
 ## Active task — t2 family 100% pass
