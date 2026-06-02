@@ -397,6 +397,7 @@ def generate_index(rows: list[dict[str, str]]) -> str:
     sha_l = sha_link_html(sha, sha_full)
 
     groups = group_summaries(rows)
+    total_remaining = max(total_tests - total_pass, 0)
 
     skipped_by_group: dict[str, int] = {}
     for r in rows:
@@ -420,6 +421,8 @@ def generate_index(rows: list[dict[str, str]]) -> str:
         st = groups[g]
         desc = GROUP_DESC.get(g, "Tests")
         ttot, tpass = st["tests"], st["pass"]
+        remaining = max(ttot - tpass, 0)
+        remaining_share = pct(remaining, total_remaining)
         pc = pct(tpass, ttot)
         band = pass_rate_band(pc)
         q = urllib.parse.urlencode({"group": g})
@@ -430,11 +433,16 @@ def generate_index(rows: list[dict[str, str]]) -> str:
       <div class="group-line1">
         <span class="group-id">{html.escape(g)}</span>
         <span class="group-desc">{html.escape(desc)}</span>
-        <span class="group-meta">{st["full"]}/{st["files"]} files · {n_skip} skipped · {tpass:,}/{ttot:,} tests</span>
       </div>
       <div class="group-line2">
         <div class="bar-bg"><div class="bar-fg {band}" style="width:{pc}%"></div></div>
         <span class="group-pct {band}">{pc}%</span>
+      </div>
+      <div class="group-meta">
+        <span>{st["full"]}/{st["files"]} files</span>
+        <span>{n_skip} skipped</span>
+        <span>{tpass:,}/{ttot:,} tests</span>
+        <span>todo: {remaining:,} ({remaining_share}%)</span>
       </div>
     </a>"""
 
@@ -544,13 +552,17 @@ h1 {{ font-size: 1.75rem; margin-bottom: 0.25rem; color: #f0f6fc; }}
 .group-line2 .bar-fg.pct-orange {{ background: linear-gradient(90deg, #8b6914, #d29922); }}
 .group-line2 .bar-fg.pct-blue {{ background: linear-gradient(90deg, #1f4f8f, #58a6ff); }}
 .group-line2 .bar-fg.pct-green {{ background: linear-gradient(90deg, #238636, #2ea043); }}
+.group-grid {{
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}}
 .group-card {{
   display: block;
   background: #161b22;
   border: 1px solid #30363d;
   border-radius: 8px;
   padding: 1rem 1.1rem;
-  margin-bottom: 0.75rem;
   text-decoration: none;
   color: inherit;
   transition: border-color 0.15s;
@@ -574,8 +586,15 @@ h1 {{ font-size: 1.75rem; margin-bottom: 0.25rem; color: #f0f6fc; }}
   text-overflow: ellipsis;
   white-space: nowrap;
 }}
-.group-meta {{ flex-shrink: 0; font-size: 0.78rem; color: #7d8590; text-align: right; }}
-.group-line2 {{ display: flex; align-items: center; gap: 0.75rem; min-width: 0; }}
+.group-meta {{
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.25rem 0.75rem;
+  font-size: 0.78rem;
+  color: #7d8590;
+}}
+.group-meta span {{ min-width: 0; }}
+.group-line2 {{ display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; min-width: 0; }}
 .group-line2 .bar-bg {{ flex: 1 1 auto; min-width: 0; }}
 .bar-bg {{ background: #21262d; border-radius: 6px; height: 10px; overflow: hidden; border: 1px solid #30363d; }}
 .group-line2 .bar-fg {{ height: 100%; border-radius: 6px 0 0 6px; }}
@@ -584,6 +603,16 @@ h1 {{ font-size: 1.75rem; margin-bottom: 0.25rem; color: #f0f6fc; }}
 .group-pct.pct-orange {{ color: #e3b341; }}
 .group-pct.pct-blue {{ color: #79c0ff; }}
 .group-pct.pct-green {{ color: #3fb950; }}
+@media (max-width: 760px) {{
+  body {{ padding: 1.25rem; }}
+  .summary-big {{ grid-template-columns: 1fr; text-align: left; }}
+  .summary-big-val {{ font-size: 1.8rem; }}
+  .summary-meta {{ justify-content: flex-start; }}
+  .group-grid {{ grid-template-columns: 1fr; }}
+}}
+@media (max-width: 480px) {{
+  .group-meta {{ grid-template-columns: 1fr; }}
+}}
 </style>
 </head>
 <body>
@@ -621,7 +650,9 @@ h1 {{ font-size: 1.75rem; margin-bottom: 0.25rem; color: #f0f6fc; }}
   <h2>Git Testing Family Groups</h2>
   <p class="section-hint">Click a group for per-file detail. Counts exclude manually skipped files.</p>
 </div>
+<div class="group-grid">
 {group_html}
+</div>
 {RELATIVE_TIME_JS}
 </body>
 </html>

@@ -104,13 +104,17 @@ h1 { font-size: 1.75rem; margin-bottom: 0.25rem; color: #f0f6fc; }
 .group-line2 .bar-fg.pct-orange { background: linear-gradient(90deg, #8b6914, #d29922); }
 .group-line2 .bar-fg.pct-blue { background: linear-gradient(90deg, #1f4f8f, #58a6ff); }
 .group-line2 .bar-fg.pct-green { background: linear-gradient(90deg, #238636, #2ea043); }
+.group-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
 .group-card {
   display: block;
   background: #161b22;
   border: 1px solid #30363d;
   border-radius: 8px;
   padding: 1rem 1.1rem;
-  margin-bottom: 0.75rem;
   text-decoration: none;
   color: inherit;
   transition: border-color 0.15s;
@@ -134,8 +138,15 @@ h1 { font-size: 1.75rem; margin-bottom: 0.25rem; color: #f0f6fc; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.group-meta { flex-shrink: 0; font-size: 0.78rem; color: #7d8590; text-align: right; }
-.group-line2 { display: flex; align-items: center; gap: 0.75rem; min-width: 0; }
+.group-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.25rem 0.75rem;
+  font-size: 0.78rem;
+  color: #7d8590;
+}
+.group-meta span { min-width: 0; }
+.group-line2 { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; min-width: 0; }
 .group-line2 .bar-bg { flex: 1 1 auto; min-width: 0; }
 .bar-bg { background: #21262d; border-radius: 6px; height: 10px; overflow: hidden; border: 1px solid #30363d; }
 .group-line2 .bar-fg { height: 100%; border-radius: 6px 0 0 6px; }
@@ -144,11 +155,21 @@ h1 { font-size: 1.75rem; margin-bottom: 0.25rem; color: #f0f6fc; }
 .group-pct.pct-orange { color: #e3b341; }
 .group-pct.pct-blue { color: #79c0ff; }
 .group-pct.pct-green { color: #3fb950; }
+@media (max-width: 760px) {
+  body { padding: 1.25rem; }
+  .summary-big { grid-template-columns: 1fr; text-align: left; }
+  .summary-big-val { font-size: 1.8rem; }
+  .summary-meta { justify-content: flex-start; }
+  .group-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 480px) {
+  .group-meta { grid-template-columns: 1fr; }
+}
 </style>
 </head>
 <body>
 <h1>Grit Project Progress</h1>
-<p class="sub">Generated <time datetime="2026-06-02T14:24:51+00:00" class="gen-time" title="2026-06-02 14:24 UTC">2026-06-02 14:24 UTC</time> · <a href="https://github.com/schacon/grit/commit/eb1c0d8bcb3a785abfad2d28d76df219abfcbc2d" style="color:#58a6ff">eb1c0d8</a> · <a href="../testfiles.html" style="color:#58a6ff">All test files</a></p>
+<p class="sub">Generated <time datetime="2026-06-02T14:30:06+00:00" class="gen-time" title="2026-06-02 14:30 UTC">2026-06-02 14:30 UTC</time> · <a href="https://github.com/schacon/grit/commit/0713f5f0c93741125595d9904d25ec5d1f62be01" style="color:#58a6ff">0713f5f</a> · <a href="../testfiles.html" style="color:#58a6ff">All test files</a></p>
 
 <section class="summary-hero" aria-label="Overall test progress">
   <div class="summary-big">
@@ -181,117 +202,169 @@ h1 { font-size: 1.75rem; margin-bottom: 0.25rem; color: #f0f6fc; }
   <h2>Git Testing Family Groups</h2>
   <p class="section-hint">Click a group for per-file detail. Counts exclude manually skipped files.</p>
 </div>
+<div class="group-grid">
 
     <a class="group-card" href="../testfiles.html?group=t0">
       <div class="group-line1">
         <span class="group-id">t0</span>
         <span class="group-desc">Absolute basics and global stuff</span>
-        <span class="group-meta">66/70 files · 15 skipped · 2,790/2,813 tests</span>
       </div>
       <div class="group-line2">
         <div class="bar-bg"><div class="bar-fg pct-green" style="width:99.2%"></div></div>
         <span class="group-pct pct-green">99.2%</span>
+      </div>
+      <div class="group-meta">
+        <span>66/70 files</span>
+        <span>15 skipped</span>
+        <span>2,790/2,813 tests</span>
+        <span>todo: 23 (0.3%)</span>
       </div>
     </a>
     <a class="group-card" href="../testfiles.html?group=t1">
       <div class="group-line1">
         <span class="group-id">t1</span>
         <span class="group-desc">Basic commands concerning the database</span>
-        <span class="group-meta">234/368 files · 8 skipped · 10,805/12,731 tests</span>
       </div>
       <div class="group-line2">
         <div class="bar-bg"><div class="bar-fg pct-green" style="width:84.9%"></div></div>
         <span class="group-pct pct-green">84.9%</span>
+      </div>
+      <div class="group-meta">
+        <span>234/368 files</span>
+        <span>8 skipped</span>
+        <span>10,805/12,731 tests</span>
+        <span>todo: 1,926 (28.9%)</span>
       </div>
     </a>
     <a class="group-card" href="../testfiles.html?group=t2">
       <div class="group-line1">
         <span class="group-id">t2</span>
         <span class="group-desc">Basic commands concerning the working tree</span>
-        <span class="group-meta">63/70 files · 0 skipped · 1,213/1,257 tests</span>
       </div>
       <div class="group-line2">
         <div class="bar-bg"><div class="bar-fg pct-green" style="width:96.5%"></div></div>
         <span class="group-pct pct-green">96.5%</span>
+      </div>
+      <div class="group-meta">
+        <span>63/70 files</span>
+        <span>0 skipped</span>
+        <span>1,213/1,257 tests</span>
+        <span>todo: 44 (0.7%)</span>
       </div>
     </a>
     <a class="group-card" href="../testfiles.html?group=t3">
       <div class="group-line1">
         <span class="group-id">t3</span>
         <span class="group-desc">Other basic commands (e.g. ls-files)</span>
-        <span class="group-meta">72/141 files · 2 skipped · 4,485/5,333 tests</span>
       </div>
       <div class="group-line2">
         <div class="bar-bg"><div class="bar-fg pct-green" style="width:84.1%"></div></div>
         <span class="group-pct pct-green">84.1%</span>
+      </div>
+      <div class="group-meta">
+        <span>72/141 files</span>
+        <span>2 skipped</span>
+        <span>4,485/5,333 tests</span>
+        <span>todo: 848 (12.7%)</span>
       </div>
     </a>
     <a class="group-card" href="../testfiles.html?group=t4">
       <div class="group-line1">
         <span class="group-id">t4</span>
         <span class="group-desc">Diff commands</span>
-        <span class="group-meta">64/126 files · 54 skipped · 2,712/3,810 tests</span>
       </div>
       <div class="group-line2">
         <div class="bar-bg"><div class="bar-fg pct-blue" style="width:71.2%"></div></div>
         <span class="group-pct pct-blue">71.2%</span>
+      </div>
+      <div class="group-meta">
+        <span>64/126 files</span>
+        <span>54 skipped</span>
+        <span>2,712/3,810 tests</span>
+        <span>todo: 1,098 (16.5%)</span>
       </div>
     </a>
     <a class="group-card" href="../testfiles.html?group=t5">
       <div class="group-line1">
         <span class="group-id">t5</span>
         <span class="group-desc">Pull and exporting commands</span>
-        <span class="group-meta">68/170 files · 14 skipped · 2,368/3,580 tests</span>
       </div>
       <div class="group-line2">
         <div class="bar-bg"><div class="bar-fg pct-blue" style="width:66.1%"></div></div>
         <span class="group-pct pct-blue">66.1%</span>
+      </div>
+      <div class="group-meta">
+        <span>68/170 files</span>
+        <span>14 skipped</span>
+        <span>2,368/3,580 tests</span>
+        <span>todo: 1,212 (18.2%)</span>
       </div>
     </a>
     <a class="group-card" href="../testfiles.html?group=t6">
       <div class="group-line1">
         <span class="group-id">t6</span>
         <span class="group-desc">Revision tree commands (e.g. merge-base)</span>
-        <span class="group-meta">46/105 files · 3 skipped · 1,960/2,829 tests</span>
       </div>
       <div class="group-line2">
         <div class="bar-bg"><div class="bar-fg pct-blue" style="width:69.3%"></div></div>
         <span class="group-pct pct-blue">69.3%</span>
+      </div>
+      <div class="group-meta">
+        <span>46/105 files</span>
+        <span>3 skipped</span>
+        <span>1,960/2,829 tests</span>
+        <span>todo: 869 (13.0%)</span>
       </div>
     </a>
     <a class="group-card" href="../testfiles.html?group=t7">
       <div class="group-line1">
         <span class="group-id">t7</span>
         <span class="group-desc">Porcelainish commands concerning the working tree</span>
-        <span class="group-meta">67/130 files · 7 skipped · 3,121/3,741 tests</span>
       </div>
       <div class="group-line2">
         <div class="bar-bg"><div class="bar-fg pct-green" style="width:83.4%"></div></div>
         <span class="group-pct pct-green">83.4%</span>
+      </div>
+      <div class="group-meta">
+        <span>67/130 files</span>
+        <span>7 skipped</span>
+        <span>3,121/3,741 tests</span>
+        <span>todo: 620 (9.3%)</span>
       </div>
     </a>
     <a class="group-card" href="../testfiles.html?group=t8">
       <div class="group-line1">
         <span class="group-id">t8</span>
         <span class="group-desc">Porcelainish commands concerning forensics</span>
-        <span class="group-meta">99/105 files · 0 skipped · 3,109/3,116 tests</span>
       </div>
       <div class="group-line2">
         <div class="bar-bg"><div class="bar-fg pct-green" style="width:99.8%"></div></div>
         <span class="group-pct pct-green">99.8%</span>
+      </div>
+      <div class="group-meta">
+        <span>99/105 files</span>
+        <span>0 skipped</span>
+        <span>3,109/3,116 tests</span>
+        <span>todo: 7 (0.1%)</span>
       </div>
     </a>
     <a class="group-card" href="../testfiles.html?group=t9">
       <div class="group-line1">
         <span class="group-id">t9</span>
         <span class="group-desc">Git tools</span>
-        <span class="group-meta">81/87 files · 130 skipped · 2,848/2,861 tests</span>
       </div>
       <div class="group-line2">
         <div class="bar-bg"><div class="bar-fg pct-green" style="width:99.5%"></div></div>
         <span class="group-pct pct-green">99.5%</span>
       </div>
+      <div class="group-meta">
+        <span>81/87 files</span>
+        <span>130 skipped</span>
+        <span>2,848/2,861 tests</span>
+        <span>todo: 13 (0.2%)</span>
+      </div>
     </a>
+</div>
 
 <script>
 (function() {
