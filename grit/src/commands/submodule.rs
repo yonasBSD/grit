@@ -137,10 +137,6 @@ fn run_with_top_opts(top: SubmoduleTopOpts, args: Args) -> Result<()> {
         }
         Some(SubmoduleCommand::Update(mut a)) => {
             a.quiet |= top.quiet;
-            // Top-level `git submodule update` recurses into nested submodules like Git even without
-            // `--recursive` (`submodule.recurse` default behavior). Programmatic callers set this
-            // explicitly via `UpdateArgs::implicit_recursive`.
-            a.implicit_recursive = true;
             run_update(&a)
         }
         Some(SubmoduleCommand::Add(mut a)) => {
@@ -504,7 +500,7 @@ pub struct UpdateArgs {
     #[arg(long)]
     pub recursive: bool,
 
-    /// When true, recurse into nested submodules like `git submodule update` (even without `--recursive`).
+    /// Internal recursion override for callers that need nested submodule updates.
     #[arg(skip)]
     pub implicit_recursive: bool,
 

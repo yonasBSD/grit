@@ -1200,7 +1200,7 @@ t7401-submodule-summary	t7	yes	25	10	15	false	ok	0
 t7402-submodule-rebase	t7	yes	6	4	2	false	ok	0
 t7403-submodule-sync	t7	yes	18	1	17	false	ok	0
 t7406-submodule-update	t7	yes	70	70	0	true	ok	0
-t7407-submodule-foreach	t7	yes	23	4	19	false	ok	0
+t7407-submodule-foreach	t7	yes	23	23	0	true	ok	0
 t7408-submodule-reference	t7	yes	16	8	8	false	ok	0
 t7409-submodule-detached-work-tree	t7	yes	3	1	2	false	ok	0
 t7411-submodule-config	t7	yes	20	20	0	true	ok	0

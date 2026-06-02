@@ -6,6 +6,15 @@
 # Test Results
 
 Updated: 2026-06-02
+- t7 submodule focus: `./scripts/run-tests.sh t7407-submodule-foreach.sh --verbose` improved
+  `t7407` from 4/23 to 23/23 by keeping plain CLI `submodule update --init` nonrecursive while
+  preserving explicit `--recursive` behavior. Regression check:
+  `./scripts/run-tests.sh t7406-submodule-update.sh --verbose` remains 70/70.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+  `cargo test --workspace` and `./tests/harness/run.sh` were skipped for this focused harness
+  checkpoint; project harness runs used `./scripts/run-tests.sh`.
 - t7 submodule focus: `./scripts/run-tests.sh t7506-status-submodule.sh --verbose` improved
   `t7506` from 20/40 to 40/40 by separating porcelain v1 submodule output from short-format
   `m`/`?` details, honoring `-uno` for submodule-untracked dirtiness, and rendering unmerged
