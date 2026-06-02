@@ -304,6 +304,9 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                 if args.dissociate {
                     clone_cmd.arg("--dissociate");
                 }
+                if let Some(ref format) = args.ref_format {
+                    clone_cmd.arg(format!("--ref-format={format}"));
+                }
                 clone_cmd.arg(&clone_src_str).arg(&sub_path);
                 if args.quiet {
                     clone_cmd.arg("--quiet");
@@ -552,31 +555,48 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
             match effective.as_str() {
                 "rebase" => {
                     let mut pull_cmd = grit_subprocess(&grit_bin);
+                    pull_cmd.arg("pull").arg("--rebase");
+                    if args.quiet {
+                        pull_cmd.arg("--quiet");
+                    }
                     pull_cmd
-                        .args(["pull", "--rebase", ".", &checkout_oid])
+                        .args([".", &checkout_oid])
                         .current_dir(&sub_path)
                         .env_remove("GIT_DIR")
                         .env_remove("GIT_WORK_TREE");
-                    if args.quiet {
-                        pull_cmd.args(["--quiet"]);
-                        pull_cmd.stdout(Stdio::null()).stderr(Stdio::null());
+                    let output = pull_cmd.output().context("submodule pull --rebase")?;
+                    if !args.quiet {
+                        io::stdout().write_all(&output.stdout)?;
+                        if output.status.success() {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            let filtered = stderr
+                                .lines()
+                                .filter(|line| *line != "Already up to date.")
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            if !filtered.is_empty() {
+                                eprintln!("{filtered}");
+                            }
+                        } else {
+                            io::stderr().write_all(&output.stderr)?;
+                        }
                     }
-                    let st = pull_cmd.status().context("submodule pull --rebase")?;
-                    if !st.success() {
+                    if !output.status.success() {
                         bail!("submodule update failed for '{}'", m.path);
                     }
                 }
                 "merge" => {
                     let mut pull_cmd = grit_subprocess(&grit_bin);
+                    pull_cmd.arg("pull");
+                    if args.quiet {
+                        pull_cmd.arg("--quiet");
+                        pull_cmd.stdout(Stdio::null()).stderr(Stdio::null());
+                    }
                     pull_cmd
-                        .args(["pull", ".", &checkout_oid])
+                        .args([".", &checkout_oid])
                         .current_dir(&sub_path)
                         .env_remove("GIT_DIR")
                         .env_remove("GIT_WORK_TREE");
-                    if args.quiet {
-                        pull_cmd.args(["--quiet"]);
-                        pull_cmd.stdout(Stdio::null()).stderr(Stdio::null());
-                    }
                     let st = pull_cmd.status().context("submodule pull merge")?;
                     if !st.success() {
                         bail!("submodule update failed for '{}'", m.path);
@@ -708,6 +728,7 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                 depth: args.depth,
                 jobs: args.jobs,
                 filter: args.filter.clone(),
+                ref_format: args.ref_format.clone(),
                 recursive: recurse_nested,
                 implicit_recursive: args.implicit_recursive,
                 reference: args.reference.clone(),

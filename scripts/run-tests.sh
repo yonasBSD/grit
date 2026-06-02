@@ -366,6 +366,7 @@ run_one() {
         GUST_BIN="$BIN" \
         PERL_PATH="$perl_abs" \
         GIT_TEST_BUILTIN_HASH=sha1 \
+        GIT_DEFAULT_REF_FORMAT="${GIT_TEST_DEFAULT_REF_FORMAT:-files}" \
         GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main \
         GIT_SOURCE_DIR="$REPO/git" \
         GIT_CONFIG_NOSYSTEM=1 \

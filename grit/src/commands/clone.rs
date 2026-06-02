@@ -166,6 +166,10 @@ pub struct Args {
     )]
     pub recurse_submodules_specs: Vec<String>,
 
+    /// Do not recurse into submodules after cloning.
+    #[arg(long = "no-recurse-submodules")]
+    pub no_recurse_submodules: bool,
+
     /// Parallel jobs hint for submodule cloning (forwarded to `submodule update`).
     #[arg(short = 'j', long = "jobs", value_name = "N")]
     pub jobs: Option<usize>,
@@ -253,7 +257,7 @@ pub struct Args {
 impl Args {
     /// Whether `--recurse-submodules` was given (with or without a pathspec value).
     pub fn recurse_submodules(&self) -> bool {
-        !self.recurse_submodules_specs.is_empty()
+        !self.no_recurse_submodules && !self.recurse_submodules_specs.is_empty()
     }
 
     /// The submodule.active pathspecs to set when explicit `--recurse-submodules=<spec>` values
@@ -3503,16 +3507,7 @@ fn run_ssh_network_clone(args: Args, spec: &crate::ssh_transport::SshUrl) -> Res
 fn gitlink_paths_at_head(work_tree: &Path) -> Result<HashSet<String>> {
     let git_dir = work_tree.join(".git");
     let repo = Repository::open(&git_dir, Some(work_tree))?;
-    let head_content = fs::read_to_string(repo.git_dir.join("HEAD")).context("reading HEAD")?;
-    let head = head_content.trim();
-    let oid = if let Some(refname) = head.strip_prefix("ref: ") {
-        let ref_path = repo.git_dir.join(refname);
-        let oid_str =
-            fs::read_to_string(&ref_path).with_context(|| format!("reading ref {refname}"))?;
-        ObjectId::from_hex(oid_str.trim()).with_context(|| format!("invalid OID in {refname}"))?
-    } else {
-        ObjectId::from_hex(head).context("invalid OID in HEAD")?
-    };
+    let oid = refs::resolve_ref(&repo.git_dir, "HEAD").context("resolving HEAD")?;
     let obj = repo.odb.read(&oid).context("reading HEAD commit")?;
     let commit = parse_commit(&obj.data).context("parsing HEAD commit")?;
     let mut out = HashSet::new();
@@ -3554,6 +3549,7 @@ fn clone_with_optional_superproject_refs(
     separate_git_dir: Option<&Path>,
     no_checkout: bool,
     depth: Option<usize>,
+    ref_storage: Option<&str>,
 ) -> Result<std::process::ExitStatus> {
     let run = |with_refs: bool| -> Result<std::process::ExitStatus> {
         let mut cmd = std::process::Command::new(grit_bin);
@@ -3566,6 +3562,9 @@ fn clone_with_optional_superproject_refs(
         }
         if let Some(d) = depth {
             cmd.arg("--depth").arg(d.to_string());
+        }
+        if let Some(format) = ref_storage {
+            cmd.arg(format!("--ref-format={format}"));
         }
         if no_checkout {
             cmd.arg("--no-checkout");
@@ -3605,6 +3604,7 @@ struct SubmoduleCloneJob {
     sub_dest: PathBuf,
     depth: Option<usize>,
     overlay_existing: bool,
+    ref_storage: Option<String>,
 }
 
 fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> Result<()> {
@@ -3653,6 +3653,11 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
     let gitlink_paths = gitlink_paths_at_head(work_tree).unwrap_or_default();
 
     let super_shallow = repo.git_dir.join("shallow").is_file();
+    let submodule_ref_storage = if grit_lib::reftable::is_reftable_repo(&repo.git_dir) {
+        Some("reftable".to_owned())
+    } else {
+        clone_args.ref_format.clone()
+    };
     let mut jobs: Vec<SubmoduleCloneJob> = Vec::new();
 
     for sm in &modules {
@@ -3741,6 +3746,7 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
             sub_dest,
             depth,
             overlay_existing,
+            ref_storage: submodule_ref_storage.clone(),
         });
     }
 
@@ -3770,6 +3776,7 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                 Some(&j.modules_dir),
                 true,
                 j.depth,
+                j.ref_storage.as_deref(),
             )?;
             if !status.success() {
                 anyhow::bail!(
@@ -3819,6 +3826,7 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                         Some(&j.modules_dir),
                         true,
                         j.depth,
+                        j.ref_storage.as_deref(),
                     );
                     match st {
                         Ok(s) if s.success() => {
@@ -3925,6 +3933,7 @@ fn overlay_clone_submodule_contents(
         None,
         false,
         depth,
+        None,
     )?;
     if !status.success() {
         let _ = fs::remove_dir_all(&tmp);

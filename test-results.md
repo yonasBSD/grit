@@ -464,3 +464,29 @@ Updated: 2026-06-01
 - t7426 validation: `cargo fmt` ran; `cargo check -p grit-cli` passed with existing warnings;
   `cargo test -p grit-lib --lib` passed 238/238; `cargo clippy --fix --allow-dirty` completed
   with the existing warning backlog and its unrelated auto-fixes were reverted.
+- Submodule skipped audit: `cargo build --release -p grit-cli` passed with existing warnings;
+  focused `cd tests && GIT_DEFAULT_REF_FORMAT=files sh t7424-submodule-mixed-ref-formats.sh -i -v`
+  passed 7/7.
+- Submodule harness: after restoring `t7424-submodule-mixed-ref-formats` to `in_scope=yes`,
+  `./scripts/run-tests.sh t7424-submodule-mixed-ref-formats.sh` passed 7/7 and refreshed
+  `data/test-files.csv` plus dashboards.
+- Submodule final-sweep repair: `./scripts/run-tests.sh t7406-submodule-update.sh` is back to
+  70/70 after filtering the redundant successful `pull --rebase` stderr line from submodule rebase
+  updates; CSV/dashboard refreshed.
+- Submodule final verification: `./scripts/run-tests.sh t7400-submodule-basic.sh
+  t7401-submodule-summary.sh t7402-submodule-rebase.sh t7403-submodule-sync.sh
+  t7406-submodule-update.sh t7407-submodule-foreach.sh t7408-submodule-reference.sh
+  t7409-submodule-detached-work-tree.sh t7411-submodule-config.sh
+  t7412-submodule-absorbgitdirs.sh t7413-submodule-is-active.sh
+  t7414-submodule-mistakes.sh t7416-submodule-dash-url.sh t7417-submodule-path-url.sh
+  t7418-submodule-sparse-gitmodules.sh t7419-submodule-set-branch.sh
+  t7420-submodule-set-url.sh t7421-submodule-summary-add.sh t7422-submodule-output.sh
+  t7423-submodule-symlinks.sh t7424-submodule-mixed-ref-formats.sh
+  t7425-submodule-gitdir-path-extension.sh t7426-submodule-get-default-remote.sh
+  t7506-status-submodule.sh t7814-grep-recurse-submodules.sh t7112-reset-submodule.sh`
+  completed with all covered rows at `failing=0`; `t7814` reports 27/34 and `t7112` reports
+  78/82 because upstream TODO cases are tracked separately.
+- t7424/t7406 validation: `cargo fmt` ran; `cargo check -p grit-cli` passed with existing
+  warnings; `cargo clippy --fix --allow-dirty` completed with the existing warning backlog and its
+  unrelated `config.rs`/`filter_process.rs` auto-fixes were reverted; `cargo test -p grit-lib --lib`
+  passed 238/238.

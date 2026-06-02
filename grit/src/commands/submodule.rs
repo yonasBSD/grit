@@ -505,6 +505,10 @@ pub struct UpdateArgs {
     #[arg(long)]
     pub filter: Option<String>,
 
+    /// Ref storage backend for newly cloned submodules.
+    #[arg(long = "ref-format", value_name = "FORMAT")]
+    pub ref_format: Option<String>,
+
     /// Recurse into nested submodules.
     #[arg(long)]
     pub recursive: bool,
@@ -559,6 +563,10 @@ pub struct AddArgs {
     /// Borrow the objects from reference repositories.
     #[arg(long = "dissociate")]
     pub dissociate: bool,
+
+    /// Ref storage backend for the cloned submodule.
+    #[arg(long = "ref-format", value_name = "FORMAT")]
+    pub ref_format: Option<String>,
 
     /// URL of the submodule repository.
     pub url: String,
@@ -723,6 +731,7 @@ pub(crate) fn update_after_superproject_merge(init: bool, recursive: bool) -> Re
         depth: None,
         jobs: None,
         filter: None,
+        ref_format: None,
         recursive,
         implicit_recursive: false,
         reference: vec![],
@@ -746,6 +755,7 @@ pub(crate) fn update_after_superproject_rebase(init: bool, recursive: bool) -> R
         depth: None,
         jobs: None,
         filter: None,
+        ref_format: None,
         recursive,
         implicit_recursive: false,
         reference: vec![],
@@ -2391,6 +2401,7 @@ pub(crate) fn ensure_submodule_modules_gitdir(repo: &Repository, rel: &str) -> R
                 depth: None,
                 jobs: None,
                 filter: None,
+                ref_format: None,
                 recursive: true,
                 implicit_recursive: false,
                 reference: vec![],
@@ -2425,6 +2436,7 @@ pub(crate) fn ensure_submodule_modules_gitdir(repo: &Repository, rel: &str) -> R
                 depth: None,
                 jobs: None,
                 filter: None,
+                ref_format: None,
                 recursive: true,
                 implicit_recursive: false,
                 reference: vec![],
@@ -2692,18 +2704,7 @@ fn is_nonbare_repository_dir(dir: &Path) -> bool {
 /// Resolve the gitlink `HEAD` of a submodule work tree to a commit OID, returning `None` when the
 /// repository has no commit checked out (git: `repo_resolve_gitlink_ref(.., "HEAD") < 0`).
 fn submodule_resolve_gitlink_head(sub_path: &Path) -> Option<String> {
-    let head = read_submodule_head(sub_path)?;
-    let head = head.trim();
-    // An unborn branch resolves to a ref path that does not exist yet → no commit.
-    if head.is_empty() || head.starts_with("ref:") {
-        return None;
-    }
-    // 40-hex (sha1) or 64-hex (sha256) commit id.
-    if head.len() >= 40 && head.bytes().all(|b| b.is_ascii_hexdigit()) {
-        Some(head.to_string())
-    } else {
-        None
-    }
+    grit_lib::diff::read_submodule_head_oid(sub_path).map(|oid| oid.to_hex())
 }
 
 fn run_add(args: &AddArgs) -> Result<()> {
@@ -3022,6 +3023,9 @@ fn run_add(args: &AddArgs) -> Result<()> {
         }
         if args.dissociate {
             clone_cmd.arg("--dissociate");
+        }
+        if let Some(ref format) = args.ref_format {
+            clone_cmd.arg(format!("--ref-format={format}"));
         }
         for r in &args.reference {
             clone_cmd.arg("--reference").arg(r);

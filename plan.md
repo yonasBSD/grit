@@ -2,9 +2,9 @@
 
 ## Active task — t7 submodule tests 100% pass
 
-- [~] Make all in-scope t7 submodule tests fully pass. Detailed queue and per-file status are in
-  `submodule-plan.md`; work one file at a time, currently auditing skipped
-  `t7424-submodule-mixed-ref-formats.sh`.
+- [x] Make all in-scope t7 submodule tests fully pass. Detailed queue and per-file status are in
+  `submodule-plan.md`; the final submodule-focused verification sweep reports `failing=0` for all
+  covered rows, including TODO-bearing `t7112` and `t7814`.
   - Completed: `t7406-submodule-update.sh` improved from 10/70 to 70/70.
   - Completed: `t7400-submodule-basic.sh` improved from 96/124 to 124/124.
   - Completed: `t7112-reset-submodule.sh` improved from 34/82 to 78/78 aggregate passing, with 4 upstream TODO known breakages omitted from the failing count; log:
@@ -56,7 +56,12 @@
     `submodule--helper get-default-remote` paths against the caller's current directory before
     mapping them back to the superproject root; log:
     `logs/2026-06-02_2146-t7426-submodule-get-default-remote.md`.
-  - Next focus: audit skipped `t7424-submodule-mixed-ref-formats.sh`.
+  - Completed skipped audit: `t7424-submodule-mixed-ref-formats.sh` is restored to
+    `in_scope=yes` and passes 7/7 after mixed files/reftable submodule clone/update handling was
+    fixed; log: `logs/2026-06-02_2152-t7424-submodule-mixed-ref-formats.md`.
+  - Final sweep repair: `t7406-submodule-update.sh` is back to 70/70 after filtering the redundant
+    successful `pull --rebase` stderr line from submodule rebase updates.
+  - Final verification: `./scripts/run-tests.sh t7400-submodule-basic.sh t7401-submodule-summary.sh t7402-submodule-rebase.sh t7403-submodule-sync.sh t7406-submodule-update.sh t7407-submodule-foreach.sh t7408-submodule-reference.sh t7409-submodule-detached-work-tree.sh t7411-submodule-config.sh t7412-submodule-absorbgitdirs.sh t7413-submodule-is-active.sh t7414-submodule-mistakes.sh t7416-submodule-dash-url.sh t7417-submodule-path-url.sh t7418-submodule-sparse-gitmodules.sh t7419-submodule-set-branch.sh t7420-submodule-set-url.sh t7421-submodule-summary-add.sh t7422-submodule-output.sh t7423-submodule-symlinks.sh t7424-submodule-mixed-ref-formats.sh t7425-submodule-gitdir-path-extension.sh t7426-submodule-get-default-remote.sh t7506-status-submodule.sh t7814-grep-recurse-submodules.sh t7112-reset-submodule.sh` completed with every row at `failing=0`.
 
 ## Active task — t2 family 100% pass
 

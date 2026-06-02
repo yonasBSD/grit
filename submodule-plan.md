@@ -10,6 +10,9 @@ Rows marked `skip` remain out of aggregate scope until explicitly audited.
 ## Current Queue
 
 - [x] `t7406-submodule-update.sh` - 70/70 passing. Focus: submodule update behavior.
+  - Final verification fix: successful `pull --rebase`-backed updates now filter the redundant
+    `Already up to date.` stderr line while preserving the existing rebase behavior needed by
+    moved/configured submodule cases.
   - Fixed this iteration: relative `submodule add` URL fallback for local clones, update-init
     pathspec double-normalization from subdirectories, checkout status stdout, clone `done.`
     progress, default update preserving local changes unless `--force`, `--remote` branch/tag
@@ -95,6 +98,11 @@ Rows marked `skip` remain out of aggregate scope until explicitly audited.
 - [x] `t7420-submodule-set-url.sh` - 3/3 passing.
 - [x] `t7421-submodule-summary-add.sh` - 5/5 passing.
 
-## Skipped
+## Previously Skipped
 
-- [ ] `t7424-submodule-mixed-ref-formats.sh` - `in_scope=skip`; audit after in-scope queue is green.
+- [x] `t7424-submodule-mixed-ref-formats.sh` - 7/7 passing; restored to `in_scope=yes`.
+  - Fixed this iteration: `submodule add` and `submodule update --init` accept and forward
+    `--ref-format`, `clone --recurse-submodules --ref-format=reftable` propagates the reftable
+    backend to cloned submodules, recursive clone detects gitlinks through the shared ref resolver
+    in reftable destinations, and the harness now supplies upstream's default
+    `GIT_DEFAULT_REF_FORMAT=files`.
