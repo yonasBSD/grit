@@ -164,14 +164,91 @@ impl IgnoreMatcher {
         // `!negation`, and a per-directory `.gitignore` overrides `core.excludesfile`.
         let per_dir_groups = self.rules_for_path_grouped(repo, index, repo_rel_path)?;
 
-        // EXC_CMDL: command-line `-x` patterns (single list).
+        // Git's `prep_exclude` (dir.c) descends into the path's ancestor directories before
+        // matching the leaf. If an ancestor directory itself matches a non-negative exclude
+        // pattern, the entire subtree is excluded and the walk stops: a later `!one/a.1`
+        // negation can never re-include a file once its parent directory `one` is excluded
+        // ("It is not possible to re-include a file if a parent directory of that file is
+        // excluded", gitignore(5)). When checking ancestor `a/b`, only the per-directory
+        // `.gitignore` files strictly above it are loaded yet, so we slice `per_dir_groups`
+        // to the ancestor's own depth.
+        if let Some(ancestor_match) = self.first_excluded_ancestor(repo_rel_path, &per_dir_groups) {
+            return Ok((true, Some(ancestor_match)));
+        }
+
+        let (ignored, matched) =
+            self.evaluate_against_groups(repo_rel_path, is_dir, &per_dir_groups);
+
+        // For `check-ignore -v` attribution, the verbose refinement walks the full flattened set.
+        let all_rules: Vec<&IgnoreRule> = self.flatten_groups(&per_dir_groups);
+        let matched = refine_match_for_check_ignore_verbose(
+            repo_rel_path,
+            is_dir,
+            ignored,
+            matched,
+            &all_rules,
+        );
+
+        Ok((ignored, matched))
+    }
+
+    /// Build the ordered group list (EXC_CMDL, EXC_DIRS deepest-first, EXC_FILE) for a given
+    /// set of per-directory rule groups, then run Git's first-group-wins / last-pattern-wins
+    /// evaluation against `path`.
+    ///
+    /// `per_dir_groups` is the root-first slice of `.gitignore` rule lists that should be
+    /// considered for this query: callers pass the leaf's full slice for the path itself, or a
+    /// shorter prefix slice when probing an ancestor directory (matching `prep_exclude`'s
+    /// incremental loading order).
+    fn evaluate_against_groups(
+        &self,
+        path: &str,
+        is_dir: bool,
+        per_dir_groups: &[Vec<IgnoreRule>],
+    ) -> (bool, Option<IgnoreMatch>) {
+        let groups = self.build_groups(per_dir_groups);
+        for group in &groups {
+            let mut group_match: Option<&&IgnoreRule> = None;
+            for rule in group {
+                if rule_matches(rule, path, is_dir) {
+                    group_match = Some(rule);
+                }
+            }
+            if let Some(rule) = group_match {
+                return (
+                    !rule.negative,
+                    Some(IgnoreMatch {
+                        source_display: rule.source_display.clone(),
+                        line_number: rule.line_number,
+                        pattern_text: rule.pattern_text.clone(),
+                        negative: rule.negative,
+                    }),
+                );
+            }
+        }
+        (false, None)
+    }
+
+    /// Flatten the ordered group list into a single rule slice (used for `check-ignore -v`
+    /// attribution, which walks every loaded pattern).
+    fn flatten_groups<'a>(&'a self, per_dir_groups: &'a [Vec<IgnoreRule>]) -> Vec<&'a IgnoreRule> {
+        self.build_groups(per_dir_groups)
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    /// Assemble the priority-ordered exclude groups: EXC_CMDL, then per-directory `.gitignore`
+    /// (deepest directory first), then EXC_FILE (`--exclude-from`, global, info).
+    fn build_groups<'a>(
+        &'a self,
+        per_dir_groups: &'a [Vec<IgnoreRule>],
+    ) -> Vec<Vec<&'a IgnoreRule>> {
         let cmdl_rules: Vec<&IgnoreRule> = self.cli_rules.iter().collect();
-        // EXC_DIRS: per-directory lists, deepest directory first.
         let mut dir_groups: Vec<Vec<&IgnoreRule>> = Vec::new();
         for rules in per_dir_groups.iter().rev() {
             dir_groups.push(rules.iter().collect());
         }
-        // EXC_FILE: `--exclude-from`, then global, then info (each a separate list, last-to-first).
         let file_rules: Vec<&IgnoreRule> = self
             .exclude_from_rules
             .iter()
@@ -183,39 +260,43 @@ impl IgnoreMatcher {
         groups.push(cmdl_rules);
         groups.extend(dir_groups);
         groups.push(file_rules);
+        groups
+    }
 
-        let mut matched: Option<IgnoreMatch> = None;
-        let mut ignored = false;
-        for group in &groups {
-            let mut group_match: Option<&&IgnoreRule> = None;
-            for rule in group {
-                if rule_matches(rule, repo_rel_path, is_dir) {
-                    group_match = Some(rule);
-                }
+    /// Walk the ancestor directories of `repo_rel_path` from the top down. Returns the matching
+    /// pattern of the first ancestor directory that is positively excluded (Git's `prep_exclude`
+    /// abort), or `None` if no ancestor directory is excluded.
+    ///
+    /// `per_dir_groups` is the root-first list of per-directory rule lists for the leaf path;
+    /// element `i` corresponds to the ancestor directory at depth `i`. When probing the ancestor
+    /// directory at depth `d`, only groups `[0..d]` are loaded (the directory's own `.gitignore`
+    /// has not been read yet), matching Git's incremental load order.
+    fn first_excluded_ancestor(
+        &self,
+        repo_rel_path: &str,
+        per_dir_groups: &[Vec<IgnoreRule>],
+    ) -> Option<IgnoreMatch> {
+        let parent = parent_dir(repo_rel_path);
+        if parent.is_empty() {
+            return None;
+        }
+        let mut cur = String::new();
+        for (depth, segment) in parent.split('/').enumerate() {
+            if !cur.is_empty() {
+                cur.push('/');
             }
-            if let Some(rule) = group_match {
-                matched = Some(IgnoreMatch {
-                    source_display: rule.source_display.clone(),
-                    line_number: rule.line_number,
-                    pattern_text: rule.pattern_text.clone(),
-                    negative: rule.negative,
-                });
-                ignored = !rule.negative;
-                break;
+            cur.push_str(segment);
+            // Patterns loaded before descending into this directory: per-directory groups for
+            // strictly-shallower directories (root..=depth). `per_dir_groups[0]` is the root
+            // `.gitignore`, so the ancestor at depth `depth` (0-based) sees groups `[0..=depth]`.
+            let upper = (depth + 1).min(per_dir_groups.len());
+            let slice = &per_dir_groups[..upper];
+            let (ignored, matched) = self.evaluate_against_groups(&cur, true, slice);
+            if ignored {
+                return matched;
             }
         }
-
-        // For `check-ignore -v` attribution, the verbose refinement walks the full flattened set.
-        let all_rules: Vec<&IgnoreRule> = groups.iter().flatten().copied().collect();
-        let matched = refine_match_for_check_ignore_verbose(
-            repo_rel_path,
-            is_dir,
-            ignored,
-            matched,
-            &all_rules,
-        );
-
-        Ok((ignored, matched))
+        None
     }
 
     /// Per-directory `.gitignore` rules for the ancestors of `repo_rel_path`, grouped by

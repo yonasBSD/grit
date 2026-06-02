@@ -1509,6 +1509,10 @@ fn recurse_submodules_path_matches(
     } else {
         pathspec_filter.iter().any(|p| match p {
             Pathspec::Magic(_) => false,
+            // Glob pathspecs use Git fnmatch semantics where `?`/`*` cross `/` (e.g. `s???file`
+            // matches `sib/file`); route through the lib matcher rather than the path-aware
+            // local `glob_match`.
+            Pathspec::Glob(pat) => grit_lib::pathspec::pathspec_matches(pat, path),
             other => other.matches(path_bytes),
         })
     };
@@ -1525,7 +1529,8 @@ fn recurse_submodules_mark_pathspec_hits(
     for (i, spec) in pathspec_filter.iter().enumerate() {
         let hit = match spec {
             Pathspec::Magic(s) => grit_lib::pathspec::pathspec_contributes_match(s, path),
-            Pathspec::Glob(_) | Pathspec::Literal(_) => spec.matches(path_bytes),
+            Pathspec::Glob(pat) => grit_lib::pathspec::pathspec_matches(pat, path),
+            Pathspec::Literal(_) => spec.matches(path_bytes),
         };
         if hit {
             matched_index[i] = true;
