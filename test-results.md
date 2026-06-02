@@ -1,6 +1,26 @@
 # Test Results
 
-Updated: 2026-06-01
+Updated: 2026-06-02
+- t0 worktree merge: `cargo build --release -p grit-cli` passes with the existing warning backlog
+  (`ignore.rs`, `refs.rs`, `difftool.rs`, `sparse_checkout.rs`, `worktree.rs`).
+- t0 worktree merge: `cargo clippy --fix --allow-dirty --allow-staged` completed after sandbox
+  escalation. It left the existing warning backlog and reported failed auto-fixes in unrelated
+  binary files (`bundle_uri_test_tool.rs`, `mergetool.rs`); unrelated auto-fixes in `config.rs` and
+  `filter_process.rs` were backed out.
+- t0 worktree merge: `cargo test -p grit-lib --lib` passes 233/233.
+- t0 worktree merge: final `cargo build --release -p grit-cli` passes with the same existing
+  warning backlog.
+- t0 worktree merge: `./scripts/run-tests.sh t0060-path-utils.sh` passes 219/219 after merging the
+  `wf/t0/path-utils` lane.
+- t0 cache-tree finish: `./scripts/run-tests.sh t0090-cache-tree.sh` passes 22/22 after fixing
+  `ls-tree -d` trailing-slash directory pathspec descent.
+- t0 cache-tree guard: `./scripts/run-tests.sh t3105-ls-tree-output.sh` passes 60/60.
+- t0 reftable merge verification: `t0610-reftable-basics` remains 89/91,
+  `t0613-reftable-write-options` remains 10/11, and `t0611-reftable-httpd` remains 0/1.
+- Current t0 CSV summary: 72 in-scope rows, 59 fully green, 13 non-green, 32 failing subtests.
+- `cargo test --workspace`: not run for this focused merge/orchestration pass.
+- `./tests/harness/run.sh`: skipped; project uses `./scripts/run-tests.sh` for CSV/dashboard updates.
+
 - Final t9 verification: `./scripts/run-tests.sh t9 --verbose` ran 90 in-scope t9 files with zero
   failing tests; files with executable tests all passed. `t9832-unshelve.sh` and `t9833-errors.sh`
   reported 0/0 due unavailable git-p4 external prereqs.

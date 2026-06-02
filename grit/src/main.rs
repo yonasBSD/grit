@@ -5539,6 +5539,8 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
                 "hexdump" => run_test_tool_hexdump(rest),
                 "chmtime" => run_test_tool_chmtime(&rest[1..]),
                 "read-cache" => run_test_tool_read_cache(rest),
+                "dump-cache-tree" => run_test_tool_dump_cache_tree(),
+                "scrap-cache-tree" => run_test_tool_scrap_cache_tree(),
                 "dump-untracked-cache" => run_test_tool_dump_untracked_cache(),
                 "dump-split-index" => run_test_tool_dump_split_index(&rest[1..]),
                 "dump-fsmonitor" => run_test_tool_dump_fsmonitor(),
@@ -5944,6 +5946,30 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
                 "pack-deltas" => {
                     let args = preprocess_test_tool_args(rest)?;
                     test_tool_pack_deltas::run(&args)
+                }
+                "dump-reftable" => {
+                    // Supports `-b` (dump per-block stats) used by t0613.
+                    let mut dump_blocks = false;
+                    let mut table: Option<&str> = None;
+                    for arg in &rest[1..] {
+                        if arg == "-b" {
+                            dump_blocks = true;
+                        } else {
+                            table = Some(arg.as_str());
+                        }
+                    }
+                    let table = table.ok_or_else(|| {
+                        anyhow::anyhow!("usage: test-tool dump-reftable [-b] arg")
+                    })?;
+                    if dump_blocks {
+                        let out =
+                            grit_lib::reftable::dump_reftable_blocks(std::path::Path::new(table))
+                                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        print!("{out}");
+                        Ok(())
+                    } else {
+                        bail!("test-tool dump-reftable: only -b is supported");
+                    }
                 }
                 other => bail!("test-tool: unknown subcommand '{other}'"),
             }
@@ -6513,6 +6539,42 @@ fn run_test_tool_dump_split_index(rest: &[String]) -> Result<()> {
     let idx = Index::parse(&data).context("parse index")?;
     let out = format_dump_split_index_file(&data, &idx).context("dump split index")?;
     print!("{out}");
+    Ok(())
+}
+
+/// `test-tool dump-cache-tree` — matches `git/t/helper/test-dump-cache-tree.c`.
+///
+/// Loads the index, compares the stored cache-tree against a freshly built
+/// reference, and prints the agreeing nodes.
+fn run_test_tool_dump_cache_tree() -> Result<()> {
+    use grit_lib::repo::Repository;
+
+    let repo = Repository::discover(None).context("not a git repository")?;
+    let index_path = repo.index_path_for_env().context("resolve index path")?;
+    let index = repo
+        .load_index_at(&index_path)
+        .with_context(|| format!("loading index {}", index_path.display()))?;
+    let out = index
+        .dump_cache_tree(&repo.odb)
+        .context("dump cache-tree")?;
+    print!("{out}");
+    Ok(())
+}
+
+/// `test-tool scrap-cache-tree` — matches `git/t/helper/test-scrap-cache-tree.c`.
+///
+/// Drops the cache-tree extension from the index and writes it back.
+fn run_test_tool_scrap_cache_tree() -> Result<()> {
+    use grit_lib::repo::Repository;
+
+    let repo = Repository::discover(None).context("not a git repository")?;
+    let index_path = repo.index_path_for_env().context("resolve index path")?;
+    let mut index = repo
+        .load_index_at(&index_path)
+        .with_context(|| format!("loading index {}", index_path.display()))?;
+    index.clear_cache_tree();
+    repo.write_index_at(&index_path, &mut index)
+        .with_context(|| format!("writing index {}", index_path.display()))?;
     Ok(())
 }
 

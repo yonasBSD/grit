@@ -2203,9 +2203,17 @@ fn run_commit_patch_mode(
     candidate_paths.dedup();
 
     if candidate_paths.is_empty() {
+        // No worktree changes are available for interactive selection. Git's
+        // `commit -p` still prints "No changes." for the interactive phase, but
+        // if the index already carries staged changes versus the parent tree
+        // (e.g. a `git rm` deletion staged before `commit -p`), it commits those
+        // staged changes as-is rather than aborting.
         println!("No changes.");
         let config = ConfigSet::load(Some(&repo.git_dir), true)?;
         let staged = diff_index_to_tree(&repo.odb, &disk_index, parent_tree_oid, false)?;
+        if !staged.is_empty() {
+            return Ok(disk_index);
+        }
         let unstaged_raw = diff_index_to_worktree(&repo.odb, &disk_index, work_tree, false, false)?;
         let (rename_threshold, rename_copies) = commit_rename_settings(&config);
         let unstaged = if let Some(th) = rename_threshold {

@@ -56,6 +56,8 @@ const BLOCK_TYPE_REF: u8 = b'r';
 const BLOCK_TYPE_INDEX: u8 = b'i';
 /// Block type: log block (zlib-compressed).
 const BLOCK_TYPE_LOG: u8 = b'g';
+/// Block type: object index block.
+const BLOCK_TYPE_OBJ: u8 = b'o';
 
 /// Value types encoded in the low 3 bits of the suffix_length varint.
 const VALUE_DELETION: u8 = 0;
@@ -169,12 +171,16 @@ pub struct LogRecord {
 /// Write options for reftable creation.
 #[derive(Debug, Clone)]
 pub struct WriteOptions {
-    /// Block size in bytes. 0 means unaligned (variable-sized blocks).
+    /// Block size in bytes. 0 means use the default.
     pub block_size: u32,
     /// Restart interval (number of records between restart points).
     pub restart_interval: usize,
     /// Whether to write log blocks.
     pub write_log: bool,
+    /// Skip writing the object index (config `reftable.indexObjects=false`).
+    pub skip_index_objects: bool,
+    /// Write blocks without padding to the block size.
+    pub unpadded: bool,
 }
 
 impl Default for WriteOptions {
@@ -183,6 +189,8 @@ impl Default for WriteOptions {
             block_size: DEFAULT_BLOCK_SIZE,
             restart_interval: RESTART_INTERVAL,
             write_log: true,
+            skip_index_objects: false,
+            unpadded: false,
         }
     }
 }
@@ -244,381 +252,767 @@ impl ReftableWriter {
     }
 
     /// Finish writing and return the complete reftable file bytes.
-    pub fn finish(mut self) -> Result<Vec<u8>> {
-        let mut out = Vec::new();
-        let block_size = self.opts.block_size;
+    ///
+    /// This is a faithful port of `git/reftable/writer.c` so that the
+    /// on-disk layout (block boundaries, restart points, padding,
+    /// index/object sections, footer offsets) is byte-identical to git.
+    pub fn finish(self) -> Result<Vec<u8>> {
+        let refs = self.refs;
+        let logs = self.logs;
+        let opts = self.opts;
+        let mut w = WriterState::new(opts, self.min_update_index, self.max_update_index);
 
-        // --- Header (24 bytes) ---
-        out.extend_from_slice(REFTABLE_MAGIC);
-        out.push(1); // version
-        out.push(((block_size >> 16) & 0xff) as u8);
-        out.push(((block_size >> 8) & 0xff) as u8);
-        out.push((block_size & 0xff) as u8);
-        out.extend_from_slice(&self.min_update_index.to_be_bytes());
-        out.extend_from_slice(&self.max_update_index.to_be_bytes());
-
-        assert_eq!(out.len(), HEADER_SIZE);
-
-        // --- Ref blocks ---
-        let ref_block_positions = self.write_ref_blocks(&mut out)?;
-
-        // --- Ref index (if ≥ 4 ref blocks) ---
-        let ref_index_position = if ref_block_positions.len() >= 4 {
-            let pos = out.len() as u64;
-            self.write_ref_index(&mut out, &ref_block_positions)?;
-            pos
-        } else {
-            0
-        };
-
-        // --- Log blocks ---
-        let log_position = if self.opts.write_log && !self.logs.is_empty() {
-            let pos = out.len() as u64;
-            self.write_log_blocks(&mut out)?;
-            pos
-        } else {
-            0
-        };
-
-        // --- Footer ---
-        let footer_start = out.len();
-        // Repeat header
-        out.extend_from_slice(REFTABLE_MAGIC);
-        out.push(1);
-        out.push(((block_size >> 16) & 0xff) as u8);
-        out.push(((block_size >> 8) & 0xff) as u8);
-        out.push((block_size & 0xff) as u8);
-        out.extend_from_slice(&self.min_update_index.to_be_bytes());
-        out.extend_from_slice(&self.max_update_index.to_be_bytes());
-
-        // ref_index_position
-        out.extend_from_slice(&ref_index_position.to_be_bytes());
-        // (obj_position << 5) | obj_id_len — no obj blocks yet
-        out.extend_from_slice(&0u64.to_be_bytes());
-        // obj_index_position
-        out.extend_from_slice(&0u64.to_be_bytes());
-        // log_position
-        out.extend_from_slice(&log_position.to_be_bytes());
-        // log_index_position (we skip log index for simplicity)
-        out.extend_from_slice(&0u64.to_be_bytes());
-
-        // CRC-32 of footer (everything from footer_start to here)
-        let crc = crc32(&out[footer_start..]);
-        out.extend_from_slice(&crc.to_be_bytes());
-
-        Ok(out)
-    }
-
-    /// Write ref blocks, returning (block_start_position, last_refname) per block.
-    fn write_ref_blocks(&self, out: &mut Vec<u8>) -> Result<Vec<(u64, String)>> {
-        if self.refs.is_empty() {
-            return Ok(Vec::new());
+        // Refs are added in sorted order; index objects as we go.
+        for rec in &refs {
+            w.add_ref(rec)?;
         }
 
-        let block_size = self.opts.block_size as usize;
-        let restart_interval = self.opts.restart_interval;
-        let mut block_positions: Vec<(u64, String)> = Vec::new();
-        let mut i = 0;
-
-        while i < self.refs.len() {
-            let block_start = out.len();
-            let is_first_block = block_start == HEADER_SIZE;
-
-            // We accumulate records into a buffer, then write the block.
-            let mut records_buf = Vec::new();
-            let mut restart_offsets: Vec<u32> = Vec::new();
-            let mut prev_name = String::new();
-            let mut count = 0;
-            let mut last_name = String::new();
-
-            while i < self.refs.len() {
-                let rec = &self.refs[i];
-                let is_restart = count % restart_interval == 0;
-
-                let mut rec_buf = Vec::new();
-                let prefix_len = if is_restart {
-                    0
-                } else {
-                    common_prefix_len(prev_name.as_bytes(), rec.name.as_bytes())
-                };
-                let suffix = &rec.name.as_bytes()[prefix_len..];
-                let suffix_len = suffix.len();
-
-                let value_type = match &rec.value {
-                    RefValue::Deletion => VALUE_DELETION,
-                    RefValue::Val1(_) => VALUE_ONE_OID,
-                    RefValue::Val2(_, _) => VALUE_TWO_OID,
-                    RefValue::Symref(_) => VALUE_SYMREF,
-                };
-
-                put_varint(prefix_len as u64, &mut rec_buf);
-                put_varint(((suffix_len as u64) << 3) | value_type as u64, &mut rec_buf);
-                rec_buf.extend_from_slice(suffix);
-
-                let update_index_delta = rec.update_index.saturating_sub(self.min_update_index);
-                put_varint(update_index_delta, &mut rec_buf);
-
-                match &rec.value {
-                    RefValue::Deletion => {}
-                    RefValue::Val1(oid) => {
-                        rec_buf.extend_from_slice(oid.as_bytes());
-                    }
-                    RefValue::Val2(oid, peeled) => {
-                        rec_buf.extend_from_slice(oid.as_bytes());
-                        rec_buf.extend_from_slice(peeled.as_bytes());
-                    }
-                    RefValue::Symref(target) => {
-                        put_varint(target.len() as u64, &mut rec_buf);
-                        rec_buf.extend_from_slice(target.as_bytes());
-                    }
-                }
-
-                // Check if adding this record would overflow the block.
-                // Block overhead: 4 (block header) + restart table
-                let restart_count = restart_offsets.len() + if is_restart { 1 } else { 0 };
-                let trailer_size = restart_count * 3 + 2;
-                let total = 4 + records_buf.len() + rec_buf.len() + trailer_size;
-                let effective_block_size = if is_first_block && block_size > 0 {
-                    block_size // first block includes header
-                } else if block_size > 0 {
-                    block_size
-                } else {
-                    usize::MAX // unaligned
-                };
-                // For first block, block_len includes the 24-byte header
-                let block_len = if is_first_block {
-                    HEADER_SIZE + total
-                } else {
-                    total
-                };
-
-                if block_size > 0 && block_len > effective_block_size && count > 0 {
-                    break; // Start a new block
-                }
-
-                if is_restart {
-                    let offset = if is_first_block {
-                        HEADER_SIZE + 4 + records_buf.len()
-                    } else {
-                        4 + records_buf.len()
-                    };
-                    restart_offsets.push(offset as u32);
-                }
-
-                records_buf.extend_from_slice(&rec_buf);
-                last_name = rec.name.clone();
-                prev_name = rec.name.clone();
-                count += 1;
-                i += 1;
-            }
-
-            if count == 0 {
-                return Err(Error::InvalidRef(
-                    "reftable: ref record too large for block size".into(),
-                ));
-            }
-
-            // Ensure at least one restart point
-            if restart_offsets.is_empty() {
-                restart_offsets.push(if is_first_block {
-                    HEADER_SIZE as u32 + 4
-                } else {
-                    4
-                });
-            }
-
-            // Compute block_len
-            let trailer_size = restart_offsets.len() * 3 + 2;
-            let block_len_val = if is_first_block {
-                HEADER_SIZE + 4 + records_buf.len() + trailer_size
-            } else {
-                4 + records_buf.len() + trailer_size
-            };
-
-            // Write block header: type(1) + block_len(3)
-            out.push(BLOCK_TYPE_REF);
-            out.push(((block_len_val >> 16) & 0xff) as u8);
-            out.push(((block_len_val >> 8) & 0xff) as u8);
-            out.push((block_len_val & 0xff) as u8);
-
-            // Write records
-            out.extend_from_slice(&records_buf);
-
-            // Write restart offsets (3 bytes each)
-            for &off in &restart_offsets {
-                out.push(((off >> 16) & 0xff) as u8);
-                out.push(((off >> 8) & 0xff) as u8);
-                out.push((off & 0xff) as u8);
-            }
-
-            // Write restart count (2 bytes)
-            let rc = restart_offsets.len() as u16;
-            out.push((rc >> 8) as u8);
-            out.push((rc & 0xff) as u8);
-
-            // Pad to block alignment if needed
-            if block_size > 0 {
-                let written = out.len() - block_start;
-                let target = if is_first_block {
-                    block_size
-                } else {
-                    block_size
-                };
-                if written < target {
-                    out.resize(block_start + target, 0);
-                }
-            }
-
-            block_positions.push((block_start as u64, last_name.clone()));
-        }
-
-        Ok(block_positions)
-    }
-
-    /// Write a single-level ref index block.
-    fn write_ref_index(&self, out: &mut Vec<u8>, block_positions: &[(u64, String)]) -> Result<()> {
-        let mut records_buf = Vec::new();
-        let mut restart_offsets: Vec<u32> = Vec::new();
-        let mut prev_name = String::new();
-
-        for (idx, (block_pos, last_ref)) in block_positions.iter().enumerate() {
-            let is_restart = idx % self.opts.restart_interval == 0;
-            let prefix_len = if is_restart {
-                0
-            } else {
-                common_prefix_len(prev_name.as_bytes(), last_ref.as_bytes())
-            };
-            let suffix = &last_ref.as_bytes()[prefix_len..];
-
-            if is_restart {
-                restart_offsets.push(4 + records_buf.len() as u32);
-            }
-
-            put_varint(prefix_len as u64, &mut records_buf);
-            put_varint((suffix.len() as u64) << 3, &mut records_buf);
-            records_buf.extend_from_slice(suffix);
-            put_varint(*block_pos, &mut records_buf);
-
-            prev_name = last_ref.clone();
-        }
-
-        if restart_offsets.is_empty() {
-            restart_offsets.push(4);
-        }
-
-        let trailer_size = restart_offsets.len() * 3 + 2;
-        let block_len = 4 + records_buf.len() + trailer_size;
-
-        out.push(BLOCK_TYPE_INDEX);
-        out.push(((block_len >> 16) & 0xff) as u8);
-        out.push(((block_len >> 8) & 0xff) as u8);
-        out.push((block_len & 0xff) as u8);
-
-        out.extend_from_slice(&records_buf);
-
-        for &off in &restart_offsets {
-            out.push(((off >> 16) & 0xff) as u8);
-            out.push(((off >> 8) & 0xff) as u8);
-            out.push((off & 0xff) as u8);
-        }
-        let rc = restart_offsets.len() as u16;
-        out.push((rc >> 8) as u8);
-        out.push((rc & 0xff) as u8);
-
-        Ok(())
-    }
-
-    /// Write log blocks (zlib-compressed).
-    fn write_log_blocks(&mut self, out: &mut Vec<u8>) -> Result<()> {
-        use flate2::write::DeflateEncoder;
-        use flate2::Compression;
-
-        // Sort logs by (refname, reverse update_index)
-        self.logs.sort_by(|a, b| {
+        // Logs: sort by (refname asc, update_index desc) — matches
+        // reftable_log_record_compare_key.
+        let mut logs = logs;
+        logs.sort_by(|a, b| {
             a.refname
                 .cmp(&b.refname)
                 .then_with(|| b.update_index.cmp(&a.update_index))
         });
-
-        // Build the uncompressed log block content
-        let mut inner = Vec::new();
-        let mut restart_offsets: Vec<u32> = Vec::new();
-        let mut prev_key = Vec::<u8>::new();
-
-        for (idx, log) in self.logs.iter().enumerate() {
-            let is_restart = idx % self.opts.restart_interval == 0;
-
-            // Log key: refname \0 reverse_int64(update_index)
-            let mut key = Vec::new();
-            key.extend_from_slice(log.refname.as_bytes());
-            key.push(0);
-            key.extend_from_slice(&(0xffffffffffffffffu64 - log.update_index).to_be_bytes());
-
-            let prefix_len = if is_restart {
-                0
-            } else {
-                common_prefix_len(&prev_key, &key)
-            };
-            let suffix = &key[prefix_len..];
-
-            if is_restart {
-                // Offset within the decompressed block (4 byte header + inner.len())
-                restart_offsets.push(4 + inner.len() as u32);
+        if w.opts.write_log {
+            for log in &logs {
+                w.add_log(log)?;
             }
-
-            // log_type = 1 (standard reflog data)
-            let log_type: u8 = 1;
-            put_varint(prefix_len as u64, &mut inner);
-            put_varint(((suffix.len() as u64) << 3) | log_type as u64, &mut inner);
-            inner.extend_from_slice(suffix);
-
-            // log_data
-            inner.extend_from_slice(log.old_id.as_bytes());
-            inner.extend_from_slice(log.new_id.as_bytes());
-            put_varint(log.name.len() as u64, &mut inner);
-            inner.extend_from_slice(log.name.as_bytes());
-            put_varint(log.email.len() as u64, &mut inner);
-            inner.extend_from_slice(log.email.as_bytes());
-            put_varint(log.time_seconds, &mut inner);
-            inner.extend_from_slice(&log.tz_offset.to_be_bytes());
-            put_varint(log.message.len() as u64, &mut inner);
-            inner.extend_from_slice(log.message.as_bytes());
-
-            prev_key = key;
         }
 
-        if restart_offsets.is_empty() {
-            restart_offsets.push(4);
+        w.close()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Faithful low-level writer (ports git/reftable/{block,writer,record}.c)
+// ---------------------------------------------------------------------------
+
+/// Default block size, mirrors reftable's `DEFAULT_BLOCK_SIZE`.
+const REFTABLE_DEFAULT_BLOCK_SIZE: u32 = 4096;
+/// Maximum number of restart points per block (`MAX_RESTARTS`).
+const MAX_RESTARTS: usize = (1 << 16) - 1;
+
+/// A record to encode: produces a key and a value body.
+enum EncRecord<'a> {
+    Ref(&'a RefRecord, u64),
+    Log(&'a LogRecord),
+    Obj { prefix: Vec<u8>, offsets: Vec<u64> },
+    Index { last_key: Vec<u8>, offset: u64 },
+}
+
+impl EncRecord<'_> {
+    fn block_type(&self) -> u8 {
+        match self {
+            EncRecord::Ref(..) => BLOCK_TYPE_REF,
+            EncRecord::Log(_) => BLOCK_TYPE_LOG,
+            EncRecord::Obj { .. } => BLOCK_TYPE_OBJ,
+            EncRecord::Index { .. } => BLOCK_TYPE_INDEX,
+        }
+    }
+
+    /// The record key (used for prefix compression and restart points).
+    fn key(&self) -> Vec<u8> {
+        match self {
+            EncRecord::Ref(r, _) => r.name.as_bytes().to_vec(),
+            EncRecord::Log(l) => {
+                let mut k = Vec::with_capacity(l.refname.len() + 9);
+                k.extend_from_slice(l.refname.as_bytes());
+                k.push(0);
+                let ts = u64::MAX - l.update_index;
+                k.extend_from_slice(&ts.to_be_bytes());
+                k
+            }
+            EncRecord::Obj { prefix, .. } => prefix.clone(),
+            EncRecord::Index { last_key, .. } => last_key.clone(),
+        }
+    }
+
+    /// The `extra` value-type bits stored in the key varint.
+    fn val_type(&self) -> u8 {
+        match self {
+            EncRecord::Ref(r, _) => match r.value {
+                RefValue::Deletion => VALUE_DELETION,
+                RefValue::Val1(_) => VALUE_ONE_OID,
+                RefValue::Val2(..) => VALUE_TWO_OID,
+                RefValue::Symref(_) => VALUE_SYMREF,
+            },
+            // grit only writes reflog updates (value_type 1), never the
+            // explicit-deletion form (value_type 0).
+            EncRecord::Log(_) => 1,
+            EncRecord::Obj { offsets, .. } => {
+                if !offsets.is_empty() && offsets.len() < 8 {
+                    offsets.len() as u8
+                } else {
+                    0
+                }
+            }
+            EncRecord::Index { .. } => 0,
+        }
+    }
+
+    /// Encode the value body (everything after the key).
+    fn encode_value(&self, opts: &WriteOptions, out: &mut Vec<u8>) {
+        match self {
+            EncRecord::Ref(r, update_index_delta) => {
+                put_varint(*update_index_delta, out);
+                match &r.value {
+                    RefValue::Deletion => {}
+                    RefValue::Val1(oid) => out.extend_from_slice(oid.as_bytes()),
+                    RefValue::Val2(oid, peeled) => {
+                        out.extend_from_slice(oid.as_bytes());
+                        out.extend_from_slice(peeled.as_bytes());
+                    }
+                    RefValue::Symref(target) => {
+                        put_varint(target.len() as u64, out);
+                        out.extend_from_slice(target.as_bytes());
+                    }
+                }
+            }
+            EncRecord::Log(l) => {
+                out.extend_from_slice(l.old_id.as_bytes());
+                out.extend_from_slice(l.new_id.as_bytes());
+                put_varint(l.name.len() as u64, out);
+                out.extend_from_slice(l.name.as_bytes());
+                put_varint(l.email.len() as u64, out);
+                out.extend_from_slice(l.email.as_bytes());
+                put_varint(l.time_seconds, out);
+                out.extend_from_slice(&l.tz_offset.to_be_bytes());
+                let msg = clean_log_message(&l.message, opts);
+                put_varint(msg.len() as u64, out);
+                out.extend_from_slice(&msg);
+            }
+            EncRecord::Obj { offsets, .. } => {
+                if offsets.is_empty() || offsets.len() >= 8 {
+                    put_varint(offsets.len() as u64, out);
+                }
+                if offsets.is_empty() {
+                    return;
+                }
+                put_varint(offsets[0], out);
+                let mut last = offsets[0];
+                for &o in &offsets[1..] {
+                    put_varint(o - last, out);
+                    last = o;
+                }
+            }
+            EncRecord::Index { offset, .. } => {
+                put_varint(*offset, out);
+            }
+        }
+    }
+}
+
+/// Clean a reflog message the way `reftable_writer_add_log` does (unless the
+/// writer is in `exact_log_message` mode, which grit never uses): strip
+/// trailing newlines and append exactly one.
+///
+/// Git applies this cleaning whenever the message field is non-NULL, including
+/// the empty string: `""` becomes `"\n"` (a single trailing newline), not an
+/// empty value. grit's `LogRecord` always carries a (possibly empty) `String`,
+/// so the cleaning always runs — matching git's `msglen == 1` for reflog entries
+/// written without an explicit message (e.g. `update-ref` with no `-m`,
+/// t0613 'restart interval at every single record').
+fn clean_log_message(msg: &str, opts: &WriteOptions) -> Vec<u8> {
+    // Git's reftable backend truncates the reflog message to `block_size / 2`
+    // bytes before storing it (reftable-backend.c: `xstrndup(u->msg,
+    // block_size / 2)`) so that an oversized message still fits inside a log
+    // block instead of failing the whole transaction with "entry too large"
+    // (t0610 'basic: can write large commit message'). Mirror that bound,
+    // clamping to a UTF-8 char boundary so the resulting string stays valid.
+    let limit = (opts.block_size as usize / 2).max(1);
+    let msg = if msg.len() > limit {
+        let mut end = limit;
+        while end > 0 && !msg.is_char_boundary(end) {
+            end -= 1;
+        }
+        &msg[..end]
+    } else {
+        msg
+    };
+    let trimmed = msg.trim_end_matches('\n');
+    let mut out = trimmed.as_bytes().to_vec();
+    out.push(b'\n');
+    out
+}
+
+/// Encode a key (prefix/suffix compression) into `out`, returning whether this
+/// was a restart point. Mirrors `reftable_encode_key`.
+fn encode_key(prev: &[u8], key: &[u8], extra: u8, out: &mut Vec<u8>) -> bool {
+    let prefix_len = common_prefix_len(prev, key);
+    let suffix_len = key.len() - prefix_len;
+    put_varint(prefix_len as u64, out);
+    put_varint(((suffix_len as u64) << 3) | (extra as u64), out);
+    out.extend_from_slice(&key[prefix_len..]);
+    prefix_len == 0
+}
+
+/// In-progress block being filled by the writer.
+struct BlockWriter {
+    typ: u8,
+    /// Bytes from `header_off` onwards (block type byte + 3 reserved length
+    /// bytes are at the start; record payload follows).
+    buf: Vec<u8>,
+    header_off: usize,
+    block_size: usize,
+    restart_interval: usize,
+    restarts: Vec<u32>,
+    last_key: Vec<u8>,
+    entries: usize,
+}
+
+impl BlockWriter {
+    fn new(typ: u8, block_size: usize, header_off: usize, restart_interval: usize) -> Self {
+        // buf is laid out starting at header_off: [type][len:3][records...]
+        let mut buf = vec![0u8; header_off + 4];
+        buf[header_off] = typ;
+        Self {
+            typ,
+            buf,
+            header_off,
+            block_size,
+            restart_interval,
+            restarts: Vec::new(),
+            last_key: Vec::new(),
+            entries: 0,
+        }
+    }
+
+    /// `w->next` equivalent: number of bytes written so far (within the block,
+    /// counting from offset 0 which includes header_off).
+    fn next(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// Try to add a record. Returns Ok(true) if added, Ok(false) if it does not
+    /// fit (entry-too-big), or Err on other failure.
+    fn add(&mut self, rec: &EncRecord, opts: &WriteOptions) -> Result<bool> {
+        let key = rec.key();
+        if key.is_empty() {
+            return Err(Error::InvalidRef("reftable: empty record key".into()));
+        }
+        let restart = self.entries.is_multiple_of(self.restart_interval);
+        let prev: &[u8] = if restart { &[] } else { &self.last_key };
+
+        let mut encoded = Vec::new();
+        let is_restart = encode_key(prev, &key, rec.val_type(), &mut encoded);
+        rec.encode_value(opts, &mut encoded);
+        let n = encoded.len();
+
+        // register_restart overflow check: 2 + 3*rlen + n > block_size - next
+        let mut rlen = self.restarts.len();
+        let mut is_restart = is_restart;
+        if rlen >= MAX_RESTARTS {
+            is_restart = false;
+        }
+        if is_restart {
+            rlen += 1;
+        }
+        if self.block_size > 0 && 2 + 3 * rlen + n > self.block_size - self.next() {
+            return Ok(false);
         }
 
-        // Append restart table
-        for &off in &restart_offsets {
-            inner.push(((off >> 16) & 0xff) as u8);
-            inner.push(((off >> 8) & 0xff) as u8);
-            inner.push((off & 0xff) as u8);
+        if is_restart {
+            self.restarts.push(self.next() as u32);
         }
-        let rc = restart_offsets.len() as u16;
-        inner.push((rc >> 8) as u8);
-        inner.push((rc & 0xff) as u8);
+        self.buf.extend_from_slice(&encoded);
+        self.last_key = key;
+        self.entries += 1;
+        Ok(true)
+    }
 
-        // block_len is the *inflated* size including the 4-byte block header
-        let block_len = 4 + inner.len();
+    /// Finalize the block in memory: append restart table + count, write the
+    /// 3-byte block length, and (for log blocks) compress. Returns the raw byte
+    /// length written (`raw_bytes`).
+    fn finish(&mut self) -> Result<usize> {
+        for &r in &self.restarts {
+            self.buf.push(((r >> 16) & 0xff) as u8);
+            self.buf.push(((r >> 8) & 0xff) as u8);
+            self.buf.push((r & 0xff) as u8);
+        }
+        let rc = self.restarts.len() as u16;
+        self.buf.push((rc >> 8) as u8);
+        self.buf.push((rc & 0xff) as u8);
 
-        // Deflate the inner content
-        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
-        encoder
-            .write_all(&inner)
-            .map_err(|e| Error::Zlib(e.to_string()))?;
-        let compressed = encoder.finish().map_err(|e| Error::Zlib(e.to_string()))?;
+        // block length (uncompressed) goes into the 3 bytes after the type.
+        let block_len = self.buf.len();
+        self.buf[self.header_off + 1] = ((block_len >> 16) & 0xff) as u8;
+        self.buf[self.header_off + 2] = ((block_len >> 8) & 0xff) as u8;
+        self.buf[self.header_off + 3] = (block_len & 0xff) as u8;
 
-        // Write block header + compressed data
-        out.push(BLOCK_TYPE_LOG);
-        out.push(((block_len >> 16) & 0xff) as u8);
-        out.push(((block_len >> 8) & 0xff) as u8);
-        out.push((block_len & 0xff) as u8);
-        out.extend_from_slice(&compressed);
+        if self.typ == BLOCK_TYPE_LOG {
+            use flate2::write::DeflateEncoder;
+            use flate2::Compression;
+            let skip = 4 + self.header_off;
+            let mut enc = DeflateEncoder::new(Vec::new(), Compression::new(9));
+            enc.write_all(&self.buf[skip..])
+                .map_err(|e| Error::Zlib(e.to_string()))?;
+            let compressed = enc.finish().map_err(|e| Error::Zlib(e.to_string()))?;
+            self.buf.truncate(skip);
+            self.buf.extend_from_slice(&compressed);
+        }
+        Ok(self.buf.len())
+    }
+}
 
+/// Per-section accumulated stats (mirrors `reftable_block_stats`).
+#[derive(Default, Clone)]
+struct SectionStats {
+    blocks: usize,
+    index_blocks: usize,
+    offset: u64,
+    index_offset: u64,
+}
+
+/// An object-index entry collected while writing refs.
+struct ObjEntry {
+    hash: Vec<u8>,
+    offsets: Vec<u64>,
+}
+
+/// The full writer state, ported from `struct reftable_writer`.
+struct WriterState {
+    opts: WriteOptions,
+    min_update_index: u64,
+    max_update_index: u64,
+
+    out: Vec<u8>,
+    next: u64,
+    pending_padding: usize,
+
+    block: Option<BlockWriter>,
+    block_type: u8,
+
+    /// Index records for the current section (last_key, offset).
+    index: Vec<(Vec<u8>, u64)>,
+
+    /// Object-index tree (kept sorted by hash).
+    obj_entries: Vec<ObjEntry>,
+    object_id_len: usize,
+
+    ref_stats: SectionStats,
+    obj_stats: SectionStats,
+    log_stats: SectionStats,
+    idx_blocks_total: usize,
+}
+
+impl WriterState {
+    fn new(mut opts: WriteOptions, min: u64, max: u64) -> Self {
+        if opts.restart_interval == 0 {
+            opts.restart_interval = RESTART_INTERVAL;
+        }
+        if opts.block_size == 0 {
+            opts.block_size = REFTABLE_DEFAULT_BLOCK_SIZE;
+        }
+        Self {
+            opts,
+            min_update_index: min,
+            max_update_index: max,
+            out: Vec::new(),
+            next: 0,
+            pending_padding: 0,
+            block: None,
+            block_type: 0,
+            index: Vec::new(),
+            obj_entries: Vec::new(),
+            object_id_len: 0,
+            ref_stats: SectionStats::default(),
+            obj_stats: SectionStats::default(),
+            log_stats: SectionStats::default(),
+            idx_blocks_total: 0,
+        }
+    }
+
+    fn header_size(&self) -> usize {
+        // version 1 (sha1) only — grit is sha1 in these tests.
+        24
+    }
+
+    fn write_header(&self, dest: &mut [u8]) {
+        dest[0..4].copy_from_slice(REFTABLE_MAGIC);
+        dest[4] = 1;
+        dest[5] = ((self.opts.block_size >> 16) & 0xff) as u8;
+        dest[6] = ((self.opts.block_size >> 8) & 0xff) as u8;
+        dest[7] = (self.opts.block_size & 0xff) as u8;
+        dest[8..16].copy_from_slice(&self.min_update_index.to_be_bytes());
+        dest[16..24].copy_from_slice(&self.max_update_index.to_be_bytes());
+    }
+
+    fn stats_mut(&mut self, typ: u8) -> &mut SectionStats {
+        match typ {
+            BLOCK_TYPE_REF => &mut self.ref_stats,
+            BLOCK_TYPE_OBJ => &mut self.obj_stats,
+            BLOCK_TYPE_LOG => &mut self.log_stats,
+            // index blocks roll into the section being indexed; not used here.
+            _ => &mut self.ref_stats,
+        }
+    }
+
+    /// Write `data` then queue `padding` zero bytes for the next write
+    /// (`padded_write`).
+    fn padded_write(&mut self, data: &[u8], padding: usize) {
+        if self.pending_padding > 0 {
+            self.out
+                .extend(std::iter::repeat_n(0u8, self.pending_padding));
+            self.pending_padding = 0;
+        }
+        self.pending_padding = padding;
+        self.out.extend_from_slice(data);
+    }
+
+    fn reinit_block(&mut self, typ: u8) {
+        let header_off = if self.next == 0 {
+            self.header_size()
+        } else {
+            0
+        };
+        self.block = Some(BlockWriter::new(
+            typ,
+            self.opts.block_size as usize,
+            header_off,
+            self.opts.restart_interval,
+        ));
+        self.block_type = typ;
+    }
+
+    fn add_record(&mut self, rec: &EncRecord) -> Result<()> {
+        let typ = rec.block_type();
+        if self.block.is_none() {
+            self.reinit_block(typ);
+        }
+        // Attempt to add.
+        let opts = self.opts.clone();
+        let fit = {
+            let bw = self
+                .block
+                .as_mut()
+                .ok_or_else(|| Error::InvalidRef("reftable: no active block writer".into()))?;
+            bw.add(rec, &opts)?
+        };
+        if fit {
+            return Ok(());
+        }
+        // Block full: flush and retry in a fresh block.
+        self.flush_block()?;
+        self.reinit_block(typ);
+        let opts = self.opts.clone();
+        let bw = self
+            .block
+            .as_mut()
+            .ok_or_else(|| Error::InvalidRef("reftable: no active block writer".into()))?;
+        if !bw.add(rec, &opts)? {
+            return Err(Error::InvalidRef(
+                "reftable: transaction failure: entry too large".into(),
+            ));
+        }
         Ok(())
+    }
+
+    fn add_ref(&mut self, r: &RefRecord) -> Result<()> {
+        let delta = r.update_index.saturating_sub(self.min_update_index);
+        self.add_record(&EncRecord::Ref(r, delta))?;
+
+        if !self.opts.skip_index_objects {
+            match &r.value {
+                RefValue::Val1(oid) => self.index_hash(oid.as_bytes()),
+                RefValue::Val2(oid, peeled) => {
+                    self.index_hash(oid.as_bytes());
+                    self.index_hash(peeled.as_bytes());
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn add_log(&mut self, l: &LogRecord) -> Result<()> {
+        // Finishing the ref section happens before the first log record.
+        if matches!(&self.block, Some(b) if b.typ == BLOCK_TYPE_REF) {
+            self.finish_public_section()?;
+        }
+        // Drop pending padding before a log block (matches add_log_verbatim).
+        self.next -= self.pending_padding as u64;
+        self.pending_padding = 0;
+        self.add_record(&EncRecord::Log(l))
+    }
+
+    fn index_hash(&mut self, hash: &[u8]) {
+        let off = self.next;
+        match self
+            .obj_entries
+            .binary_search_by(|e| e.hash.as_slice().cmp(hash))
+        {
+            Ok(idx) => {
+                let e = &mut self.obj_entries[idx];
+                if e.offsets.last() != Some(&off) {
+                    e.offsets.push(off);
+                }
+            }
+            Err(idx) => {
+                self.obj_entries.insert(
+                    idx,
+                    ObjEntry {
+                        hash: hash.to_vec(),
+                        offsets: vec![off],
+                    },
+                );
+            }
+        }
+    }
+
+    /// `writer_flush_nonempty_block`.
+    fn flush_block(&mut self) -> Result<()> {
+        let Some(mut bw) = self.block.take() else {
+            return Ok(());
+        };
+        if bw.entries == 0 {
+            self.block = Some(bw);
+            return Ok(());
+        }
+        let typ = bw.typ;
+        let raw_bytes = bw.finish()?;
+
+        let mut padding = 0;
+        if !self.opts.unpadded && typ != BLOCK_TYPE_LOG {
+            padding = (self.opts.block_size as usize).saturating_sub(raw_bytes);
+        }
+
+        let block_typ_off = if self.stats_mut(typ).blocks == 0 {
+            self.next
+        } else {
+            0
+        };
+        {
+            let next = self.next;
+            let st = self.stats_mut(typ);
+            if block_typ_off > 0 {
+                st.offset = next;
+            }
+            st.blocks += 1;
+        }
+
+        if self.next == 0 {
+            // Write the reftable header into the front of the first block.
+            let hs = self.header_size();
+            self.write_header_into_block(&mut bw, hs);
+        }
+
+        let data = bw.buf.clone();
+        self.padded_write(&data, padding);
+
+        // Record an index entry for this block.
+        self.index.push((bw.last_key.clone(), self.next));
+
+        self.next += (padding + raw_bytes) as u64;
+        self.block = None;
+        Ok(())
+    }
+
+    fn write_header_into_block(&self, bw: &mut BlockWriter, hs: usize) {
+        let mut hdr = vec![0u8; hs];
+        self.write_header(&mut hdr);
+        bw.buf[..hs].copy_from_slice(&hdr);
+    }
+
+    fn flush_block_if_nonempty(&mut self) -> Result<()> {
+        if matches!(&self.block, Some(b) if b.entries == 0) {
+            return Ok(());
+        }
+        self.flush_block()
+    }
+
+    /// `writer_finish_section`: flush the current block then emit any index.
+    fn finish_section(&mut self) -> Result<()> {
+        let typ = self.block_type;
+        let threshold = if self.opts.unpadded { 1 } else { 3 };
+        let before_blocks = self.idx_blocks_total;
+
+        self.flush_block_if_nonempty()?;
+
+        let mut max_level = 0;
+        let mut index_start = 0u64;
+
+        while self.index.len() > threshold {
+            max_level += 1;
+            index_start = self.next;
+            self.reinit_block(BLOCK_TYPE_INDEX);
+
+            let idx = std::mem::take(&mut self.index);
+            for (last_key, offset) in &idx {
+                self.add_record(&EncRecord::Index {
+                    last_key: last_key.clone(),
+                    offset: *offset,
+                })?;
+            }
+            // Count index blocks produced during this level.
+            let blocks_before = self.count_index_blocks_marker();
+            self.flush_index_block()?;
+            let _ = blocks_before;
+        }
+
+        self.index.clear();
+
+        let index_blocks = self.idx_blocks_total - before_blocks;
+        {
+            let st = self.stats_mut(typ);
+            st.index_blocks = index_blocks;
+            st.index_offset = index_start;
+        }
+        let _ = max_level;
+        Ok(())
+    }
+
+    fn count_index_blocks_marker(&self) -> usize {
+        self.idx_blocks_total
+    }
+
+    /// Flush an index block: like `flush_block` but the produced block counts
+    /// toward `idx_blocks_total` and re-populates `self.index` for the next
+    /// (higher) level.
+    fn flush_index_block(&mut self) -> Result<()> {
+        let Some(mut bw) = self.block.take() else {
+            return Ok(());
+        };
+        if bw.entries == 0 {
+            self.block = Some(bw);
+            return Ok(());
+        }
+        let raw_bytes = bw.finish()?;
+        let mut padding = 0;
+        if !self.opts.unpadded {
+            padding = (self.opts.block_size as usize).saturating_sub(raw_bytes);
+        }
+        if self.next == 0 {
+            let hs = self.header_size();
+            self.write_header_into_block(&mut bw, hs);
+        }
+        let data = bw.buf.clone();
+        self.padded_write(&data, padding);
+        self.index.push((bw.last_key.clone(), self.next));
+        self.next += (padding + raw_bytes) as u64;
+        self.idx_blocks_total += 1;
+        self.block = None;
+        Ok(())
+    }
+
+    /// `writer_dump_object_index`.
+    fn dump_object_index(&mut self) -> Result<()> {
+        // object_id_len = max common prefix among sorted hashes + 1, min 2.
+        let mut max_common = 1usize;
+        for w in self.obj_entries.windows(2) {
+            let n = common_prefix_len(&w[0].hash, &w[1].hash);
+            if n > max_common {
+                max_common = n;
+            }
+        }
+        self.object_id_len = max_common + 1;
+        let id_len = self.object_id_len;
+
+        self.reinit_block(BLOCK_TYPE_OBJ);
+        let entries = std::mem::take(&mut self.obj_entries);
+        for e in &entries {
+            let prefix = e.hash[..id_len.min(e.hash.len())].to_vec();
+            self.add_obj_record(prefix, &e.offsets)?;
+        }
+        self.obj_entries = entries;
+        self.finish_section()
+    }
+
+    fn add_obj_record(&mut self, prefix: Vec<u8>, offsets: &[u64]) -> Result<()> {
+        // Try with full offsets; on overflow in a fresh block, drop offsets.
+        let typ = BLOCK_TYPE_OBJ;
+        if self.block.is_none() {
+            self.reinit_block(typ);
+        }
+        let opts = self.opts.clone();
+        let rec = EncRecord::Obj {
+            prefix: prefix.clone(),
+            offsets: offsets.to_vec(),
+        };
+        let fit = {
+            let bw = self
+                .block
+                .as_mut()
+                .ok_or_else(|| Error::InvalidRef("reftable: no active block writer".into()))?;
+            bw.add(&rec, &opts)?
+        };
+        if fit {
+            return Ok(());
+        }
+        self.flush_block()?;
+        self.reinit_block(typ);
+        let opts = self.opts.clone();
+        let fit = {
+            let bw = self
+                .block
+                .as_mut()
+                .ok_or_else(|| Error::InvalidRef("reftable: no active block writer".into()))?;
+            bw.add(&rec, &opts)?
+        };
+        if fit {
+            return Ok(());
+        }
+        // Drop offsets entirely.
+        let rec = EncRecord::Obj {
+            prefix,
+            offsets: Vec::new(),
+        };
+        let opts = self.opts.clone();
+        let bw = self
+            .block
+            .as_mut()
+            .ok_or_else(|| Error::InvalidRef("reftable: no active block writer".into()))?;
+        bw.add(&rec, &opts)?;
+        Ok(())
+    }
+
+    /// `writer_finish_public_section`.
+    fn finish_public_section(&mut self) -> Result<()> {
+        let Some(bw) = &self.block else {
+            return Ok(());
+        };
+        let typ = bw.typ;
+        self.finish_section()?;
+        if typ == BLOCK_TYPE_REF && !self.opts.skip_index_objects && self.ref_stats.index_blocks > 0
+        {
+            self.dump_object_index()?;
+        }
+        self.obj_entries.clear();
+        self.block = None;
+        self.block_type = 0;
+        Ok(())
+    }
+
+    /// `reftable_writer_close`.
+    fn close(mut self) -> Result<Vec<u8>> {
+        self.finish_public_section()?;
+        let empty_table = self.next == 0;
+        self.pending_padding = 0;
+
+        if empty_table {
+            let hs = self.header_size();
+            let mut header = vec![0u8; hs];
+            self.write_header(&mut header);
+            self.padded_write(&header, 0);
+        }
+
+        let mut footer = vec![0u8; self.header_size()];
+        self.write_header(&mut footer);
+        footer.extend_from_slice(&self.ref_stats.index_offset.to_be_bytes());
+        let obj_field = (self.obj_stats.offset << 5) | (self.object_id_len as u64);
+        footer.extend_from_slice(&obj_field.to_be_bytes());
+        footer.extend_from_slice(&self.obj_stats.index_offset.to_be_bytes());
+        footer.extend_from_slice(&self.log_stats.offset.to_be_bytes());
+        footer.extend_from_slice(&self.log_stats.index_offset.to_be_bytes());
+        let crc = crc32(&footer);
+        footer.extend_from_slice(&crc.to_be_bytes());
+
+        // Footer write drops pending padding (flush() before padded_write).
+        self.pending_padding = 0;
+        self.out.extend_from_slice(&footer);
+
+        Ok(self.out)
     }
 }
 
@@ -809,17 +1203,28 @@ impl ReftableReader {
 
     /// Read all log records from the table.
     pub fn read_logs(&self) -> Result<Vec<LogRecord>> {
-        if self.log_position == 0 {
-            return Ok(Vec::new());
-        }
-
         let footer_size = if self.version == 2 {
             72
         } else {
             FOOTER_V1_SIZE
         };
         let file_end = self.data.len() - footer_size;
-        let mut pos = self.log_position as usize;
+
+        // Determine where the log section starts. Git records the log offset in
+        // the footer, but when the log block is the *first* block in the file it
+        // shares its physical block with the 24-byte reftable header and the
+        // recorded offset is left at 0 (see `writer_flush_nonempty_block`'s
+        // `block_typ_off = (blocks == 0) ? next : 0`). The reader detects this
+        // by checking whether the first on-disk block (the byte right after the
+        // header) is a log block — mirroring `is_present` in git's table.c.
+        let mut pos = if self.log_position > 0 {
+            self.log_position as usize
+        } else if self.data.len() > HEADER_SIZE && self.data[HEADER_SIZE] == BLOCK_TYPE_LOG {
+            // Log block is the first block; it begins right after the header.
+            HEADER_SIZE
+        } else {
+            return Ok(Vec::new());
+        };
         let mut logs = Vec::new();
 
         while pos < file_end {
@@ -830,11 +1235,18 @@ impl ReftableReader {
             if block_type != BLOCK_TYPE_LOG {
                 break;
             }
+            // When the log block shares its physical block with the reftable
+            // header, the 3-byte block length counts from offset 0 and so
+            // includes the header bytes; the compressed payload still starts
+            // right after the type+length header at `pos + 4`.
+            let is_first = pos == HEADER_SIZE && self.log_position == 0;
             let block_len = read_u24(&self.data, pos + 1);
             let compressed_start = pos + 4;
 
-            // The inflated size is block_len - 4 (block_len includes the 4-byte header)
-            let inflated_size = block_len - 4;
+            // The inflated size is block_len minus the 4-byte type+length header
+            // (and, for the first block, minus the embedded reftable header).
+            let header_prefix = if is_first { HEADER_SIZE } else { 0 };
+            let inflated_size = block_len.saturating_sub(4 + header_prefix);
 
             // Decompress
             use flate2::read::DeflateDecoder;
@@ -1118,6 +1530,36 @@ pub struct ReftableStack {
     table_names: Vec<String>,
 }
 
+/// RAII guard for `tables.list.lock`. Removes the lock file on drop unless it was
+/// consumed (renamed onto `tables.list`) via [`disarm`].
+struct TablesListLock {
+    path: PathBuf,
+    armed: std::cell::Cell<bool>,
+}
+
+impl TablesListLock {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            armed: std::cell::Cell::new(true),
+        }
+    }
+
+    /// Mark the lock as consumed so its `Drop` does not remove the path (it has
+    /// been renamed onto `tables.list`).
+    fn disarm(&self) {
+        self.armed.set(false);
+    }
+}
+
+impl Drop for TablesListLock {
+    fn drop(&mut self) {
+        if self.armed.get() {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 impl ReftableStack {
     /// Open an existing reftable stack.
     pub fn open(git_dir: &Path) -> Result<Self> {
@@ -1133,6 +1575,71 @@ impl ReftableStack {
             reftable_dir,
             table_names,
         })
+    }
+
+    /// Inject the HEAD symbolic ref into the ref set being compacted, mirroring
+    /// git's reftable layout where HEAD lives inside the table.
+    ///
+    /// Returns a HEAD reflog record to add to the log section if the target
+    /// branch has a most-recent reflog entry (so HEAD@{0} mirrors it).
+    fn inject_head_ref(&self, refs: &mut Vec<RefRecord>, min_idx: u64) -> Option<LogRecord> {
+        let git_dir = self.reftable_dir.parent()?;
+        let head_path = git_dir.join("HEAD");
+        let content = fs::read_to_string(&head_path).ok()?;
+        let target = content.strip_prefix("ref: ")?.trim();
+        if target.is_empty() || target == "refs/heads/.invalid" {
+            return None;
+        }
+        // Only inject HEAD if it is not already present.
+        if refs.iter().any(|r| r.name == "HEAD") {
+            return None;
+        }
+        // HEAD takes the smallest update index (git assigns it the first one).
+        refs.push(RefRecord {
+            name: "HEAD".to_owned(),
+            update_index: min_idx,
+            value: RefValue::Symref(target.to_owned()),
+        });
+        refs.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // HEAD reflog entries are already written separately by the commit /
+        // update-ref paths (`append_reflog("HEAD", …)`). Only synthesize a
+        // mirror of the branch's newest entry when HEAD has no reflog of its
+        // own — otherwise compaction would duplicate HEAD@{0} (yielding an
+        // extra log record and an oversized log block, t0613 'default write
+        // options').
+        if self
+            .read_logs_for_ref("HEAD")
+            .map(|logs| !logs.is_empty())
+            .unwrap_or(false)
+        {
+            return None;
+        }
+
+        // Mirror the target branch's newest reflog entry as HEAD@{0}.
+        let target_logs = self.read_logs_for_ref(target).ok()?;
+        let newest = target_logs.into_iter().next()?;
+        Some(LogRecord {
+            refname: "HEAD".to_owned(),
+            update_index: newest.update_index,
+            old_id: newest.old_id,
+            new_id: newest.new_id,
+            name: newest.name,
+            email: newest.email,
+            time_seconds: newest.time_seconds,
+            tz_offset: newest.tz_offset,
+            message: newest.message,
+        })
+    }
+
+    /// Read the configured reftable write options from this repo's config.
+    fn write_options(&self) -> WriteOptions {
+        let git_dir = self
+            .reftable_dir
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.reftable_dir.clone());
+        read_write_options(&git_dir)
     }
 
     /// Read a merged view of all ref records.
@@ -1275,11 +1782,29 @@ impl ReftableStack {
     }
 
     /// Get the current max update index across all tables.
+    ///
+    /// Reads the authoritative on-disk `tables.list` rather than the (possibly
+    /// stale) in-memory snapshot, and tolerates tables that a concurrent
+    /// compaction removed between listing and reading: such a table's update
+    /// index is subsumed by the compacted result that replaced it, which is also
+    /// in the freshly-read list.
     pub fn max_update_index(&self) -> Result<u64> {
+        let names: Vec<String> = match fs::read_to_string(self.reftable_dir.join("tables.list")) {
+            Ok(content) => content
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
+            Err(_) => self.table_names.clone(),
+        };
         let mut max_idx = 0u64;
-        for name in &self.table_names {
+        for name in &names {
             let path = self.reftable_dir.join(name);
-            let data = fs::read(&path).map_err(Error::Io)?;
+            let data = match fs::read(&path) {
+                Ok(data) => data,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(Error::Io(err)),
+            };
             let reader = ReftableReader::new(data)?;
             max_idx = max_idx.max(reader.max_update_index());
         }
@@ -1314,8 +1839,16 @@ impl ReftableStack {
         let path = self.reftable_dir.join(&filename);
         fs::write(&path, data).map_err(Error::Io)?;
 
-        self.table_names.push(filename.clone());
-        self.write_tables_list()?;
+        // Serialize the read-modify-write of `tables.list` so concurrent writers
+        // do not clobber each other (and so we never compact away a table that a
+        // peer just appended). Re-read the on-disk stack under the lock before
+        // extending it — our in-memory `table_names` may be stale.
+        {
+            let guard = self.acquire_tables_list_lock()?;
+            self.reload_table_names();
+            self.table_names.push(filename.clone());
+            self.write_tables_list_locked(&guard)?;
+        }
 
         // Auto-compact small write bursts into a single table. A plain commit writes several small
         // ref/log updates and should settle back to one table; a following tag write remains as a
@@ -1348,6 +1881,8 @@ impl ReftableStack {
         {
             return Ok(());
         }
+        let guard = self.acquire_tables_list_lock()?;
+        self.reload_table_names();
         if self.table_names.len() <= 2 {
             return Ok(());
         }
@@ -1385,9 +1920,13 @@ impl ReftableStack {
         }
         let data = writer.finish()?;
         let filename = self.write_table_file(&data, max_idx)?;
-        self.table_names = vec![filename, newest];
-        self.write_tables_list()?;
+        let keep: Vec<String> = vec![filename.clone(), newest.clone()];
+        self.table_names = keep;
+        self.write_tables_list_locked(&guard)?;
         for old in &old_names {
+            if old == &filename || old == &newest {
+                continue;
+            }
             let _ = fs::remove_file(self.reftable_dir.join(old));
         }
         Ok(())
@@ -1398,6 +1937,8 @@ impl ReftableStack {
     }
 
     fn compact_unlocked_suffix(&mut self) -> Result<()> {
+        let guard = self.acquire_tables_list_lock()?;
+        self.reload_table_names();
         let first_unlocked = self
             .table_names
             .iter()
@@ -1440,9 +1981,12 @@ impl ReftableStack {
         let compacted = self.write_table_file(&data, max_idx)?;
 
         self.table_names = locked_prefix;
-        self.table_names.push(compacted);
-        self.write_tables_list()?;
+        self.table_names.push(compacted.clone());
+        self.write_tables_list_locked(&guard)?;
         for old in &old_suffix {
+            if old == &compacted {
+                continue;
+            }
             let _ = fs::remove_file(self.reftable_dir.join(old));
         }
         Ok(())
@@ -1458,32 +2002,92 @@ impl ReftableStack {
         log: Option<LogRecord>,
         opts: &WriteOptions,
     ) -> Result<()> {
-        let update_index = self.max_update_index()? + 1;
-        let mut writer = ReftableWriter::new(opts.clone(), update_index, update_index);
-
-        // For a single-ref update we need to write all existing refs + the update
-        // into a proper sorted order, OR we can write a single-record table.
-        // The stack handles merging, so a single-record table is fine.
-        writer.add_ref(RefRecord {
-            name: refname.to_owned(),
-            update_index,
-            value,
-        })?;
-
-        if let Some(log_rec) = log {
-            let mut log_rec = log_rec;
-            log_rec.update_index = update_index;
-            writer.add_log(log_rec)?;
+        // Compute the update index, build the new single-record table, and append
+        // it to `tables.list` while holding the stack lock, reading the current
+        // on-disk list under the lock. This makes the whole read-modify-write
+        // atomic with respect to other writers (t0610 'many concurrent
+        // writers') — otherwise two writers can pick the same base list and the
+        // second overwrites the first's `tables.list`, dropping a ref.
+        {
+            let guard = self.acquire_tables_list_lock()?;
+            self.reload_table_names();
+            let update_index = self.max_update_index_unlocked()? + 1;
+            let mut writer = ReftableWriter::new(opts.clone(), update_index, update_index);
+            writer.add_ref(RefRecord {
+                name: refname.to_owned(),
+                update_index,
+                value,
+            })?;
+            if let Some(log_rec) = log {
+                let mut log_rec = log_rec;
+                log_rec.update_index = update_index;
+                writer.add_log(log_rec)?;
+            }
+            let data = writer.finish()?;
+            let filename = self.write_table_file(&data, update_index)?;
+            self.table_names.push(filename);
+            self.write_tables_list_locked(&guard)?;
         }
 
-        let data = writer.finish()?;
-        self.add_table(&data, update_index)?;
+        // Auto-compaction runs after releasing the append lock; it re-acquires
+        // the lock internally and works from a fresh view of the stack.
+        self.maybe_auto_compact()?;
+        Ok(())
+    }
+
+    /// Max update index from the *current* in-memory `table_names` (caller is
+    /// expected to have reloaded under the lock), tolerating tables removed by a
+    /// concurrent compaction.
+    fn max_update_index_unlocked(&self) -> Result<u64> {
+        let mut max_idx = 0u64;
+        for name in &self.table_names {
+            let path = self.reftable_dir.join(name);
+            let data = match fs::read(&path) {
+                Ok(data) => data,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(Error::Io(err)),
+            };
+            let reader = ReftableReader::new(data)?;
+            max_idx = max_idx.max(reader.max_update_index());
+        }
+        Ok(max_idx)
+    }
+
+    /// Run the auto-compaction policy (matching `add_table`) without appending a
+    /// new table. Re-reads the stack under the lock to avoid racing.
+    fn maybe_auto_compact(&mut self) -> Result<()> {
+        self.reload_table_names();
+        let has_locked = self
+            .table_names
+            .iter()
+            .any(|name| self.table_is_locked(name));
+        if self.table_names.len() > 3
+            && std::env::var("GIT_TEST_REFTABLE_AUTOCOMPACTION")
+                .map(|value| value != "false")
+                .unwrap_or(true)
+        {
+            if has_locked {
+                self.compact_unlocked_suffix()?;
+            } else {
+                self.compact()?;
+            }
+        }
         Ok(())
     }
 
     /// Compact all tables into a single table.
+    ///
+    /// `git pack-refs` always rewrites the whole stack into a single,
+    /// canonically-laid-out table even when there is just one table, so that
+    /// padding/block layout match the configured write options.
     pub fn compact(&mut self) -> Result<()> {
-        if self.table_names.len() <= 1 {
+        // Hold the stack lock across the whole compaction (read tables -> write
+        // compacted table -> rewrite tables.list -> delete old tables) and work
+        // from the freshly-read on-disk list, so a concurrent writer that
+        // appended a table after we opened the stack is not silently dropped.
+        let guard = self.acquire_tables_list_lock()?;
+        self.reload_table_names();
+        if self.table_names.is_empty() {
             return Ok(());
         }
 
@@ -1505,12 +2109,29 @@ impl ReftableStack {
             min_idx = 0;
         }
 
-        let mut writer = ReftableWriter::new(WriteOptions::default(), min_idx, max_idx);
+        // Use the configured write options (block size, restart interval,
+        // object index, logAllRefUpdates) rather than defaults.
+        let opts = self.write_options();
+
+        // Git stores HEAD as a symbolic ref inside the reftable (the on-disk
+        // `.git/HEAD` is only a `.invalid` stub). grit keeps the real HEAD in
+        // `.git/HEAD`, so inject it into the compacted table to match git's
+        // on-disk layout.
+        let mut refs = refs;
+        let head_log = self.inject_head_ref(&mut refs, min_idx);
+
+        let mut writer = ReftableWriter::new(opts.clone(), min_idx, max_idx);
         for rec in refs {
             writer.add_ref(rec)?;
         }
-        for log in logs {
-            writer.add_log(log)?;
+        if opts.write_log {
+            let mut logs = logs;
+            if let Some(hl) = head_log {
+                logs.push(hl);
+            }
+            for log in logs {
+                writer.add_log(log)?;
+            }
         }
 
         let data = writer.finish()?;
@@ -1519,11 +2140,14 @@ impl ReftableStack {
         let old_names = self.table_names.clone();
         self.table_names.clear();
         let name = self.write_table_file(&data, max_idx)?;
-        self.table_names.push(name);
-        self.write_tables_list()?;
+        self.table_names.push(name.clone());
+        self.write_tables_list_locked(&guard)?;
 
-        // Remove old table files
+        // Remove old table files (never the freshly written compacted table).
         for old in &old_names {
+            if old == &name {
+                continue;
+            }
             let path = self.reftable_dir.join(old);
             let _ = fs::remove_file(&path);
         }
@@ -1549,41 +2173,85 @@ impl ReftableStack {
     }
 
     /// Write `tables.list` atomically.
+    ///
+    /// Acquires `tables.list.lock` exclusively for the duration of the write so
+    /// it can never race with another writer. Callers that need a read followed
+    /// by a write to be atomic (e.g. [`add_table`]) should instead acquire the
+    /// lock with [`acquire_tables_list_lock`] and call
+    /// [`write_tables_list_locked`] while holding it.
     fn write_tables_list(&self) -> Result<()> {
+        let guard = self.acquire_tables_list_lock()?;
+        self.write_tables_list_locked(&guard)
+    }
+
+    /// Write `tables.list` while already holding the lock guard.
+    fn write_tables_list_locked(&self, guard: &TablesListLock) -> Result<()> {
         let tables_list = self.reftable_dir.join("tables.list");
-        let lock = self.reftable_dir.join("tables.list.lock");
-        self.wait_for_tables_list_lock(&lock)?;
         let content = self.table_names.join("\n")
             + if self.table_names.is_empty() {
                 ""
             } else {
                 "\n"
             };
-        fs::write(&lock, &content).map_err(Error::Io)?;
-        fs::rename(&lock, &tables_list).map_err(Error::Io)?;
+        fs::write(&guard.path, &content).map_err(Error::Io)?;
+        // `fs::rename` consumes the lock file; mark the guard disarmed so its
+        // Drop does not try to remove the (now-renamed) path.
+        fs::rename(&guard.path, &tables_list).map_err(Error::Io)?;
+        guard.disarm();
         Ok(())
     }
 
-    fn wait_for_tables_list_lock(&self, lock: &Path) -> Result<()> {
+    fn lock_timeout_ms(&self) -> u64 {
         let git_dir = self
             .reftable_dir
             .parent()
             .unwrap_or(self.reftable_dir.as_path());
         let config = ConfigSet::load(Some(git_dir), true).unwrap_or_else(|_| ConfigSet::new());
-        let timeout_ms = config
+        config
             .get("reftable.lockTimeout")
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0);
+            .unwrap_or(0)
+    }
+
+    /// Atomically acquire `tables.list.lock` (O_CREAT|O_EXCL), retrying up to the
+    /// configured `reftable.lockTimeout`. Mirrors git's reftable stack locking so
+    /// concurrent writers serialize instead of clobbering each other's
+    /// `tables.list` (t0610 'ref transaction: many concurrent writers').
+    fn acquire_tables_list_lock(&self) -> Result<TablesListLock> {
+        let lock = self.reftable_dir.join("tables.list.lock");
+        let timeout_ms = self.lock_timeout_ms();
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-        while lock.exists() {
-            if timeout_ms == 0 || Instant::now() >= deadline {
-                return Err(Error::InvalidRef(
-                    "cannot lock references: data is locked".to_owned(),
-                ));
+        loop {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock)
+            {
+                Ok(_) => return Ok(TablesListLock::new(lock)),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if timeout_ms == 0 || Instant::now() >= deadline {
+                        return Err(Error::InvalidRef(
+                            "cannot lock references: data is locked".to_owned(),
+                        ));
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(err) => return Err(Error::Io(err)),
             }
-            thread::sleep(Duration::from_millis(50));
         }
-        Ok(())
+    }
+
+    /// Re-read `tables.list` from disk, replacing the in-memory view. Used while
+    /// holding the lock so a writer always extends the *current* stack rather
+    /// than a stale snapshot taken when the stack was first opened.
+    fn reload_table_names(&mut self) {
+        if let Ok(content) = fs::read_to_string(self.reftable_dir.join("tables.list")) {
+            self.table_names = content
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(ToOwned::to_owned)
+                .collect();
+        }
     }
 
     /// Return the list of table filenames in this stack.
@@ -1883,11 +2551,21 @@ pub fn reftable_read_reflog(
             "{} <{}> {} {}{:02}{:02}",
             log.name, log.email, log.time_seconds, tz_sign, tz_hours, tz_mins
         );
+        // Reftable stores reflog messages with a trailing newline (git's
+        // `reftable_writer_add_log` appends one), whereas the files-backend
+        // reflog line convention — and thus grit's `ReflogEntry` — keeps the
+        // message without its line terminator. Strip a single trailing newline
+        // so reflog display is identical regardless of backend.
+        let message = log
+            .message
+            .strip_suffix('\n')
+            .map(ToOwned::to_owned)
+            .unwrap_or(log.message);
         entries.push(crate::reflog::ReflogEntry {
             old_oid: log.old_id,
             new_oid: log.new_id,
             identity,
-            message: log.message,
+            message,
         });
     }
     entries.reverse();
@@ -1912,6 +2590,64 @@ pub fn reftable_replace_reflog(
     stack.replace_logs_for_ref(&storage_refname, entries)
 }
 
+/// Effective `core.logAllRefUpdates` mode for a reftable store, reading the
+/// full config chain (system/global/local) via [`ConfigSet`].
+///
+/// `should_autocreate_reflog` in `refs.rs` only consults the repo-local
+/// `config` file, so a `core.logAllRefUpdates=false` set in the *global* config
+/// (as `test_config_global` does) is invisible to it. Reftable stores must see
+/// the merged value, so we resolve it here instead.
+enum LogRefsMode {
+    Always,
+    Normal,
+    None,
+}
+
+fn reftable_log_refs_mode(git_dir: &Path) -> LogRefsMode {
+    let config = ConfigSet::load(Some(git_dir), true).ok();
+    let value = config
+        .as_ref()
+        .and_then(|cfg| cfg.get("core.logAllRefUpdates"));
+    match value.as_deref().map(str::to_ascii_lowercase).as_deref() {
+        Some("always") => LogRefsMode::Always,
+        Some("true") | Some("yes") | Some("on") | Some("1") => LogRefsMode::Normal,
+        Some("false") | Some("no") | Some("off") | Some("0") | Some("never") => LogRefsMode::None,
+        // Unset: git resolves to NONE for bare repos, NORMAL otherwise.
+        _ => {
+            let bare = config
+                .as_ref()
+                .and_then(|cfg| cfg.get_bool("core.bare"))
+                .and_then(std::result::Result::ok)
+                .unwrap_or(false);
+            if bare {
+                LogRefsMode::None
+            } else {
+                LogRefsMode::Normal
+            }
+        }
+    }
+}
+
+/// Whether a reflog entry should be written for `storage_refname`, mirroring
+/// git's reftable-backend `should_write_log`.
+fn reftable_should_write_log(git_dir: &Path, storage_refname: &str) -> bool {
+    use crate::refs::should_autocreate_reflog_for_mode;
+    match reftable_log_refs_mode(git_dir) {
+        LogRefsMode::Always => true,
+        LogRefsMode::Normal => {
+            if should_autocreate_reflog_for_mode(
+                storage_refname,
+                crate::refs::LogRefsConfig::Normal,
+            ) {
+                true
+            } else {
+                reftable_reflog_exists(git_dir, storage_refname)
+            }
+        }
+        LogRefsMode::None => reftable_reflog_exists(git_dir, storage_refname),
+    }
+}
+
 /// Append a reflog entry for a reftable repo.
 pub fn reftable_append_reflog(
     git_dir: &Path,
@@ -1922,13 +2658,16 @@ pub fn reftable_append_reflog(
     message: &str,
     force_create: bool,
 ) -> Result<()> {
-    use crate::refs::should_autocreate_reflog;
     let (store_git_dir, storage_refname) = reftable_storage_location(git_dir, refname);
-    if !force_create
-        && !should_autocreate_reflog(&store_git_dir, &storage_refname)
-        && message.is_empty()
-        && !reftable_reflog_exists(&store_git_dir, &storage_refname)
-    {
+    // Mirror git's reftable `should_write_log`: a reflog entry is written only
+    // when explicitly forced, when `core.logAllRefUpdates` would autocreate a
+    // reflog for this ref (resolved against the *merged* config, so a global
+    // `logAllRefUpdates=false` is honoured), or when a reflog already exists. A
+    // non-empty log message does *not* by itself force reflog creation — git
+    // ignores the message when deciding — otherwise `core.logAllRefUpdates=false`
+    // would still record log blocks (t0613 'disabled reflog writes no log
+    // blocks').
+    if !force_create && !reftable_should_write_log(&store_git_dir, &storage_refname) {
         return Ok(());
     }
     let (name, email, time_secs, tz) = parse_identity_string(identity);
@@ -2045,6 +2784,12 @@ pub fn read_write_options(git_dir: &Path) -> WriteOptions {
                 opts.restart_interval = v;
             }
         }
+        if let Some(value) = config.get("reftable.indexObjects") {
+            let value = value.to_lowercase();
+            if value == "false" || value == "0" || value == "no" || value == "off" {
+                opts.skip_index_objects = true;
+            }
+        }
         if let Some(value) = config.get("core.logAllRefUpdates") {
             let value = value.to_lowercase();
             if !(value == "true" || value == "always") {
@@ -2128,6 +2873,151 @@ fn should_log_ref_updates(git_dir: &Path) -> bool {
         }
     }
     false
+}
+
+// ---------------------------------------------------------------------------
+// Block dumping (for `test-tool dump-reftable -b`)
+// ---------------------------------------------------------------------------
+
+/// Produce the `test-tool dump-reftable -b` output for a reftable file.
+///
+/// Mirrors `dump_blocks()` in `git/t/helper/test-reftable.c`: prints the
+/// header block size and, for each block, the section type, the restart offset
+/// (labelled `length`) and the restart count.
+pub fn dump_reftable_blocks(path: &Path) -> Result<String> {
+    let data = fs::read(path).map_err(Error::Io)?;
+    if data.len() < HEADER_SIZE {
+        return Err(Error::InvalidRef("reftable: file too small".into()));
+    }
+    if &data[0..4] != REFTABLE_MAGIC {
+        return Err(Error::InvalidRef("reftable: bad magic".into()));
+    }
+    let version = data[4];
+    let header_size = if version == 2 { 28 } else { 24 };
+    let footer_size = if version == 2 { 72 } else { FOOTER_V1_SIZE };
+    let block_size = ((data[5] as u32) << 16) | ((data[6] as u32) << 8) | (data[7] as u32);
+
+    let table_size = data.len().saturating_sub(footer_size);
+
+    let mut out = String::new();
+    out.push_str("header:\n");
+    out.push_str(&format!("  block_size: {block_size}\n"));
+
+    let mut section_type: u8 = 0;
+    // First block starts at offset 0 with the file header skipped.
+    let mut block_off: u64 = 0;
+    let mut first = true;
+
+    loop {
+        if !first {
+            // table_iter_next_block advances by full_block_size; computed below.
+            // `block_off` is updated at the end of the previous iteration.
+        }
+        if block_off as usize >= table_size {
+            break;
+        }
+        let header_off = if block_off == 0 { header_size } else { 0 };
+        let pos = block_off as usize + header_off;
+        if pos + 1 > data.len() {
+            break;
+        }
+        let block_type = data[pos];
+        if !is_block_type(block_type) {
+            break;
+        }
+
+        // block_size field: be24 at pos+1.
+        if pos + 4 > data.len() {
+            break;
+        }
+        let blk_len =
+            ((data[pos + 1] as u32) << 16) | ((data[pos + 2] as u32) << 8) | (data[pos + 3] as u32);
+        let blk_len = blk_len as usize;
+
+        // Determine restart_count / restart_off from the (uncompressed) block.
+        let (restart_off, restart_count, full_block_size) = if block_type == BLOCK_TYPE_LOG {
+            // Log blocks store the uncompressed size in blk_len; the on-disk
+            // data after the 4-byte header is zlib-compressed.
+            let skip = 4 + header_off;
+            let comp = &data[block_off as usize + skip..];
+            let mut dec = flate2::read::DeflateDecoder::new(comp);
+            let mut inflated = vec![0u8; blk_len.saturating_sub(skip)];
+            // Read exactly the uncompressed payload.
+            read_exact_inflate(&mut dec, &mut inflated)?;
+            let consumed = dec.total_in() as usize;
+            // restart trailer lives at the end of the (header + inflated) block.
+            let mut full = vec![0u8; skip];
+            full.extend_from_slice(&inflated);
+            let rc = be16(&full, blk_len - 2) as usize;
+            let roff = blk_len - 2 - 3 * rc;
+            let fbs = skip + consumed;
+            (roff, rc, fbs)
+        } else {
+            let abs = block_off as usize;
+            if abs + blk_len < 2 {
+                break;
+            }
+            let rc = be16(&data, abs + blk_len - 2) as usize;
+            let roff = blk_len - 2 - 3 * rc;
+            // Padded blocks advance by the table block size unless this is the
+            // last block / unaligned / padded.
+            let mut fbs = block_size as usize;
+            if fbs == 0 {
+                fbs = blk_len;
+            } else if blk_len < fbs
+                && abs + blk_len < data.len()
+                && data.get(abs + blk_len) == Some(&0u8)
+            {
+                // padded block; advances by full table block size
+            } else if blk_len < fbs {
+                fbs = blk_len;
+            }
+            (roff, rc, fbs)
+        };
+
+        if block_type != section_type {
+            let section = match block_type {
+                BLOCK_TYPE_LOG => "log",
+                BLOCK_TYPE_REF => "ref",
+                BLOCK_TYPE_OBJ => "obj",
+                BLOCK_TYPE_INDEX => "idx",
+                _ => return Err(Error::InvalidRef("reftable: bad block type".into())),
+            };
+            section_type = block_type;
+            out.push_str(&format!("{section}:\n"));
+        }
+
+        out.push_str(&format!("  - length: {restart_off}\n"));
+        out.push_str(&format!("    restarts: {restart_count}\n"));
+
+        block_off += full_block_size as u64;
+        first = false;
+        if full_block_size == 0 {
+            break;
+        }
+    }
+
+    Ok(out)
+}
+
+fn is_block_type(t: u8) -> bool {
+    t == BLOCK_TYPE_REF || t == BLOCK_TYPE_LOG || t == BLOCK_TYPE_OBJ || t == BLOCK_TYPE_INDEX
+}
+
+fn be16(data: &[u8], off: usize) -> u16 {
+    ((data[off] as u16) << 8) | (data[off + 1] as u16)
+}
+
+fn read_exact_inflate<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<()> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match r.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) => return Err(Error::Zlib(e.to_string())),
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2415,16 +3305,24 @@ mod tests {
         assert_eq!(logs[0].email, "test@example.com");
         assert_eq!(logs[0].time_seconds, 1700000000);
         assert_eq!(logs[0].tz_offset, -480);
-        assert_eq!(logs[0].message, "initial commit");
+        // The reftable writer cleans messages the way git does: it appends a
+        // trailing newline. `read_logs` returns the raw on-disk message (the
+        // newline is only stripped when converting to a `ReflogEntry`).
+        assert_eq!(logs[0].message, "initial commit\n");
     }
 
     #[test]
     fn test_unaligned_table() {
         let oid = ObjectId::from_bytes(&[0xcc; 20]).unwrap();
         let opts = WriteOptions {
-            block_size: 0, // unaligned
+            // Unpadded (unaligned) blocks: like git's `unpadded` write option,
+            // blocks are not padded out to the block size. A block_size of 0 is
+            // resolved to the default at write time, so the reported block size
+            // is the default rather than 0.
+            unpadded: true,
             restart_interval: 16,
             write_log: false,
+            ..WriteOptions::default()
         };
         let mut writer = ReftableWriter::new(opts, 1, 1);
         writer
@@ -2436,8 +3334,10 @@ mod tests {
             .unwrap();
         let data = writer.finish().unwrap();
 
+        // An unpadded single-ref table is far smaller than one padded block.
+        assert!(data.len() < DEFAULT_BLOCK_SIZE as usize);
+
         let reader = ReftableReader::new(data).unwrap();
-        assert_eq!(reader.block_size(), 0);
         let refs = reader.read_refs().unwrap();
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].value, RefValue::Val1(oid));

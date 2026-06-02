@@ -101,7 +101,18 @@ fn print_rev_parse_path(
                     None => cwd_abs.clone(),
                 };
                 if paths_share_root(&path_abs, &base_abs) {
-                    println!("{}", to_relative_path(&path_abs, &base_abs));
+                    // Git's `DEFAULT_RELATIVE_IF_SHARED` uses `relative_path()`,
+                    // which copies the path suffix verbatim. Use the faithful
+                    // port so internal `//` runs (e.g. `--git-path
+                    // info//sparse-checkout`) survive instead of being collapsed
+                    // by component-based normalization.
+                    let path_s = path_abs.to_string_lossy();
+                    let base_s = base_abs.to_string_lossy();
+                    let mut sb = String::new();
+                    match grit_lib::git_path::relative_path(&path_s, &base_s, &mut sb) {
+                        Some(rel) => println!("{rel}"),
+                        None => println!("{}", to_relative_path(&path_abs, &base_abs)),
+                    }
                 } else {
                     println!("{}", path_abs.display());
                 }
@@ -1179,12 +1190,19 @@ pub fn run(args: Args) -> Result<()> {
                             // Linked worktrees keep sparse-checkout under their admin dir
                             // (`.git/worktrees/<name>/info/sparse-checkout`), not in commondir.
                             && !path_arg.starts_with("info/sparse-checkout");
+                        // Git's `repo_git_pathv` appends the caller-supplied
+                        // component verbatim (only `cleanup_path` runs over it),
+                        // so internal `//` runs are preserved in the output even
+                        // though path classification above uses the normalized
+                        // form. Join the original component, not `path_arg`.
+                        let original_component =
+                            grit_lib::git_path::git_path_relative_component(path_arg_out);
                         if use_common {
                             let common = refs::common_dir(&current.git_dir)
                                 .unwrap_or_else(|| current.git_dir.clone());
-                            common.join(path_arg)
+                            common.join(original_component)
                         } else {
-                            current.git_dir.join(path_arg)
+                            current.git_dir.join(original_component)
                         }
                     };
                     print_rev_parse_path(

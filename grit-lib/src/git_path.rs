@@ -354,6 +354,32 @@ pub fn is_absolute_path_unix(path: &str) -> bool {
     path.starts_with('/')
 }
 
+/// Git's `cleanup_path` from `path.c`: strip a single leading `./` and any
+/// directory separators immediately following it. Internal consecutive slashes
+/// (e.g. `info//sparse-checkout`) are deliberately preserved so the result
+/// matches `git rev-parse --git-path` byte-for-byte.
+#[must_use]
+pub fn cleanup_path(path: &str) -> &str {
+    if let Some(rest) = path.strip_prefix("./") {
+        rest.trim_start_matches('/')
+    } else {
+        path
+    }
+}
+
+/// The relative portion of a `--git-path` argument, mirroring how Git builds the
+/// buffer in `repo_git_pathv`: the caller-supplied `fmt` string is appended to
+/// `<git_dir>/` verbatim and only [`cleanup_path`] runs over the whole buffer.
+/// In practice that means a single leading `/` (and a leading `./`) is dropped
+/// from the user-supplied component while internal `//` runs are kept intact.
+#[must_use]
+pub fn git_path_relative_component(path: &str) -> &str {
+    // Drop one leading slash (Git appends fmt right after "<git_dir>/", so a
+    // user "/foo" would otherwise become "<git_dir>//foo"); keep the rest as-is.
+    let trimmed = path.strip_prefix('/').unwrap_or(path);
+    cleanup_path(trimmed)
+}
+
 /// Like Git's `strbuf_realpath` / `test-tool path-utils real_path`: resolve symlinks by
 /// walking path components (so symlink targets are interpreted at each step), then if the
 /// leaf is missing, resolve the longest existing prefix and append the remainder.
@@ -489,5 +515,46 @@ pub fn prefix_path_gently(prefix: &str, path: &str, work_tree: &Path) -> Option<
     } else {
         let concat = format!("{prefix}{path}");
         normalize_path_copy(&concat).ok()
+    }
+}
+
+#[cfg(test)]
+mod git_path_component_tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_path_strips_leading_dot_slash() {
+        assert_eq!(cleanup_path("./foo"), "foo");
+        assert_eq!(cleanup_path(".//foo"), "foo");
+        assert_eq!(cleanup_path("foo"), "foo");
+    }
+
+    #[test]
+    fn cleanup_path_keeps_internal_double_slashes() {
+        // Git's cleanup_path never collapses interior consecutive slashes.
+        assert_eq!(
+            cleanup_path("info//sparse-checkout"),
+            "info//sparse-checkout"
+        );
+        assert_eq!(cleanup_path("./info//grafts"), "info//grafts");
+    }
+
+    #[test]
+    fn git_path_component_drops_one_leading_slash_keeps_interior() {
+        assert_eq!(
+            git_path_relative_component("info//sparse-checkout"),
+            "info//sparse-checkout"
+        );
+        assert_eq!(git_path_relative_component("/info//grafts"), "info//grafts");
+        assert_eq!(git_path_relative_component("HEAD"), "HEAD");
+    }
+
+    #[test]
+    fn relative_path_preserves_interior_double_slash_suffix() {
+        // Mirrors `git rev-parse --git-path info//sparse-checkout`: the suffix
+        // below the shared prefix is copied verbatim, double slash intact.
+        let mut sb = String::new();
+        let rel = relative_path("/repo/.git/info//sparse-checkout", "/repo", &mut sb);
+        assert_eq!(rel, Some(".git/info//sparse-checkout"));
     }
 }

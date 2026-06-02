@@ -1035,7 +1035,19 @@ fn create_git_dir(git_dir: &Path, opts: CreateGitDirOptions<'_>) -> Result<()> {
             cfg.set("core.bare", "true")?;
         } else {
             cfg.set("core.bare", "false")?;
-            cfg.set("core.logallrefupdates", "true")?;
+            // Mirror git's init (setup.c): only write the local
+            // `core.logAllRefUpdates=true` default when the value is not already
+            // set in the merged config (system/global, or a template-supplied
+            // local value). Otherwise a global `logAllRefUpdates=false` (e.g.
+            // `test_config_global` in t0613) would be overridden by the local
+            // default, wrongly enabling reflogs for reftable repos.
+            let log_all_already_set = ConfigSet::load(Some(git_dir), true)
+                .ok()
+                .map(|merged| merged.get("core.logAllRefUpdates").is_some())
+                .unwrap_or(false);
+            if !log_all_already_set {
+                cfg.set("core.logallrefupdates", "true")?;
+            }
             if let Some(wt) = work_tree {
                 cfg.set(
                     "core.worktree",

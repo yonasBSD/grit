@@ -248,6 +248,24 @@ fn git_normalize_pathspec_no_prefix(spec: &str) -> Result<String> {
     Ok(stack.join("/"))
 }
 
+fn git_normalize_pathspec_preserve_trailing_slash(spec: &str) -> Result<String> {
+    let has_trailing_slash = spec.ends_with('/');
+    let mut normalized = git_normalize_pathspec_no_prefix(spec)?;
+    if has_trailing_slash && !normalized.is_empty() {
+        normalized.push('/');
+    }
+    Ok(normalized)
+}
+
+fn only_trees_pathspec_wants_descent(spec: &str, full_name: &str) -> bool {
+    let Ok(normalized) = git_normalize_pathspec_preserve_trailing_slash(spec) else {
+        return false;
+    };
+    let dir_prefix = format!("{full_name}/");
+    normalized == dir_prefix
+        || (normalized.starts_with(&dir_prefix) && normalized.len() > dir_prefix.len())
+}
+
 /// Run `grit ls-tree`.
 pub fn run(mut args: Args) -> Result<()> {
     // Validate incompatible display-mode options
@@ -502,11 +520,9 @@ fn list_tree(
             // Trailing slash or deeper path means descend into the tree.
             let is_ancestor = is_tree
                 && if args.only_trees {
-                    let dir_prefix = format!("{full_name}/");
-                    args.paths.iter().any(|p| {
-                        p == &dir_prefix
-                            || (p.starts_with(&dir_prefix) && p.len() > dir_prefix.len())
-                    })
+                    args.paths
+                        .iter()
+                        .any(|p| only_trees_pathspec_wants_descent(p, &full_name))
                 } else {
                     args.paths.iter().any(|p| {
                         !(p == &full_name && !p.ends_with('/'))

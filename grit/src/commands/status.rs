@@ -395,9 +395,6 @@ pub fn run(mut args: Args) -> Result<()> {
             }
         }
     }
-    if args.porcelain.as_deref() == Some("v1") && !args.no_branch {
-        args.branch = true;
-    }
     let repo = Repository::discover(None).context("not a git repository")?;
     let work_tree = repo
         .work_tree
@@ -3804,11 +3801,36 @@ fn status_path_matches(path: &str, pathspecs: &[String]) -> bool {
     if pathspecs.is_empty() {
         return true;
     }
+    // Honor `:(exclude)` / `:!` magic. A path is rejected if any exclude
+    // pathspec matches it; when positive pathspecs are present, it must also
+    // match one of them (git's OR-of-positives / any-exclude-rejects semantics).
+    //
+    // We evaluate both the raw form and the slash-stripped form so a directory
+    // entry like "dir/" still matches a bare "dir" spec: an exclude that hits
+    // either form rejects the path, while a positive match on either form keeps
+    // it.
     let normalized = path.trim_end_matches('/');
-    pathspecs.iter().any(|spec| {
-        grit_lib::pathspec::pathspec_matches(spec, path)
+    let excluded = pathspecs.iter().any(|spec| {
+        grit_lib::pathspec::pathspec_exclude_matches(spec, path)
+            || grit_lib::pathspec::pathspec_exclude_matches(spec, normalized)
+    });
+    if excluded {
+        return false;
+    }
+    let mut has_positive = false;
+    let mut positive_match = false;
+    for spec in pathspecs {
+        if grit_lib::pathspec::pathspec_is_exclude(spec) {
+            continue;
+        }
+        has_positive = true;
+        if grit_lib::pathspec::pathspec_matches(spec, path)
             || grit_lib::pathspec::pathspec_matches(spec, normalized)
-    })
+        {
+            positive_match = true;
+        }
+    }
+    !has_positive || positive_match
 }
 
 fn pathspec_may_match_directory(rel_dir: &str, pathspecs: &[String]) -> bool {

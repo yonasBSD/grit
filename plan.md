@@ -122,12 +122,16 @@
 - [x] `t0000-basic` — clear the final diff-files/update-index failure.
 - [x] `t0020-crlf` — fix checkout with existing `.gitattributes`.
 - [x] `t0023-crlf-am` — refresh staged metadata and clean-convert files applied by `git am`.
+- [x] Merge `wf/t0/path-utils` lane work and finish `t0060-path-utils` at 219/219.
+- [x] Merge `wf/t0/cache-tree` lane work and finish `t0090-cache-tree` at 22/22 by fixing
+  `ls-tree -d` trailing-slash directory pathspec descent.
+- [x] Merge `wf/t0/reftable` lane work through `t0613` 10/11 and `t0610` 89/91; remaining
+  failures are cross-command transaction/sort/httpd issues noted below.
+- [x] Record `wf/t0/repo-setup` lane result: investigation only; no owned-module fix merged.
 
-The t0 family has **85 files: 47 fully green, 25 in-scope-not-full (~247 failing subtests),
-13 skipped**. This plan splits the 25 remaining in-scope files into **work lanes grouped by the
-source modules they touch**, so the lanes can run **in parallel** (one agent per lane, each in its
-own git worktree) with minimal cross-lane merge conflict. Within a lane the files share code, so a
-single agent should own the whole lane.
+The t0 family now has **72 in-scope rows: 59 fully green, 13 non-green, 32 failing subtests**,
+plus 13 skipped rows. The remaining plan keeps the same lane grouping by source module so work can
+still be split across independent worktrees without avoidable conflicts.
 
 > Each lane lists the test files (with current `pass/total`) and the **primary modules it owns**.
 > The disjointness of "owned modules" is what makes parallel execution safe.
@@ -136,63 +140,78 @@ single agent should own the whole lane.
 
 ## Lane 1 — Conversion: CRLF / clean-smudge filters / working-tree-encoding
 **Owns:** `grit-lib/src/crlf.rs`, `grit-lib/src/filter_process.rs`, `grit-lib/src/attributes.rs`, `grit-lib/src/ws.rs`
-- [~] `t0021-conversion` 28/42 — clean/smudge filter + `filter.<driver>.process` protocol
-- `t0028-working-tree-encoding` 8/22 — `working-tree-encoding` attr (iconv reencode on checkout/checkin)
+- [x] `t0021-conversion` 42/42 — clean/smudge filter + `filter.<driver>.process` protocol
+- [ ] `t0028-working-tree-encoding` 20/22 — `working-tree-encoding` attr (remaining checkout/checkin reencode edge cases)
 - [x] `t0020-crlf` 36/36, [x] `t0023-crlf-am` 2/2 — autocrlf / eol normalization
-- `t0027-auto-crlf` 0/0 — **runs 0 tests; investigate** (errors out or all-prereq-skip before summary)
-**Subtotal: ~31 failing.**
+- [ ] `t0027-auto-crlf` 0/0 — **timeout/no summary; investigate harness or prereq loop**
+**Subtotal: 2 failing + one timeout row.**
 
 ## Lane 2 — Filesystem: case-insensitivity / precompose / symlinks
 **Owns:** `grit-lib/src/precompose_config.rs`, `grit-lib/src/unicode_normalization.rs`
-- `t0050-filesystem` 8/13 — `core.ignorecase`, NFC/NFD precompose, beyond-symlink behavior
-**Subtotal: ~5 failing.** *(May lightly touch index/dir case-handling — see shared-file note.)*
+- [ ] `t0050-filesystem` 10/11 (2 TODO) — remaining `core.ignorecase` / NFC-NFD behavior
+**Subtotal: 1 failing.** *(May lightly touch index/dir case-handling — see shared-file note.)*
 
 ## Lane 3 — Refs: files backend (loose + packed)
 **Owns:** `grit-lib/src/refs.rs`, `grit-lib/src/reflog.rs`, `grit/src/commands/pack_refs.rs`
-- `t0600-reffiles-backend` 15/33 — files ref-store semantics, symref/loose/packed transitions
-- `t0601-reffiles-pack-refs` 45/47 — `pack-refs` edge cases
-**Subtotal: ~20 failing.**
+- [ ] `t0600-reffiles-backend` 25/33 — files ref-store semantics, symref/loose/packed transitions
+- [x] `t0601-reffiles-pack-refs` 47/47 — `pack-refs` edge cases
+**Subtotal: 8 failing.**
 
 ## Lane 4 — Refs: reftable backend
 **Owns:** `grit-lib/src/reftable.rs`
-- `t0613-reftable-write-options` 4/11 — block size / restart / compaction write options
-- `t0610-reftable-basics` 89/91 — 2 remaining basics
-- `t0611-reftable-httpd` 0/1 — single test; likely httpd-env, confirm not-grit before chasing
-**Subtotal: ~10 failing.**
+- [ ] `t0613-reftable-write-options` 10/11 — remaining failure needs batched update-index for `update-ref --stdin`
+- [ ] `t0610-reftable-basics` 89/91 — remaining failures need single-table ref+log transactions and `for-each-ref --sort=v:refname`
+- [ ] `t0611-reftable-httpd` 0/1 — environment-blocked by Apple Git server-side reftable support unless harness/server changes
+**Subtotal: 4 failing, one likely not grit-executable in this environment.**
 
 ## Lane 5 — Repository setup: init / discovery / env / safe-directory / gitfile / var (HEAVIEST)
 **Owns:** `grit-lib/src/repo.rs`, `grit/src/commands/init.rs`, `grit-lib/src/dotfile.rs`, `grit/src/commands/var.rs`, and the `safe.directory`/`GIT_*`-env read paths in `grit-lib/src/config.rs`
-- `t0110-environment` 3/31 — `GIT_*` env var precedence/handling (big gap)
-- `t0001-init` 74/102 — `git init` (`--bare`, `--separate-git-dir`, templates, reinit, `--shared`)
-- `t0120-dot-git-dir` 8/32 — `.git` dir/file discovery edge cases
-- `t0033-safe-directory` 20/22, `t0034-root-safe-directory` 0/0 (**sudo-gated**: runs only with `GIT_TEST_ALLOW_SUDO`)
-- `t0002-gitfile` 12/14 — `.git` gitfile indirection
-- `t0007-git-var` 26/27 — `git var` (1 failing)
-**Subtotal: ~85 failing.** Heaviest lane; do NOT split (everything here converges on `repo.rs`).
-Consider giving this lane a longer iteration budget.
+- [ ] `t0110-environment` 26/31 — remaining `GIT_*` env precedence/handling
+- [ ] `t0001-init` 94/102 — `git init` (`--bare`, `--separate-git-dir`, templates, reinit, `--shared`)
+- [x] `t0120-dot-git-dir` 32/32 — `.git` dir/file discovery edge cases
+- [ ] `t0033-safe-directory` 20/22, [ ] `t0034-root-safe-directory` 0/0 (sudo-gated)
+- [ ] `t0002-gitfile` 13/14 — `.git` gitfile indirection
+- [ ] `t0007-git-var` 26/27 — one `git var` compatibility failure
+**Subtotal: 17 failing + one sudo-gated 0/0 row.** Keep this lane together because the failures
+converge on repository discovery, init defaults, config, and environment handling.
 
 ## Lane 6 — Objects / tree-hash / cache-tree / oid-validation / pack (HEAVY)
 **Owns:** `grit-lib/src/objects.rs`, `grit-lib/src/odb.rs`, `grit-lib/src/write_tree.rs`, `grit-lib/src/index.rs` (cache-tree extension), `grit-lib/src/pack.rs`, `grit/src/commands/{mktree,hash_object}.rs`
-- `t0130-sha1-validation` 1/30 — object-id parse/validate, `GIT_TEST_BUILTIN_HASH`, fsck-ish id checks (big gap)
-- `t0080-tree-hash` 3/30 — `mktree` / tree object hashing (big gap)
-- [ ] `t0090-cache-tree` 16/22 — cache-tree index extension build/invalidate/write; remaining failures are partial/interactive commit patch semantics and checkout cache-tree shape edge cases
+- [x] `t0130-sha1-validation` 30/30 — object-id parse/validate
+- [x] `t0080-tree-hash` 30/30 — `mktree` / tree object hashing
+- [x] `t0090-cache-tree` 22/22 — cache-tree index extension build/invalidate/write
 - [x] `t0081-find-pack` 4/4 — `test-tool find-pack` path display
-**Subtotal: ~77 failing.** Grouped because they all touch `objects.rs`/`write_tree.rs`/`index.rs`.
+**Subtotal: complete.**
 
 ## Lane 7 — Path utilities
 **Owns:** `grit-lib/src/git_path.rs` (+ path normalization helpers)
-- `t0060-path-utils` 206/219 — `test-tool path-utils` (normalize, relative, dirname, real_path, etc.)
-**Subtotal: ~13 failing.**
+- [x] `t0060-path-utils` 219/219 — `test-tool path-utils` (normalize, relative, dirname, real_path, etc.)
+**Subtotal: complete.**
 
 ## Lane 8 — Docs vs help-synopsis consistency
 **Owns:** the `-h` synopsis strings / `grit/src/commands/upstream_synopsis_help.rs` and `git/Documentation/*.txt` alignment (text, not engine logic)
-- `t0450-txt-doc-vs-help` 537/542 — 5 commands whose `-h` synopsis doesn't match their doc
-**Subtotal: ~5 failing.** No engine overlap with any other lane.
+- [x] `t0450-txt-doc-vs-help` 542/542 — help synopsis/doc alignment
+**Subtotal: complete.**
 
 ## Lane 9 — Basics (single failure)
 **Owns:** TBD — the failing subtest decides
 - [x] `t0000-basic` 92/92 — fixed `update-index --refresh` to refresh complete stat tuples.
-**Subtotal: 1 failing.**
+**Subtotal: complete.**
+
+## Next t0 attack plan
+1. Re-run verbose failure harvest for the 13 non-green rows, starting with fast files:
+   `t0002`, `t0007`, `t0050`, `t0028`, `t0033`, then `t0110`, `t0001`, `t0600`, `t0610`,
+   `t0613`, `t0611`, `t0027`, `t0034`.
+2. Prioritize small isolated wins: `t0007` (1), `t0002` (1), `t0050` (1), `t0028` (2),
+   `t0033` (2). These should reduce non-green count quickly before returning to heavy lanes.
+3. Then take refs work in two focused passes: files backend `t0600` (8), then reftable cross-command
+   transaction/sort issues (`update-ref --stdin` transaction index, ref+log single-table writes,
+   `for-each-ref --sort=v:refname`).
+4. Finish repo setup/env as one longer lane: `t0001`, `t0110`, safe-directory, gitfile, and var.
+   Avoid splitting this across agents unless ownership is narrowed to one command and verified with
+   the whole lane.
+5. Treat `t0611` and `t0034` as environment-gated until proven otherwise; document exact blockers
+   before changing code or tests.
 
 ---
 

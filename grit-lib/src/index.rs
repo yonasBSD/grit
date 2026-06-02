@@ -427,6 +427,47 @@ fn format_cache_tree_node(node: &CacheTreeNode, parent_path: &str, out: &mut Str
     }
 }
 
+/// Emit a single cache-tree node line in `test-tool dump-cache-tree` format.
+fn dump_one_line(node: &CacheTreeNode, pfx: &str, out: &mut String) {
+    if node.entry_count < 0 {
+        out.push_str(&format!(
+            "{:<40} {} ({} subtrees)\n",
+            "invalid",
+            pfx,
+            node.children.len()
+        ));
+    } else {
+        let oid = node.oid.unwrap_or_else(ObjectId::zero);
+        out.push_str(&format!(
+            "{} {} ({} entries, {} subtrees)\n",
+            oid,
+            pfx,
+            node.entry_count,
+            node.children.len()
+        ));
+    }
+}
+
+/// Walk the stored cache-tree (`it`) against a freshly built reference (`ref`),
+/// emitting only the nodes that exist in both — matching Git's `dump_cache_tree`.
+fn dump_cache_tree_pair(
+    it: &CacheTreeNode,
+    reference: &CacheTreeNode,
+    pfx: &str,
+    out: &mut String,
+) {
+    dump_one_line(it, pfx, out);
+
+    for child in &it.children {
+        let Some(ref_child) = reference.children.iter().find(|c| c.name == child.name) else {
+            continue;
+        };
+        let name = String::from_utf8_lossy(&child.name);
+        let child_pfx = format!("{pfx}{name}/");
+        dump_cache_tree_pair(child, ref_child, &child_pfx, out);
+    }
+}
+
 /// Read `GIT_INDEX_VERSION` and return the requested version.
 ///
 /// If the environment variable is unset, returns `None`.
@@ -1300,6 +1341,31 @@ impl Index {
         let mut out = String::new();
         format_cache_tree_node(root, "", &mut out);
         out
+    }
+
+    /// Produce `test-tool dump-cache-tree` output for this index.
+    ///
+    /// Mirrors Git's `cmd__dump_cache_tree`: the stored cache-tree (`it`) is
+    /// compared against a freshly computed reference (`ref`) built from the
+    /// current index entries with `WRITE_TREE_DRY_RUN`. Only nodes present in
+    /// both trees are dumped; the `#(ref)` divergence lines that Git would emit
+    /// are filtered out by the harness, so they are intentionally omitted here.
+    ///
+    /// If the index has no stored cache-tree, output is empty (Git dumps nothing
+    /// because `it` is NULL).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the reference cache-tree cannot be built (for example,
+    /// if a tree object cannot be written to the object database).
+    pub fn dump_cache_tree(&self, odb: &Odb) -> Result<String> {
+        let Some(it_root) = self.cache_tree.as_ref() else {
+            return Ok(String::new());
+        };
+        let ref_root = crate::write_tree::build_cache_tree_from_index(odb, self)?;
+        let mut out = String::new();
+        dump_cache_tree_pair(it_root, &ref_root, "", &mut out);
+        Ok(out)
     }
 
     /// Sort entries in Git's canonical order: by path, then by stage.
