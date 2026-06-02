@@ -20,6 +20,12 @@ Updated: 2026-06-02
 - t6 post-rebase focused verification: `TZ=UTC ./scripts/run-tests.sh t6040-tracking-info.sh
   t6200-fmt-merge-msg-extra.sh t6300-for-each-ref.sh t6301-for-each-ref-errors.sh --verbose`
   passes all four files: 44/44, 23/23, 429/429, and 6/6.
+- t6 rev-list bitmap focus: `./scripts/run-tests.sh t6113-rev-list-bitmap-filters.sh --verbose`
+  passes 14/14 after `--unpacked` object walks stopped suppressing packed tree/blob closure
+  objects. Companion `t6000-rev-list-misc.sh` improved to 9/23.
+- t6113 pre-commit: `cargo fmt`, `cargo check -p grit-cli`, `cargo build --release -p grit-cli`,
+  and `cargo clippy --fix --allow-dirty` ran. Clippy completed with the existing warning backlog
+  and failed auto-fixes in unrelated files; unrelated auto-fixes were not kept.
 - t6 verification: `cargo check -p grit-cli` and `cargo build --release -p grit-cli` pass with the
   existing warning backlog (`ignore.rs`, `refs.rs`, `difftool.rs`, `sparse_checkout.rs`,
   `worktree.rs`).

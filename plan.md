@@ -29,11 +29,14 @@
     resolution, and thin push-pack negotiation for remote-only haves.
   - Verified adjacent ref-format error fixture: `t6301-for-each-ref-errors.sh` (6/6) after making
     ignored broken/zero loose refs remove any preloaded entry from the refs list.
+  - Completed rev-list bitmap filter file: `t6113-rev-list-bitmap-filters.sh` (14/14) after making
+    `rev-list --objects --unpacked` emit the full object closure for unpacked commits.
   - Next t6 work should continue with the remaining rev-list/revision traversal group unless a
     higher-value dependency group is selected from the CSV.
   - Execution logs: `logs/2026-06-02_1427-t6-for-each-ref.md`,
     `logs/2026-06-02_1655-t6200-fmt-merge-msg-extra.md`,
-    `logs/2026-06-02_1710-t6040-tracking-info.md`.
+    `logs/2026-06-02_1710-t6040-tracking-info.md`,
+    `logs/2026-06-02_2000-t6113-rev-list-bitmap-filters.md`.
 
 ---
 

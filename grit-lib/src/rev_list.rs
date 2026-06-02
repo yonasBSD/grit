@@ -1074,11 +1074,10 @@ pub fn rev_list(
         && options.use_bitmap_index
         && (options.bitmap_oid_only_objects || !object_roots.is_empty() || options.unpacked_only);
     let omit_object_paths = bitmap_object_format;
-    let packed_set = if options.objects && options.unpacked_only {
-        Some(packed_object_set(repo))
-    } else {
-        None
-    };
+    // `--unpacked` selects unpacked commits for the revision walk. Git's object walk still emits
+    // the full object closure for those commits, including tree/blob objects that already live in a
+    // pack (t6000, t6113). Do not pass the packed set into tree traversal here.
+    let packed_set = None;
 
     // Git only enables provisional omit recursion (`omits` non-NULL) with `--filter-print-omitted`.
     let collect_tree_omits = options.filter_print_omitted;

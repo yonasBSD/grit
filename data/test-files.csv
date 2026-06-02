@@ -1037,7 +1037,7 @@ t5813-proto-disable-ssh	t5	yes	81	81	0	true	ok	0
 t5814-proto-disable-ext	t5	yes	27	19	8	false	ok	0
 t5815-submodule-protos	t5	yes	8	8	0	true	ok	0
 t5900-repo-selection	t5	yes	8	4	4	false	ok	0
-t6000-rev-list-misc	t6	yes	23	8	15	false	ok	0
+t6000-rev-list-misc	t6	yes	23	9	14	false	ok	0
 t6001-rev-list-graft	t6	yes	14	10	4	false	ok	0
 t6002-rev-list-bisect	t6	yes	53	4	49	false	ok	0
 t6003-rev-list-topo-order	t6	yes	36	22	14	false	ok	0
@@ -1073,7 +1073,7 @@ t6102-rev-list-unexpected-objects	t6	yes	22	22	0	true	ok	0
 t6110-rev-list-sparse	t6	yes	2	2	0	true	ok	0
 t6111-rev-list-treesame	t6	yes	65	19	46	false	ok	0
 t6112-rev-list-filters-objects	t6	yes	54	53	1	false	ok	0
-t6113-rev-list-bitmap-filters	t6	yes	14	13	1	false	ok	0
+t6113-rev-list-bitmap-filters	t6	yes	14	14	0	true	ok	0
 t6114-keep-packs	t6	yes	3	3	0	true	ok	0
 t6115-rev-list-du	t6	yes	17	17	0	true	ok	0
 t6120-describe	t6	yes	103	54	49	false	ok	0
