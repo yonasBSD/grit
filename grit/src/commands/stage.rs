@@ -68,5 +68,9 @@ pub fn run(args: Args) -> Result<()> {
         no_warn_embedded_repo: false,
         pathspec_from_file: None,
         pathspec_file_nul: false,
+        unified: None,
+        inter_hunk_context: None,
+        no_auto_advance: false,
+        auto_advance: false,
     })
 }
