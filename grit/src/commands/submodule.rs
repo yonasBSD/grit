@@ -2782,6 +2782,10 @@ fn run_add(args: &AddArgs) -> Result<()> {
         ConfigFile::parse(&local_config_path, "", ConfigScope::Local)?
     };
 
+    if !args.force && config_last_value(&local_config, &format!("submodule.{name}.url")).is_some() {
+        bail!("submodule name '{name}' already used");
+    }
+
     if submodule_path_config_enabled(&store) {
         ensure_submodule_gitdir_config(work_tree, &store, &mut local_config, &name)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -2838,6 +2842,14 @@ fn run_add(args: &AddArgs) -> Result<()> {
                 modules_dir.display(),
                 outer.display()
             );
+        }
+        if args.force && modules_dir.exists() {
+            fs::remove_dir_all(&modules_dir).with_context(|| {
+                format!(
+                    "could not remove existing submodule git dir '{}'",
+                    modules_dir.display()
+                )
+            })?;
         }
         // Only create the parent directory; git clone --separate-git-dir
         // will create the modules_dir itself.
@@ -2974,7 +2986,8 @@ fn run_add(args: &AddArgs) -> Result<()> {
     config.write()?;
 
     // Also register the submodule in the local .git/config (like git does).
-    local_config.set(&format!("submodule.{name}.url"), &args.url)?;
+    let local_url = resolve_submodule_super_url(work_tree, &repo.git_dir, &args.url)?;
+    local_config.set(&format!("submodule.{name}.url"), &local_url)?;
     if grit_lib::submodule_active::submodule_add_should_set_active(&repo, &path) {
         local_config.set(&format!("submodule.{name}.active"), "true")?;
     }

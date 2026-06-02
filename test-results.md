@@ -9,7 +9,8 @@ Updated: 2026-06-02
 - t7 submodule focus: `./scripts/run-tests.sh t7406-submodule-update.sh --verbose` improved
   `t7406` from 10/70 to 70/70. The run refreshed `data/test-files.csv` and generated dashboards.
 - t7 submodule focus: `./scripts/run-tests.sh t7400-submodule-basic.sh --verbose` improved
-  `t7400` from 96/124 to 120/124. Remaining failures: 91, 96, 122, 123.
+  `t7400` from 96/124 to 124/124. Follow-up regression check:
+  `./scripts/run-tests.sh t7406-submodule-update.sh --verbose` remains 70/70.
 - Verification: `cargo build --release -p grit-cli` passed with the existing warning backlog.
 
 Updated: 2026-06-01

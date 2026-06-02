@@ -16,13 +16,14 @@ Rows marked `skip` remain out of aggregate scope until explicitly audited.
     parity for decorated `log --oneline` comparisons, fresh clone checkout forcing, update=none
     initialization selection, custom update command error OIDs, jobs trace propagation, and quiet
     output suppression, plus shallow depth rejection/retry.
-- [~] `t7400-submodule-basic.sh` - 120/124 passing, 4 failing. Focus: basic submodule porcelain.
+- [x] `t7400-submodule-basic.sh` - 124/124 passing. Focus: basic submodule porcelain.
   - Fixed this iteration: racy `diff-files` stat matching for refreshed zero-size files,
     `submodule add -b` branch checkout/config, POSIX discovery for paths containing literal
     backslashes, hunkless gitlink `apply --index`, trailing-slash gitlink add/reset pathspecs,
-    and checkout removal of `.git`-only submodule placeholders.
-  - Remaining failures: 91, 96, 122, 123.
-- [ ] `t7112-reset-submodule.sh` - 54/78 passing, 24 failing. Focus: reset recursion and gitlinks.
+    checkout removal of `.git`-only submodule placeholders, resolved local-config URLs for
+    relative `submodule add`, logical-name reuse handling with `--force`, recursive clone quiet
+    propagation, and clone honoring `init.templateDir` for submodule add hooks.
+- [~] `t7112-reset-submodule.sh` - 54/78 passing, 24 failing. Focus: reset recursion and gitlinks.
 - [ ] `t7506-status-submodule.sh` - 20/40 passing, 20 failing. Focus: status submodule reporting.
 - [ ] `t7407-submodule-foreach.sh` - 4/23 passing, 19 failing. Focus: foreach traversal/env/output.
 - [ ] `t7403-submodule-sync.sh` - 1/18 passing, 17 failing. Focus: sync URL propagation.

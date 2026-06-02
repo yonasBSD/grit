@@ -36,6 +36,38 @@ use grit_lib::submodule_gitdir::{
     validate_submodule_path,
 };
 
+fn expand_tilde_path(value: &str) -> String {
+    if value == "~" {
+        return std::env::var("HOME").unwrap_or_else(|_| value.to_owned());
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{home}/{rest}");
+        }
+    }
+    value.to_owned()
+}
+
+fn effective_template_dir(args: &Args) -> Option<PathBuf> {
+    match &args.template {
+        Some(t) if t.is_empty() => None,
+        Some(t) => Some(PathBuf::from(t)),
+        None => {
+            if let Ok(tdir) = std::env::var("GIT_TEMPLATE_DIR") {
+                if !tdir.is_empty() {
+                    return Some(PathBuf::from(tdir));
+                }
+                return None;
+            }
+            let config = ConfigSet::load(None, true).unwrap_or_default();
+            config
+                .get("init.templateDir")
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| PathBuf::from(expand_tilde_path(&v)))
+        }
+    }
+}
+
 /// Arguments for `grit clone`.
 #[derive(Debug, ClapArgs)]
 #[command(about = "Clone a repository into a new directory")]
@@ -625,19 +657,34 @@ pub fn run(mut args: Args) -> Result<()> {
     let path_only = repo_path_str.split('?').next().unwrap_or("").to_string();
     let source_path = PathBuf::from(&path_only);
 
-    // Open the source repository, trying .git suffix if direct path fails
+    // Open the source repository, trying common Git local path variants if direct path fails.
     let (source, source_path) = match open_source_repo(&source_path) {
         Ok(s) => (s, source_path),
         Err(_) => {
-            // Try appending .git suffix
             let with_git = PathBuf::from(format!("{}.git", source_path.display()));
             match open_source_repo(&with_git) {
                 Ok(s) => (s, with_git),
                 Err(_) => {
-                    return Err(anyhow::anyhow!(
-                        "'{}' does not appear to be a git repository",
-                        args.repository
-                    ));
+                    let without_git = source_path
+                        .to_string_lossy()
+                        .strip_suffix(".git")
+                        .map(PathBuf::from);
+                    if let Some(without_git) = without_git {
+                        match open_source_repo(&without_git) {
+                            Ok(s) => (s, without_git),
+                            Err(_) => {
+                                return Err(anyhow::anyhow!(
+                                    "'{}' does not appear to be a git repository",
+                                    args.repository
+                                ));
+                            }
+                        }
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "'{}' does not appear to be a git repository",
+                            args.repository
+                        ));
+                    }
                 }
             }
         }
@@ -828,7 +875,7 @@ pub fn run(mut args: Args) -> Result<()> {
             .with_context(|| format!("cannot create directory '{}'", target_path.display()))?;
     }
 
-    let template_dir = args.template.as_ref().map(PathBuf::from);
+    let template_dir = effective_template_dir(&args);
 
     let git_work_tree_env = std::env::var_os("GIT_WORK_TREE").filter(|v| !v.is_empty());
 
@@ -1528,7 +1575,7 @@ fn run_git_clone(args: Args) -> Result<()> {
     fs::create_dir_all(&target_path)
         .with_context(|| format!("cannot create directory '{}'", target_path.display()))?;
 
-    let template_dir = args.template.as_ref().map(PathBuf::from);
+    let template_dir = effective_template_dir(&args);
     let dest = if let Some(ref sep_git) = args.separate_git_dir {
         if sep_git.exists() && sep_git.read_dir()?.next().is_some() {
             bail!(
@@ -1791,7 +1838,7 @@ fn run_ext_clone(args: Args) -> Result<()> {
     fs::create_dir_all(&target_path)
         .with_context(|| format!("cannot create directory '{}'", target_path.display()))?;
 
-    let template_dir = args.template.as_ref().map(PathBuf::from);
+    let template_dir = effective_template_dir(&args);
     let dest = if let Some(ref sep_git) = args.separate_git_dir {
         if sep_git.exists() && sep_git.read_dir()?.next().is_some() {
             bail!(
@@ -2106,7 +2153,7 @@ fn run_http_clone(args: Args) -> Result<()> {
 
     fs::create_dir_all(&target_path)
         .with_context(|| format!("cannot create directory '{}'", target_path.display()))?;
-    let template_dir = args.template.as_ref().map(PathBuf::from);
+    let template_dir = effective_template_dir(&args);
 
     if args.separate_git_dir.is_some() {
         bail!("--separate-git-dir is not supported for HTTP clones");
@@ -2636,7 +2683,7 @@ fn run_ssh_clone(args: Args) -> Result<()> {
             .with_context(|| format!("cannot create directory '{}'", target_path.display()))?;
     }
 
-    let template_dir = args.template.as_ref().map(PathBuf::from);
+    let template_dir = effective_template_dir(&args);
     let git_work_tree_env = std::env::var_os("GIT_WORK_TREE").filter(|v| !v.is_empty());
 
     let dest = if let Some(ref sep_git) = args.separate_git_dir {
@@ -3255,7 +3302,7 @@ fn run_ssh_network_clone(args: Args, spec: &crate::ssh_transport::SshUrl) -> Res
     fs::create_dir_all(&target_path)
         .with_context(|| format!("cannot create directory '{}'", target_path.display()))?;
     let ref_storage = resolved_clone_ref_storage(&args)?;
-    let template_dir = args.template.as_ref().map(PathBuf::from);
+    let template_dir = effective_template_dir(&args);
     let dest = if let Some(ref sep_git) = args.separate_git_dir {
         if sep_git.exists() && sep_git.read_dir()?.next().is_some() {
             bail!(
@@ -3865,6 +3912,9 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
     crate::grit_exe::strip_trace2_env(&mut upd);
     upd.args(["submodule", "update", "--init", "--recursive", "--force"])
         .current_dir(work_tree);
+    if quiet {
+        upd.arg("--quiet");
+    }
     if let Some(n) = clone_args.jobs {
         upd.arg("--jobs").arg(n.to_string());
     }
