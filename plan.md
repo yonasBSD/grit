@@ -1,5 +1,16 @@
 # PLAN.md — Current execution queue
 
+## Active task — t2 family 100% pass
+
+- [~] Make all `t2` family tests fully pass. Work one file at a time, always choosing the
+  non-green in-scope `t2` row with the largest `failing` count in `data/test-files.csv`, then
+  re-running that file until it has `failing=0` before moving on. After all current in-scope rows
+  pass, audit skipped t240x worktree rows so literal t2 completion is not hidden behind skips.
+  - Current first target: `t2050-checkout.sh` (8/80, failing=72 at claim time).
+  - Execution log: `logs/2026-06-01_2000-t2-family.md`.
+
+---
+
 ## Active task — t9 family 100% pass
 
 - [x] Make current in-scope `t9` family tests fully pass. Work one file at a time, always choosing
