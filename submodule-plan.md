@@ -58,7 +58,10 @@ Rows marked `skip` remain out of aggregate scope until explicitly audited.
     repository format to v1 when writing the v1-only extension, and push `updateInstead` refreshes
     the remote worktree/index against the old tip before hard-resetting the current branch without
     detaching `HEAD`.
-- [ ] `t7402-submodule-rebase.sh` - 4/6 passing, 2 failing. Focus: submodule rebase update mode.
+- [x] `t7402-submodule-rebase.sh` - 6/6 passing. Focus: submodule rebase update mode.
+  - Fixed this iteration: rebase's initial clean-worktree preflight now ignores gitlink
+    differences like upstream `require_clean_work_tree(..., ignore_submodules=1)`, allowing dirty
+    submodules to survive rebase while real dirty files still block it.
 - [ ] `t7409-submodule-detached-work-tree.sh` - 1/3 passing, 2 failing. Focus: detached work tree handling.
 - [ ] `t7412-submodule-absorbgitdirs.sh` - 10/12 passing, 2 failing. Focus: absorbgitdirs.
 - [ ] `t7423-submodule-symlinks.sh` - 4/6 passing, 2 failing. Focus: symlink safety.

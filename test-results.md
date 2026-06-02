@@ -6,6 +6,15 @@
 # Test Results
 
 Updated: 2026-06-02
+- t7 submodule focus: `./scripts/run-tests.sh t7402-submodule-rebase.sh` improved `t7402` from
+  4/6 to 6/6 by making rebase's initial clean-worktree preflight ignore gitlink differences like
+  upstream `require_clean_work_tree(..., ignore_submodules=1)`. Direct
+  `sh t7402-submodule-rebase.sh -v` also passed all 6 tests after the release rebuild.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+  Clippy's unrelated auto-fixes in `grit-lib/src/config.rs` and
+  `grit-lib/src/filter_process.rs` were reverted.
 - t7 submodule focus: `./scripts/run-tests.sh t7425-submodule-gitdir-path-extension.sh` improved
   `t7425` from 18/23 to 23/23 by making clone-time
   `extensions.submodulePathConfig=true` write a v1 repository format and by fixing push

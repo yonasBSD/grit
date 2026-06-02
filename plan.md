@@ -4,7 +4,7 @@
 
 - [~] Make all in-scope t7 submodule tests fully pass. Detailed queue and per-file status are in
   `submodule-plan.md`; work one file at a time, currently
-  `t7402-submodule-rebase.sh`.
+  `t7409-submodule-detached-work-tree.sh`.
   - Completed: `t7406-submodule-update.sh` improved from 10/70 to 70/70.
   - Completed: `t7400-submodule-basic.sh` improved from 96/124 to 124/124.
   - Completed: `t7112-reset-submodule.sh` improved from 34/82 to 78/78 aggregate passing, with 4 upstream TODO known breakages omitted from the failing count; log:
@@ -32,7 +32,11 @@
     upgrading clone-time v1-only extension config to repository format v1 and making push
     `updateInstead` refresh the remote worktree/index without detaching `HEAD`; log:
     `logs/2026-06-02_2055-t7425-submodule-gitdir-path-extension.md`.
-  - Next focus: `t7402-submodule-rebase.sh` at 4/6.
+  - Completed: `t7402-submodule-rebase.sh` improved from 4/6 to 6/6 by making rebase's initial
+    clean-worktree preflight ignore gitlink differences like upstream
+    `require_clean_work_tree(..., ignore_submodules=1)`; log:
+    `logs/2026-06-02_2110-t7402-submodule-rebase.md`.
+  - Next focus: `t7409-submodule-detached-work-tree.sh` at 1/3.
 
 ## Active task — t2 family 100% pass
 
