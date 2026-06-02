@@ -4,14 +4,16 @@ use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
 use std::fs;
 use std::io::{self, Read};
+use std::path::Path;
 use time::OffsetDateTime;
 
 use grit_lib::check_ref_format::{check_refname_format, RefNameOptions};
+use grit_lib::config::{parse_bool, ConfigSet};
 use grit_lib::error::Error as GritError;
 use grit_lib::objects::ObjectId;
 use grit_lib::refs::{
-    append_reflog, delete_ref, read_head, read_symbolic_ref, resolve_ref, should_autocreate_reflog,
-    verify_refname_available_for_create, write_ref,
+    append_reflog, delete_ref, read_head, read_ref_file, read_symbolic_ref, resolve_ref,
+    should_autocreate_reflog, verify_refname_available_for_create, write_ref,
 };
 use grit_lib::repo::Repository;
 use std::collections::{BTreeSet, HashSet};
@@ -137,6 +139,7 @@ pub fn run(mut args: Args) -> Result<()> {
     let new_oid: ObjectId = resolve_oid_or_ref(&repo, new_str)?;
 
     let expected = parse_old_expectation(args.old_value.as_deref())?;
+    ensure_lockable_ref_path(&repo, refname, &target_refname, expected.is_none())?;
     if let Some(expected) = expected {
         verify_expected_old(&repo, refname, &target_refname, args.no_deref, expected)?;
     }
@@ -907,6 +910,7 @@ fn apply_batch_op(repo: &Repository, args: &Args, no_deref: bool, op: BatchOp) -
             expected_old,
         } => {
             let target_refname = effective_refname(repo, &refname, no_deref)?;
+            ensure_lockable_ref_path(repo, &refname, &target_refname, expected_old.is_none())?;
             if let Some(expected) = expected_old {
                 verify_expected_old(repo, &refname, &target_refname, no_deref, expected)?;
             }
@@ -928,6 +932,7 @@ fn apply_batch_op(repo: &Repository, args: &Args, no_deref: bool, op: BatchOp) -
         }
         BatchOp::CreateOid { refname, new_oid } => {
             let target_refname = effective_refname(repo, &refname, no_deref)?;
+            ensure_lockable_ref_path(repo, &refname, &target_refname, true)?;
             if resolve_ref(&repo.git_dir, &target_refname).is_ok() {
                 return Err(anyhow::Error::from(GritError::Message(format!(
                     "fatal: cannot lock ref '{refname}': reference already exists"
@@ -1005,9 +1010,10 @@ fn effective_refname(repo: &Repository, refname: &str, no_deref: bool) -> Result
         if !seen.insert(current.clone()) {
             bail!("symref cycle involving '{refname}'");
         }
-        match read_symbolic_ref(&repo.git_dir, &current)? {
-            Some(target) => current = target,
-            None => return Ok(current),
+        match read_symbolic_ref(&repo.git_dir, &current) {
+            Ok(Some(target)) => current = target,
+            Ok(None) | Err(GritError::InvalidRef(_)) => return Ok(current),
+            Err(err) => return Err(err.into()),
         }
     }
     bail!("symref chain depth exceeded for '{refname}'");
@@ -1087,6 +1093,73 @@ fn verify_expected_old(
         },
     }
     Ok(())
+}
+
+fn ensure_lockable_ref_path(
+    repo: &Repository,
+    display_refname: &str,
+    lock_refname: &str,
+    report_directory_block: bool,
+) -> Result<()> {
+    let (store, stor_name) =
+        grit_lib::worktree_ref::resolve_ref_storage(&repo.git_dir, lock_refname);
+    let storage_name = grit_lib::ref_namespace::storage_ref_name(&stor_name);
+    let path = store.join(storage_name);
+
+    if fs::symlink_metadata(&path)
+        .map(|m| m.file_type().is_dir())
+        .unwrap_or(false)
+        && directory_tree_contains_file(&path)
+        && report_directory_block
+    {
+        let display_path = ref_path_for_display(&path);
+        return Err(anyhow::Error::from(GritError::Message(format!(
+            "fatal: cannot lock ref '{display_refname}': there is a non-empty directory '{display_path}' blocking reference '{lock_refname}'"
+        ))));
+    }
+
+    match read_ref_file(&path) {
+        Ok(_) => Ok(()),
+        Err(GritError::Io(err)) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(GritError::InvalidRef(_)) => Err(anyhow::Error::from(GritError::Message(format!(
+            "fatal: cannot lock ref '{display_refname}': unable to resolve reference '{lock_refname}': reference broken"
+        )))),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn directory_tree_contains_file(path: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        let Ok(meta) = fs::symlink_metadata(&entry_path) else {
+            continue;
+        };
+        if meta.file_type().is_dir() {
+            if directory_tree_contains_file(&entry_path) {
+                return true;
+            }
+        } else {
+            return true;
+        }
+    }
+    false
+}
+
+fn ref_path_for_display(path: &Path) -> String {
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(rel) = path.strip_prefix(&cwd) {
+            return rel.to_string_lossy().into_owned();
+        }
+        if let (Ok(cwd_c), Ok(path_c)) = (cwd.canonicalize(), path.canonicalize()) {
+            if let Ok(rel) = path_c.strip_prefix(&cwd_c) {
+                return rel.to_string_lossy().into_owned();
+            }
+        }
+    }
+    path.to_string_lossy().into_owned()
 }
 
 fn hook_update_for_op(op: &BatchOp) -> Result<HookUpdate> {
@@ -1222,6 +1295,9 @@ fn read_symbolic_ref_no_deref(repo: &Repository, refname: &str) -> Result<Option
     }
 
     let path = repo.git_dir.join(refname);
+    if let Ok(target) = fs::read_link(&path) {
+        return Ok(Some(target.to_string_lossy().into_owned()));
+    }
     let Ok(content) = fs::read_to_string(path) else {
         return Ok(None);
     };
@@ -1243,10 +1319,46 @@ fn write_symbolic_ref(repo: &Repository, refname: &str, target: &str) -> Result<
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    if prefers_symlink_refs(repo) {
+        warn_prefer_symlink_refs();
+        let _ = fs::remove_file(&path);
+        create_symbolic_link(target, &path)?;
+        return Ok(());
+    }
     let lock_path = grit_lib::refs::lock_path_for_ref(&path);
     fs::write(&lock_path, format!("ref: {target}\n"))?;
     fs::rename(lock_path, path)?;
     Ok(())
+}
+
+fn prefers_symlink_refs(repo: &Repository) -> bool {
+    let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    config
+        .get("core.prefersymlinkrefs")
+        .and_then(|raw| parse_bool(&raw).ok())
+        .unwrap_or(false)
+}
+
+fn warn_prefer_symlink_refs() {
+    eprintln!("warning: 'core.preferSymlinkRefs=true' is nominated for removal.");
+    eprintln!("hint: The use of symbolic links for symbolic refs is deprecated");
+    eprintln!("hint: and will be removed in Git 3.0. The configuration that");
+    eprintln!("hint: tells Git to use them is thus going away. You can unset");
+    eprintln!("hint: it with:");
+    eprintln!("hint:");
+    eprintln!("hint:\tgit config unset core.preferSymlinkRefs");
+    eprintln!("hint:");
+    eprintln!("hint: Git will then use the textual symref format instead.");
+}
+
+#[cfg(unix)]
+fn create_symbolic_link(target: &str, path: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, path)
+}
+
+#[cfg(not(unix))]
+fn create_symbolic_link(target: &str, path: &Path) -> io::Result<()> {
+    fs::write(path, format!("ref: {target}\n"))
 }
 
 fn delete_ref_no_deref(repo: &Repository, refname: &str) -> Result<()> {

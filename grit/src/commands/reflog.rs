@@ -358,6 +358,7 @@ fn run_show(args: ShowArgs) -> Result<()> {
         author_date_order: false,
         topo_order: false,
         ignore_missing: false,
+        default_revision: None,
         clear_decorations: false,
         shortstat: false,
         bisect: false,

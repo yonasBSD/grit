@@ -1336,6 +1336,7 @@ fn validate_repository_format(git_dir: &Path) -> Result<()> {
     let mut in_extensions = false;
     let mut repo_version = 0u32;
     let mut extensions = BTreeSet::new();
+    let mut ref_storage: Option<String> = None;
 
     for raw_line in content.lines() {
         let mut line = raw_line.trim();
@@ -1379,6 +1380,14 @@ fn validate_repository_format(git_dir: &Path) -> Result<()> {
         }
 
         if in_extensions {
+            let (key, value) = if let Some((key, value)) = line.split_once('=') {
+                (key.trim(), Some(value.trim()))
+            } else {
+                (line, None)
+            };
+            if key.eq_ignore_ascii_case("refstorage") {
+                ref_storage = value.map(str::to_owned);
+            }
             let key = if let Some((key, _)) = line.split_once('=') {
                 key.trim()
             } else {
@@ -1392,6 +1401,21 @@ fn validate_repository_format(git_dir: &Path) -> Result<()> {
 
     if repo_version > 1 {
         return Err(Error::UnsupportedRepositoryFormatVersion(repo_version));
+    }
+
+    if repo_version >= 1 {
+        if let Some(raw) = ref_storage.as_deref() {
+            let lower = raw.to_ascii_lowercase();
+            let name = lower
+                .split_once(':')
+                .map(|(prefix, _)| prefix)
+                .unwrap_or(lower.as_str());
+            if !matches!(name, "files" | "reftable") {
+                return Err(Error::Message(format!(
+                    "invalid value for 'extensions.refstorage': '{raw}'"
+                )));
+            }
+        }
     }
 
     // Mirror git/setup.c `check_repo_format` / `verify_repository_format`. Extensions split into:

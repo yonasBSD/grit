@@ -15,6 +15,7 @@
 use std::fs;
 use std::path::Path;
 
+use crate::check_ref_format::{check_refname_format, RefNameOptions};
 use crate::error::{Error, Result};
 use crate::objects::ObjectId;
 use crate::reflog;
@@ -179,6 +180,9 @@ pub fn resolve_head(git_dir: &Path) -> Result<HeadState> {
         } else {
             refname.to_owned()
         };
+        if check_refname_format(&refname, &RefNameOptions::default()).is_err() {
+            return Ok(HeadState::Invalid);
+        }
         let short_name = refname
             .strip_prefix("refs/heads/")
             .unwrap_or(&refname)

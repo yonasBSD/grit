@@ -41,6 +41,10 @@ pub struct Args {
     /// Smart-HTTP stateless RPC mode; accepted for compatibility.
     #[arg(long = "stateless-rpc", hide = true)]
     pub stateless_rpc: bool,
+
+    /// Compatibility flag accepted by Git's upload-pack.
+    #[arg(long, hide = true)]
+    pub strict: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {

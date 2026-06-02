@@ -506,6 +506,10 @@ pub struct Args {
     #[arg(long = "ignore-missing")]
     pub ignore_missing: bool,
 
+    /// Default revision to use when no revision is given.
+    #[arg(long = "default", value_name = "REV", hide = true)]
+    pub default_revision: Option<String>,
+
     /// Exclude promisor objects from the walk (only valid in a partial-clone repository).
     #[arg(long = "exclude-promisor-objects")]
     pub exclude_promisor_objects: bool,
@@ -1873,6 +1877,14 @@ fn merge_log_revision_argv(repo: &Repository, args: &Args) -> Result<Vec<String>
             out.push(arg.clone());
             out.extend(src[i + 1..].iter().cloned());
             break;
+        }
+        if !end_opts && arg == "--default" {
+            i += 2;
+            continue;
+        }
+        if !end_opts && arg.starts_with("--default=") {
+            i += 1;
+            continue;
         }
         if !end_opts && arg == "--end-of-options" {
             end_opts = true;
@@ -4282,15 +4294,24 @@ pub fn run(mut args: Args) -> Result<()> {
             if rev_input_given {
                 // Input was given but resolved to nothing: produce empty output, not HEAD.
             } else {
-                let head = resolve_head(&repo.git_dir)?;
-                match head.oid() {
-                    Some(oid) => start_oids.push(*oid),
-                    None => {
-                        // Unborn / empty HEAD with no revisions: git errors out.
-                        let branch = head.branch_name().unwrap_or("HEAD");
-                        anyhow::bail!(
-                            "your current branch '{branch}' does not have any commits yet"
-                        );
+                let head = resolve_head_for_log(&repo.git_dir)?;
+                if let Some(default) = args.default_revision.as_ref() {
+                    let default_specs = [default.clone()];
+                    start_oids.extend(resolve_specs_to_commits_ignoring_missing(
+                        &repo,
+                        &default_specs,
+                        &args,
+                    )?);
+                } else {
+                    match head.oid() {
+                        Some(oid) => start_oids.push(*oid),
+                        None => {
+                            // Unborn / empty HEAD with no revisions: git errors out.
+                            let branch = head.branch_name().unwrap_or("HEAD");
+                            anyhow::bail!(
+                                "your current branch '{branch}' does not have any commits yet"
+                            );
+                        }
                     }
                 }
             }
@@ -5086,6 +5107,14 @@ fn reflog_grep_matches(patterns: &[Regex], text: &str, all_match: bool, invert: 
         !m
     } else {
         m
+    }
+}
+
+fn resolve_head_for_log(git_dir: &Path) -> Result<HeadState> {
+    match resolve_head(git_dir) {
+        Ok(HeadState::Invalid) => anyhow::bail!("broken HEAD"),
+        Ok(head) => Ok(head),
+        Err(_) => anyhow::bail!("broken HEAD"),
     }
 }
 

@@ -352,9 +352,11 @@ fn run_ls_remote_via_upload_pack(repo_path: &Path, upload_pack: &str, args: &Arg
 
     let default_hash = std::env::var("GIT_DEFAULT_HASH").unwrap_or_else(|_| "sha1".to_owned());
 
+    let upload_pack_command = format!("exec {upload_pack} \"$@\"");
     let mut child = Command::new("sh")
         .arg("-c")
-        .arg(upload_pack)
+        .arg(&upload_pack_command)
+        .arg("git-upload-pack")
         .arg(repo_dir.to_string_lossy().as_ref())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

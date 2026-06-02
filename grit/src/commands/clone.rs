@@ -642,6 +642,7 @@ pub fn run(mut args: Args) -> Result<()> {
             }
         }
     };
+    source.verify_safe_for_clone_source()?;
 
     // Git refuses `--upload-pack` on the local fast path (no remote helper to run).
     // `--no-local` still spawns upload-pack, so the custom command must be honored (`t5605`).

@@ -1973,6 +1973,12 @@ fn rename_branch(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
     // Capture reflog bytes before `delete_ref`: that helper removes `logs/<refname>` too.
     let reflog_dir = repo.git_dir.join("logs");
     let old_log_path = reflog_dir.join(&old_ref);
+    if fs::symlink_metadata(&old_log_path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        bail!("fatal: branch rename failed");
+    }
     let old_reflog_bytes = if old_log_path.is_file() {
         fs::read(&old_log_path).ok()
     } else {

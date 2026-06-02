@@ -6003,6 +6003,15 @@ fn write_diff_header_with_prefix(
         let len = abbrev_len.min(hex.len());
         hex[..len].to_owned()
     };
+    let abbr_pair = |old: &ObjectId, new: &ObjectId| -> (String, String) {
+        let old_hex = old.to_hex();
+        let new_hex = new.to_hex();
+        let mut len = abbrev_len.min(old_hex.len()).min(new_hex.len());
+        while len < old_hex.len().min(new_hex.len()) && old_hex[..len] == new_hex[..len] {
+            len += 1;
+        }
+        (old_hex[..len].to_owned(), new_hex[..len].to_owned())
+    };
 
     let new_oid_for_index_line = || -> ObjectId {
         if entry.old_mode == "160000" && entry.new_mode == "160000" && entry.new_oid == zero_oid() {
@@ -6050,20 +6059,13 @@ fn write_diff_header_with_prefix(
                 return Ok(());
             }
             if entry.old_mode == entry.new_mode {
-                writeln!(
-                    out,
-                    "{b}index {}..{} {}{r}",
-                    abbr(&entry.old_oid),
-                    abbr(&new_oid_for_index_line()),
-                    entry.old_mode
-                )?;
+                let new_for_index = new_oid_for_index_line();
+                let (old_abbr, new_abbr) = abbr_pair(&entry.old_oid, &new_for_index);
+                writeln!(out, "{b}index {old_abbr}..{new_abbr} {}{r}", entry.old_mode)?;
             } else {
-                writeln!(
-                    out,
-                    "{b}index {}..{}{r}",
-                    abbr(&entry.old_oid),
-                    abbr(&new_oid_for_index_line())
-                )?;
+                let new_for_index = new_oid_for_index_line();
+                let (old_abbr, new_abbr) = abbr_pair(&entry.old_oid, &new_for_index);
+                writeln!(out, "{b}index {old_abbr}..{new_abbr}{r}")?;
             }
         }
         DiffStatus::Renamed => {

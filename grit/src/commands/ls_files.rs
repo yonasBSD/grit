@@ -34,6 +34,19 @@ fn resolved_env_index_path(repo: &Repository) -> PathBuf {
     }
 }
 
+fn write_eol_record<W: Write + ?Sized>(
+    out: &mut W,
+    index_eol: &str,
+    wt_eol: &str,
+    attr_str: &str,
+    name: &str,
+) -> io::Result<()> {
+    let index_field = format!("i/{index_eol}");
+    let wt_field = format!("w/{wt_eol}");
+    let attr_field = format!("attr/{attr_str}");
+    write!(out, "{index_field:<8}{wt_field:<8}{attr_field:<22}\t{name}")
+}
+
 /// Arguments for `grit ls-files`.
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -539,7 +552,7 @@ pub fn run(args: Args) -> Result<()> {
                     &config,
                 );
 
-                write!(out, "i/{index_eol} w/{wt_eol} attr/{attr_str}\t{name}")?;
+                write_eol_record(&mut out, &index_eol, &wt_eol, &attr_str, &name)?;
                 out.write_all(&[term])?;
                 if args.debug {
                     write_ls_files_debug(&mut out, entry)?;
@@ -873,7 +886,7 @@ pub fn run(args: Args) -> Result<()> {
                     path_str.as_ref(),
                     &config,
                 );
-                write!(out, "i/ w/{wt_eol} attr/{attr_str}\t{qname}")?;
+                write_eol_record(&mut out, "", &wt_eol, &attr_str, &qname)?;
             } else if args.show_tag {
                 write!(out, "? {qname}")?;
             } else {
@@ -1129,7 +1142,7 @@ fn ls_files_recurse_submodules(
             };
             let attr_str =
                 grit_lib::crlf::convert_attr_ascii_for_ls_files(p.attrs_for_eol, path_str, config);
-            write!(out, "i/{index_eol} w/{wt_eol} attr/{attr_str}\t{name}")?;
+            write_eol_record(out, &index_eol, &wt_eol, &attr_str, &name)?;
             out.write_all(&[p.term])?;
             if p.debug {
                 write_ls_files_debug(out, entry)?;

@@ -39,6 +39,10 @@ pub enum Ref {
 /// - [`Error::InvalidRef`] if the file content is not a valid ref.
 /// - [`Error::Io`] on filesystem errors.
 pub fn read_ref_file(path: &Path) -> Result<Ref> {
+    if let Ok(target) = fs::read_link(path) {
+        return Ok(Ref::Symbolic(target.to_string_lossy().into_owned()));
+    }
+
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         // `refs/heads/master` can be a directory when a branch named `master/...` exists, and a

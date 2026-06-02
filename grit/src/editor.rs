@@ -6,6 +6,7 @@
 //! [`Some`] with the resolved command, defaulting to `vi`.
 
 use grit_lib::config::ConfigSet;
+use std::io::IsTerminal;
 
 /// Matches Git's `is_terminal_dumb()`: true when `TERM` is unset or equals `"dumb"`.
 #[must_use]
@@ -60,7 +61,7 @@ pub(crate) fn resolve_git_editor(config: &ConfigSet, for_launch: bool) -> Option
     if let Some(e) = env_editor_candidate("EDITOR", for_launch) {
         return Some(e);
     }
-    if terminal_is_dumb {
+    if terminal_is_dumb || (!for_launch && !std::io::stdin().is_terminal()) {
         return None;
     }
     Some("vi".to_owned())

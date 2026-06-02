@@ -68,18 +68,18 @@ test_expect_success 'GIT_DIR with cat-file -p works from outside repo' '
 
 test_expect_success 'GIT_DIR with symbolic-ref works from outside repo' '
 	GIT_DIR="$TRASH_DIRECTORY/repo/.git" git symbolic-ref HEAD >actual &&
-	echo refs/heads/master >expect &&
+	echo "refs/heads/${GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME:-master}" >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'GIT_DIR with branch works from outside repo' '
 	GIT_DIR="$TRASH_DIRECTORY/repo/.git" git branch >actual &&
-	grep "master" actual
+	grep "${GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME:-master}" actual
 '
 
 test_expect_success 'GIT_DIR with show-ref works from outside repo' '
 	GIT_DIR="$TRASH_DIRECTORY/repo/.git" git show-ref >actual &&
-	grep "refs/heads/master" actual
+	grep "refs/heads/${GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME:-master}" actual
 '
 
 test_expect_success 'GIT_DIR pointing to nonexistent dir fails' '
@@ -90,7 +90,7 @@ test_expect_success 'GIT_DIR pointing to nonexistent dir fails' '
 test_expect_success 'GIT_DIR with for-each-ref works from outside repo' '
 	GIT_DIR="$TRASH_DIRECTORY/repo/.git" \
 	git for-each-ref --format="%(refname)" refs/heads/ >actual &&
-	echo refs/heads/master >expect &&
+	echo "refs/heads/${GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME:-master}" >expect &&
 	test_cmp expect actual
 '
 
@@ -113,7 +113,7 @@ test_expect_success 'GIT_DIR + GIT_WORK_TREE with status from outside' '
 	GIT_DIR="$TRASH_DIRECTORY/repo/.git" \
 	GIT_WORK_TREE="$TRASH_DIRECTORY/repo" \
 	git status >actual 2>&1 &&
-	grep -q "On branch master" actual
+	grep -q "On branch ${GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME:-master}" actual
 '
 
 test_expect_success 'GIT_DIR + GIT_WORK_TREE diff detects changes' '

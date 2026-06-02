@@ -567,7 +567,7 @@ pub fn run(args: Args, global_bare: bool) -> Result<()> {
     // git/setup.c `read_default_format_config` warns about a garbage `init.defaultObjectFormat`
     // whenever the key is present, independent of whether env/CLI ultimately overrides it.
     if let Some(v) = config
-        .get("init.defaultObjectFormat")
+        .get("init.defaultobjectformat")
         .filter(|v| !v.trim().is_empty())
     {
         if !is_known_object_format(&v) {
@@ -602,7 +602,7 @@ pub fn run(args: Args, global_bare: bool) -> Result<()> {
         }
         hash
     } else if let Some(fmt) = config
-        .get("init.defaultObjectFormat")
+        .get("init.defaultobjectformat")
         .filter(|v| !v.trim().is_empty())
     {
         if is_known_object_format(&fmt) {
@@ -648,7 +648,7 @@ pub fn run(args: Args, global_bare: bool) -> Result<()> {
     // git/setup.c `read_default_format_config` warns about a garbage `init.defaultRefFormat`
     // whenever the key is present, independent of whether env/CLI ultimately overrides it.
     if let Some(v) = config
-        .get("init.defaultRefFormat")
+        .get("init.defaultrefformat")
         .filter(|v| !v.trim().is_empty())
     {
         if !is_known_ref_format(&v) {
@@ -694,7 +694,7 @@ pub fn run(args: Args, global_bare: bool) -> Result<()> {
         }
         env.to_owned()
     } else if let Some(configured) = config
-        .get("init.defaultRefFormat")
+        .get("init.defaultrefformat")
         .filter(|value| !value.trim().is_empty())
     {
         // `init.defaultRefFormat`: an unknown value is ignored (already warned above), falling
@@ -1069,14 +1069,6 @@ fn create_git_dir(git_dir: &Path, opts: CreateGitDirOptions<'_>) -> Result<()> {
         // `init.defaultBranch` in `.git/config`. Tests (e.g. t1300-config) expect `config --list`
         // in a fresh repo to omit that key.
 
-        cfg.write()?;
-    }
-
-    // git/setup.c: if `.git/config` is visible as `CoNfIg`, the filesystem is case-insensitive.
-    if !is_reinit && !bare && fs::metadata(git_dir.join("CoNfIg")).is_ok() {
-        let content = fs::read_to_string(&config_path)?;
-        let mut cfg = ConfigFile::parse(&config_path, &content, ConfigScope::Local)?;
-        cfg.set("core.ignorecase", "true")?;
         cfg.write()?;
     }
 

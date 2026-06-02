@@ -1,6 +1,93 @@
 # PLAN.md — Current execution queue
 
-## Active task — t9 family 100% pass
+## Active task — t0 remaining in-scope failures 100% pass
+
+Goal: make every current in-scope `t0` row fully pass. The current failure ledger is 32 subtests:
+31 direct `not ok` failures plus one `t0007-git-var` harness-summary mismatch that direct execution
+currently reports green.
+
+### Area A — init object/ref format and includeIf config
+**Owns:** `grit/src/commands/init.rs`, `grit-lib/src/repo.rs`, `grit-lib/src/config.rs`,
+`grit-lib/src/refs.rs`, `grit-lib/src/reftable.rs`.
+- [x] `t0001-init` #54 — `init honors init.defaultObjectFormat`
+- [x] `t0001-init` #55 — `init warns about invalid init.defaultObjectFormat`
+- [x] `t0001-init` #64 — `extensions.refStorage with unknown backend`
+- [x] `t0001-init` #66 — `init warns about invalid init.defaultRefFormat`
+- [x] `t0001-init` #67 — `default ref format`
+- [x] `t0001-init` #98 — `init with includeIf.onbranch condition`
+- [x] `t0001-init` #99 — `init with includeIf.onbranch condition with existing directory`
+- [x] `t0001-init` #100 — `re-init with includeIf.onbranch condition`
+
+### Area B — repository discovery, gitfile, safe directory, and environment
+**Owns:** `grit-lib/src/repo.rs`, `grit-lib/src/config.rs`, clone/discovery call sites,
+`grit/src/commands/var.rs`.
+- [x] `t0002-gitfile` #14 — `enter_repo strict mode`
+- [x] `t0007-git-var` harness row — CSV/harness reports 26/27, while direct verbose execution
+  reports 27/27; isolate and refresh or fix the runner-visible discrepancy.
+- [x] `t0033-safe-directory` #15 — `local clone of unowned repo refused in unsafe directory`
+- [x] `t0033-safe-directory` #16 — `local clone of unowned repo accepted in safe directory`
+- [x] `t0110-environment` #6 — `GIT_DIR with symbolic-ref works from outside repo`
+- [x] `t0110-environment` #7 — `GIT_DIR with branch works from outside repo`
+- [x] `t0110-environment` #8 — `GIT_DIR with show-ref works from outside repo`
+- [x] `t0110-environment` #10 — `GIT_DIR with for-each-ref works from outside repo`
+- [x] `t0110-environment` #12 — `GIT_DIR + GIT_WORK_TREE with status from outside`
+
+### Area C — working tree conversion and filesystem detection
+**Owns:** `grit-lib/src/crlf.rs`, `grit-lib/src/attributes.rs`, `grit-lib/src/precompose_config.rs`,
+`grit-lib/src/unicode_normalization.rs`, init filesystem probes.
+- [x] `t0028-working-tree-encoding` #8 — `eol conversion for UTF-16 encoded files on checkout`
+- [x] `t0028-working-tree-encoding` #11 — `eol conversion for UTF-32 encoded files on checkout`
+- [x] `t0050-filesystem` #2 — `detection of case insensitive filesystem during repo init`
+
+### Area D — files ref backend semantics
+**Owns:** `grit-lib/src/refs.rs`, `grit-lib/src/reflog.rs`, branch/log/symbolic-ref call sites.
+- [ ] `t0600-reffiles-backend` #11 — `broken reference blocks create`
+- [ ] `t0600-reffiles-backend` #12 — `non-empty directory blocks indirect create`
+- [ ] `t0600-reffiles-backend` #13 — `broken reference blocks indirect create`
+- [ ] `t0600-reffiles-backend` #18 — `for_each_reflog()`
+- [ ] `t0600-reffiles-backend` #23 — `log diagnoses bogus HEAD hash`
+- [ ] `t0600-reffiles-backend` #24 — `log diagnoses bogus HEAD symref`
+- [ ] `t0600-reffiles-backend` #28 — `git branch -m u v should fail when the reflog for u is a symlink`
+- [ ] `t0600-reffiles-backend` #32 — `symref transaction supports symlinks`
+
+### Area E — reftable transaction and serving behavior
+**Owns:** `grit-lib/src/reftable.rs`, `grit/src/commands/update_ref.rs`,
+`grit/src/commands/for_each_ref.rs`, HTTP test environment only if proven grit-controlled.
+- [ ] `t0610-reftable-basics` #45 — `ref transaction: fails gracefully when auto compaction fails`
+- [ ] `t0610-reftable-basics` #48 — `ref transaction: many concurrent writers`
+- [ ] `t0611-reftable-httpd` #1 — `serving ls-remote`
+- [ ] `t0613-reftable-write-options` #3 — `many refs results in multiple blocks`
+
+### Execution order
+1. Fix small repo/discovery mismatches first: `t0007`, `t0002`, `t0050`, then `t0110`.
+2. Fix conversion checkout EOL handling: `t0028`.
+3. Fix init/ref format/includeIf: `t0001`.
+4. Fix files refs: `t0600`.
+5. Fix reftable transaction/sort/block/httpd items: `t0613`, `t0610`, `t0611`.
+6. After each file goes green, run `./scripts/run-tests.sh <file>.sh` to refresh CSV/dashboards.
+7. Final verification: `cargo fmt`, `cargo build --release -p grit-cli`,
+   `cargo clippy --fix --allow-dirty --allow-staged`, `cargo test -p grit-lib --lib`,
+   and `./scripts/run-tests.sh --family t0`.
+
+---
+
+## Paused task — t4 diff-family 100% pass
+
+- [~] Work the t4 family by dependency groups, starting with low-failure foundational diff behavior before high-volume consumers.
+  - [x] `t4017-diff-retval.sh` — aligned diff `--exit-code`, `--quiet`, `--check`, and invalid-option behavior (38/38).
+  - [ ] Core diff output: option parsing, pair generation, raw/name-status/patch headers, quoting, ordering, abbrev/full-index, binary markers; use `t4013-diff-various` as the broad regression target.
+  - [ ] Stats and summaries: `--stat`, `--numstat`, `--shortstat`, `--dirstat`, `--summary`, width/count/name-width behavior (`t4047`, `t4049`, `t4052`, `t4069`).
+  - [ ] Rename/rewrite/typechange: similarity scoring, break-rewrite, mode-aware rename/typechange handling (`t4001`, `t4005`, `t4008`, `t4023`).
+  - [ ] Whitespace and word/function diffs: whitespace checks/highlighting/ignore modes, word-diff formats, and function-name hunk headers (`t4015`, `t4019`, `t4034`, `t4051`).
+  - [ ] Submodule diff: gitlink diff display, ignore modes, uninitialized handling, and `--submodule` formats (`t4027`, `t4041`, `t4059`, `t4060`).
+  - [ ] Defer combined/remerge diff until normal two-parent diff and merge-parent traversal are stable (`t4038`, `t4048`, `t4057`, `t4069-remerge-diff`).
+  - [ ] Defer external/no-index/textconv until core output and exit status semantics are reliable (`t4020`, `t4030`, `t4042`, `t4053`).
+  - [ ] Defer format-patch until patch emission, diff/log option parsing, revision ranges, and pretty/email formatting are stable (`t4014` and related format-patch tests).
+  - Execution log: `logs/2026-06-02_0817-t4-family.md`.
+
+---
+
+## Previous active task — t9 family 100% pass
 
 - [x] Make current in-scope `t9` family tests fully pass. Work one file at a time, always choosing
   the non-green in-scope `t9` row with the largest `failing` count in `data/test-files.csv`, then

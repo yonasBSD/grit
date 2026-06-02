@@ -23,6 +23,7 @@ pub fn run(args: Args) -> Result<()> {
         writeln!(out, "sizeof-size_t: {}", std::mem::size_of::<usize>())?;
         writeln!(out, "shell-path: /bin/sh")?;
         writeln!(out, "default-hash: sha1")?;
+        writeln!(out, "default-ref-format: files")?;
     }
     Ok(())
 }

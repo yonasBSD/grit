@@ -301,15 +301,26 @@ fn collect_refs(dir: &Path, prefix_path: &str, filter: &str) -> Result<Vec<(Stri
 
 /// List all reflog refs.
 fn cmd_for_each_reflog(store: &RefStore) -> Result<()> {
-    let logs_dir = store.git_dir.join("logs");
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    let mut logs = collect_log_refs(&logs_dir, "")?;
+    let mut logs = collect_log_refs(&store.git_dir.join("logs"), "")?;
+    if store.git_dir != store.common_dir {
+        logs.extend(
+            collect_log_refs(&store.common_dir.join("logs"), "")?
+                .into_iter()
+                .filter(|name| shared_reflog_visible_from_worktree(name)),
+        );
+    }
     logs.sort();
+    logs.dedup();
     for r in logs {
         writeln!(out, "{r}")?;
     }
     Ok(())
+}
+
+fn shared_reflog_visible_from_worktree(name: &str) -> bool {
+    name.starts_with("refs/") && !grit_lib::worktree_ref::is_per_worktree_ref(name)
 }
 
 fn collect_log_refs(dir: &Path, prefix: &str) -> Result<Vec<String>> {

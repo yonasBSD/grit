@@ -542,8 +542,9 @@ test_expect_success 'init honors --object-format' '
 
 test_expect_success 'init honors init.defaultObjectFormat' '
 	test_when_finished "rm -rf sha1 sha256" &&
+	test_when_finished "test_unconfig --global init.defaultObjectFormat" &&
 
-	test_config_global init.defaultObjectFormat sha1 &&
+	git config --global init.defaultObjectFormat sha1 &&
 	(
 		sane_unset GIT_DEFAULT_HASH &&
 		git init sha1 &&
@@ -552,7 +553,7 @@ test_expect_success 'init honors init.defaultObjectFormat' '
 		test_cmp expected actual
 	) &&
 
-	test_config_global init.defaultObjectFormat sha256 &&
+	git config --global init.defaultObjectFormat sha256 &&
 	(
 		sane_unset GIT_DEFAULT_HASH &&
 		git init sha256 &&
@@ -571,7 +572,7 @@ test_expect_success 'init warns about invalid init.defaultObjectFormat' '
 	test_cmp expect err &&
 
 	git -C repo rev-parse --show-object-format >actual &&
-	echo $GIT_DEFAULT_HASH >expected &&
+	git version --build-options | sed -ne "s/^default-hash: //p" >expected &&
 	test_cmp expected actual
 '
 
@@ -658,7 +659,7 @@ test_expect_success 'init warns about invalid init.defaultRefFormat' '
 	test_cmp expect err &&
 
 	git -C repo rev-parse --show-ref-format >actual &&
-	echo $GIT_DEFAULT_REF_FORMAT >expected &&
+	git version --build-options | sed -ne "s/^default-ref-format: //p" >expected &&
 	test_cmp expected actual
 '
 
@@ -932,7 +933,7 @@ test_expect_success 'branch -m with the initial branch' '
 test_expect_success 'init with includeIf.onbranch condition' '
 	test_when_finished "rm -rf repo" &&
 	git -c includeIf.onbranch:main.path=nonexistent init repo &&
-	echo $GIT_DEFAULT_REF_FORMAT >expect &&
+	git version --build-options | sed -ne "s/^default-ref-format: //p" >expect &&
 	git -C repo rev-parse --show-ref-format >actual &&
 	test_cmp expect actual
 '
@@ -941,7 +942,7 @@ test_expect_success 'init with includeIf.onbranch condition with existing direct
 	test_when_finished "rm -rf repo" &&
 	mkdir repo &&
 	git -c includeIf.onbranch:nonexistent.path=/does/not/exist init repo &&
-	echo $GIT_DEFAULT_REF_FORMAT >expect &&
+	git version --build-options | sed -ne "s/^default-ref-format: //p" >expect &&
 	git -C repo rev-parse --show-ref-format >actual &&
 	test_cmp expect actual
 '
@@ -950,7 +951,7 @@ test_expect_success 're-init with includeIf.onbranch condition' '
 	test_when_finished "rm -rf repo" &&
 	git init repo &&
 	git -c includeIf.onbranch:nonexistent.path=/does/not/exist init repo &&
-	echo $GIT_DEFAULT_REF_FORMAT >expect &&
+	git version --build-options | sed -ne "s/^default-ref-format: //p" >expect &&
 	git -C repo rev-parse --show-ref-format >actual &&
 	test_cmp expect actual
 '
