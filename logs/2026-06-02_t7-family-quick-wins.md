@@ -29,3 +29,22 @@
 ./scripts/run-tests.sh t7060-wtstatus.sh t7103-reset-bare.sh t7106-reset-unborn-branch.sh t7065-status-rename.sh
 → all fully passing
 ```
+
+## Merge group — octopus failure cleanup
+
+### Root cause (t7607)
+
+Multi-head octopus merge treated conflicts on non-final heads like a normal merge conflict
+(writing `MERGE_HEAD`). Git's `git-merge-octopus.sh` aborts with exit 2 and restores state when
+an intermediate head fails.
+
+### Fix
+
+In `do_octopus_merge`, when conflicts occur before the last merge head, restore the pre-merge
+index/worktree, remove `ORIG_HEAD`, print Git's octopus failure messages, and exit 2.
+
+### Validation
+
+```
+./scripts/run-tests.sh t7607-merge-state.sh → 1/1 passing
+```

@@ -3906,6 +3906,9 @@ fn do_octopus_merge(
             )?;
 
             if merge_result.has_conflicts {
+                if i + 1 < merge_oids.len() {
+                    return die_octopus_merge_program_failed(repo, &pre_merge_index);
+                }
                 return finish_octopus_merge_on_conflict(
                     repo,
                     head,
@@ -4001,6 +4004,9 @@ fn do_octopus_merge(
         )?;
 
         if merge_result.has_conflicts {
+            if i + 1 < merge_oids.len() {
+                return die_octopus_merge_program_failed(repo, &pre_merge_index);
+            }
             return finish_octopus_merge_on_conflict(
                 repo,
                 head,
@@ -4913,6 +4919,16 @@ struct MergeResult {
     submodule_merge_stdout: Vec<String>,
     /// `(path, abbrev)` for recursive-submodule advice on stderr.
     submodule_merge_advice: Vec<(String, String)>,
+}
+
+/// Octopus merge cannot recover after a failed intermediate head (`git-merge-octopus.sh`).
+fn die_octopus_merge_program_failed(repo: &Repository, pre_merge_index: &Index) -> Result<()> {
+    restore_index_and_worktree(repo, pre_merge_index)?;
+    let _ = fs::remove_file(repo.git_dir.join("ORIG_HEAD"));
+    eprintln!("Automated merge did not work.");
+    eprintln!("Should not be doing an octopus.");
+    eprintln!("fatal: merge program failed");
+    std::process::exit(2);
 }
 
 /// Multi-head merge hit conflicts: stage unmerged entries, write `MERGE_HEAD` with every merge

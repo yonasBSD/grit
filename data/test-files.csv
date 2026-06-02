@@ -1257,7 +1257,7 @@ t7603-merge-reduce-heads	t7	yes	13	13	0	true	ok	0
 t7604-merge-custom-message	t7	yes	8	8	0	true	ok	0
 t7605-merge-resolve	t7	yes	4	4	0	true	ok	0
 t7606-merge-custom	t7	yes	4	2	2	false	ok	0
-t7607-merge-state	t7	yes	1	0	1	false	ok	0
+t7607-merge-state	t7	yes	1	1	0	true	ok	0
 t7608-merge-messages	t7	yes	5	5	0	true	ok	0
 t7609-mergetool--lib	t7	yes	1	1	0	true	ok	0
 t7610-mergetool	t7	skip	31	0	0	false	timeout	0
