@@ -3063,7 +3063,7 @@ fn reset_index_to_head(repo: &Repository, git_dir: &Path) -> Result<()> {
 
 /// Matches Git's `git_editor()` (see [`crate::editor::resolve_git_editor`]).
 fn git_editor_cmd(config: &ConfigSet) -> Result<String> {
-    crate::editor::resolve_git_editor(config, true)
+    crate::editor::resolve_git_editor(config, false)
         .ok_or_else(|| anyhow::anyhow!("Terminal is dumb, but EDITOR unset"))
 }
 

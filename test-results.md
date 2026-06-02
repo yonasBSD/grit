@@ -9,6 +9,8 @@ Updated: 2026-06-01
   after update-index refresh output/content checks and reset gitlink preservation were fixed.
 - t2 focus: `./scripts/run-tests.sh t2004-checkout-cache-temp.sh --verbose` passes 23/23 after
   checkout-index stage-specific temp path classification was fixed.
+- t2 focus: `./scripts/run-tests.sh t2012-checkout-last.sh --verbose` passes 22/22 after rebase
+  editor resolution began honoring the harness no-op `EDITOR=:`.
 - t2 add/update typechange: `./scripts/run-tests.sh t2201-add-update-typechange.sh --verbose`
   passes 6/6 after symlink-parent deletion and gitlink typechange handling in diff/add/commit.
 - t2 focus: `./scripts/run-tests.sh t2016-checkout-patch.sh --verbose` passes 19/19 with the
