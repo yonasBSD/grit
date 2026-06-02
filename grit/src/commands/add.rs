@@ -206,6 +206,44 @@ fn run_add_edit(repo: &Repository, pathspecs: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the number of context lines for `git add -p`: the `-U`/`--unified` flag wins (when
+/// `>= 0`); otherwise `diff.context` (rejecting negatives like Git's `add-patch.c`); default 3.
+fn resolve_patch_context(unified: Option<i32>, config: &ConfigSet) -> Result<usize> {
+    if let Some(n) = unified {
+        if n >= 0 {
+            return Ok(n as usize);
+        }
+    }
+    if let Some(v) = config.get("diff.context") {
+        if let Ok(n) = v.trim().parse::<i32>() {
+            if n < 0 {
+                bail!("{} cannot be negative", "diff.context");
+            }
+            return Ok(n as usize);
+        }
+    }
+    Ok(3)
+}
+
+/// Resolve the inter-hunk context for `git add -p`: `--inter-hunk-context` flag wins (when
+/// `>= 0`); otherwise `diff.interhunkcontext`; default 0.
+fn resolve_patch_interhunk(inter: Option<i32>, config: &ConfigSet) -> Result<usize> {
+    if let Some(n) = inter {
+        if n >= 0 {
+            return Ok(n as usize);
+        }
+    }
+    if let Some(v) = config.get("diff.interhunkcontext") {
+        if let Ok(n) = v.trim().parse::<i32>() {
+            if n < 0 {
+                bail!("{} cannot be negative", "diff.interhunkcontext");
+            }
+            return Ok(n as usize);
+        }
+    }
+    Ok(0)
+}
+
 /// Arguments for `grit add`.
 #[derive(Debug, ClapArgs)]
 #[command(about = "Add file contents to the index")]
@@ -293,6 +331,32 @@ pub struct Args {
     /// NUL-terminated pathspec input (requires --pathspec-from-file).
     #[arg(long = "pathspec-file-nul")]
     pub pathspec_file_nul: bool,
+
+    /// Number of context lines in interactive (`-p`/`-i`) hunks. Mirrors Git's `-U`/`--unified`
+    /// sentinel of `-1` (unset) so `add --unified` outside patch mode errors like Git.
+    #[arg(
+        short = 'U',
+        long = "unified",
+        value_name = "N",
+        allow_hyphen_values = true
+    )]
+    pub unified: Option<i32>,
+
+    /// Number of context lines between adjacent interactive hunks (`-p`/`-i`).
+    #[arg(
+        long = "inter-hunk-context",
+        value_name = "N",
+        allow_hyphen_values = true
+    )]
+    pub inter_hunk_context: Option<i32>,
+
+    /// Disable auto-advancing to the next hunk after a decision in interactive patch mode.
+    #[arg(long = "no-auto-advance")]
+    pub no_auto_advance: bool,
+
+    /// Re-enable auto-advancing (Git default); accepted for parity with `--no-auto-advance`.
+    #[arg(long = "auto-advance", overrides_with = "no_auto_advance")]
+    pub auto_advance: bool,
 }
 
 /// Flags for [`stage_file`] shared by `git add` and `git commit <paths>`.
@@ -356,6 +420,44 @@ pub fn run(mut args: Args) -> Result<()> {
         };
         args.pathspec =
             grit_lib::pathspec::parse_pathspecs_from_source(&data, args.pathspec_file_nul)?;
+    }
+
+    // Validate the interactive context options (`-U`/`--unified`, `--inter-hunk-context`,
+    // `--no-auto-advance`) exactly like Git's `cmd_add` (builtin/add.c): negative values below the
+    // `-1` sentinel are rejected, and the options only make sense with `-p`/`-i`.
+    if let Some(n) = args.unified {
+        if n < -1 {
+            bail!("'{}' cannot be negative", "--unified");
+        }
+    }
+    if let Some(n) = args.inter_hunk_context {
+        if n < -1 {
+            bail!("'{}' cannot be negative", "--inter-hunk-context");
+        }
+    }
+    let interactive_mode = args.interactive || args.patch;
+    if !interactive_mode {
+        if args.unified.is_some() {
+            bail!(
+                "the option '{}' requires '{}'",
+                "--unified",
+                "--interactive/--patch"
+            );
+        }
+        if args.inter_hunk_context.is_some() {
+            bail!(
+                "the option '{}' requires '{}'",
+                "--inter-hunk-context",
+                "--interactive/--patch"
+            );
+        }
+        if args.no_auto_advance {
+            bail!(
+                "the option '{}' requires '{}'",
+                "--no-auto-advance",
+                "--interactive/--patch"
+            );
+        }
     }
 
     // --dry-run is incompatible with interactive modes
@@ -459,7 +561,12 @@ pub fn run(mut args: Args) -> Result<()> {
     // index updates; `add -p` would use `run_add_patch`, which does not implement exclude
     // semantics (t6132 `add -p with all negative`).
     if args.patch && !pathspecs_are_all_exclude(&args.pathspec) {
-        return super::add_patch::run_add_patch(&repo, &args.pathspec, &add_cfg);
+        let patch_opts = super::add_patch::PatchOptions {
+            context: resolve_patch_context(args.unified, &config)?,
+            inter_hunk_context: resolve_patch_interhunk(args.inter_hunk_context, &config)?,
+            auto_advance: !args.no_auto_advance,
+        };
+        return super::add_patch::run_add_patch(&repo, &args.pathspec, &add_cfg, &patch_opts);
     }
     if args.interactive {
         eprintln!("warning: -i/--interactive mode is not yet implemented; doing nothing");

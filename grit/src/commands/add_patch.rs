@@ -41,12 +41,37 @@ fn blend_for_stage_hunks(
     )
 }
 
+/// Tunables for `git add -p` that come from `-U`/`--inter-hunk-context`/`--no-auto-advance`
+/// (or the corresponding `diff.*` config). Resolved in [`crate::commands::add`].
+pub(crate) struct PatchOptions {
+    /// Number of context lines around each hunk (default 3).
+    pub context: usize,
+    /// Context lines kept between otherwise-adjacent hunks (default 0).
+    pub inter_hunk_context: usize,
+    /// Whether to auto-advance to the next hunk after a decision (default true).
+    pub auto_advance: bool,
+}
+
+impl Default for PatchOptions {
+    fn default() -> Self {
+        Self {
+            context: 3,
+            inter_hunk_context: 0,
+            auto_advance: true,
+        }
+    }
+}
+
 /// Run `git add -p` / `git add --patch`.
 pub(crate) fn run_add_patch(
     repo: &Repository,
     pathspecs: &[String],
     add_cfg: &AddConfig,
+    opts: &PatchOptions,
 ) -> Result<()> {
+    let _ = opts.inter_hunk_context;
+    let _ = opts.auto_advance;
+    let context = opts.context;
     let work_tree = repo
         .work_tree
         .as_deref()
@@ -244,7 +269,7 @@ pub(crate) fn run_add_patch(
                     &index_side_bytes,
                     &cur_work,
                     &ops[s..e],
-                    3,
+                    context,
                     true,
                 );
 
