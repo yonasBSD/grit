@@ -1455,6 +1455,18 @@ fn error_if_cherry_pick_would_clobber_worktree(
     no_commit: bool,
 ) -> Result<()> {
     let touched = merge_touched_paths(repo, parent_tree, head_tree, picked_tree)?;
+    // A local worktree edit only blocks the pick when the *incoming* commit actually
+    // rewrites that path. Paths that differ only between the parent and HEAD (e.g. a
+    // local rename the pick does not touch) are kept as "ours" by the three-way merge,
+    // so the worktree file is left untouched and must not abort the pick (t3501
+    // "cherry-pick works with dirty renamed file"). Restrict the overwrite check to the
+    // paths the picked commit changes relative to its parent.
+    let theirs_touched: BTreeSet<String> =
+        grit_lib::diff::diff_trees(&repo.odb, Some(&parent_tree), Some(&picked_tree), "")?
+            .iter()
+            .map(|e| e.path().to_string())
+            .collect();
+    let touched: BTreeSet<String> = touched.intersection(&theirs_touched).cloned().collect();
     // In `--no-commit` mode the index legitimately accumulates earlier picks of the same
     // sequence (`ours` is the evolving index tree, not HEAD). git's overwrite protection
     // there is `unpack_trees` against the index, so only genuine *unstaged* worktree edits
