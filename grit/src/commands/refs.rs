@@ -232,15 +232,16 @@ fn verify_reftable_refs(repo: &Repository, bad_ref_name_level: &str) -> Result<u
                 record.name.clone()
             };
 
-            if grit_lib::check_ref_format::check_refname_format(
-                &record.name,
-                &grit_lib::check_ref_format::RefNameOptions {
-                    allow_onelevel: false,
-                    refspec_pattern: false,
-                    normalize: false,
-                },
-            )
-            .is_err()
+            if record.name != "HEAD"
+                && grit_lib::check_ref_format::check_refname_format(
+                    &record.name,
+                    &grit_lib::check_ref_format::RefNameOptions {
+                        allow_onelevel: false,
+                        refspec_pattern: false,
+                        normalize: false,
+                    },
+                )
+                .is_err()
             {
                 if bad_ref_name_level == "warn" {
                     eprintln!("warning: {display_name}: badRefName: invalid refname format");

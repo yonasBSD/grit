@@ -2053,18 +2053,6 @@ impl ReftableStack {
             self.write_tables_list_locked(&guard)?;
         }
 
-        if refname.starts_with("refs/heads/branch-") {
-            self.reload_table_names();
-            let has_locked = self
-                .table_names
-                .iter()
-                .any(|name| self.table_is_locked(name));
-            if !has_locked && self.table_names.len() <= 3 {
-                self.compact()?;
-                return Ok(());
-            }
-        }
-
         // Auto-compaction runs after releasing the append lock; it re-acquires
         // the lock internally and works from a fresh view of the stack.
         self.maybe_auto_compact()?;

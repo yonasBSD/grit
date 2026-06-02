@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 132" width="780" height="132" role="img" aria-labelledby="svg-title svg-desc">
   <title id="svg-title">Grit harness: upstream test progress</title>
-  <desc id="svg-desc">34366 of 41610 tests passing across 1373 harness files (82.6% pass rate).</desc>
+  <desc id="svg-desc">34373 of 41610 tests passing across 1373 harness files (82.6% pass rate).</desc>
   <rect x="0" y="0" width="780" height="132" rx="6" fill="#0d1117" stroke="#30363d"/>
   <text x="40" y="38" fill="#f0f6fc" font-family="ui-sans-serif,system-ui,sans-serif" font-size="20" font-weight="600">Grit harness test progress</text>
-  <text x="40" y="64" fill="#8b949e" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13">82.6% pass rate · 34,366 / 41,610 tests · 1,373 files in scope · 821 fully passing · 232 skipped</text>
+  <text x="40" y="64" fill="#8b949e" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13">82.6% pass rate · 34,373 / 41,610 tests · 1,373 files in scope · 822 fully passing · 232 skipped</text>
   <rect x="40" y="80" width="700" height="18" rx="9" fill="#21262d" stroke="#30363d"/>
   <rect x="40" y="80" width="578" height="18" rx="9" fill="#3fb950"/>
   <text x="40" y="118" fill="#6e7681" font-family="ui-monospace,monospace" font-size="11">Generated from data/test-files.csv</text>
