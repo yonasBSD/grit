@@ -2178,7 +2178,7 @@ fn worktree_id_from_path(path: &Path) -> Option<String> {
 /// Infer `<common>/worktrees/<id>` from a worktree `.git` gitfile (Git `infer_backlink`).
 fn infer_worktree_admin_from_gitfile(
     worktrees_dir: &Path,
-    gitfile: &Path,
+    _gitfile: &Path,
     content: &str,
 ) -> Option<PathBuf> {
     let line = content.trim();

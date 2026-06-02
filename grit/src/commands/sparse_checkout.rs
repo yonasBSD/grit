@@ -1287,7 +1287,7 @@ fn path_included_for_sparse_apply(
     path: &str,
     patterns: &[String],
     cone_mode: bool,
-    file_content: &str,
+    _file_content: &str,
     cone_struct: Option<&ConePatterns>,
     non_cone: &NonConePatterns,
     work_tree: Option<&Path>,

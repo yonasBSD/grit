@@ -8,7 +8,7 @@ use grit_lib::config::ConfigSet;
 use grit_lib::difftool::{parse_difftool_argv, run_difftool, DifftoolEnv};
 use grit_lib::error::Error;
 use grit_lib::repo::Repository;
-use std::io::{self, Write};
+use std::io::{self};
 
 /// Run `grit difftool` from raw argv (after the subcommand name).
 pub fn run_from_argv(argv: Vec<String>) -> Result<()> {
