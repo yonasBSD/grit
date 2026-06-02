@@ -293,6 +293,7 @@ fn run_show(args: ShowArgs) -> Result<()> {
         stat_graph_width: None,
         stat_name_width: None,
         name_only: false,
+        ignore_submodules: None,
         name_status: false,
         raw: false,
         all: false,

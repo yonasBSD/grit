@@ -2051,6 +2051,12 @@ fn add_all_for_pathspecs(
             if !path_matches_any_resolved_spec(path_str, &resolved_specs) {
                 return false;
             }
+            if ie.mode == 0o160000
+                && submodule_ignore_all_for_add(repo, work_tree, path_str)
+                && work_tree.join(path_str).join(".git").exists()
+            {
+                return false;
+            }
             fs::symlink_metadata(work_tree.join(path_str)).is_err()
         })
         .map(|ie| ie.path.clone())
@@ -2403,15 +2409,23 @@ fn add_path(
 
         // Nested repository (subdirectory with its own .git, not the superproject root).
         if is_nested_embedded_git_repo(&abs_path, repo) {
+            let gitlink_path = path
+                .trim_end_matches('/')
+                .strip_prefix("./")
+                .unwrap_or_else(|| path.trim_end_matches('/'));
+            if !args.force && submodule_ignore_all_for_add(repo, work_tree, gitlink_path) {
+                println!("Skipping submodule due to ignore=all: {gitlink_path}");
+                return Ok(());
+            }
             return stage_gitlink(
                 odb,
                 index,
                 repo,
-                path,
+                gitlink_path,
                 &abs_path,
                 args.dry_run,
                 args.verbose,
-                args.no_warn_embedded_repo,
+                args.no_warn_embedded_repo || index.get(gitlink_path.as_bytes(), 0).is_some(),
             )
             .map_err(|e| {
                 if e.downcast_ref::<EmbeddedRepoNoCommitError>().is_some() {
@@ -2765,6 +2779,16 @@ pub(crate) fn stage_file(
         && !meta.file_type().is_symlink()
         && is_nested_embedded_git_repo(abs_path, repo)
     {
+        if repo
+            .work_tree
+            .as_deref()
+            .is_some_and(|wt| submodule_ignore_all_for_add(repo, wt, rel_path))
+            && index
+                .get(rel_path.as_bytes(), 0)
+                .is_some_and(|e| e.mode == 0o160000)
+        {
+            return Ok(());
+        }
         return stage_gitlink(
             odb,
             index,
@@ -3092,6 +3116,24 @@ fn walk_directory(
     }
 
     Ok(())
+}
+
+fn submodule_ignore_all_for_add(repo: &Repository, work_tree: &Path, rel: &str) -> bool {
+    if let Ok(modules) = crate::commands::submodule::parse_gitmodules_with_repo(work_tree, Some(repo))
+    {
+        if let Some(module) = modules.iter().find(|m| m.path == rel) {
+            let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+            let config_key = format!("submodule.{}.ignore", module.name);
+            if config
+                .get(&config_key)
+                .is_some_and(|v| v.eq_ignore_ascii_case("all"))
+            {
+                return true;
+            }
+            return module.ignore.as_deref().is_some_and(|v| v.eq_ignore_ascii_case("all"));
+        }
+    }
+    false
 }
 
 /// Exit when running inside an unpopulated submodule worktree path.

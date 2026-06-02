@@ -1969,6 +1969,11 @@ fn format_short(
     let mut staged_map: std::collections::HashMap<String, char> = std::collections::HashMap::new();
     let mut unstaged_map: std::collections::HashMap<String, char> =
         std::collections::HashMap::new();
+    let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_else(|_| ConfigSet::new());
+    let cli_ignore = args.ignore_submodules.as_deref();
+    let submodule_suppressed = |path: &str, oid: ObjectId| -> bool {
+        submodule_display_decision(&config, work_tree, cli_ignore, path, oid).suppress_unstaged
+    };
 
     for entry in staged {
         if entry.status == DiffStatus::Renamed || entry.status == DiffStatus::Copied {
@@ -1984,6 +1989,11 @@ fn format_short(
 
     for entry in unstaged {
         let path = entry.path().to_owned();
+        if let Some(ie) = index.get(path.as_bytes(), 0) {
+            if ie.mode == MODE_GITLINK && submodule_suppressed(&path, ie.oid) {
+                continue;
+            }
+        }
         unstaged_map.insert(path.clone(), entry.status.letter());
         paths.insert(path);
     }
@@ -1993,6 +2003,9 @@ fn format_short(
             continue;
         }
         let path = String::from_utf8_lossy(&ie.path).into_owned();
+        if submodule_suppressed(&path, ie.oid) {
+            continue;
+        }
         if staged_map.contains_key(&path) || unstaged_map.contains_key(&path) {
             paths.insert(path);
             continue;

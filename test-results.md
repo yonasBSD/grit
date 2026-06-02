@@ -1,6 +1,8 @@
 # Test Results
 
 Updated: 2026-06-01
+- t2 focus: `./scripts/run-tests.sh t2206-add-submodule-ignored.sh --verbose` passes 8/8 after
+  add/status/log submodule-ignore handling fixes.
 - t2 unresolve: `./scripts/run-tests.sh t2030-unresolve-info.sh --verbose` passes 14/14 after
   checkout resolve-undo, rerere forget, prune/gc, and fsck output fixes.
 - t2 focus: `./scripts/run-tests.sh t2108-update-index-refresh-racy.sh --verbose` passes 6/6

@@ -39,6 +39,8 @@
   - Completed: `t2030-unresolve-info.sh` (14/14) by clearing resolve-undo
     records on checkout tree switches and teaching `rerere forget` to use resolve-undo/subdir paths.
     Also fixed GC/prune reachability for index/resolve-undo objects and fsck unreachable output.
+  - Completed: `t2206-add-submodule-ignored.sh` (8/8). Status/add now honor submodule
+    `ignore=all` for unstaged gitlinks while explicit `git add --force` can stage the pointer.
   - Execution log: `logs/2026-06-01_2000-t2-family.md`.
 
 ---
