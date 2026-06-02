@@ -6,6 +6,15 @@
 # Test Results
 
 Updated: 2026-06-02
+- t7 submodule focus: `./scripts/run-tests.sh t7422-submodule-output.sh --verbose` improved
+  `t7422` from 9/18 to 18/18 by fixing `git pull` default-branch inference for local remote
+  worktree paths. Direct `sh t7422-submodule-output.sh -v` also passed all 18 tests after the
+  release rebuild.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+  Clippy's unrelated auto-fixes in `grit-lib/src/config.rs` and
+  `grit-lib/src/filter_process.rs` were reverted.
 - t7 submodule focus: `./scripts/run-tests.sh t7814-grep-recurse-submodules.sh --verbose`
   improved `t7814` from 17/27 to 27/27 aggregate passing (`failing=0`, `todo=7`) by fixing
   glued `-ePATTERN` parsing, cwd-relative recursive grep output, direct-gitlink pathspec handoff,

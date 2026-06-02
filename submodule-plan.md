@@ -43,7 +43,10 @@ Rows marked `skip` remain out of aggregate scope until explicitly audited.
     historical moved-submodule tree lookup through `.git/modules`, promisor trace reporting for
     partial-clone submodule object reads, and per-repository replace-ref scoping for cached/tree
     grep object reads.
-- [ ] `t7422-submodule-output.sh` - 9/18 passing, 9 failing. Focus: submodule command output.
+- [x] `t7422-submodule-output.sh` - 18/18 passing. Focus: submodule command output.
+  - Fixed this iteration: `git pull` now opens local remote worktree paths before reading their
+    default branch, allowing detached submodule clones to pull their origin branch and produce the
+    expected status output fixture.
 - [ ] `t7408-submodule-reference.sh` - 8/16 passing, 8 failing. Focus: reference clone/update.
 - [ ] `t7425-submodule-gitdir-path-extension.sh` - 18/23 passing, 5 failing. Focus: gitdir path extension.
 - [ ] `t7402-submodule-rebase.sh` - 4/6 passing, 2 failing. Focus: submodule rebase update mode.

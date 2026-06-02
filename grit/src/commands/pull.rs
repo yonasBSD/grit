@@ -95,7 +95,9 @@ fn rebase_cli_value_is_valid(s: &str) -> bool {
 
 /// If clap consumed the repository token as `--rebase`'s optional value (`pull --rebase . c1` →
 /// rebase=".", remote=c1), restore Git's argv layout: remote=`.`, refspecs start with `c1`.
-fn remote_default_branch_short(remote_git_dir: &Path) -> Result<String> {
+fn remote_default_branch_short(remote_path: &Path) -> Result<String> {
+    let remote_repo = open_repository_at_path(remote_path)?;
+    let remote_git_dir = &remote_repo.git_dir;
     if let Some(sym) = refs::read_symbolic_ref(remote_git_dir, "HEAD")? {
         let sym = sym.trim();
         if let Some(rest) = sym.strip_prefix("refs/heads/") {
