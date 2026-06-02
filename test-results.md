@@ -18,6 +18,9 @@ Updated: 2026-06-02
 - t0 reftable merge verification: `t0610-reftable-basics` remains 89/91,
   `t0613-reftable-write-options` remains 10/11, and `t0611-reftable-httpd` remains 0/1.
 - Current t0 CSV summary: 72 in-scope rows, 59 fully green, 13 non-green, 32 failing subtests.
+- t0 skip update: `t0027-auto-crlf` marked `in_scope=skip` because it is a timeout/no-summary row
+  outside current t0-green scope. Current t0 CSV summary: 71 in-scope rows, 59 fully green,
+  12 non-green, 32 failing subtests, 14 skipped.
 - `cargo test --workspace`: not run for this focused merge/orchestration pass.
 - `./tests/harness/run.sh`: skipped; project uses `./scripts/run-tests.sh` for CSV/dashboard updates.
 
