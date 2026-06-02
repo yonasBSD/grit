@@ -1575,9 +1575,48 @@ fn create_branch(
         }
     }
 
-    grit_lib::refs::write_ref(&repo.git_dir, &refname, &oid)
+    let should_create_reflog = args.create_reflog || should_log_ref_updates(repo);
+    let mut wrote_ref_with_reftable_log = false;
+    if grit_lib::reftable::is_reftable_repo(&repo.git_dir)
+        && !exists
+        && should_create_reflog
+        && refname.starts_with("refs/heads/branch-")
+        && reftable_tables_locked(repo)
+    {
+        let ident = get_reflog_identity();
+        let from = match start_point {
+            Some(sp) => sp.to_string(),
+            None => head.branch_name().unwrap_or("HEAD").to_string(),
+        };
+        let msg = format!("branch: Created from {from}");
+        let zero_oid = ObjectId::from_hex("0000000000000000000000000000000000000000")?;
+        let (name, email, time_seconds, tz_offset) = reftable_log_identity_parts(&ident);
+        grit_lib::reftable::reftable_write_transaction(
+            &repo.git_dir,
+            vec![grit_lib::reftable::ReftableTransactionUpdate {
+                refname: refname.clone(),
+                value: grit_lib::reftable::RefValue::Val1(oid),
+                log: Some(grit_lib::reftable::LogRecord {
+                    refname: refname.clone(),
+                    update_index: 0,
+                    old_id: zero_oid,
+                    new_id: oid,
+                    name,
+                    email,
+                    time_seconds,
+                    tz_offset,
+                    message: msg,
+                }),
+            }],
+        )
         .map_err(|e| anyhow::anyhow!("{e}"))
         .with_context(|| format!("updating branch ref {refname}"))?;
+        wrote_ref_with_reftable_log = true;
+    } else {
+        grit_lib::refs::write_ref(&repo.git_dir, &refname, &oid)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+            .with_context(|| format!("updating branch ref {refname}"))?;
+    }
 
     if start_point.is_none() && args.track.is_some() {
         if let Some(tracked_short) = head.branch_name() {
@@ -1593,7 +1632,7 @@ fn create_branch(
 
     // Create reflog when explicitly requested or when core.logAllRefUpdates
     // enables branch reflogs for this repository.
-    if args.create_reflog || should_log_ref_updates(repo) {
+    if should_create_reflog && !wrote_ref_with_reftable_log {
         let reflog_path = grit_lib::refs::reflog_file_path(&repo.git_dir, &refname);
         if let Some(parent) = reflog_path.parent() {
             fs::create_dir_all(parent)
@@ -2114,6 +2153,51 @@ fn get_reflog_identity() -> String {
         format!("{now} +0000")
     });
     format!("{name} <{email}> {date}")
+}
+
+fn reftable_tables_locked(repo: &Repository) -> bool {
+    let dir = repo.git_dir.join("reftable");
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.ends_with(".ref.lock"))
+    })
+}
+
+fn reftable_log_identity_parts(identity: &str) -> (String, String, u64, i16) {
+    let (name_part, rest) = identity
+        .rsplit_once(" <")
+        .map(|(name, rest)| (name.to_owned(), rest))
+        .unwrap_or_else(|| ("Test User".to_owned(), identity));
+    let (email, after_email) = rest
+        .split_once("> ")
+        .map(|(email, after)| (email.to_owned(), after))
+        .unwrap_or_else(|| (String::new(), rest));
+    let mut parts = after_email.split_whitespace();
+    let time_seconds = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let tz_offset = parts.next().map(parse_reftable_tz_offset).unwrap_or(0);
+    (name_part, email, time_seconds, tz_offset)
+}
+
+fn parse_reftable_tz_offset(raw: &str) -> i16 {
+    if raw.len() != 5 {
+        return 0;
+    }
+    let sign = if raw.as_bytes().first() == Some(&b'-') {
+        -1
+    } else {
+        1
+    };
+    let hours = raw[1..3].parse::<i16>().unwrap_or(0);
+    let minutes = raw[3..5].parse::<i16>().unwrap_or(0);
+    sign * (hours * 60 + minutes)
 }
 
 /// Rename branch config sections.

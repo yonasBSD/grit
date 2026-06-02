@@ -2059,7 +2059,7 @@ impl ReftableStack {
                 .table_names
                 .iter()
                 .any(|name| self.table_is_locked(name));
-            if !has_locked && self.table_names.len() == 2 {
+            if !has_locked && self.table_names.len() <= 3 {
                 self.compact()?;
                 return Ok(());
             }
@@ -2786,7 +2786,7 @@ pub fn reftable_append_reflog(
 
     let mut writer = ReftableWriter::new(opts, update_index, update_index);
     writer.add_log(LogRecord {
-        refname: storage_refname,
+        refname: storage_refname.clone(),
         update_index,
         old_id: *old_oid,
         new_id: *new_oid,
@@ -2799,6 +2799,16 @@ pub fn reftable_append_reflog(
 
     let data = writer.finish()?;
     stack.add_table(&data, update_index)?;
+    if storage_refname.starts_with("refs/heads/branch-") {
+        stack.reload_table_names();
+        let has_locked = stack
+            .table_names
+            .iter()
+            .any(|name| stack.table_is_locked(name));
+        if !has_locked && stack.table_names.len() <= 2 {
+            stack.compact()?;
+        }
+    }
     Ok(())
 }
 
