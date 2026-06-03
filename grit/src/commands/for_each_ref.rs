@@ -211,8 +211,8 @@ struct Options {
     patterns: Vec<String>,
     exclude: Vec<String>,
     points_at: Option<String>,
-    merged: Option<Option<String>>,
-    no_merged: Option<Option<String>>,
+    merged: Vec<Option<String>>,
+    no_merged: Vec<Option<String>>,
     contains: Option<Option<String>>,
     no_contains: Option<Option<String>>,
     stdin: bool,
@@ -383,7 +383,7 @@ fn parse_args(args: Vec<String>, inv: ForEachRefInvocation) -> Result<Options> {
             continue;
         }
         if let Some(value) = arg.strip_prefix("--merged=") {
-            opts.merged = Some(Some(value.to_owned()));
+            opts.merged.push(Some(value.to_owned()));
             i += 1;
             continue;
         }
@@ -391,18 +391,18 @@ fn parse_args(args: Vec<String>, inv: ForEachRefInvocation) -> Result<Options> {
             i += 1;
             if let Some(value) = args.get(i) {
                 if !value.starts_with('-') {
-                    opts.merged = Some(Some(value.clone()));
+                    opts.merged.push(Some(value.clone()));
                     i += 1;
                 } else {
-                    opts.merged = Some(None);
+                    opts.merged.push(None);
                 }
             } else {
-                opts.merged = Some(None);
+                opts.merged.push(None);
             }
             continue;
         }
         if let Some(value) = arg.strip_prefix("--no-merged=") {
-            opts.no_merged = Some(Some(value.to_owned()));
+            opts.no_merged.push(Some(value.to_owned()));
             i += 1;
             continue;
         }
@@ -410,13 +410,13 @@ fn parse_args(args: Vec<String>, inv: ForEachRefInvocation) -> Result<Options> {
             i += 1;
             if let Some(value) = args.get(i) {
                 if !value.starts_with('-') {
-                    opts.no_merged = Some(Some(value.clone()));
+                    opts.no_merged.push(Some(value.clone()));
                     i += 1;
                 } else {
-                    opts.no_merged = Some(None);
+                    opts.no_merged.push(None);
                 }
             } else {
-                opts.no_merged = Some(None);
+                opts.no_merged.push(None);
             }
             continue;
         }
@@ -799,25 +799,28 @@ fn apply_filters(repo: &Repository, opts: &Options, refs: &mut Vec<RefEntry>) ->
         });
     }
 
-    let merged_base = resolve_optional_merged_commitish(repo, opts.merged.as_ref())?;
-    let no_merged_base = resolve_optional_merged_commitish(repo, opts.no_merged.as_ref())?;
-    if let Some(base) = merged_base {
+    let merged_bases = resolve_optional_merged_commitishes(repo, &opts.merged)?;
+    let no_merged_bases = resolve_optional_merged_commitishes(repo, &opts.no_merged)?;
+    if !merged_bases.is_empty() {
         refs.retain(|entry| {
-            entry
-                .oid
-                .and_then(|oid| peel_to_commit(repo, oid).ok())
-                .and_then(|oid| is_ancestor(repo, oid, base).ok())
-                .unwrap_or(false)
+            let Some(oid) = entry.oid.and_then(|oid| peel_to_commit(repo, oid).ok()) else {
+                return false;
+            };
+            merged_bases
+                .iter()
+                .copied()
+                .any(|base| is_ancestor(repo, oid, base).unwrap_or(false))
         });
     }
-    if let Some(base) = no_merged_base {
+    if !no_merged_bases.is_empty() {
         refs.retain(|entry| {
-            entry
-                .oid
-                .and_then(|oid| peel_to_commit(repo, oid).ok())
-                .and_then(|oid| is_ancestor(repo, oid, base).ok())
-                .map(|merged| !merged)
-                .unwrap_or(false)
+            let Some(oid) = entry.oid.and_then(|oid| peel_to_commit(repo, oid).ok()) else {
+                return false;
+            };
+            !no_merged_bases
+                .iter()
+                .copied()
+                .any(|base| is_ancestor(repo, oid, base).unwrap_or(false))
         });
     }
 
@@ -846,15 +849,16 @@ fn apply_filters(repo: &Repository, opts: &Options, refs: &mut Vec<RefEntry>) ->
     Ok(())
 }
 
-fn resolve_optional_merged_commitish(
+fn resolve_optional_merged_commitishes(
     repo: &Repository,
-    raw: Option<&Option<String>>,
-) -> Result<Option<ObjectId>> {
-    match raw {
-        None => Ok(None),
-        Some(Some(spec)) => Ok(Some(resolve_porcelain_merged_commit(repo, spec)?)),
-        Some(None) => Ok(Some(resolve_porcelain_merged_commit(repo, "HEAD")?)),
+    raw: &[Option<String>],
+) -> Result<Vec<ObjectId>> {
+    let mut out = Vec::with_capacity(raw.len());
+    for item in raw {
+        let spec = item.as_deref().unwrap_or("HEAD");
+        out.push(resolve_porcelain_merged_commit(repo, spec)?);
     }
+    Ok(out)
 }
 
 fn resolve_optional_contains_commitish(

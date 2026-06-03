@@ -49,9 +49,9 @@
     traversal, parent rewriting, ancestry-bottom pruning, simplify-merges path rewriting, and
     adjacent merge-parent topo ordering.
   - Adjacent topo refresh: `t6003-rev-list-topo-order.sh` improved to 23/36.
-  - Current rev-list/reachability focus: `t6600-test-reach.sh` improved to 43/47 after adding
-    the upstream `test-tool reach` helper operations and first-parent `%(is-base)` selection;
-    remaining failures are in symmetric `rev-list`, multi-base `for-each-ref --merged`, and
+  - Current rev-list/reachability focus: `t6600-test-reach.sh` improved to 44/47 after adding
+    the upstream `test-tool reach` helper operations, first-parent `%(is-base)` selection, and
+    multi-base `for-each-ref --merged`; remaining failures are in symmetric `rev-list` and
     `rev-list --maximal-only`.
   - Execution logs: `logs/2026-06-02_1427-t6-for-each-ref.md`,
     `logs/2026-06-02_1655-t6200-fmt-merge-msg-extra.md`,

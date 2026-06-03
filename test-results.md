@@ -15,6 +15,9 @@ Updated: 2026-06-03
 - t6600 `is-base` focus: `./scripts/run-tests.sh t6600-test-reach.sh --verbose` improves from
   40/47 to 43/47 after moving first-parent branch-base selection into `grit-lib::merge_base` and
   using it for `for-each-ref` `%(is-base)` output and sorting.
+- t6600 multi-base merged focus: `./scripts/run-tests.sh t6600-test-reach.sh --verbose` improves
+  from 43/47 to 44/47 after preserving all `for-each-ref --merged` bases and filtering refs
+  reachable from any base.
 - Verification for this increment: `cargo fmt`, `cargo clippy --fix --allow-dirty`,
   `cargo build --release -p grit-cli`, and the focused harness ran. Clippy completed with the
   existing warning backlog and failed auto-fixes in unrelated files; unrelated auto-fixes were not

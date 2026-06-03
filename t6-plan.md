@@ -15,8 +15,9 @@ dependency/topic groups. Mark an item `[~]` when claimed and `[x]` only after th
 - [x] `t6111-rev-list-treesame.sh` — 65/65 passing after dense TREESAME traversal,
   path-limited parent rewriting, ancestry-bottom pruning, simplify-merges path rewriting, and
   adjacent merge-parent topo ordering.
-- [~] `t6600-test-reach.sh` — 43/47 passing, 4 failing after adding the
-  upstream `test-tool reach` helper operations and first-parent `%(is-base)` selection.
+- [~] `t6600-test-reach.sh` — 44/47 passing, 3 failing after adding the
+  upstream `test-tool reach` helper operations, first-parent `%(is-base)` selection, and
+  multi-base `for-each-ref --merged` filtering.
 - [ ] `t6022-rev-list-missing.sh` — 16/40 passing, 24 failing.
 - [ ] `t6006-rev-list-format.sh` — 58/80 passing, 22 failing.
 - [ ] `t6007-rev-list-cherry-pick-file.sh` — 6/23 passing, 17 failing.
