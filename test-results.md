@@ -1,3 +1,7 @@
+## 2026-06-03 — t10750-status-deleted-renamed
+
+- Focus harness: `./scripts/run-tests.sh t10750-status-deleted-renamed.sh --verbose` passes 40/40 after aligning branch header expectations with the `main` default branch.
+
 ## 2026-06-03 — t1016-compatObjectSorting
 
 - Focus harness: `./scripts/run-tests.sh t1016-compatObjectSorting.sh --verbose` passes 19/19 after correcting synthetic empty-output assertions to avoid unsupported `test_must_fail test ...` usage.
