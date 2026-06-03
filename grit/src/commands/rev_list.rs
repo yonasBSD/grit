@@ -1163,8 +1163,16 @@ pub fn run(args: Args) -> Result<()> {
                 .iter()
                 .filter(|oid| result.left_right_map.get(oid) == Some(&false))
                 .count();
-            let both_count = result.commits.len() - left_count - right_count;
-            println!("{left_count}\t{right_count}\t{both_count}");
+            if options.cherry_mark {
+                let equivalent_count = result
+                    .commits
+                    .iter()
+                    .filter(|oid| result.cherry_equivalent.contains(oid))
+                    .count();
+                println!("{left_count}\t{right_count}\t{equivalent_count}");
+            } else {
+                println!("{left_count}\t{right_count}");
+            }
         } else {
             let mut total = result.commits.len();
             if options.objects {

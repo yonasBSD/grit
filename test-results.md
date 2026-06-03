@@ -1218,3 +1218,10 @@ Updated: 2026-06-01
   grit-cli`, `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
   --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
   `cargo test -p grit-lib --lib`.
+- t6007 option/count focus: after accepting `name-rev --no-refs` and matching Git's two-column
+  output for plain `rev-list --count --left-right`, the direct verbose run and
+  `./scripts/run-tests.sh t6007-rev-list-cherry-pick-file.sh` improve from 6/23 to 8/23 with
+  refreshed `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p
+  grit-cli`, `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
+  `cargo test -p grit-lib --lib`.
