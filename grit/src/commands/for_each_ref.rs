@@ -7,7 +7,9 @@ use grit_lib::error::Error as GustError;
 use grit_lib::git_date::show::{date_mode_release, parse_date_format, show_date};
 use grit_lib::git_date::tm::atoi_bytes;
 use grit_lib::mailmap::{load_mailmap_table, map_contact_table, parse_contact, MailmapTable};
-use grit_lib::merge_base::{ancestor_closure, count_symmetric_ahead_behind, is_ancestor};
+use grit_lib::merge_base::{
+    ancestor_closure, branch_base_for_tip, count_symmetric_ahead_behind, is_ancestor,
+};
 use grit_lib::objects::{
     parse_commit, parse_tag, tag_header_field, tag_object_line_oid, ObjectId, ObjectKind,
 };
@@ -21,7 +23,7 @@ use crate::porcelain_rev::{
     resolve_porcelain_points_at,
 };
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -1242,37 +1244,27 @@ fn compute_is_base_winners(
     targets: &[String],
 ) -> HashMap<String, String> {
     let mut out = HashMap::new();
+    let mut seen_blob_error = false;
+    let mut seen_bad_tag_error = false;
+    let candidates: Vec<(&str, ObjectId)> = refs
+        .iter()
+        .filter_map(|entry| {
+            commit_for_is_base(repo, entry, &mut seen_blob_error, &mut seen_bad_tag_error)
+                .map(|oid| (entry.name.as_str(), oid))
+        })
+        .collect();
+    let base_oids: Vec<ObjectId> = candidates.iter().map(|(_, oid)| *oid).collect();
+
     for target in targets {
         let Ok(target_oid) =
             resolve_revision(repo, target).and_then(|oid| peel_to_commit(repo, oid))
         else {
             continue;
         };
-        let mut seen_blob_error = false;
-        let mut seen_bad_tag_error = false;
-        let mut best: Option<(&str, usize)> = None;
-        for entry in refs {
-            let Some(commit_oid) =
-                commit_for_is_base(repo, entry, &mut seen_blob_error, &mut seen_bad_tag_error)
-            else {
-                continue;
-            };
-            let Some(distance) = commit_distance_to_ancestor(repo, commit_oid, target_oid) else {
-                continue;
-            };
-            let replace = match best {
-                None => true,
-                Some((best_name, best_distance)) => {
-                    distance < best_distance
-                        || (distance == best_distance && entry.name.as_str() < best_name)
-                }
-            };
-            if replace {
-                best = Some((&entry.name, distance));
+        if let Ok(Some(candidate_index)) = branch_base_for_tip(repo, target_oid, &base_oids) {
+            if let Some((name, _)) = candidates.get(candidate_index) {
+                out.insert(target.clone(), (*name).to_owned());
             }
-        }
-        if let Some((name, _)) = best {
-            out.insert(target.clone(), name.to_owned());
         }
     }
     out
@@ -1349,30 +1341,6 @@ fn commit_for_is_base(
             _ => return None,
         }
     }
-}
-
-fn commit_distance_to_ancestor(
-    repo: &Repository,
-    start: ObjectId,
-    ancestor: ObjectId,
-) -> Option<usize> {
-    let mut seen = HashSet::new();
-    let mut queue = VecDeque::new();
-    queue.push_back((start, 0usize));
-    while let Some((oid, distance)) = queue.pop_front() {
-        if !seen.insert(oid) {
-            continue;
-        }
-        if oid == ancestor {
-            return Some(distance);
-        }
-        let object = repo.read_replaced(&oid).ok()?;
-        let commit = parse_commit(&object.data).ok()?;
-        for parent in commit.parents {
-            queue.push_back((parent, distance + 1));
-        }
-    }
-    None
 }
 
 fn quote_output(s: &str, style: Option<QuoteStyle>) -> String {

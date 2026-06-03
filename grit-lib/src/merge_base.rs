@@ -333,6 +333,82 @@ pub fn independent_commits(repo: &Repository, commits: &[ObjectId]) -> Result<Ve
     Ok(out)
 }
 
+/// Select the best base ref for a target tip using Git's first-parent branch-base heuristic.
+///
+/// The returned index points into `bases`. The algorithm walks the first-parent histories of
+/// `tip` and the candidate bases, picking the base whose first-parent path collides with the
+/// tip's first-parent path at the newest branch point. Ties keep the earliest candidate index.
+///
+/// # Parameters
+///
+/// - `repo` - repository used to read commit parents.
+/// - `tip` - target commit whose branch base is being queried.
+/// - `bases` - candidate base commits in caller-visible order.
+///
+/// # Errors
+///
+/// Returns object read or parse errors for malformed commit history.
+pub fn branch_base_for_tip(
+    repo: &Repository,
+    tip: ObjectId,
+    bases: &[ObjectId],
+) -> Result<Option<usize>> {
+    if bases.is_empty() {
+        return Ok(None);
+    }
+
+    let tip_chain = first_parent_chain(repo, tip)?;
+    let tip_positions: HashMap<ObjectId, usize> = tip_chain
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, oid)| (oid, index))
+        .collect();
+
+    let mut best: Option<(usize, usize)> = None;
+    for (base_index, &base) in bases.iter().enumerate() {
+        for oid in first_parent_chain(repo, base)? {
+            let Some(&tip_position) = tip_positions.get(&oid) else {
+                continue;
+            };
+            match best {
+                None => best = Some((tip_position, base_index)),
+                Some((best_position, best_index))
+                    if tip_position < best_position
+                        || (tip_position == best_position && base_index < best_index) =>
+                {
+                    best = Some((tip_position, base_index));
+                }
+                _ => {}
+            }
+            break;
+        }
+    }
+
+    Ok(best.map(|(_, index)| index))
+}
+
+fn first_parent_chain(repo: &Repository, start: ObjectId) -> Result<Vec<ObjectId>> {
+    let mut chain = Vec::new();
+    let mut current = Some(start);
+    while let Some(oid) = current {
+        chain.push(oid);
+        current = first_parent(repo, oid)?;
+    }
+    Ok(chain)
+}
+
+fn first_parent(repo: &Repository, oid: ObjectId) -> Result<Option<ObjectId>> {
+    let object = repo.odb.read(&oid)?;
+    if object.kind != ObjectKind::Commit {
+        return Err(Error::CorruptObject(format!(
+            "object {oid} is not a commit"
+        )));
+    }
+    let commit = parse_commit(&object.data)?;
+    Ok(commit.parents.first().copied())
+}
+
 fn ensure_is_commit(repo: &Repository, oid: ObjectId) -> Result<()> {
     let object = repo.odb.read(&oid)?;
     if object.kind != ObjectKind::Commit {

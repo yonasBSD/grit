@@ -1,13 +1,13 @@
 //! `test-tool reach` support used by upstream reachability tests.
 
-use std::collections::HashMap;
 use std::io::{self, BufRead};
 
 use anyhow::{bail, Context, Result};
 use grit_lib::merge_base::{
-    ancestor_closure, independent_commits, is_ancestor, merge_bases_first_vs_rest,
+    ancestor_closure, branch_base_for_tip, independent_commits, is_ancestor,
+    merge_bases_first_vs_rest,
 };
-use grit_lib::objects::{parse_commit, ObjectId, ObjectKind};
+use grit_lib::objects::ObjectId;
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse::{peel_to_commit_for_merge_base, resolve_revision};
 
@@ -62,7 +62,9 @@ pub fn run(args: &[String]) -> Result<()> {
         }
         "get_branch_base_for_tip" => {
             let a = require(input.a, "A")?;
-            let index = branch_base_for_tip(&repo, a, &input.x)?;
+            let index = branch_base_for_tip(&repo, a, &input.x)?
+                .map(|index| index as isize)
+                .unwrap_or(-1);
             println!("get_branch_base_for_tip(A,X):{index}");
         }
         "get_merge_bases_many" => {
@@ -195,59 +197,4 @@ fn reachable_subset(
         .copied()
         .filter(|oid| from_closure.contains(oid))
         .collect())
-}
-
-fn branch_base_for_tip(repo: &Repository, tip: ObjectId, bases: &[ObjectId]) -> Result<isize> {
-    if bases.is_empty() {
-        return Ok(-1);
-    }
-
-    let tip_chain = first_parent_chain(repo, tip)?;
-    let tip_positions: HashMap<ObjectId, usize> = tip_chain
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(index, oid)| (oid, index))
-        .collect();
-
-    let mut best: Option<(usize, usize)> = None;
-    for (base_index, &base) in bases.iter().enumerate() {
-        for oid in first_parent_chain(repo, base)? {
-            let Some(&tip_position) = tip_positions.get(&oid) else {
-                continue;
-            };
-            match best {
-                None => best = Some((tip_position, base_index)),
-                Some((best_position, best_index))
-                    if tip_position < best_position
-                        || (tip_position == best_position && base_index < best_index) =>
-                {
-                    best = Some((tip_position, base_index));
-                }
-                _ => {}
-            }
-            break;
-        }
-    }
-
-    Ok(best.map(|(_, index)| index as isize).unwrap_or(-1))
-}
-
-fn first_parent_chain(repo: &Repository, start: ObjectId) -> Result<Vec<ObjectId>> {
-    let mut chain = Vec::new();
-    let mut current = Some(start);
-    while let Some(oid) = current {
-        chain.push(oid);
-        current = first_parent(repo, oid)?;
-    }
-    Ok(chain)
-}
-
-fn first_parent(repo: &Repository, oid: ObjectId) -> Result<Option<ObjectId>> {
-    let object = repo.odb.read(&oid)?;
-    if object.kind != ObjectKind::Commit {
-        bail!("object {oid} is not a commit");
-    }
-    let commit = parse_commit(&object.data)?;
-    Ok(commit.parents.first().copied())
 }
