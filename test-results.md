@@ -1,3 +1,7 @@
+## 2026-06-03 — t11430-rev-parse-git-dir
+
+- Focus harness: `./scripts/run-tests.sh t11430-rev-parse-git-dir.sh --verbose` passes 35/35 after switching synthetic `master` branch references to `main`.
+
 ## 2026-06-03 — t10300-for-each-ref-count-pattern
 
 - Focus harness: `./scripts/run-tests.sh t10300-for-each-ref-count-pattern.sh --verbose` passes 36/36 with existing fixes.

@@ -281,10 +281,10 @@ test_expect_success 'rev-parse HEAD from subdir matches root' '
 	)
 '
 
-test_expect_success 'rev-parse master from subdir works' '
+test_expect_success 'rev-parse main from subdir works' '
 	(
 	cd repo/src/lib &&
-	git rev-parse master >output &&
+	git rev-parse main >output &&
 	grep -qE "^[0-9a-f]{40}$" output
 	)
 '

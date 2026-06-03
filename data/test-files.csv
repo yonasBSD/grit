@@ -226,7 +226,7 @@ t11390-log-diff-tree-raw	t1	yes	32	32	0	true	ok	0
 t11400-rev-list-max-count	t1	yes	33	33	0	true	ok	0
 t11410-rev-list-first-parent	t1	yes	31	26	5	false	ok	0
 t11420-rev-parse-flags-args	t1	yes	33	23	10	false	ok	0
-t11430-rev-parse-git-dir	t1	yes	35	34	1	false	ok	0
+t11430-rev-parse-git-dir	t1	yes	35	35	0	true	ok	0
 t11440-config-type-bool-int	t1	yes	38	38	0	true	ok	0
 t11450-config-include-path	t1	yes	28	28	0	true	ok	0
 t11460-init-separate-git-dir	t1	yes	34	34	0	true	ok	0
