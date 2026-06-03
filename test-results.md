@@ -1,4 +1,10 @@
 
+## 2026-06-03 — t5313-pack-bounds-checks
+
+- Focus harness: `./scripts/run-tests.sh t5313-pack-bounds-checks.sh --verbose` passes 9/9 after pack/index object-count validation and small-pack deletion-style OFS_DELTA generation.
+- Regression harness: `./scripts/run-tests.sh --timeout 180 t5316-pack-delta-depth.sh t5303-pack-corruption-resilience.sh t5313-pack-bounds-checks.sh --verbose` reports `t5316` at its prior 3/5 baseline, `t5303` 36/36, and `t5313` 9/9.
+
+
 ## 2026-06-03 — t5303-pack-corruption-resilience
 
 - Focus harness: `./scripts/run-tests.sh t5303-pack-corruption-resilience.sh --verbose` passes 36/36 after common-prefix delta chain, loose/redundant base recovery, pack inflated-size validation, and `test-tool delta -p` fixes.

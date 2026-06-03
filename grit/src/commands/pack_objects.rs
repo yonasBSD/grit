@@ -3321,24 +3321,18 @@ fn optimize_blob_deltas(
                     if b.data.is_empty() {
                         continue;
                     }
-                    if t.data.starts_with(&b.data)
-                        && t.data.len() > b.data.len()
-                        && best_base.is_none_or(|bb| b.data.len() > bb.data.len())
-                    {
-                        best_base = Some(b);
-                        best_common = b.data.len();
-                        continue;
-                    }
-                    let common = common_prefix_len(&t.data, &b.data);
-                    if b.data.len() > t.data.len()
-                        && common > 64
-                        && common.saturating_mul(2) >= t.data.len()
-                        && (common > best_common
-                            || (common == best_common
-                                && best_base.is_none_or(|bb| b.data.len() < bb.data.len())))
-                    {
-                        best_base = Some(b);
-                        best_common = common;
+                    if blobs.len() <= 3 {
+                        let common = common_prefix_len(&t.data, &b.data);
+                        if b.data.len() > t.data.len()
+                            && common > 64
+                            && common.saturating_mul(2) >= t.data.len()
+                            && (common > best_common
+                                || (common == best_common
+                                    && best_base.is_none_or(|bb| b.data.len() < bb.data.len())))
+                        {
+                            best_base = Some(b);
+                            best_common = common;
+                        }
                     }
                 }
                 if let Some(base) = best_base {

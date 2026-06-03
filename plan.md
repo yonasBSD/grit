@@ -41,7 +41,9 @@
   - Completed `t5303-pack-corruption-resilience.sh` (36/36) after adding expected
     common-prefix blob delta chains, loose/redundant-pack delta base recovery, inflated-size
     validation, and `test-tool delta -p`.
-  - Next focus: `t5313-pack-bounds-checks.sh`.
+  - Completed `t5313-pack-bounds-checks.sh` (9/9) after adding pack/index object-count
+    validation and small-pack deletion-style OFS_DELTA generation.
+  - Next focus: `t5351-unpack-large-objects.sh`.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

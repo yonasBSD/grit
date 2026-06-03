@@ -1334,6 +1334,7 @@ pub fn read_object_from_pack(idx: &PackIndex, oid: &ObjectId) -> Result<Object> 
     }
 
     let pack_bytes = read_pack_bytes_cached(&idx.pack_path)?;
+    validate_pack_index_object_count(&pack_bytes, idx)?;
     let objects_dir = idx.pack_path.parent().and_then(Path::parent);
     let entry = idx
         .entries
@@ -1350,6 +1351,7 @@ pub fn read_object_from_pack_bytes(
     idx: &PackIndex,
     oid: &[u8],
 ) -> Result<Object> {
+    validate_pack_index_object_count(pack_bytes, idx)?;
     let entry = idx
         .entries
         .iter()
@@ -1357,6 +1359,21 @@ pub fn read_object_from_pack_bytes(
         .ok_or_else(|| Error::ObjectNotFound(oid_bytes_to_hex(oid)))?;
     let (kind, data) = read_pack_object_at(pack_bytes, entry.offset, idx, None, 0)?;
     Ok(Object::new(kind, data))
+}
+
+fn validate_pack_index_object_count(pack_bytes: &[u8], idx: &PackIndex) -> Result<()> {
+    if pack_bytes.len() < 12 || &pack_bytes[0..4] != b"PACK" {
+        return Err(Error::CorruptObject("bad pack header".to_owned()));
+    }
+    let count =
+        u32::from_be_bytes([pack_bytes[8], pack_bytes[9], pack_bytes[10], pack_bytes[11]]) as usize;
+    if count != idx.entries.len() {
+        return Err(Error::CorruptObject(format!(
+            "pack object count mismatch: pack has {count}, index has {}",
+            idx.entries.len()
+        )));
+    }
+    Ok(())
 }
 
 /// Search all pack indexes in `objects_dir` for the given OID and read it.
