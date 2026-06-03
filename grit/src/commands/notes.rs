@@ -1060,10 +1060,7 @@ Please use 'git notes add -f -m/-F/-c/-C' instead."
         }
         if !frag.is_empty() {
             if !base.is_empty() {
-                if !base.ends_with('\n') {
-                    base.push('\n');
-                }
-                base.push('\n');
+                append_separator(&mut base, separator);
             }
             base.push_str(&frag);
         }

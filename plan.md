@@ -62,8 +62,8 @@
   - Current focus: `t3301-notes.sh` (153 total, 125 passed, 28 failing after fixing raw log
     spacing, format-patch `--show-notes` forwarding, default `-m`/`-F` separator handling, and
     wiring notes `--stripspace`/`--no-stripspace` support, plus notes display env/default header
-    handling, exact `notes.displayRef` matching, and wildcard `--show-notes=*` expansion), first
-    file in the notes group.
+    handling, exact/wildcard notes display ref matching, and append separator handling), first file
+    in the notes group.
   - Related progress: `t3321-notes-stripspace.sh` improved from 2/27 to 18/27 with the stripspace
     support; it remains in the notes group queue.
   - Execution log: `logs/2026-06-03_t3-family.md`.

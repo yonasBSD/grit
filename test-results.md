@@ -58,6 +58,15 @@
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
+## 2026-06-03 — t3301-notes append separator partial
+
+- Focus harness remains at 125/153, with multiple append separator cases fixed by applying the
+  selected separator between existing notes and appended fragments.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh t3321-notes-stripspace.sh
+  t3206-range-diff.sh` keeps `t3206` at 48/48, with `t3301` at 125/153 and `t3321` at 18/27.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3301-notes separator partial
 
 - Focus harness improved to 115/153 after default note fragment separation was changed to a
