@@ -2424,6 +2424,8 @@ fn add_path(
             args.force,
             add_cfg.precompose_unicode,
         )?;
+        let worktree_paths: std::collections::HashSet<&str> =
+            paths.iter().map(|(r, _)| r.as_str()).collect();
         for (rel_path, file_abs) in &paths {
             if let Err(e) = stage_file(
                 odb,
@@ -2443,6 +2445,48 @@ fn add_path(
                 } else {
                     return Err(AddPathError::IoError(e));
                 }
+            }
+        }
+
+        // `git add <dir>` also stages deletions: index entries under this
+        // directory whose working-tree file no longer exists are removed.
+        let dir_prefix = {
+            let trimmed = path.trim_end_matches('/').trim_start_matches("./");
+            if trimmed.is_empty() {
+                String::new()
+            } else {
+                format!("{trimmed}/")
+            }
+        };
+        let removed: Vec<Vec<u8>> = index
+            .entries
+            .iter()
+            .filter(|ie| {
+                if ie.stage() != 0 || ie.skip_worktree() {
+                    return false;
+                }
+                let Ok(p) = std::str::from_utf8(&ie.path) else {
+                    return false;
+                };
+                if !(dir_prefix.is_empty() || p.starts_with(&dir_prefix)) {
+                    return false;
+                }
+                if worktree_paths.contains(p) {
+                    return false;
+                }
+                // Only remove if the working-tree file genuinely no longer
+                // exists (a tracked-but-ignored present file must be kept).
+                fs::symlink_metadata(work_tree.join(p)).is_err()
+            })
+            .map(|ie| ie.path.clone())
+            .collect();
+        for p in removed {
+            if !args.dry_run {
+                index.remove(&p);
+            }
+            if args.verbose {
+                let path_str = String::from_utf8_lossy(&p);
+                eprintln!("remove '{path_str}'");
             }
         }
     } else {
