@@ -144,7 +144,7 @@ t10450-status-porcelain-staged	t1	yes	35	31	4	false	ok	0
 t10460-log-format-author-committer	t1	yes	31	31	0	true	ok	0
 t10460-status-ahead-behind	t1	yes	5	4	1	false	ok	0
 t10480-config-list-file	t1	yes	34	34	0	true	ok	0
-t10490-init-quiet-branch	t1	yes	32	29	3	false	ok	0
+t10490-init-quiet-branch	t1	yes	32	32	0	true	ok	0
 t1050-large	t1	yes	29	14	15	false	ok	0
 t10500-branch-force-create	t1	yes	33	25	8	false	ok	0
 t1051-large-conversion	t1	yes	12	12	0	true	ok	0

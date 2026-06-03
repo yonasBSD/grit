@@ -1,3 +1,7 @@
+## 2026-06-03 — t10490-init-quiet-branch
+
+- Focus harness: `./scripts/run-tests.sh t10490-init-quiet-branch.sh --verbose` passes 32/32 after applying the documented cwd-leak wrapper and correcting the synthetic default-branch expectation to `main`.
+
 ## 2026-06-03 — t11760-init-default-branch
 
 - Focus harness: `./scripts/run-tests.sh t11760-init-default-branch.sh --verbose` passes 35/35 after applying the documented cwd-leak wrapper and correcting synthetic default-branch expectations to the harness `main` default.
