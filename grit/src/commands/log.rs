@@ -1832,6 +1832,12 @@ fn hydrate_log_options_from_raw_argv(args: &mut Args) {
             }
         }
 
+        if !args.oneline && arg == "--oneline" {
+            args.oneline = true;
+            i += 1;
+            continue;
+        }
+
         if args.format.is_none() {
             if let Some(rest) = arg.strip_prefix("--format=") {
                 args.format = Some(rest.to_owned());
@@ -2527,7 +2533,7 @@ fn run_graph_log(
             p.clone()
         };
         let re = RegexBuilder::new(&pat)
-            .case_insensitive(true)
+            .case_insensitive(args.regexp_ignore_case)
             .build()
             .with_context(|| format!("invalid --author regex: {p}"))?;
         author_res_graph.push(re);
@@ -2540,7 +2546,7 @@ fn run_graph_log(
             p.clone()
         };
         let re = RegexBuilder::new(&pat)
-            .case_insensitive(true)
+            .case_insensitive(args.regexp_ignore_case)
             .build()
             .with_context(|| format!("invalid --committer regex: {p}"))?;
         committer_res_graph.push(re);
@@ -4204,13 +4210,13 @@ pub fn run(mut args: Args) -> Result<()> {
 
     let mut author_res: Vec<Regex> = Vec::new();
     for p in &args.authors {
-        let re = build_grep_regex(p, grep_ptype, true)
+        let re = build_grep_regex(p, grep_ptype, grep_ignore_case)
             .with_context(|| format!("invalid --author regex: {p}"))?;
         author_res.push(re);
     }
     let mut committer_res: Vec<Regex> = Vec::new();
     for p in &args.committers {
-        let re = build_grep_regex(p, grep_ptype, true)
+        let re = build_grep_regex(p, grep_ptype, grep_ignore_case)
             .with_context(|| format!("invalid --committer regex: {p}"))?;
         committer_res.push(re);
     }
