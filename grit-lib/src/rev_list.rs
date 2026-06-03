@@ -3294,12 +3294,47 @@ fn commit_touches_paths(
     let mut differs_any = false;
     let mut first_parent_differs = false;
     for (nth, parent_oid) in parents.iter().enumerate() {
-        let parent = load_commit(repo, *parent_oid)?;
-        let parent_map: HashMap<String, ObjectId> =
-            flatten_tree(repo, parent.tree, "")?.into_iter().collect();
-        let differs = path_differs_for_specs(&commit_map, &parent_map, paths);
+        // Git consults the changed-path Bloom filter only when comparing against the
+        // first parent (`nth_parent == 0` in `rev_compare_tree`). This applies to merge
+        // commits too: a `DefinitelyNot` result short-circuits the first-parent tree diff
+        // and is recorded in the Bloom statistics counters just like for single-parent
+        // commits.
+        let mut bloom_ret = BloomPrecheck::Inapplicable;
+        if nth == 0 {
+            if let Some(chain) = bloom_chain {
+                bloom_ret = chain.bloom_precheck_for_paths(
+                    &repo.odb,
+                    oid,
+                    paths,
+                    bloom_cwd,
+                    changed_paths_version,
+                    read_changed_paths,
+                )?;
+                if let Some(stats) = bloom_stats {
+                    if let Ok(mut g) = stats.lock() {
+                        g.record_precheck(bloom_ret);
+                    }
+                }
+            }
+        }
+
+        let differs = if bloom_ret == BloomPrecheck::DefinitelyNot {
+            false
+        } else {
+            let parent = load_commit(repo, *parent_oid)?;
+            let parent_map: HashMap<String, ObjectId> =
+                flatten_tree(repo, parent.tree, "")?.into_iter().collect();
+            path_differs_for_specs(&commit_map, &parent_map, paths)
+        };
         if nth == 0 {
             first_parent_differs = differs;
+            if bloom_ret == BloomPrecheck::Maybe && !differs {
+                if let Some(stats) = bloom_stats {
+                    if let Ok(mut g) = stats.lock() {
+                        g.record_false_positive();
+                    }
+                }
+            }
         }
         if differs {
             differs_any = true;

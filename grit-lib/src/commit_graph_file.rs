@@ -623,11 +623,11 @@ impl CommitGraphChain {
             return Ok(BloomPrecheck::FilterNotPresent);
         }
 
-        let commit = crate::objects::parse_commit(&odb.read(&oid)?.data)?;
-        if commit.parents.len() > 1 {
-            return Ok(BloomPrecheck::Inapplicable);
-        }
-
+        // Git computes the changed-path Bloom filter for every commit (including merges)
+        // relative to its first parent, and `rev_compare_tree` consults it for the
+        // first-parent comparison only (`nth_parent == 0`). The caller is responsible for
+        // restricting the precheck to the first parent, so merge commits are handled here
+        // exactly like single-parent commits.
         let filter = match layer.bloom_filter_slice(lex) {
             Some(s) => s,
             None => return Ok(BloomPrecheck::FilterNotPresent),
