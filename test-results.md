@@ -1,3 +1,7 @@
+## 2026-06-03 — t12280-log-shortlog-format
+
+- Focus harness: `./scripts/run-tests.sh t12280-log-shortlog-format.sh --verbose` passes 36/36 after isolating setup `cd repo` in a subshell.
+
 ## 2026-06-03 — t1514-rev-parse-push
 
 - Focus harness: `./scripts/run-tests.sh t1514-rev-parse-push.sh --verbose` passes 9/9 after resolving `@{push}` from explicit remote push refspecs even when `push.default=nothing`, including wildcard refspecs.

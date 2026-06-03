@@ -288,7 +288,7 @@ t12240-diff-tree-name-status	t1	yes	32	32	0	true	ok	0
 t12250-diff-stat-compact	t1	yes	30	30	0	true	ok	0
 t12260-diff-index-submodule	t1	yes	32	32	0	true	ok	0
 t12270-status-porcelain-v2	t1	yes	32	23	9	false	ok	0
-t12280-log-shortlog-format	t1	yes	0	0	0	false	timeout	0
+t12280-log-shortlog-format	t1	yes	36	36	0	true	ok	0
 t12290-log-cherry-mark	t1	yes	33	33	0	true	ok	0
 t12300-rev-list-merge-left-right	t1	yes	33	33	0	true	ok	0
 t12310-rev-list-simplify	t1	yes	32	32	0	true	ok	0
