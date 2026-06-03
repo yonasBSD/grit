@@ -1390,6 +1390,23 @@ pub fn rev_list(
                     segment.retain(|(oid, _)| !excluded_promisor.contains(oid));
                 }
             }
+            if !options.paths.is_empty() && !omit_object_paths {
+                retain_objects_matching_pathspecs(&mut objs, &options.paths);
+                let mut seen_oids: HashSet<ObjectId> = objs.iter().map(|(oid, _)| *oid).collect();
+                for (oid, path) in
+                    collect_pathspec_matching_tree_objects(repo, &ordered, &options.paths)?
+                {
+                    if seen_oids.insert(oid) {
+                        objs.push((oid, path));
+                    }
+                }
+                for segment in &mut segments {
+                    retain_objects_matching_pathspecs(segment, &options.paths);
+                }
+                if !counts.is_empty() {
+                    counts = segments.iter().map(Vec::len).collect();
+                }
+            }
             (objs, omit, miss, counts, segments)
         } else {
             (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
@@ -5120,6 +5137,79 @@ fn excluded_object_root_ids(
     }
 
     Ok(objects.into_iter().map(|(oid, _)| oid).collect())
+}
+
+fn retain_objects_matching_pathspecs(objects: &mut Vec<(ObjectId, String)>, pathspecs: &[String]) {
+    objects.retain(|(_, path)| {
+        path.is_empty()
+            || crate::pathspec::matches_pathspec_list(path, pathspecs)
+            || pathspecs
+                .iter()
+                .any(|spec| crate::pathspec::pathspec_wants_descent_into_tree(spec, path))
+    });
+}
+
+fn collect_pathspec_matching_tree_objects(
+    repo: &Repository,
+    commits: &[ObjectId],
+    pathspecs: &[String],
+) -> Result<Vec<(ObjectId, String)>> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for commit_oid in commits {
+        let commit = load_commit(repo, *commit_oid)?;
+        collect_pathspec_matching_tree_objects_inner(
+            repo,
+            commit.tree,
+            "",
+            pathspecs,
+            &mut seen,
+            &mut out,
+        )?;
+    }
+    Ok(out)
+}
+
+fn collect_pathspec_matching_tree_objects_inner(
+    repo: &Repository,
+    tree_oid: ObjectId,
+    prefix: &str,
+    pathspecs: &[String],
+    seen: &mut HashSet<ObjectId>,
+    out: &mut Vec<(ObjectId, String)>,
+) -> Result<()> {
+    let object = repo.odb.read(&tree_oid)?;
+    if object.kind != ObjectKind::Tree {
+        return Err(Error::CorruptObject(format!(
+            "object {tree_oid} is not a tree"
+        )));
+    }
+    let entries = parse_tree(&object.data)?;
+    for entry in entries {
+        if entry.mode == 0o160000 {
+            continue;
+        }
+        let name = String::from_utf8_lossy(&entry.name);
+        let path = if prefix.is_empty() {
+            name.into_owned()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let is_tree = entry.mode == 0o040000;
+        let matches = crate::pathspec::matches_pathspec_list(&path, pathspecs);
+        let wants_descent = pathspecs
+            .iter()
+            .any(|spec| crate::pathspec::pathspec_wants_descent_into_tree(spec, &path));
+        if (matches || (is_tree && wants_descent)) && seen.insert(entry.oid) {
+            out.push((entry.oid, path.clone()));
+        }
+        if is_tree && wants_descent {
+            collect_pathspec_matching_tree_objects_inner(
+                repo, entry.oid, &path, pathspecs, seen, out,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Like [`collect_reachable_objects`], but also returns objects newly discovered per commit walk

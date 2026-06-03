@@ -1337,3 +1337,10 @@ Updated: 2026-06-01
   4/12. Also ran `cargo fmt`, `cargo check -p grit-cli`, `cargo build -p grit-cli`,
   `cargo build --release -p grit-cli`, `cargo clippy --fix --allow-dirty` (existing warning
   backlog and known failed auto-fix diagnostics remain), and `cargo test -p grit-lib --lib`.
+- t6000 path-limited objects focus: after filtering `rev-list --objects` output by pathspec and
+  recovering matching names for duplicate blob IDs, the direct debug run advances through test 9
+  and `./scripts/run-tests.sh t6000-rev-list-misc.sh` improves from 9/23 to 14/23 with refreshed
+  `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
+  `cargo test -p grit-lib --lib`.
