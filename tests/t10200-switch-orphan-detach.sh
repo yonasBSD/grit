@@ -44,7 +44,7 @@ test_expect_success 'switch -c preserves working tree' '
 	)
 '
 
-test_expect_success 'commit on new branch diverges from master' '
+test_expect_success 'commit on new branch diverges from main' '
 	(
 	cd repo &&
 	echo feature >feature.txt &&
@@ -56,16 +56,16 @@ test_expect_success 'commit on new branch diverges from master' '
 	)
 '
 
-test_expect_success 'switch back to master' '
+test_expect_success 'switch back to main' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit branch --show-current >current &&
-	grep "master" current
+	grep "main" current
 	)
 '
 
-test_expect_success 'switch to master loses feature file' '
+test_expect_success 'switch to main loses feature file' '
 	(
 	cd repo &&
 	test_path_is_missing feature.txt
@@ -83,12 +83,12 @@ test_expect_success 'switch back to feature1 restores feature file' '
 test_expect_success 'switch -c from non-HEAD commit' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	initial=$(grit rev-parse HEAD) &&
 	echo second >second.txt &&
 	grit add second.txt &&
 	test_tick &&
-	grit commit -m "second on master" &&
+	grit commit -m "second on main" &&
 	grit switch -c from-initial "$initial" &&
 	grit branch --show-current >current &&
 	grep "from-initial" current &&
@@ -130,13 +130,13 @@ test_expect_success 'commit on orphan branch creates root commit' '
 	)
 '
 
-test_expect_success 'orphan branch has no relation to master' '
+test_expect_success 'orphan branch has no relation to main' '
 	(
 	cd repo &&
 	orphan_head=$(grit rev-parse HEAD) &&
-	grit switch master &&
-	master_head=$(grit rev-parse HEAD) &&
-	test "$orphan_head" != "$master_head"
+	grit switch main &&
+	main_head=$(grit rev-parse HEAD) &&
+	test "$orphan_head" != "$main_head"
 	)
 '
 
@@ -145,7 +145,7 @@ test_expect_success 'switch --detach goes to detached HEAD' '
 	cd repo &&
 	grit switch --detach HEAD &&
 	grit branch >branches &&
-	grep "HEAD detached" branches || grep "^\* (HEAD" branches || head -1 branches | grep -v "master"
+	grep "HEAD detached" branches || grep "^\* (HEAD" branches || head -1 branches | grep -v "main"
 	)
 '
 
@@ -160,7 +160,7 @@ test_expect_success 'switch --detach preserves files' '
 test_expect_success 'switch --detach at specific commit' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	initial=$(grit log --oneline | tail -1 | cut -d" " -f1) &&
 	grit switch --detach "$initial" &&
 	test_path_is_file file.txt &&
@@ -171,9 +171,9 @@ test_expect_success 'switch --detach at specific commit' '
 test_expect_success 'switch from detached HEAD to named branch' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit branch --show-current >current &&
-	grep "master" current
+	grep "main" current
 	)
 '
 
@@ -190,11 +190,11 @@ test_expect_success 'switch -c from detached HEAD' '
 test_expect_success 'setup multiple branches for listing' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit switch -c branch-a &&
-	grit switch master &&
+	grit switch main &&
 	grit switch -c branch-b &&
-	grit switch master &&
+	grit switch main &&
 	grit switch -c branch-c
 	)
 '
@@ -216,7 +216,7 @@ test_expect_success 'switch between branches preserves commits' '
 	cd repo &&
 	grit switch feature1 &&
 	test_path_is_file feature.txt &&
-	grit switch master &&
+	grit switch main &&
 	test_path_is_missing feature.txt &&
 	grit switch feature1 &&
 	test_path_is_file feature.txt
@@ -233,14 +233,14 @@ test_expect_success 'switch to nonexistent branch fails' '
 test_expect_success 'switch -c existing branch name fails' '
 	(
 	cd repo &&
-	test_must_fail grit switch -c master 2>err
+	test_must_fail grit switch -c main 2>err
 	)
 '
 
 test_expect_success 'switch with conflicting dirty worktree fails' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	echo dirty-conflict >feature.txt &&
 	grit add feature.txt &&
 	echo more-dirty >feature.txt &&
@@ -254,7 +254,7 @@ test_expect_success 'switch with conflicting dirty worktree fails' '
 test_expect_success 'switch --orphan second time creates another root' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit reset --hard HEAD &&
 	grit switch --orphan another-orphan &&
 	grit rm -rf . 2>/dev/null || true &&
@@ -270,7 +270,7 @@ test_expect_success 'switch --orphan second time creates another root' '
 test_expect_success 'switch --detach specific tag works' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit tag v1.0 &&
 	grit switch --detach v1.0 &&
 	head_at_tag=$(grit rev-parse HEAD) &&
@@ -279,12 +279,12 @@ test_expect_success 'switch --detach specific tag works' '
 	)
 '
 
-test_expect_success 'switch back from tag detach to master' '
+test_expect_success 'switch back from tag detach to main' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit branch --show-current >current &&
-	grep "master" current
+	grep "main" current
 	)
 '
 
@@ -300,11 +300,11 @@ test_expect_success 'switch -c with upstream tracking branch name' '
 test_expect_success 'switch - goes to previous branch' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit switch feature1 &&
 	grit switch - &&
 	grit branch --show-current >current &&
-	grep "master" current
+	grep "main" current
 	)
 '
 
@@ -320,11 +320,11 @@ test_expect_success 'switch - again goes back' '
 test_expect_success 'switch --detach HEAD~1 works' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit switch --detach HEAD~1 &&
 	detached=$(grit rev-parse HEAD) &&
-	master_parent=$(grit rev-parse master~1) &&
-	test "$detached" = "$master_parent"
+	main_parent=$(grit rev-parse main~1) &&
+	test "$detached" = "$main_parent"
 	)
 '
 
