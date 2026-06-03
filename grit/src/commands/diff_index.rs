@@ -1298,9 +1298,17 @@ fn diff_tree_vs_worktree(
                 change.status = 'T';
             }
         }
+        // For a gitlink the resolved submodule HEAD is the right side (used by `--submodule`
+        // patch rendering); raw plumbing re-zeros it. Regular blobs keep the zero placeholder and
+        // read their worktree content lazily at patch time.
+        let new_oid = if wt_snapshot.mode == MODE_GITLINK {
+            wt_snapshot.oid
+        } else {
+            zero_oid()
+        };
         change.new = Some(Snapshot {
             mode: wt_snapshot.mode,
-            oid: zero_oid(),
+            oid: new_oid,
         });
     }
     for path in remove_merged_paths {
@@ -1557,9 +1565,13 @@ fn read_worktree_snapshot_from_meta(
     // file (`EISDIR`); matches Git and unblocks `merge` pre-checks (`t6437`).
     if metadata.is_dir() {
         if abs_path.join(".git").exists() {
+            // A populated submodule checkout: resolve its HEAD so `--submodule` patch output shows
+            // the real right-side commit. Raw plumbing re-zeros this via
+            // `raw_gitlink_new_is_worktree_zero`, matching Git.
+            let oid = read_submodule_head_oid(abs_path).unwrap_or_else(zero_oid);
             return Ok(Some(Snapshot {
                 mode: MODE_GITLINK,
-                oid: zero_oid(),
+                oid,
             }));
         }
         return Ok(None);
@@ -1991,10 +2003,14 @@ fn raw_gitlink_new_is_worktree_zero(
     if !diff_index_uncached || entry.new_mode != "160000" || entry.new_oid == zero_oid() {
         return false;
     }
-    // Worktree-driven only when the index gitlink still equals the old (tree) gitlink.
-    index
+    // Git shows the recorded index gitlink OID only when the index itself carries that gitlink
+    // commit (a staged submodule bump). When the new side instead came from the live worktree
+    // submodule HEAD (the index entry is the tree gitlink, a blob, or absent), Git prints the
+    // all-zero OID in raw plumbing output even though the `--submodule` patch uses the real HEAD.
+    let index_carries_new_gitlink = index
         .get(entry.path().as_bytes(), 0)
-        .is_some_and(|e| e.oid == entry.old_oid)
+        .is_some_and(|e| canonicalize_mode(e.mode) == MODE_GITLINK && e.oid == entry.new_oid);
+    !index_carries_new_gitlink
 }
 
 fn write_raw_diff_entry_z(

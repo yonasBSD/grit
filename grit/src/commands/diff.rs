@@ -1838,6 +1838,17 @@ pub fn run(mut args: Args) -> Result<()> {
                 .unwrap_or_else(|| "log".to_string()),
         );
     }
+    // No CLI `--submodule`: fall back to the `diff.submodule` config value (Git's
+    // `git_diff_ui_config`). Plumbing (`diff-index`/`diff-tree`) ignores this and is handled in
+    // its own command, so this porcelain default only affects `git diff`. See t4041/t4060 #3.
+    if args.submodule.as_deref().is_none_or(str::is_empty) {
+        if let Some(val) = diff_config.get("diff.submodule") {
+            let v = val.trim();
+            if matches!(v, "log" | "short" | "diff") {
+                args.submodule = Some(v.to_string());
+            }
+        }
+    }
     let emit_unified_patch = diff_emit_unified_patch_from_argv(&raw_args);
     let indent_heuristic = resolve_indent_heuristic(
         &diff_config_early,
