@@ -542,7 +542,7 @@ fn gap_blocks_merge_between_conflicts(gap: &[Vec<u8>], simplify_if_no_alnum: boo
     !simplify_if_no_alnum || gap.iter().any(|l| line_contains_alnum(l.as_slice()))
 }
 
-fn merge_two_adjacent_conflicts(left: &Hunk, right: &Hunk) -> Option<Hunk> {
+fn merge_two_adjacent_conflicts(left: &Hunk, gap: &[Vec<u8>], right: &Hunk) -> Option<Hunk> {
     let Hunk::Conflict {
         base: b1,
         ours: o1,
@@ -559,11 +559,16 @@ fn merge_two_adjacent_conflicts(left: &Hunk, right: &Hunk) -> Option<Hunk> {
     else {
         return None;
     };
+    // Git's xdl_simplify_non_conflicts absorbs the common gap between the two conflicts back
+    // into *both* sides of the merged conflict (the gap lines are identical on ours/theirs).
     let mut merged_base = b1.clone();
+    merged_base.extend(gap.iter().cloned());
     merged_base.extend(b2.iter().cloned());
     let mut merged_ours = o1.clone();
+    merged_ours.extend(gap.iter().cloned());
     merged_ours.extend(o2.iter().cloned());
     let mut merged_theirs = t1.clone();
+    merged_theirs.extend(gap.iter().cloned());
     merged_theirs.extend(t2.iter().cloned());
     Some(Hunk::Conflict {
         base: merged_base,
@@ -597,7 +602,7 @@ fn simplify_non_conflicts_between_conflicts(
             if gap_blocks_merge_between_conflicts(gap, simplify_if_no_alnum) {
                 break;
             }
-            let Some(m) = merge_two_adjacent_conflicts(&merged, &hunks[j + 2]) else {
+            let Some(m) = merge_two_adjacent_conflicts(&merged, gap, &hunks[j + 2]) else {
                 break;
             };
             merged = m;
@@ -642,17 +647,22 @@ fn refine_conflicts_by_subdiff(
                     }
                 }
                 DiffTag::Delete => {
+                    // Lines present only on ours within an overlapping (both-changed) region
+                    // stay a conflict with an empty theirs side (git's xdl_refine_conflicts
+                    // re-emits these as conflict hunks, not clean resolutions).
                     if !old.is_empty() {
-                        out.push(Hunk::OnlyOurs {
+                        out.push(Hunk::Conflict {
                             base: Vec::new(),
                             ours: ours[old.start..old.end].to_vec(),
+                            theirs: Vec::new(),
                         });
                     }
                 }
                 DiffTag::Insert => {
                     if !new_.is_empty() {
-                        out.push(Hunk::OnlyTheirs {
+                        out.push(Hunk::Conflict {
                             base: Vec::new(),
+                            ours: Vec::new(),
                             theirs: theirs[new_.start..new_.end].to_vec(),
                         });
                     }
