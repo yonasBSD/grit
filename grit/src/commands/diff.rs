@@ -5914,15 +5914,23 @@ fn filter_by_paths(entries: Vec<DiffEntry>, paths: &[String]) -> Vec<DiffEntry> 
         .into_iter()
         .filter(|e| {
             let path = e.path();
+            // Classify the entry from its modes so `dir/` style pathspecs match
+            // gitlinks (t4010: `submod/` must match submodule entry `submod`).
+            let old_ctx = grit_lib::pathspec::context_from_mode_octal(&e.old_mode);
+            let new_ctx = grit_lib::pathspec::context_from_mode_octal(&e.new_mode);
+            let ctx = grit_lib::pathspec::PathspecMatchContext {
+                is_directory: old_ctx.is_directory || new_ctx.is_directory,
+                is_git_submodule: old_ctx.is_git_submodule || new_ctx.is_git_submodule,
+            };
             let included = include_specs.iter().any(|spec| {
                 if spec == &"." || spec.is_empty() {
                     return true;
                 }
-                grit_lib::pathspec::pathspec_matches(spec, path)
+                grit_lib::pathspec::matches_pathspec_with_context(spec, path, ctx)
             });
-            let excluded = exclude_inners
-                .iter()
-                .any(|inner| grit_lib::pathspec::pathspec_matches(inner, path));
+            let excluded = exclude_inners.iter().any(|inner| {
+                grit_lib::pathspec::matches_pathspec_with_context(inner, path, ctx)
+            });
             included && !excluded
         })
         .collect()
