@@ -699,7 +699,8 @@ pub fn run_whatchanged(argv: &[String]) -> Result<()> {
         }
     }
 
-    let commits = whatchanged_walk(&repo.odb, &tips)?;
+    let include_merges = opts.combined_patch;
+    let commits = whatchanged_walk(&repo.odb, &tips, include_merges)?;
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -717,9 +718,10 @@ pub fn run_whatchanged(argv: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Walk non-merge commits reachable from `tips`, ordered by committer date
-/// (newest first) like `git log`.
-fn whatchanged_walk(odb: &Odb, tips: &[ObjectId]) -> Result<Vec<ObjectId>> {
+/// Walk commits reachable from `tips`, ordered by committer date (newest first)
+/// like `git log`. Merge commits are skipped unless `include_merges` is set
+/// (`whatchanged -c`/`--cc`, which show a combined merge diff).
+fn whatchanged_walk(odb: &Odb, tips: &[ObjectId], include_merges: bool) -> Result<Vec<ObjectId>> {
     use std::collections::HashSet;
     let mut visited: HashSet<ObjectId> = HashSet::new();
     let mut stack: Vec<ObjectId> = tips.to_vec();
@@ -733,8 +735,8 @@ fn whatchanged_walk(odb: &Odb, tips: &[ObjectId]) -> Result<Vec<ObjectId>> {
         }
         let obj = odb.read(&oid)?;
         let commit = parse_commit(&obj.data)?;
-        // Skip merge commits (whatchanged == `--no-merges`).
-        if commit.parents.len() <= 1 {
+        // Skip merge commits (whatchanged == `--no-merges`) unless combined.
+        if commit.parents.len() <= 1 || include_merges {
             let ts = committer_timestamp(&commit.committer);
             collected.push((oid, ts, order));
             order += 1;
@@ -770,6 +772,30 @@ fn render_whatchanged_commit(
 ) -> Result<bool> {
     let obj = repo.odb.read(oid).context("reading commit")?;
     let commit = parse_commit(&obj.data).context("parsing commit")?;
+
+    // Merge commits: `whatchanged -c`/`--cc` shows a combined merge diff with the
+    // pretty header (other invocations skip merges and never reach here).
+    if commit.parents.len() > 1 && opts.combined_patch {
+        let walk = CombinedTreeDiffOptions {
+            recursive: true,
+            tree_in_recursive: false,
+        };
+        let mut paths =
+            combined_diff_paths_filtered(&repo.odb, &commit.tree, &commit.parents, &walk, None)?;
+        paths = filter_combined_paths_intersection(&repo.odb, &commit.tree, &commit.parents, paths);
+        if !opts.pathspecs.is_empty() {
+            paths.retain(|p| combined_path_matches_pathspecs(p, &opts.pathspecs));
+        }
+        if paths.is_empty() {
+            return Ok(false);
+        }
+        if leading_blank {
+            writeln!(out)?;
+        }
+        write_commit_header(out, oid, &obj.data, opts, None)?;
+        print_combined_merge_output(out, repo, &paths, opts, &commit.parents, &commit.tree, None)?;
+        return Ok(true);
+    }
 
     // The root commit is only diffed when `log.showroot` is enabled (opts.root).
     let is_root = commit.parents.is_empty();
@@ -3122,12 +3148,20 @@ fn write_commit_header(
             writeln!(out, "commit {oid}")?;
         }
         if commit.parents.len() > 1 {
+            // Git abbreviates the `Merge:` parent OIDs to the default short length
+            // in medium-style headers.
+            let merge_abbrev = if opts.full_index {
+                40usize
+            } else {
+                opts.abbrev.unwrap_or(7)
+            };
             let mut merge_line = String::new();
             for (i, parent) in commit.parents.iter().enumerate() {
                 if i > 0 {
                     merge_line.push(' ');
                 }
-                merge_line.push_str(&parent.to_hex());
+                let hex = parent.to_hex();
+                merge_line.push_str(&hex[..merge_abbrev.min(hex.len())]);
             }
             writeln!(out, "Merge: {merge_line}")?;
         }
@@ -3158,8 +3192,11 @@ fn write_commit_header(
                 }
             }
         }
-        // Use "---" separator when --patch-with-stat is active, blank line otherwise
-        if opts.patch_with_stat {
+        // Use the "---" separator when `--patch-with-stat` is active, except for a
+        // combined merge diff (which separates the header from the stat with a
+        // blank line, like Git's combined log output); otherwise a blank line.
+        let is_combined_merge = opts.combined_patch && commit.parents.len() > 1;
+        if opts.patch_with_stat && !is_combined_merge {
             writeln!(out, "---")?;
         } else {
             writeln!(out)?;
