@@ -336,8 +336,14 @@ impl Parser {
             }
             self.subsection = Some(sub);
         } else {
-            self.section = inside.trim().to_owned();
-            self.subsection = None;
+            let name = inside.trim();
+            if let Some((section, subsection)) = name.split_once('.') {
+                self.section = section.trim().to_owned();
+                self.subsection = Some(subsection.trim().to_lowercase());
+            } else {
+                self.section = name.to_owned();
+                self.subsection = None;
+            }
         }
         // Check for inline content after the closing `]`
         let after = trimmed[end + 1..].trim();
@@ -537,10 +543,7 @@ fn escape_subsection(s: &str) -> String {
 }
 
 fn escape_value(s: &str) -> String {
-    // Quote leading `-` so values are not mistaken for config options (Git does this for
-    // submodule paths like `-sub` in `.gitmodules`).
-    let needs_quoting = s.starts_with('-')
-        || s.starts_with(' ')
+    let needs_quoting = s.starts_with(' ')
         || s.starts_with('\t')
         || s.ends_with(' ')
         || s.ends_with('\t')
@@ -1221,37 +1224,39 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
     pub fn remove_section(&mut self, section: &str) -> Result<bool> {
         let (sec_name, sub_name) = parse_section_name(section);
         let sec_lower = sec_name.to_lowercase();
-
-        // Find section header line and all lines that belong to it
-        let mut start = None;
-        let mut end = 0;
         let mut parser = Parser::new();
+        let mut ranges = Vec::new();
+        let mut current: Option<usize> = None;
 
         for (idx, line) in self.raw_lines.iter().enumerate() {
             if parser.try_parse_section(line) {
-                if parser.section.to_lowercase() == sec_lower
-                    && parser.subsection.as_deref() == sub_name
-                {
-                    start = Some(idx);
-                    end = idx;
-                } else if start.is_some() {
-                    break;
+                if let Some(start) = current.take() {
+                    ranges.push(start..idx);
                 }
-            } else if start.is_some() {
-                end = idx;
+                let old_style = section_line_is_old_style_subsection(line);
+                if parser.section.to_lowercase() == sec_lower
+                    && subsection_matches(parser.subsection.as_deref(), sub_name, old_style)
+                {
+                    current = Some(idx);
+                }
             }
         }
-
-        if let Some(s) = start {
-            self.raw_lines.drain(s..=end);
-            let content = self.raw_lines.join("\n");
-            let reparsed = Self::parse(&self.path, &content, self.scope)?;
-            self.entries = reparsed.entries;
-            self.raw_lines = reparsed.raw_lines;
-            Ok(true)
-        } else {
-            Ok(false)
+        if let Some(start) = current.take() {
+            ranges.push(start..self.raw_lines.len());
         }
+
+        if ranges.is_empty() {
+            return Ok(false);
+        }
+
+        for range in ranges.into_iter().rev() {
+            self.raw_lines.drain(range);
+        }
+        let content = self.raw_lines.join("\n");
+        let reparsed = Self::parse(&self.path, &content, self.scope)?;
+        self.entries = reparsed.entries;
+        self.raw_lines = reparsed.raw_lines;
+        Ok(true)
     }
 
     /// Rename a section.
@@ -1261,27 +1266,44 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
     /// - `old_name` — current section name (e.g. `"branch.main"`).
     /// - `new_name` — new section name (e.g. `"branch.develop"`).
     pub fn rename_section(&mut self, old_name: &str, new_name: &str) -> Result<bool> {
+        if !valid_section_name_for_rename(new_name) {
+            return Err(Error::ConfigError(format!(
+                "invalid section name: {new_name}"
+            )));
+        }
+
         let (old_sec, old_sub) = parse_section_name(old_name);
         let (new_sec, new_sub) = parse_section_name(new_name);
         let old_lower = old_sec.to_lowercase();
 
         let mut found = false;
         let mut parser = Parser::new();
+        let mut idx = 0;
 
-        for idx in 0..self.raw_lines.len() {
-            let line = &self.raw_lines[idx];
-            if parser.try_parse_section(line)
-                && parser.section.to_lowercase() == old_lower
-                && parser.subsection.as_deref() == old_sub
-            {
-                // Rewrite the section header
-                let header = match new_sub {
-                    Some(sub) => format!("[{} \"{}\"]", new_sec, sub),
-                    None => format!("[{}]", new_sec),
-                };
-                self.raw_lines[idx] = header;
-                found = true;
+        while idx < self.raw_lines.len() {
+            let line = self.raw_lines[idx].clone();
+            let mut inline_remainder = None;
+            if parser.try_parse_section_with_remainder(&line, &mut inline_remainder) {
+                let old_style = section_line_is_old_style_subsection(&line);
+                if parser.section.to_lowercase() == old_lower
+                    && subsection_matches(parser.subsection.as_deref(), old_sub, old_style)
+                {
+                    let header = match new_sub {
+                        Some(sub) => format!("[{} \"{}\"]", new_sec, escape_subsection(sub)),
+                        None => format!("[{}]", new_sec),
+                    };
+                    if let Some(remainder) = inline_remainder {
+                        self.raw_lines[idx] = header;
+                        self.raw_lines
+                            .insert(idx + 1, format!("\t{}", remainder.trim()));
+                        idx += 1;
+                    } else {
+                        self.raw_lines[idx] = header;
+                    }
+                    found = true;
+                }
             }
+            idx += 1;
         }
 
         if found {
@@ -1424,7 +1446,11 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
         for (idx, line) in self.raw_lines.iter().enumerate() {
             if parser.try_parse_section(line)
                 && parser.section.to_lowercase() == sec_lower
-                && parser.subsection.as_deref() == subsection
+                && subsection_matches(
+                    parser.subsection.as_deref(),
+                    subsection,
+                    section_line_is_old_style_subsection(line),
+                )
             {
                 return idx;
             }
@@ -1457,7 +1483,11 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
         for (idx, line) in self.raw_lines.iter().enumerate() {
             if parser.try_parse_section(line)
                 && parser.section.to_lowercase() == sec_lower
-                && parser.subsection.as_deref() == subsection
+                && subsection_matches(
+                    parser.subsection.as_deref(),
+                    subsection,
+                    section_line_is_old_style_subsection(line),
+                )
             {
                 return idx;
             }
@@ -2095,13 +2125,7 @@ impl ConfigSet {
                 // fatal error (t0001 #102 `re-init reads matching includeIf.onbranch`). A missing
                 // include target is silently skipped (`from_path` -> `Ok(None)`).
                 if let Some(inc_file) = ConfigFile::from_path(&resolved, file.scope)? {
-                    Self::merge_with_includes(
-                        set,
-                        &inc_file,
-                        process_includes,
-                        depth + 1,
-                        ctx,
-                    )?;
+                    Self::merge_with_includes(set, &inc_file, process_includes, depth + 1, ctx)?;
                 }
             }
         }
@@ -3080,6 +3104,39 @@ fn parse_section_name(name: &str) -> (&str, Option<&str>) {
         Some(i) => (&name[..i], Some(&name[i + 1..])),
         None => (name, None),
     }
+}
+
+fn section_line_is_old_style_subsection(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some(rest) = trimmed.strip_prefix('[') else {
+        return false;
+    };
+    let Some(end) = rest.find(']') else {
+        return false;
+    };
+    let inside = rest[..end].trim();
+    !inside.contains('"') && inside.contains('.')
+}
+
+fn subsection_matches(actual: Option<&str>, expected: Option<&str>, old_style: bool) -> bool {
+    match (actual, expected) {
+        (None, None) => true,
+        (Some(a), Some(e)) if old_style => a.eq_ignore_ascii_case(e),
+        (Some(a), Some(e)) => a == e,
+        _ => false,
+    }
+}
+
+fn valid_section_name_for_rename(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let (section, subsection) = parse_section_name(name);
+    !section.is_empty()
+        && section
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        && subsection.is_none_or(|s| !s.is_empty())
 }
 
 /// Extract the original-case variable name from a raw (user-typed) key.

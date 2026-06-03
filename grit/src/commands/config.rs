@@ -694,7 +694,11 @@ fn cmd_get(
                 } else {
                     let val = entry.value.as_deref().unwrap_or("true");
                     let val = format_typed_value(args, Some(&entry.key), val)?;
-                    print!("{} {}{}", entry.key, val, terminator);
+                    if args.null_terminated {
+                        print!("{}\n{}{}", entry.key, val, terminator);
+                    } else {
+                        print!("{} {}{}", entry.key, val, terminator);
+                    }
                 }
             } else {
                 let val = entry.value.as_deref().unwrap_or("true");
@@ -908,13 +912,15 @@ fn cmd_list(args: &Args, git_dir: Option<&Path>) -> Result<()> {
                 prefix.push_str(&format!("file:{}\t", display_path));
             }
         }
-        let val = entry.value.as_deref().unwrap_or("true");
         if args.name_only {
             print!("{}{}{}", prefix, entry.key, terminator);
         } else if args.null_terminated {
-            // Git uses key=value\0 format with -z for --list
-            print!("{}{}={}{}", prefix, entry.key, val, terminator);
+            match entry.value.as_deref() {
+                Some(val) => print!("{}{}\n{}{}", prefix, entry.key, val, terminator),
+                None => print!("{}{}{}", prefix, entry.key, terminator),
+            }
         } else {
+            let val = entry.value.as_deref().unwrap_or("true");
             print!("{}{}={}{}", prefix, entry.key, val, terminator);
         }
     }
