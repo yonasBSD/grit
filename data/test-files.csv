@@ -571,7 +571,7 @@ t3207-branch-submodule	t3	yes	20	20	0	true	ok	0
 t3210-pack-refs	t3	yes	29	29	0	true	ok	0
 t3211-peel-ref	t3	yes	8	8	0	true	ok	0
 t3300-funny-names	t3	yes	21	21	0	true	ok	0
-t3301-notes	t3	yes	153	127	26	false	ok	0
+t3301-notes	t3	yes	153	133	20	false	ok	0
 t3301-notes-basic	t3	yes	38	38	0	true	ok	0
 t3302-notes-index-expensive	t3	yes	12	12	0	true	ok	0
 t3303-notes-subtrees	t3	yes	23	23	0	true	ok	0

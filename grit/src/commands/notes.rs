@@ -346,8 +346,12 @@ pub fn run(args: Args) -> Result<()> {
             allow_empty,
             stripspace,
             no_stripspace,
-            if no_separator || (no_stripspace && separator.is_none()) {
+            if no_separator {
+                Some("")
+            } else if no_stripspace && separator.is_none() {
                 None
+            } else if separator.as_deref() == Some("") {
+                Some("\n")
             } else {
                 Some(separator.as_deref().unwrap_or("\n\n"))
             },
@@ -383,8 +387,12 @@ pub fn run(args: Args) -> Result<()> {
             allow_empty,
             stripspace,
             no_stripspace,
-            if no_separator || (no_stripspace && separator.is_none()) {
+            if no_separator {
+                Some("")
+            } else if no_stripspace && separator.is_none() {
                 None
+            } else if separator.as_deref() == Some("") {
+                Some("\n")
             } else {
                 Some(separator.as_deref().unwrap_or("\n\n"))
             },
@@ -414,8 +422,12 @@ pub fn run(args: Args) -> Result<()> {
             allow_empty,
             stripspace,
             no_stripspace,
-            if no_separator || (no_stripspace && separator.is_none()) {
+            if no_separator {
+                Some("")
+            } else if no_stripspace && separator.is_none() {
                 None
+            } else if separator.as_deref() == Some("") {
+                Some("\n")
             } else {
                 Some(separator.as_deref().unwrap_or("\n\n"))
             },
@@ -796,7 +808,13 @@ fn append_separator(buf: &mut String, sep: Option<&str>) {
         return;
     };
     if s.is_empty() {
+        if !buf.ends_with('\n') {
+            buf.push('\n');
+        }
         return;
+    }
+    if !s.starts_with('\n') && !buf.ends_with('\n') {
+        buf.push('\n');
     }
     if s.as_bytes().last() == Some(&b'\n') {
         buf.push_str(s);

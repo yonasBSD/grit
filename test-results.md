@@ -1321,3 +1321,13 @@ Updated: 2026-06-01
   warnings; `cargo clippy --fix --allow-dirty` completed with the existing warning backlog and its
   unrelated `config.rs`/`filter_process.rs` auto-fixes were reverted; `cargo test -p grit-lib --lib`
   passed 238/238.
+
+## 2026-06-03 — t3301-notes separator line-boundary partial
+
+- Focus harness improved from 127/153 to 133/153 after explicit note separators insert line
+  boundaries like Git, `--no-separator` still separates adjacent stripped fragments by one line
+  boundary, and `--separator=""` restores paragraph separation for append.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh t3321-notes-stripspace.sh` keeps
+  `t3321` at 27/27 and records `t3301` at 133/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
