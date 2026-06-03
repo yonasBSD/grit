@@ -1,3 +1,7 @@
+## 2026-06-03 — t12700-add-edit-intent
+
+- Focus harness: `./scripts/run-tests.sh t12700-add-edit-intent.sh --verbose` passes 37/37 after correcting intent-to-add porcelain expectations to Git's ` A` worktree-added status.
+
 ## 2026-06-03 — t11410-rev-list-first-parent
 
 - Focus harness: `./scripts/run-tests.sh t11410-rev-list-first-parent.sh --verbose` passes 31/31 after aligning merge-history setup and branch assertions with the `main` default branch.

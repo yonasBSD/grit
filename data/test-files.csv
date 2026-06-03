@@ -323,7 +323,7 @@ t12640-config-list-show-origin	t1	yes	33	33	0	true	ok	0
 t12650-config-null-value	t1	yes	34	34	0	true	ok	0
 t12660-init-shared-perm	t1	yes	37	37	0	true	ok	0
 t12670-branch-force-delete	t1	yes	32	32	0	true	ok	0
-t12700-add-edit-intent	t1	yes	37	32	5	false	ok	0
+t12700-add-edit-intent	t1	yes	37	37	0	true	ok	0
 t12710-rm-staged-conflict	t1	yes	37	37	0	true	ok	0
 t12720-mv-cross-directory	t1	yes	37	37	0	true	ok	0
 t12730-switch-start-point	t1	yes	36	36	0	true	ok	0
