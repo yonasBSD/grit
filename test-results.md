@@ -1,3 +1,7 @@
+## 2026-06-03 — t12290-log-cherry-mark
+
+- Focus harness: `./scripts/run-tests.sh t12290-log-cherry-mark.sh --verbose` passes 33/33 after wrapping setup in a subshell and switching synthetic `master` branch references to `main`.
+
 ## 2026-06-03 — t12580-log-oneline-all
 
 - Focus harness: `./scripts/run-tests.sh t12580-log-oneline-all.sh --verbose` passes 31/31 after wrapping setup in a subshell and switching synthetic `master` branch references to `main`.
