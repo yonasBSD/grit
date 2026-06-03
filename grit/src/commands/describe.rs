@@ -133,6 +133,25 @@ pub(crate) struct DescribeOptions {
 }
 
 impl DescribeOptions {
+    /// Default options used for the `%(describe...)` pretty placeholder
+    /// (`git log --format`), matching Git's `format_describe` defaults.
+    #[must_use]
+    pub(crate) fn default_for_format() -> Self {
+        Self {
+            tags: false,
+            always: false,
+            long: false,
+            abbrev: 7,
+            candidates: 10,
+            match_pattern: Vec::new(),
+            exclude_pattern: Vec::new(),
+            exact_match: false,
+            first_parent: false,
+            all: false,
+            contains: false,
+        }
+    }
+
     /// Build describe options from parsed CLI arguments.
     #[must_use]
     pub(crate) fn from_args(args: &Args) -> Self {

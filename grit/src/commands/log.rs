@@ -8257,6 +8257,49 @@ fn parse_trailers_opts(rest: &str) -> Option<grit_lib::commit_trailers::TrailerO
     Some(opts)
 }
 
+/// Parse the option string of a `%(describe...)` placeholder (the part after
+/// `describe`). Returns `None` on a malformed option (so the placeholder is
+/// emitted literally).
+fn parse_describe_opts(rest: &str) -> Option<crate::commands::describe::DescribeOptions> {
+    let mut opts = crate::commands::describe::DescribeOptions::default_for_format();
+    let body = match rest.strip_prefix(':') {
+        Some(b) => b,
+        None => {
+            if rest.is_empty() {
+                return Some(opts);
+            }
+            return None;
+        }
+    };
+    if body.is_empty() {
+        return Some(opts);
+    }
+    for tok in body.split(',') {
+        let (name, value) = match tok.split_once('=') {
+            Some((n, v)) => (n, Some(v)),
+            None => (tok, None),
+        };
+        match name {
+            "match" => opts.match_pattern.push(value?.to_owned()),
+            "exclude" => opts.exclude_pattern.push(value?.to_owned()),
+            "tags" => opts.tags = true,
+            "abbrev" => opts.abbrev = value?.parse().ok()?,
+            _ => return None,
+        }
+    }
+    Some(opts)
+}
+
+/// Run `git describe` for a commit during pretty formatting; returns `None`
+/// when no description is found (Git emits an empty placeholder).
+fn run_describe_for_format(
+    oid: &ObjectId,
+    opts: &crate::commands::describe::DescribeOptions,
+) -> Option<String> {
+    let repo = grit_lib::repo::Repository::discover(None).ok()?;
+    crate::commands::describe::describe_object(&repo, *oid, opts).ok()
+}
+
 fn apply_format_string(
     template: &str,
     oid: &ObjectId,
@@ -9041,8 +9084,19 @@ fn apply_format_string(
                             // Invalid option (e.g. `key` without value): emit literally.
                             result.push_str(&format!("%({inner})"));
                         }
+                    } else if let Some(rest) = inner.strip_prefix("describe") {
+                        if let Some(opts) = parse_describe_opts(rest) {
+                            chars = look;
+                            if let Some(desc) = run_describe_for_format(oid, &opts) {
+                                result.push_str(&desc);
+                            }
+                            // On describe failure (no tag, no --always) Git emits
+                            // nothing for the placeholder.
+                        } else {
+                            result.push('%');
+                        }
                     } else {
-                        // Unhandled extended placeholder (describe/decorate): emit literally.
+                        // Unhandled extended placeholder (decorate): emit literally.
                         result.push('%');
                     }
                 }
