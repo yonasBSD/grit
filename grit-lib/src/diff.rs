@@ -997,8 +997,25 @@ pub fn diff_index_to_worktree_with_options(
 
         match fs::symlink_metadata(&file_path) {
             Ok(meta) if meta.is_dir() => {
-                // A directory exists where the index expects a file.
-                // Treat as a type change: the indexed file is effectively deleted.
+                // A directory exists where the index expects a file. A populated submodule
+                // checkout (`.git` present) is a blob→gitlink typechange with the submodule HEAD on
+                // the new side (raw output re-zeros it); otherwise the indexed file is effectively
+                // deleted. See t4041/t4060 #13.
+                if file_path.join(".git").exists() {
+                    let head = read_submodule_head_oid(&file_path).unwrap_or_else(zero_oid);
+                    let path_owned = path_str_ref.to_owned();
+                    result.push(DiffEntry {
+                        status: DiffStatus::TypeChanged,
+                        old_path: Some(path_owned.clone()),
+                        new_path: Some(path_owned),
+                        old_mode: format_mode(ie.mode),
+                        new_mode: format_mode(0o160000),
+                        old_oid: ie.oid,
+                        new_oid: head,
+                        score: None,
+                    });
+                    continue;
+                }
                 result.push(DiffEntry {
                     status: DiffStatus::Deleted,
                     old_path: Some(path_str_ref.to_owned()),

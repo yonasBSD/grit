@@ -3128,7 +3128,7 @@ pub fn run(mut args: Args) -> Result<()> {
         let mut need_blank_before_patch = false;
 
         if args.raw {
-            write_raw(&mut out, &entries, oid_len)?;
+            write_raw(&mut out, &entries, oid_len, !args.cached && revs.len() <= 1)?;
             wrote_output = true;
             need_blank_before_patch = true;
         }
@@ -3231,7 +3231,7 @@ pub fn run(mut args: Args) -> Result<()> {
         }
 
         if args.patch_with_raw && show_unified_patch && !args.raw {
-            write_raw(&mut out, &entries, oid_len)?;
+            write_raw(&mut out, &entries, oid_len, !args.cached && revs.len() <= 1)?;
             need_blank_before_patch = true;
         }
         if args.patch_with_stat && show_unified_patch && !stat_block_active {
@@ -6506,6 +6506,29 @@ fn write_patch_with_prefix(
 
         if let Some(fmt) = submodule_fmt {
             if entry.old_mode == "160000" || entry.new_mode == "160000" {
+                // A blob→gitlink typechange against the work tree records the new gitlink as zero;
+                // resolve the submodule's checked-out HEAD so `write_patch_entry` produces the
+                // `Submodule … (new submodule)` summary with the real commit. See t4041/t4060 #17.
+                let mut resolved;
+                let entry: &DiffEntry = if entry.new_mode == "160000"
+                    && entry.new_oid == zero_oid()
+                    && entry.old_mode != "160000"
+                {
+                    let head = work_tree
+                        .and_then(|wt| {
+                            grit_lib::diff::read_submodule_head_oid(&wt.join(entry.path()))
+                        })
+                        .unwrap_or_else(zero_oid);
+                    if head == zero_oid() {
+                        entry
+                    } else {
+                        resolved = entry.clone();
+                        resolved.new_oid = head;
+                        &resolved
+                    }
+                } else {
+                    entry
+                };
                 if fmt == "log" {
                     if entry.old_mode == "160000"
                         && entry.new_mode == "160000"
@@ -8441,7 +8464,12 @@ fn write_name_only(
 /// Write `{status_letter}\t{path}` for each entry.
 /// For renames/copies, output `R100\told_path\tnew_path`.
 /// Write raw diff format: `:old-mode new-mode old-oid new-oid status\tpath`
-fn write_raw(out: &mut impl Write, entries: &[DiffEntry], abbrev_len: usize) -> Result<()> {
+fn write_raw(
+    out: &mut impl Write,
+    entries: &[DiffEntry],
+    abbrev_len: usize,
+    worktree_new_side: bool,
+) -> Result<()> {
     for entry in entries {
         let old_mode = &entry.old_mode;
         let new_mode = &entry.new_mode;
@@ -8450,7 +8478,16 @@ fn write_raw(out: &mut impl Write, entries: &[DiffEntry], abbrev_len: usize) -> 
         let olen = abbrev_len.min(old_oid_hex.len());
         let nlen = abbrev_len.min(new_oid_hex.len());
         let old_oid = &old_oid_hex[..olen];
-        let new_oid = &new_oid_hex[..nlen];
+        // A gitlink whose new side is the work tree (e.g. a blob→gitlink typechange or a
+        // worktree-side submodule bump) prints the all-zero OID in raw plumbing, even though the
+        // `--submodule` patch shows the real HEAD. See t4041/t4060.
+        let zero_wt_gitlink = worktree_new_side && new_mode == "160000";
+        let zeroed = "0".repeat(nlen);
+        let new_oid = if zero_wt_gitlink {
+            zeroed.as_str()
+        } else {
+            &new_oid_hex[..nlen]
+        };
         let status = entry.status.letter();
         match entry.status {
             DiffStatus::Renamed | DiffStatus::Copied => {
