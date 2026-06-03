@@ -1,5 +1,23 @@
 # PLAN.md — Current execution queue
 
+
+## Active task — t5 family 100% pass
+
+- [~] Make all current in-scope `t5` family tests fully pass. Work one dependency group at a time,
+  choosing one non-green file, fixing the underlying Rust behavior, and re-running that file until
+  `failing=0` before moving to the next file.
+  - Dependency groups: archive (`t5000`-`t5004`), request-pull/server-info (`t5150`, `t5200`),
+    pack/index/prune/commit-graph/MIDX/bitmaps (`t53xx`), send/receive-pack and hooks (`t54xx`),
+    fetch/remote/refspec/ls-remote/push/pull/http (`t55xx`), clone/alternates/partial clone
+    (`t56xx`), protocol/policy/repo selection (`t57xx`-`t59xx`), then skipped-row audit.
+  - Starting CSV snapshot: 184 t5 rows; 68 in-scope fully passing, 94 in-scope failing,
+    8 in-scope zero/non-green rows, and 14 skipped rows.
+  - First focus: archive dependency group, starting with `t5000-tar-tree.sh`, then
+    `t5001-archive-attr.sh` and `t5003-archive-zip.sh`.
+  - Execution log: `logs/2026-06-03_2000-t5-family.md`.
+
+---
+
 ## Active task — t6 family 100% pass
 
 - [~] Make current in-scope `t6` family tests fully pass. Work one dependency group at a time,
