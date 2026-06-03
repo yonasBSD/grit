@@ -1,3 +1,7 @@
+## 2026-06-03 — t1450-fsck-flags
+
+- Focus harness: `./scripts/run-tests.sh t1450-fsck-flags.sh --verbose` passes 10/10 after correcting synthetic `fsck` dangling-output assertions to inspect stdout and using `--name-objects` in the intended coverage case.
+
 ## 2026-06-03 — t13150-diff-stat-insertions-deletions
 
 - Focus harness: `./scripts/run-tests.sh t13150-diff-stat-insertions-deletions.sh --verbose` passes 42/42; no additional code changes were required beyond refreshing the recorded harness status.

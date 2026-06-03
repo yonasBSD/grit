@@ -41,8 +41,8 @@ test_expect_success 'setup: create dangling objects' '
 '
 
 test_expect_success 'fsck reports dangling objects by default' '
-	git fsck 2>err &&
-	grep "dangling" err
+	git fsck >out 2>err &&
+	grep "dangling" out
 '
 
 test_expect_success 'fsck --no-dangling suppresses dangling output' '
@@ -51,8 +51,8 @@ test_expect_success 'fsck --no-dangling suppresses dangling output' '
 '
 
 test_expect_success 'fsck --name-objects shows names in output' '
-	git fsck 2>err &&
-	grep "dangling" err
+	git fsck --name-objects >out 2>err &&
+	grep "dangling" out
 '
 
 test_expect_success 'fsck --lost-found creates lost-found directory' '
