@@ -35,7 +35,10 @@ pub enum RefsAction {
         ref_format: String,
     },
     /// Optimize the ref database (pack loose refs).
-    Optimize,
+    Optimize {
+        #[command(flatten)]
+        args: crate::commands::pack_refs::Args,
+    },
     /// List refs with filtering, sorting, and format atoms (`git for-each-ref` compatible).
     List {
         #[command(flatten)]
@@ -56,7 +59,7 @@ pub fn run(args: Args) -> Result<()> {
     match args.action {
         RefsAction::Verify => verify_refs(&repo),
         RefsAction::Migrate { ref_format } => migrate_refs(&repo, &ref_format),
-        RefsAction::Optimize => optimize_refs(&repo),
+        RefsAction::Optimize { args } => optimize_refs(&repo, args),
         RefsAction::List { list_args } => for_each_ref::run_refs_list(list_args),
         RefsAction::Exists { reference } => run_refs_exists(&repo, &reference),
     }
@@ -290,18 +293,8 @@ fn verify_reftable_refs(repo: &Repository, bad_ref_name_level: &str) -> Result<u
     Ok(errors)
 }
 
-fn optimize_refs(_repo: &Repository) -> Result<()> {
-    // Delegate to pack-refs --all
-    crate::commands::pack_refs::run(crate::commands::pack_refs::Args {
-        all: true,
-        prune: false,
-        no_prune: false,
-        auto: false,
-        include: Vec::new(),
-        no_include: false,
-        exclude: Vec::new(),
-        no_exclude: false,
-    })
+fn optimize_refs(_repo: &Repository, args: crate::commands::pack_refs::Args) -> Result<()> {
+    crate::commands::pack_refs::run(args)
 }
 
 /// Detect the current ref storage format of a repository.

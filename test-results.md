@@ -1,3 +1,7 @@
+## 2026-06-03 — t1463-refs-optimize
+
+- Focus harness: `./scripts/run-tests.sh t1463-refs-optimize.sh --verbose` passes 47/47 after `git refs optimize` forwards pack-refs options (`--all`, `--prune`, `--include`, `--exclude`, etc.).
+
 ## 2026-06-03 — t1430-bad-ref-name partial
 
 - Focus harness improved from 11/42 to 13/42 after fast-import rejects invalid branch/ref names before writing objects/refs. Remaining failures are broader broken-ref handling across branch/update-ref/for-each-ref/push.
