@@ -1053,6 +1053,21 @@ pub fn rev_list(
         }
     }
 
+    if matches!(
+        options.ordering,
+        OrderingMode::Topo | OrderingMode::AuthorDateTopo
+    ) && !options.left_right
+        && !options.left_only
+        && !options.right_only
+        && !options.cherry_mark
+        && !options.cherry_pick
+    {
+        if let (Some(left_oid), Some(right_oid)) = (options.symmetric_left, options.symmetric_right)
+        {
+            reorder_symmetric_topo_right_first(&mut graph, &mut ordered, left_oid, right_oid)?;
+        }
+    }
+
     // Left-right classification for symmetric diffs
     let mut left_right_map = HashMap::new();
     if options.left_right
@@ -3095,6 +3110,34 @@ fn reorder_adjacent_merge_parent_blocks(
             ordered[index + 1..end].sort_by_key(|oid| rank.get(oid).copied().unwrap_or(usize::MAX));
         }
     }
+    Ok(())
+}
+
+fn reorder_symmetric_topo_right_first(
+    graph: &mut CommitGraph<'_>,
+    ordered: &mut Vec<ObjectId>,
+    left_oid: ObjectId,
+    right_oid: ObjectId,
+) -> Result<()> {
+    if ordered.len() < 2 {
+        return Ok(());
+    }
+
+    let left_reach = walk_closure(graph, &[left_oid])?;
+    let right_reach = walk_closure(graph, &[right_oid])?;
+    let mut right_only = Vec::new();
+    let mut rest = Vec::new();
+
+    for oid in ordered.drain(..) {
+        if right_reach.contains(&oid) && !left_reach.contains(&oid) {
+            right_only.push(oid);
+        } else {
+            rest.push(oid);
+        }
+    }
+
+    right_only.extend(rest);
+    *ordered = right_only;
     Ok(())
 }
 

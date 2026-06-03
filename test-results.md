@@ -21,6 +21,9 @@ Updated: 2026-06-03
 - t6600 maximal-only focus: `./scripts/run-tests.sh t6600-test-reach.sh --verbose` improves from
   44/47 to 46/47 after parsing `rev-list --maximal-only` and pruning commits reachable from another
   selected commit in the revision range.
+- t6600 symmetric topo completion: `./scripts/run-tests.sh t6600-test-reach.sh
+  t6003-rev-list-topo-order.sh t6111-rev-list-treesame.sh --verbose` passes `t6600` at 47/47,
+  keeps `t6111` at 65/65, and leaves adjacent `t6003` at its existing 23/36.
 - Verification for this increment: `cargo fmt`, `cargo check -p grit-cli`,
   `cargo clippy --fix --allow-dirty`, `cargo build --release -p grit-cli`,
   `cargo test -p grit-lib --lib` (238/238), and the focused harness ran. Clippy completed with the
