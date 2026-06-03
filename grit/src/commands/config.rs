@@ -122,6 +122,10 @@ pub struct Args {
     #[arg(long = "remove-section")]
     pub remove_section: bool,
 
+    /// Open the config file in an editor (legacy).
+    #[arg(long = "edit")]
+    pub edit: bool,
+
     // ── Type flags ──
     /// Ensure the value is a valid boolean and canonicalize.
     #[arg(long = "bool", global = true)]
@@ -390,6 +394,10 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     // Legacy interface
+    if args.edit {
+        return cmd_edit(&file_path);
+    }
+
     if args.list {
         return cmd_list(&args, git_dir.as_deref());
     }
@@ -658,23 +666,37 @@ fn cmd_get(
 
     // Handle --url for URL matching (subcommand interface)
     if let Some(ref url) = get_args.url {
-        let (section, variable) = match get_args.key.find('.') {
-            Some(i) => (&get_args.key[..i], &get_args.key[i + 1..]),
-            None => bail!("key does not contain a section: '{}'", get_args.key),
-        };
-        let entries =
-            grit_lib::config::get_urlmatch_entries(config.entries(), section, variable, url);
-        let Some(entry) = entries.last() else {
-            if let Some(ref default) = get_args.default {
-                let val = format_default_value(args, default)?;
-                print_default_value(args, &val, terminator);
-                return Ok(());
+        if let Some(i) = get_args.key.find('.') {
+            let (section, variable) = (&get_args.key[..i], &get_args.key[i + 1..]);
+            let entries =
+                grit_lib::config::get_urlmatch_entries(config.entries(), section, variable, url);
+            let Some(entry) = entries.last() else {
+                if let Some(ref default) = get_args.default {
+                    let val = format_default_value(args, default)?;
+                    print_default_value(args, &val, terminator);
+                    return Ok(());
+                }
+                std::process::exit(1);
+            };
+            let val = entry.value.as_deref().unwrap_or("true");
+            let val = format_typed_value(args, Some(&get_args.key), val)?;
+            print!("{val}{terminator}");
+        } else {
+            let entries =
+                grit_lib::config::get_urlmatch_all_in_section(config.entries(), &get_args.key, url);
+            if entries.is_empty() {
+                std::process::exit(1);
             }
-            std::process::exit(1);
-        };
-        let val = entry.value.as_deref().unwrap_or("true");
-        let val = format_typed_value(args, Some(&get_args.key), val)?;
-        print!("{val}{terminator}");
+            for (var_key, val, scope) in &entries {
+                let val = format_typed_value(args, Some(var_key), val)?;
+                let prefix = if get_args.show_scope || args.show_scope {
+                    format!("{}	", scope)
+                } else {
+                    String::new()
+                };
+                print!("{prefix}{var_key} {val}{terminator}");
+            }
+        }
         return Ok(());
     }
 

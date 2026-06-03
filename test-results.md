@@ -1,6 +1,6 @@
 ## 2026-06-02 — t1 config kickoff
 
-- Focus harness: `./scripts/run-tests.sh t1300-config.sh --verbose` improved from 287/497 to 367/497 after config compatibility fixes for bare-key regexp output, empty boolean values, `GIT_CONFIG`, `--null`, stdin-write rejection, old-style dotted subsection handling, section rename/remove behavior, negative numeric config writes, expiry-date parsing, path diagnostics, color default/error handling, alias global-option expansion, quote-aware `GIT_CONFIG_PARAMETERS`, validated `GIT_CONFIG_COUNT`, `--config-env` keys containing equals, and config diagnostic wording. Remaining failures are tracked under the t1 family work.
+- Focus harness: `./scripts/run-tests.sh t1300-config.sh --verbose` improved from 287/497 to 373/497 after config compatibility fixes for bare-key regexp output, empty boolean values, `GIT_CONFIG`, `--null`, stdin-write rejection, old-style dotted subsection handling, section rename/remove behavior, negative numeric config writes, expiry-date parsing, path diagnostics, color default/error handling, alias global-option expansion, quote-aware `GIT_CONFIG_PARAMETERS`, validated `GIT_CONFIG_COUNT`, `--config-env` keys containing equals, config diagnostic wording, legacy `--edit`, malformed key rejection, and URL section-only matching. Remaining failures are tracked under the t1 family work.
 
 ## 2026-06-02 — t7300-clean
 

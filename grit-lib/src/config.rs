@@ -381,6 +381,9 @@ impl Parser {
 
         if let Some(eq_pos) = trimmed.find('=') {
             let raw_name = trimmed[..eq_pos].trim();
+            if raw_name.chars().any(char::is_whitespace) {
+                return None;
+            }
             let raw_value = trimmed[eq_pos + 1..].trim();
             // Strip inline comment (not inside quotes)
             let value = strip_inline_comment(raw_value);
@@ -390,7 +393,11 @@ impl Parser {
         } else {
             // Bare key (boolean true)
             let raw_name = strip_inline_comment(trimmed);
-            let key = self.make_key(raw_name.trim());
+            let raw_name = raw_name.trim();
+            if raw_name.chars().any(char::is_whitespace) {
+                return None;
+            }
+            let key = self.make_key(raw_name);
             Some((key, None))
         }
     }
