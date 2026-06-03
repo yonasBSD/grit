@@ -1185,3 +1185,7 @@ Updated: 2026-06-01
 - t6111 completion: after ordering adjacent direct-parent blocks for topo-order output,
   `./scripts/run-tests.sh t6111-rev-list-treesame.sh t6003-rev-list-topo-order.sh --verbose`
   passes `t6111` at 65/65 and refreshes adjacent `t6003` to 23/36.
+- t6006 log color focus: after making pretty `%C(auto)` color the following `%H`/`%h` placeholder
+  with the commit color under `--color`, `./scripts/run-tests.sh t6006-rev-list-format.sh`
+  improves from 64/80 to 65/80 and refreshed `data/test-files.csv` plus dashboards. Full
+  workspace/harness sweeps were skipped for this narrow increment.

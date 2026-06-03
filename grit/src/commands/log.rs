@@ -8848,6 +8848,16 @@ fn apply_format_string(
     signature: Option<&grit_lib::signing::SignatureCheck>,
 ) -> String {
     let hex = oid.to_hex();
+    let commit_color = || {
+        decoration_paint
+            .map(|p| p.commit.as_str())
+            .unwrap_or("\x1b[33m")
+    };
+    let reset_color = || {
+        decoration_paint
+            .map(|p| p.reset.as_str())
+            .unwrap_or("\x1b[m")
+    };
 
     // Alignment/truncation helpers
     #[derive(Clone, Copy)]
@@ -9063,6 +9073,7 @@ fn apply_format_string(
     }
 
     let mut pending_col: Option<ColSpec> = None;
+    let mut auto_color_next_hash = false;
     let mut result = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
 
@@ -9138,11 +9149,26 @@ fn apply_format_string(
             match chars.peek() {
                 Some('H') => {
                     chars.next();
-                    result.push_str(&hex);
+                    if auto_color_next_hash && use_color {
+                        result.push_str(commit_color());
+                        result.push_str(&hex);
+                        result.push_str(reset_color());
+                    } else {
+                        result.push_str(&hex);
+                    }
+                    auto_color_next_hash = false;
                 }
                 Some('h') => {
                     chars.next();
-                    result.push_str(&hex[..abbrev_len.min(hex.len())]);
+                    let abbreviated = &hex[..abbrev_len.min(hex.len())];
+                    if auto_color_next_hash && use_color {
+                        result.push_str(commit_color());
+                        result.push_str(abbreviated);
+                        result.push_str(reset_color());
+                    } else {
+                        result.push_str(abbreviated);
+                    }
+                    auto_color_next_hash = false;
                 }
                 Some('T') => {
                     chars.next();
@@ -9436,9 +9462,7 @@ fn apply_format_string(
                         } else if let Some(rest) = spec.strip_prefix("auto,") {
                             (false, rest)
                         } else if spec == "auto" {
-                            if use_color {
-                                result.push_str("\x1b[m");
-                            }
+                            auto_color_next_hash = use_color;
                             continue;
                         } else {
                             (false, spec.as_str())

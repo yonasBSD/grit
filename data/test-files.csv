@@ -1043,7 +1043,7 @@ t6002-rev-list-bisect	t6	yes	53	53	0	true	ok	0
 t6003-rev-list-topo-order	t6	yes	36	23	13	false	ok	0
 t6004-rev-list-path-optim	t6	yes	7	7	0	true	ok	0
 t6005-rev-list-count	t6	yes	6	6	0	true	ok	0
-t6006-rev-list-format	t6	yes	80	64	16	false	ok	0
+t6006-rev-list-format	t6	yes	80	65	15	false	ok	0
 t6007-rev-list-cherry-pick-file	t6	yes	23	6	17	false	ok	0
 t6007-rev-list-cherry-pick-status	t6	yes	29	29	0	true	ok	0
 t6008-rev-list-submodule	t6	yes	2	2	0	true	ok	0
