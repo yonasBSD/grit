@@ -6797,6 +6797,46 @@ fn merge_trees(
                             auto_merge_hint_path: None,
                         });
                     }
+                } else if path_has_tree_descendant(&ours_entries, theirs_new_path) {
+                    // Ours turned `theirs_new_path` into a directory (e.g. a directory rename put
+                    // a subtree there) while theirs renamed a deleted-on-our-side file into it.
+                    // git relocates the file to `theirs_new_path~THEIRS`, staging base (the rename
+                    // source's base blob) at stage 1 and theirs at stage 3, and reports
+                    // file/directory + modify/delete at that relocated path — not at the bare
+                    // directory path. Handle it here so the generic D/F pass does not also fire.
+                    let side_path = format!("{new_path_str}~{their_name}");
+                    let mut be_side = be.clone();
+                    be_side.path = side_path.as_bytes().to_vec();
+                    stage_entry(&mut index, &be_side, 1);
+                    let mut te_side = te.clone();
+                    te_side.path = side_path.as_bytes().to_vec();
+                    stage_entry(&mut index, &te_side, 3);
+                    if let Ok(obj) = repo.odb.read(&te.oid) {
+                        conflict_files.push((side_path.clone(), obj.data));
+                    }
+                    conflict_descriptions.push(ConflictDescription {
+                        kind: "file/directory",
+                        body: format!(
+                            "directory in the way of {new_path_str} from {their_name}; moving it to {side_path} instead."
+                        ),
+                        subject_path: side_path.clone(),
+                        remerge_anchor_path: Some(new_path_str.clone()),
+                        rename_rr_ours_dest: None,
+                        rename_rr_theirs_dest: None,
+                        auto_merge_hint_path: None,
+                    });
+                    conflict_descriptions.push(ConflictDescription {
+                        kind: "modify/delete",
+                        body: format!(
+                            "{side_path} deleted in {ours_label} and modified in {their_name}.  Version {their_name} of {side_path} left in tree."
+                        ),
+                        subject_path: side_path,
+                        remerge_anchor_path: Some(new_path_str.clone()),
+                        rename_rr_ours_dest: None,
+                        rename_rr_theirs_dest: None,
+                        auto_merge_hint_path: None,
+                    });
+                    handled_paths.insert(theirs_new_path.clone());
                 } else {
                     let mut be_at_new = be.clone();
                     be_at_new.path = theirs_new_path.clone();
@@ -8535,6 +8575,12 @@ fn apply_directory_file_conflicts(
 ) -> Result<()> {
     let mut df_cases: Vec<(Vec<u8>, bool)> = Vec::new();
     for path in all_paths {
+        // A directory/file conflict already resolved upstream (e.g. a directory-rename +
+        // rename/delete that relocated the file to `path~SIDE`) is marked handled; do not
+        // re-stage it here.
+        if handled_paths.contains(path) {
+            continue;
+        }
         let o = ours_entries.get(path);
         let t = theirs_entries.get(path);
         if let Some(oe) = o {
