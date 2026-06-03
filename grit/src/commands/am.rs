@@ -1037,7 +1037,10 @@ fn apply_remaining(
         }
 
         match apply_one_patch(repo, &patch, &effective_opts) {
-            Ok(()) => {
+            Ok(outcome) => {
+                if matches!(outcome, ApplyOutcome::AlreadyApplied) && !effective_opts.quiet {
+                    println!("No changes -- Patch already applied.");
+                }
                 write_am_abort_safety(git_dir)?;
                 next += 1;
                 fs::write(state_dir.join("next"), next.to_string())?;
@@ -1063,8 +1066,17 @@ fn apply_remaining(
     Ok(())
 }
 
+/// Outcome of applying a single mbox patch.
+enum ApplyOutcome {
+    /// The patch was applied and a commit created.
+    Applied,
+    /// After a 3-way merge the result was identical to `HEAD`; Git prints
+    /// "No changes -- Patch already applied." and skips this patch.
+    AlreadyApplied,
+}
+
 /// Apply a single mbox patch: apply the diff, then create a commit.
-fn apply_one_patch(repo: &Repository, patch: &MboxPatch, opts: &AmOptions) -> Result<()> {
+fn apply_one_patch(repo: &Repository, patch: &MboxPatch, opts: &AmOptions) -> Result<ApplyOutcome> {
     let git_dir = &repo.git_dir;
     let work_tree = repo
         .work_tree
@@ -1131,7 +1143,7 @@ fn apply_one_patch(repo: &Repository, patch: &MboxPatch, opts: &AmOptions) -> Re
             }
 
             let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
-            return Ok(());
+            return Ok(ApplyOutcome::Applied);
         } else {
             bail!("Patch is empty.");
         }
@@ -1150,9 +1162,15 @@ fn apply_one_patch(repo: &Repository, patch: &MboxPatch, opts: &AmOptions) -> Re
 
     let strip = opts.apply.p_value as usize;
 
+    // Whether this patch went through the three-way fallback (direct apply failed and
+    // the merge reconstructed the result). Git only reports "Patch already applied"
+    // and skips an empty result when it fell back to the three-way path.
+    let mut used_three_way_fallback = false;
+
     if opts.three_way {
         if let Some(()) = apply_am_format_patch_tree_merge(repo, patch)? {
             // `format-patch` mbox: cherry-pick-style tree merge (directory renames, etc.).
+            used_three_way_fallback = true;
         } else {
             let apply_result = apply_patch_to_worktree(
                 work_tree,
@@ -1173,6 +1191,7 @@ fn apply_one_patch(repo: &Repository, patch: &MboxPatch, opts: &AmOptions) -> Re
                 }
                 Err(_e) => {
                     apply_three_way(repo, patch, strip)?;
+                    used_three_way_fallback = true;
                 }
             }
         }
@@ -1214,6 +1233,14 @@ fn apply_one_patch(repo: &Repository, patch: &MboxPatch, opts: &AmOptions) -> Re
         let obj = repo.odb.read(head_oid)?;
         let commit = parse_commit(&obj.data)?;
         if tree_oid == commit.tree && !opts.allow_empty {
+            // The patch produced no change relative to HEAD. When we reached this via
+            // the three-way fallback, the change is already present upstream: Git prints
+            // "No changes -- Patch already applied." and skips the patch (no commit).
+            // Otherwise this is the "did you forget to git add" error.
+            if used_three_way_fallback {
+                let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
+                return Ok(ApplyOutcome::AlreadyApplied);
+            }
             bail!("patch does not apply");
         }
     }
@@ -1230,7 +1257,7 @@ fn apply_one_patch(repo: &Repository, patch: &MboxPatch, opts: &AmOptions) -> Re
 
     let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
 
-    Ok(())
+    Ok(ApplyOutcome::Applied)
 }
 
 /// When the mbox carries a `git format-patch` commit OID, run a full tree merge (rename + directory
