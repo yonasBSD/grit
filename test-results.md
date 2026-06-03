@@ -588,3 +588,8 @@ Updated: 2026-06-01
 - t6438 submodule directory/file conflict focus: initial official refresh for the claimed file,
   `./scripts/run-tests.sh t6438-submodule-directory-file-conflicts.sh --verbose`, reports 39/56
   and refreshed `data/test-files.csv` plus dashboards.
+- t6438 submodule replacement focus: after aborting merges that would replace checked-out
+  submodules with regular files/directories and rebuilding `target/release/grit`,
+  `./scripts/run-tests.sh t6438-submodule-directory-file-conflicts.sh --verbose` reports 55/56
+  and refreshed `data/test-files.csv` plus dashboards. Remaining failure is `merge --no-ff`
+  replacing a directory with a submodule.

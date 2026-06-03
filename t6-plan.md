@@ -40,7 +40,7 @@ Completed rev-list/revision files: `t6004`, `t6005`, `t6007-rev-list-cherry-pick
 
 - [x] `t6423-merge-rename-directories.sh` — 80/82 passing, 0 failing, with 2 expected
   failures.
-- [~] `t6438-submodule-directory-file-conflicts.sh` — 39/56 passing, 17 failing.
+- [~] `t6438-submodule-directory-file-conflicts.sh` — 55/56 passing, 1 failing.
 - [ ] `t6430-merge-recursive.sh` — 11/36 passing, 25 failing.
 - [ ] `t6402-merge-rename.sh` — 24/46 passing, 22 failing.
 - [ ] `t6416-recursive-corner-cases.sh` — 24/37 passing, 13 failing, with 3 expected failures.

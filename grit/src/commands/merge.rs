@@ -2928,8 +2928,23 @@ fn bail_if_merge_would_overwrite_local_changes(
         ignore_case && current_tracked_paths_folded.contains(&path_ascii_lowercase_components(path))
     };
 
-    // Merge-ort resolves submodule vs tree at the same path as index conflicts (t6437); do not
-    // abort here — checked-out submodules are preserved on disk while conflict stages are written.
+    // Merge-ort resolves submodule-vs-tree conflicts in the index (t6437), but a clean result that
+    // replaces a checked-out gitlink with files would remove the submodule work tree. Abort before
+    // `remove_deleted_files` can delete the checkout (t6438).
+    for (path, old_entry) in old_entries {
+        if old_entry.mode != MODE_GITLINK {
+            continue;
+        }
+        if !merge_result_replaces_checked_out_gitlink(path, new_index) {
+            continue;
+        }
+
+        let rel = String::from_utf8_lossy(path);
+        let abs = work_tree.join(rel.as_ref());
+        if abs.exists() && abs.join(".git").exists() {
+            bail!("Cannot update submodule:\n{}", rel);
+        }
+    }
 
     // Dirty tracked paths from HEAD that would change in the target.
     for (path, old_entry) in old_entries {
@@ -3158,6 +3173,37 @@ fn bail_if_merge_would_overwrite_local_changes(
     }
 
     Ok(())
+}
+
+fn merge_result_replaces_checked_out_gitlink(path: &[u8], new_index: &Index) -> bool {
+    if merge_result_has_relocated_gitlink_conflict(path, new_index) {
+        return false;
+    }
+
+    let same_path_replaced = new_index
+        .entries
+        .iter()
+        .any(|entry| entry.stage() == 0 && entry.path == path && entry.mode != MODE_GITLINK);
+    if same_path_replaced {
+        return true;
+    }
+
+    new_index.entries.iter().any(|entry| {
+        entry.stage() == 0
+            && entry.path.len() > path.len()
+            && entry.path.starts_with(path)
+            && entry.path.get(path.len()) == Some(&b'/')
+    })
+}
+
+fn merge_result_has_relocated_gitlink_conflict(path: &[u8], new_index: &Index) -> bool {
+    new_index.entries.iter().any(|entry| {
+        entry.mode == MODE_GITLINK
+            && entry.stage() != 0
+            && entry.path.len() > path.len()
+            && entry.path.starts_with(path)
+            && entry.path.get(path.len()) == Some(&b'~')
+    })
 }
 
 fn is_worktree_entry_dirty(repo: &Repository, entry: &IndexEntry, abs_path: &Path) -> Result<bool> {
