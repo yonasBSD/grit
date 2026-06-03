@@ -1,3 +1,7 @@
+## 2026-06-03 — t11530-switch-orphan-track
+
+- Focus harness: `./scripts/run-tests.sh t11530-switch-orphan-track.sh --verbose` passes 30/30 after switching synthetic `master` branch references to `main`.
+
 ## 2026-06-03 — t10860-switch-force-create
 
 - Focus harness: `./scripts/run-tests.sh t10860-switch-force-create.sh --verbose` passes 30/30 after switching synthetic `master` branch references to `main`.
