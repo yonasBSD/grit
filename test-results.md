@@ -1,3 +1,7 @@
+## 2026-06-03 — t1501-work-tree partial
+
+- Focus harness improved from 32/39 to 36/39 after `rev-parse --git-common-dir` uses the canonical common dir for admin gitdirs with `commondir`. Remaining failures are relative `GIT_WORK_TREE` diff and diff-index worktree behavior.
+
 ## 2026-06-03 — t1004-read-tree-m-u-wf
 
 - Focus harness: `./scripts/run-tests.sh t1004-read-tree-m-u-wf.sh --verbose` passes 17/17 after merge-recursive auto-resolves the simple relocated D/F case.

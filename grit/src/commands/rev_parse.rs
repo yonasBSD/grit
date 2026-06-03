@@ -669,6 +669,16 @@ pub fn run(args: Args) -> Result<()> {
                 Err(_) => return fail_verify(quiet, false),
             }
         } else {
+            if spec.contains("@{") {
+                if let Ok(Some(log_ref)) = grit_lib::rev_parse::reflog_walk_refname(current, spec) {
+                    if grit_lib::reflog::read_reflog(&current.git_dir, &log_ref)
+                        .map(|entries| entries.is_empty())
+                        .unwrap_or(true)
+                    {
+                        return fail_verify(quiet, true);
+                    }
+                }
+            }
             match grit_lib::rev_parse::resolve_revision_for_verify(current, spec) {
                 Ok(oid) => oid,
                 Err(e) => return fail_verify_resolve(quiet, &e, Some(current)),
@@ -945,12 +955,17 @@ pub fn run(args: Args) -> Result<()> {
                 };
                 let common_git_dir =
                     refs::common_dir(&current.git_dir).unwrap_or_else(|| current.git_dir.clone());
+                let default_mode = if current.git_dir.join("commondir").exists() {
+                    PathDefaultMode::Canonical
+                } else {
+                    PathDefaultMode::RelativeToCwd
+                };
                 print_rev_parse_path(
                     &common_git_dir,
                     &cwd,
                     cli_prefix_path.as_deref(),
                     *fmt,
-                    PathDefaultMode::RelativeToCwd,
+                    default_mode,
                 );
             }
             Action::ShowAbsoluteGitDir => {
