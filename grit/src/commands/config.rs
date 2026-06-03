@@ -1281,11 +1281,12 @@ fn cmd_blob(args: &Args, blob_spec: &str) -> Result<()> {
     // --list
     if args.list {
         for entry in config.entries() {
+            let prefix = blob_config_prefix(args, blob_spec);
             let val = entry.value.as_deref().unwrap_or("true");
             if args.name_only {
-                print!("{}{}", entry.key, terminator);
+                print!("{}{}{}", prefix, entry.key, terminator);
             } else {
-                print!("{}={}{}", entry.key, val, terminator);
+                print!("{}{}={}{}", prefix, entry.key, val, terminator);
             }
         }
         return Ok(());
@@ -1409,11 +1410,12 @@ fn cmd_blob(args: &Args, blob_spec: &str) -> Result<()> {
             }
             ConfigSubcommand::List(_) => {
                 for entry in config.entries() {
+                    let prefix = blob_config_prefix(args, blob_spec);
                     let val = entry.value.as_deref().unwrap_or("true");
                     if args.name_only {
-                        print!("{}{}", entry.key, terminator);
+                        print!("{}{}{}", prefix, entry.key, terminator);
                     } else {
-                        print!("{}={}{}", entry.key, val, terminator);
+                        print!("{}{}={}{}", prefix, entry.key, val, terminator);
                     }
                 }
                 Ok(())
@@ -1423,6 +1425,17 @@ fn cmd_blob(args: &Args, blob_spec: &str) -> Result<()> {
     } else {
         bail!("--blob requires a key or --list");
     }
+}
+
+fn blob_config_prefix(args: &Args, blob_spec: &str) -> String {
+    let mut prefix = String::new();
+    if args.show_scope {
+        prefix.push_str("command	");
+    }
+    if args.show_origin {
+        prefix.push_str(&format!("blob:{blob_spec}	"));
+    }
+    prefix
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
