@@ -2800,7 +2800,7 @@ pub(crate) fn extract_globals(
 }
 
 fn resolve_config_env(spec: &str) -> Result<String> {
-    let Some((key, envvar)) = spec.split_once('=') else {
+    let Some((key, envvar)) = spec.rsplit_once('=') else {
         bail!("invalid config format: {spec}");
     };
     if key.is_empty() {
@@ -2818,7 +2818,20 @@ fn resolve_config_env(spec: &str) -> Result<String> {
             envvar, key
         )
     })?;
-    Ok(format!("{key}={value}"))
+    if key.contains('=') {
+        Ok(format!(
+            "\u{1}{}={}",
+            quote_config_parameter_atom(key),
+            quote_config_parameter_atom(&value)
+        ))
+    } else {
+        Ok(format!("{key}={value}"))
+    }
+}
+
+fn quote_config_parameter_atom(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("'{escaped}'")
 }
 
 /// Apply global options (env vars, chdir).
@@ -2849,7 +2862,11 @@ pub(crate) fn apply_globals(opts: &GlobalOpts) -> Result<()> {
         let extra: String = opts
             .config_overrides
             .iter()
-            .map(|kv| format!("'{}'", kv))
+            .map(|kv| {
+                kv.strip_prefix('\u{1}')
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("'{}'", kv))
+            })
             .collect::<Vec<_>>()
             .join(" ");
         // Git's config reader applies the last occurrence of a key. Inherited

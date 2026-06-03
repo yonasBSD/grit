@@ -826,26 +826,15 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
     pub fn from_git_config_parameters(path: &Path, raw: &str) -> Result<Self> {
         let mut entries = Vec::new();
         let pseudo_path = path.to_path_buf();
-        for entry in parse_config_parameters(raw) {
-            if let Some((key, val)) = entry.split_once('=') {
-                let canon = canonical_key(key.trim())?;
-                entries.push(ConfigEntry {
-                    key: canon,
-                    value: Some(val.to_owned()),
-                    scope: ConfigScope::Command,
-                    file: Some(pseudo_path.clone()),
-                    line: 0,
-                });
-            } else {
-                let canon = canonical_key(entry.trim())?;
-                entries.push(ConfigEntry {
-                    key: canon,
-                    value: None,
-                    scope: ConfigScope::Command,
-                    file: Some(pseudo_path.clone()),
-                    line: 0,
-                });
-            }
+        for (key, value) in parse_config_parameter_entries(raw)? {
+            let canon = canonical_key(key.trim())?;
+            entries.push(ConfigEntry {
+                key: canon,
+                value,
+                scope: ConfigScope::Command,
+                file: Some(pseudo_path.clone()),
+                line: 0,
+            });
         }
         Ok(Self {
             path: path.to_path_buf(),
@@ -1872,17 +1861,7 @@ impl ConfigSet {
         }
 
         // GIT_CONFIG_COUNT / GIT_CONFIG_KEY_N / GIT_CONFIG_VALUE_N
-        if let Ok(count_str) = std::env::var("GIT_CONFIG_COUNT") {
-            if let Ok(count) = count_str.parse::<usize>() {
-                for i in 0..count {
-                    let key_var = format!("GIT_CONFIG_KEY_{i}");
-                    let val_var = format!("GIT_CONFIG_VALUE_{i}");
-                    if let (Ok(key), Ok(val)) = (std::env::var(&key_var), std::env::var(&val_var)) {
-                        let _ = set.add_command_override(&key, &val);
-                    }
-                }
-            }
-        }
+        merge_env_config_count(&mut set)?;
 
         // GIT_CONFIG_PARAMETERS — used by `git -c key=value`.
         if let Ok(params) = std::env::var("GIT_CONFIG_PARAMETERS") {
@@ -1891,12 +1870,8 @@ impl ConfigSet {
                 let cmd_file = ConfigFile::from_git_config_parameters(pseudo, &params)?;
                 Self::merge_with_includes(&mut set, &cmd_file, proc, 0, &ctx)?;
             } else if !params.trim().is_empty() {
-                for entry in parse_config_parameters(&params) {
-                    if let Some((key, val)) = entry.split_once('=') {
-                        let _ = set.add_command_override(key.trim(), val);
-                    } else {
-                        let _ = set.add_command_override(entry.trim(), "true");
-                    }
+                for (key, value) in parse_config_parameter_entries(&params)? {
+                    set.add_command_override(key.trim(), value.as_deref().unwrap_or("true"))?;
                 }
             }
         }
@@ -2049,25 +2024,11 @@ impl ConfigSet {
             }
         }
 
-        if let Ok(count_str) = std::env::var("GIT_CONFIG_COUNT") {
-            if let Ok(count) = count_str.parse::<usize>() {
-                for i in 0..count {
-                    let key_var = format!("GIT_CONFIG_KEY_{i}");
-                    let val_var = format!("GIT_CONFIG_VALUE_{i}");
-                    if let (Ok(key), Ok(val)) = (std::env::var(&key_var), std::env::var(&val_var)) {
-                        let _ = set.add_command_override(&key, &val);
-                    }
-                }
-            }
-        }
+        merge_env_config_count(&mut set)?;
 
         if let Ok(params) = std::env::var("GIT_CONFIG_PARAMETERS") {
-            for entry in parse_config_parameters(&params) {
-                if let Some((key, val)) = entry.split_once('=') {
-                    let _ = set.add_command_override(key.trim(), val);
-                } else {
-                    let _ = set.add_command_override(entry.trim(), "true");
-                }
+            for (key, value) in parse_config_parameter_entries(&params)? {
+                set.add_command_override(key.trim(), value.as_deref().unwrap_or("true"))?;
             }
         }
 
@@ -2767,25 +2728,56 @@ pub fn git_config_parameters_last_value(raw: &str, key: &str) -> Option<String> 
         return None;
     };
     let mut last: Option<String> = None;
-    for entry in parse_config_parameters(raw) {
-        if let Some((k, v)) = entry.split_once('=') {
-            if canonical_key(k.trim()).ok().as_ref() == Some(&canon) {
-                last = Some(v.to_owned());
-            }
-        } else if canonical_key(entry.trim()).ok().as_ref() == Some(&canon) {
-            last = Some("true".to_owned());
+    let Ok(entries) = parse_config_parameter_entries(raw) else {
+        return None;
+    };
+    for (k, v) in entries {
+        if canonical_key(k.trim()).ok().as_ref() == Some(&canon) {
+            last = Some(v.unwrap_or_else(|| "true".to_owned()));
         }
     }
     last
 }
 
-pub fn parse_config_parameters(raw: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+fn parse_config_parameter_entries(raw: &str) -> Result<Vec<(String, Option<String>)>> {
+    let tokens = parse_config_parameter_tokens(raw)?;
+    Ok(tokens
+        .into_iter()
+        .filter_map(|token| {
+            if token.text.trim().is_empty() {
+                return None;
+            }
+            if let Some(pos) = token.outside_equals {
+                let key = token.text[..pos].to_owned();
+                let value = &token.text[pos + 1..];
+                let value = if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_owned())
+                };
+                Some((key, value))
+            } else if let Some((key, value)) = token.text.split_once('=') {
+                Some((key.to_owned(), Some(value.to_owned())))
+            } else {
+                Some((token.text, None))
+            }
+        })
+        .collect())
+}
+
+struct ConfigParameterToken {
+    text: String,
+    outside_equals: Option<usize>,
+}
+
+fn parse_config_parameter_tokens(raw: &str) -> Result<Vec<ConfigParameterToken>> {
+    let mut out = Vec::new();
     let mut buf = String::new();
+    let mut outside_equals = None;
     let mut in_single = false;
     let mut in_double = false;
-
     let mut chars = raw.chars().peekable();
+
     while let Some(ch) = chars.next() {
         if in_single {
             if ch == '\'' {
@@ -2801,23 +2793,35 @@ pub fn parse_config_parameters(raw: &str) -> Vec<String> {
                 continue;
             }
             if ch == '\\' {
-                if let Some(next) = chars.next() {
-                    let mapped = match next {
-                        'n' => '\n',
-                        't' => '\t',
-                        'r' => '\r',
-                        '"' => '"',
-                        '\\' => '\\',
-                        other => other,
-                    };
-                    buf.push(mapped);
-                }
+                let Some(next) = chars.next() else {
+                    return Err(Error::ConfigError(
+                        "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+                    ));
+                };
+                let mapped = match next {
+                    'n' => '\n',
+                    't' => '\t',
+                    'r' => '\r',
+                    '"' => '"',
+                    '\\' => '\\',
+                    other => other,
+                };
+                buf.push(mapped);
                 continue;
             }
             buf.push(ch);
             continue;
         }
 
+        if ch.is_whitespace() {
+            if !buf.is_empty() || outside_equals.is_some() {
+                out.push(ConfigParameterToken {
+                    text: std::mem::take(&mut buf),
+                    outside_equals: outside_equals.take(),
+                });
+            }
+            continue;
+        }
         if ch == '\'' {
             in_single = true;
             continue;
@@ -2826,22 +2830,76 @@ pub fn parse_config_parameters(raw: &str) -> Vec<String> {
             in_double = true;
             continue;
         }
-
-        if ch.is_whitespace() {
-            if !buf.is_empty() {
-                out.push(std::mem::take(&mut buf));
+        if ch == '\\' {
+            let Some(next) = chars.next() else {
+                return Err(Error::ConfigError(
+                    "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+                ));
+            };
+            if next == '\'' && chars.peek().is_some_and(|peek| peek.is_whitespace()) {
+                return Err(Error::ConfigError(
+                    "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+                ));
             }
+            buf.push(next);
             continue;
         }
-
+        if ch == '=' && outside_equals.is_none() {
+            outside_equals = Some(buf.len());
+        }
         buf.push(ch);
     }
 
-    if !buf.is_empty() {
-        out.push(buf);
+    if in_single || in_double {
+        return Err(Error::ConfigError(
+            "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+        ));
     }
+    if !buf.is_empty() || outside_equals.is_some() {
+        out.push(ConfigParameterToken {
+            text: buf,
+            outside_equals,
+        });
+    }
+    Ok(out)
+}
 
-    out
+pub fn parse_config_parameters(raw: &str) -> Vec<String> {
+    parse_config_parameter_entries(raw)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(key, value)| match value {
+            Some(value) => format!("{key}={value}"),
+            None => key,
+        })
+        .collect()
+}
+
+fn merge_env_config_count(set: &mut ConfigSet) -> Result<()> {
+    let Ok(count_str) = std::env::var("GIT_CONFIG_COUNT") else {
+        return Ok(());
+    };
+    if count_str.is_empty() {
+        return Ok(());
+    }
+    let count: usize = count_str
+        .parse()
+        .map_err(|_| Error::ConfigError("bogus count in GIT_CONFIG_COUNT".to_owned()))?;
+    if count > 1_000_000 {
+        return Err(Error::ConfigError(
+            "too many entries in GIT_CONFIG_COUNT".to_owned(),
+        ));
+    }
+    for i in 0..count {
+        let key_var = format!("GIT_CONFIG_KEY_{i}");
+        let val_var = format!("GIT_CONFIG_VALUE_{i}");
+        let key = std::env::var(&key_var)
+            .map_err(|_| Error::ConfigError(format!("missing config key {key_var}")))?;
+        let val = std::env::var(&val_var)
+            .map_err(|_| Error::ConfigError(format!("missing config value {val_var}")))?;
+        set.add_command_override(&key, &val)?;
+    }
+    Ok(())
 }
 
 /// Return candidate paths for the global config file, in priority order.
