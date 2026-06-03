@@ -10959,7 +10959,11 @@ fn write_commit_diff_body(
     } else {
         &entries_f
     };
-    if list_raw_name.is_empty() && list_patch.is_empty() {
+    // `--cc -p --stat` on a merge: even when the dense combined diff is empty,
+    // Git still prints the first-parent diffstat (t4066).
+    let merge_stat_from_first_parent =
+        combined_style && !args.stat.is_empty() && !entries.is_empty();
+    if list_raw_name.is_empty() && list_patch.is_empty() && !merge_stat_from_first_parent {
         return Ok(());
     }
     let has_patch = show_patch && !list_patch.is_empty();
