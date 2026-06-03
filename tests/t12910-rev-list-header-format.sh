@@ -148,7 +148,7 @@ test_expect_success 'setup branch for multi-ref tests' '
 	git checkout side &&
 	echo s1 >s1.txt && grit add s1.txt && grit commit -m "side-1" &&
 	echo s2 >s2.txt && grit add s2.txt && grit commit -m "side-2" &&
-	git checkout master)
+	git checkout main)
 '
 
 test_expect_success 'rev-list --count --all includes side branch' '
@@ -157,18 +157,18 @@ test_expect_success 'rev-list --count --all includes side branch' '
 	test_cmp expect actual
 '
 
-test_expect_success 'rev-list side..master shows master-only commits' '
-	(cd repo && grit rev-list side..master >../actual) &&
+test_expect_success 'rev-list side..main shows main-only commits' '
+	(cd repo && grit rev-list side..main >../actual) &&
 	test_line_count = 2 actual
 '
 
-test_expect_success 'rev-list master..side shows side-only commits' '
-	(cd repo && grit rev-list master..side >../actual) &&
+test_expect_success 'rev-list main..side shows side-only commits' '
+	(cd repo && grit rev-list main..side >../actual) &&
 	test_line_count = 2 actual
 '
 
-test_expect_success 'rev-list --count side..master' '
-	(cd repo && grit rev-list --count side..master >../actual) &&
+test_expect_success 'rev-list --count side..main' '
+	(cd repo && grit rev-list --count side..main >../actual) &&
 	echo 2 >expect &&
 	test_cmp expect actual
 '
@@ -179,14 +179,14 @@ test_expect_success 'rev-list --first-parent on linear history' '
 '
 
 test_expect_success 'rev-list --format=%s on range' '
-	(cd repo && grit rev-list --format="%s" side..master >../actual) &&
+	(cd repo && grit rev-list --format="%s" side..main >../actual) &&
 	grep "fifth" actual &&
 	grep "fourth" actual &&
 	! grep "third" actual
 '
 
 test_expect_success 'rev-list --skip on range' '
-	(cd repo && grit rev-list --skip=1 side..master >../actual) &&
+	(cd repo && grit rev-list --skip=1 side..main >../actual) &&
 	test_line_count = 1 actual
 '
 
