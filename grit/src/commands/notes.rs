@@ -326,7 +326,7 @@ pub fn run(args: Args) -> Result<()> {
             if no_separator {
                 None
             } else {
-                Some(separator.as_deref().unwrap_or("\n"))
+                Some(separator.as_deref().unwrap_or("\n\n"))
             },
         ),
         Some(NotesSubcommand::Show { object }) => show_note(&repo, &notes_ref, object.as_deref()),
@@ -359,7 +359,7 @@ pub fn run(args: Args) -> Result<()> {
             if no_separator {
                 None
             } else {
-                Some(separator.as_deref().unwrap_or("\n"))
+                Some(separator.as_deref().unwrap_or("\n\n"))
             },
         ),
         Some(NotesSubcommand::Edit {
@@ -386,7 +386,7 @@ pub fn run(args: Args) -> Result<()> {
             if no_separator {
                 None
             } else {
-                Some(separator.as_deref().unwrap_or("\n"))
+                Some(separator.as_deref().unwrap_or("\n\n"))
             },
         ),
         Some(NotesSubcommand::Copy {

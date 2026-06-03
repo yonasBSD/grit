@@ -13,6 +13,15 @@
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
+## 2026-06-03 — t3301-notes separator partial
+
+- Focus harness improved to 115/153 after default note fragment separation was changed to a
+  blank-line separator between multiple `-m`/`-F` fragments.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh t3321-notes-stripspace.sh`
+  reports `t3301` at 115/153 and `t3321` at 2/27.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3210-pack-refs
 
 - Focus harness: `./scripts/run-tests.sh t3210-pack-refs.sh` passes 29/29 after the synthetic
