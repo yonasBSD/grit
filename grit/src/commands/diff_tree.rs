@@ -1523,25 +1523,53 @@ fn diff_trees_toplevel(
                     std::cmp::Ordering::Equal => {
                         if o.oid != n.oid || o.mode != n.mode {
                             let path = o_name.into_owned();
-                            // A mode-only change (e.g. chmod) is Modified, not TypeChanged.
-                            // TypeChanged is only for actual type changes (blob ↔ symlink etc.)
                             let old_type = o.mode & 0o170000;
                             let new_type = n.mode & 0o170000;
-                            let status = if old_type != new_type {
-                                DiffStatus::TypeChanged
+                            let old_is_tree = old_type == 0o040000;
+                            let new_is_tree = new_type == 0o040000;
+                            if old_is_tree != new_is_tree {
+                                // A directory turning into a file (or vice versa) is not a
+                                // typechange in non-recursive diff-tree; git emits a separate
+                                // addition of the new entry followed by deletion of the old.
+                                result.push(DiffEntry {
+                                    status: DiffStatus::Added,
+                                    old_path: None,
+                                    new_path: Some(path.clone()),
+                                    old_mode: "000000".to_owned(),
+                                    new_mode: format!("{:06o}", n.mode),
+                                    old_oid: zero,
+                                    new_oid: n.oid,
+                                    score: None,
+                                });
+                                result.push(DiffEntry {
+                                    status: DiffStatus::Deleted,
+                                    old_path: Some(path),
+                                    new_path: None,
+                                    old_mode: format!("{:06o}", o.mode),
+                                    new_mode: "000000".to_owned(),
+                                    old_oid: o.oid,
+                                    new_oid: zero,
+                                    score: None,
+                                });
                             } else {
-                                DiffStatus::Modified
-                            };
-                            result.push(DiffEntry {
-                                status,
-                                old_path: Some(path.clone()),
-                                new_path: Some(path),
-                                old_mode: format!("{:06o}", o.mode),
-                                new_mode: format!("{:06o}", n.mode),
-                                old_oid: o.oid,
-                                new_oid: n.oid,
-                                score: None,
-                            });
+                                // A mode-only change (e.g. chmod) is Modified, not TypeChanged.
+                                // TypeChanged is only for actual type changes (blob ↔ symlink etc.)
+                                let status = if old_type != new_type {
+                                    DiffStatus::TypeChanged
+                                } else {
+                                    DiffStatus::Modified
+                                };
+                                result.push(DiffEntry {
+                                    status,
+                                    old_path: Some(path.clone()),
+                                    new_path: Some(path),
+                                    old_mode: format!("{:06o}", o.mode),
+                                    new_mode: format!("{:06o}", n.mode),
+                                    old_oid: o.oid,
+                                    new_oid: n.oid,
+                                    score: None,
+                                });
+                            }
                         }
                         oi += 1;
                         ni += 1;

@@ -3970,12 +3970,20 @@ fn no_index_apply_textconv(
 ///
 /// Run `diff --no-index <path_a> <path_b>` — compare two files outside a repo.
 fn run_no_index(args: Args) -> Result<()> {
-    // Collect paths (skip "--" separators and unrecognized flags)
-    let paths: Vec<&String> = args
-        .args
-        .iter()
-        .filter(|a| a.as_str() != "--" && !a.starts_with('-'))
-        .collect();
+    // Collect paths (skip "--" separators and unrecognized flags). Everything
+    // after a literal "--" is a pathspec, including a bare "-" which means
+    // standard input. A bare "-" outside of "--" is also treated as a path.
+    let mut paths: Vec<&String> = Vec::new();
+    let mut after_dd = false;
+    for a in args.args.iter() {
+        if a.as_str() == "--" {
+            after_dd = true;
+            continue;
+        }
+        if after_dd || a.as_str() == "-" || !a.starts_with('-') {
+            paths.push(a);
+        }
+    }
     if paths.len() != 2 {
         bail!("diff --no-index requires exactly two paths");
     }
@@ -4043,8 +4051,15 @@ fn run_no_index(args: Args) -> Result<()> {
         }
     }
 
-    // Read file or symlink target (for symlinks, read the target path as content)
+    // Read file or symlink target (for symlinks, read the target path as content).
+    // A bare "-" means read from standard input.
     let read_path_or_symlink = |p: &Path, name: &str| -> Result<Vec<u8>> {
+        if name == "-" {
+            let mut buf = Vec::new();
+            io::Read::read_to_end(&mut io::stdin().lock(), &mut buf)
+                .context("could not read from standard input")?;
+            return Ok(buf);
+        }
         if let Ok(meta) = std::fs::symlink_metadata(p) {
             if meta.file_type().is_symlink() {
                 return std::fs::read_link(p)
