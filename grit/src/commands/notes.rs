@@ -935,12 +935,20 @@ fn ordered_note_fragments_from_argv(
     }
     let multi = out.len() > 1;
     let mut previous_other = false;
+    let last_index = out.len().saturating_sub(1);
     Ok(Some(
         out.into_iter()
-            .map(|fragment| match fragment {
+            .enumerate()
+            .map(|(idx, fragment)| match fragment {
                 Fragment::Message(mut value) => {
                     if add_newline_to_multiple_messages && multi {
-                        value.push('\n');
+                        if value.bytes().all(|b| b == b'\n') {
+                            if idx != last_index {
+                                value.push('\n');
+                            }
+                        } else if !value.ends_with('\n') {
+                            value.push('\n');
+                        }
                     }
                     previous_other = false;
                     value
@@ -1235,7 +1243,12 @@ Please use 'git notes add -f -m/-F/-c/-C' instead."
         }
         if !frag.is_empty() {
             if !base.is_empty() {
-                append_separator(&mut base, separator);
+                let base_separator = if no_stripspace && separator.is_none() {
+                    Some("\n")
+                } else {
+                    separator
+                };
+                append_separator(&mut base, base_separator);
             }
             base.push_str(&frag);
         }
