@@ -243,7 +243,7 @@ t11560-cherry-pick-signoff-edit	t1	yes	32	32	0	true	ok	0
 t11570-for-each-ref-creatordate	t1	yes	35	35	0	true	ok	0
 t11580-show-ref-heads-tags	t1	yes	34	34	0	true	ok	0
 t11590-update-ref-reflog	t1	yes	31	31	0	true	ok	0
-t11600-symbolic-ref-bare-worktree	t1	yes	31	18	13	false	ok	0
+t11600-symbolic-ref-bare-worktree	t1	yes	31	31	0	true	ok	0
 t11620-diff-no-index-binary	t1	yes	36	36	0	true	ok	0
 t11630-diff-cached-subdir	t1	yes	35	35	0	true	ok	0
 t11640-diff-tree-format-patch	t1	yes	37	37	0	true	ok	0

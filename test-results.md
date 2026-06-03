@@ -1,3 +1,7 @@
+## 2026-06-03 — t11600-symbolic-ref-bare-worktree
+
+- Focus harness: `./scripts/run-tests.sh t11600-symbolic-ref-bare-worktree.sh --verbose` passes 31/31 after isolating setup and using absolute repo paths to avoid CWD leakage.
+
 ## 2026-06-03 — t12970-branch-verbose-abbrev
 
 - Focus harness: `./scripts/run-tests.sh t12970-branch-verbose-abbrev.sh --verbose` passes 34/34 after aligning branch verbose/show-current expectations with `main`.
