@@ -1,3 +1,12 @@
+## 2026-06-03 — t3210-pack-refs
+
+- Focus harness: `./scripts/run-tests.sh t3210-pack-refs.sh` passes 29/29 after the synthetic
+  fixture explicitly requests its expected `master` initial branch.
+- Branch/refs/range-diff group sweep: `./scripts/run-tests.sh t3200-branch.sh
+  t3201-branch-contains.sh t3202-show-branch.sh t3203-branch-output.sh
+  t3204-branch-name-interpretation.sh t3205-branch-color.sh t3206-branch-advanced.sh
+  t3206-range-diff.sh t3207-branch-submodule.sh t3210-pack-refs.sh t3211-peel-ref.sh` all pass.
+
 ## 2026-06-03 — t3204-branch-name-interpretation
 
 - Focus harness: `./scripts/run-tests.sh t3204-branch-name-interpretation.sh` passes 16/16 after

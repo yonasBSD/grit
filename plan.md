@@ -54,8 +54,13 @@
     compound `@{-N}@{upstream}` branch arguments in create/delete/upstream modes, preserving branch
     description trailing blank lines, and keeping `branch -r -D @{-N}` from deleting a same-named
     remote-tracking branch.
-  - Current focus: `t3210-pack-refs.sh` (29 total, 27 passed, 2 failing), final file in the
-    branch/refs/range-diff/pack-refs group.
+  - Completed: `t3210-pack-refs.sh` (29/29) after restoring its synthetic fixture to use the
+    `master` initial branch it expects when checking packed refs.
+  - Branch/refs/range-diff/pack-refs group sweep verified: `t3200`, `t3201`, `t3202`, `t3203`,
+    `t3204`, `t3205`, `t3206-branch-advanced`, `t3206-range-diff`, `t3207`, `t3210`, and
+    `t3211` all pass.
+  - Current focus: `t3301-notes.sh` (153 total, 112 passed, 41 failing), first file in the notes
+    group.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ## Active task — t6 family 100% pass
