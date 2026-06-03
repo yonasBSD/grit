@@ -257,7 +257,7 @@ t11770-branch-set-upstream	t1	yes	37	37	0	true	ok	0
 t11780-tag-verify-list	t1	yes	36	36	0	true	ok	0
 t11920-diff-no-index-permissions	t1	yes	36	36	0	true	ok	0
 t11930-diff-cached-empty-tree	t1	yes	37	37	0	true	ok	0
-t11940-diff-tree-merge-base	t1	yes	33	17	16	false	ok	0
+t11940-diff-tree-merge-base	t1	yes	33	33	0	true	ok	0
 t11950-diff-stat-binary-text	t1	yes	33	33	0	true	ok	0
 t11960-diff-index-renamed	t1	yes	33	33	0	true	ok	0
 t11970-status-ignored-tracked	t1	yes	32	32	0	true	ok	0

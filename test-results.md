@@ -1,3 +1,7 @@
+## 2026-06-03 — t11940-diff-tree-merge-base
+
+- Focus harness: `./scripts/run-tests.sh t11940-diff-tree-merge-base.sh --verbose` passes 33/33 after aligning diff-tree/merge-base fixture branch references with `main`.
+
 ## 2026-06-03 — t1406-submodule-ref-store
 
 - Focus harness: `./scripts/run-tests.sh t1406-submodule-ref-store.sh --verbose` passes 15/15 after routing `test-tool ref-store submodule:*` to the ref-store helper and fixing reflog entry order.
