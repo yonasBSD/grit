@@ -3346,8 +3346,9 @@ fn build_solo_interdiff_block(
             Some(v) => out.push_str(&format!("Range-diff against {v}:\n")),
             None => out.push_str("Range-diff:\n"),
         }
+        // Unlike interdiff, the range-diff body is NOT indented in git's output.
         let body = compute_range_diff(repo, spec, commits, creation_factor)?;
-        push_indented(&mut out, &body);
+        out.push_str(&body);
     }
     Ok(Some(out))
 }
@@ -3403,14 +3404,26 @@ fn compute_interdiff(
     Ok(out)
 }
 
-/// Compute the range-diff body for the cover letter. Not yet implemented in full; emit empty.
+/// Compute the range-diff body for a cover letter / solo patch: compare the previous range
+/// (`spec`, e.g. `boop~2..boop~1`) against the current series (`<first parent>..<last commit>`).
 fn compute_range_diff(
-    _repo: &Repository,
-    _spec: &str,
-    _commits: &[(ObjectId, CommitData)],
-    _creation_factor: Option<usize>,
+    repo: &Repository,
+    spec: &str,
+    commits: &[(ObjectId, CommitData)],
+    creation_factor: Option<usize>,
 ) -> Result<String> {
-    Ok(String::new())
+    let (first_oid, first_commit) = commits
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("empty series"))?;
+    let (last_oid, _) = commits
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("empty series"))?;
+    // New range: parent-of-first .. last. If the first commit is a root, use the commit itself.
+    let new_range = match first_commit.parents.first() {
+        Some(parent) => format!("{}..{}", parent.to_hex(), last_oid.to_hex()),
+        None => first_oid.to_hex(),
+    };
+    crate::commands::range_diff::compute_range_diff_body(repo, spec, &new_range, creation_factor)
 }
 
 /// Apply mboxrd `>From ` escaping to body lines if `mboxrd` is set.
