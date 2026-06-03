@@ -342,8 +342,8 @@ t12880-log-notes-display	t1	yes	34	34	0	true	ok	0
 t12890-log-grep-author	t1	yes	33	27	6	false	ok	0
 t12900-rev-list-cherry-pick	t1	yes	30	30	0	true	ok	0
 t12910-rev-list-header-format	t1	yes	32	25	7	false	ok	0
-t12920-rev-parse-parseopt	t1	yes	33	4	29	false	ok	0
-t12930-rev-parse-since-until	t1	yes	33	5	28	false	ok	0
+t12920-rev-parse-parseopt	t1	yes	33	33	0	true	ok	0
+t12930-rev-parse-since-until	t1	yes	33	33	0	true	ok	0
 t12940-config-set-all	t1	yes	35	35	0	true	ok	0
 t12950-config-regexp-match	t1	yes	33	33	0	true	ok	0
 t12960-init-quiet-template	t1	yes	36	36	0	true	ok	0

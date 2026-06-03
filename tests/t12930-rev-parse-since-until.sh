@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup history with tags and branches' '
+	(
 	grit init repo && cd repo &&
 	git config user.email "t@t.com" && git config user.name "T" &&
 	echo a >a.txt && grit add a.txt && grit commit -m "commit-A" &&
@@ -24,7 +25,8 @@ test_expect_success 'setup history with tags and branches' '
 	echo s1 >s1.txt && grit add s1.txt && grit commit -m "side-1" &&
 	echo s2 >s2.txt && grit add s2.txt && grit commit -m "side-2" &&
 	git tag tagS2 &&
-	git checkout master
+	git checkout main
+	)
 '
 
 test_expect_success 'rev-parse tagA resolves to commit-A hash' '
@@ -103,10 +105,10 @@ test_expect_success 'rev-parse side branch resolves' '
 	grep "^[0-9a-f]\{40\}$" actual
 '
 
-test_expect_success 'rev-parse side differs from master' '
+test_expect_success 'rev-parse side differs from main' '
 	(cd repo && grit rev-parse side >../side_hash) &&
-	(cd repo && grit rev-parse master >../master_hash) &&
-	! test_cmp side_hash master_hash
+	(cd repo && grit rev-parse main >../main_hash) &&
+	! test_cmp side_hash main_hash
 '
 
 test_expect_success 'rev-parse side~1 is side parent' '

@@ -6,12 +6,14 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	grit init repo && cd repo &&
 	git config user.email "t@t.com" && git config user.name "T" &&
 	echo hello >file.txt && grit add file.txt && grit commit -m "initial" &&
 	echo second >file2.txt && grit add file2.txt && grit commit -m "second" &&
 	echo third >file3.txt && grit add file3.txt && grit commit -m "third" &&
 	mkdir -p sub/deep
+	)
 '
 
 test_expect_success 'rev-parse HEAD returns 40-char hash' '
@@ -25,10 +27,10 @@ test_expect_success 'rev-parse HEAD matches git rev-parse HEAD' '
 	test_cmp git_out grit_out
 '
 
-test_expect_success 'rev-parse master returns same as HEAD' '
-	(cd repo && grit rev-parse master >../master_hash) &&
+test_expect_success 'rev-parse main returns same as HEAD' '
+	(cd repo && grit rev-parse main >../main_hash) &&
 	(cd repo && grit rev-parse HEAD >../head_hash) &&
-	test_cmp head_hash master_hash
+	test_cmp head_hash main_hash
 '
 
 test_expect_success 'rev-parse HEAD~1 returns parent' '
