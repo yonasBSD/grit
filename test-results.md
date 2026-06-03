@@ -1,3 +1,7 @@
+## 2026-06-03 — t12190-update-ref-deref-symref
+
+- Focus harness: `./scripts/run-tests.sh t12190-update-ref-deref-symref.sh --verbose` passes 35/35 after switching synthetic `master` references to `main`.
+
 ## 2026-06-03 — t11290-update-ref-atomic-batch
 
 - Focus harness: `./scripts/run-tests.sh t11290-update-ref-atomic-batch.sh --verbose` passes 33/33 after allowing implicit stdin batches to contain `verify` and `update` commands for the same ref; only mutating commands now trip duplicate-update detection.
