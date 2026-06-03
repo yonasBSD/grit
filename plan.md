@@ -9,6 +9,7 @@
   that file until `failing=0` before moving on.
   - Starting point: 368 in-scope rows; 234 already fully passing; 134 in-scope rows non-green.
   - Current first focus group: config/init/repo setup, starting with `t1300-config.sh` (now 442/497, failing=55 after initial config compatibility fixes).
+  - Current refs focus: `t1461-refs-list.sh` is now 359/428 after tracking atom fixes.
   - Skipped rows to audit after current in-scope rows are green: `t1016-compatObjectFormat`,
     `t1400-update-ref`, `t1407-worktree-ref-store`, `t1415-worktree-refs`,
     `t1419-exclude-refs`, `t1423-ref-backend`, `t1450-fsck`, `t1460-refs-migrate`.

@@ -1,3 +1,7 @@
+## 2026-06-03 — t1461-refs-list tracking atoms
+
+- Focus harness: `./scripts/run-tests.sh t1461-refs-list.sh --verbose` improved to 359/428 after adding ahead/behind tracking output for `%(upstream:track[short])` and `%(push:track[short])`, including `nobracket` modifier handling.
+
 ## 2026-06-03 — t1302-repo-version
 
 - Focus harness: `./scripts/run-tests.sh t1302-repo-version.sh --verbose` passes 18/18 after validating repository format for `apply --index` even when discovery rejects the repository, blocking destructive repack in precious-object repositories, and skipping prune during gc for precious-object repositories.

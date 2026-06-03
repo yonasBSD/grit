@@ -1916,22 +1916,19 @@ fn resolve_upstream(
     let upstream_ref = format!("refs/remotes/{remote}/{remote_branch}");
 
     match modifier {
-        Some("track") => {
-            // Simple ahead/behind tracking
+        Some(m) if modifier_has(m, "track") => {
             let upstream_oid = grit_lib::refs::resolve_ref(&repo.git_dir, &upstream_ref).ok();
-            match upstream_oid {
-                Some(up_oid) if Some(up_oid) == entry.oid => Ok(String::new()),
-                Some(_up_oid) => Ok("[differs]".to_owned()),
-                None => Ok("[gone]".to_owned()),
-            }
+            let no_bracket = modifier_has(m, "nobracket");
+            Ok(format_tracking_status(
+                repo,
+                entry.oid,
+                upstream_oid,
+                no_bracket,
+            ))
         }
         Some("trackshort") => {
             let upstream_oid = grit_lib::refs::resolve_ref(&repo.git_dir, &upstream_ref).ok();
-            match upstream_oid {
-                Some(up_oid) if Some(up_oid) == entry.oid => Ok("=".to_owned()),
-                Some(_) => Ok("<>".to_owned()),
-                None => Ok(String::new()),
-            }
+            Ok(format_tracking_short(repo, entry.oid, upstream_oid))
         }
         Some("short") => Ok(format!("{remote}/{remote_branch}")),
         Some(m)
@@ -1943,6 +1940,56 @@ fn resolve_upstream(
         Some(m) => Err(FormatError::Other(format!(
             "unsupported upstream modifier: {m}"
         ))),
+    }
+}
+
+fn modifier_has(modifier: &str, needle: &str) -> bool {
+    modifier.split(',').any(|part| part == needle)
+}
+
+fn format_tracking_status(
+    repo: &Repository,
+    oid: Option<ObjectId>,
+    target_oid: Option<ObjectId>,
+    no_bracket: bool,
+) -> String {
+    let Some(target_oid) = target_oid else {
+        return if no_bracket { "gone" } else { "[gone]" }.to_owned();
+    };
+    let Some(oid) = oid else {
+        return String::new();
+    };
+    let (ahead, behind) = compute_ahead_behind(repo, oid, target_oid);
+    let body = match (ahead, behind) {
+        (0, 0) => return String::new(),
+        (a, 0) => format!("ahead {a}"),
+        (0, b) => format!("behind {b}"),
+        (a, b) => format!("ahead {a}, behind {b}"),
+    };
+    if no_bracket {
+        body
+    } else {
+        format!("[{body}]")
+    }
+}
+
+fn format_tracking_short(
+    repo: &Repository,
+    oid: Option<ObjectId>,
+    target_oid: Option<ObjectId>,
+) -> String {
+    let Some(target_oid) = target_oid else {
+        return String::new();
+    };
+    let Some(oid) = oid else {
+        return String::new();
+    };
+    let (ahead, behind) = compute_ahead_behind(repo, oid, target_oid);
+    match (ahead > 0, behind > 0) {
+        (false, false) => "=".to_owned(),
+        (true, false) => ">".to_owned(),
+        (false, true) => "<".to_owned(),
+        (true, true) => "<>".to_owned(),
     }
 }
 
@@ -1977,6 +2024,14 @@ fn resolve_push(
     let push_ref = format!("refs/remotes/{remote}/{branch}");
 
     match modifier {
+        Some("track") => {
+            let push_oid = grit_lib::refs::resolve_ref(&repo.git_dir, &push_ref).ok();
+            Ok(format_tracking_status(repo, entry.oid, push_oid, false))
+        }
+        Some("trackshort") => {
+            let push_oid = grit_lib::refs::resolve_ref(&repo.git_dir, &push_ref).ok();
+            Ok(format_tracking_short(repo, entry.oid, push_oid))
+        }
         Some("short") => Ok(format!("{remote}/{branch}")),
         Some(m)
             if m.starts_with("lstrip=") || m.starts_with("rstrip=") || m.starts_with("strip=") =>
