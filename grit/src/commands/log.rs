@@ -1563,6 +1563,24 @@ fn log_uses_builtin_oneline(args: &Args) -> bool {
         || (!args.oneline && args.format.as_deref() == Some("oneline"))
 }
 
+/// Whether a blank line separates consecutive log entries (git log-tree.c `shown_one`
+/// behaviour). All builtin pretty formats (medium/short/full/fuller/raw) print a blank
+/// line between commits; `oneline` and user `format:`/`tformat:` strings do not (those are
+/// handled separately by the `is_format_separator` logic).
+fn log_uses_blank_separator(args: &Args) -> bool {
+    if log_uses_builtin_oneline(args) {
+        return false;
+    }
+    // Only the builtin multi-line pretty formats (and the default) print the blank
+    // separator. `oneline`, `reference`, `email`, and any user `format:`/`tformat:`/`%`
+    // string carry their own terminator.
+    match args.format.as_deref() {
+        None => true,
+        Some("medium") | Some("short") | Some("full") | Some("fuller") | Some("raw") => true,
+        _ => false,
+    }
+}
+
 /// Whether to load ref decorations and whether to use full ref names (`refs/heads/...`).
 ///
 /// Mirrors Git's handling of `--decorate`, `--no-decorate`, and raw argv scanning for
@@ -2491,6 +2509,10 @@ fn run_rev_list_log(
                 writeln!(out)?;
             }
         }
+        let blank_separator = log_uses_blank_separator(args);
+        if blank_separator && shown > 0 {
+            writeln!(out)?;
+        }
 
         format_commit(
             &mut out,
@@ -2529,6 +2551,7 @@ fn run_rev_list_log(
                 &head_state,
                 &mut notes_cache,
                 patch_context,
+                blank_separator,
             )?;
         }
         shown += 1;
@@ -2932,6 +2955,7 @@ fn run_graph_log(
                 &head_state,
                 &mut notes_cache,
                 patch_context,
+                false,
             )?;
         }
     }
@@ -4909,7 +4933,6 @@ pub fn run(mut args: Args) -> Result<()> {
             args.author_date_order,
         );
         let mut shown = 0usize;
-        let mut prev_had_notes = false;
         while let Some((oid, commit_data)) = iter.next_commit()? {
             if !commit_passes_post_walk_filters(
                 &repo,
@@ -4933,8 +4956,8 @@ pub fn run(mut args: Args) -> Result<()> {
                     writeln!(out)?;
                 }
             }
-            let this_has_notes = commit_has_notes_to_show(&oid, &mut notes_cache, &args);
-            if !is_format_separator && shown > 0 && prev_had_notes {
+            let blank_separator = log_uses_blank_separator(&args);
+            if blank_separator && shown > 0 {
                 writeln!(out)?;
             }
             let oneline_fmt = args.oneline || args.format.as_deref() == Some("oneline");
@@ -4987,13 +5010,13 @@ pub fn run(mut args: Args) -> Result<()> {
                     &head_state,
                     &mut notes_cache,
                     patch_context,
+                    blank_separator,
                 )?;
             }
             if flush_each {
                 out.flush()?;
             }
             shown += 1;
-            prev_had_notes = this_has_notes;
         }
     } else {
         let commits = walk_commits(
@@ -5129,7 +5152,7 @@ pub fn run(mut args: Args) -> Result<()> {
             commits
         };
 
-        let mut prev_had_notes = false;
+        let blank_separator = log_uses_blank_separator(&args);
         for (i, (oid, commit_data)) in commits.iter().enumerate() {
             if is_format_separator && i > 0 {
                 if args.null_terminator {
@@ -5138,8 +5161,9 @@ pub fn run(mut args: Args) -> Result<()> {
                     writeln!(out)?;
                 }
             }
-            let this_has_notes = commit_has_notes_to_show(oid, &mut notes_cache, &args);
-            if !is_format_separator && i > 0 && prev_had_notes {
+            // Builtin pretty formats print a blank line between consecutive entries
+            // (git log-tree.c `shown_one`).
+            if blank_separator && i > 0 {
                 writeln!(out)?;
             }
             let oneline_fmt = args.oneline || args.format.as_deref() == Some("oneline");
@@ -5192,9 +5216,9 @@ pub fn run(mut args: Args) -> Result<()> {
                     &head_state,
                     &mut notes_cache,
                     patch_context,
+                    blank_separator,
                 )?;
             }
-            prev_had_notes = this_has_notes;
         }
     }
 
@@ -5480,13 +5504,12 @@ pub fn run_no_walk(
         None
     };
 
-    let mut prev_had_notes = false;
+    let blank_separator = log_uses_blank_separator(args);
     for (i, (oid, commit_data)) in commits.iter().enumerate() {
         if is_format_separator && i > 0 {
             writeln!(out)?;
         }
-        let this_has_notes = commit_has_notes_to_show(oid, &mut notes_cache, args);
-        if !is_format_separator && i > 0 && prev_had_notes {
+        if blank_separator && i > 0 {
             writeln!(out)?;
         }
         format_commit(
@@ -5525,9 +5548,9 @@ pub fn run_no_walk(
                 &head_state,
                 &mut notes_cache,
                 patch_context,
+                blank_separator,
             )?;
         }
-        prev_had_notes = this_has_notes;
     }
 
     Ok(())
@@ -6425,6 +6448,7 @@ fn run_reflog_walk(
                 &head_state,
                 &mut notes_cache,
                 patch_context,
+                false,
             )?;
             if j > 0 {
                 writeln!(out)?;
@@ -10754,6 +10778,7 @@ fn write_commit_diff(
     head_for_decor: &HeadState,
     notes_cache: &mut NotesMapCache<'_>,
     patch_context: usize,
+    leading_blank: bool,
 ) -> Result<()> {
     let odb = &repo.odb;
     let git_dir = &repo.git_dir;
@@ -10782,6 +10807,9 @@ fn write_commit_diff(
             context_lines: patch_context,
             indent_heuristic,
         };
+        if leading_blank {
+            writeln!(out)?;
+        }
         return write_remerge_diff(out, repo, &info.tree, &info.parents, &opts);
     }
 
@@ -10810,6 +10838,11 @@ fn write_commit_diff(
             // First parent: the main `format_commit` was already printed; only extra headers
             // repeat the commit with `(from <parent>)` for parents 2+ (matches Git).
             if i > 0 {
+                // Separator blank line before each repeated commit header (git's
+                // `shown_one`), then `format_commit` re-prints the header+message.
+                if leading_blank {
+                    writeln!(out)?;
+                }
                 format_commit(
                     out,
                     commit_oid,
@@ -10843,6 +10876,7 @@ fn write_commit_diff(
                 false,
                 patch_context,
                 indent_heuristic,
+                leading_blank,
             )?;
         }
         return Ok(());
@@ -10896,6 +10930,7 @@ fn write_commit_diff(
         is_merge,
         patch_context,
         indent_heuristic,
+        leading_blank,
     )?;
 
     Ok(())
@@ -10930,6 +10965,7 @@ fn filter_diff_entries_by_pathspecs(entries: Vec<DiffEntry>, specs: &[String]) -
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_commit_diff_body(
     out: &mut impl Write,
     odb: &Odb,
@@ -10943,6 +10979,7 @@ fn write_commit_diff_body(
     treat_as_merge_for_format: bool,
     patch_context: usize,
     indent_heuristic: bool,
+    leading_blank: bool,
 ) -> Result<()> {
     let combined_style = merge_diff_is_combined_style(args, treat_as_merge_for_format, git_dir)?;
     let entries_owned: Vec<DiffEntry> = entries.to_vec();
@@ -10967,6 +11004,13 @@ fn write_commit_diff_body(
         return Ok(());
     }
     let has_patch = show_patch && !list_patch.is_empty();
+
+    // Builtin pretty formats (medium/short/full/fuller/raw) print a blank line between
+    // the commit message and the diff body (git log-tree.c). `--stat`/`--name-status`
+    // emit their own leading separator below, so only prefix it for the raw/patch cases.
+    if leading_blank && args.stat.is_empty() && !args.name_only && !args.name_status {
+        writeln!(out)?;
+    }
 
     if args.raw {
         for entry in list_raw_name {
