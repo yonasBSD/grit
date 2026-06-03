@@ -1057,9 +1057,16 @@ fn resolve_revision_impl(
     // Handle `:/message` early — it can contain any characters so must
     // not be confused with peel/nav syntax.
     if let Some(pattern) = spec.strip_prefix(":/") {
-        if !pattern.is_empty() {
-            return resolve_commit_message_search(repo, pattern);
+        if pattern.is_empty() {
+            // `:/` with an empty pattern resolves to the youngest reachable commit (HEAD tip).
+            let head = crate::state::resolve_head(&repo.git_dir)
+                .map_err(|_| Error::ObjectNotFound(":/".to_owned()))?;
+            return head
+                .oid()
+                .copied()
+                .ok_or_else(|| Error::ObjectNotFound(":/".to_owned()));
         }
+        return resolve_commit_message_search(repo, pattern);
     }
 
     // `tags/<name>` is Git's DWIM for `refs/tags/<name>` (t6101 `tags/start`).

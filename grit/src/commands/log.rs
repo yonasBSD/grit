@@ -2082,6 +2082,9 @@ fn extract_log_cli_revision_specs(
     let mut implied_pathspecs: Vec<String> = Vec::new();
     let mut revision_specs = Vec::new();
     let mut after_end_of_options = false;
+    // When an explicit `--` is present, tokens before it MUST resolve as objects; git's
+    // setup_revisions does not reinterpret them as pathspecs on failure (t4208).
+    let has_dashdash = merged_revisions.iter().any(|r| r == "--");
     for rev in merged_revisions {
         if rev == "--end-of-options" {
             after_end_of_options = true;
@@ -2121,8 +2124,21 @@ fn extract_log_cli_revision_specs(
             }
         } else {
             match resolve_revision_as_commit(repo, rev) {
-                Ok(_) => revision_specs.push(rev.clone()),
-                Err(_err) if is_likely_pathspec_during_rev_parse(rev) => {
+                Ok(_) => {
+                    // git's setup_revisions: when a token resolves as a revision but the same
+                    // token (minus any magic) also names an existing worktree/index path and no
+                    // explicit `--` separator is present, the argument is ambiguous (t4208 `:/a`).
+                    if !has_dashdash && rev_token_collides_with_path(repo, rev) {
+                        return Err(anyhow::anyhow!(
+                            "fatal: ambiguous argument '{rev}': both revision and filename\n\
+                             Use '--' to separate paths from revisions, like this:\n\
+                             'git <command> [<revision>...] -- [<file>...]'"
+                        ));
+                    }
+                    revision_specs.push(rev.clone())
+                }
+                // An explicit `--` forces object resolution: do not reinterpret as pathspec.
+                Err(_err) if !has_dashdash && is_likely_pathspec_during_rev_parse(rev) => {
                     implied_pathspecs.push(rev.clone())
                 }
                 Err(_err) => match resolve_revision_as_commit_after_precompose(repo, rev) {
@@ -2136,12 +2152,18 @@ fn extract_log_cli_revision_specs(
                     }
                     // git's verify_filename: a token that fails to resolve as a revision but
                     // names an existing worktree/index path is an implied pathspec.
-                    Err(_err) if token_names_existing_path(repo, rev) => {
+                    Err(_err) if !has_dashdash && token_names_existing_path(repo, rev) => {
                         implied_pathspecs.push(rev.clone());
                     }
                     // `--ignore-missing`: drop tokens that name no object instead of erroring.
                     Err(_err) if args.ignore_missing => {}
-                    Err(err) => return Err(err.into()),
+                    Err(_err) => {
+                        return Err(anyhow::anyhow!(
+                            "fatal: ambiguous argument '{rev}': unknown revision or path not in the working tree.\n\
+                             Use '--' to separate paths from revisions, like this:\n\
+                             'git <command> [<revision>...] -- [<file>...]'"
+                        ));
+                    }
                 },
             }
         }
@@ -4895,7 +4917,38 @@ pub fn run(mut args: Args) -> Result<()> {
 /// Git rejects pathspecs that escape the worktree (e.g. `..`) as
 /// "outside repository", and also rejects pathspecs provided while running in
 /// an unqualified `.git` context.
+/// Validate `:(...)` long magic words, matching git's pathspec.c `get_prefix`/magic parser.
+/// Returns the `fatal: Invalid pathspec magic '<word>' in '<spec>'` error for an unknown word.
+fn validate_pathspec_magic_words(pathspecs: &[String]) -> Result<()> {
+    for spec in pathspecs {
+        let Some(rest) = spec.strip_prefix(":(") else {
+            continue;
+        };
+        let Some(close) = rest.find(')') else {
+            continue;
+        };
+        let magic_part = &rest[..close];
+        for raw in magic_part.split(',') {
+            let token = raw.trim();
+            if token.is_empty() {
+                continue;
+            }
+            // Forms taking a value: `prefix:...`, `attr:...`.
+            let word = token.split(':').next().unwrap_or(token);
+            let known = matches!(
+                word,
+                "top" | "literal" | "icase" | "glob" | "attr" | "exclude" | "prefix"
+            );
+            if !known {
+                anyhow::bail!("fatal: Invalid pathspec magic '{word}' in '{spec}'");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_pathspec_scope(repo: &Repository, pathspecs: &[String]) -> Result<()> {
+    validate_pathspec_magic_words(pathspecs)?;
     if pathspecs.is_empty() {
         return Ok(());
     }
@@ -9624,6 +9677,14 @@ fn resolve_revision_as_commit_after_precompose(repo: &Repository, rev: &str) -> 
 /// uses this to decide that a token which fails to resolve as a revision is actually a pathspec
 /// (e.g. `git log ichi` where `ichi` is a tracked file, used by `--follow`).
 fn token_names_existing_path(repo: &Repository, token: &str) -> bool {
+    // Short exclude magic sigils `:^` / `:!` name a path via their suffix; git's verify_filename
+    // accepts `:^sub` as a pathspec only when `sub` exists (`:^does-not-exist` is ambiguous).
+    if let Some(rest) = token
+        .strip_prefix(":^")
+        .or_else(|| token.strip_prefix(":!"))
+    {
+        return !rest.is_empty() && token_names_existing_path(repo, rest);
+    }
     if token.is_empty() {
         return false;
     }
@@ -9649,6 +9710,19 @@ fn token_names_existing_path(repo: &Repository, token: &str) -> bool {
                     return true;
                 }
             }
+        }
+    }
+    false
+}
+
+/// git's setup_revisions ambiguity check: a `:/pattern` revision that ALSO names an existing
+/// worktree/index path (`pattern` as a file) is ambiguous (`git log :/a` with file `a` present).
+/// Returns true when such a collision exists. Only `:/`-style search revisions can collide this
+/// way (a plain object name like a branch/sha is never a relative path here).
+fn rev_token_collides_with_path(repo: &Repository, token: &str) -> bool {
+    if let Some(pattern) = token.strip_prefix(":/") {
+        if !pattern.is_empty() && !pattern.contains('/') {
+            return token_names_existing_path(repo, pattern);
         }
     }
     false
