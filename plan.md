@@ -52,8 +52,9 @@
   - Completed rev-list/reachability file: `t6600-test-reach.sh` (47/47) after adding the upstream
     `test-tool reach` helper operations, first-parent `%(is-base)` selection, multi-base
     `for-each-ref --merged`, `rev-list --maximal-only`, and symmetric-difference topo ordering.
-  - Current rev-list/missing-object focus: `t6022-rev-list-missing.sh` improved from 16/40 to
-    26/40 after missing-tolerant traversal and segmented object parent-closure subtraction.
+  - Completed rev-list/missing-object file: `t6022-rev-list-missing.sh` (40/40) after
+    missing-tolerant traversal, segmented object parent-closure subtraction, negative tree/blob
+    object root subtraction, and `--missing=print-info`/`-z` output.
   - Execution logs: `logs/2026-06-02_1427-t6-for-each-ref.md`,
     `logs/2026-06-02_1655-t6200-fmt-merge-msg-extra.md`,
     `logs/2026-06-02_1710-t6040-tracking-info.md`,

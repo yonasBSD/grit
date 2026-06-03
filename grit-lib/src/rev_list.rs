@@ -45,8 +45,16 @@ pub enum MissingAction {
     Error,
     /// Continue traversal and report each missing object.
     Print,
+    /// Continue traversal and report missing objects with inferred metadata.
+    PrintInfo,
     /// Continue traversal and silently ignore missing objects.
     Allow,
+}
+
+impl MissingAction {
+    fn reports_missing(self) -> bool {
+        matches!(self, Self::Print | Self::PrintInfo)
+    }
 }
 
 /// Kind selector for `object:type=<kind>` filters.
@@ -783,7 +791,20 @@ pub fn rev_list(
             HashMap::new(),
         )
     };
-    let exclude = resolve_specs_with_options(repo, negative_specs, options.ignore_missing)?;
+    let (exclude, negative_object_roots) = if options.objects {
+        let (commits, roots, _) = resolve_specs_for_objects_with_options(
+            repo,
+            negative_specs,
+            options.ignore_missing,
+            options.missing_action,
+        )?;
+        (commits, roots)
+    } else {
+        (
+            resolve_specs_with_options(repo, negative_specs, options.ignore_missing)?,
+            Vec::new(),
+        )
+    };
 
     if options.all_refs {
         include.extend(all_ref_tips(repo, &RefExclusions::default())?);
@@ -1284,42 +1305,71 @@ pub fn rev_list(
     // Collect reachable objects if --objects
     let (objects, omitted_objects, missing_objects, per_commit_object_counts, object_segments) =
         if options.objects {
+            let excluded_object_ids = excluded_object_root_ids(
+                repo,
+                &negative_object_roots,
+                object_walk_missing_action,
+                sparse_lines.as_deref(),
+                skip_trees,
+                omit_object_paths,
+                collect_tree_omits,
+            )?;
             let filter_provided = options.filter_provided_objects;
-            let (mut objs, omit, miss, counts, mut segments) = if options.in_commit_order {
-                let (o, om, mi, c) = collect_reachable_objects_in_commit_order(
-                    repo,
-                    &mut graph,
-                    &ordered,
-                    &object_roots,
-                    &tip_annotated_tag_by_commit,
-                    options.filter.as_ref(),
-                    filter_provided,
-                    object_walk_missing_action,
-                    sparse_lines.as_deref(),
-                    skip_trees,
-                    omit_object_paths,
-                    packed_set.as_ref(),
-                    collect_tree_omits,
-                )?;
-                (o, om, mi, c, Vec::new())
-            } else {
-                let (o, om, mi, seg) = collect_reachable_objects_segmented(
-                    repo,
-                    &mut graph,
-                    &ordered,
-                    &object_roots,
-                    &tip_annotated_tag_by_commit,
-                    options.filter.as_ref(),
-                    filter_provided,
-                    object_walk_missing_action,
-                    sparse_lines.as_deref(),
-                    skip_trees,
-                    omit_object_paths,
-                    packed_set.as_ref(),
-                    collect_tree_omits,
-                )?;
-                (o, om, mi, Vec::new(), seg)
-            };
+            let (mut objs, mut omit, mut miss, mut counts, mut segments) =
+                if options.in_commit_order {
+                    let (o, om, mi, c) = collect_reachable_objects_in_commit_order(
+                        repo,
+                        &mut graph,
+                        &ordered,
+                        &object_roots,
+                        &tip_annotated_tag_by_commit,
+                        options.filter.as_ref(),
+                        filter_provided,
+                        object_walk_missing_action,
+                        sparse_lines.as_deref(),
+                        skip_trees,
+                        omit_object_paths,
+                        packed_set.as_ref(),
+                        collect_tree_omits,
+                    )?;
+                    (o, om, mi, c, Vec::new())
+                } else {
+                    let (o, om, mi, seg) = collect_reachable_objects_segmented(
+                        repo,
+                        &mut graph,
+                        &ordered,
+                        &object_roots,
+                        &tip_annotated_tag_by_commit,
+                        options.filter.as_ref(),
+                        filter_provided,
+                        object_walk_missing_action,
+                        sparse_lines.as_deref(),
+                        skip_trees,
+                        omit_object_paths,
+                        packed_set.as_ref(),
+                        collect_tree_omits,
+                    )?;
+                    (o, om, mi, Vec::new(), seg)
+                };
+            if !excluded_object_ids.is_empty() {
+                if !counts.is_empty() {
+                    let mut offset = 0usize;
+                    for count in &mut counts {
+                        let end = offset.saturating_add(*count);
+                        *count = objs[offset..end]
+                            .iter()
+                            .filter(|(oid, _)| !excluded_object_ids.contains(oid))
+                            .count();
+                        offset = end;
+                    }
+                }
+                objs.retain(|(oid, _)| !excluded_object_ids.contains(oid));
+                omit.retain(|oid| !excluded_object_ids.contains(oid));
+                miss.retain(|oid| !excluded_object_ids.contains(oid));
+                for segment in &mut segments {
+                    segment.retain(|(oid, _)| !excluded_object_ids.contains(oid));
+                }
+            }
             if options.no_kept_objects {
                 objs.retain(|(oid, _)| !kept_set.contains(oid));
             }
@@ -2456,6 +2506,15 @@ enum ExpectedObjectKind {
 }
 
 impl ExpectedObjectKind {
+    fn from_object_kind(kind: ObjectKind) -> Option<Self> {
+        match kind {
+            ObjectKind::Commit => Some(Self::Commit),
+            ObjectKind::Tree => Some(Self::Tree),
+            ObjectKind::Blob => Some(Self::Blob),
+            ObjectKind::Tag => None,
+        }
+    }
+
     fn from_tag_type(kind: &str) -> Option<Self> {
         match kind {
             "commit" => Some(Self::Commit),
@@ -2783,17 +2842,23 @@ fn resolve_specs_for_objects_with_options(
                     }
                     Err(err) => return Err(err),
                 };
-                let blob_oid = match resolve_treeish_path(repo, treeish_oid, path) {
+                let object_oid = match resolve_treeish_path(repo, treeish_oid, path) {
                     Ok(oid) => oid,
                     Err(Error::ObjectNotFound(_) | Error::InvalidRef(_)) if ignore_missing => {
                         continue;
                     }
                     Err(err) => return Err(err),
                 };
+                let expected_kind = match repo.odb.read(&object_oid) {
+                    Ok(object) => ExpectedObjectKind::from_object_kind(object.kind),
+                    Err(Error::ObjectNotFound(_)) if missing_action != MissingAction::Error => None,
+                    Err(Error::ObjectNotFound(_)) if ignore_missing => continue,
+                    Err(err) => return Err(err),
+                };
                 roots.push(RootObject {
-                    oid: blob_oid,
+                    oid: object_oid,
                     input: spec.clone(),
-                    expected_kind: Some(ExpectedObjectKind::Blob),
+                    expected_kind,
                     root_path: Some(path.to_owned()),
                     wrap_with_tag: None,
                 });
@@ -2960,7 +3025,7 @@ fn walk_closure_ordered_with_missing(
         let parents = match graph.parents_of(oid) {
             Ok(parents) => parents,
             Err(Error::ObjectNotFound(_)) if missing_action != MissingAction::Error => {
-                if missing_action == MissingAction::Print && missing_seen.insert(oid) {
+                if missing_action.reports_missing() && missing_seen.insert(oid) {
                     missing.push(oid);
                 }
                 continue;
@@ -4705,7 +4770,7 @@ fn collect_tree_closure_objects(
         let object = match repo.odb.read(&t) {
             Ok(o) => o,
             Err(Error::ObjectNotFound(_)) if missing_action != MissingAction::Error => {
-                if missing_action == MissingAction::Print && missing_seen.insert(t) {
+                if missing_action.reports_missing() && missing_seen.insert(t) {
                     missing.push(t);
                 }
                 continue;
@@ -4741,7 +4806,7 @@ fn union_parent_reachable_objects(
         let commit = match load_commit(repo, p) {
             Ok(c) => c,
             Err(Error::ObjectNotFound(_)) if missing_action != MissingAction::Error => {
-                if missing_action == MissingAction::Print && missing_seen.insert(p) {
+                if missing_action.reports_missing() && missing_seen.insert(p) {
                     missing.push(p);
                 }
                 continue;
@@ -4791,7 +4856,7 @@ fn collect_reachable_objects(
         let commit = match load_commit(repo, commit_oid) {
             Ok(commit) => commit,
             Err(Error::ObjectNotFound(_)) if missing_action != MissingAction::Error => {
-                if missing_seen.insert(commit_oid) && missing_action == MissingAction::Print {
+                if missing_seen.insert(commit_oid) && missing_action.reports_missing() {
                     missing.push(commit_oid);
                 }
                 continue;
@@ -4863,6 +4928,54 @@ fn collect_reachable_objects(
     Ok((result, omitted, missing))
 }
 
+fn excluded_object_root_ids(
+    repo: &Repository,
+    object_roots: &[RootObject],
+    missing_action: MissingAction,
+    sparse_lines: Option<&[String]>,
+    skip_trees_for_type_filter: bool,
+    omit_object_paths: bool,
+    collect_tree_omits: bool,
+) -> Result<HashSet<ObjectId>> {
+    if object_roots.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let mut tree_state = TreeWalkState::new();
+    let mut emitted = HashSet::new();
+    let mut objects = Vec::new();
+    let mut omitted = Vec::new();
+    let mut missing = Vec::new();
+    let mut missing_seen = HashSet::new();
+    let mut top_tree_omit = None;
+    let mut combine_states = None;
+
+    for root in object_roots {
+        collect_root_object(
+            repo,
+            root,
+            &mut tree_state,
+            &mut emitted,
+            &mut objects,
+            &mut omitted,
+            &mut missing,
+            &mut missing_seen,
+            None,
+            false,
+            missing_action,
+            sparse_lines,
+            skip_trees_for_type_filter,
+            omit_object_paths,
+            None,
+            collect_tree_omits,
+            &mut top_tree_omit,
+            &mut combine_states,
+        )?;
+    }
+
+    Ok(objects.into_iter().map(|(oid, _)| oid).collect())
+}
+
 /// Like [`collect_reachable_objects`], but also returns objects newly discovered per commit walk
 /// plus one trailing segment for `object_roots`.
 ///
@@ -4904,7 +5017,7 @@ fn collect_reachable_objects_segmented(
         let commit = match load_commit(repo, commit_oid) {
             Ok(commit) => commit,
             Err(Error::ObjectNotFound(_)) if missing_action != MissingAction::Error => {
-                if missing_action == MissingAction::Print && missing_seen.insert(commit_oid) {
+                if missing_action.reports_missing() && missing_seen.insert(commit_oid) {
                     missing.push(commit_oid);
                 }
                 segments.push(Vec::new());
@@ -5321,7 +5434,7 @@ fn collect_tree_objects_filtered(
     let object = match repo.odb.read(&tree_oid) {
         Ok(object) => object,
         Err(Error::ObjectNotFound(_)) if missing_action != MissingAction::Error => {
-            if missing_action == MissingAction::Print && missing_seen.insert(tree_oid) {
+            if missing_action.reports_missing() && missing_seen.insert(tree_oid) {
                 missing.push(tree_oid);
             }
             return Ok(());
@@ -5414,7 +5527,7 @@ fn collect_tree_objects_filtered(
         let child_obj = match repo.odb.read(&entry.oid) {
             Ok(object) => object,
             Err(Error::ObjectNotFound(_)) if missing_action != MissingAction::Error => {
-                if missing_action == MissingAction::Print && missing_seen.insert(entry.oid) {
+                if missing_action.reports_missing() && missing_seen.insert(entry.oid) {
                     missing.push(entry.oid);
                 }
                 continue;
@@ -5580,7 +5693,7 @@ fn collect_root_object(
     let object = match repo.odb.read(&root.oid) {
         Ok(object) => object,
         Err(Error::ObjectNotFound(_)) if missing_action != MissingAction::Error => {
-            if missing_action == MissingAction::Print && missing_seen.insert(root.oid) {
+            if missing_action.reports_missing() && missing_seen.insert(root.oid) {
                 missing.push(root.oid);
             }
             return Ok(());
@@ -5798,7 +5911,7 @@ fn collect_reachable_objects_in_commit_order(
         let commit = match load_commit(repo, commit_oid) {
             Ok(commit) => commit,
             Err(Error::ObjectNotFound(_)) if missing_action != MissingAction::Error => {
-                if missing_action == MissingAction::Print && missing_seen.insert(commit_oid) {
+                if missing_action.reports_missing() && missing_seen.insert(commit_oid) {
                     missing.push(commit_oid);
                 }
                 counts.push(0);

@@ -1061,7 +1061,7 @@ t6018-rev-list-glob	t6	yes	95	95	0	true	ok	0
 t6019-rev-list-ancestry-path	t6	yes	18	5	13	false	ok	0
 t6020-bundle-misc	t6	yes	37	13	24	false	ok	0
 t6021-rev-list-exclude-hidden	t6	yes	62	62	0	true	ok	0
-t6022-rev-list-missing	t6	yes	40	26	14	false	ok	0
+t6022-rev-list-missing	t6	yes	40	40	0	true	ok	0
 t6030-bisect-porcelain	t6	yes	96	85	11	false	ok	0
 t6040-tracking-info	t6	yes	44	44	0	true	ok	0
 t6041-bisect-submodule	t6	yes	14	7	7	false	ok	0

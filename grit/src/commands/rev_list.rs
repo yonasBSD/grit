@@ -6,10 +6,11 @@ use grit_lib::config::ConfigSet;
 use grit_lib::diff::diff_trees;
 use grit_lib::git_date::approx::approxidate_careful;
 use grit_lib::git_date::parse::parse_date_basic;
-use grit_lib::objects::{parse_commit, parse_tree, ObjectId};
+use grit_lib::objects::{parse_commit, parse_tree, ObjectId, ObjectKind};
 use grit_lib::pack;
 use grit_lib::pathspec::matches_pathspec;
 use grit_lib::promisor::read_promisor_missing_oids;
+use grit_lib::quote_path::quote_c_style;
 use grit_lib::ref_exclusions::RefExclusions;
 use grit_lib::reflog::{read_reflog_dwim, ReflogEntry};
 use grit_lib::repo::Repository;
@@ -150,6 +151,106 @@ fn push_all_refs_as_specs(
     push_ref_pairs_as_specs(repo, specs, not_mode, &pairs, exclusions)
 }
 
+#[derive(Clone, Debug)]
+struct MissingObjectInfo {
+    oid: ObjectId,
+    path: Option<String>,
+    kind: ObjectKind,
+}
+
+fn infer_missing_object_info(
+    repo: &Repository,
+    commits: &[ObjectId],
+    oid: ObjectId,
+) -> MissingObjectInfo {
+    for commit_oid in commits {
+        let Ok(object) = repo.odb.read(commit_oid) else {
+            continue;
+        };
+        if object.kind != ObjectKind::Commit {
+            continue;
+        }
+        let Ok(commit) = parse_commit(&object.data) else {
+            continue;
+        };
+        if commit.tree == oid {
+            return MissingObjectInfo {
+                oid,
+                path: None,
+                kind: ObjectKind::Tree,
+            };
+        }
+        let mut seen_trees = HashSet::new();
+        if let Some((path, kind)) =
+            find_missing_object_in_tree(repo, commit.tree, "", oid, &mut seen_trees)
+        {
+            return MissingObjectInfo {
+                oid,
+                path: Some(path),
+                kind,
+            };
+        }
+    }
+
+    MissingObjectInfo {
+        oid,
+        path: None,
+        kind: ObjectKind::Commit,
+    }
+}
+
+fn find_missing_object_in_tree(
+    repo: &Repository,
+    tree_oid: ObjectId,
+    prefix: &str,
+    target: ObjectId,
+    seen: &mut HashSet<ObjectId>,
+) -> Option<(String, ObjectKind)> {
+    if !seen.insert(tree_oid) {
+        return None;
+    }
+    let object = repo.odb.read(&tree_oid).ok()?;
+    if object.kind != ObjectKind::Tree {
+        return None;
+    }
+    let entries = parse_tree(&object.data).ok()?;
+    for entry in entries {
+        let name = String::from_utf8_lossy(&entry.name);
+        let path = if prefix.is_empty() {
+            name.into_owned()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let kind = object_kind_for_tree_mode(entry.mode);
+        if entry.oid == target {
+            return Some((path, kind));
+        }
+        if kind == ObjectKind::Tree {
+            if let Some(found) = find_missing_object_in_tree(repo, entry.oid, &path, target, seen) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn object_kind_for_tree_mode(mode: u32) -> ObjectKind {
+    match mode {
+        0o040000 => ObjectKind::Tree,
+        0o160000 => ObjectKind::Commit,
+        _ => ObjectKind::Blob,
+    }
+}
+
+fn quote_missing_info_path(path: &str) -> String {
+    let quoted = quote_c_style(path, true);
+    if quoted == path && path.as_bytes().iter().any(|&b| b == b' ') {
+        format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        quoted
+    }
+}
+
 fn list_refs_glob_physical(repo: &Repository, pattern: &str) -> Result<Vec<(String, ObjectId)>> {
     Ok(grit_lib::refs::list_refs_physical(&repo.git_dir, "refs/")?
         .into_iter()
@@ -281,6 +382,7 @@ pub fn run(args: Args) -> Result<()> {
     let mut ref_exclude_patterns = Vec::new();
     let mut saw_pseudo_ref = false;
     let mut bisect_mode: Option<BisectMode> = None;
+    let mut zero_terminated = false;
 
     let mut i = 0usize;
     while i < args.args.len() {
@@ -324,6 +426,7 @@ pub fn run(args: Args) -> Result<()> {
                     show_parents = true;
                 }
                 "--quiet" => options.quiet = true,
+                "-z" => zero_terminated = true,
                 "--stdin" => read_stdin = true,
                 "--not" => not_mode = !not_mode,
                 "--end-of-options" => end_of_options = true,
@@ -355,6 +458,7 @@ pub fn run(args: Args) -> Result<()> {
                     options.missing_action = match value {
                         "error" => MissingAction::Error,
                         "print" => MissingAction::Print,
+                        "print-info" => MissingAction::PrintInfo,
                         "allow-any" | "allow-promisor" => MissingAction::Allow,
                         _ => bail!("unsupported value for --missing: {value}"),
                     };
@@ -1039,17 +1143,25 @@ pub fn run(args: Args) -> Result<()> {
         return Ok(());
     }
 
+    let emit_record = |record: &str| {
+        if zero_terminated {
+            print!("{record}\0");
+        } else {
+            println!("{record}");
+        }
+    };
+
     let print_object = |oid: &grit_lib::objects::ObjectId, path: &str| {
         if options.no_object_names {
-            println!("{oid}");
+            emit_record(&oid.to_string());
         } else if path.is_empty() {
             if result.bitmap_object_format {
-                println!("{oid}");
+                emit_record(&oid.to_string());
             } else {
-                println!("{oid} ");
+                emit_record(&format!("{oid} "));
             }
         } else {
-            println!("{oid} {path}");
+            emit_record(&format!("{oid} {path}"));
         }
     };
 
@@ -1210,22 +1322,58 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
-    if options.missing_action == MissingAction::Print {
+    if matches!(
+        options.missing_action,
+        MissingAction::Print | MissingAction::PrintInfo
+    ) {
         let mut seen_missing = HashSet::new();
+        let mut missing_oids = Vec::new();
         for oid in &result.missing_objects {
-            let text = oid.to_hex();
-            if seen_missing.insert(text.clone()) {
-                println!("?{text}");
+            if seen_missing.insert(*oid) {
+                missing_oids.push(*oid);
             }
         }
         for oid in read_promisor_missing_oids(&repo.git_dir) {
             if repo.odb.exists_local(&oid) {
                 continue;
             }
-            let text = oid.to_hex();
-            if seen_missing.insert(text.clone()) {
-                println!("?{text}");
+            if seen_missing.insert(oid) {
+                missing_oids.push(oid);
             }
+        }
+
+        match options.missing_action {
+            MissingAction::Print => {
+                for oid in missing_oids {
+                    if zero_terminated {
+                        print!("?{oid}\0");
+                    } else {
+                        println!("?{oid}");
+                    }
+                }
+            }
+            MissingAction::PrintInfo => {
+                for oid in missing_oids {
+                    let info = infer_missing_object_info(&repo, &result.commits, oid);
+                    if zero_terminated {
+                        print!("{}\0missing=yes\0", info.oid);
+                        if let Some(path) = &info.path {
+                            print!("path={path}\0");
+                        }
+                        print!("type={}\0", info.kind);
+                    } else {
+                        let mut line = format!("?{}", info.oid);
+                        if let Some(path) = &info.path {
+                            line.push_str(" path=");
+                            line.push_str(&quote_missing_info_path(path));
+                        }
+                        line.push_str(" type=");
+                        line.push_str(info.kind.as_str());
+                        println!("{line}");
+                    }
+                }
+            }
+            MissingAction::Error | MissingAction::Allow => {}
         }
     }
 
