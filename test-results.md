@@ -1,3 +1,7 @@
+## 2026-06-03 — t13120-diff-no-index-dir-file
+
+- Focus harness: `./scripts/run-tests.sh t13120-diff-no-index-dir-file.sh --verbose` passes 37/37 after wrapping setup `cd repo` in a subshell so diff working-tree tests run from the expected trash root.
+
 ## 2026-06-03 — t13130-diff-cached-delete-add
 
 - Focus harness: `./scripts/run-tests.sh t13130-diff-cached-delete-add.sh --verbose` passes 44/44 after wrapping setup `cd repo` in a subshell so all diff-cached tests start from the expected trash root.

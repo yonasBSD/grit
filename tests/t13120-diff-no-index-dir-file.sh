@@ -10,6 +10,7 @@ cd "$(dirname "$0")" || exit 1
 REAL_GIT=/usr/bin/git
 
 test_expect_success 'setup' '
+	(
 	$REAL_GIT init repo &&
 	cd repo &&
 	$REAL_GIT config user.email "t@t.com" &&
@@ -21,6 +22,7 @@ test_expect_success 'setup' '
 	echo also >dir/b.txt &&
 	$REAL_GIT add . &&
 	$REAL_GIT commit -m "initial"
+	)
 '
 
 test_expect_success 'diff shows no output on clean tree' '
