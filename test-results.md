@@ -1,3 +1,7 @@
+## 2026-06-03 — t1430-bad-ref-name update-ref partial
+
+- Focus harness improved from 13/42 to 14/42 after `update-ref -d` permits deletion of safe in-namespace broken ref names while still rejecting unsafe path names.
+
 ## 2026-06-03 — t1463-refs-optimize
 
 - Focus harness: `./scripts/run-tests.sh t1463-refs-optimize.sh --verbose` passes 47/47 after `git refs optimize` forwards pack-refs options (`--all`, `--prune`, `--include`, `--exclude`, etc.).
