@@ -25,7 +25,10 @@
   - Completed: `t3000-ls-files-others.sh` (15/15) by making `ls-files --others` include the
     active redirection target like Git and by teaching `--directory` pathspec collapse to preserve
     file-level pathspec matches while still collapsing directory matches.
-  - Current focus: `t3050-ls-files-unmerged.sh` (23 total, 22 passed, 1 failing), next in the
+  - Completed: `t3050-ls-files-unmerged.sh` (23/23) by correcting its synthetic `ls-files -s`
+    expectation to match Git's documented behavior: `--stage` shows both stage-0 entries and
+    unmerged conflict stages, while `-u` restricts output to unmerged entries.
+  - Current focus: `t3030-merge-recursive.sh` (26 total, 25 passed, 1 failing), next in the
     foundational index/path group.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
