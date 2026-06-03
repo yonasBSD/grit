@@ -2365,9 +2365,10 @@ pub(crate) fn write_submodule_diff_recursive(
         message = Some("(new submodule)");
     } else if new_commit == z {
         message = Some("(submodule deleted)");
-    }
-
-    if (old_commit != z && old_tree.is_none()) || (new_commit != z && new_tree.is_none()) {
+    } else if old_tree.is_none() || new_tree.is_none() {
+        // Git's `show_submodule_summary`: `(commits not present)` only when BOTH endpoints are
+        // real commits that the superproject ODB cannot resolve. A zero endpoint is always
+        // reported as `(new submodule)`/`(submodule deleted)` even if the other commit is absent.
         message = Some("(commits not present)");
     }
 
@@ -2614,7 +2615,8 @@ pub(crate) fn write_patch_entry(
             && entry.new_mode != "000000";
 
         if is_gitlink_to_blob {
-            // Submodule summary first, then blob delete (matches `git diff --submodule=log`).
+            // Submodule summary first (`(submodule deleted)`), then the blob **add** — the regular
+            // file is the new side of the typechange (matches `git diff --submodule=log`).
             write_submodule_diff_recursive(
                 out,
                 repo,
@@ -2628,18 +2630,18 @@ pub(crate) fn write_patch_entry(
                 context_lines,
                 indent_heuristic,
             )?;
-            let mut blob_del = entry.clone();
-            blob_del.status = DiffStatus::Deleted;
-            blob_del.old_mode = entry.new_mode.clone();
-            blob_del.old_oid = entry.new_oid;
-            blob_del.new_path = None;
-            blob_del.new_mode = "000000".to_owned();
-            blob_del.new_oid = z;
+            let mut blob_add = entry.clone();
+            blob_add.status = DiffStatus::Added;
+            blob_add.old_path = None;
+            blob_add.old_mode = "000000".to_owned();
+            blob_add.old_oid = z;
+            blob_add.new_mode = entry.new_mode.clone();
+            blob_add.new_oid = entry.new_oid;
             write_patch_entry_inner(
                 out,
                 repo,
                 odb,
-                &blob_del,
+                &blob_add,
                 context_lines,
                 work_tree,
                 "",
