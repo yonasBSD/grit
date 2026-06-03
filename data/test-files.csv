@@ -346,7 +346,7 @@ t12920-rev-parse-parseopt	t1	yes	33	4	29	false	ok	0
 t12930-rev-parse-since-until	t1	yes	33	5	28	false	ok	0
 t12940-config-set-all	t1	yes	35	35	0	true	ok	0
 t12950-config-regexp-match	t1	yes	33	33	0	true	ok	0
-t12960-init-quiet-template	t1	yes	36	33	3	false	ok	0
+t12960-init-quiet-template	t1	yes	36	36	0	true	ok	0
 t12970-branch-verbose-abbrev	t1	yes	34	22	12	false	ok	0
 t12980-tag-force-replace	t1	yes	33	33	0	true	ok	0
 t12990-commit-reuse-message	t1	yes	32	32	0	true	ok	0
