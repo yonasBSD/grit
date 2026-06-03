@@ -1370,3 +1370,13 @@ Updated: 2026-06-01
   33/33).
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3309-notes-merge-auto-resolve complete
+
+- Focus harness completed at 31/31 after builtin multi-line log spacing stopped adding extra
+  notes-based blank lines to custom `--format="%H %s%n%N"` output.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh
+  t3309-notes-merge-auto-resolve.sh t3321-notes-stripspace.sh t9260-log-oneline-format.sh` passed
+  all four files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).

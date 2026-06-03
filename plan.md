@@ -70,6 +70,9 @@
     commits, and no-op success for empty editor-created notes when no note exists.
   - Completed: `t3321-notes-stripspace.sh` (27/27) after finishing raw no-stripspace newline
     preservation for multiple `-m` fragments and consecutive raw file/blob fragments.
+  - Completed: `t3309-notes-merge-auto-resolve.sh` (31/31) after tightening the medium-style log
+    inter-commit spacing fix so it applies only to builtin multi-line pretty formats and does not
+    add extra blank lines to custom `--format="%H %s%n%N"` notes verification output.
   - Completed opportunistic notes-adjacent fixture: `t3300-funny-names.sh` (21/21) after rerunning
     with the current diff/path quoting code; no additional code changes were needed.
   - Completed: `t3303-notes-subtrees.sh` (23/23) after fast-import now concatenates duplicate
