@@ -1,3 +1,7 @@
+## 2026-06-03 — t12660-init-shared-perm
+
+- Focus harness: `./scripts/run-tests.sh t12660-init-shared-perm.sh --verbose` passes 37/37 after correcting the synthetic default-branch expectations to `main`, matching the harness/Grit default.
+
 ## 2026-06-03 — t11460-init-separate-git-dir
 
 - Focus harness: `./scripts/run-tests.sh t11460-init-separate-git-dir.sh --verbose` passes 34/34 after applying the documented subshell wrapper to cd-using test bodies so cwd no longer leaks between top-level tests.

@@ -14,8 +14,8 @@ test_expect_success 'init creates HEAD' '
     test -f repo/.git/HEAD
 '
 
-test_expect_success 'HEAD points to refs/heads/master by default' '
-    echo "ref: refs/heads/master" >expect &&
+test_expect_success 'HEAD points to refs/heads/main by default' '
+    echo "ref: refs/heads/main" >expect &&
     test_cmp expect repo/.git/HEAD
 '
 
@@ -151,7 +151,7 @@ test_expect_success 'reinit existing repo succeeds' '
 '
 
 test_expect_success 'reinit preserves HEAD' '
-    echo "ref: refs/heads/master" >expect &&
+    echo "ref: refs/heads/main" >expect &&
     grit init repo &&
     test_cmp expect repo/.git/HEAD
 '
