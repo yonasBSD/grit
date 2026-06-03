@@ -934,6 +934,7 @@ pub fn rev_list(
             &excluded,
             &options.paths,
             options.sparse,
+            options.show_pulls,
         )?;
     }
 
@@ -3864,6 +3865,10 @@ fn commit_touches_paths(
         return Ok(parent_rewrite || sparse);
     }
 
+    if show_pulls && first_parent_differs && treesame_parents > 0 {
+        return Ok(true);
+    }
+
     if !full_history && treesame_parents == 1 {
         return Ok(false);
     }
@@ -3922,6 +3927,7 @@ fn walk_dense_path_limited_closure(
     excluded: &HashSet<ObjectId>,
     paths: &[String],
     sparse: bool,
+    show_pulls: bool,
 ) -> Result<HashSet<ObjectId>> {
     let mut walked = HashSet::new();
     let mut selected = HashSet::new();
@@ -3932,7 +3938,7 @@ fn walk_dense_path_limited_closure(
             continue;
         }
 
-        let action = dense_path_limited_action(repo, graph, oid, paths, sparse)?;
+        let action = dense_path_limited_action(repo, graph, oid, paths, sparse, show_pulls)?;
         if action.visible {
             selected.insert(oid);
         }
@@ -3958,6 +3964,7 @@ fn dense_path_limited_action(
     oid: ObjectId,
     paths: &[String],
     sparse: bool,
+    show_pulls: bool,
 ) -> Result<DensePathAction> {
     let commit = load_commit(repo, oid)?;
     let parents = graph.parents_of(oid)?;
@@ -3981,11 +3988,15 @@ fn dense_path_limited_action(
 
     let mut treesame = Vec::new();
     let mut differs_any = false;
-    for parent_oid in &parents {
+    let mut first_parent_differs = false;
+    for (nth, parent_oid) in parents.iter().enumerate() {
         let parent = load_commit(repo, *parent_oid)?;
         let parent_map: HashMap<String, ObjectId> =
             flatten_tree(repo, parent.tree, "")?.into_iter().collect();
         if path_differs_for_specs(&commit_map, &parent_map, paths) {
+            if nth == 0 {
+                first_parent_differs = true;
+            }
             differs_any = true;
         } else {
             treesame.push(*parent_oid);
@@ -4004,7 +4015,7 @@ fn dense_path_limited_action(
     let visible = if sparse {
         true
     } else if parents.len() > 1 {
-        treesame.is_empty()
+        treesame.is_empty() || (show_pulls && first_parent_differs && !treesame.is_empty())
     } else {
         differs_any
     };

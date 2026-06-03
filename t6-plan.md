@@ -30,7 +30,7 @@ dependency/topic groups. Mark an item `[~]` when claimed and `[x]` only after th
 - [x] `t6007-rev-list-cherry-pick-file.sh` — 23/23 passing after path-limited patch-id matching,
   `--cherry-mark` / `--cherry` marker/count semantics, duplicate patch-id matching, and empty-side
   symmetric range handling.
-- [~] `t6012-rev-list-simplify.sh` — 37/42 passing, 5 failing.
+- [~] `t6012-rev-list-simplify.sh` — 38/42 passing, 4 failing.
 - [ ] `t6000-rev-list-misc.sh` — 9/23 passing, 14 failing.
 - [ ] `t6003-rev-list-topo-order.sh` — 23/36 passing, 13 failing.
 - [ ] `t6019-rev-list-ancestry-path.sh` — 5/18 passing, 13 failing.
