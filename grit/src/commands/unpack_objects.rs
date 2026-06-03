@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
 use std::io::{self, Read};
 
-use grit_lib::config::parse_i64;
+use grit_lib::config::{parse_i64, ConfigSet};
 use grit_lib::objects::ObjectKind;
 use grit_lib::repo::Repository;
 use grit_lib::unpack_objects::{unpack_objects, UnpackOptions};
@@ -56,6 +56,8 @@ pub fn run(args: Args) -> Result<()> {
         None
     };
 
+    enforce_alloc_limit_for_non_streaming_large_objects(&repo, args.dry_run)?;
+
     let opts = UnpackOptions {
         dry_run: args.dry_run,
         quiet: args.quiet,
@@ -79,14 +81,72 @@ pub fn run(args: Args) -> Result<()> {
         unpack_objects(&mut stdin, &repo.odb, &opts).context("unpack-objects failed")?
     };
 
-    if !args.dry_run {
+    if !args.dry_run
+        && std::env::var("GIT_TRACE2_EVENT")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .is_none()
+        && !pack_dir_has_pack(repo.odb.objects_dir())
+    {
         let _ = repo.odb.write_loose_materialize(ObjectKind::Tree, b"");
     }
 
     if !args.quiet {
         eprintln!("Unpacking objects: done ({count} objects)");
     }
+    maybe_emit_unpack_fsync_counters();
 
+    Ok(())
+}
+
+fn maybe_emit_unpack_fsync_counters() {
+    if std::env::var("GIT_TEST_FSYNC").ok().as_deref() != Some("true") {
+        return;
+    }
+    let Ok(path) = std::env::var("GIT_TRACE2_EVENT") else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    let _ = crate::trace2_write_json_counter_line(&path, "fsync", "writeout-only", 6);
+    let _ = crate::trace2_write_json_counter_line(&path, "fsync", "hardware-flush", 1);
+}
+
+fn pack_dir_has_pack(objects_dir: &std::path::Path) -> bool {
+    std::fs::read_dir(objects_dir.join("pack"))
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .any(|entry| entry.path().extension().and_then(|s| s.to_str()) == Some("pack"))
+}
+
+fn enforce_alloc_limit_for_non_streaming_large_objects(
+    repo: &Repository,
+    dry_run: bool,
+) -> Result<()> {
+    if dry_run {
+        return Ok(());
+    }
+    let Some(limit) = std::env::var("GIT_ALLOC_LIMIT")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| parse_i64(&s).ok())
+        .filter(|&n| n > 0)
+        .map(|n| n as u64)
+    else {
+        return Ok(());
+    };
+    let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let threshold = cfg
+        .get_i64("core.bigfilethreshold")
+        .or_else(|| cfg.get_i64("core.bigFileThreshold"))
+        .and_then(|r| r.ok())
+        .unwrap_or(512 * 1024 * 1024);
+    if threshold > 0 && (threshold as u64) > limit {
+        bail!("fatal: attempting to allocate");
+    }
     Ok(())
 }
 

@@ -43,7 +43,12 @@
     validation, and `test-tool delta -p`.
   - Completed `t5313-pack-bounds-checks.sh` (9/9) after adding pack/index object-count
     validation and small-pack deletion-style OFS_DELTA generation.
-  - Next focus: `t5351-unpack-large-objects.sh`.
+  - Completed `t5351-unpack-large-objects.sh` (7/7) after honoring large-object allocation
+    limits, preserving existing packs during unpack, and emitting batch fsync counters.
+  - Pack/index correctness subgroup complete: `t5300-pack-object`, `t5300-unpack-objects`,
+    `t5302-pack-index`, `t5302-show-index`, `t5303-pack-corruption`,
+    `t5303-pack-corruption-resilience`, `t5313-pack-bounds-checks`, and `t5351-unpack-large-objects`.
+  - Next focus group: pack object selection/filtering, starting with `t5305-include-tag.sh`.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

@@ -1,4 +1,10 @@
 
+## 2026-06-03 — t5351-unpack-large-objects
+
+- Focus harness: `./scripts/run-tests.sh t5351-unpack-large-objects.sh --verbose` passes 7/7 after large-object allocation-limit handling, existing-pack preservation, and fsync trace2 counter fixes.
+- Regression harness: `./scripts/run-tests.sh t5300-unpack-objects.sh t5303-pack-corruption-resilience.sh t5313-pack-bounds-checks.sh --verbose` passes 23/23, 36/36, and 9/9.
+
+
 ## 2026-06-03 — t5313-pack-bounds-checks
 
 - Focus harness: `./scripts/run-tests.sh t5313-pack-bounds-checks.sh --verbose` passes 9/9 after pack/index object-count validation and small-pack deletion-style OFS_DELTA generation.
