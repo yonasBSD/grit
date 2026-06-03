@@ -1,3 +1,7 @@
+## 2026-06-03 — t12460-cherry-pick-sequence
+
+- Focus harness: `./scripts/run-tests.sh t12460-cherry-pick-sequence.sh --verbose` passes 36/36 after containing the repeated-empty-pick block in a subshell to prevent CWD leakage.
+
 ## 2026-06-03 — t12160-cherry-pick-conflict-resolve
 
 - Focus harness: `./scripts/run-tests.sh t12160-cherry-pick-conflict-resolve.sh --verbose` passes 34/34 after containing the empty-cherry-pick cleanup block in a subshell to prevent CWD leakage.
