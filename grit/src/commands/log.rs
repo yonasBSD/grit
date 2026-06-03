@@ -7457,8 +7457,10 @@ fn commit_has_notes_to_show(
                 format!("refs/notes/{s}")
             }
         };
-        if load_notes_map_for_ref(notes_cache.repo(), &refname).contains_key(oid) {
-            return true;
+        for resolved in resolve_notes_display_pattern(notes_cache.repo(), &refname) {
+            if load_notes_map_for_ref(notes_cache.repo(), &resolved).contains_key(oid) {
+                return true;
+            }
         }
     }
     false
@@ -7491,9 +7493,16 @@ fn write_notes(
         } else {
             format!("refs/notes/{spec}")
         };
-        if seen.insert(refname.clone()) {
-            let short = refname.strip_prefix("refs/notes/").unwrap_or(&refname);
-            display.push((format!("Notes ({short})"), refname));
+        for resolved in resolve_notes_display_pattern(notes_cache.repo(), &refname) {
+            if seen.insert(resolved.clone()) {
+                let short = resolved.strip_prefix("refs/notes/").unwrap_or(&resolved);
+                let header = if resolved == "refs/notes/commits" {
+                    "Notes".to_string()
+                } else {
+                    format!("Notes ({short})")
+                };
+                display.push((header, resolved));
+            }
         }
     }
     for (header, refname) in display {

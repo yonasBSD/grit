@@ -59,10 +59,11 @@
   - Branch/refs/range-diff/pack-refs group sweep verified: `t3200`, `t3201`, `t3202`, `t3203`,
     `t3204`, `t3205`, `t3206-branch-advanced`, `t3206-range-diff`, `t3207`, `t3210`, and
     `t3211` all pass.
-  - Current focus: `t3301-notes.sh` (153 total, 122 passed, 31 failing after fixing raw log
+  - Current focus: `t3301-notes.sh` (153 total, 125 passed, 28 failing after fixing raw log
     spacing, format-patch `--show-notes` forwarding, default `-m`/`-F` separator handling, and
     wiring notes `--stripspace`/`--no-stripspace` support, plus notes display env/default header
-    handling and exact `notes.displayRef` matching), first file in the notes group.
+    handling, exact `notes.displayRef` matching, and wildcard `--show-notes=*` expansion), first
+    file in the notes group.
   - Related progress: `t3321-notes-stripspace.sh` improved from 2/27 to 18/27 with the stripspace
     support; it remains in the notes group queue.
   - Execution log: `logs/2026-06-03_t3-family.md`.

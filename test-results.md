@@ -49,6 +49,15 @@
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
+## 2026-06-03 — t3301-notes wildcard display partial
+
+- Focus harness improved to 125/153 after wildcard `--notes=<pattern>` / `--show-notes=*`
+  expansion was applied to explicit log notes refs.
+- Adjacent verification: `./scripts/run-tests.sh t3301-notes.sh t3206-range-diff.sh` keeps
+  `t3206` at 48/48.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3301-notes separator partial
 
 - Focus harness improved to 115/153 after default note fragment separation was changed to a
