@@ -104,13 +104,13 @@ test_expect_success 'show-ref --tags excludes branches' '
 ###########################################################################
 
 test_expect_success 'show-ref --verify with exact ref succeeds' '
-	(cd repo && grit show-ref --verify refs/heads/master >../actual) &&
-	grep "refs/heads/master" actual
+	(cd repo && grit show-ref --verify refs/heads/main >../actual) &&
+	grep "refs/heads/main" actual
 '
 
 test_expect_success 'show-ref --verify matches git' '
-	(cd repo && grit show-ref --verify refs/heads/master >../actual) &&
-	(cd repo && "$REAL_GIT" show-ref --verify refs/heads/master >../expect) &&
+	(cd repo && grit show-ref --verify refs/heads/main >../actual) &&
+	(cd repo && "$REAL_GIT" show-ref --verify refs/heads/main >../expect) &&
 	test_cmp expect actual
 '
 
@@ -119,7 +119,7 @@ test_expect_success 'show-ref --verify with nonexistent ref fails' '
 '
 
 test_expect_success 'show-ref --verify requires full ref path' '
-	(cd repo && test_must_fail grit show-ref --verify master)
+	(cd repo && test_must_fail grit show-ref --verify main)
 '
 
 ###########################################################################
@@ -127,7 +127,7 @@ test_expect_success 'show-ref --verify requires full ref path' '
 ###########################################################################
 
 test_expect_success 'show-ref --exists returns 0 for existing ref' '
-	(cd repo && grit show-ref --exists refs/heads/master)
+	(cd repo && grit show-ref --exists refs/heads/main)
 '
 
 test_expect_success 'show-ref --exists returns non-zero for missing ref' '
@@ -199,12 +199,12 @@ test_expect_success 'show-ref --abbrev abbreviates SHA' '
 ###########################################################################
 
 test_expect_success 'show-ref --verify -q produces no output on success' '
-	(cd repo && grit show-ref --verify -q refs/heads/master >../actual) &&
+	(cd repo && grit show-ref --verify -q refs/heads/main >../actual) &&
 	test_must_be_empty actual
 '
 
 test_expect_success 'show-ref --verify -q returns 0 for existing ref' '
-	(cd repo && grit show-ref --verify -q refs/heads/master)
+	(cd repo && grit show-ref --verify -q refs/heads/main)
 '
 
 test_expect_success 'show-ref --verify -q returns non-zero for missing ref' '
@@ -216,9 +216,9 @@ test_expect_success 'show-ref --verify -q returns non-zero for missing ref' '
 ###########################################################################
 
 test_expect_success 'show-ref with pattern filters refs' '
-	(cd repo && grit show-ref refs/heads/master >../actual) &&
+	(cd repo && grit show-ref refs/heads/main >../actual) &&
 	test_line_count = 1 actual &&
-	grep "refs/heads/master" actual
+	grep "refs/heads/main" actual
 '
 
 test_expect_success 'show-ref with nonexistent pattern returns empty' '
@@ -229,10 +229,10 @@ test_expect_success 'show-ref with nonexistent pattern returns empty' '
 # Symbolic ref scenarios
 ###########################################################################
 
-test_expect_success 'HEAD is a symref to master' '
+test_expect_success 'HEAD is a symref to main' '
 	(cd repo &&
 	 "$REAL_GIT" symbolic-ref HEAD >../actual) &&
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 
@@ -241,7 +241,7 @@ test_expect_success 'show-ref --head after switching branch' '
 	 "$REAL_GIT" checkout feature &&
 	 grit show-ref --head >../actual &&
 	 "$REAL_GIT" show-ref --head >../expect &&
-	 "$REAL_GIT" checkout master) &&
+	 "$REAL_GIT" checkout main) &&
 	test_cmp expect actual
 '
 

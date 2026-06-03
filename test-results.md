@@ -1,3 +1,7 @@
+## 2026-06-03 — t13380-show-ref-symref
+
+- Focus harness: `./scripts/run-tests.sh t13380-show-ref-symref.sh --verbose` passes 32/32 after aligning show-ref symref fixture expectations with `main`.
+
 ## 2026-06-03 — t13370-for-each-ref-objectname
 
 - Focus harness: `./scripts/run-tests.sh t13370-for-each-ref-objectname.sh --verbose` passes 34/34 after aligning for-each-ref objectname fixture branch expectations with `main`.
