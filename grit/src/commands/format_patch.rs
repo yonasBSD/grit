@@ -1887,10 +1887,12 @@ fn format_single_patch(
     write_thread_headers(&mut out, message_id, in_reply_to, references);
     write_recipient_headers(&mut out, opts);
 
-    // Commit message body (skip first line which is in Subject)
+    // Commit message body (skip first line which is in Subject). Git strips trailing whitespace
+    // from each body line when emitting the mail body (matching `pp_remainder`).
     let body: String = commit_msg_unicode
         .lines()
         .skip(1)
+        .map(|l| l.trim_end())
         .collect::<Vec<_>>()
         .join("\n");
     let body = body.trim_start_matches('\n');
@@ -3710,14 +3712,10 @@ fn mboxrd_escape(body: &str, mboxrd: bool) -> String {
     let mut out = String::with_capacity(body.len());
     for line in split_keep_newlines(body) {
         let content = line.strip_suffix('\n').unwrap_or(&line);
-        // Escape lines that are "From " or one-or-more '>' followed by "From ".
+        // Escape lines matching `>*From ` (zero or more leading '>' then `From` followed by a
+        // space). A bare `From` is never an mbox delimiter, so git leaves it unescaped.
         let trimmed_gt = content.trim_start_matches('>');
-        let n_gt = content.len() - trimmed_gt.len();
-        if trimmed_gt == "From"
-            || trimmed_gt.starts_with("From ")
-            || trimmed_gt.starts_with("From\t")
-        {
-            let _ = n_gt;
+        if trimmed_gt.starts_with("From ") || trimmed_gt.starts_with("From\t") {
             out.push('>');
         }
         out.push_str(&line);
