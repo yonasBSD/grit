@@ -1267,3 +1267,11 @@ Updated: 2026-06-01
   check -p grit-cli`, `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo
   clippy --fix --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics
   remain), and `cargo test -p grit-lib --lib`.
+- t6120 broken submodule dirty focus: after making describe's dirty check error on broken
+  absorbed-submodule gitdirs while allowing `--broken` to append the broken suffix, the direct
+  verbose run reaches `describe a blob at a directly tagged commit` and
+  `./scripts/run-tests.sh t6120-describe.sh` improves from 92/105 to 95/105 with refreshed
+  `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
+  `cargo test -p grit-lib --lib`.

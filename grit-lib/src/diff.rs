@@ -810,6 +810,9 @@ pub struct DiffIndexToWorktreeOptions {
     pub ignore_submodule_untracked: bool,
     /// When true, nested gitlink entries only compare the submodule checkout HEAD to the recorded OID.
     pub simplify_gitlinks: bool,
+    /// When true, a populated gitlink checkout whose `.git` indirection cannot resolve to a HEAD
+    /// is returned as an error instead of a normal modified gitlink.
+    pub error_on_broken_gitlinks: bool,
 }
 
 /// Compare the index against the working tree with optional racy-timestamp context.
@@ -883,9 +886,19 @@ pub fn diff_index_to_worktree_with_options(
         if ie.mode == 0o160000 {
             let sub_dir = work_tree.join(path_str_ref);
             let sub_head_oid = read_submodule_head_oid(&sub_dir);
-            let ref_matches = match sub_head_oid {
-                Some(oid) => oid == ie.oid,
-                None => submodule_worktree_is_unpopulated_placeholder(&sub_dir),
+            let ref_matches = if let Some(oid) = sub_head_oid {
+                oid == ie.oid
+            } else {
+                let is_placeholder = submodule_worktree_is_unpopulated_placeholder(&sub_dir);
+                if options.error_on_broken_gitlinks
+                    && !is_placeholder
+                    && submodule_embedded_git_dir(&sub_dir).is_some()
+                {
+                    return Err(Error::ConfigError(format!(
+                        "could not read submodule HEAD for '{path_str_ref}'"
+                    )));
+                }
+                is_placeholder
             };
             if simplify_gitlinks {
                 if !ref_matches {

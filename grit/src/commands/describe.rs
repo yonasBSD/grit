@@ -6,7 +6,9 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
-use grit_lib::diff::{diff_index_to_tree, diff_index_to_worktree};
+use grit_lib::diff::{
+    diff_index_to_tree, diff_index_to_worktree_with_options, DiffIndexToWorktreeOptions,
+};
 use grit_lib::error::Error;
 use grit_lib::index::Index;
 use grit_lib::objects::{parse_commit, parse_tag, ObjectId, ObjectKind};
@@ -280,10 +282,15 @@ pub fn run(args: Args) -> Result<()> {
 
     // Determine the dirty suffix before formatting the final description.
     let dirty_suffix = if args.dirty.is_some() || args.broken.is_some() {
-        if is_worktree_dirty(&repo) {
-            args.dirty.as_deref().unwrap_or("-dirty").to_string()
-        } else {
-            String::new()
+        match is_worktree_dirty(&repo) {
+            Ok(true) if args.dirty.is_some() => {
+                args.dirty.as_deref().unwrap_or("-dirty").to_string()
+            }
+            Ok(_) => String::new(),
+            Err(_) if args.broken.is_some() => {
+                args.broken.as_deref().unwrap_or("-broken").to_string()
+            }
+            Err(err) => return Err(err.into()),
         }
     } else {
         String::new()
@@ -457,38 +464,44 @@ fn ancestor_depth(repo: &Repository, descendant: &ObjectId, ancestor: &ObjectId)
     None
 }
 
-fn is_worktree_dirty(repo: &Repository) -> bool {
+fn is_worktree_dirty(repo: &Repository) -> grit_lib::error::Result<bool> {
     let workdir = match &repo.work_tree {
         Some(d) => d,
-        None => return false,
+        None => return Ok(false),
     };
     let head = match resolve_head(&repo.git_dir) {
         Ok(h) => h,
-        Err(_) => return true,
+        Err(_) => return Ok(true),
     };
     let index = match repo.load_index() {
         Ok(idx) => idx,
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
-        Err(_) => return true,
+        Err(e) => return Err(e),
     };
     let head_tree = match head.oid() {
         Some(oid) => match repo.odb.read(oid) {
             Ok(obj) => match parse_commit(&obj.data) {
                 Ok(c) => Some(c.tree),
-                Err(_) => return true,
+                Err(_) => return Ok(true),
             },
-            Err(_) => return true,
+            Err(_) => return Ok(true),
         },
         None => None,
     };
-    let staged =
-        diff_index_to_tree(&repo.odb, &index, head_tree.as_ref(), false).unwrap_or_default();
+    let staged = diff_index_to_tree(&repo.odb, &index, head_tree.as_ref(), false)?;
     if !staged.is_empty() {
-        return true;
+        return Ok(true);
     }
-    diff_index_to_worktree(&repo.odb, &index, workdir, false, false)
-        .map(|u| !u.is_empty())
-        .unwrap_or(true)
+    diff_index_to_worktree_with_options(
+        &repo.odb,
+        &index,
+        workdir,
+        DiffIndexToWorktreeOptions {
+            error_on_broken_gitlinks: true,
+            ..DiffIndexToWorktreeOptions::default()
+        },
+    )
+    .map(|u| !u.is_empty())
 }
 
 /// Build a map from commit OID to ref metadata for all qualifying refs.
