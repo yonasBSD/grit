@@ -162,7 +162,7 @@ test_expect_success 'mktree empty input produces empty tree' '
 	cd repo &&
 	tree=$(printf "" | git mktree) &&
 	git ls-tree $tree >actual &&
-	test_must_fail test -s actual
+	! test -s actual
 	)
 '
 
@@ -200,7 +200,7 @@ test_expect_success 'diff-tree shows no diff for identical trees' '
 	oid=$(echo same | git hash-object -w --stdin) &&
 	tree=$(printf "100644 blob %s\tfile\n" "$oid" | git mktree) &&
 	git diff-tree $tree $tree >actual &&
-	test_must_fail test -s actual
+	! test -s actual
 	)
 '
 

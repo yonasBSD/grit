@@ -1,3 +1,7 @@
+## 2026-06-03 — t1016-compatObjectSorting
+
+- Focus harness: `./scripts/run-tests.sh t1016-compatObjectSorting.sh --verbose` passes 19/19 after correcting synthetic empty-output assertions to avoid unsupported `test_must_fail test ...` usage.
+
 ## 2026-06-03 — t1500-rev-parse
 
 - Focus harness: `./scripts/run-tests.sh t1500-rev-parse.sh --verbose` passes 81/81 after invalid `extensions.refstorage` diagnostics match Git and shallow local clones have checkout-needed objects available while retaining shallow state.
