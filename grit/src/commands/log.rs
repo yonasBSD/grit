@@ -8091,14 +8091,35 @@ fn format_commit(
             write_notes(out, oid, notes_cache, args, odb)?;
         }
         Some("reference") => {
-            let subject = info.message.lines().next().unwrap_or("");
-            let line = grit_lib::commit_pretty::format_reference_line(
+            // `--pretty=reference` is equivalent to the format
+            // `%C(auto)%h (%s, %as)` (short committer date), except an explicit
+            // `--date` overrides the date mode and the hash is always abbreviated.
+            // It never shows decorations or reflog selectors.
+            let date_ph = if date_format.is_some() { "%ad" } else { "%as" };
+            let template = format!("%C(auto)%h (%s, {date_ph})");
+            // Force abbreviation even under --no-abbrev-commit.
+            let ref_abbrev = if abbrev_len >= 40 { 7 } else { abbrev_len };
+            let formatted = apply_format_string(
+                &template,
                 oid,
-                subject,
-                &info.committer,
-                abbrev_len,
+                info,
+                None,
+                date_format,
+                ref_abbrev,
+                use_color,
+                decoration_paint,
+                head_for_decor,
+                None,
+                display_parents,
+                log_marker,
+                mailmap,
+                use_mailmap,
+                et,
+                signature_ref,
             );
-            writeln!(out, "{line}")?;
+            let bytes = encode_log_str(&formatted, args.log_output_encoding.as_deref());
+            out.write_all(&bytes)?;
+            out.write_all(b"\n")?;
         }
         Some(other) => {
             // Try as a format string directly
