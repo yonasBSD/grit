@@ -419,7 +419,6 @@ fn read_patches_from_log(
         .arg("--no-color")
         .arg("--no-abbrev")
         .arg("--reverse")
-        .arg("--date-order")
         .arg("--decorate=no")
         .arg("--no-prefix")
         .arg("--output-indicator-new=>")

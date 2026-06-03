@@ -1,3 +1,12 @@
+## 2026-06-03 — t3206-range-diff pathspec partial
+
+- Focus harness improved from 44/48 to 45/48 after the internal range-diff `log` invocation stopped
+  using `--date-order`, which had hidden a mode-only pathspec commit.
+- Adjacent verification: `./scripts/run-tests.sh t3206-range-diff.sh t1507-rev-parse-upstream.sh`
+  reports `t3206` at 45/48 and keeps `t1507` at 29/29.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3206-range-diff format-patch notes partial
 
 - Focus harness improved from 40/48 to 44/48 after `format-patch --range-diff` started forwarding
