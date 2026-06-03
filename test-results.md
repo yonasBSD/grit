@@ -1,3 +1,7 @@
+## 2026-06-03 — t11420-rev-parse-flags-args
+
+- Focus harness: `./scripts/run-tests.sh t11420-rev-parse-flags-args.sh --verbose` passes 33/33 after aligning rev-parse branch argument expectations with `main`.
+
 ## 2026-06-03 — t13270-branch-remote-tracking
 
 - Focus harness: `./scripts/run-tests.sh t13270-branch-remote-tracking.sh --verbose` passes 33/33 after replacing the fragile fetch fixture with explicit remote-tracking refs plus an absolute alternates path and aligning branch expectations with `main`.
