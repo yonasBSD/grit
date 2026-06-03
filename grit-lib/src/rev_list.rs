@@ -1489,34 +1489,41 @@ fn ansi_color_from_spec(spec: &str) -> String {
     if spec == "reset" {
         return "\x1b[m".to_owned();
     }
-    let mut codes = Vec::new();
-    let mut fg_set = false;
+    let mut attrs = Vec::new();
+    let mut fg = None;
+    let mut bg = None;
     for part in spec.split_whitespace() {
         match part {
-            "bold" => codes.push("1".to_owned()),
-            "dim" => codes.push("2".to_owned()),
-            "italic" => codes.push("3".to_owned()),
-            "ul" | "underline" => codes.push("4".to_owned()),
-            "blink" => codes.push("5".to_owned()),
-            "reverse" => codes.push("7".to_owned()),
-            "strike" => codes.push("9".to_owned()),
-            "nobold" | "nodim" => codes.push("22".to_owned()),
-            "noitalic" => codes.push("23".to_owned()),
-            "noul" | "nounderline" => codes.push("24".to_owned()),
-            "noblink" => codes.push("25".to_owned()),
-            "noreverse" => codes.push("27".to_owned()),
-            "nostrike" => codes.push("29".to_owned()),
+            "bold" => attrs.push("1".to_owned()),
+            "dim" => attrs.push("2".to_owned()),
+            "italic" => attrs.push("3".to_owned()),
+            "ul" | "underline" => attrs.push("4".to_owned()),
+            "blink" => attrs.push("5".to_owned()),
+            "reverse" => attrs.push("7".to_owned()),
+            "strike" => attrs.push("9".to_owned()),
+            "nobold" | "nodim" => attrs.push("22".to_owned()),
+            "noitalic" => attrs.push("23".to_owned()),
+            "noul" | "nounderline" => attrs.push("24".to_owned()),
+            "noblink" => attrs.push("25".to_owned()),
+            "noreverse" => attrs.push("27".to_owned()),
+            "nostrike" => attrs.push("29".to_owned()),
             _ => {
                 if let Some(code) = color_name_to_code(part) {
-                    if !fg_set {
-                        codes.push(format!("{}", 30 + code));
-                        fg_set = true;
+                    if fg.is_none() {
+                        fg = Some(format!("{}", 30 + code));
                     } else {
-                        codes.push(format!("{}", 40 + code));
+                        bg = Some(format!("{}", 40 + code));
                     }
                 }
             }
         }
+    }
+    let mut codes = attrs;
+    if let Some(code) = fg {
+        codes.push(code);
+    }
+    if let Some(code) = bg {
+        codes.push(code);
     }
     if codes.is_empty() {
         String::new()

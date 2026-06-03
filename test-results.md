@@ -553,6 +553,11 @@ Updated: 2026-06-03
   formats under `--no-commit-header`.
 - Verification for this increment: `cargo fmt`, `cargo check -p grit-cli`, `cargo build --release
   -p grit-cli`, and the focused harness ran with the existing warning backlog.
+- t6006 color-order focus: direct debug run and official
+  `./scripts/run-tests.sh t6006-rev-list-format.sh` improve from 63/80 to 64/80 after rendering
+  `%C(red yellow bold)` with attributes before foreground/background color codes.
+- Verification for this increment: `cargo fmt`, `cargo check -p grit-cli`, `cargo build --release
+  -p grit-cli`, and the focused harness ran with the existing warning backlog.
 - Build unblock: `cargo build --release -p grit-cli` initially failed because `merge --abort`
   still called `checkout_merge_reset_worktree` with its old three-argument signature; the caller
   now passes explicit non-recursive submodule flags and release builds complete.
