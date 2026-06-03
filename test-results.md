@@ -1,3 +1,7 @@
+## 2026-06-03 — t12470-for-each-ref-shell-format
+
+- Focus harness: `./scripts/run-tests.sh t12470-for-each-ref-shell-format.sh --verbose` passes 34/34 after aligning for-each-ref branch format expectations with `main`.
+
 ## 2026-06-03 — t11470-branch-copy-move
 
 - Focus harness: `./scripts/run-tests.sh t11470-branch-copy-move.sh --verbose` passes 31/31 after aligning branch copy/move fixture expectations with `main`.
