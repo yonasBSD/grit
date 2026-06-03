@@ -63,8 +63,8 @@
     spacing, format-patch `--show-notes` forwarding, default `-m`/`-F` separator handling, and
     wiring notes `--stripspace`/`--no-stripspace` support, plus notes display env/default header
     handling, exact/wildcard notes display ref matching, append separator handling, and
-    command-line order preservation for note fragments, plus `notes.displayRef` no-value errors),
-    first file in the notes group.
+    command-line order preservation for note fragments, `notes.displayRef` no-value errors, and
+    no-stripspace append separator behavior), first file in the notes group.
   - Related progress: `t3321-notes-stripspace.sh` improved from 2/27 to 19/27 with the stripspace
     support; it remains in the notes group queue.
   - Execution log: `logs/2026-06-03_t3-family.md`.

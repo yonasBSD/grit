@@ -346,7 +346,7 @@ pub fn run(args: Args) -> Result<()> {
             allow_empty,
             stripspace,
             no_stripspace,
-            if no_separator {
+            if no_separator || (no_stripspace && separator.is_none()) {
                 None
             } else {
                 Some(separator.as_deref().unwrap_or("\n\n"))
@@ -383,7 +383,7 @@ pub fn run(args: Args) -> Result<()> {
             allow_empty,
             stripspace,
             no_stripspace,
-            if no_separator {
+            if no_separator || (no_stripspace && separator.is_none()) {
                 None
             } else {
                 Some(separator.as_deref().unwrap_or("\n\n"))
@@ -414,7 +414,7 @@ pub fn run(args: Args) -> Result<()> {
             allow_empty,
             stripspace,
             no_stripspace,
-            if no_separator {
+            if no_separator || (no_stripspace && separator.is_none()) {
                 None
             } else {
                 Some(separator.as_deref().unwrap_or("\n\n"))
