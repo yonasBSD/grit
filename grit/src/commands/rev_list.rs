@@ -1028,14 +1028,16 @@ pub fn run(args: Args) -> Result<()> {
 
     // If symmetric diff, resolve merge bases and set up positive/negative
     if let (Some(ref lhs), Some(ref rhs)) = (&symmetric_left, &symmetric_right) {
-        let lhs_oid = grit_lib::rev_parse::resolve_revision(&repo, lhs)
-            .with_context(|| format!("bad revision '{lhs}'"))?;
-        let rhs_oid = grit_lib::rev_parse::resolve_revision(&repo, rhs)
-            .with_context(|| format!("bad revision '{rhs}'"))?;
+        let lhs_spec = if lhs.is_empty() { "HEAD" } else { lhs };
+        let rhs_spec = if rhs.is_empty() { "HEAD" } else { rhs };
+        let lhs_oid = grit_lib::rev_parse::resolve_revision(&repo, lhs_spec)
+            .with_context(|| format!("bad revision '{lhs_spec}'"))?;
+        let rhs_oid = grit_lib::rev_parse::resolve_revision(&repo, rhs_spec)
+            .with_context(|| format!("bad revision '{rhs_spec}'"))?;
         let bases = merge_bases(&repo, lhs_oid, rhs_oid, options.first_parent)
             .context("failed to compute merge bases")?;
-        positive_specs.push(lhs.clone());
-        positive_specs.push(rhs.clone());
+        positive_specs.push(lhs_spec.to_owned());
+        positive_specs.push(rhs_spec.to_owned());
         for base in bases {
             negative_specs.push(base.to_hex());
         }

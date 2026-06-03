@@ -1044,7 +1044,7 @@ t6003-rev-list-topo-order	t6	yes	36	23	13	false	ok	0
 t6004-rev-list-path-optim	t6	yes	7	7	0	true	ok	0
 t6005-rev-list-count	t6	yes	6	6	0	true	ok	0
 t6006-rev-list-format	t6	yes	80	80	0	true	ok	0
-t6007-rev-list-cherry-pick-file	t6	yes	23	22	1	false	ok	0
+t6007-rev-list-cherry-pick-file	t6	yes	23	23	0	true	ok	0
 t6007-rev-list-cherry-pick-status	t6	yes	29	29	0	true	ok	0
 t6008-rev-list-submodule	t6	yes	2	2	0	true	ok	0
 t6009-rev-list-parent	t6	yes	15	15	0	true	ok	0

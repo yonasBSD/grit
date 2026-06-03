@@ -20,3 +20,8 @@
 - Direct verbose run reaches the final `...shy-diff` parser case; official harness
   `./scripts/run-tests.sh t6007-rev-list-cherry-pick-file.sh` improves from 21/23 to 22/23 and
   refreshes `data/test-files.csv` plus dashboards.
+- Final increment: normalized omitted symmetric range endpoints in `rev-list` CLI handling to
+  `HEAD`, so `...shy-diff` no longer tries to resolve an empty revision.
+- Direct verbose run passes all 23 tests; official harness
+  `./scripts/run-tests.sh t6007-rev-list-cherry-pick-file.sh` records 23/23 and refreshes
+  `data/test-files.csv` plus dashboards.

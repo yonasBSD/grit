@@ -1238,3 +1238,10 @@ Updated: 2026-06-01
   refreshed `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p
   grit-cli`, `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
   --allow-dirty` (existing warning backlog remains), and `cargo test -p grit-lib --lib`.
+- t6007 completion: after treating omitted symmetric range endpoints as `HEAD` in `rev-list` CLI
+  handling, the direct verbose run passes all 23 tests and
+  `./scripts/run-tests.sh t6007-rev-list-cherry-pick-file.sh` records 23/23 with refreshed
+  `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
+  `cargo test -p grit-lib --lib`.
