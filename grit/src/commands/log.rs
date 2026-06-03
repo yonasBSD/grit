@@ -7202,7 +7202,7 @@ fn collect_log_display_note_refs_unconditional(repo: &Repository) -> Vec<(String
             return;
         }
         let short = refname.strip_prefix("refs/notes/").unwrap_or(refname);
-        let header = if refname == default_ref {
+        let header = if refname == "refs/notes/commits" {
             "Notes".to_string()
         } else {
             format!("Notes ({short})")
@@ -7271,7 +7271,7 @@ fn collect_log_display_note_refs(repo: &Repository) -> Vec<(String, String)> {
             return;
         }
         let short = refname.strip_prefix("refs/notes/").unwrap_or(refname);
-        let header = if refname == default_ref {
+        let header = if refname == "refs/notes/commits" {
             "Notes".to_string()
         } else {
             format!("Notes ({short})")
