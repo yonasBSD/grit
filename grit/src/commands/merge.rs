@@ -7859,6 +7859,13 @@ fn merge_trees(
             // Added only by ours — unless theirs only has paths under this name (directory).
             (None, Some(oe), None) => {
                 if oe.mode == MODE_GITLINK && has_descendant(&theirs_entries, path) {
+                    if path_descendants_match(&base, &theirs_entries, path) {
+                        index.entries.push(oe.clone());
+                        mark_path_descendants_handled(&mut handled_paths, &base, path);
+                        mark_path_descendants_handled(&mut handled_paths, &theirs_entries, path);
+                        continue;
+                    }
+
                     let path_str = String::from_utf8_lossy(path).to_string();
                     let Some(te) = first_entry_under_path_prefix(&theirs_entries, path) else {
                         index.entries.push(oe.clone());
@@ -7938,6 +7945,13 @@ fn merge_trees(
             // Added only by theirs — unless ours only has paths under this name (directory).
             (None, None, Some(te)) => {
                 if te.mode == MODE_GITLINK && has_descendant(&ours_entries, path) {
+                    if path_descendants_match(&base, &ours_entries, path) {
+                        index.entries.push(te.clone());
+                        mark_path_descendants_handled(&mut handled_paths, &base, path);
+                        mark_path_descendants_handled(&mut handled_paths, &ours_entries, path);
+                        continue;
+                    }
+
                     let path_str = String::from_utf8_lossy(path).to_string();
                     let Some(oe) = first_entry_under_path_prefix(&ours_entries, path) else {
                         index.entries.push(te.clone());
@@ -9301,6 +9315,52 @@ fn path_has_unmerged_entries(index: &Index, path: &[u8]) -> bool {
 fn path_has_tree_descendant(map: &HashMap<Vec<u8>, IndexEntry>, path: &[u8]) -> bool {
     map.keys()
         .any(|k| k.len() > path.len() && k.starts_with(path) && k.get(path.len()) == Some(&b'/'))
+}
+
+fn path_descendants_match(
+    left: &HashMap<Vec<u8>, IndexEntry>,
+    right: &HashMap<Vec<u8>, IndexEntry>,
+    path: &[u8],
+) -> bool {
+    let mut left_entries = descendant_entry_fingerprint(left, path);
+    let mut right_entries = descendant_entry_fingerprint(right, path);
+    left_entries.sort();
+    right_entries.sort();
+    !left_entries.is_empty() && left_entries == right_entries
+}
+
+fn descendant_entry_fingerprint(
+    entries: &HashMap<Vec<u8>, IndexEntry>,
+    path: &[u8],
+) -> Vec<(Vec<u8>, ObjectId, u32)> {
+    entries
+        .iter()
+        .filter(|(candidate, _)| {
+            candidate.len() > path.len()
+                && candidate.starts_with(path)
+                && candidate.get(path.len()) == Some(&b'/')
+        })
+        .map(|(candidate, entry)| {
+            (
+                candidate[(path.len() + 1)..].to_vec(),
+                entry.oid,
+                entry.mode,
+            )
+        })
+        .collect()
+}
+
+fn mark_path_descendants_handled(
+    handled_paths: &mut BTreeSet<Vec<u8>>,
+    entries: &HashMap<Vec<u8>, IndexEntry>,
+    path: &[u8],
+) {
+    handled_paths.extend(entries.keys().filter_map(|candidate| {
+        (candidate.len() > path.len()
+            && candidate.starts_with(path)
+            && candidate.get(path.len()) == Some(&b'/'))
+        .then(|| candidate.clone())
+    }));
 }
 
 /// First flattened index entry strictly under `prefix/` (lexicographic), for submodule/directory conflicts.

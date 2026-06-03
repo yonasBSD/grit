@@ -11,3 +11,9 @@
 - Official refresh after `cargo build --release -p grit-cli`:
   `./scripts/run-tests.sh t6438-submodule-directory-file-conflicts.sh --verbose` reports 55/56
   passing and regenerated `data/test-files.csv` plus dashboards.
+- Fixed the remaining `merge --no-ff` directory-to-submodule case by treating a gitlink replacement
+  as clean when the other side's directory descendants match the merge base, then marking those
+  descendants handled.
+- Final official refresh after `cargo build --release -p grit-cli`:
+  `./scripts/run-tests.sh t6438-submodule-directory-file-conflicts.sh --verbose` passes 56/56 and
+  regenerated `data/test-files.csv` plus dashboards.

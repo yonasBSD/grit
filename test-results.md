@@ -593,3 +593,7 @@ Updated: 2026-06-01
   `./scripts/run-tests.sh t6438-submodule-directory-file-conflicts.sh --verbose` reports 55/56
   and refreshed `data/test-files.csv` plus dashboards. Remaining failure is `merge --no-ff`
   replacing a directory with a submodule.
+- t6438 completion: after resolving no-ff directory-to-submodule merges where the directory side
+  matches the merge base and rebuilding `target/release/grit`,
+  `./scripts/run-tests.sh t6438-submodule-directory-file-conflicts.sh --verbose` passes 56/56 and
+  refreshed `data/test-files.csv` plus dashboards.
