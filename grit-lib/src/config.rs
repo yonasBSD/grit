@@ -2140,8 +2140,8 @@ pub fn parse_bool(s: &str) -> std::result::Result<bool, String> {
         "" => Ok(false),
         "false" | "no" | "off" => Ok(false),
         _ => {
-            // Try parsing as integer: 0 → false, non-zero → true
-            if let Ok(n) = s.parse::<i64>() {
+            // Try parsing as Git integer (including k/m/g suffixes): 0 → false, non-zero → true.
+            if let Ok(n) = parse_i64(s) {
                 return Ok(n != 0);
             }
             Err(format!("bad boolean config value '{s}'"))

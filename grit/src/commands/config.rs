@@ -1775,7 +1775,13 @@ fn default_supported(args: &Args) -> bool {
 
 /// Formats a default value and adds Git-compatible context on failure.
 fn format_default_value(args: &Args, val: &str) -> Result<String> {
-    format_typed_value(args, None, val).context("failed to format default config value")
+    format_typed_value(args, None, val).map_err(|err| {
+        if args.type_int || args.type_name.as_deref() == Some("int") {
+            fatal_config_parse(format!("fatal: bad numeric config value '{val}'"))
+        } else {
+            err.context("failed to format default config value")
+        }
+    })
 }
 
 fn print_default_value(args: &Args, val: &str, terminator: char) {
