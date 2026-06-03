@@ -1820,7 +1820,12 @@ fn format_single_patch(
     } else {
         None
     };
-    let body_with_signoff = apply_signoff(body, signoff_line.as_deref(), git_dir);
+    // Git appends the signoff to the *full* pretty-printed mail buffer (subject line plus
+    // the blank separator plus the body), so for an empty body the trailing "\n\n" already
+    // present after the subject means no extra blank lines are inserted before the trailer.
+    // Reconstruct that by passing the raw subject line so footer/blank-line handling matches.
+    let raw_subject_line = commit_msg_unicode.lines().next().unwrap_or("");
+    let body_with_signoff = apply_signoff(raw_subject_line, body, signoff_line.as_deref(), git_dir);
 
     // Check if anything (subject already encoded; body, in-body From) contains non-ASCII.
     let in_body_non_ascii = in_body_from
@@ -2734,6 +2739,9 @@ fn build_patch_subject(
     };
     if tag.is_empty() {
         subject_line.to_string()
+    } else if subject_line.is_empty() {
+        // An empty subject must not leave a trailing space after the tag.
+        tag
     } else {
         format!("{tag} {subject_line}")
     }
@@ -3456,14 +3464,28 @@ fn mboxrd_escape(body: &str, mboxrd: bool) -> String {
 }
 
 /// Append a Signed-off-by trailer to the body using git's `append_signoff` semantics.
-fn apply_signoff(body: &str, signoff_line: Option<&str>, git_dir: &std::path::Path) -> String {
+///
+/// Git runs `append_signoff` over the whole pretty-printed mail buffer, i.e. the subject
+/// line followed by a blank line and the body. We replicate that by prepending
+/// `<subject>\n\n` before invoking the trailer logic and stripping it back off, so that an
+/// empty body does not trigger the "completely empty buffer" path (which would insert two
+/// extra blank lines before the trailer).
+fn apply_signoff(
+    subject: &str,
+    body: &str,
+    signoff_line: Option<&str>,
+    git_dir: &std::path::Path,
+) -> String {
     let Some(sob) = signoff_line else {
         return body.to_string();
     };
     let config = ConfigSet::load(Some(git_dir), true).unwrap_or_default();
-    let mut msg = body.to_string();
+    let prefix = format!("{subject}\n\n");
+    let mut msg = format!("{prefix}{body}");
     let sob_with_nl = format!("{sob}\n");
     grit_lib::commit_trailers::append_signoff_trailer(&mut msg, &sob_with_nl, &config);
+    // Strip the synthetic subject prefix back off.
+    let mut msg = msg.split_off(prefix.len());
     // Drop one trailing newline (caller re-adds one).
     if msg.ends_with('\n') {
         msg.pop();
