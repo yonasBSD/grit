@@ -3314,7 +3314,10 @@ fn simplify_merges_commit_list(
             && raw_parents.len() > 1
             && path_merge_survives_simplify(repo, *oid, paths, excluded)?;
         if raw_parents.len() > 1 && rewritten.len() <= 1 {
-            if pull_merge {
+            if rewritten.is_empty()
+                || pull_merge
+                || path_merge_survives_simplify(repo, *oid, paths, excluded)?
+            {
                 simplified_parents.insert(*oid, rewritten);
                 out.push(*oid);
             }
