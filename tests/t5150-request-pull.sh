@@ -8,7 +8,6 @@ export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 . ./test-lib.sh
 
 test_expect_success 'setup' '
-	(
 
 	git init --bare upstream.git &&
 	git init --bare downstream.git &&
@@ -58,8 +57,6 @@ test_expect_success 'setup' '
 
 But keep the old version, too, in case some people prefer it." &&
 		git checkout main
-	)
-
 	)
 '
 

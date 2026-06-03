@@ -4608,6 +4608,11 @@ fn resolve_push_src_for_refspec(
         let oid = refs::resolve_ref(&repo.git_dir, src)?;
         return Ok((src.to_owned(), oid, None));
     }
+    if let Some(tag) = src.strip_prefix("tags/") {
+        let full = format!("refs/tags/{tag}");
+        let oid = refs::resolve_ref(&repo.git_dir, &full)?;
+        return Ok((full, oid, None));
+    }
 
     if src.len() == 40 {
         if let Ok(oid) = src.parse::<ObjectId>() {
@@ -4660,6 +4665,9 @@ fn resolve_destination_ref_for_push(
     }
     if dst == "HEAD" {
         return Ok("HEAD".to_owned());
+    }
+    if let Some(tag) = dst.strip_prefix("tags/") {
+        return Ok(format!("refs/tags/{tag}"));
     }
     if dst.starts_with("refs/") {
         if dst.matches('/').count() < 2 {

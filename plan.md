@@ -21,7 +21,9 @@
     options and matching the smart-HTTP remote archive fixture behavior.
   - Archive dependency group now passes: `t5000-tar-tree`, `t5000-write-tree`, `t5001`,
     `t5002`, `t5003`, and `t5004`.
-  - Next focus group: request-pull/server-info, starting with `t5150-request-pull.sh`.
+  - Completed `t5150-request-pull.sh` (10/10) after adding request-pull behavior,
+    tag push shorthand, and repairing the ported fixture setup variable scope.
+  - Next focus: `t5200-update-server-info.sh`.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

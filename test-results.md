@@ -1,4 +1,9 @@
 
+## 2026-06-03 — t5150-request-pull
+
+- Focus harness: `./scripts/run-tests.sh t5150-request-pull.sh --verbose` passes 10/10 after adding request-pull behavior, tag push shorthand, and fixing the ported fixture setup variable scope.
+
+
 ## 2026-06-03 — t5003-archive-zip
 
 - Focus harness: `./scripts/run-tests.sh t5003-archive-zip.sh --verbose` passes 82/82 after ZIP compression-level parsing and smart-HTTP remote archive handling.

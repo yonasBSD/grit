@@ -5055,6 +5055,7 @@ pub(crate) const KNOWN_COMMANDS: &[&str] = &[
     "read-tree",
     "rebase",
     "receive-pack",
+    "request-pull",
     "reflog",
     "refs",
     "remote",
@@ -5481,6 +5482,7 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
             &commands::rebase::preprocess_rebase_argv(rest),
         )),
         "receive-pack" => commands::receive_pack::run(parse_cmd_args(subcmd, rest)),
+        "request-pull" => commands::request_pull::run_from_argv(rest),
         "reflog" => {
             let rest = preprocess_expand_tabs_for_rev_cmd(&preprocess_log_args(rest));
             commands::reflog::run(parse_cmd_args(subcmd, &rest))

@@ -114,6 +114,7 @@ pub mod repack;
 pub mod replace;
 pub mod replay;
 pub mod repo;
+pub mod request_pull;
 pub mod rerere;
 pub mod reset;
 pub mod restore;
