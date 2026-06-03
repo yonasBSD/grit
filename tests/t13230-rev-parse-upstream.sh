@@ -132,9 +132,9 @@ test_expect_success 'rev-parse feature returns full hash' '
 	test ${#hash} = 40
 '
 
-test_expect_success 'rev-parse feature differs from master' '
+test_expect_success 'rev-parse feature differs from main' '
 	(cd repo && grit rev-parse feature >../feat) &&
-	(cd repo && grit rev-parse master >../mast) &&
+	(cd repo && grit rev-parse main >../mast) &&
 	! test_cmp feat mast
 '
 
@@ -154,7 +154,7 @@ test_expect_success 'rev-parse feature^ is parent of feature tip' '
 
 test_expect_success 'rev-parse feature~2 goes back two from feature' '
 	(cd repo && grit rev-parse "feature~2" >../actual) &&
-	(cd repo && grit rev-parse master >../mast) &&
+	(cd repo && grit rev-parse main >../mast) &&
 	test_cmp actual mast
 '
 
@@ -184,8 +184,8 @@ test_expect_success 'rev-parse v1.0^ returns parent of tagged commit' '
 	test "$(cat actual)" != "$(cat v1_hash)"
 '
 
-test_expect_success 'rev-parse master from feature branch context' '
-	(cd repo && grit rev-parse master >../actual) &&
+test_expect_success 'rev-parse main from feature branch context' '
+	(cd repo && grit rev-parse main >../actual) &&
 	hash=$(cat actual) &&
 	test ${#hash} = 40
 '
@@ -196,26 +196,26 @@ test_expect_success 'rev-parse --is-bare-repository from feature' '
 	test_cmp expect actual
 '
 
-test_expect_success 'setup: switch back to master' '
-	(cd repo && git checkout master)
+test_expect_success 'setup: switch back to main' '
+	(cd repo && git checkout main)
 '
 
-test_expect_success 'rev-parse HEAD after checkout matches master' '
+test_expect_success 'rev-parse HEAD after checkout matches main' '
 	(cd repo && grit rev-parse HEAD >../head_hash) &&
-	(cd repo && grit rev-parse master >../master_hash) &&
-	test_cmp head_hash master_hash
+	(cd repo && grit rev-parse main >../main_hash) &&
+	test_cmp head_hash main_hash
 '
 
 test_expect_success 'rev-parse multiple refs at once' '
-	(cd repo && grit rev-parse HEAD master >../actual) &&
+	(cd repo && grit rev-parse HEAD main >../actual) &&
 	test_line_count = 2 actual
 '
 
-test_expect_success 'rev-parse multiple refs gives same hash twice for HEAD and master' '
-	(cd repo && grit rev-parse HEAD master >../actual) &&
+test_expect_success 'rev-parse multiple refs gives same hash twice for HEAD and main' '
+	(cd repo && grit rev-parse HEAD main >../actual) &&
 	head_h=$(head -1 actual) &&
-	master_h=$(tail -1 actual) &&
-	test "$head_h" = "$master_h"
+	main_h=$(tail -1 actual) &&
+	test "$head_h" = "$main_h"
 '
 
 test_expect_success 'rev-parse HEAD feature gives different hashes' '

@@ -1,3 +1,7 @@
+## 2026-06-03 — t13230-rev-parse-upstream
+
+- Focus harness: `./scripts/run-tests.sh t13230-rev-parse-upstream.sh --verbose` passes 35/35 after aligning rev-parse feature/main fixture references with `main`.
+
 ## 2026-06-03 — t12030-rev-parse-default
 
 - Focus harness: `./scripts/run-tests.sh t12030-rev-parse-default.sh --verbose` passes 35/35 after aligning rev-parse default branch references with `main`.
