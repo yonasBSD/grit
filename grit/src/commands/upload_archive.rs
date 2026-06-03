@@ -49,7 +49,7 @@ pub fn run(args: Args) -> Result<()> {
             bail!("extra parameter to git archive --list");
         }
         let mut list_out = Vec::new();
-        write_list_formats(&mut list_out, true)?;
+        write_list_formats(&repo, &mut list_out, true)?;
         respond_ack_and_send(&list_out)?;
         return Ok(());
     }
@@ -86,9 +86,9 @@ fn read_argument_packets() -> Result<Vec<String>> {
     Ok(out)
 }
 
-fn write_list_formats(w: &mut impl Write, remote: bool) -> Result<()> {
+fn write_list_formats(repo: &Repository, w: &mut impl Write, remote: bool) -> Result<()> {
     use grit_lib::config::ConfigSet;
-    let config = ConfigSet::load(None, true).unwrap_or_default();
+    let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
     writeln!(w, "tar")?;
     writeln!(w, "zip")?;
     for (name, _, rem) in tar_filters_from_config(&config) {

@@ -20,6 +20,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
 
 use grit_lib::pkt_line;
 
@@ -249,17 +250,32 @@ fn is_list(p: &ParsedArchive) -> bool {
     p.tokens.iter().any(|t| matches!(t, ArchiveToken::List))
 }
 
-fn collect_prefix_addfile(p: &ParsedArchive) -> (String, Vec<PathBuf>) {
+#[derive(Debug, Clone)]
+struct ArchiveAddFile {
+    fs_path: PathBuf,
+    archive_path: String,
+}
+
+fn collect_prefix_addfile(p: &ParsedArchive) -> Result<(String, Vec<ArchiveAddFile>)> {
     let mut prefix = String::new();
     let mut add_files = Vec::new();
     for t in &p.tokens {
         match t {
-            ArchiveToken::Prefix(s) => prefix.push_str(s),
-            ArchiveToken::AddFile(path) => add_files.push(path.clone()),
+            ArchiveToken::Prefix(s) => prefix = s.clone(),
+            ArchiveToken::AddFile(path) => {
+                let name = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .ok_or_else(|| anyhow::anyhow!("invalid add-file path"))?;
+                add_files.push(ArchiveAddFile {
+                    fs_path: path.clone(),
+                    archive_path: format!("{prefix}{name}"),
+                });
+            }
             _ => {}
         }
     }
-    (prefix, add_files)
+    Ok((prefix, add_files))
 }
 
 fn verbose_flag(p: &ParsedArchive) -> bool {
@@ -277,7 +293,7 @@ fn execute(p: ParsedArchive) -> Result<()> {
     let remote = token_remote(&p);
     let exec = token_exec(&p);
     let output = token_output(&p);
-    let (_prefix, add_files) = collect_prefix_addfile(&p);
+    let (_prefix, add_files) = collect_prefix_addfile(&p)?;
 
     if remote.is_some() && exec.is_none() && !add_files.is_empty() {
         bail!("options '--add-file' and '--remote' cannot be used together");
@@ -296,6 +312,13 @@ fn execute(p: ParsedArchive) -> Result<()> {
     if format.is_none() {
         if let Some(path) = name_hint {
             format = archive_format_from_filename(path).map(str::to_string);
+            if format.is_none() {
+                let config = Repository::discover(None)
+                    .ok()
+                    .and_then(|repo| ConfigSet::load(Some(&repo.git_dir), true).ok())
+                    .unwrap_or_else(|| ConfigSet::load(None, true).unwrap_or_default());
+                format = archive_format_from_configured_filename(path, &config);
+            }
         }
     }
     let format = format.unwrap_or_else(|| "tar".to_string());
@@ -333,7 +356,7 @@ pub(crate) fn archive_bytes_for_repo(
     format: &str,
     upload_context: bool,
 ) -> Result<Vec<u8>> {
-    let (prefix, add_files) = collect_prefix_addfile(p);
+    let (prefix, add_files) = collect_prefix_addfile(p)?;
     let cwd_prefix = cwd_relative_to_worktree(repo);
 
     let config = ConfigSet::load(Some(&repo.git_dir), true)?;
@@ -351,13 +374,14 @@ pub(crate) fn archive_bytes_for_repo(
         resolve_tree_for_archive(repo, tree_ish, mtime_opt, upload_context, allow_unreachable)?;
 
     validate_pathspecs(&p.pathspecs, cwd_prefix.as_deref(), &prefix)?;
+    let scoped_pathspecs = scope_pathspecs(&p.pathspecs, cwd_prefix.as_deref())?;
 
     build_archive(
         repo,
         &config,
         &tree_data,
         &prefix,
-        &p.pathspecs,
+        &scoped_pathspecs,
         cwd_prefix.as_deref(),
         mtime_secs,
         tree_ish,
@@ -371,7 +395,10 @@ pub(crate) fn archive_bytes_for_repo(
 }
 
 fn list_formats(remote: bool) -> Result<()> {
-    let config = ConfigSet::load(None, true).unwrap_or_default();
+    let config = Repository::discover(None)
+        .ok()
+        .and_then(|repo| ConfigSet::load(Some(&repo.git_dir), true).ok())
+        .unwrap_or_else(|| ConfigSet::load(None, true).unwrap_or_default());
     println!("tar");
     println!("zip");
     for (name, _, rem) in tar_filters_from_config(&config) {
@@ -455,9 +482,18 @@ fn validate_pathspecs(
     }
     let cwd = cwd_prefix.unwrap_or("");
     for spec in specs {
+        if spec.starts_with(":(") {
+            continue;
+        }
         let rel = spec.strip_prefix("./").unwrap_or(spec.as_str());
         let tree_path = posix_clean_under(cwd, rel)?;
         if tree_path.starts_with("../") || tree_path == ".." {
+            bail!(
+                "pathspec '{}' matches files outside the current directory",
+                spec
+            );
+        }
+        if !cwd.is_empty() && tree_path != cwd && !tree_path.starts_with(&format!("{cwd}/")) {
             bail!(
                 "pathspec '{}' matches files outside the current directory",
                 spec
@@ -477,6 +513,45 @@ fn validate_pathspecs(
         }
     }
     Ok(())
+}
+
+fn scope_pathspecs(specs: &[String], cwd_prefix: Option<&str>) -> Result<Vec<String>> {
+    let Some(cwd) = cwd_prefix.filter(|s| !s.is_empty()) else {
+        return Ok(specs.to_vec());
+    };
+    let cwd_slash = format!("{cwd}/");
+    specs
+        .iter()
+        .map(|spec| {
+            if spec.starts_with(":(") {
+                return Ok(spec.clone());
+            }
+            let rel = spec.strip_prefix("./").unwrap_or(spec.as_str());
+            let tree_path = posix_clean_under(cwd, rel)?;
+            if tree_path == cwd {
+                return Ok(".".to_string());
+            }
+            Ok(tree_path
+                .strip_prefix(&cwd_slash)
+                .unwrap_or(tree_path.as_str())
+                .to_string())
+        })
+        .collect()
+}
+
+fn root_gitattributes_from_tree(
+    repo: &Repository,
+    tree_data: &[u8],
+) -> Result<Vec<grit_lib::crlf::AttrRule>> {
+    for entry in parse_tree(tree_data)? {
+        if entry.name == b".gitattributes" {
+            let obj = repo.odb.read(&entry.oid)?;
+            if let Ok(content) = String::from_utf8(obj.data) {
+                return Ok(grit_lib::crlf::parse_gitattributes_content(&content));
+            }
+        }
+    }
+    Ok(Vec::new())
 }
 
 fn committer_unix_secs(committer: &str) -> Option<u64> {
@@ -525,9 +600,6 @@ fn resolve_tree_for_archive(
 fn dwim_ref_must_exist(repo: &Repository, name: &str) -> Result<()> {
     let colon = name.find(':').unwrap_or(name.len());
     let stem = &name[..colon];
-    if stem.len() == 40 && stem.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Ok(());
-    }
     let git_dir = &repo.git_dir;
     if resolve_ref(git_dir, stem).is_ok() {
         return Ok(());
@@ -615,16 +687,19 @@ fn build_archive(
     resolved_tip: &ObjectId,
     tip_is_commit: bool,
     commit_oid: Option<ObjectId>,
-    add_files: &[PathBuf],
+    add_files: &[ArchiveAddFile],
     verbose: bool,
     format: &str,
 ) -> Result<Vec<u8>> {
     let conv = ConversionConfig::from_config(config);
     let work_tree = repo.work_tree.clone().unwrap_or_default();
-    let attr_rules = load_gitattributes(&work_tree);
+    let mut attr_rules = load_gitattributes(&work_tree);
     let max_tree_depth = resolve_max_tree_depth(config)?;
 
     let scoped_tree = tree_data_for_cwd_prefix(repo, tree_data, cwd_prefix)?;
+    if attr_rules.is_empty() {
+        attr_rules = root_gitattributes_from_tree(repo, tree_data)?;
+    }
 
     let mut entries: Vec<ArchiveEntry> = Vec::new();
     if !pathspecs.is_empty() {
@@ -679,18 +754,14 @@ fn build_archive(
     let archiver = lookup_archiver(config, format, false)
         .ok_or_else(|| anyhow::anyhow!("Unknown archive format '{format}'"))?;
 
-    for path in add_files {
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow::anyhow!("invalid add-file path"))?;
-        let apath = format!("{prefix}{name}");
-        let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    for file in add_files {
+        let data = std::fs::read(&file.fs_path)
+            .with_context(|| format!("reading {}", file.fs_path.display()))?;
         if verbose {
-            eprintln!("{apath}");
+            eprintln!("{}", file.archive_path);
         }
         entries.push(ArchiveEntry {
-            path: apath,
+            path: file.archive_path.clone(),
             mode: 0o100644,
             data,
             symlink: false,
@@ -719,7 +790,7 @@ fn build_archive(
 
     if let Some(cmd) = &archiver.filter_cmd {
         raw = run_tar_filter_command(cmd, &raw)?;
-    } else if archiver.base == "tgz" || archiver.base == "tar.gz" {
+    } else if archiver.gzip {
         let mut enc = GzEncoder::new(Vec::new(), Compression::default());
         enc.write_all(&raw)?;
         raw = enc.finish()?;
@@ -731,6 +802,7 @@ fn build_archive(
 struct ArchiverInfo {
     base: String,
     filter_cmd: Option<String>,
+    gzip: bool,
     #[allow(dead_code)]
     remote_ok: bool,
 }
@@ -740,6 +812,7 @@ fn lookup_archiver(config: &ConfigSet, format: &str, remote: bool) -> Option<Arc
         return Some(ArchiverInfo {
             base: "tar".to_string(),
             filter_cmd: None,
+            gzip: false,
             remote_ok: true,
         });
     }
@@ -747,6 +820,7 @@ fn lookup_archiver(config: &ConfigSet, format: &str, remote: bool) -> Option<Arc
         return Some(ArchiverInfo {
             base: "zip".to_string(),
             filter_cmd: None,
+            gzip: false,
             remote_ok: true,
         });
     }
@@ -760,9 +834,13 @@ fn lookup_archiver(config: &ConfigSet, format: &str, remote: bool) -> Option<Arc
             _ => false,
         };
         if use_internal {
+            if remote && !is_remote_enabled(config, "tar.gz") {
+                return None;
+            }
             return Some(ArchiverInfo {
                 base: "tar".to_string(),
                 filter_cmd: None,
+                gzip: true,
                 remote_ok: is_remote_enabled(config, "tar.gz"),
             });
         }
@@ -775,6 +853,7 @@ fn lookup_archiver(config: &ConfigSet, format: &str, remote: bool) -> Option<Arc
         return Some(ArchiverInfo {
             base: "tar".to_string(),
             filter_cmd: Some(cmd),
+            gzip: false,
             remote_ok: is_remote_enabled(config, "tar.gz"),
         });
     }
@@ -784,9 +863,13 @@ fn lookup_archiver(config: &ConfigSet, format: &str, remote: bool) -> Option<Arc
             if remote && !rem {
                 return None;
             }
+            if cmd.as_deref().is_some_and(str::is_empty) {
+                return None;
+            }
             return Some(ArchiverInfo {
                 base: "tar".to_string(),
                 filter_cmd: cmd,
+                gzip: false,
                 remote_ok: rem,
             });
         }
@@ -848,7 +931,20 @@ fn run_tar_filter_command(cmd: &str, input: &[u8]) -> Result<Vec<u8>> {
         .stderr(Stdio::inherit())
         .spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(input)?;
+        let input = input.to_vec();
+        let writer = thread::spawn(move || -> io::Result<()> {
+            stdin.write_all(&input)?;
+            Ok(())
+        });
+        let out = child.wait_with_output()?;
+        let writer_result = writer
+            .join()
+            .map_err(|_| anyhow::anyhow!("tar filter input thread panicked"))?;
+        writer_result?;
+        if !out.status.success() {
+            bail!("tar filter command failed with status {}", out.status);
+        }
+        return Ok(out.stdout);
     }
     let out = child.wait_with_output()?;
     if !out.status.success() {
@@ -864,6 +960,12 @@ fn pathspec_match_any(
     attr_rules: &[grit_lib::crlf::AttrRule],
 ) -> bool {
     if specs.is_empty() {
+        return true;
+    }
+    if specs.iter().any(|spec| {
+        spec.strip_prefix(":(glob)**/")
+            .is_some_and(|suffix| tree_path == suffix || tree_path.ends_with(&format!("/{suffix}")))
+    }) {
         return true;
     }
     grit_lib::pathspec::matches_pathspec_list_for_object(tree_path, mode, attr_rules, specs)
@@ -994,7 +1096,7 @@ fn collect_entries(
         if is_tree {
             let dir_path = format!("{full_path}/");
             if verbose {
-                eprintln!("{}", dir_path.trim_end_matches('/'));
+                eprintln!("{dir_path}");
             }
             entries.push(ArchiveEntry {
                 path: dir_path.clone(),
@@ -1658,36 +1760,43 @@ fn resolve_tree_ish(repo: &Repository, s: &str) -> Result<ObjectId> {
 }
 
 /// Infer `--format` from the output filename, matching Git `match_extension` / `archive_format_from_filename`.
-fn archive_format_from_filename(filename: &str) -> Option<&'static str> {
-    fn match_extension(filename: &str, ext: &str) -> bool {
-        let Some(prefix_len) = filename.len().checked_sub(ext.len()) else {
-            return false;
-        };
-        // Git requires a non-empty basename: at least one char before '.', and '.' before ext.
-        if prefix_len < 2 {
-            return false;
-        }
-        let b = filename.as_bytes();
-        if b.get(prefix_len - 1) != Some(&b'.') {
-            return false;
-        }
-        filename.ends_with(ext)
+fn filename_matches_extension(filename: &str, ext: &str) -> bool {
+    let Some(prefix_len) = filename.len().checked_sub(ext.len()) else {
+        return false;
+    };
+    // Git requires a non-empty basename: at least one char before '.', and '.' before ext.
+    if prefix_len < 2 {
+        return false;
     }
+    let b = filename.as_bytes();
+    if b.get(prefix_len - 1) != Some(&b'.') {
+        return false;
+    }
+    filename.ends_with(ext)
+}
 
+fn archive_format_from_filename(filename: &str) -> Option<&'static str> {
     // Longer extensions first (tar.gz before tar).
-    if match_extension(filename, "tar.gz") {
+    if filename_matches_extension(filename, "tar.gz") {
         return Some("tar.gz");
     }
-    if match_extension(filename, "tgz") {
+    if filename_matches_extension(filename, "tgz") {
         return Some("tgz");
     }
-    if match_extension(filename, "zip") {
+    if filename_matches_extension(filename, "zip") {
         return Some("zip");
     }
-    if match_extension(filename, "tar") {
+    if filename_matches_extension(filename, "tar") {
         return Some("tar");
     }
     None
+}
+
+fn archive_format_from_configured_filename(filename: &str, config: &ConfigSet) -> Option<String> {
+    tar_filters_from_config(config)
+        .into_iter()
+        .map(|(name, _, _)| name)
+        .find(|name| filename_matches_extension(filename, name))
 }
 
 fn run_remote_archive(
@@ -1835,7 +1944,14 @@ fn resolve_remote_archive_url(remote: &str) -> Result<String> {
     let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
     let key = format!("remote.{remote}.url");
     if let Some(url) = config.get(&key).filter(|u| !u.trim().is_empty()) {
-        return Ok(url);
+        if url.contains("://") || url.starts_with('/') {
+            return Ok(url);
+        }
+        let base = repo
+            .work_tree
+            .clone()
+            .unwrap_or_else(|| repo.git_dir.clone());
+        return Ok(base.join(url).to_string_lossy().to_string());
     }
     Ok(remote.to_owned())
 }

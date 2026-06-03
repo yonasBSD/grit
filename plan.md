@@ -12,8 +12,10 @@
     (`t56xx`), protocol/policy/repo selection (`t57xx`-`t59xx`), then skipped-row audit.
   - Starting CSV snapshot: 184 t5 rows; 68 in-scope fully passing, 94 in-scope failing,
     8 in-scope zero/non-green rows, and 14 skipped rows.
-  - First focus: archive dependency group, starting with `t5000-tar-tree.sh`, then
-    `t5001-archive-attr.sh` and `t5003-archive-zip.sh`.
+  - Completed `t5000-tar-tree.sh` (90/90) after fixing archive filter streaming, ordered
+    prefix/add-file semantics, configured format inference, remote URL/list/tar.gz/unreachable
+    behavior, scoped pathspecs, glob archive pathspecs, and bare tree attrs for attr pathspecs.
+  - Next focus: `t5001-archive-attr.sh`, then `t5003-archive-zip.sh`.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

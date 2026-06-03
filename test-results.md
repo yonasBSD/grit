@@ -1,3 +1,9 @@
+
+## 2026-06-03 — t5000-tar-tree
+
+- Focus harness: `./scripts/run-tests.sh --timeout 600 t5000-tar-tree.sh --verbose` passes 90/90 after archive filter streaming and archive option/pathspec/remote fixes.
+- Quality gates: `cargo fmt`, `cargo check`, `cargo clippy --fix --allow-dirty`, and `cargo test -p grit-lib --lib` completed successfully; unrelated automatic clippy formatting outside the archive change was reverted before commit.
+
 ## 2026-06-03 — t1300-config --config-env partial
 
 - Focus harness improved from 366/497 to 372/497 after adding global `--config-env` support, including keys containing `=`. Remaining failures are broader config parsing/formatting/type edge cases.

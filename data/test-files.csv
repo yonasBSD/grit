@@ -757,7 +757,7 @@ t4070-diff-pairs	t4	yes	7	6	1	false	ok	0
 t4070-diff-submodule	t4	yes	31	31	0	true	ok	0
 t4071-diff-empty-tree	t4	yes	32	29	3	false	ok	0
 t4071-diff-minimal	t4	yes	1	1	0	true	ok	0
-t4072-diff-max-depth	t4	yes	76	50	0	true	ok	0
+t4072-diff-max-depth	t4	yes	50	50	0	true	ok	0
 t4073-diff-stat-name-width	t4	yes	6	6	0	true	ok	0
 t4074-diff-shifted-matched-group	t4	yes	4	4	0	true	ok	0
 t4075-diff-full-index-abbrev	t4	yes	7	7	0	true	ok	0
@@ -824,7 +824,7 @@ t4203-log-diff-filter	t4	yes	7	6	1	false	ok	0
 t4203-mailmap	t4	yes	74	56	18	false	ok	0
 t4204-log-follow	t4	yes	5	5	0	true	ok	0
 t4204-patch-id	t4	yes	26	26	0	true	ok	0
-t4205-log-pretty-formats	t4	yes	125	106	17	false	ok	2
+t4205-log-pretty-formats	t4	yes	123	106	17	false	ok	2
 t4206-log-follow	t4	yes	26	9	17	false	ok	0
 t4206-log-follow-harder-copies	t4	yes	7	6	1	false	ok	0
 t4207-log-decoration	t4	yes	23	11	12	false	ok	0
@@ -853,7 +853,7 @@ t4257-am-interactive	t4	skip	0	0	0	false	timeout	0
 t4258-am-quoted-cr	t4	skip	4	3	1	false	ok	0
 t4300-merge-tree	t4	yes	22	17	5	false	ok	0
 t4301-merge-tree-write-tree	t4	yes	44	44	0	true	ok	0
-t5000-tar-tree	t5	yes	0	0	0	false	timeout	0
+t5000-tar-tree	t5	yes	90	90	0	true	ok	0
 t5000-write-tree	t5	yes	5	5	0	true	ok	0
 t5001-archive-attr	t5	yes	44	21	23	false	ok	0
 t5002-archive-attr-pattern	t5	yes	19	19	0	true	ok	0
