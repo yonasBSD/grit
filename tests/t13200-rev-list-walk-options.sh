@@ -107,10 +107,10 @@ test_expect_success 'rev-list --first-parent on linear history same as HEAD' '
 	test_cmp actual_all actual_fp
 '
 
-test_expect_success 'rev-list master same as HEAD' '
+test_expect_success 'rev-list main same as HEAD' '
 	(cd repo && grit rev-list HEAD >../actual_head) &&
-	(cd repo && grit rev-list master >../actual_master) &&
-	test_cmp actual_head actual_master
+	(cd repo && grit rev-list main >../actual_main) &&
+	test_cmp actual_head actual_main
 '
 
 test_expect_success 'setup branch for range tests' '
@@ -118,56 +118,56 @@ test_expect_success 'setup branch for range tests' '
 	 git checkout -b feature &&
 	 echo G >g.txt && grit add g.txt && grit commit -m "G" &&
 	 echo H >h.txt && grit add h.txt && grit commit -m "H" &&
-	 git checkout master)
+	 git checkout main)
 '
 
-test_expect_success 'rev-list feature shows more commits than master' '
+test_expect_success 'rev-list feature shows more commits than main' '
 	(cd repo && grit rev-list feature >../actual_feature) &&
-	(cd repo && grit rev-list master >../actual_master) &&
+	(cd repo && grit rev-list main >../actual_main) &&
 	feature_count=$(wc -l <actual_feature) &&
-	master_count=$(wc -l <actual_master) &&
-	test "$feature_count" -gt "$master_count"
+	main_count=$(wc -l <actual_main) &&
+	test "$feature_count" -gt "$main_count"
 '
 
-test_expect_success 'rev-list master..feature shows only feature commits' '
-	(cd repo && grit rev-list master..feature >../actual) &&
+test_expect_success 'rev-list main..feature shows only feature commits' '
+	(cd repo && grit rev-list main..feature >../actual) &&
 	test_line_count = 2 actual
 '
 
-test_expect_success 'rev-list master..feature contains only feature-exclusive commits' '
-	(cd repo && grit rev-list master..feature >../actual) &&
-	(cd repo && grit rev-list master >../master_commits) &&
+test_expect_success 'rev-list main..feature contains only feature-exclusive commits' '
+	(cd repo && grit rev-list main..feature >../actual) &&
+	(cd repo && grit rev-list main >../main_commits) &&
 	while read hash; do
-		! grep "$hash" master_commits || return 1
+		! grep "$hash" main_commits || return 1
 	done <actual
 '
 
-test_expect_success 'rev-list feature..master is empty' '
-	(cd repo && grit rev-list feature..master >../actual) &&
+test_expect_success 'rev-list feature..main is empty' '
+	(cd repo && grit rev-list feature..main >../actual) &&
 	test_must_be_empty actual
 '
 
-test_expect_success 'rev-list --count master..feature shows 2' '
-	(cd repo && grit rev-list --count master..feature >../actual) &&
+test_expect_success 'rev-list --count main..feature shows 2' '
+	(cd repo && grit rev-list --count main..feature >../actual) &&
 	echo "2" >expect &&
 	test_cmp expect actual
 '
 
-test_expect_success 'rev-list --reverse master..feature flips order' '
-	(cd repo && grit rev-list master..feature >../fwd) &&
-	(cd repo && grit rev-list --reverse master..feature >../rev) &&
+test_expect_success 'rev-list --reverse main..feature flips order' '
+	(cd repo && grit rev-list main..feature >../fwd) &&
+	(cd repo && grit rev-list --reverse main..feature >../rev) &&
 	head -1 fwd >fwd_first &&
 	tail -1 rev >rev_last &&
 	test_cmp fwd_first rev_last
 '
 
-test_expect_success 'rev-list --max-count=1 master..feature' '
-	(cd repo && grit rev-list --max-count=1 master..feature >../actual) &&
+test_expect_success 'rev-list --max-count=1 main..feature' '
+	(cd repo && grit rev-list --max-count=1 main..feature >../actual) &&
 	test_line_count = 1 actual
 '
 
-test_expect_success 'rev-list --skip=1 master..feature' '
-	(cd repo && grit rev-list --skip=1 master..feature >../actual) &&
+test_expect_success 'rev-list --skip=1 main..feature' '
+	(cd repo && grit rev-list --skip=1 main..feature >../actual) &&
 	test_line_count = 1 actual
 '
 

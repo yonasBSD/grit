@@ -1,3 +1,7 @@
+## 2026-06-03 — t13200-rev-list-walk-options
+
+- Focus harness: `./scripts/run-tests.sh t13200-rev-list-walk-options.sh --verbose` passes 35/35 after aligning rev-list walk/range fixture references with `main`.
+
 ## 2026-06-03 — t12610-rev-list-all-branches
 
 - Focus harness: `./scripts/run-tests.sh t12610-rev-list-all-branches.sh --verbose` passes 32/32 after aligning rev-list multi-branch fixture references with `main`.
