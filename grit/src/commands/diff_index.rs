@@ -1908,6 +1908,22 @@ pub(crate) fn write_diff_index_name_status(
                     )?;
                 }
             }
+            // A broken (`-B`) in-place rewrite carries a similarity score on the
+            // surviving Modified/TypeChanged entry (e.g. `T100`).
+            (DiffStatus::Modified | DiffStatus::TypeChanged, Some(s)) => {
+                let letter = entry.status.letter();
+                if nul {
+                    write!(out, "{letter}{s:03}\0")?;
+                    out.write_all(entry.path().as_bytes())?;
+                    out.write_all(b"\0")?;
+                } else {
+                    writeln!(
+                        out,
+                        "{letter}{s:03}\t{}",
+                        quote_c_style(entry.path(), quote_fully)
+                    )?;
+                }
+            }
             _ => {
                 if nul {
                     write!(out, "{}\0", entry.status.letter())?;

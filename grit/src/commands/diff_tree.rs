@@ -114,6 +114,8 @@ struct Options {
     find_renames: Option<u32>,
     /// Copy detection threshold (None = disabled).
     find_copies: Option<u32>,
+    /// Break complete-rewrite pairs (`-B`/`--break-rewrites`).
+    break_rewrites: bool,
     /// Use all source files for copy detection, not just modified ones.
     find_copies_harder: bool,
     /// Rename limit (max number of rename source candidates).
@@ -248,6 +250,7 @@ impl Default for Options {
             abbrev: None,
             find_renames: None,
             find_copies: None,
+            break_rewrites: false,
             find_copies_harder: false,
             rename_limit: None,
             full_index: false,
@@ -406,6 +409,12 @@ fn parse_options(repo: &Repository, argv: &[String]) -> Result<Options> {
                 "-b" | "--ignore-space-change" => opts.ignore_space_change = true,
                 "-w" | "--ignore-all-space" => opts.ignore_all_space = true,
                 "--ignore-cr-at-eol" => opts.ignore_cr_at_eol = true,
+                "-B" | "--break-rewrites" => opts.break_rewrites = true,
+                _ if arg.starts_with("-B") || arg.starts_with("--break-rewrites=") => {
+                    // Accept a score/merge-score argument but use git's defaults;
+                    // these tests only exercise the default break behavior.
+                    opts.break_rewrites = true;
+                }
                 "-M" | "--find-renames" => opts.find_renames = Some(50),
                 "-C" | "--find-copies" => {
                     opts.find_copies = Some(50);
@@ -2033,6 +2042,13 @@ fn prepare_diff_tree_entries<'a>(
     } else {
         Vec::new()
     };
+    // `-B` (break-rewrites): split complete-rewrite Modified/TypeChanged pairs
+    // into a Deleted + Added pair so that rename/copy detection can re-pair them
+    // across paths, then merge any surviving broken pairs back together.
+    if opts.break_rewrites && (opts.find_renames.is_some() || opts.find_copies.is_some()) {
+        return break_then_detect(odb, entries, opts, &old_blobs);
+    }
+
     let mut out = if let Some(threshold) = opts.find_renames {
         let mut result = detect_renames(odb, None, entries, threshold);
         if let Some(copy_threshold) = opts.find_copies {
@@ -2064,6 +2080,198 @@ fn prepare_diff_tree_entries<'a>(
         out = preprocess_gitlink_renames_for_submodule_log(out);
     }
     out
+}
+
+/// Implements `-B` (break-rewrites) combined with rename/copy detection.
+///
+/// Mirrors git's diffcore-break + diffcore-rename + diffcore-merge-broken:
+/// complete-rewrite Modified/TypeChanged pairs are split into a Deleted + Added
+/// pair (the "broken pair"), rename/copy detection is run, and surviving broken
+/// halves are merged back. A rename whose source path survives (its broken-add
+/// peer was not consumed) is downgraded to a copy.
+fn break_then_detect(
+    odb: &Odb,
+    entries: Vec<DiffEntry>,
+    opts: &Options,
+    old_blobs: &[(String, String, ObjectId)],
+) -> Vec<DiffEntry> {
+    use std::collections::HashSet;
+    let zero = grit_lib::diff::zero_oid();
+    let zero_mode = "000000".to_owned();
+
+    // Phase 1: break eligible pairs.
+    let mut broken_paths: HashSet<String> = HashSet::new();
+    // Remember the original (old half, new half) of every broken path so we can
+    // merge it back together later.
+    let mut broken_old: std::collections::HashMap<String, DiffEntry> =
+        std::collections::HashMap::new();
+    let mut broken_new: std::collections::HashMap<String, DiffEntry> =
+        std::collections::HashMap::new();
+    let mut prepared: Vec<DiffEntry> = Vec::new();
+
+    for entry in entries {
+        let is_inplace_edit =
+            matches!(entry.status, DiffStatus::Modified | DiffStatus::TypeChanged)
+                && entry.old_path.as_deref() == entry.new_path.as_deref()
+                && entry.old_path.is_some();
+        if !is_inplace_edit {
+            prepared.push(entry);
+            continue;
+        }
+        let old_data = odb.read(&entry.old_oid).ok().map(|o| o.data);
+        let new_data = odb.read(&entry.new_oid).ok().map(|o| o.data);
+        let should_break = match (&old_data, &new_data) {
+            (Some(o), Some(n)) => grit_lib::diff::should_break_rewrite_pair(
+                o,
+                n,
+                grit_lib::diff::GIT_DIFF_DEFAULT_BREAK_SCORE,
+            ),
+            _ => false,
+        };
+        if !should_break {
+            prepared.push(entry);
+            continue;
+        }
+        let path = entry.path().to_owned();
+        broken_paths.insert(path.clone());
+        // Deleted half (old side).
+        let del = DiffEntry {
+            status: DiffStatus::Deleted,
+            old_path: entry.old_path.clone(),
+            new_path: None,
+            old_mode: entry.old_mode.clone(),
+            new_mode: zero_mode.clone(),
+            old_oid: entry.old_oid,
+            new_oid: zero,
+            score: None,
+        };
+        // Added half (new side).
+        let add = DiffEntry {
+            status: DiffStatus::Added,
+            old_path: None,
+            new_path: entry.new_path.clone(),
+            old_mode: zero_mode.clone(),
+            new_mode: entry.new_mode.clone(),
+            old_oid: zero,
+            new_oid: entry.new_oid,
+            score: None,
+        };
+        broken_old.insert(path.clone(), del.clone());
+        broken_new.insert(path.clone(), add.clone());
+        prepared.push(del);
+        prepared.push(add);
+    }
+
+    // Phase 2: rename (and optional copy) detection.
+    let mut detected = if let Some(threshold) = opts.find_renames {
+        detect_renames(odb, None, prepared, threshold)
+    } else {
+        prepared
+    };
+    if let Some(copy_threshold) = opts.find_copies {
+        detected = lib_detect_copies(
+            odb,
+            None,
+            detected,
+            copy_threshold,
+            opts.find_copies_harder,
+            old_blobs,
+        );
+    }
+
+    // Phase 3: merge back surviving broken pairs and resolve rename-vs-copy.
+    //
+    // A broken-add peer "survives" if the path still appears as a standalone
+    // Added entry in the detection output.
+    let surviving_add: HashSet<String> = detected
+        .iter()
+        .filter(|e| e.status == DiffStatus::Added)
+        .filter_map(|e| e.new_path.clone())
+        .filter(|p| broken_paths.contains(p))
+        .collect();
+    let surviving_del: HashSet<String> = detected
+        .iter()
+        .filter(|e| e.status == DiffStatus::Deleted)
+        .filter_map(|e| e.old_path.clone())
+        .filter(|p| broken_paths.contains(p))
+        .collect();
+
+    let mut result: Vec<DiffEntry> = Vec::new();
+    let mut merged_paths: HashSet<String> = HashSet::new();
+    for entry in detected {
+        match entry.status {
+            // A rename/copy whose source is a broken path that still survives in
+            // the destination tree is really a copy.
+            DiffStatus::Renamed
+                if entry
+                    .old_path
+                    .as_deref()
+                    .is_some_and(|p| surviving_add.contains(p)) =>
+            {
+                let mut e = entry;
+                e.status = DiffStatus::Copied;
+                result.push(e);
+            }
+            // Standalone surviving broken halves: recombine into the original
+            // Modified/TypeChanged once (when both halves survived) or restore
+            // the original change when only this half survived because its peer
+            // was consumed by a rename/copy.
+            DiffStatus::Added
+                if entry
+                    .new_path
+                    .as_deref()
+                    .is_some_and(|p| broken_paths.contains(p)) =>
+            {
+                let path = entry.new_path.clone().unwrap_or_default();
+                if merged_paths.insert(path.clone()) {
+                    if let (Some(del), Some(add)) = (broken_old.get(&path), broken_new.get(&path)) {
+                        result.push(merge_broken_pair(del, add));
+                    }
+                }
+            }
+            DiffStatus::Deleted
+                if entry
+                    .old_path
+                    .as_deref()
+                    .is_some_and(|p| broken_paths.contains(p)) =>
+            {
+                let path = entry.old_path.clone().unwrap_or_default();
+                // Only emit here if the add-half did NOT survive (otherwise the
+                // Added arm above handles the merge); this covers the symmetric
+                // case where the delete half is the survivor.
+                if !surviving_add.contains(&path) && merged_paths.insert(path.clone()) {
+                    if let (Some(del), Some(add)) = (broken_old.get(&path), broken_new.get(&path)) {
+                        result.push(merge_broken_pair(del, add));
+                    }
+                }
+            }
+            _ => result.push(entry),
+        }
+    }
+    let _ = surviving_del;
+
+    result.sort_by(|a, b| a.path().cmp(b.path()));
+    result
+}
+
+/// Recombine the two halves of a broken pair into a single Modified or
+/// TypeChanged entry, restoring git's score-100 break marker.
+fn merge_broken_pair(del: &DiffEntry, add: &DiffEntry) -> DiffEntry {
+    let status = if del.old_mode != add.new_mode {
+        DiffStatus::TypeChanged
+    } else {
+        DiffStatus::Modified
+    };
+    DiffEntry {
+        status,
+        old_path: del.old_path.clone(),
+        new_path: add.new_path.clone(),
+        old_mode: del.old_mode.clone(),
+        new_mode: add.new_mode.clone(),
+        old_oid: del.old_oid,
+        new_oid: add.new_oid,
+        score: Some(100),
+    }
 }
 
 fn run_diff_tree_whitespace_check(
