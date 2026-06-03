@@ -922,6 +922,10 @@ fn show_commit(
     );
 
     if args.oneline || resolved_format.as_deref() == Some("oneline") {
+        // Mirror `git log --oneline`, which decorates the header line with the refs pointing at
+        // the commit (`<hash> (HEAD -> main) subject`). This keeps `git show --oneline` output
+        // byte-for-byte identical to `git log --oneline` for the same commit.
+        let decoration = crate::commands::log::oneline_decoration_for_hex(repo, &hex);
         let first_line = commit.message.lines().next().unwrap_or("");
         let first_line = if expand_tabs_in_log > 0 {
             grit_lib::tab_expand::expand_tabs_in_line(first_line, expand_tabs_in_log)
@@ -963,7 +967,7 @@ fn show_commit(
             if suppress_commit_line {
                 return Ok(());
             }
-            writeln!(out, "{} {}", &hex[..7], first_line)?;
+            writeln!(out, "{}{} {}", &hex[..7], decoration, first_line)?;
             out.write_all(&remerge_buf)?;
             // Pathspecs limit remerge-diff only; do not also emit the default parent diff.
             if !pathspecs.is_empty() {
@@ -971,7 +975,7 @@ fn show_commit(
             }
             return Ok(());
         }
-        writeln!(out, "{} {}", &hex[..7], first_line)?;
+        writeln!(out, "{}{} {}", &hex[..7], decoration, first_line)?;
         return Ok(());
     }
 

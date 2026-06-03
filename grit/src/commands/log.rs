@@ -9398,6 +9398,20 @@ fn current_branch_decoration_index(items: &[DecorationItem], head: &HeadState) -
         .position(|it| it.kind == DecorationKind::Branch && it.refname.as_deref() == Some(refname))
 }
 
+/// Compute the plain (no-color, short-ref) decoration suffix for a commit hex, e.g.
+/// ` (HEAD -> main, tag: v1)`. Returns an empty string when the commit carries no refs.
+///
+/// Shared with `show.rs` so that `git show --oneline` decorates its header line the same way
+/// `git log --oneline` does.
+pub(crate) fn oneline_decoration_for_hex(repo: &Repository, hex: &str) -> String {
+    let decorations = match collect_decorations(repo, false) {
+        Ok(map) => map,
+        Err(_) => return String::new(),
+    };
+    let head = resolve_head(&repo.git_dir).unwrap_or(HeadState::Invalid);
+    format_decoration(hex, Some(&decorations), false, None, &head)
+}
+
 /// Format decoration string for a commit (with parentheses), matching Git's `format_decorations`.
 fn format_decoration(
     hex: &str,

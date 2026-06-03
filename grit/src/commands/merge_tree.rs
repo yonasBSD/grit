@@ -37,29 +37,38 @@ struct Parsed {
     positionals: Vec<String>,
     git_completion_helper: bool,
     git_completion_helper_all: bool,
+    /// True if any option token other than `--trivial-merge` was consumed by the
+    /// parser. Mirrors git's `argc < original_argc` check: when `--trivial-merge`
+    /// is present together with *any* other option, git dies with
+    /// "--trivial-merge is incompatible with all other options".
+    other_options_seen: bool,
 }
 
 /// Entry from `main`: `rest` is argv after `merge-tree`.
 /// Options for shell completion (`git merge-tree --git-completion-helper[-all]`).
-pub fn completion_helper_options(show_all: bool) -> Vec<String> {
-    let mut opts = vec![
-        "--write-tree=".to_string(),
-        "--trivial-merge=".to_string(),
-        "--stdin=".to_string(),
+///
+/// This mirrors git's parse-options `show_gitcomp()` for the merge-tree option
+/// table: boolean options are emitted without a trailing `=`, only options that
+/// take an argument get `=`, and the negated (`--no-*`) forms (plus a literal
+/// `--`) are appended at the end. `-z` has no long name and is therefore not
+/// listed. `show_all` does not change the result here because merge-tree has no
+/// hidden options.
+pub fn completion_helper_options(_show_all: bool) -> Vec<String> {
+    vec![
+        "--write-tree".to_string(),
+        "--trivial-merge".to_string(),
+        "--messages".to_string(),
+        "--quiet".to_string(),
+        "--name-only".to_string(),
+        "--allow-unrelated-histories".to_string(),
+        "--stdin".to_string(),
         "--merge-base=".to_string(),
-        "--allow-unrelated-histories=".to_string(),
-        "--quiet=".to_string(),
-        "--messages=".to_string(),
-        "--no-messages=".to_string(),
-        "-z=".to_string(),
-        "--name-only=".to_string(),
         "--strategy-option=".to_string(),
-    ];
-    if show_all {
-        opts.push("--git-completion-helper=".to_string());
-        opts.push("--git-completion-helper-all=".to_string());
-    }
-    opts
+        "--no-messages".to_string(),
+        "--".to_string(),
+        "--no-merge-base".to_string(),
+        "--no-strategy-option".to_string(),
+    ]
 }
 
 pub fn run_from_argv(rest: &[String]) -> Result<()> {
@@ -76,6 +85,10 @@ fn parse_argv(rest: &[String]) -> Result<Parsed> {
     while i < rest.len() {
         let tok = rest[i].as_str();
         if tok == "--" || tok == "--end-of-options" {
+            // git's parse-options consumes the `--` token, so when combined with
+            // `--trivial-merge` the remaining-arg count shrinks and git reports
+            // the incompatibility error. Record that an option token was seen.
+            p.other_options_seen = true;
             i += 1;
             while i < rest.len() {
                 p.positionals.push(rest[i].clone());
@@ -90,6 +103,7 @@ fn parse_argv(rest: &[String]) -> Result<Parsed> {
         }
         if tok == "-z" {
             p.nul_terminate = true;
+            p.other_options_seen = true;
             i += 1;
             continue;
         }
@@ -111,16 +125,19 @@ fn parse_argv(rest: &[String]) -> Result<Parsed> {
                 }));
             }
             p.strategy_option.push(opt);
+            p.other_options_seen = true;
             i += 1;
             continue;
         }
         if tok.starts_with("-X") && tok.len() > 2 {
             p.strategy_option.push(tok[2..].to_string());
+            p.other_options_seen = true;
             i += 1;
             continue;
         }
         if let Some(v) = tok.strip_prefix("--strategy-option=") {
             p.strategy_option.push(v.to_string());
+            p.other_options_seen = true;
             i += 1;
             continue;
         }
@@ -136,18 +153,41 @@ fn parse_argv(rest: &[String]) -> Result<Parsed> {
                 })?
                 .clone();
             p.strategy_option.push(v);
+            p.other_options_seen = true;
+            i += 1;
+            continue;
+        }
+        // `--no-strategy-option` clears any accumulated strategy options (it does
+        // not take a value); it is emitted by the completion helper.
+        if tok == "--no-strategy-option" {
+            p.strategy_option.clear();
+            p.other_options_seen = true;
             i += 1;
             continue;
         }
         if let Some(v) = tok.strip_prefix("--merge-base=") {
             p.merge_base = Some(v.to_string());
+            p.other_options_seen = true;
+            i += 1;
+            continue;
+        }
+        // `--no-merge-base` unsets the merge base (no value).
+        if tok == "--no-merge-base" {
+            p.merge_base = None;
+            p.other_options_seen = true;
             i += 1;
             continue;
         }
         match tok {
-            "--write-tree" => p.write_tree = true,
+            "--write-tree" => {
+                p.write_tree = true;
+                p.other_options_seen = true;
+            }
             "--trivial-merge" => p.trivial_merge = true,
-            "--stdin" => p.stdin = true,
+            "--stdin" => {
+                p.stdin = true;
+                p.other_options_seen = true;
+            }
             "--merge-base" => {
                 i += 1;
                 let v = rest
@@ -160,12 +200,28 @@ fn parse_argv(rest: &[String]) -> Result<Parsed> {
                     })?
                     .clone();
                 p.merge_base = Some(v);
+                p.other_options_seen = true;
             }
-            "--allow-unrelated-histories" => p.allow_unrelated_histories = true,
-            "--quiet" => p.quiet = true,
-            "--messages" => p.messages = true,
-            "--no-messages" => p.no_messages = true,
-            "--name-only" => p.name_only = true,
+            "--allow-unrelated-histories" => {
+                p.allow_unrelated_histories = true;
+                p.other_options_seen = true;
+            }
+            "--quiet" => {
+                p.quiet = true;
+                p.other_options_seen = true;
+            }
+            "--messages" => {
+                p.messages = true;
+                p.other_options_seen = true;
+            }
+            "--no-messages" => {
+                p.no_messages = true;
+                p.other_options_seen = true;
+            }
+            "--name-only" => {
+                p.name_only = true;
+                p.other_options_seen = true;
+            }
             "--git-completion-helper" => p.git_completion_helper = true,
             "--git-completion-helper-all" => p.git_completion_helper_all = true,
             other => {
@@ -414,17 +470,10 @@ fn run_stdin_merges(args: &Parsed) -> Result<()> {
 }
 
 fn run_trivial_merge(args: &Parsed) -> Result<()> {
-    if args.write_tree
-        || args.stdin
-        || args.merge_base.is_some()
-        || args.allow_unrelated_histories
-        || args.quiet
-        || args.messages
-        || args.no_messages
-        || args.nul_terminate
-        || args.name_only
-        || !args.strategy_option.is_empty()
-    {
+    // git: `--trivial-merge` is incompatible with *any* other option token,
+    // including ones that were unset (`--no-merge-base`) or `--` itself. The
+    // `other_options_seen` flag captures git's `argc < original_argc` behavior.
+    if args.other_options_seen {
         return Err(anyhow::Error::new(ExplicitExit {
             code: 128,
             message: "fatal: --trivial-merge is incompatible with all other options".to_string(),
@@ -549,7 +598,9 @@ fn write_merge_tree_stdout_to(
     w.write_all(&[line_term])?;
 
     if out.has_conflicts {
-        let quote = config_quote_path(repo);
+        // With NUL line termination (`-z`/`--stdin`), git never C-quotes paths — the NUL
+        // delimiter already makes any byte safe, so non-ASCII names appear verbatim.
+        let quote = !nul && config_quote_path(repo);
         let mut seen_name_only: Option<String> = None;
         for e in &out.index.entries {
             if e.stage() == 0 || e.mode == grit_lib::index::MODE_TREE {
@@ -735,6 +786,38 @@ fn write_merge_tree_stdout_to(
                     }
                     continue;
                 }
+                if d.kind == "file/directory" {
+                    // git lists the relocated path and the original directory path, and orders the
+                    // `file/directory` row before the companion `modify/delete` row at the same
+                    // relocated path.
+                    let new = d.subject_path.as_str();
+                    let short = "CONFLICT (file/directory)".to_string();
+                    let long = format!("{short}: {}", d.body);
+                    if let Some(old) = d.remerge_anchor_path.as_deref() {
+                        zrows.push((
+                            new.to_string(),
+                            0,
+                            String::new(),
+                            ZMsg::OtherConflict {
+                                paths: vec![new, old],
+                                short,
+                                long,
+                            },
+                        ));
+                    } else {
+                        zrows.push((
+                            new.to_string(),
+                            0,
+                            String::new(),
+                            ZMsg::OtherConflict {
+                                paths: vec![new],
+                                short,
+                                long,
+                            },
+                        ));
+                    }
+                    continue;
+                }
                 let tier = match d.kind {
                     "rename/delete" => 0u8,
                     "modify/delete" => 1,
@@ -764,6 +847,12 @@ fn write_merge_tree_stdout_to(
                     } else {
                         (s, l, vec![d.subject_path.as_str()])
                     }
+                } else if d.kind == "modify/delete" {
+                    // git always lists the single (possibly relocated) subject path for
+                    // modify/delete, even when an anchor to the original path is recorded.
+                    let s = format!("CONFLICT ({})", d.kind);
+                    let l = format!("{s}: {}", d.body);
+                    (s, l, vec![d.subject_path.as_str()])
                 } else {
                     let s = format!("CONFLICT ({})", d.kind);
                     let l = format!("{s}: {}", d.body);

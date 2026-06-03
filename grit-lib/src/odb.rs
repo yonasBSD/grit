@@ -97,6 +97,11 @@ pub struct Odb {
     /// every file; the value cannot change for a process that has opened a single repository, so
     /// caching it here avoids re-loading the cascade for every object read.
     core_multi_pack_index_cache: Arc<OnceLock<bool>>,
+    /// When `Some`, object writes are redirected into this in-memory overlay instead of being
+    /// persisted to the loose store (Git's tmp-objdir). Reads consult the overlay first. This
+    /// mirrors `git merge-tree --quiet`, which performs a full merge but must leave the object
+    /// database untouched (no new loose objects).
+    mem_overlay: Arc<Mutex<Option<std::collections::HashMap<ObjectId, (ObjectKind, Vec<u8>)>>>>,
 }
 
 impl std::fmt::Debug for Odb {
@@ -123,6 +128,7 @@ impl Odb {
             submodule_alternate_dirs: Arc::new(Mutex::new(Vec::new())),
             config_git_dir: None,
             core_multi_pack_index_cache: Arc::new(OnceLock::new()),
+            mem_overlay: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -135,7 +141,52 @@ impl Odb {
             submodule_alternate_dirs: Arc::new(Mutex::new(Vec::new())),
             config_git_dir: None,
             core_multi_pack_index_cache: Arc::new(OnceLock::new()),
+            mem_overlay: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Enable the in-memory write overlay (Git's tmp-objdir): subsequent [`Self::write`]/
+    /// [`Self::write_local`] calls keep objects only in memory, and [`Self::read`] consults that
+    /// overlay before the on-disk store. Used by `merge-tree --quiet` so a full merge can run
+    /// without persisting any new loose objects.
+    pub fn enable_mem_overlay(&self) {
+        if let Ok(mut guard) = self.mem_overlay.lock() {
+            *guard = Some(std::collections::HashMap::new());
+        }
+    }
+
+    /// Disable the in-memory write overlay, discarding any objects accumulated in it.
+    pub fn disable_mem_overlay(&self) {
+        if let Ok(mut guard) = self.mem_overlay.lock() {
+            *guard = None;
+        }
+    }
+
+    /// If the in-memory overlay is active, store `(kind, data)` under `oid` there and return
+    /// `true`; otherwise return `false` so the caller falls through to the on-disk path.
+    fn overlay_store(&self, oid: ObjectId, kind: ObjectKind, data: &[u8]) -> bool {
+        if let Ok(mut guard) = self.mem_overlay.lock() {
+            if let Some(map) = guard.as_mut() {
+                map.entry(oid).or_insert_with(|| (kind, data.to_vec()));
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Read `oid` from the in-memory overlay, if active and present.
+    fn overlay_read(&self, oid: &ObjectId) -> Option<Object> {
+        if let Ok(guard) = self.mem_overlay.lock() {
+            if let Some(map) = guard.as_ref() {
+                if let Some((kind, data)) = map.get(oid) {
+                    return Some(Object {
+                        kind: *kind,
+                        data: data.clone(),
+                    });
+                }
+            }
+        }
+        None
     }
 
     /// Register `<submodule-git-dir>/objects` for every stage-0 gitlink in `index` that has a
@@ -388,6 +439,12 @@ impl Odb {
             });
         }
 
+        // Objects written under an active in-memory overlay never hit disk, so they must be
+        // resolved here before any loose/pack lookup.
+        if let Some(obj) = self.overlay_read(oid) {
+            return Ok(obj);
+        }
+
         let path = self.object_path(oid);
         match fs::File::open(&path) {
             Ok(file) => {
@@ -484,6 +541,12 @@ impl Odb {
     pub fn write(&self, kind: ObjectKind, data: &[u8]) -> Result<ObjectId> {
         let store_bytes = build_store_bytes(kind, data);
         let oid = hash_bytes(&store_bytes);
+
+        // When the in-memory overlay is active, keep the object in memory only (unless it is
+        // already present on disk, in which case nothing new needs to be written anyway).
+        if !self.exists(&oid) && self.overlay_store(oid, kind, data) {
+            return Ok(oid);
+        }
 
         let path = self.object_path(&oid);
         if path.exists() {

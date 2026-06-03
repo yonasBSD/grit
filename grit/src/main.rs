@@ -4513,8 +4513,44 @@ fn preprocess_expand_tabs_for_rev_cmd(rest: &[String]) -> Vec<String> {
     out
 }
 
+/// Value-less `git log` option flags that git accepts in any position (before or after
+/// revision arguments). clap treats the `revisions` positional as `allow_hyphen_values`,
+/// so a flag appearing after a revision would be consumed as a revision instead of an
+/// option. Hoisting these specific flags ahead of the positionals restores git's behavior
+/// without disturbing options that take values.
+fn hoist_trailing_log_flags(rest: &[String]) -> Vec<String> {
+    const FLAGS: &[&str] = &["--reverse"];
+    let mut hoisted: Vec<String> = Vec::new();
+    let mut tail: Vec<String> = Vec::new();
+    let mut after_dashdash = false;
+    for arg in rest {
+        if after_dashdash {
+            tail.push(arg.clone());
+            continue;
+        }
+        if arg == "--" {
+            after_dashdash = true;
+            tail.push(arg.clone());
+            continue;
+        }
+        if FLAGS.contains(&arg.as_str()) {
+            hoisted.push(arg.clone());
+        } else {
+            tail.push(arg.clone());
+        }
+    }
+    hoisted.extend(tail);
+    hoisted
+}
+
 fn preprocess_log_args(rest: &[String]) -> Vec<String> {
     let rest = preprocess_git_notes_display_argv(rest, NotesDisplayDefault::OnIfUnset);
+    // git accepts value-less options interspersed with / after revision arguments
+    // (e.g. `git log -2 <rev> --reverse`). clap's `allow_hyphen_values` revisions
+    // positional would otherwise swallow such a trailing flag as a revision. Hoist
+    // these flags before the positional revisions (stopping at `--`, after which
+    // everything is a pathspec).
+    let rest = hoist_trailing_log_flags(&rest);
     let mut result = Vec::new();
     let mut saw_graph = false;
     let mut i = 0usize;
