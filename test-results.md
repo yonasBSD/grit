@@ -1301,3 +1301,10 @@ Updated: 2026-06-01
   `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
   --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
   `cargo test -p grit-lib --lib`.
+- t6012 simplify-merges author-date focus: after reordering simplified merge output with rewritten
+  parent edges and author-date ready-queue ordering, the direct verbose run advances through test
+  30 and `./scripts/run-tests.sh t6012-rev-list-simplify.sh` improves from 36/42 to 37/42 with
+  refreshed `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p
+  grit-cli`, `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
+  `cargo test -p grit-lib --lib`.

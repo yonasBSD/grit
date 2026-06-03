@@ -1072,7 +1072,13 @@ pub fn rev_list(
     }
 
     if !options.paths.is_empty() && options.simplify_merges && !ordered.is_empty() {
-        ordered = simplify_merges_commit_list(repo, &ordered, &options.paths, &excluded)?;
+        ordered = simplify_merges_commit_list(
+            repo,
+            &ordered,
+            &options.paths,
+            &excluded,
+            options.ordering,
+        )?;
     }
 
     // Git-style path-limited parent reordering (dense history and `--sparse` only). Pure
@@ -3293,19 +3299,23 @@ fn simplify_merges_commit_list(
     commits: &[ObjectId],
     paths: &[String],
     excluded: &HashSet<ObjectId>,
+    ordering: OrderingMode,
 ) -> Result<Vec<ObjectId>> {
     let selected: HashSet<ObjectId> = commits.iter().copied().collect();
     let mut out = Vec::new();
+    let mut simplified_parents: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
     for oid in commits {
         let raw_parents = load_commit(repo, *oid)?.parents;
         let rewritten = visible_parents_for_graph_lib(repo, *oid, &selected, false)?;
         if raw_parents.len() > 1 && rewritten.len() <= 1 {
             if path_merge_survives_simplify(repo, *oid, paths, excluded)? {
+                simplified_parents.insert(*oid, rewritten);
                 out.push(*oid);
             }
             continue;
         }
         if rewritten.len() <= 1 {
+            simplified_parents.insert(*oid, rewritten);
             out.push(*oid);
             continue;
         }
@@ -3313,7 +3323,68 @@ fn simplify_merges_commit_list(
         simplified.sort_unstable();
         simplified.dedup();
         if simplified.len() > 1 {
+            simplified_parents.insert(*oid, simplified);
             out.push(*oid);
+        }
+    }
+    if ordering == OrderingMode::AuthorDateTopo {
+        return simplify_merges_author_date_order(repo, &out, &simplified_parents);
+    }
+    Ok(out)
+}
+
+fn simplify_merges_author_date_order(
+    repo: &Repository,
+    commits: &[ObjectId],
+    simplified_parents: &HashMap<ObjectId, Vec<ObjectId>>,
+) -> Result<Vec<ObjectId>> {
+    let selected: HashSet<ObjectId> = commits.iter().copied().collect();
+    let mut child_count: HashMap<ObjectId, usize> =
+        commits.iter().copied().map(|oid| (oid, 0)).collect();
+    for parents in simplified_parents.values() {
+        for parent in parents {
+            if selected.contains(parent) {
+                if let Some(count) = child_count.get_mut(parent) {
+                    *count += 1;
+                }
+            }
+        }
+    }
+
+    let mut graph = CommitGraph::new(repo, false);
+    let mut ready = BinaryHeap::new();
+    for oid in commits {
+        if child_count.get(oid).copied().unwrap_or_default() == 0 {
+            ready.push(CommitDateKey {
+                oid: *oid,
+                date: graph.sort_key(*oid, true),
+            });
+        }
+    }
+
+    let mut out = Vec::with_capacity(commits.len());
+    let mut emitted = HashSet::new();
+    while let Some(item) = ready.pop() {
+        if !emitted.insert(item.oid) {
+            continue;
+        }
+        out.push(item.oid);
+        if let Some(parents) = simplified_parents.get(&item.oid) {
+            for parent in parents {
+                if !selected.contains(parent) {
+                    continue;
+                }
+                let Some(count) = child_count.get_mut(parent) else {
+                    continue;
+                };
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    ready.push(CommitDateKey {
+                        oid: *parent,
+                        date: graph.sort_key(*parent, true),
+                    });
+                }
+            }
         }
     }
     Ok(out)
