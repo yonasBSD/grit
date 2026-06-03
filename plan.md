@@ -28,8 +28,10 @@
   - Completed: `t3050-ls-files-unmerged.sh` (23/23) by correcting its synthetic `ls-files -s`
     expectation to match Git's documented behavior: `--stage` shows both stage-0 entries and
     unmerged conflict stages, while `-u` restricts output to unmerged entries.
-  - Current focus: `t3030-merge-recursive.sh` (26 total, 25 passed, 1 failing), next in the
-    foundational index/path group.
+  - Completed: `t3030-merge-recursive.sh` (26/26) by rejecting `read-tree -m` invocations with
+    more than three trees, matching the documented command synopsis and merge forms.
+  - Current focus: `t3040-subprojects-basic.sh` (11 total, 10 passed, 1 failing), final file in
+    the foundational index/path group.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ## Active task — t6 family 100% pass

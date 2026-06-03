@@ -547,7 +547,7 @@ t3012-ls-files-dedup	t3	yes	3	3	0	true	ok	0
 t3013-ls-files-format	t3	yes	20	20	0	true	ok	0
 t3014-ls-files-pathspec-magic	t3	yes	29	29	0	true	ok	0
 t3020-ls-files-error-unmatch	t3	yes	3	3	0	true	ok	0
-t3030-merge-recursive	t3	yes	26	25	1	false	ok	0
+t3030-merge-recursive	t3	yes	26	26	0	true	ok	0
 t3040-subprojects-basic	t3	yes	11	10	1	false	ok	0
 t3050-ls-files-unmerged	t3	yes	23	23	0	true	ok	0
 t3050-subprojects-fetch	t3	yes	4	4	0	true	ok	0
@@ -1476,7 +1476,7 @@ t9166-git-svn-fetch-merge-branch-of-branch2	t9	skip	3	0	0	false	ok	0
 t9167-git-svn-cmd-branch-subproject	t9	skip	3	0	0	false	ok	0
 t9168-git-svn-partially-globbed-names	t9	skip	12	0	0	false	ok	0
 t9169-git-svn-dcommit-crlf	t9	skip	1	0	0	false	ok	0
-t9170-read-tree-prefix	t9	yes	25	24	1	false	ok	0
+t9170-read-tree-prefix	t9	yes	25	25	0	true	ok	0
 t9180-checkout-index-stdin	t9	yes	25	25	0	true	ok	0
 t9190-for-each-ref-atoms	t9	yes	27	26	1	false	ok	0
 t9200-git-cvsexportcommit	t9	skip	17	0	0	false	ok	0

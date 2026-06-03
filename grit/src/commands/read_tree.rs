@@ -249,6 +249,9 @@ pub fn run(args: Args) -> Result<()> {
     if tree_oids.is_empty() {
         bail!("at least one tree required");
     }
+    if args.merge && tree_oids.len() > 3 {
+        bail!("too many trees for -m (max 3)");
+    }
     if tree_oids.len() > 4 {
         bail!("too many trees (max 4)");
     }
