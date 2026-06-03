@@ -249,6 +249,7 @@ pub fn build_commit_graph_bytes(
     base_graph_hashes: &[[u8; 20]],
     max_new_filters: Option<u32>,
     existing_filters: &HashMap<ObjectId, Vec<u8>>,
+    upgraded_filters: &HashMap<ObjectId, Vec<u8>>,
 ) -> crate::error::Result<(Vec<u8>, BloomWriteStats)> {
     let base_count: u32 = base_chain.map(CommitGraphChain::total_commits).unwrap_or(0);
 
@@ -347,6 +348,16 @@ pub fn build_commit_graph_bytes(
                 cur += existing.len() as u32;
                 indexes.push(cur);
                 data_payload.extend_from_slice(existing);
+                continue;
+            }
+            // A filter present under a different (compatible) version that we can
+            // relabel without recomputation: the on-disk bytes are reused as-is
+            // and Git counts it as `filter-upgraded`.
+            if let Some(upgraded) = upgraded_filters.get(oid) {
+                bloom_stats.filter_upgraded += 1;
+                cur += upgraded.len() as u32;
+                indexes.push(cur);
+                data_payload.extend_from_slice(upgraded);
                 continue;
             }
             let compute = bloom_stats.filter_computed < max_new;

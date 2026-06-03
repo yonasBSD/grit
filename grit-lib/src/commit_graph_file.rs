@@ -10,6 +10,20 @@ use crate::error::Error;
 use crate::objects::ObjectId;
 use crate::odb::Odb;
 
+/// Track which commit-graph layers have already emitted the "disabling Bloom
+/// filters ... due to incompatible settings" warning this process, so it is
+/// printed at most once per layer (matching Git, which loads the chain once).
+fn warn_once_for_disabled_bloom_layer(id: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let set = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    match set.lock() {
+        Ok(mut guard) => guard.insert(id.to_string()),
+        Err(_) => true,
+    }
+}
+
 const SIGNATURE: &[u8; 4] = b"CGPH";
 const GRAPH_VERSION: u8 = 1;
 const HASH_VERSION_SHA1: u8 = 1;
@@ -520,6 +534,10 @@ impl CommitGraphChain {
             if layers.is_empty() {
                 return Ok(None);
             }
+            // The on-disk chain file lists layers base-first (Git order: line 1
+            // is the base graph, the last line is the tip). Grit's internal
+            // representation is tip-first, so reverse after reading.
+            layers.reverse();
             let mut chain = Self { layers };
             chain.validate_bloom_compatibility();
             return Ok(Some(chain));
@@ -543,6 +561,11 @@ impl CommitGraphChain {
     }
 
     fn validate_bloom_compatibility(&mut self) {
+        // Git walks the chain from the tip down to the base (`for (; g; g =
+        // g->base_graph)` in validate_mixed_bloom_settings), so the *topmost*
+        // (tip) layer's Bloom settings become the reference and any
+        // incompatible *lower* (base) layer is disabled. `self.layers` is
+        // stored tip-first internally, so iterate forward to match.
         let mut ref_settings: Option<BloomFilterSettings> = None;
         for layer in &mut self.layers {
             let Some(bs) = layer.bloom_settings else {
@@ -556,9 +579,16 @@ impl CommitGraphChain {
                         || r.bits_per_entry != bs.bits_per_entry
                     {
                         let id = layer.layer_display_id();
-                        eprintln!(
-                            "warning: disabling Bloom filters for commit-graph layer '{id}' due to incompatible settings"
-                        );
+                        // Git loads the commit-graph chain once per process and caches
+                        // it, so the "disabling Bloom filters" warning is emitted at
+                        // most once per layer. Grit re-reads the chain from disk several
+                        // times within a single command (settings probe, commit set,
+                        // filter reuse), so dedupe the warning per layer id to match.
+                        if warn_once_for_disabled_bloom_layer(&id) {
+                            eprintln!(
+                                "warning: disabling Bloom filters for commit-graph layer '{id}' due to incompatible settings"
+                            );
+                        }
                         layer.disable_bloom();
                     }
                 }
@@ -591,6 +621,32 @@ impl CommitGraphChain {
         // `--max-new-filters` budget) and must be (re)computed. Empty-diff
         // filters are stored with length 1 (a single zero byte) and so are
         // reused. Truncated-large filters are length 1 (0xff) and reused too.
+        match layer.bloom_filter_slice(lex) {
+            Some(s) if !s.is_empty() => Some(s.to_vec()),
+            _ => None,
+        }
+    }
+
+    /// Existing non-empty filter bytes for `oid` whose stored `hash_version`
+    /// differs from `want.hash_version` but is otherwise compatible (same
+    /// `num_hashes`/`bits_per_entry`). Used to detect filters that may be
+    /// *upgraded* (relabeled to the new version without recomputation) when the
+    /// changed paths contain no high-bit bytes.
+    pub fn upgradable_filter_bytes(
+        &self,
+        oid: &ObjectId,
+        want: &BloomFilterSettings,
+    ) -> Option<Vec<u8>> {
+        let (layer_idx, lex) = self.find_commit(oid)?;
+        let layer = &self.layers[layer_idx];
+        let settings = layer.bloom_settings.as_ref()?;
+        if settings.hash_version == want.hash_version {
+            return None;
+        }
+        if settings.num_hashes != want.num_hashes || settings.bits_per_entry != want.bits_per_entry
+        {
+            return None;
+        }
         match layer.bloom_filter_slice(lex) {
             Some(s) if !s.is_empty() => Some(s.to_vec()),
             _ => None,
@@ -762,6 +818,38 @@ fn load_commit_tree(odb: &Odb, commit_oid: ObjectId) -> crate::error::Result<Obj
     let obj = odb.read(&commit_oid)?;
     let c = crate::objects::parse_commit(&obj.data)?;
     Ok(c.tree)
+}
+
+/// Whether any path component in `tree` (recursively) contains a byte with the
+/// high bit set (`& 0x80`). Mirrors `bloom.c:has_entries_with_high_bit`, used to
+/// decide whether a v1 changed-path Bloom filter can be relabeled as v2 without
+/// recomputation (v1/v2 hashing only differs for bytes >= 0x80).
+fn tree_has_high_bit_paths(odb: &Odb, tree_oid: ObjectId) -> bool {
+    let Ok(obj) = odb.read(&tree_oid) else {
+        // Git treats an unreadable tree conservatively (no upgrade).
+        return true;
+    };
+    let Ok(entries) = crate::objects::parse_tree(&obj.data) else {
+        return true;
+    };
+    for e in &entries {
+        if e.name.iter().any(|&b| b & 0x80 != 0) {
+            return true;
+        }
+        if e.mode == 0o040000 && tree_has_high_bit_paths(odb, e.oid) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether a commit's tree (recursively) has any high-bit path bytes
+/// (`bloom.c:commit_tree_has_high_bit_paths`).
+pub fn commit_tree_has_high_bit_paths(odb: &Odb, commit_oid: ObjectId) -> bool {
+    match load_commit_tree(odb, commit_oid) {
+        Ok(tree) => tree_has_high_bit_paths(odb, tree),
+        Err(_) => true,
+    }
 }
 
 /// Parse all chunks for `test-tool read-graph` / debugging.

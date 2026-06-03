@@ -565,11 +565,27 @@ fn cmd_write(
     // (including empty filters for commits with no changes). This drives the
     // `--max-new-filters` backfill semantics.
     let mut existing_filters: HashMap<ObjectId, Vec<u8>> = HashMap::new();
+    // Filters present on disk for a *different* changed-path version that can be
+    // relabeled (upgraded) to the requested version without recomputation. This
+    // is possible when neither the commit's tree nor its first parent's tree
+    // contains a high-bit path byte (v1/v2 hashing only differs there). Git
+    // counts these as `filter-upgraded` rather than `filter-computed`.
+    let mut upgraded_filters: HashMap<ObjectId, Vec<u8>> = HashMap::new();
     if write_bloom {
         if let Some(chain) = CommitGraphChain::load(&objects_dir) {
             for oid in &layer_oids {
                 if let Some(bytes) = chain.existing_filter_bytes(oid, &bloom) {
                     existing_filters.insert(*oid, bytes);
+                } else if let Some(bytes) = chain.upgradable_filter_bytes(oid, &bloom) {
+                    let parents = infos.get(oid).map(|i| i.parents.as_slice()).unwrap_or(&[]);
+                    let commit_high =
+                        grit_lib::commit_graph_file::commit_tree_has_high_bit_paths(&odb, *oid);
+                    let parent_high = parents.first().is_some_and(|p| {
+                        grit_lib::commit_graph_file::commit_tree_has_high_bit_paths(&odb, *p)
+                    });
+                    if !commit_high && !parent_high {
+                        upgraded_filters.insert(*oid, bytes);
+                    }
                 }
             }
         }
@@ -585,6 +601,7 @@ fn cmd_write(
         hashes_for_build,
         max_new,
         &existing_filters,
+        &upgraded_filters,
     )?;
 
     if write_bloom {
@@ -623,6 +640,9 @@ fn cmd_write(
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(&layer_path, fs::Permissions::from_mode(0o444));
         }
+        // The chain file is written base-first (Git order: line 1 is the base
+        // graph, the last line is the tip). The newly written layer is the new
+        // tip, so append it at the end.
         let mut chain_lines: Vec<String> = if replace {
             Vec::new()
         } else {
@@ -633,7 +653,7 @@ fn cmd_write(
                 .filter(|s| !s.is_empty())
                 .collect()
         };
-        chain_lines.insert(0, hex_hash);
+        chain_lines.push(hex_hash);
         fs::write(&chain_path, format!("{}\n", chain_lines.join("\n")))
             .with_context(|| format!("writing {:?}", chain_path))?;
         let _ = fs::remove_file(&graph_path);
@@ -646,7 +666,10 @@ fn cmd_write(
                     let _ = fs::remove_file(&p);
                 }
             }
-            let _ = fs::remove_dir(&graphs_dir);
+            // Git removes the chain and its layer files when collapsing a split
+            // commit-graph into a single file, but leaves the (now empty)
+            // commit-graphs directory in place. t4216 checks `test_dir_is_empty`,
+            // which requires the directory to still exist.
         }
         let _ = fs::remove_file(&chain_path);
         #[cfg(unix)]
