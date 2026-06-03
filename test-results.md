@@ -1,3 +1,7 @@
+## 2026-06-03 — t1309-early-config
+
+- Focus harness: `./scripts/run-tests.sh t1309-early-config.sh --verbose` passes 10/10 after making `test-tool config read_early_config` warn about incompatible `.git` repository versions even when discovery rejects the repository before early-config loading.
+
 ## 2026-06-03 — t1308-config-set
 
 - Focus harness: `./scripts/run-tests.sh t1308-config-set.sh --verbose` passes 39/39 after making `test-tool config get_value` surface bad `.git/config` parse errors even when repository discovery aborts first.

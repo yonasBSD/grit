@@ -6985,6 +6985,14 @@ fn run_test_tool_config(rest: &[String]) -> Result<()> {
         let key = rest.get(1).map(|s| s.as_str()).unwrap_or("");
         let repo = grit_lib::repo::Repository::discover(None).ok();
         let git_dir = repo.as_ref().map(|r| r.git_dir.as_path());
+        if git_dir.is_none() {
+            let dot_git = Path::new(".git");
+            if dot_git.is_dir() {
+                if let Some(msg) = grit_lib::repo::early_config_ignore_repo_reason(dot_git) {
+                    eprintln!("warning: ignoring git dir '{}': {}", dot_git.display(), msg);
+                }
+            }
+        }
         return match ConfigSet::read_early_config(git_dir, key) {
             Ok(values) => {
                 if values.is_empty() {
@@ -7026,17 +7034,6 @@ fn run_test_tool_config(rest: &[String]) -> Result<()> {
         }
         "get_value" => {
             let key = rest.get(1).map(|s| s.as_str()).unwrap_or("");
-            if git_dir.is_none() {
-                if let Err(e) = ConfigFile::from_path(Path::new(".git/config"), ConfigScope::Local)
-                {
-                    let es = e.to_string();
-                    if es.starts_with("fatal: bad config line ") {
-                        eprintln!("{es}");
-                        std::process::exit(128);
-                    }
-                    return Err(anyhow::anyhow!("{}", e));
-                }
-            }
             let cfg = match ConfigSet::load(git_dir, true) {
                 Ok(c) => c,
                 Err(e) => {
