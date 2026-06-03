@@ -7217,10 +7217,8 @@ fn collect_log_display_note_refs_unconditional(repo: &Repository) -> Vec<(String
                 if pat.is_empty() {
                     continue;
                 }
-                if let Ok(refs) = refs::list_refs_glob(&repo.git_dir, pat) {
-                    for (name, _) in refs {
-                        push_ref(&name);
-                    }
+                for name in resolve_notes_display_pattern(repo, pat) {
+                    push_ref(&name);
                 }
             }
         }
@@ -7231,10 +7229,8 @@ fn collect_log_display_note_refs_unconditional(repo: &Repository) -> Vec<(String
                 if pat.is_empty() {
                     continue;
                 }
-                if let Ok(refs) = refs::list_refs_glob(&repo.git_dir, pat) {
-                    for (name, _) in refs {
-                        push_ref(&name);
-                    }
+                for name in resolve_notes_display_pattern(repo, pat) {
+                    push_ref(&name);
                 }
             }
         }
@@ -7290,10 +7286,8 @@ fn collect_log_display_note_refs(repo: &Repository) -> Vec<(String, String)> {
                     if pat.is_empty() {
                         continue;
                     }
-                    if let Ok(refs) = refs::list_refs_glob(&repo.git_dir, pat) {
-                        for (name, _) in refs {
-                            push_ref(&name);
-                        }
+                    for name in resolve_notes_display_pattern(repo, pat) {
+                        push_ref(&name);
                     }
                 }
             }
@@ -7304,10 +7298,8 @@ fn collect_log_display_note_refs(repo: &Repository) -> Vec<(String, String)> {
                     if pat.is_empty() {
                         continue;
                     }
-                    if let Ok(refs) = refs::list_refs_glob(&repo.git_dir, pat) {
-                        for (name, _) in refs {
-                            push_ref(&name);
-                        }
+                    for name in resolve_notes_display_pattern(repo, pat) {
+                        push_ref(&name);
                     }
                 }
             }
@@ -7315,6 +7307,17 @@ fn collect_log_display_note_refs(repo: &Repository) -> Vec<(String, String)> {
     }
 
     out
+}
+
+fn resolve_notes_display_pattern(repo: &Repository, pattern: &str) -> Vec<String> {
+    if !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('[') {
+        if refs::resolve_ref(&repo.git_dir, pattern).is_ok() {
+            return vec![pattern.to_owned()];
+        }
+    }
+    refs::list_refs_glob(&repo.git_dir, pattern)
+        .map(|items| items.into_iter().map(|(name, _)| name).collect())
+        .unwrap_or_default()
 }
 
 /// Load notes from the configured notes ref (or `refs/notes/commits` default).
