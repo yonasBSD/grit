@@ -1,3 +1,7 @@
+## 2026-06-03 — t11500-add-chmod-intent
+
+- Focus harness: `./scripts/run-tests.sh t11500-add-chmod-intent.sh --verbose` passes 31/31 after correcting synthetic intent-to-add index OID expectations to Git's empty-blob ID.
+
 ## 2026-06-03 — t12190-update-ref-deref-symref
 
 - Focus harness: `./scripts/run-tests.sh t12190-update-ref-deref-symref.sh --verbose` passes 35/35 after switching synthetic `master` references to `main`.
