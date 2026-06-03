@@ -1,3 +1,7 @@
+## 2026-06-03 — t12760-cherry-pick-multi-range
+
+- Focus harness: `./scripts/run-tests.sh t12760-cherry-pick-multi-range.sh --verbose` passes 34/34 after switching synthetic `master` references to `main` and correcting an assertion to match its title: cherry-picked commits should have different object IDs from their originals.
+
 ## 2026-06-03 — t13060-cherry-pick-mainline
 
 - Focus harness: `./scripts/run-tests.sh t13060-cherry-pick-mainline.sh --verbose` passes 31/31 after switching synthetic `master` branch references to `main`.

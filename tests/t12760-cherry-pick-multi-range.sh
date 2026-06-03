@@ -29,7 +29,7 @@ test_expect_success 'create source branch with 8 commits' '
 
 test_expect_success 'cherry-pick first commit onto new branch' '
     (cd repo &&
-     grit checkout -b pick-first master &&
+     grit checkout -b pick-first main &&
      grit cherry-pick source~7
     )
 '
@@ -107,7 +107,7 @@ test_expect_success 'setup second repo for non-overlapping picks' '
 
 test_expect_success 'cherry-pick first and third commits (skip second)' '
     (cd repo2 &&
-     grit checkout -b selective master &&
+     grit checkout -b selective main &&
      grit cherry-pick features~3 &&
      grit cherry-pick features~1
     )
@@ -123,7 +123,7 @@ test_expect_success 'selective pick has a and c but not b' '
 
 test_expect_success 'cherry-pick onto empty-ish branch works' '
     (cd repo2 &&
-     grit checkout -b fresh master &&
+     grit checkout -b fresh main &&
      grit cherry-pick features~3
     ) &&
     (cd repo2 && test -f a.txt)
@@ -133,7 +133,7 @@ test_expect_success 'cherry-picked commit has different hash from original' '
     (cd repo2 &&
      orig=$(grit rev-parse features~3) &&
      picked=$(grit rev-parse fresh) &&
-     test "$orig" = "$picked"
+     test "$orig" != "$picked"
     )
 '
 
@@ -156,7 +156,7 @@ test_expect_success 'cherry-pick commit that adds multiple files' '
      echo "x" >x.txt && echo "y" >y.txt && echo "z" >z.txt &&
      grit add x.txt y.txt z.txt &&
      grit commit -m "add xyz" &&
-     grit checkout master &&
+     grit checkout main &&
      grit cherry-pick multi
     ) &&
     (cd repo3 &&
@@ -170,7 +170,7 @@ test_expect_success 'cherry-pick commit that modifies existing file' '
      echo "modified" >start.txt &&
      grit add start.txt &&
      grit commit -m "modify start" &&
-     grit checkout -b target-mod master &&
+     grit checkout -b target-mod main &&
      grit cherry-pick modify
     ) &&
     (cd repo3 && cat start.txt >../actual) &&
@@ -207,7 +207,7 @@ test_expect_success 'setup repo for cherry-pick with same content on both sides'
 
 test_expect_success 'cherry-pick non-conflicting commit succeeds' '
     (cd repo4 &&
-     grit checkout master &&
+     grit checkout main &&
      grit cherry-pick side
     ) &&
     (cd repo4 && test -f side.txt)
@@ -230,7 +230,7 @@ test_expect_success 'cherry-pick two commits and verify count' '
      grit checkout -b src &&
      echo "one" >one.txt && grit add one.txt && grit commit -m "one" &&
      echo "two" >two.txt && grit add two.txt && grit commit -m "two" &&
-     grit checkout -b dest master &&
+     grit checkout -b dest main &&
      grit cherry-pick src~1 &&
      grit cherry-pick src &&
      grit log --oneline >../actual
@@ -253,7 +253,7 @@ test_expect_success 'cherry-pick preserves file permissions (executable)' '
      chmod +x script.sh &&
      grit add script.sh &&
      grit commit -m "add executable" &&
-     grit checkout master &&
+     grit checkout main &&
      grit cherry-pick exec-branch
     ) &&
     (cd repo6 && test -x script.sh)
@@ -272,7 +272,7 @@ test_expect_success 'cherry-pick with -x appends origin info' '
      grit add data.txt &&
      grit commit -m "add data" &&
      hash=$(grit rev-parse src7) &&
-     grit checkout master &&
+     grit checkout main &&
      grit cherry-pick -x src7 &&
      grit log -n 1 --format="%b" >../actual
     ) &&
@@ -290,7 +290,7 @@ test_expect_success 'cherry-pick back-to-back same file different content' '
      grit checkout -b versions &&
      echo "v1" >versioned.txt && grit add versioned.txt && grit commit -m "v1" &&
      echo "v2" >versioned.txt && grit add versioned.txt && grit commit -m "v2" &&
-     grit checkout -b replay master &&
+     grit checkout -b replay main &&
      grit cherry-pick versions~1 &&
      cat versioned.txt >../actual
     ) &&
@@ -320,8 +320,8 @@ test_expect_success 'cherry-pick from detached HEAD works' '
      grit add d.txt &&
      grit commit -m "from-detached" &&
      hash=$(grit rev-parse src9) &&
-     grit checkout master &&
-     grit checkout --detach master &&
+     grit checkout main &&
+     grit checkout --detach main &&
      grit cherry-pick "$hash"
     ) &&
     (cd repo9 && test -f d.txt)
@@ -329,7 +329,7 @@ test_expect_success 'cherry-pick from detached HEAD works' '
 
 test_expect_success 'cherry-pick empty range (same commit) is error or no-op' '
     (cd repo &&
-     grit checkout master &&
+     grit checkout main &&
      head=$(grit rev-parse HEAD) &&
      test_must_fail grit cherry-pick "$head..$head" 2>../err_out
     ) ||
@@ -348,7 +348,7 @@ test_expect_success 'cherry-pick with --no-commit stages but does not commit' '
      echo "nc-data" >nc.txt &&
      grit add nc.txt &&
      grit commit -m "nc commit" &&
-     grit checkout master &&
+     grit checkout main &&
      grit cherry-pick --no-commit nc-src &&
      test -f nc.txt &&
      grit status >../actual
@@ -367,7 +367,7 @@ test_expect_success 'after --no-commit, manual commit works' '
 
 test_expect_success 'cherry-pick with rev-parse to get exact hash' '
     (cd repo &&
-     grit checkout -b from-hash master &&
+     grit checkout -b from-hash main &&
      exact=$(grit rev-parse source~2) &&
      grit cherry-pick "$exact" &&
      grit log -n 1 --format="%s" >../actual
@@ -378,7 +378,7 @@ test_expect_success 'cherry-pick with rev-parse to get exact hash' '
 
 test_expect_success 'cherry-pick multiple individual commits in sequence' '
     (cd repo &&
-     grit checkout -b multi-seq master &&
+     grit checkout -b multi-seq main &&
      grit cherry-pick source~7 &&
      grit cherry-pick source~5 &&
      grit cherry-pick source~3 &&
