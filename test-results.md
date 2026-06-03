@@ -1,3 +1,10 @@
+## 2026-06-03 — t3203-branch-output
+
+- Focus harness: `./scripts/run-tests.sh t3203-branch-output.sh` passes 41/41 after detached HEAD
+  branch display resolves tag labels before falling back to abbreviated OIDs.
+- Adjacent verification: `./scripts/run-tests.sh t3200-branch.sh t3203-branch-output.sh
+  t3206-range-diff.sh` all pass.
+
 ## 2026-06-03 — t3206-range-diff
 
 - Focus harness: `./scripts/run-tests.sh t3206-range-diff.sh` passes 48/48 after fixing

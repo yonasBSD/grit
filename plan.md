@@ -45,7 +45,10 @@
   - Completed: `t3206-range-diff.sh` (48/48) after fixing range-diff child log ordering,
     custom/format-patch notes forwarding, gitlink patch hunk output, rename-detected log patches,
     and adjacent unmatched note output for single-commit range-diff.
-  - Current focus: `t3203-branch-output.sh` (41 total, 30 passed, 11 failing), next in the
+  - Completed: `t3203-branch-output.sh` (41/41) after detached-HEAD descriptions prefer matching
+    tag names over raw OID labels, which fixed tag-detach display, sorting, formatting, color, and
+    verbose worktree output expectations.
+  - Current focus: `t3206-branch-advanced.sh` (29 total, 18 passed, 11 failing), next in the
     branch/refs/range-diff/pack-refs group.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 

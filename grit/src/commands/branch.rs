@@ -429,6 +429,7 @@ fn detached_head_description(repo: &Repository, head: &HeadState) -> Result<Stri
         return Ok(format!("(no branch, bisect started on {label})"));
     }
     if let Some(label) = wt.detached_from {
+        let label = detached_label_prefer_tag(repo, &label).unwrap_or(label);
         if wt.detached_at {
             return Ok(format!("(HEAD detached at {label})"));
         }
@@ -436,6 +437,18 @@ fn detached_head_description(repo: &Repository, head: &HeadState) -> Result<Stri
     }
     let abbrev: String = oid.to_hex().chars().take(7).collect();
     Ok(format!("(HEAD detached at {abbrev})"))
+}
+
+fn detached_label_prefer_tag(repo: &Repository, label: &str) -> Option<String> {
+    let oid = ObjectId::from_hex(label)
+        .or_else(|_| resolve_revision(repo, label))
+        .ok()?;
+    refs::list_refs(&repo.git_dir, "refs/tags/")
+        .ok()?
+        .into_iter()
+        .find_map(|(name, tip)| {
+            (tip == oid).then(|| name.strip_prefix("refs/tags/").unwrap_or(&name).to_owned())
+        })
 }
 
 fn rebase_original_head_label(git_dir: &Path) -> Option<String> {
