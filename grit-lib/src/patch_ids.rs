@@ -17,7 +17,7 @@
 use sha1::{Digest, Sha1};
 use similar::{ChangeTag, TextDiff};
 
-use crate::diff::{diff_trees, zero_oid};
+use crate::diff::{diff_trees, zero_oid, DiffEntry};
 use crate::error::Result;
 use crate::merge_file;
 use crate::objects::{parse_commit, ObjectId, ObjectKind};
@@ -397,6 +397,36 @@ fn split_lines_with_nl(input: &[u8]) -> Vec<&[u8]> {
 ///
 /// Returns errors from object-database reads or object-parse failures.
 pub fn compute_patch_id(odb: &Odb, commit_oid: &ObjectId) -> Result<Option<ObjectId>> {
+    compute_patch_id_filtered(odb, commit_oid, &[])
+}
+
+/// Compute the patch-ID for a single commit, limited to matching pathspecs.
+///
+/// This follows [`compute_patch_id`] semantics, but ignores file diffs whose
+/// old and new paths do not match `paths`.
+///
+/// # Parameters
+///
+/// - `odb` — object database used to read commit, tree, and blob objects.
+/// - `commit_oid` — OID of the commit to compute the patch-ID for.
+/// - `paths` — pathspec strings used to limit the files included in the diff.
+///
+/// # Errors
+///
+/// Returns errors from object-database reads or object-parse failures.
+pub fn compute_patch_id_for_paths(
+    odb: &Odb,
+    commit_oid: &ObjectId,
+    paths: &[String],
+) -> Result<Option<ObjectId>> {
+    compute_patch_id_filtered(odb, commit_oid, paths)
+}
+
+fn compute_patch_id_filtered(
+    odb: &Odb,
+    commit_oid: &ObjectId,
+    paths: &[String],
+) -> Result<Option<ObjectId>> {
     let obj = odb.read(commit_oid)?;
     if obj.kind != ObjectKind::Commit {
         return Ok(None);
@@ -419,6 +449,9 @@ pub fn compute_patch_id(odb: &Odb, commit_oid: &ObjectId) -> Result<Option<Objec
 
     // Compute tree-to-tree diff.
     let mut diffs = diff_trees(odb, parent_tree_oid.as_ref(), Some(&commit.tree), "")?;
+    if !paths.is_empty() {
+        diffs.retain(|entry| diff_entry_matches_paths(entry, paths));
+    }
 
     // Sort by primary path (lexicographic), matching diffcore_std ordering.
     diffs.sort_by(|a, b| a.path().cmp(b.path()));
@@ -518,6 +551,15 @@ pub fn compute_patch_id(odb: &Odb, commit_oid: &ObjectId) -> Result<Option<Objec
     }
 
     ObjectId::from_bytes(&result).map(Some)
+}
+
+fn diff_entry_matches_paths(entry: &DiffEntry, paths: &[String]) -> bool {
+    entry
+        .old_path
+        .as_deref()
+        .into_iter()
+        .chain(entry.new_path.as_deref())
+        .any(|path| crate::pathspec::matches_pathspec_list(path, paths))
 }
 
 fn parse_mode_u32(mode: &str) -> u32 {

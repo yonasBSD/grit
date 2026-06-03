@@ -547,6 +547,17 @@ Updated: 2026-06-03
   `cargo test -p grit-lib --lib` (238/238), and the focused harness ran. Clippy completed with the
   existing warning backlog and failed auto-fixes in unrelated files; unrelated auto-fixes were not
   kept.
+- t6006 rev-list format focus: direct debug run and official
+  `./scripts/run-tests.sh t6006-rev-list-format.sh` improve from 58/80 to 63/80 after rendering
+  `%e`, suppressing empty custom-format output lines, and keeping commit headers for named pretty
+  formats under `--no-commit-header`.
+- Verification for this increment: `cargo fmt`, `cargo check -p grit-cli`, `cargo build --release
+  -p grit-cli`, and the focused harness ran with the existing warning backlog.
+- t6006 color-order focus: direct debug run and official
+  `./scripts/run-tests.sh t6006-rev-list-format.sh` improve from 63/80 to 64/80 after rendering
+  `%C(red yellow bold)` with attributes before foreground/background color codes.
+- Verification for this increment: `cargo fmt`, `cargo check -p grit-cli`, `cargo build --release
+  -p grit-cli`, and the focused harness ran with the existing warning backlog.
 - Build unblock: `cargo build --release -p grit-cli` initially failed because `merge --abort`
   still called `checkout_merge_reset_worktree` with its old three-argument signature; the caller
   now passes explicit non-recursive submodule flags and release builds complete.
@@ -1174,3 +1185,63 @@ Updated: 2026-06-01
 - t6111 completion: after ordering adjacent direct-parent blocks for topo-order output,
   `./scripts/run-tests.sh t6111-rev-list-treesame.sh t6003-rev-list-topo-order.sh --verbose`
   passes `t6111` at 65/65 and refreshes adjacent `t6003` to 23/36.
+- t6006 log color focus: after making pretty `%C(auto)` color the following `%H`/`%h` placeholder
+  with the commit color under `--color`, `./scripts/run-tests.sh t6006-rev-list-format.sh`
+  improves from 64/80 to 65/80 and refreshed `data/test-files.csv` plus dashboards. Full
+  workspace/harness sweeps were skipped for this narrow increment.
+- t6006 show conditional focus: after adding `%+`, `%-`, and `% ` conditional wrappers to
+  `git show --pretty=format:`, `./scripts/run-tests.sh t6006-rev-list-format.sh` improves from
+  65/80 to 68/80 and refreshed `data/test-files.csv` plus dashboards. Full workspace/harness
+  sweeps were skipped for this narrow increment.
+- t6006 show body newline focus: after making non-empty `git show --pretty=format:%b` include the
+  trailing body newline, `./scripts/run-tests.sh t6006-rev-list-format.sh` improves from 68/80 to
+  70/80 and refreshed `data/test-files.csv` plus dashboards. Full workspace/harness sweeps were
+  skipped for this narrow increment.
+- t6006 reflog format focus: after making bare `log -g` walk `HEAD`, adding `%gD`/short `%gd`
+  reflog selectors, and accepting `reflog --abbrev=<n>`, `./scripts/run-tests.sh
+  t6006-rev-list-format.sh` improves from 70/80 to 73/80 and refreshed `data/test-files.csv` plus
+  dashboards. Full workspace/harness sweeps were skipped for this narrow increment.
+- t6006 reflog abbrev focus: after passing `--abbrev=<n>` through reflog pretty `%h`,
+  `./scripts/run-tests.sh t6006-rev-list-format.sh` improves from 73/80 to 74/80 and refreshed
+  `data/test-files.csv` plus dashboards. Full workspace/harness sweeps were skipped for this
+  narrow increment.
+- t6006 empty-message oneline focus: after allowing newline-only `--cleanup=verbatim` commit
+  messages and accepting `rev-list --oneline --graph`, `./scripts/run-tests.sh
+  t6006-rev-list-format.sh` improves from 74/80 to 75/80 and refreshed `data/test-files.csv` plus
+  dashboards. Also ran `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`
+  (existing warning backlog remains), `cargo build -p grit-cli`, `cargo build --release -p
+  grit-cli`, and `cargo test -p grit-lib --lib`.
+- t6006 completion: after re-encoding `rev-list` pretty output according to
+  `i18n.logOutputEncoding` or fallback `i18n.commitEncoding`, the direct debug run passes all
+  80 tests and `./scripts/run-tests.sh t6006-rev-list-format.sh` improves from 75/80 to 80/80 with
+  refreshed `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p
+  grit-cli`, `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
+  `cargo test -p grit-lib --lib`.
+- t6007 option/count focus: after accepting `name-rev --no-refs` and matching Git's two-column
+  output for plain `rev-list --count --left-right`, the direct verbose run and
+  `./scripts/run-tests.sh t6007-rev-list-cherry-pick-file.sh` improve from 6/23 to 8/23 with
+  refreshed `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p
+  grit-cli`, `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
+  `cargo test -p grit-lib --lib`.
+- t6007 path-limited cherry focus: after computing patch-ids against path-limited diffs and
+  aligning `--cherry-mark`, `--cherry`, and cherry count marker semantics, the direct verbose run
+  reaches the duplicate patch-id case and `./scripts/run-tests.sh t6007-rev-list-cherry-pick-file.sh`
+  improves from 8/23 to 21/23 with refreshed `data/test-files.csv` plus dashboards. Also ran
+  `cargo fmt`, `cargo check -p grit-cli`, `cargo build -p grit-cli`, `cargo build --release -p
+  grit-cli`, `cargo clippy --fix --allow-dirty` (existing warning backlog and known failed
+  auto-fix diagnostics remain), and `cargo test -p grit-lib --lib`.
+- t6007 duplicate patch-id focus: after retaining all commits for a patch-id on the indexed side of
+  cherry equivalence, duplicate add/revert/add sequences are omitted by `--cherry-pick` and
+  `./scripts/run-tests.sh t6007-rev-list-cherry-pick-file.sh` improves from 21/23 to 22/23 with
+  refreshed `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p
+  grit-cli`, `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog remains), and `cargo test -p grit-lib --lib`.
+- t6007 completion: after treating omitted symmetric range endpoints as `HEAD` in `rev-list` CLI
+  handling, the direct verbose run passes all 23 tests and
+  `./scripts/run-tests.sh t6007-rev-list-cherry-pick-file.sh` records 23/23 with refreshed
+  `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
+  `cargo test -p grit-lib --lib`.

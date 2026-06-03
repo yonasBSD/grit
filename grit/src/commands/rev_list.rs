@@ -63,6 +63,27 @@ fn resolve_max_tree_depth(config: &ConfigSet) -> Result<usize> {
     Ok(depth)
 }
 
+fn is_utf8_encoding(label: &str) -> bool {
+    matches!(label.trim().to_ascii_lowercase().as_str(), "utf-8" | "utf8")
+}
+
+fn effective_pretty_output_encoding(config: &ConfigSet) -> Option<String> {
+    config
+        .get("i18n.logOutputEncoding")
+        .or_else(|| config.get("i18n.logoutputencoding"))
+        .or_else(|| config.get("i18n.commitEncoding"))
+        .or_else(|| config.get("i18n.commitencoding"))
+        .filter(|label| !label.trim().is_empty() && !is_utf8_encoding(label))
+}
+
+fn encode_pretty_output(text: &str, encoding: Option<&str>) -> Vec<u8> {
+    match encoding {
+        None => text.as_bytes().to_vec(),
+        Some(label) => grit_lib::commit_encoding::encode_header_text(label, text)
+            .unwrap_or_else(|| text.as_bytes().to_vec()),
+    }
+}
+
 /// Arguments for `grit rev-list`.
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -356,6 +377,7 @@ fn estimate_bisect_steps(total: usize) -> usize {
 pub fn run(args: Args) -> Result<()> {
     let repo = Repository::discover(None).context("failed to discover repository")?;
     let config = ConfigSet::load(Some(&repo.git_dir), true)?;
+    let pretty_output_encoding = effective_pretty_output_encoding(&config);
 
     let mut options = RevListOptions::default();
     let mut object_depth_limit: Option<usize> = None;
@@ -478,20 +500,20 @@ pub fn run(args: Args) -> Result<()> {
                 "--sparse" => options.sparse = true,
                 "--dense" => { /* default behavior, no-op */ }
                 "--simplify-merges" => options.simplify_merges = true,
-                "--left-right" => options.left_right = true,
+                "--left-right" => {
+                    options.left_right = true;
+                    options.left_right_explicit = true;
+                }
                 "--left-only" => options.left_only = true,
                 "--right-only" => options.right_only = true,
-                "--cherry-mark" => {
-                    options.cherry_mark = true;
-                    options.left_right = true;
-                }
+                "--cherry-mark" => options.cherry_mark = true,
                 "--cherry-pick" => options.cherry_pick = true,
                 "--merges" => options.min_parents = Some(2),
                 "--no-merges" => options.max_parents = Some(1),
                 "--cherry" => {
-                    options.cherry_pick = true;
+                    options.cherry_mark = true;
                     options.right_only = true;
-                    options.left_right = true;
+                    options.max_parents = Some(1);
                 }
                 "-n" => {
                     let Some(value) = args.args.get(i + 1) else {
@@ -770,6 +792,8 @@ pub fn run(args: Args) -> Result<()> {
                 "--filter-provided-objects" => options.filter_provided_objects = true,
                 "--no-commit-header" => no_commit_header = true,
                 "--commit-header" => no_commit_header = false,
+                "--oneline" => options.output_mode = OutputMode::Format("oneline".to_owned()),
+                "--graph" => { /* graph decoration is irrelevant for rev-list consumers here */ }
                 "--color" => {
                     use_color = true;
                 }
@@ -1004,14 +1028,16 @@ pub fn run(args: Args) -> Result<()> {
 
     // If symmetric diff, resolve merge bases and set up positive/negative
     if let (Some(ref lhs), Some(ref rhs)) = (&symmetric_left, &symmetric_right) {
-        let lhs_oid = grit_lib::rev_parse::resolve_revision(&repo, lhs)
-            .with_context(|| format!("bad revision '{lhs}'"))?;
-        let rhs_oid = grit_lib::rev_parse::resolve_revision(&repo, rhs)
-            .with_context(|| format!("bad revision '{rhs}'"))?;
+        let lhs_spec = if lhs.is_empty() { "HEAD" } else { lhs };
+        let rhs_spec = if rhs.is_empty() { "HEAD" } else { rhs };
+        let lhs_oid = grit_lib::rev_parse::resolve_revision(&repo, lhs_spec)
+            .with_context(|| format!("bad revision '{lhs_spec}'"))?;
+        let rhs_oid = grit_lib::rev_parse::resolve_revision(&repo, rhs_spec)
+            .with_context(|| format!("bad revision '{rhs_spec}'"))?;
         let bases = merge_bases(&repo, lhs_oid, rhs_oid, options.first_parent)
             .context("failed to compute merge bases")?;
-        positive_specs.push(lhs.clone());
-        positive_specs.push(rhs.clone());
+        positive_specs.push(lhs_spec.to_owned());
+        positive_specs.push(rhs_spec.to_owned());
         for base in bases {
             negative_specs.push(base.to_hex());
         }
@@ -1129,18 +1155,46 @@ pub fn run(args: Args) -> Result<()> {
 
     if options.count {
         if options.left_right {
-            let left_count = result
+            if options.cherry_mark {
+                let left_count = result
+                    .commits
+                    .iter()
+                    .filter(|oid| !result.cherry_equivalent.contains(oid))
+                    .filter(|oid| result.left_right_map.get(oid) == Some(&true))
+                    .count();
+                let right_count = result
+                    .commits
+                    .iter()
+                    .filter(|oid| !result.cherry_equivalent.contains(oid))
+                    .filter(|oid| result.left_right_map.get(oid) == Some(&false))
+                    .count();
+                let equivalent_count = result
+                    .commits
+                    .iter()
+                    .filter(|oid| result.cherry_equivalent.contains(oid))
+                    .count();
+                println!("{left_count}\t{right_count}\t{equivalent_count}");
+            } else {
+                let left_count = result
+                    .commits
+                    .iter()
+                    .filter(|oid| result.left_right_map.get(oid) == Some(&true))
+                    .count();
+                let right_count = result
+                    .commits
+                    .iter()
+                    .filter(|oid| result.left_right_map.get(oid) == Some(&false))
+                    .count();
+                println!("{left_count}\t{right_count}");
+            }
+        } else if options.cherry_mark {
+            let equivalent_count = result
                 .commits
                 .iter()
-                .filter(|oid| result.left_right_map.get(oid) == Some(&true))
+                .filter(|oid| result.cherry_equivalent.contains(oid))
                 .count();
-            let right_count = result
-                .commits
-                .iter()
-                .filter(|oid| result.left_right_map.get(oid) == Some(&false))
-                .count();
-            let both_count = result.commits.len() - left_count - right_count;
-            println!("{left_count}\t{right_count}\t{both_count}");
+            let different_count = result.commits.len().saturating_sub(equivalent_count);
+            println!("{different_count}\t{equivalent_count}");
         } else {
             let mut total = result.commits.len();
             if options.objects {
@@ -1210,7 +1264,7 @@ pub fn run(args: Args) -> Result<()> {
         if options.cherry_mark {
             if result.cherry_equivalent.contains(oid) {
                 prefix = "=".to_owned();
-            } else if !prefix.is_empty() {
+            } else if !options.left_right_explicit {
                 prefix = "+".to_owned();
             }
         }
@@ -1240,7 +1294,7 @@ pub fn run(args: Args) -> Result<()> {
                         fmt.as_str(),
                         "oneline" | "short" | "medium" | "full" | "fuller" | "email" | "raw"
                     );
-                    if !no_commit_header && !is_oneline {
+                    if (!no_commit_header || is_named_format) && !is_oneline {
                         let mut header = format!("commit {prefix}{oid}");
                         if show_parents {
                             // Match Git: parent lines come from the commit object (and grafts), not
@@ -1261,12 +1315,23 @@ pub fn run(args: Args) -> Result<()> {
                         use_color,
                     )?;
                     if is_named_format {
-                        print!("{rendered}");
+                        std::io::stdout()
+                            .write_all(&encode_pretty_output(
+                                &rendered,
+                                pretty_output_encoding.as_deref(),
+                            ))
+                            .context("failed to write rev-list output")?;
                         if !rendered.ends_with('\n') {
                             println!();
                         }
-                    } else {
-                        println!("{rendered}");
+                    } else if !rendered.is_empty() {
+                        std::io::stdout()
+                            .write_all(&encode_pretty_output(
+                                &rendered,
+                                pretty_output_encoding.as_deref(),
+                            ))
+                            .context("failed to write rev-list output")?;
+                        println!();
                     }
                 }
                 OutputMode::Parents => {

@@ -56,6 +56,10 @@ pub struct Args {
     #[arg(long = "abbrev-commit")]
     pub abbrev_commit: bool,
 
+    /// Abbreviate commit hashes to this length.
+    #[arg(long = "abbrev", value_name = "N", require_equals = true)]
+    pub abbrev: Option<String>,
+
     /// Date format.
     #[arg(long = "date")]
     pub date: Option<String>,
@@ -102,6 +106,10 @@ pub struct ShowArgs {
     /// Abbreviate commit hashes.
     #[arg(long = "abbrev-commit")]
     pub abbrev_commit: bool,
+
+    /// Abbreviate commit hashes to this length.
+    #[arg(long = "abbrev", value_name = "N", require_equals = true)]
+    pub abbrev: Option<String>,
 
     /// Format string.
     #[arg(long = "format")]
@@ -237,6 +245,7 @@ pub fn run(args: Args) -> Result<()> {
                 max_count: args.max_count,
                 no_abbrev_commit: args.no_abbrev_commit,
                 abbrev_commit: args.abbrev_commit,
+                abbrev: args.abbrev,
                 format: args.format,
                 date: args.date,
                 walk_reflogs: false,
@@ -317,6 +326,8 @@ fn run_show(args: ShowArgs) -> Result<()> {
         no_pickaxe_regex: false,
         abbrev: if args.no_abbrev_commit {
             Some("40".to_owned())
+        } else if args.abbrev.is_some() {
+            args.abbrev
         } else if args.abbrev_commit {
             Some("7".to_owned())
         } else {

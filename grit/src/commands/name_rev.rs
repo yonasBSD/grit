@@ -65,6 +65,11 @@ pub fn run(args: Args) -> Result<()> {
             "--no-undefined" => allow_undefined = false,
             "--always" => always = true,
             "--no-always" => always = false,
+            "--no-refs" => {
+                options.ref_filters.clear();
+                options.exclude_filters.clear();
+                options.tags_only = false;
+            }
             "--" => {
                 // Everything after `--` is positional.
                 positional.extend(args.args[i + 1..].iter().cloned());

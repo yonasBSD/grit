@@ -1,4 +1,4 @@
-# Cap build parallelism to 2 jobs.
+# Cap build parallelism to 4 jobs.
 #
 # grit is developed with many git worktrees built concurrently (one per
 # parallel agent/lane). Cargo defaults to one job per CPU core, so N
@@ -7,4 +7,4 @@
 # Capping jobs keeps concurrent builds cooperative. Override for a one-off
 # fast single build with `cargo build -j8` or CARGO_BUILD_JOBS=8.
 [build]
-jobs = 2
+jobs = 4

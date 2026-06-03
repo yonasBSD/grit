@@ -5720,6 +5720,19 @@ fn reflog_walk_percent_gd(
     format!("{display_name}@{{{idx_from_tip}}}")
 }
 
+fn shorten_reflog_selector(selector: &str) -> String {
+    let Some(at) = selector.find("@{") else {
+        return selector.to_string();
+    };
+    let name = &selector[..at];
+    let suffix = &selector[at..];
+    if let Some(short) = name.strip_prefix("refs/heads/") {
+        format!("{short}{suffix}")
+    } else {
+        selector.to_string()
+    }
+}
+
 /// Reflog file key plus display name for `%gd` / headers (matches Git `complete_reflogs`).
 struct ReflogWalkRef {
     log_ref: String,
@@ -5837,12 +5850,15 @@ fn run_reflog_walk(
     mailmap: &MailmapTable,
 ) -> Result<()> {
     let rev_specs: Vec<String> = if args.revisions.is_empty() {
-        // Bare `--reflog`/`--walk-reflogs` walks every ref's reflog plus HEAD.
-        let mut refs = grit_lib::reflog::list_reflog_refs(&repo.git_dir).unwrap_or_default();
-        if refs.is_empty() {
-            refs.push("HEAD".to_string());
+        if args.all {
+            let mut refs = grit_lib::reflog::list_reflog_refs(&repo.git_dir).unwrap_or_default();
+            if refs.is_empty() {
+                refs.push("HEAD".to_string());
+            }
+            refs
+        } else {
+            vec!["HEAD".to_string()]
         }
-        refs
     } else {
         args.revisions.clone()
     };
@@ -6095,7 +6111,7 @@ fn run_reflog_walk(
             format!("{display_name}@{{{idx_from_tip}}}")
         };
 
-        let percent_gd = reflog_walk_percent_gd(
+        let percent_gd_full = reflog_walk_percent_gd(
             &display_name,
             &entry,
             nr,
@@ -6104,7 +6120,13 @@ fn run_reflog_walk(
             last_reflog_suffix,
             cli_date_for_reflog,
         );
+        let percent_gd_short = shorten_reflog_selector(&percent_gd_full);
         let et = args.expand_tabs_in_log;
+        let reflog_abbrev_len = if args.no_abbrev {
+            40
+        } else {
+            parse_abbrev(&args.abbrev)
+        };
 
         let is_oneline_fmt = args.format.as_deref() == Some("oneline") || args.oneline;
         if args.null_terminator && shown > 0 && !is_oneline_fmt {
@@ -6294,7 +6316,9 @@ fn run_reflog_walk(
                         &template,
                         &entry.new_oid,
                         &commit_data,
-                        &percent_gd,
+                        reflog_abbrev_len,
+                        &percent_gd_full,
+                        &percent_gd_short,
                         &entry.message,
                         &entry.identity,
                         mailmap,
@@ -6315,7 +6339,9 @@ fn run_reflog_walk(
                         fmt_str,
                         &entry.new_oid,
                         &commit_data,
-                        &percent_gd,
+                        reflog_abbrev_len,
+                        &percent_gd_full,
+                        &percent_gd_short,
                         &entry.message,
                         &entry.identity,
                         mailmap,
@@ -6417,7 +6443,9 @@ fn apply_reflog_format_string(
     fmt: &str,
     oid: &ObjectId,
     commit: &grit_lib::objects::CommitData,
-    percent_gd: &str,
+    abbrev_len: usize,
+    percent_gd_full: &str,
+    percent_gd_short: &str,
     reflog_msg: &str,
     reflog_identity: &str,
     mailmap: &MailmapTable,
@@ -6425,7 +6453,7 @@ fn apply_reflog_format_string(
     expand_tabs_in_log: usize,
 ) -> String {
     let hex = oid.to_hex();
-    let short = &hex[..7.min(hex.len())];
+    let short = &hex[..abbrev_len.min(hex.len())];
     let subject = commit.message.lines().next().unwrap_or("");
     let body = extract_body(&commit.message);
 
@@ -6493,9 +6521,13 @@ fn apply_reflog_format_string(
                 Some('g') => {
                     chars.next();
                     match chars.peek() {
+                        Some('D') => {
+                            chars.next();
+                            result.push_str(percent_gd_full);
+                        }
                         Some('d') => {
                             chars.next();
-                            result.push_str(percent_gd);
+                            result.push_str(percent_gd_short);
                         }
                         Some('s') => {
                             chars.next();
@@ -8848,6 +8880,16 @@ fn apply_format_string(
     signature: Option<&grit_lib::signing::SignatureCheck>,
 ) -> String {
     let hex = oid.to_hex();
+    let commit_color = || {
+        decoration_paint
+            .map(|p| p.commit.as_str())
+            .unwrap_or("\x1b[33m")
+    };
+    let reset_color = || {
+        decoration_paint
+            .map(|p| p.reset.as_str())
+            .unwrap_or("\x1b[m")
+    };
 
     // Alignment/truncation helpers
     #[derive(Clone, Copy)]
@@ -9063,6 +9105,7 @@ fn apply_format_string(
     }
 
     let mut pending_col: Option<ColSpec> = None;
+    let mut auto_color_next_hash = false;
     let mut result = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
 
@@ -9138,11 +9181,26 @@ fn apply_format_string(
             match chars.peek() {
                 Some('H') => {
                     chars.next();
-                    result.push_str(&hex);
+                    if auto_color_next_hash && use_color {
+                        result.push_str(commit_color());
+                        result.push_str(&hex);
+                        result.push_str(reset_color());
+                    } else {
+                        result.push_str(&hex);
+                    }
+                    auto_color_next_hash = false;
                 }
                 Some('h') => {
                     chars.next();
-                    result.push_str(&hex[..abbrev_len.min(hex.len())]);
+                    let abbreviated = &hex[..abbrev_len.min(hex.len())];
+                    if auto_color_next_hash && use_color {
+                        result.push_str(commit_color());
+                        result.push_str(abbreviated);
+                        result.push_str(reset_color());
+                    } else {
+                        result.push_str(abbreviated);
+                    }
+                    auto_color_next_hash = false;
                 }
                 Some('T') => {
                     chars.next();
@@ -9436,9 +9494,7 @@ fn apply_format_string(
                         } else if let Some(rest) = spec.strip_prefix("auto,") {
                             (false, rest)
                         } else if spec == "auto" {
-                            if use_color {
-                                result.push_str("\x1b[m");
-                            }
+                            auto_color_next_hash = use_color;
                             continue;
                         } else {
                             (false, spec.as_str())

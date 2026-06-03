@@ -1113,7 +1113,12 @@ pub fn run(mut args: Args) -> Result<()> {
         }
     }
 
-    if message.trim().is_empty() && !args.allow_empty_message {
+    let empty_message = if commit_cleanup_mode == CommitMsgCleanupMode::None {
+        message.is_empty()
+    } else {
+        message.trim().is_empty()
+    };
+    if empty_message && !args.allow_empty_message {
         eprintln!("Aborting commit due to empty commit message.");
         std::process::exit(1);
     }
