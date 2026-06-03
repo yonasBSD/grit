@@ -1549,7 +1549,7 @@ fn shortlog_block(commits: &[(ObjectId, CommitData)]) -> String {
     }
     for author in &order {
         let lines = &groups[author];
-        out.push_str(&format!("  {author} ({}):\n", lines.len()));
+        out.push_str(&format!("{author} ({}):\n", lines.len()));
         for line in lines {
             // Wrap onelines like git: indent 4, wrap to ~74 cols width with hanging indent 6.
             out.push_str(&wrap_oneline(line));
@@ -1566,8 +1566,8 @@ fn wrap_oneline(text: &str) -> String {
     let words: Vec<&str> = text.split(' ').collect();
     let mut out = String::new();
     let mut col;
-    let indent1 = "    ";
-    let indent2 = "      ";
+    let indent1 = "  ";
+    let indent2 = "    ";
     let mut line = String::from(indent1);
     col = indent1.len();
     let mut first_word = true;
@@ -2229,8 +2229,9 @@ fn format_date_rfc2822(ident: &str) -> String {
             let dt = time::OffsetDateTime::from_unix_timestamp(ts)
                 .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
                 .to_offset(tz_offset);
+            // git uses a space-padded day-of-month (e.g. "Thu, 7 Apr 2005"), not zero-padded.
             let format = time::format_description::parse(
-                "[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] ",
+                "[weekday repr:short], [day padding:none] [month repr:short] [year] [hour]:[minute]:[second] ",
             );
             if let Ok(fmt) = format {
                 if let Ok(formatted) = dt.format(&fmt) {
