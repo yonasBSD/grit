@@ -439,6 +439,8 @@ pub struct RevListOptions {
     pub ordering: OrderingMode,
     /// Reverse selected output order.
     pub reverse: bool,
+    /// Keep only commits not reachable from another selected commit (`--maximal-only`).
+    pub maximal_only: bool,
     /// List reachable objects (trees, blobs) in addition to commits.
     pub objects: bool,
     /// Suppress object path names in --objects output.
@@ -538,6 +540,7 @@ impl Default for RevListOptions {
             max_count: None,
             ordering: OrderingMode::Default,
             reverse: false,
+            maximal_only: false,
             objects: false,
             no_object_names: false,
             boundary: false,
@@ -721,6 +724,30 @@ fn count_reachable_candidates(
     Ok(seen.len())
 }
 
+fn retain_maximal_commits(
+    graph: &mut CommitGraph<'_>,
+    candidates: &mut HashSet<ObjectId>,
+) -> Result<()> {
+    if candidates.len() < 2 {
+        return Ok(());
+    }
+
+    let candidate_list: Vec<ObjectId> = candidates.iter().copied().collect();
+    let candidate_set: HashSet<ObjectId> = candidate_list.iter().copied().collect();
+    let mut reachable_from_another = HashSet::new();
+
+    for tip in candidate_list {
+        for reachable in walk_closure(graph, &[tip])? {
+            if reachable != tip && candidate_set.contains(&reachable) {
+                reachable_from_another.insert(reachable);
+            }
+        }
+    }
+
+    candidates.retain(|oid| !reachable_from_another.contains(oid));
+    Ok(())
+}
+
 /// Resolve and walk revisions for the requested options.
 ///
 /// # Parameters
@@ -899,6 +926,10 @@ pub fn rev_list(
             let count = graph.parents_of(*oid).map(|p| p.len()).unwrap_or(0);
             count >= min_p && count <= max_p
         });
+    }
+
+    if options.maximal_only {
+        retain_maximal_commits(&mut graph, &mut included)?;
     }
 
     let mut ordered = match options.ordering {

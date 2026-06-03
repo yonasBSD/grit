@@ -18,8 +18,12 @@ Updated: 2026-06-03
 - t6600 multi-base merged focus: `./scripts/run-tests.sh t6600-test-reach.sh --verbose` improves
   from 43/47 to 44/47 after preserving all `for-each-ref --merged` bases and filtering refs
   reachable from any base.
-- Verification for this increment: `cargo fmt`, `cargo clippy --fix --allow-dirty`,
-  `cargo build --release -p grit-cli`, and the focused harness ran. Clippy completed with the
+- t6600 maximal-only focus: `./scripts/run-tests.sh t6600-test-reach.sh --verbose` improves from
+  44/47 to 46/47 after parsing `rev-list --maximal-only` and pruning commits reachable from another
+  selected commit in the revision range.
+- Verification for this increment: `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo clippy --fix --allow-dirty`, `cargo build --release -p grit-cli`,
+  `cargo test -p grit-lib --lib` (238/238), and the focused harness ran. Clippy completed with the
   existing warning backlog and failed auto-fixes in unrelated files; unrelated auto-fixes were not
   kept.
 - Build unblock: `cargo build --release -p grit-cli` initially failed because `merge --abort`

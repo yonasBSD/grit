@@ -315,6 +315,7 @@ pub fn run(args: Args) -> Result<()> {
                 "--date-order" => cli_date_order = true,
                 "--author-date-order" => cli_author_date_order = true,
                 "--exclude-first-parent-only" => options.exclude_first_parent_only = true,
+                "--maximal-only" => options.maximal_only = true,
                 "--show-pulls" => options.show_pulls = true,
                 "--reverse" => options.reverse = true,
                 "--count" => options.count = true,
