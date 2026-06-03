@@ -8,7 +8,8 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup: create repo with branches' '
-	git init -q &&
+	rm -rf .git &&
+	git init -q -b master &&
 	git config user.name "Test" &&
 	git config user.email "t@t" &&
 	echo "base" >base.txt &&

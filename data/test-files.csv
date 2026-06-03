@@ -886,7 +886,7 @@ t5315-pack-objects-compression	t5	yes	9	9	0	true	ok	0
 t5316-pack-delta-depth	t5	yes	5	5	0	true	ok	0
 t5317-pack-objects-filter-objects	t5	yes	33	33	0	true	ok	0
 t5318-commit-graph	t5	skip	85	0	0	false	ok	0
-t5318-pack-objects-revs-exclude	t5	yes	9	6	3	false	ok	0
+t5318-pack-objects-revs-exclude	t5	yes	9	9	0	true	ok	0
 t5319-multi-pack-index	t5	yes	98	45	53	false	ok	0
 t5320-delta-islands	t5	yes	15	5	10	false	ok	0
 t5321-pack-large-objects	t5	yes	2	2	0	true	ok	0

@@ -57,7 +57,9 @@
   - Completed `t5317-pack-objects-filter-objects.sh` (33/33) after fixing repeated/invalid
     filter parsing, blob-limit boundaries, explicit root preservation, and direct tree roots under
     `tree:0`.
-  - Next focus: `t5318-pack-objects-revs-exclude.sh`.
+  - Completed `t5318-pack-objects-revs-exclude.sh` (9/9) after making the synthetic
+    fixture explicitly initialize its expected `master` branch and clear old repo metadata.
+  - Next focus: `t5331-pack-objects-stdin.sh`.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

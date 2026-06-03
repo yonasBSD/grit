@@ -1,4 +1,9 @@
 
+## 2026-06-03 — t5318-pack-objects-revs-exclude
+
+- Focus harness: `./scripts/run-tests.sh t5318-pack-objects-revs-exclude.sh --verbose` passes 9/9 after fixture branch initialization and setup cleanup.
+
+
 ## 2026-06-03 — t5317-pack-objects-filter-objects
 
 - Focus harness: `./scripts/run-tests.sh t5317-pack-objects-filter-objects.sh --verbose` passes 33/33 after repeated/invalid filter parsing, blob-limit boundary, explicit root, and `tree:0` fixes.
