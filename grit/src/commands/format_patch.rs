@@ -2879,6 +2879,11 @@ impl ThreadState {
 
     /// Generate (and remember) the Message-Id for sequence `seq`.
     fn next_message_id(&mut self, commits: &[(ObjectId, CommitData)], seq: usize) -> String {
+        // git only assigns/emits Message-Id headers when threading is active (`--thread` or
+        // `format.thread`). Without it, no Message-Id is generated even with `--in-reply-to`.
+        if matches!(self.mode, ThreadMode::None) {
+            return String::new();
+        }
         // Use the commit OID when available, else a synthetic id, to keep ids unique & stable.
         let id = if let Some((oid, commit)) =
             commits.get(seq.saturating_sub(if self.cover_present() { 1 } else { 0 }))
