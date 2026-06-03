@@ -1,3 +1,7 @@
+## 2026-06-03 — t1011-read-tree-sparse-checkout
+
+- Focus harness: `./scripts/run-tests.sh t1011-read-tree-sparse-checkout.sh --verbose` passes 23/23 after quiet checkout suppresses detached-HEAD leave messages while preserving sparse-checkout warnings.
+
 ## 2026-06-03 — t12280-log-shortlog-format
 
 - Focus harness: `./scripts/run-tests.sh t12280-log-shortlog-format.sh --verbose` passes 36/36 after isolating setup `cd repo` in a subshell.

@@ -5755,6 +5755,9 @@ fn print_detached_checkout_leave_message(
     old_oid: ObjectId,
     new_oid: ObjectId,
 ) -> Result<()> {
+    if QUIET.with(std::cell::Cell::get) {
+        return Ok(());
+    }
     if old_oid == new_oid {
         return Ok(());
     }
