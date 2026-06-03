@@ -1,3 +1,7 @@
+## 2026-06-03 — t12890-log-grep-author
+
+- Focus harness: `./scripts/run-tests.sh t12890-log-grep-author.sh --verbose` passes 33/33 after aligning log branch fixture references with `main`.
+
 ## 2026-06-03 — t12470-for-each-ref-shell-format
 
 - Focus harness: `./scripts/run-tests.sh t12470-for-each-ref-shell-format.sh --verbose` passes 34/34 after aligning for-each-ref branch format expectations with `main`.
