@@ -200,6 +200,13 @@ pub fn run(args: Args) -> Result<()> {
 
     if !args.no_prune {
         if let Some(expire) = gc_prune_expire_cli(&args, &cfg) {
+            let precious_objects = cfg
+                .get_bool("extensions.preciousobjects")
+                .and_then(|r| r.ok())
+                .unwrap_or(false);
+            if precious_objects {
+                return Ok(());
+            }
             if quiet_effective {
                 trace_run_command_git_invocation(&[
                     "prune",

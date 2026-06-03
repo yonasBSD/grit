@@ -1,3 +1,7 @@
+## 2026-06-03 — t1302-repo-version
+
+- Focus harness: `./scripts/run-tests.sh t1302-repo-version.sh --verbose` passes 18/18 after validating repository format for `apply --index` even when discovery rejects the repository, blocking destructive repack in precious-object repositories, and skipping prune during gc for precious-object repositories.
+
 ## 2026-06-03 — t1309-early-config
 
 - Focus harness: `./scripts/run-tests.sh t1309-early-config.sh --verbose` passes 10/10 after making `test-tool config read_early_config` warn about incompatible `.git` repository versions even when discovery rejects the repository before early-config loading.
