@@ -1054,7 +1054,7 @@ fn add_note(
         }
         return Ok(());
     }
-    let note_oid = if let Some(reuse) = reuse_message.filter(|_| only_minus_c) {
+    let note_oid = if let Some(reuse) = reuse_message.filter(|_| only_minus_c && !stripspace) {
         resolve_revision(repo, reuse)?
     } else {
         if !combined.ends_with('\n') && !combined.is_empty() {

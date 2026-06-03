@@ -66,7 +66,7 @@
     command-line order preservation for note fragments, `notes.displayRef` no-value errors,
     no-stripspace append separator behavior, and empty log pretty-format support), first file in
     the notes group.
-  - Related progress: `t3321-notes-stripspace.sh` improved from 2/27 to 19/27 with the stripspace
+  - Related progress: `t3321-notes-stripspace.sh` improved from 2/27 to 20/27 with the stripspace
     support; it remains in the notes group queue.
   - Completed opportunistic notes-adjacent fixture: `t3300-funny-names.sh` (21/21) after rerunning
     with the current diff/path quoting code; no additional code changes were needed.

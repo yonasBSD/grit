@@ -94,6 +94,15 @@
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
+## 2026-06-03 — t3321-notes-stripspace reuse partial
+
+- Focus harness improved to 20/27 after `git notes add --stripspace -C <blob>` writes a cleaned
+  note blob instead of reusing the original blob verbatim.
+- Related verification: `./scripts/run-tests.sh t3321-notes-stripspace.sh t3301-notes.sh
+  t3206-range-diff.sh` keeps `t3206` at 48/48, with `t3321` at 20/27 and `t3301` at 127/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3300-funny-names
 
 - Focus harness: `./scripts/run-tests.sh t3300-funny-names.sh` passes 21/21 with current
