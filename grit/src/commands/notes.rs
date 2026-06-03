@@ -1014,12 +1014,8 @@ fn launch_editor(repo: &Repository, initial: &str) -> Result<String> {
         bail!("editor exited with non-zero status");
     }
 
-    let mut result = std::fs::read_to_string(&tmp_path)?;
+    let result = std::fs::read_to_string(&tmp_path)?;
     let _ = std::fs::remove_file(&tmp_path);
-    // Test harness `fake_editor` and Git's scripted flows inject `MSG` into the file via the editor.
-    if let Ok(msg) = std::env::var("MSG") {
-        result = msg;
-    }
     Ok(result)
 }
 
