@@ -1837,6 +1837,25 @@ fn hydrate_log_options_from_raw_argv(args: &mut Args) {
             }
         }
 
+        match arg.as_str() {
+            "--topo-order" => args.topo_order = true,
+            "--date-order" => args.date_order = true,
+            "--author-date-order" => args.author_date_order = true,
+            "--first-parent" => args.first_parent = true,
+            "--full-history" => args.full_history = true,
+            "--simplify-merges" => args.simplify_merges = true,
+            "--ancestry-path" => args.ancestry_path = true,
+            "--sparse" => args.sparse = true,
+            "--parents" => args.show_parents = true,
+            _ => {}
+        }
+        if let Some(rest) = arg.strip_prefix("--ancestry-path=") {
+            args.ancestry_path = true;
+            if !rest.is_empty() {
+                args.ancestry_path_bottom = Some(rest.to_owned());
+            }
+        }
+
         i += 1;
     }
 }
@@ -2048,6 +2067,12 @@ fn pathspecs_after_dashdash(merged_argv: &[String], clap_pathspecs: &[String]) -
     }
 }
 
+fn log_parent_format_requested(args: &Args) -> bool {
+    args.format
+        .as_deref()
+        .is_some_and(|fmt| fmt.contains("%P") || fmt.contains("%p"))
+}
+
 /// Collect revision argument strings from `git log` argv (before `--stdin`), matching the
 /// revision vs pathspec disambiguation used for graph output.
 fn extract_log_cli_revision_specs(
@@ -2190,6 +2215,7 @@ fn run_rev_list_log(
         reverse: args.reverse,
         boundary: args.boundary,
         full_history: args.full_history,
+        parent_rewrite: args.show_parents || log_parent_format_requested(args),
         sparse: args.sparse,
         simplify_merges: args.simplify_merges,
         show_pulls: args.show_pulls,
@@ -2260,10 +2286,7 @@ fn run_rev_list_log(
         || args.patch_with_stat;
 
     let mut shown = 0usize;
-    let parent_format_requested = args
-        .format
-        .as_deref()
-        .is_some_and(|fmt| fmt.contains("%P") || fmt.contains("%p"));
+    let parent_format_requested = log_parent_format_requested(args);
     let rewrite_path_limited_parents =
         !combined_pathspecs.is_empty() && (args.show_parents || parent_format_requested);
     let included_for_parent_rewrite: HashSet<ObjectId> = if rewrite_path_limited_parents {
@@ -2449,6 +2472,7 @@ fn run_graph_log(
         reverse: args.reverse,
         boundary: args.boundary,
         full_history: args.full_history,
+        parent_rewrite: args.show_parents || log_parent_format_requested(&args),
         sparse: args.sparse,
         simplify_merges: args.simplify_merges,
         show_pulls: args.show_pulls,
@@ -4226,7 +4250,9 @@ pub fn run(mut args: Args) -> Result<()> {
         return run_graph_log(&repo, &args, patch_context, use_mailmap, &mailmap);
     }
 
-    let effective_for_rev_list = resolve_effective_pathspecs(&repo, &args.pathspecs)?;
+    let merged_argv_for_walk_probe = merge_log_revision_argv(&repo, &args)?;
+    let probe_pathspecs = pathspecs_after_dashdash(&merged_argv_for_walk_probe, &args.pathspecs);
+    let effective_for_rev_list = resolve_effective_pathspecs(&repo, &probe_pathspecs)?;
     let wants_rev_list_walk = !args.follow
         && args.branches.is_none()
         && !args.source

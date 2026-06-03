@@ -12,7 +12,7 @@ dependency/topic groups. Mark an item `[~]` when claimed and `[x]` only after th
   handling across `rev-list`, `rev-parse`, and `shortlog`.
 - [x] `t6002-rev-list-bisect.sh` — 53/53 passing after adding rev-list bisection
   midpoint selection, `--bisect-vars`, `--bisect-all`, and bisect-ref defaults.
-- [~] `t6111-rev-list-treesame.sh` — 22/65 passing, 43 failing.
+- [~] `t6111-rev-list-treesame.sh` — 42/65 passing, 23 failing.
 - [ ] `t6600-test-reach.sh` — 16/47 passing, 31 failing.
 - [ ] `t6022-rev-list-missing.sh` — 16/40 passing, 24 failing.
 - [ ] `t6006-rev-list-format.sh` — 58/80 passing, 22 failing.

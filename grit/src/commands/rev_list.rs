@@ -188,6 +188,14 @@ fn reject_exclude_hidden_with(option: &str, exclusions: &RefExclusions) -> Resul
     Ok(())
 }
 
+fn output_mode_requests_parent_rewrite(output_mode: &OutputMode) -> bool {
+    match output_mode {
+        OutputMode::Parents => true,
+        OutputMode::Format(fmt) => fmt.contains("%P") || fmt.contains("%p"),
+        _ => false,
+    }
+}
+
 fn append_bisect_ref_specs(
     repo: &Repository,
     positive_specs: &mut Vec<String>,
@@ -813,6 +821,8 @@ pub fn run(args: Args) -> Result<()> {
             options.simplify_by_decoration = false;
         }
     }
+    options.parent_rewrite =
+        show_parents || output_mode_requests_parent_rewrite(&options.output_mode);
 
     // Apply --default when no revision specs given
     if revision_specs.is_empty() {

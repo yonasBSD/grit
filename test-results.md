@@ -605,3 +605,7 @@ Updated: 2026-06-01
   parent output and rebuilding `target/release/grit`,
   `./scripts/run-tests.sh t6111-rev-list-treesame.sh --verbose` improves to 22/65 and refreshed
   `data/test-files.csv` plus dashboards.
+- t6111 option/range TREESAME focus: after routing `--` pathspecs through the rev-list-backed log
+  path, hydrating raw revision-walk flags placed after revision tokens, and making full-history
+  selection aware of parent rewriting, `./scripts/run-tests.sh t6111-rev-list-treesame.sh
+  --verbose` improves to 42/65 and refreshed `data/test-files.csv` plus dashboards.

@@ -467,6 +467,8 @@ pub struct RevListOptions {
     pub paths: Vec<String>,
     /// Show full history (don't simplify) for path-limited walks.
     pub full_history: bool,
+    /// Parent rewriting was requested (`--parents`, `--children`, or `%P`/`%p` output).
+    pub parent_rewrite: bool,
     /// Sparse mode: don't prune non-matching commits.
     pub sparse: bool,
     /// Further simplify history after path limiting (`--simplify-merges`).
@@ -550,6 +552,7 @@ impl Default for RevListOptions {
             symmetric_right: None,
             paths: Vec::new(),
             full_history: false,
+            parent_rewrite: false,
             sparse: false,
             simplify_merges: false,
             show_pulls: false,
@@ -976,6 +979,7 @@ pub fn rev_list(
                 options.sparse,
                 options.simplify_merges,
                 options.show_pulls,
+                options.parent_rewrite,
                 bloom_chain.as_ref(),
                 read_changed,
                 bloom_version,
@@ -3344,6 +3348,7 @@ fn commit_touches_paths(
     sparse: bool,
     simplify_merges: bool,
     show_pulls: bool,
+    parent_rewrite: bool,
     bloom_chain: Option<&CommitGraphChain>,
     read_changed_paths: bool,
     changed_paths_version: i32,
@@ -3430,10 +3435,11 @@ fn commit_touches_paths(
         }
     }
 
-    // `--full-history`: keep merges that are TREESAME to every parent for the pathspec (Git
-    // `revision.c` still walks them for path-limited output; `t6012` expects them in the list).
+    // `--full-history` without parent rewriting still omits merges that are TREESAME to every
+    // parent. With parent rewriting (`--parents`, `--children`, or `%P`/`%p`) Git keeps those
+    // merges so their rewritten edges can explain the selected history.
     if full_history && !simplify_merges && parents.len() > 1 && treesame_parents == parents.len() {
-        return Ok(true);
+        return Ok(parent_rewrite || sparse);
     }
 
     if !full_history && treesame_parents == 1 {
