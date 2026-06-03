@@ -5450,7 +5450,7 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         "sh-i18n--envsubst" => commands::sh_i18n_envsubst::run_from_argv(rest),
         "sh-setup" => commands::sh_setup::run(parse_cmd_args(subcmd, rest)),
         "shell" => commands::shell::run(parse_cmd_args(subcmd, rest)),
-        "shortlog" => commands::shortlog::run(parse_cmd_args(subcmd, rest)),
+        "shortlog" => commands::shortlog::run_with_raw_args(rest),
         "show" => {
             let rest = preprocess_expand_tabs_for_rev_cmd(rest);
             let rest = preprocess_show_argv(&rest);

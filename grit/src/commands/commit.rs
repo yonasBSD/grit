@@ -1252,7 +1252,15 @@ pub fn run(mut args: Args) -> Result<()> {
                     }
                 } else {
                     let trimmed = message.trim_end();
-                    message = format!("{trimmed}\n\n{trailer}\n");
+                    // Join the existing trailer block (single newline) when the message
+                    // already ends in a trailer; otherwise start a new paragraph.
+                    let sep =
+                        if grit_lib::commit_trailers::message_ends_with_trailer(trimmed, &config) {
+                            "\n"
+                        } else {
+                            "\n\n"
+                        };
+                    message = format!("{trimmed}{sep}{trailer}\n");
                     if let Some(ref raw) = raw_message {
                         let trimmed_raw = {
                             let mut end = raw.len();
@@ -1266,13 +1274,19 @@ pub fn run(mut args: Args) -> Result<()> {
                             &raw[..end]
                         };
                         let mut new_raw = trimmed_raw.to_vec();
-                        new_raw.extend_from_slice(format!("\n\n{trailer}\n").as_bytes());
+                        new_raw.extend_from_slice(format!("{sep}{trailer}\n").as_bytes());
                         raw_message = Some(new_raw);
                     }
                 }
             } else {
                 let trimmed = message.trim_end();
-                message = format!("{trimmed}\n\n{trailer}\n");
+                let sep = if grit_lib::commit_trailers::message_ends_with_trailer(trimmed, &config)
+                {
+                    "\n"
+                } else {
+                    "\n\n"
+                };
+                message = format!("{trimmed}{sep}{trailer}\n");
                 if let Some(ref raw) = raw_message {
                     let trimmed_raw = {
                         let mut end = raw.len();
@@ -1286,7 +1300,7 @@ pub fn run(mut args: Args) -> Result<()> {
                         &raw[..end]
                     };
                     let mut new_raw = trimmed_raw.to_vec();
-                    new_raw.extend_from_slice(format!("\n\n{trailer}\n").as_bytes());
+                    new_raw.extend_from_slice(format!("{sep}{trailer}\n").as_bytes());
                     raw_message = Some(new_raw);
                 }
             }

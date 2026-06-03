@@ -432,6 +432,17 @@ pub fn append_signoff_trailer(msg: &mut String, sob_line: &str, config: &ConfigS
     }
 }
 
+/// Whether the final non-blank line of `msg` looks like a trailer (per `trailer.c`
+/// rules from `config`). Used to decide whether an appended `Signed-off-by:` joins
+/// the existing trailer block (single `\n`) or starts a new paragraph (`\n\n`),
+/// matching Git's `append_signoff`.
+#[must_use]
+pub fn message_ends_with_trailer(msg: &str, config: &ConfigSet) -> bool {
+    let rules = load_trailer_rules(config);
+    let body_scan = msg.trim_end_matches('\n');
+    last_line_looks_like_trailer(body_scan.as_bytes(), &rules)
+}
+
 /// Build `Signed-off-by: Name <email>\n` using the same identity resolution as cherry-pick.
 pub fn format_signoff_line(name: &str, email: &str) -> String {
     format!("{SIGN_OFF_HEADER}{name} <{email}>\n")
