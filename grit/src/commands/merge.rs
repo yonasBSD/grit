@@ -6393,7 +6393,24 @@ fn merge_trees(
                         stage_entry(&mut index, &be_at_dest, 1);
                         stage_entry(&mut index, oe, 2);
                         if let Ok(obj) = repo.odb.read(&oe.oid) {
-                            conflict_files.push((dest_str, obj.data));
+                            conflict_files.push((dest_str.clone(), obj.data));
+                        }
+                        // When ours also modified the renamed file's content (oe differs from the
+                        // base blob), git emits an additional modify/delete conflict at the rename
+                        // destination, in addition to the rename/delete above.
+                        if oe.oid != be.oid {
+                            let md_body = format!(
+                                "{dest_str} deleted in {their_name} and modified in {ours_label}.  Version {ours_label} of {dest_str} left in tree."
+                            );
+                            conflict_descriptions.push(ConflictDescription {
+                                kind: "modify/delete",
+                                body: md_body,
+                                subject_path: dest_str,
+                                remerge_anchor_path: None,
+                                rename_rr_ours_dest: None,
+                                rename_rr_theirs_dest: None,
+                                auto_merge_hint_path: None,
+                            });
                         }
                     }
                 }
@@ -7675,7 +7692,10 @@ pub(crate) fn merge_tree_write_tree_core(
     let conflict_files = merge_result.conflict_files;
     let conflict_descriptions = merge_result.conflict_descriptions;
 
-    let tree_oid = if mergeability_only && has_conflicts {
+    let tree_oid = if mergeability_only {
+        // `--quiet` only reports clean/conflict status; git never persists the
+        // resulting tree (or any "outer layer" objects) in this mode, so the
+        // object store must be left untouched.
         None
     } else {
         let mut index_for_tree = index.clone();
@@ -8661,6 +8681,15 @@ fn apply_directory_file_conflicts(
                 rename_rr_theirs_dest: None,
                 auto_merge_hint_path: None,
             });
+
+            // git also stages the base version (stage 1) at the relocated `path~SIDE`
+            // path when the file existed in the merge base, so the modify/delete shows
+            // both `1 path~SIDE` and `2/3 path~SIDE` in the conflicted-file listing.
+            if let Some(be) = base.get(&path) {
+                let mut be_here = be.clone();
+                be_here.path = new_path_str.as_bytes().to_vec();
+                stage_entry(index, &be_here, 1);
+            }
 
             let stage = if file_is_ours { 2u8 } else { 3u8 };
             let mut staged = file_entry.clone();
