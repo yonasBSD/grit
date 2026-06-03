@@ -42,6 +42,8 @@
     `rev-parse --bisect` object output.
   - Completed file: `t6423-merge-rename-directories.sh`, now 80/82 with 0 real failures; `9g`
     and `12h` remain expected failures.
+  - Current claimed file: `t6438-submodule-directory-file-conflicts.sh`, refreshed baseline 39/56
+    with 17 failures.
   - Next t6 work should follow the highest-value remaining row from the grouped CSV unless a
     dependency-focused sequence is clearly more efficient.
   - Execution logs: `logs/2026-06-02_1427-t6-for-each-ref.md`,

@@ -585,3 +585,6 @@ Updated: 2026-06-01
   `./scripts/run-tests.sh t6423-merge-rename-directories.sh --verbose` now reports 80/82 with
   0 real failures and refreshed `data/test-files.csv` plus dashboards. The remaining `9g` and
   `12h` cases are expected failures.
+- t6438 submodule directory/file conflict focus: initial official refresh for the claimed file,
+  `./scripts/run-tests.sh t6438-submodule-directory-file-conflicts.sh --verbose`, reports 39/56
+  and refreshed `data/test-files.csv` plus dashboards.
