@@ -1,3 +1,7 @@
+## 2026-06-03 — t12780-show-ref-head-detached
+
+- Focus harness: `./scripts/run-tests.sh t12780-show-ref-head-detached.sh --verbose` passes 36/36 after switching synthetic `master` branch references to `main`.
+
 ## 2026-06-03 — t12630-rev-parse-is-bare
 
 - Focus harness: `./scripts/run-tests.sh t12630-rev-parse-is-bare.sh --verbose` passes 33/33 after wrapping setup blocks that changed into repositories.
