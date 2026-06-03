@@ -435,23 +435,65 @@ impl Shortlog {
     }
 }
 
-/// Reduce a oneline subject to git's `format_subject(.. , " ")` form: fold internal
-/// newlines/leading whitespace into single spaces (the subject is normally one line).
+/// Port of git's `insert_one_record` subject cleanup + `format_subject(.., " ")`.
+///
+/// Skips leading whitespace/blank lines, strips a leading `[PATCH...]` token, then
+/// folds the message lines (stopping at the first blank line) into a single line,
+/// joining with a space and stripping each line's trailing whitespace.
 fn format_subject(oneline: &str) -> String {
-    // git skips leading whitespace, strips a leading `[PATCH...]` token, then
-    // collapses the subject. The callers already provide the cleaned oneline,
-    // so just normalize a possible leading `[PATCH]`/whitespace here.
-    let mut s = oneline.trim_start();
-    if s.starts_with("[PATCH") {
-        if let Some(close) = s.find(']') {
-            // Only treat as a patch tag if `]` is before the first newline.
-            let nl = s.find('\n').unwrap_or(s.len());
-            if close < nl {
-                s = s[close + 1..].trim_start();
+    let bytes = oneline.as_bytes();
+    let mut p = 0usize;
+
+    // Skip any leading whitespace, including any blank lines.
+    while p < bytes.len() && bytes[p].is_ascii_whitespace() {
+        p += 1;
+    }
+
+    // Strip a leading `[PATCH...]` token when its `]` precedes the line's newline.
+    if oneline[p..].starts_with("[PATCH") {
+        let rest = &bytes[p..];
+        let eol = rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
+        if let Some(eob) = rest.iter().position(|&b| b == b']') {
+            if eob < eol {
+                p += eob + 1;
             }
         }
     }
-    s.to_owned()
+    // Skip whitespace but not a newline.
+    while p < bytes.len() && bytes[p].is_ascii_whitespace() && bytes[p] != b'\n' {
+        p += 1;
+    }
+
+    // format_subject(&subject, oneline, " ").
+    let mut out = String::new();
+    let mut first = true;
+    while p < bytes.len() {
+        // get_one_line: length up to and including '\n'.
+        let line_start = p;
+        let mut len = 0usize;
+        while p < bytes.len() {
+            let c = bytes[p];
+            p += 1;
+            len += 1;
+            if c == b'\n' {
+                break;
+            }
+        }
+        // is_blank_line: trim trailing whitespace; break if empty.
+        let mut trimmed = len;
+        while trimmed > 0 && bytes[line_start + trimmed - 1].is_ascii_whitespace() {
+            trimmed -= 1;
+        }
+        if trimmed == 0 {
+            break;
+        }
+        if !first {
+            out.push(' ');
+        }
+        first = false;
+        out.push_str(&oneline[line_start..line_start + trimmed]);
+    }
+    out
 }
 
 fn output(log: &mut Shortlog) -> Result<()> {
