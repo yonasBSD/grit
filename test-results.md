@@ -1,3 +1,7 @@
+## 2026-06-03 — t12270-status-porcelain-v2
+
+- Focus harness: `./scripts/run-tests.sh t12270-status-porcelain-v2.sh --verbose` passes 32/32 after aligning default branch expectations with `main` and correcting porcelain/no-branch-header assertions.
+
 ## 2026-06-03 — t12070-branch-describe-sort
 
 - Focus harness: `./scripts/run-tests.sh t12070-branch-describe-sort.sh --verbose` passes 34/34 after aligning branch listing/checkout expectations with `main`.
