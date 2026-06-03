@@ -89,7 +89,7 @@ test_expect_success 'branch list shows all branches' '
 	(
 	cd repo &&
 	grit branch >out &&
-	grep "master" out &&
+	grep "main" out &&
 	grep "feature-x" out
 	)
 '
@@ -98,7 +98,7 @@ test_expect_success 'branch list marks current with asterisk' '
 	(
 	cd repo &&
 	grit branch >out &&
-	grep "^\\* master" out
+	grep "^\\* main" out
 	)
 '
 
@@ -106,7 +106,7 @@ test_expect_success 'branch -l lists branches' '
 	(
 	cd repo &&
 	grit branch -l >out &&
-	grep "master" out
+	grep "main" out
 	)
 '
 
@@ -127,7 +127,7 @@ test_expect_success 'branch -v shows commit hash and subject' '
 	(
 	cd repo &&
 	grit branch -v >out &&
-	grep "master" out &&
+	grep "main" out &&
 	grep "second commit" out
 	)
 '
@@ -146,11 +146,11 @@ test_expect_success 'branch -v output contains abbreviated hashes' '
 # Section 5: --show-current
 ###########################################################################
 
-test_expect_success '--show-current shows master' '
+test_expect_success '--show-current shows main' '
 	(
 	cd repo &&
 	grit branch --show-current >out &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect out
 	)
 '
@@ -171,7 +171,7 @@ test_expect_success '--show-current after checkout' '
 	grit branch --show-current >out &&
 	echo "feature-x" >expect &&
 	test_cmp expect out &&
-	grit checkout master
+	grit checkout main
 	)
 '
 
@@ -220,7 +220,7 @@ test_expect_success 'deleting nonexistent branch fails' '
 test_expect_success 'cannot delete current branch' '
 	(
 	cd repo &&
-	test_must_fail grit branch -d master
+	test_must_fail grit branch -d main
 	)
 '
 
@@ -303,7 +303,7 @@ test_expect_success '--merged flag runs successfully' '
 	(
 	cd repo &&
 	grit branch --merged HEAD >out &&
-	grep "master" out
+	grep "main" out
 	)
 '
 
@@ -319,7 +319,7 @@ test_expect_success '--contains flag runs successfully' '
 	(
 	cd repo &&
 	grit branch --contains HEAD >out &&
-	grep "master" out
+	grep "main" out
 	)
 '
 

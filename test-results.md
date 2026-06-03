@@ -1,3 +1,7 @@
+## 2026-06-03 — t10800-branch-merged-contains
+
+- Focus harness: `./scripts/run-tests.sh t10800-branch-merged-contains.sh --verbose` passes 32/32 after aligning branch operation/listing expectations with `main`.
+
 ## 2026-06-03 — t10500-branch-force-create
 
 - Focus harness: `./scripts/run-tests.sh t10500-branch-force-create.sh --verbose` passes 33/33 after aligning branch force/delete/list fixture expectations with `main`.
