@@ -772,7 +772,7 @@ fn restore_repo_to_head(repo: &Repository, head_oid: ObjectId) -> Result<()> {
 
 /// Apply branch.<name>.mergeoptions to the args.
 /// Only applies settings that weren't explicitly set on the command line.
-fn apply_mergeoptions(args: &mut Args, opts: &str) {
+fn apply_mergeoptions(args: &mut Args, opts: &str) -> Result<()> {
     // Save CLI-set flags before applying config options
     let cli_ff = args.ff;
     let cli_no_ff = args.no_ff;
@@ -785,8 +785,12 @@ fn apply_mergeoptions(args: &mut Args, opts: &str) {
     let cli_no_stat = args.no_stat;
     let cli_summary = args.summary;
 
-    for token in opts.split_whitespace() {
-        match token {
+    let tokens = shell_words::split(opts).map_err(|err| {
+        anyhow::anyhow!("fatal: bad branch mergeoptions string '{}': {}", opts, err)
+    })?;
+
+    for token in tokens {
+        match token.as_str() {
             "--ff" if !cli_no_ff && !cli_ff_only => args.ff = true,
             "--no-ff" if !cli_ff && !cli_ff_only => args.no_ff = true,
             "--ff-only" if !cli_ff && !cli_no_ff => args.ff_only = true,
@@ -819,6 +823,7 @@ fn apply_mergeoptions(args: &mut Args, opts: &str) {
             _ => {} // ignore unknown options
         }
     }
+    Ok(())
 }
 
 /// Run the `merge` command.
@@ -860,7 +865,7 @@ pub fn run(mut args: Args) -> Result<()> {
         if let Some(branch_name) = head_state.branch_name() {
             let key = format!("branch.{branch_name}.mergeoptions");
             if let Some(opts) = config.get(&key) {
-                apply_mergeoptions(&mut args, &opts);
+                apply_mergeoptions(&mut args, &opts)?;
             }
         }
 
