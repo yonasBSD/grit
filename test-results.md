@@ -1,3 +1,7 @@
+## 2026-06-03 — t13020-mv-force-overwrite
+
+- Focus harness: `./scripts/run-tests.sh t13020-mv-force-overwrite.sh --verbose` passes 30/30 after wrapping the setup `cd repo` in a subshell so subsequent mv tests run from the expected trash root.
+
 ## 2026-06-03 — t1461-refs-list tracking atoms
 
 - Focus harness: `./scripts/run-tests.sh t1461-refs-list.sh --verbose` improved to 359/428 after adding ahead/behind tracking output for `%(upstream:track[short])` and `%(push:track[short])`, including `nobracket` modifier handling.
