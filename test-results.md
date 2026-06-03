@@ -1252,3 +1252,11 @@ Updated: 2026-06-01
   86/105 with refreshed `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check
   -p grit-cli`, `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy
   --fix --allow-dirty` (existing warning backlog remains), and `cargo test -p grit-lib --lib`.
+- t6120 describe dirty/all-ref focus: after making `--dirty`/`--broken` reject commit-ish
+  arguments, matching `--all --match/--exclude` against branch and remote short names, and adding
+  unfiltered `refs/original/*` candidates, the direct verbose run reaches `name-rev with exact
+  tags` and `./scripts/run-tests.sh t6120-describe.sh` improves from 86/105 to 91/105 with
+  refreshed `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p
+  grit-cli`, `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
+  `cargo test -p grit-lib --lib`.

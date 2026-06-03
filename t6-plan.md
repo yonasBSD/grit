@@ -89,10 +89,11 @@ Completed pathspec files: `t6130`, `t6132`, `t6133-pathspec-toplevel`, `t6134-*`
 
 ## Describe
 
-- [~] `t6120-describe.sh` — 86/105 passing, 17 failing. Improved describe candidate
+- [~] `t6120-describe.sh` — 91/105 passing, 12 failing. Improved describe candidate
   selection/counting, describe-name rev parsing, inverse pattern/exact options, exact
-  `--contains` output, and renamed annotated-tag handling. Next blocker: `describe --dirty HEAD`
-  must reject explicit commit-ish arguments.
+  `--contains` output, renamed annotated-tag handling, dirty/broken commit-ish rejection, `--all`
+  branch/remote pattern matching, and `refs/original` describe candidates. Next blocker: name-rev
+  should distinguish exact tag objects from peeled tagged commits.
 
 Completed describe/name files: `t6120-name-rev`.
 

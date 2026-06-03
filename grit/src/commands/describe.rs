@@ -96,13 +96,13 @@ pub struct Args {
     /// Describe the working tree.  After the version string, append
     /// the given mark (default: "-dirty") if the working tree has
     /// local modifications.
-    #[arg(long, default_missing_value = "-dirty", num_args = 0..=1)]
+    #[arg(long, default_missing_value = "-dirty", num_args = 0..=1, require_equals = true)]
     pub dirty: Option<String>,
 
     /// Describe the working tree.  After the version string, append
     /// the given mark (default: "-broken") if the working tree cannot
     /// be described (e.g. HEAD points to a broken commit).
-    #[arg(long, default_missing_value = "-broken", num_args = 0..=1)]
+    #[arg(long, default_missing_value = "-broken", num_args = 0..=1, require_equals = true)]
     pub broken: Option<String>,
 }
 
@@ -240,6 +240,10 @@ fn apply_ordered_pattern_options_from_argv(options: &mut DescribeOptions) {
 /// Run the `describe` command.
 pub fn run(args: Args) -> Result<()> {
     let repo = Repository::discover(None).context("not a git repository")?;
+
+    if args.commit.is_some() && (args.dirty.is_some() || args.broken.is_some()) {
+        bail!("--dirty/--broken cannot be used with commit-ish arguments");
+    }
 
     // --broken: if HEAD cannot be resolved, output the broken suffix and return
     if args.broken.is_some() {
@@ -608,22 +612,43 @@ fn build_ref_map(
             for (refname, oid) in &refs {
                 // Display name for --all is the refname with "refs/" stripped
                 let display = refname.strip_prefix("refs/").unwrap_or(refname).to_string();
+                let match_name = refname.strip_prefix(prefix).unwrap_or(refname);
 
                 if !patterns.is_empty()
                     && !patterns
                         .iter()
-                        .any(|p| crate::commands::tag::glob_matches(p, &display))
+                        .any(|p| crate::commands::tag::glob_matches(p, match_name))
                 {
                     continue;
                 }
                 if exclude_patterns
                     .iter()
-                    .any(|p| crate::commands::tag::glob_matches(p, &display))
+                    .any(|p| crate::commands::tag::glob_matches(p, match_name))
                 {
                     continue;
                 }
 
                 // Peel to commit
+                if let Some(commit_oid) = peel_to_commit(repo, oid) {
+                    insert_ref_candidate(
+                        &mut map,
+                        commit_oid,
+                        RefCandidate {
+                            name: display.clone(),
+                            annotated: false,
+                            tagger_time: 0,
+                            misnamed_ref: None,
+                        },
+                    );
+                }
+            }
+        }
+
+        if patterns.is_empty() && exclude_patterns.is_empty() {
+            let refs = list_refs(&repo.git_dir, "refs/original/").unwrap_or_default();
+            for (refname, oid) in &refs {
+                let display = refname.strip_prefix("refs/").unwrap_or(refname).to_string();
+
                 if let Some(commit_oid) = peel_to_commit(repo, oid) {
                     insert_ref_candidate(
                         &mut map,
