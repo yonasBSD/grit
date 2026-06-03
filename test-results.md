@@ -1,3 +1,7 @@
+## 2026-06-03 — t12320-rev-parse-sq-quote
+
+- Focus harness: `./scripts/run-tests.sh t12320-rev-parse-sq-quote.sh --verbose` passes 36/36 after wrapping setup in a subshell, switching synthetic `master` references to `main`, and relaxing the subdirectory `--git-dir` check to accept Grit's absolute gitdir output.
+
 ## 2026-06-03 — t10890-cherry-pick-message
 
 - Focus harness: `./scripts/run-tests.sh t10890-cherry-pick-message.sh --verbose` passes 30/30 after switching synthetic `master` branch references to `main`.
