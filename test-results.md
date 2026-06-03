@@ -1201,3 +1201,7 @@ Updated: 2026-06-01
   reflog selectors, and accepting `reflog --abbrev=<n>`, `./scripts/run-tests.sh
   t6006-rev-list-format.sh` improves from 70/80 to 73/80 and refreshed `data/test-files.csv` plus
   dashboards. Full workspace/harness sweeps were skipped for this narrow increment.
+- t6006 reflog abbrev focus: after passing `--abbrev=<n>` through reflog pretty `%h`,
+  `./scripts/run-tests.sh t6006-rev-list-format.sh` improves from 73/80 to 74/80 and refreshed
+  `data/test-files.csv` plus dashboards. Full workspace/harness sweeps were skipped for this
+  narrow increment.

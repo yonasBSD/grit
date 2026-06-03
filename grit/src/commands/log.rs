@@ -6122,6 +6122,11 @@ fn run_reflog_walk(
         );
         let percent_gd_short = shorten_reflog_selector(&percent_gd_full);
         let et = args.expand_tabs_in_log;
+        let reflog_abbrev_len = if args.no_abbrev {
+            40
+        } else {
+            parse_abbrev(&args.abbrev)
+        };
 
         let is_oneline_fmt = args.format.as_deref() == Some("oneline") || args.oneline;
         if args.null_terminator && shown > 0 && !is_oneline_fmt {
@@ -6311,6 +6316,7 @@ fn run_reflog_walk(
                         &template,
                         &entry.new_oid,
                         &commit_data,
+                        reflog_abbrev_len,
                         &percent_gd_full,
                         &percent_gd_short,
                         &entry.message,
@@ -6333,6 +6339,7 @@ fn run_reflog_walk(
                         fmt_str,
                         &entry.new_oid,
                         &commit_data,
+                        reflog_abbrev_len,
                         &percent_gd_full,
                         &percent_gd_short,
                         &entry.message,
@@ -6436,6 +6443,7 @@ fn apply_reflog_format_string(
     fmt: &str,
     oid: &ObjectId,
     commit: &grit_lib::objects::CommitData,
+    abbrev_len: usize,
     percent_gd_full: &str,
     percent_gd_short: &str,
     reflog_msg: &str,
@@ -6445,7 +6453,7 @@ fn apply_reflog_format_string(
     expand_tabs_in_log: usize,
 ) -> String {
     let hex = oid.to_hex();
-    let short = &hex[..7.min(hex.len())];
+    let short = &hex[..abbrev_len.min(hex.len())];
     let subject = commit.message.lines().next().unwrap_or("");
     let body = extract_body(&commit.message);
 
