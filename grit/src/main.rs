@@ -2676,6 +2676,22 @@ pub(crate) fn extract_globals(
             continue;
         }
 
+        // --config-env=<key>=<envvar> or --config-env <key>=<envvar>
+        if let Some(spec) = arg.strip_prefix("--config-env=") {
+            opts.config_overrides.push(resolve_config_env(spec)?);
+            i += 1;
+            continue;
+        }
+        if arg == "--config-env" {
+            i += 1;
+            let Some(spec) = items.get(i) else {
+                bail!("no config key given for --config-env");
+            };
+            opts.config_overrides.push(resolve_config_env(spec)?);
+            i += 1;
+            continue;
+        }
+
         // --attr-source=<tree-ish> or --attr-source <tree-ish>
         if let Some(val) = arg.strip_prefix("--attr-source=") {
             opts.attr_source = Some(val.to_owned());
@@ -2783,8 +2799,30 @@ pub(crate) fn extract_globals(
     Ok((opts, subcmd, rest))
 }
 
+fn resolve_config_env(spec: &str) -> Result<String> {
+    let Some((key, envvar)) = spec.split_once('=') else {
+        bail!("invalid config format: {spec}");
+    };
+    if key.is_empty() {
+        bail!("invalid config format: {spec}");
+    }
+    if envvar.is_empty() {
+        bail!(
+            "missing environment variable name for configuration '{}': {spec}",
+            key
+        );
+    }
+    let value = std::env::var(envvar).with_context(|| {
+        format!(
+            "missing environment variable '{}' for configuration '{}'",
+            envvar, key
+        )
+    })?;
+    Ok(format!("{key}={value}"))
+}
+
 /// Apply global options (env vars, chdir).
-fn apply_globals(opts: &GlobalOpts) -> Result<()> {
+pub(crate) fn apply_globals(opts: &GlobalOpts) -> Result<()> {
     if let Some(dir) = &opts.change_dir {
         if !dir.as_os_str().is_empty() {
             std::env::set_current_dir(dir)?;

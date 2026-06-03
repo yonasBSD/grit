@@ -270,6 +270,23 @@ pub(crate) fn run_command_with_aliases(
     loop {
         let cmd = args[0].clone();
 
+        if cmd.starts_with('-') {
+            let mut argv = vec!["git".to_owned()];
+            argv.extend(args.iter().cloned());
+            let (alias_opts, alias_subcmd, alias_rest) = crate::extract_globals(&argv)?;
+            crate::apply_globals(&alias_opts)?;
+            let Some(alias_subcmd) = alias_subcmd else {
+                bail!(
+                    "alias '{}' expands to options without a command",
+                    root_alias
+                );
+            };
+            args = vec![alias_subcmd];
+            args.extend(alias_rest);
+            done_alias = true;
+            continue;
+        }
+
         if is_deprecated_command(&cmd) {
             if let Some(new_argv) = try_expand_alias(
                 &cmd,
