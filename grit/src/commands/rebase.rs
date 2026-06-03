@@ -5547,7 +5547,7 @@ fn cherry_pick_for_rebase(
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("cherry-pick of root commit not supported"))?,
             &head_oid,
-            MergeFavor::Theirs,
+            MergeFavor::None,
         )?;
         let cf = tree_merge
             .conflict_files

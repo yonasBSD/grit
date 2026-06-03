@@ -13,10 +13,18 @@ use std::io::{self, Write};
 #[derive(Debug, ClapArgs)]
 #[command(about = "Reuse recorded resolution of conflicted merges")]
 pub struct Args {
-    #[arg(long = "rerere-autoupdate")]
+    #[arg(
+        long = "rerere-autoupdate",
+        action = clap::ArgAction::SetTrue,
+        overrides_with = "no_rerere_autoupdate"
+    )]
     pub rerere_autoupdate: bool,
 
-    #[arg(long = "no-rerere-autoupdate")]
+    #[arg(
+        long = "no-rerere-autoupdate",
+        action = clap::ArgAction::SetTrue,
+        overrides_with = "rerere_autoupdate"
+    )]
     pub no_rerere_autoupdate: bool,
 
     #[command(subcommand)]

@@ -102,8 +102,9 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     if merge_result.has_conflicts {
-        let _ =
-            grit_lib::rerere::repo_rerere(&repo, grit_lib::rerere::RerereAutoupdate::FromConfig);
+        // The `git merge-recursive` plumbing command never invokes rerere; only the porcelain
+        // `git merge` (and friends) do. Running rerere here would auto-resolve the working tree
+        // and break callers that capture the raw conflict (t4200 'set up an unresolved merge').
         for desc in &merge_result.conflict_descriptions {
             if desc.kind == "binary" {
                 println!("warning: Cannot merge binary files: {}", desc.subject_path);
