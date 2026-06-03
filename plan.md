@@ -8,7 +8,7 @@
   non-green in-scope row with the largest `failing` count in `data/test-files.csv`, re-running
   that file until `failing=0` before moving on.
   - Starting point: 368 in-scope rows; 234 already fully passing; 134 in-scope rows non-green.
-  - Current progress: 10 in-scope `t1` rows remain non-green after latest read-tree/rev-parse work.
+  - Current progress: 8 in-scope `t1` rows remain non-green after refs optimize and bad-ref-name partial fixes.
   - Current first focus group: config/init/repo setup, with `t1300-config.sh` still non-green (450/497, failing=47 in the latest CSV snapshot).
   - Current refs focus: `t1461-refs-list.sh` is now 359/428 after tracking atom fixes.
   - Skipped rows to audit after current in-scope rows are green: `t1016-compatObjectFormat`,
