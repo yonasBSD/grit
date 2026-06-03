@@ -4,6 +4,15 @@
   blank line after the raw commit message body when notes are omitted.
 - Remaining failures cover notes message composition, display refs, copy, and rewrite behavior.
 
+## 2026-06-03 — t3301-notes format-patch partial
+
+- Focus harness improved to 114/153 after `format-patch --show-notes` started resolving parsed
+  notes options into `format-patch` notes refs.
+- Adjacent verification: `./scripts/run-tests.sh t3301-notes.sh t3206-range-diff.sh` keeps
+  `t3206` at 48/48.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3210-pack-refs
 
 - Focus harness: `./scripts/run-tests.sh t3210-pack-refs.sh` passes 29/29 after the synthetic

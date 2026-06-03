@@ -3535,6 +3535,13 @@ fn resolve_notes_refs(args: &Args, config: &ConfigSet) -> Vec<(String, String)> 
             add(&mut refs, notes_value_to_ref(val));
         }
     }
+    if args.no_notes {
+        refs.clear();
+    } else {
+        for note in &args.notes {
+            add(&mut refs, notes_value_to_ref(note));
+        }
+    }
 
     refs.into_iter()
         .map(|refname| {

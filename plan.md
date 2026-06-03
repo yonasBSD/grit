@@ -59,8 +59,8 @@
   - Branch/refs/range-diff/pack-refs group sweep verified: `t3200`, `t3201`, `t3202`, `t3203`,
     `t3204`, `t3205`, `t3206-branch-advanced`, `t3206-range-diff`, `t3207`, `t3210`, and
     `t3211` all pass.
-  - Current focus: `t3301-notes.sh` (153 total, 113 passed, 40 failing after fixing raw log
-    spacing), first file in the notes group.
+  - Current focus: `t3301-notes.sh` (153 total, 114 passed, 39 failing after fixing raw log
+    spacing and format-patch `--show-notes` forwarding), first file in the notes group.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ## Active task — t6 family 100% pass
