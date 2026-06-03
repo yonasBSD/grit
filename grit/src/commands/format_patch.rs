@@ -438,6 +438,8 @@ struct PatchOptions {
     mboxrd: bool,
     /// `--relative=<dir>`: strip this prefix from diff paths.
     relative: Option<String>,
+    /// `--zero-commit`: use an all-zero object name on the `From` line.
+    zero_commit: bool,
 }
 
 pub fn run(mut args: Args) -> Result<()> {
@@ -557,7 +559,7 @@ pub fn run(mut args: Args) -> Result<()> {
 
     let (positive_specs, exclude_specs): (Vec<&String>, Vec<&String>) =
         args.revisions.iter().partition(|s| !s.starts_with('^'));
-    let exclude_rest: Vec<String> = exclude_specs
+    let mut exclude_rest: Vec<String> = exclude_specs
         .iter()
         .map(|s| s.strip_prefix('^').unwrap_or(s.as_str()).to_string())
         .collect();
@@ -565,19 +567,34 @@ pub fn run(mut args: Args) -> Result<()> {
     let mut rev_tokens: Vec<String> = positive_specs.iter().map(|s| (*s).clone()).collect();
     let max_count_flag = if args.last_one { Some(1) } else { None };
     let max_count_from_argv = strip_leading_neg_count(&mut rev_tokens);
-    let mut max_count = max_count_flag
+    let max_count = max_count_flag
         .or(args.grit_format_patch_max_count)
         .or(max_count_from_argv);
     let no_revs = positive_specs.is_empty() && exclude_specs.is_empty();
-    if no_revs && max_count.is_none() {
-        max_count = Some(1);
+    // With no revision range and no count, git defaults to `@{upstream}..HEAD`. When the current
+    // branch has a configured upstream, format the commits since it; otherwise there is nothing to
+    // format (git emits no output, exit 0) -- so leave the commit set empty.
+    let mut default_no_upstream = false;
+    if no_revs && max_count.is_none() && !args.root && !(args.cherry_pick && args.right_only) {
+        match resolve_branch_upstream_oid(&repo, &config) {
+            Some(upstream_oid) => {
+                rev_tokens.push("HEAD".to_owned());
+                exclude_rest.push(upstream_oid.to_hex());
+            }
+            None => {
+                default_no_upstream = true;
+            }
+        }
     }
 
     // Pathspec after `--` limits which commits/diffs are shown.
     let pathspec: Vec<String> = args.pathspec.clone();
 
     // Determine the list of commits to format.
-    let mut commits = if args.cherry_pick && args.right_only {
+    let mut commits = if default_no_upstream {
+        // No revision range, no count, and no upstream: nothing to format.
+        Vec::new()
+    } else if args.cherry_pick && args.right_only {
         let range_spec = rev_tokens
             .first()
             .map(|s| s.as_str())
@@ -665,9 +682,10 @@ pub fn run(mut args: Args) -> Result<()> {
                 .or_else(|| config.get("format.subjectPrefix"))
         })
         .unwrap_or_else(|| "PATCH".to_owned());
-    // When `--rfc` is repeated the last occurrence wins (matches git's option parsing).
+    // When `--rfc` is repeated the last occurrence wins (matches git's option parsing). An
+    // empty value (`--rfc=`) resets the RFC prefix to nothing, so no prefix is prepended.
     if let Some(rfc) = args.rfc.last() {
-        if !args.no_rfc {
+        if !args.no_rfc && !rfc.is_empty() {
             prefix = apply_rfc_prefix(&prefix, rfc);
         }
     }
@@ -862,6 +880,7 @@ pub fn run(mut args: Args) -> Result<()> {
         force_in_body_from,
         mboxrd,
         relative,
+        zero_commit: args.zero_commit,
     };
 
     let mut log_output_encoding = config
@@ -1008,8 +1027,15 @@ pub fn run(mut args: Args) -> Result<()> {
             solo_extra.as_deref(),
         )?;
 
-        let filename =
-            build_patch_filename(&file_prefix, patch_num, &subject_line, filename_max_length);
+        // Git derives the patch filename from only the FIRST line of the subject (it stops at the
+        // first newline), even though the Subject header flattens a multi-line subject onto one line.
+        let filename_subject = first_subject_line(&display_msg);
+        let filename = build_patch_filename(
+            &file_prefix,
+            patch_num,
+            filename_subject,
+            filename_max_length,
+        );
         emit_output(
             &mut single_buf,
             to_single,
@@ -1418,10 +1444,12 @@ fn format_cover_letter(
         .last()
         .ok_or_else(|| anyhow::anyhow!("cannot format cover letter for empty commit series"))?;
 
-    out.push_str(&format!(
-        "From {} Mon Sep 17 00:00:00 2001\n",
+    let cover_from_oid = if patch_opts.zero_commit {
+        "0".repeat(last_oid.to_hex().len())
+    } else {
         last_oid.to_hex()
-    ));
+    };
+    out.push_str(&format!("From {cover_from_oid} Mon Sep 17 00:00:00 2001\n"));
 
     let charset_label = rfc2047_charset_label(log_output_encoding);
     let use_utf8_log = charset_label.eq_ignore_ascii_case("UTF-8");
@@ -1773,7 +1801,12 @@ fn format_single_patch(
     let boundary = mime_boundary.unwrap_or_else(|| "------------grit-patch-boundary".to_owned());
 
     // From line
-    out.push_str(&format!("From {} Mon Sep 17 00:00:00 2001\n", oid.to_hex()));
+    let from_oid = if opts.zero_commit {
+        "0".repeat(oid.to_hex().len())
+    } else {
+        oid.to_hex()
+    };
+    out.push_str(&format!("From {from_oid} Mon Sep 17 00:00:00 2001\n"));
 
     // Determine in-body From: (when the author differs from the From: header mailbox).
     let author_mailbox =
@@ -2582,13 +2615,36 @@ fn split_keep_newlines(text: &str) -> Vec<String> {
 fn write_subject_header(out: &mut String, subject: &str, encode: bool, charset_label: &str) {
     const MAX_LENGTH: i32 = 78;
     out.push_str("Subject: ");
-    if encode && needs_rfc2047_encoding(subject) {
-        add_rfc2047(out, subject, charset_label, Rfc2047Type::Subject);
+    // Git keeps the bracketed subject prefix (`[PATCH N/M] `) literal and only RFC2047-encodes
+    // the title that follows it. Split off a leading `[...] ` prefix so it is emitted verbatim.
+    let (literal_prefix, title) = split_subject_prefix(subject);
+    if encode && needs_rfc2047_encoding(title) {
+        if !literal_prefix.is_empty() {
+            out.push_str(literal_prefix);
+        }
+        add_rfc2047(out, title, charset_label, Rfc2047Type::Subject);
     } else {
         let consumed = last_line_length(out) as i32;
         add_wrapped_text(out, subject, -consumed, 1, MAX_LENGTH);
     }
     out.push('\n');
+}
+
+/// Split a subject into its literal `[...] ` prefix (kept verbatim by git) and the remaining
+/// title. Returns `("", subject)` when there is no bracketed prefix.
+fn split_subject_prefix(subject: &str) -> (&str, &str) {
+    if !subject.starts_with('[') {
+        return ("", subject);
+    }
+    if let Some(close) = subject.find(']') {
+        // Include the closing bracket and a single following space (if present) in the prefix.
+        let mut end = close + 1;
+        if subject[end..].starts_with(' ') {
+            end += 1;
+        }
+        return (&subject[..end], &subject[end..]);
+    }
+    ("", subject)
 }
 
 /// Write a `From:`/recipient address header `<Name> <mail>`, encoding/folding the display name.
@@ -2703,6 +2759,17 @@ fn write_signature(out: &mut String, signature: Option<&str>) {
 // ---------------------------------------------------------------------------
 // Subject / prefix / reroll / signature / threading / base / cover helpers
 // ---------------------------------------------------------------------------
+
+/// The first physical line of the subject (used for the patch filename, matching git which stops
+/// `format_sanitized_subject` at the first newline). Returns the whole trimmed message if single-line.
+fn first_subject_line(message: &str) -> &str {
+    let start = message.len() - message.trim_start().len();
+    let rest = &message[start..];
+    match rest.find('\n') {
+        Some(nl) => rest[..nl].trim_end(),
+        None => rest.trim_end(),
+    }
+}
 
 /// Flatten a multi-line commit message into a single-line subject (paragraph join with spaces).
 fn flatten_subject(message: &str) -> String {
@@ -3182,6 +3249,24 @@ fn current_branch_description(repo: &Repository, config: &ConfigSet) -> Option<S
 fn current_branch_name(repo: &Repository) -> Option<String> {
     let head = grit_lib::state::resolve_head(&repo.git_dir).ok()?;
     head.branch_name().map(|s| s.to_string())
+}
+
+/// Resolve the upstream (`@{upstream}`) commit of the current branch from `branch.<name>.{remote,merge}`.
+/// Returns `None` when HEAD is detached or no upstream is configured / resolvable.
+fn resolve_branch_upstream_oid(repo: &Repository, config: &ConfigSet) -> Option<ObjectId> {
+    let branch = current_branch_name(repo)?;
+    let remote = config.get(&format!("branch.{branch}.remote"));
+    let merge_ref = config.get(&format!("branch.{branch}.merge"));
+    match (remote.as_deref(), merge_ref.as_deref()) {
+        (Some("."), Some(m)) => resolve_revision(repo, m).ok(),
+        (Some(_r), Some(m)) => {
+            let short = m.strip_prefix("refs/heads/").unwrap_or(m);
+            resolve_revision(repo, short)
+                .ok()
+                .or_else(|| resolve_revision(repo, m).ok())
+        }
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
