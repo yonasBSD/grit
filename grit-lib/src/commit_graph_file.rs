@@ -387,15 +387,11 @@ impl CommitGraphLayer {
                     .ok()?,
             ) as usize
         };
-        if end_rel < start_rel {
-            eprintln!(
-                "warning: ignoring decreasing changed-path index offsets ({start_rel} > {end_rel}) for positions {} and {} of {}",
-                lex_index.saturating_sub(1),
-                lex_index,
-                graph_warn
-            );
-            return None;
-        }
+        // Git checks both offsets for being out of range *before* comparing them
+        // (`load_bloom_filter_from_graph`: two `check_bloom_offset` calls joined by
+        // `||`, then the decreasing-offset check). The end offset (at this position)
+        // is checked first, short-circuiting the start offset (reported one position
+        // back) when it fails.
         let max_payload = payload_len;
         if end_rel > max_payload {
             eprintln!(
@@ -412,6 +408,15 @@ impl CommitGraphLayer {
                 lex_index.saturating_sub(1),
                 graph_warn,
                 bdat_total = bdat_total
+            );
+            return None;
+        }
+        if end_rel < start_rel {
+            eprintln!(
+                "warning: ignoring decreasing changed-path index offsets ({start_rel} > {end_rel}) for positions {} and {} of {}",
+                lex_index.saturating_sub(1),
+                lex_index,
+                graph_warn
             );
             return None;
         }
