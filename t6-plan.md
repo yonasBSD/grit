@@ -89,14 +89,14 @@ Completed pathspec files: `t6130`, `t6132`, `t6133-pathspec-toplevel`, `t6134-*`
 
 ## Describe
 
-- [~] `t6120-describe.sh` — 102/105 passing, 1 failing. Improved describe candidate
+- [x] `t6120-describe.sh` — 105/105 passing. Improved describe candidate
   selection/counting, describe-name rev parsing, inverse pattern/exact options, exact
   `--contains` output, renamed annotated-tag handling, dirty/broken commit-ish rejection, `--all`
   branch/remote pattern matching, `refs/original` describe candidates, and exact tag-object
-  name-rev output, broken absorbed-submodule dirty handling, and blob describe lookup from `HEAD`.
-  Next blocker: `--no-abbrev` should be accepted for full-hash fallback output.
+  name-rev output, broken absorbed-submodule dirty handling, blob describe lookup from `HEAD`,
+  and full-hash `--no-abbrev` fallback output.
 
-Completed describe/name files: `t6120-name-rev`.
+Completed describe/name files: `t6120-name-rev`, `t6120-describe`.
 
 ## Bundle, Object Reachability, And GC
 

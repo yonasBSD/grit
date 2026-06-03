@@ -1282,3 +1282,10 @@ Updated: 2026-06-01
   `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
   --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
   `cargo test -p grit-lib --lib`.
+- t6120 final describe focus: after adding `--no-abbrev` full-hash fallback output and flipping
+  the two fixed `--candidates=2` expected-failure checks to success, the direct verbose run passes
+  all 105 tests and `./scripts/run-tests.sh t6120-describe.sh` records 105/105 with refreshed
+  `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
+  `cargo test -p grit-lib --lib`.

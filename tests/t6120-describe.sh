@@ -683,7 +683,7 @@ test_expect_success 'setup: describe commits with disjoint bases' '
 '
 
 check_describe -C disjoint1 "A-3-gHASH" HEAD
-check_describe -C disjoint1 --expect-failure "A-3-gHASH" --candidates=2 HEAD
+check_describe -C disjoint1 "A-3-gHASH" --candidates=2 HEAD
 
 #       H   B
 #   o---o---o------------.
@@ -711,7 +711,7 @@ test_expect_success 'setup: describe commits with disjoint bases 2' '
 '
 
 check_describe -C disjoint2 "B-3-gHASH" HEAD
-check_describe -C disjoint2 --expect-failure "B-3-gHASH" --candidates=2 HEAD
+check_describe -C disjoint2 "B-3-gHASH" --candidates=2 HEAD
 
 test_expect_success 'setup misleading taggerdates' '
 	GIT_COMMITTER_DATE="2006-12-12 12:31" git tag -a -m "another tag" newer-tag-older-commit unique-file~1

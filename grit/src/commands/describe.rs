@@ -51,6 +51,10 @@ pub struct Args {
     #[arg(long, default_value = "7")]
     pub abbrev: usize,
 
+    /// Show unabbreviated object names.
+    #[arg(long = "no-abbrev", action = clap::ArgAction::SetTrue)]
+    pub no_abbrev: bool,
+
     /// Instead of considering only the 10 most recent tags as candidates,
     /// consider this many. Increasing above 10 takes proportionally longer
     /// but may give a more accurate result.
@@ -185,7 +189,7 @@ impl DescribeOptions {
             tags: args.tags,
             always: args.always,
             long: args.long && !args.no_long,
-            abbrev: args.abbrev,
+            abbrev: if args.no_abbrev { 40 } else { args.abbrev },
             candidates: args.candidates,
             match_pattern: if args.no_match {
                 Vec::new()
@@ -255,7 +259,7 @@ pub fn run(args: Args) -> Result<()> {
             Ok(oid) => {
                 if peel_to_commit(&repo, &oid).is_none() {
                     // HEAD is not a valid commit
-                    let abbrev = abbreviate(&oid, args.abbrev);
+                    let abbrev = abbreviate(&oid, if args.no_abbrev { 40 } else { args.abbrev });
                     println!("{abbrev}{broken_suffix}");
                     return Ok(());
                 }
