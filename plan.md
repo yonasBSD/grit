@@ -40,6 +40,71 @@
 
 ---
 
+## Completed task — t7 submodule tests 100% pass
+
+- [x] Make all in-scope t7 submodule tests fully pass. Detailed queue and per-file status are in
+  `submodule-plan.md`; the final submodule-focused verification sweep reports `failing=0` for all
+  covered rows, including TODO-bearing `t7112` and `t7814`.
+  - Completed: `t7406-submodule-update.sh` improved from 10/70 to 70/70.
+  - Completed: `t7400-submodule-basic.sh` improved from 96/124 to 124/124.
+  - Completed: `t7112-reset-submodule.sh` improved from 34/82 to 78/78 aggregate passing, with 4 upstream TODO known breakages omitted from the failing count; log:
+    `logs/2026-06-02_2220-t7112-reset-submodule.md`.
+  - Completed: `t7506-status-submodule.sh` improved from 20/40 to 40/40; log:
+    `logs/2026-06-02_1941-t7506-status-submodule.md`.
+  - Completed: `t7407-submodule-foreach.sh` improved from 4/23 to 23/23 by keeping plain
+    `submodule update --init` nonrecursive; log:
+    `logs/2026-06-02_1949-t7407-submodule-foreach.md`.
+  - Completed: `t7403-submodule-sync.sh` improved from 1/18 to 18/18 after harness refresh; log:
+    `logs/2026-06-02_2004-t7403-submodule-sync.md`.
+  - Completed: `t7401-submodule-summary.sh` improved from 10/25 to 25/25; log:
+    `logs/2026-06-02_2010-t7401-submodule-summary.md`.
+  - Completed: `t7814-grep-recurse-submodules.sh` improved from 17/27 to 27/27 aggregate
+    passing, with 7 upstream TODO cases tracked separately; log:
+    `logs/2026-06-02_2023-t7814-grep-recurse-submodules.md`.
+  - Completed: `t7422-submodule-output.sh` improved from 9/18 to 18/18 by resolving local remote
+    worktree paths before inferring pull default branches; log:
+    `logs/2026-06-02_2029-t7422-submodule-output.md`.
+  - Completed: `t7408-submodule-reference.sh` improved from 8/16 to 16/16 by fixing explicit
+    reference clone/update alternates, update dissociation, recursive superproject alternate
+    derivation, nested alternate inheritance, and missing-alternate retry diagnostics; log:
+    `logs/2026-06-02_2035-t7408-submodule-reference.md`.
+  - Completed: `t7425-submodule-gitdir-path-extension.sh` improved from 18/23 to 23/23 by
+    upgrading clone-time v1-only extension config to repository format v1 and making push
+    `updateInstead` refresh the remote worktree/index without detaching `HEAD`; log:
+    `logs/2026-06-02_2055-t7425-submodule-gitdir-path-extension.md`.
+  - Completed: `t7402-submodule-rebase.sh` improved from 4/6 to 6/6 by making rebase's initial
+    clean-worktree preflight ignore gitlink differences like upstream
+    `require_clean_work_tree(..., ignore_submodules=1)`; log:
+    `logs/2026-06-02_2110-t7402-submodule-rebase.md`.
+  - Completed: `t7409-submodule-detached-work-tree.sh` improved from 1/3 to 3/3 by preserving
+    explicit superproject env for `submodule add` staging and stripping client repo env from
+    local upload-pack server processes; log:
+    `logs/2026-06-02_2124-t7409-submodule-detached-work-tree.md`.
+  - Completed: `t7412-submodule-absorbgitdirs.sh` improved from 10/12 to 12/12 by skipping
+    index gitlinks in `fsck` reachability seeds and by letting recursive submodule update skip
+    clean, already-current parent submodules while still recursing; log:
+    `logs/2026-06-02_2136-t7412-submodule-absorbgitdirs.md`.
+  - Completed: `t7423-submodule-symlinks.sh` improved from 4/6 to 6/6 by validating submodule
+    paths before update reattach/clone work and before recursive checkout removes dropped
+    gitlinks; log:
+    `logs/2026-06-02_2130-t7423-submodule-symlinks.md`.
+  - Completed: `t7418-submodule-sparse-gitmodules.sh` improved from 8/9 to 9/9 by wiring
+    fetch's changed-submodule record to the typed recursive fetch path and using Git's implicit
+    on-demand recurse default; log:
+    `logs/2026-06-02_2138-t7418-submodule-sparse-gitmodules.md`.
+  - Completed: `t7426-submodule-get-default-remote.sh` improved from 14/15 to 15/15 by resolving
+    `submodule--helper get-default-remote` paths against the caller's current directory before
+    mapping them back to the superproject root; log:
+    `logs/2026-06-02_2146-t7426-submodule-get-default-remote.md`.
+  - Completed skipped audit: `t7424-submodule-mixed-ref-formats.sh` is restored to
+    `in_scope=yes` and passes 7/7 after mixed files/reftable submodule clone/update handling was
+    fixed; log: `logs/2026-06-02_2152-t7424-submodule-mixed-ref-formats.md`.
+  - Final sweep repair: `t7406-submodule-update.sh` is back to 70/70 after filtering the redundant
+    successful `pull --rebase` stderr line from submodule rebase updates.
+  - Final verification: `./scripts/run-tests.sh t7400-submodule-basic.sh t7401-submodule-summary.sh t7402-submodule-rebase.sh t7403-submodule-sync.sh t7406-submodule-update.sh t7407-submodule-foreach.sh t7408-submodule-reference.sh t7409-submodule-detached-work-tree.sh t7411-submodule-config.sh t7412-submodule-absorbgitdirs.sh t7413-submodule-is-active.sh t7414-submodule-mistakes.sh t7416-submodule-dash-url.sh t7417-submodule-path-url.sh t7418-submodule-sparse-gitmodules.sh t7419-submodule-set-branch.sh t7420-submodule-set-url.sh t7421-submodule-summary-add.sh t7422-submodule-output.sh t7423-submodule-symlinks.sh t7424-submodule-mixed-ref-formats.sh t7425-submodule-gitdir-path-extension.sh t7426-submodule-get-default-remote.sh t7506-status-submodule.sh t7814-grep-recurse-submodules.sh t7112-reset-submodule.sh` completed with every row at `failing=0`.
+
+---
+
 ## Active task — t2 family 100% pass
 
 - [x] Make all `t2` family tests fully pass. Work one file at a time, always choosing the

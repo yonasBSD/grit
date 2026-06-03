@@ -32,6 +32,144 @@ Updated: 2026-06-02
 - Pre-commit: `cargo fmt` ran; `git diff --check` passed. `cargo clippy --fix --allow-dirty` ran
   and completed with the existing clippy warning backlog plus failed auto-fixes in unrelated files;
   unrelated auto-fixes were not kept.
+- t7 submodule focus: `./scripts/run-tests.sh t7423-submodule-symlinks.sh` improved `t7423`
+  from 4/6 to 6/6 by rejecting submodule operations through symlinked paths before update can
+  reattach an existing module gitdir and before recursive checkout can remove or absorb a dropped
+  gitlink path. Direct `sh t7423-submodule-symlinks.sh -v` also passed all 6 tests after the
+  release rebuild.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+  Clippy's unrelated auto-fixes in `grit-lib/src/config.rs` and
+  `grit-lib/src/filter_process.rs` were reverted.
+- t7 submodule focus: `./scripts/run-tests.sh t7412-submodule-absorbgitdirs.sh` improved
+  `t7412` from 10/12 to 12/12 by making `fsck` ignore index gitlink OIDs as local object
+  requirements and by allowing recursive submodule update to skip clean parent submodules that are
+  already at the recorded commit while still recursing into nested submodules. Direct
+  `sh t7412-submodule-absorbgitdirs.sh -v` also passed all 12 tests after the release rebuild.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+  Clippy's unrelated auto-fixes in `grit-lib/src/config.rs` and
+  `grit-lib/src/filter_process.rs` were reverted.
+- t7 submodule focus: `./scripts/run-tests.sh t7409-submodule-detached-work-tree.sh` improved
+  `t7409` from 1/3 to 3/3 by keeping explicit superproject `GIT_DIR`/`GIT_WORK_TREE` for
+  `submodule add` staging/probe commands and by stripping client repo env from local upload-pack
+  server processes. Direct `sh t7409-submodule-detached-work-tree.sh -v` also passed all 3 tests
+  after the release rebuild.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+  Clippy's unrelated auto-fixes in `grit-lib/src/config.rs` and
+  `grit-lib/src/filter_process.rs` were reverted.
+- t7 submodule focus: `./scripts/run-tests.sh t7402-submodule-rebase.sh` improved `t7402` from
+  4/6 to 6/6 by making rebase's initial clean-worktree preflight ignore gitlink differences like
+  upstream `require_clean_work_tree(..., ignore_submodules=1)`. Direct
+  `sh t7402-submodule-rebase.sh -v` also passed all 6 tests after the release rebuild.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+  Clippy's unrelated auto-fixes in `grit-lib/src/config.rs` and
+  `grit-lib/src/filter_process.rs` were reverted.
+- t7 submodule focus: `./scripts/run-tests.sh t7425-submodule-gitdir-path-extension.sh` improved
+  `t7425` from 18/23 to 23/23 by making clone-time
+  `extensions.submodulePathConfig=true` write a v1 repository format and by fixing push
+  `updateInstead` to refresh the remote branch worktree/index without detaching `HEAD`. Direct
+  `sh t7425-submodule-gitdir-path-extension.sh -v` also passed all 23 tests after the release
+  rebuild.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+  Clippy's unrelated auto-fixes in `grit-lib/src/config.rs` and
+  `grit-lib/src/filter_process.rs` were reverted.
+- t7 submodule focus: `./scripts/run-tests.sh t7408-submodule-reference.sh` improved `t7408`
+  from 8/16 to 16/16 by fixing explicit reference alternates for clone/update, update
+  `--dissociate`, recursive superproject-derived alternates, nested alternate inheritance, and
+  missing-alternate retry diagnostics. Direct `sh t7408-submodule-reference.sh -v` also passed
+  all 16 tests after the release rebuild.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+  Clippy's unrelated auto-fixes in `grit-lib/src/config.rs` and
+  `grit-lib/src/filter_process.rs` were reverted.
+- t7 submodule focus: `./scripts/run-tests.sh t7422-submodule-output.sh --verbose` improved
+  `t7422` from 9/18 to 18/18 by fixing `git pull` default-branch inference for local remote
+  worktree paths. Direct `sh t7422-submodule-output.sh -v` also passed all 18 tests after the
+  release rebuild.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+  Clippy's unrelated auto-fixes in `grit-lib/src/config.rs` and
+  `grit-lib/src/filter_process.rs` were reverted.
+- t7 submodule focus: `./scripts/run-tests.sh t7814-grep-recurse-submodules.sh --verbose`
+  improved `t7814` from 17/27 to 27/27 aggregate passing (`failing=0`, `todo=7`) by fixing
+  glued `-ePATTERN` parsing, cwd-relative recursive grep output, direct-gitlink pathspec handoff,
+  moved-submodule historical tree lookup, partial-clone promisor trace reporting, and scoped
+  replace-ref object reads for cached/tree grep. Direct `sh t7814-grep-recurse-submodules.sh -v`
+  also has all 27 non-TODO cases passing, with 2 upstream TODO known breakages remaining.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+  Clippy's unrelated auto-fixes in `grit-lib/src/config.rs` and
+  `grit-lib/src/filter_process.rs` were reverted. Final rebuilt harness run:
+  `./scripts/run-tests.sh t7814-grep-recurse-submodules.sh --verbose` remains 27/34 with
+  `failing=0`.
+- t7 submodule focus: `./scripts/run-tests.sh t7401-submodule-summary.sh --verbose` improved
+  `t7401` from 10/25 to 25/25 by fixing cwd-relative summary pathspec/display handling,
+  right-before-left divergent log output with shared limits, gitlink/blob typechange summaries,
+  worktree submodule detection when the index holds a blob, deleted submodule summaries, and
+  missing-commit warnings. Regression check:
+  `./scripts/run-tests.sh t7403-submodule-sync.sh t7407-submodule-foreach.sh --verbose` remains
+  green at 18/18 and 23/23.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+- t7 submodule focus: `./scripts/run-tests.sh t7403-submodule-sync.sh --verbose` improved
+  `t7403` from the stale 1/18 CSV baseline to 18/18. No Rust changes were needed; the harness
+  run refreshed `data/test-files.csv` and dashboards. Rust validation was skipped for this
+  metadata-only checkpoint.
+- t7 submodule focus: `./scripts/run-tests.sh t7407-submodule-foreach.sh --verbose` improved
+  `t7407` from 4/23 to 23/23 by keeping plain CLI `submodule update --init` nonrecursive while
+  preserving explicit `--recursive` behavior. Regression check:
+  `./scripts/run-tests.sh t7406-submodule-update.sh --verbose` remains 70/70.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+  `cargo test --workspace` and `./tests/harness/run.sh` were skipped for this focused harness
+  checkpoint; project harness runs used `./scripts/run-tests.sh`.
+- t7 submodule focus: `./scripts/run-tests.sh t7506-status-submodule.sh --verbose` improved
+  `t7506` from 20/40 to 40/40 by separating porcelain v1 submodule output from short-format
+  `m`/`?` details, honoring `-uno` for submodule-untracked dirtiness, and rendering unmerged
+  short statuses from index stage masks.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
+- t7 submodule focus: `./scripts/run-tests.sh t7406-submodule-update.sh --verbose` improved
+  `t7406` from 10/70 to 70/70. The run refreshed `data/test-files.csv` and generated dashboards.
+- t7 submodule focus: `./scripts/run-tests.sh t7400-submodule-basic.sh --verbose` improved
+  `t7400` from 96/124 to 124/124. Follow-up regression check:
+  `./scripts/run-tests.sh t7406-submodule-update.sh --verbose` remains 70/70.
+- t7 submodule focus: `./scripts/run-tests.sh t7112-reset-submodule.sh --verbose` improved
+  `t7112` from the fresh 34/82 baseline to 54/82 by repopulating same-OID submodule gitlinks
+  whose worktree had been reduced to only `.git`.
+- t7 submodule focus: `./scripts/run-tests.sh t7112-reset-submodule.sh --verbose` improved
+  `t7112` from 54/82 to 61/82 by allowing explicit recursive reset to remove clean gitlinks,
+  cleaning dropped submodule worktrees, writing replacement blobs after gitlink removal, and
+  materializing non-recursive gitlink targets as empty directories.
+- t7 submodule focus: `./scripts/run-tests.sh t7112-reset-submodule.sh --verbose` improved
+  `t7112` from 61/82 to 69/82 by preserving submodule worktrees during non-recursive hard reset,
+  failing atomically on populated gitlink replacement, and relaxing keep/merge safety for
+  gitlink-only superproject index updates.
+- t7 submodule focus: `./scripts/run-tests.sh t7112-reset-submodule.sh --verbose` improved
+  `t7112` from 69/82 to 76/82 by allowing `reset --merge` to introduce gitlinks over empty
+  directories and clean tracked directories without misclassifying them as untracked obstructions.
+- t7 submodule focus: `./scripts/run-tests.sh t7112-reset-submodule.sh --verbose` improved
+  `t7112` from 76/82 to 78/82, failing=0 with 4 upstream TODO known breakages, by forcing
+  same-OID submodule cleanup during recursive hard reset and relaxing non-recursive keep-mode
+  gitlink OID changes.
+- Verification: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed. Build/check
+  and clippy still report the existing warning backlog; grit-lib unit tests passed 238/238.
 
 Updated: 2026-06-01
 - Final t2 verification: `./scripts/run-tests.sh t2 --verbose` ran all 70 in-scope t2 files with
@@ -338,3 +476,43 @@ Updated: 2026-06-01
 - Pre-commit: `cargo fmt` ran; `cargo check` passes with existing warnings; `cargo test -p grit-lib --lib` passes 204/204.
 - Pre-commit: `cargo clippy --fix --allow-dirty` completed after sandbox escalation; it still reports the existing warning backlog and failed auto-fixes in unrelated files (`bundle_uri_test_tool.rs`, `mergetool.rs`).
 - t8 family verification: `./scripts/run-tests.sh t8` passes 105/105 in-scope files (all subtests green). CSV/dashboard refreshed; stale failing counts from prior runs were corrected.
+- Submodule focus: `cargo build --release -p grit-cli` passed with existing warnings; focused
+  `cd tests && sh t7418-submodule-sparse-gitmodules.sh -v` passed 9/9.
+- Submodule harness: `./scripts/run-tests.sh t7418-submodule-sparse-gitmodules.sh` passed 9/9 and
+  refreshed `data/test-files.csv` plus dashboards.
+- t7418 validation: `cargo fmt` ran; `cargo check -p grit-cli` passed with existing warnings;
+  `cargo test -p grit-lib --lib` passed 238/238; `cargo clippy --fix --allow-dirty` completed
+  with the existing warning backlog and its unrelated auto-fixes were reverted.
+- Submodule focus: `cargo build --release -p grit-cli` passed with existing warnings; focused
+  `cd tests && sh t7426-submodule-get-default-remote.sh -v` passed 15/15.
+- Submodule harness: `./scripts/run-tests.sh t7426-submodule-get-default-remote.sh` passed 15/15
+  and refreshed `data/test-files.csv` plus dashboards.
+- t7426 validation: `cargo fmt` ran; `cargo check -p grit-cli` passed with existing warnings;
+  `cargo test -p grit-lib --lib` passed 238/238; `cargo clippy --fix --allow-dirty` completed
+  with the existing warning backlog and its unrelated auto-fixes were reverted.
+- Submodule skipped audit: `cargo build --release -p grit-cli` passed with existing warnings;
+  focused `cd tests && GIT_DEFAULT_REF_FORMAT=files sh t7424-submodule-mixed-ref-formats.sh -i -v`
+  passed 7/7.
+- Submodule harness: after restoring `t7424-submodule-mixed-ref-formats` to `in_scope=yes`,
+  `./scripts/run-tests.sh t7424-submodule-mixed-ref-formats.sh` passed 7/7 and refreshed
+  `data/test-files.csv` plus dashboards.
+- Submodule final-sweep repair: `./scripts/run-tests.sh t7406-submodule-update.sh` is back to
+  70/70 after filtering the redundant successful `pull --rebase` stderr line from submodule rebase
+  updates; CSV/dashboard refreshed.
+- Submodule final verification: `./scripts/run-tests.sh t7400-submodule-basic.sh
+  t7401-submodule-summary.sh t7402-submodule-rebase.sh t7403-submodule-sync.sh
+  t7406-submodule-update.sh t7407-submodule-foreach.sh t7408-submodule-reference.sh
+  t7409-submodule-detached-work-tree.sh t7411-submodule-config.sh
+  t7412-submodule-absorbgitdirs.sh t7413-submodule-is-active.sh
+  t7414-submodule-mistakes.sh t7416-submodule-dash-url.sh t7417-submodule-path-url.sh
+  t7418-submodule-sparse-gitmodules.sh t7419-submodule-set-branch.sh
+  t7420-submodule-set-url.sh t7421-submodule-summary-add.sh t7422-submodule-output.sh
+  t7423-submodule-symlinks.sh t7424-submodule-mixed-ref-formats.sh
+  t7425-submodule-gitdir-path-extension.sh t7426-submodule-get-default-remote.sh
+  t7506-status-submodule.sh t7814-grep-recurse-submodules.sh t7112-reset-submodule.sh`
+  completed with all covered rows at `failing=0`; `t7814` reports 27/34 and `t7112` reports
+  78/82 because upstream TODO cases are tracked separately.
+- t7424/t7406 validation: `cargo fmt` ran; `cargo check -p grit-cli` passed with existing
+  warnings; `cargo clippy --fix --allow-dirty` completed with the existing warning backlog and its
+  unrelated `config.rs`/`filter_process.rs` auto-fixes were reverted; `cargo test -p grit-lib --lib`
+  passed 238/238.

@@ -1743,7 +1743,27 @@ fn subproject_commit_from_hunks(fp: &FilePatch) -> String {
                 None
             }
         })
+        .or_else(|| fp.new_oid.clone())
         .unwrap_or_else(|| "0000000000000000000000000000000000000000".to_string())
+}
+
+fn subproject_commit_oid_for_index(
+    fp: &FilePatch,
+    work_tree: Option<&Path>,
+    target_adjusted: &str,
+) -> Result<ObjectId> {
+    let commit = subproject_commit_from_hunks(fp);
+    if let Ok(oid) = ObjectId::from_hex(&commit) {
+        return Ok(oid);
+    }
+    if let Some(wt) = work_tree {
+        if let Some(head) = grit_lib::diff::read_submodule_head_oid(&wt.join(target_adjusted)) {
+            if head.to_hex().starts_with(&commit) {
+                return Ok(head);
+            }
+        }
+    }
+    ObjectId::from_hex(&commit).with_context(|| format!("invalid object id '{commit}'"))
 }
 
 /// Parse a `GIT binary patch` payload.
@@ -5011,6 +5031,10 @@ fn apply_to_worktree(
             continue;
         }
 
+        if fp.old_mode.as_deref() == Some("160000") && fp.new_mode.as_deref() == Some("160000") {
+            continue;
+        }
+
         if fp.new_mode.as_deref() == Some("160000")
             && fp.old_mode.as_deref() != Some("160000")
             && !fp.is_new
@@ -5494,8 +5518,11 @@ fn apply_to_index(
 
         if fp.new_mode.as_deref() == Some("160000") && !fp.is_deleted {
             if fp.is_new {
-                let commit_hash = subproject_commit_from_hunks(fp);
-                let oid = grit_lib::objects::ObjectId::from_hex(&commit_hash)?;
+                let oid = subproject_commit_oid_for_index(
+                    fp,
+                    repo.work_tree.as_deref(),
+                    &target_adjusted,
+                )?;
                 let mode = grit_lib::index::MODE_GITLINK;
                 let entry = grit_lib::index::IndexEntry {
                     ctime_sec: 0,
@@ -5550,8 +5577,8 @@ fn apply_to_index(
                 }
             }
 
-            let commit_hash = subproject_commit_from_hunks(fp);
-            let oid = grit_lib::objects::ObjectId::from_hex(&commit_hash)?;
+            let oid =
+                subproject_commit_oid_for_index(fp, repo.work_tree.as_deref(), &target_adjusted)?;
             let mode = grit_lib::index::MODE_GITLINK;
             let entry = grit_lib::index::IndexEntry {
                 ctime_sec: 0,
@@ -6023,6 +6050,9 @@ fn preimage_st_mode_for_apply(
     if check_index {
         let ce = ce_mode
             .ok_or_else(|| anyhow::anyhow!("{old_path_display}: does not exist in index"))?;
+        if ce == MODE_GITLINK {
+            return Ok(ce);
+        }
         let st = st_stat.ok_or_else(|| anyhow::anyhow!("failed to stat {}", old_path_display))?;
         let is_reg = st & S_IFMT == S_IFREG;
         if trust_file_mode || !is_reg {

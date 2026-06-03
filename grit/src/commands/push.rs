@@ -1037,9 +1037,7 @@ fn push_to_url(
             &negs,
             refspec_force,
         )?;
-        if matched == 0 {
-            bail!("No refs in common and none specified; doing nothing.\nPerhaps you should specify a branch.");
-        }
+        let _ = matched;
     } else if push_all {
         // Push all branches (refs/heads/*)
         let mut local_branches = refs::list_refs(&repo.git_dir, "refs/heads/")?;
@@ -2479,7 +2477,10 @@ fn read_receive_deny_delete_current(cfg: &ConfigSet) -> ReceiveDenyAction {
 }
 
 /// `git diff-files` / `git diff-index` cleanliness checks for `receive.denyCurrentBranch=updateInstead`.
-fn worktree_clean_for_update_instead(remote_repo: &Repository) -> std::result::Result<(), String> {
+fn worktree_clean_for_update_instead(
+    remote_repo: &Repository,
+    expected_treeish: Option<ObjectId>,
+) -> std::result::Result<(), String> {
     let wt = remote_repo
         .work_tree
         .as_ref()
@@ -2495,10 +2496,15 @@ fn worktree_clean_for_update_instead(remote_repo: &Repository) -> std::result::R
     if !df.status().map_err(|e| e.to_string())?.success() {
         return Err("Working directory has unstaged changes".to_owned());
     }
-    let head_tree = match resolve_head(&remote_repo.git_dir) {
-        Ok(HeadState::Branch { .. }) => "HEAD",
-        Ok(HeadState::Detached { .. }) => "HEAD",
-        _ => "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    let expected_hex;
+    let head_tree = if let Some(oid) = expected_treeish {
+        expected_hex = oid.to_hex();
+        expected_hex.as_str()
+    } else {
+        match resolve_head(&remote_repo.git_dir) {
+            Ok(HeadState::Branch { .. }) | Ok(HeadState::Detached { .. }) => "HEAD",
+            _ => "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        }
     };
     let mut di = Command::new(&grit_bin);
     di.current_dir(wt)
@@ -2523,6 +2529,7 @@ fn worktree_clean_for_update_instead(remote_repo: &Repository) -> std::result::R
 fn update_worktree_after_push_update_instead(
     remote_repo: &Repository,
     new_oid: ObjectId,
+    old_oid: Option<ObjectId>,
 ) -> std::result::Result<Vec<u8>, String> {
     let wt = remote_repo
         .work_tree
@@ -2562,7 +2569,7 @@ fn update_worktree_after_push_update_instead(
 
     // No push-to-checkout hook: fall back to the cleanliness checks before
     // updating the work tree, matching git's push_to_deploy.
-    worktree_clean_for_update_instead(remote_repo)?;
+    worktree_clean_for_update_instead(remote_repo, old_oid)?;
 
     update_worktree_after_push_update_instead_checkout(remote_repo, new_oid)?;
     Ok(hook_output)
@@ -2570,7 +2577,7 @@ fn update_worktree_after_push_update_instead(
 
 fn update_worktree_after_push_update_instead_checkout(
     remote_repo: &Repository,
-    new_oid: ObjectId,
+    _new_oid: ObjectId,
 ) -> std::result::Result<(), String> {
     let wt = remote_repo
         .work_tree
@@ -2594,13 +2601,13 @@ fn update_worktree_after_push_update_instead_checkout(
         }
     }
     let grit_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("grit"));
-    let hex = new_oid.to_hex();
-    // Git's receive-pack uses `read-tree -u -m`; grit's read-tree is stricter around gitlinks.
-    // `checkout --force` matches the pushed commit in the non-bare remote work tree (t7425).
+    // The current branch ref has already been written; reset hard updates the remote index and
+    // worktree to that branch tip without detaching HEAD.
     let mut cmd = Command::new(&grit_bin);
     cmd.current_dir(wt)
-        .args(["checkout", "--force", "--quiet", &hex])
+        .args(["reset", "--hard", "--quiet"])
         .env("GIT_DIR", &remote_repo.git_dir)
+        .env("GIT_WORK_TREE", wt)
         .stdin(Stdio::null());
     if !cmd.status().map_err(|e| e.to_string())?.success() {
         return Err("Could not update working tree to new HEAD".to_owned());
@@ -2830,7 +2837,11 @@ fn apply_ref_update(
                 refs::write_ref(&remote_repo.git_dir, &update.remote_ref, new_oid)
                     .with_context(|| format!("updating remote ref {}", update.remote_ref))?;
                 if update_instead_after_ref {
-                    match update_worktree_after_push_update_instead(remote_repo, *new_oid) {
+                    match update_worktree_after_push_update_instead(
+                        remote_repo,
+                        *new_oid,
+                        update.old_oid,
+                    ) {
                         Ok(hook_output) => {
                             if !hook_output.is_empty() {
                                 let output_str = String::from_utf8_lossy(&hook_output);

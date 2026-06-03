@@ -392,7 +392,7 @@ pub fn run(args: Args) -> Result<()> {
                 let new_tree = tree_to_map(tree_to_index_entries(&repo, &tree_oids[1], "", prot)?);
                 new_index = quiet_merge_error(
                     args.quiet,
-                    two_way_merge(&repo, &old_index, &old_tree, &new_tree),
+                    two_way_merge(&repo, &old_index, &old_tree, &new_tree, false),
                 )?;
             }
             3 => {
@@ -952,11 +952,18 @@ fn remove_index_descendants(result: &mut HashMap<Vec<u8>, IndexEntry>, root: &[u
     }
 }
 
+fn tree_has_strict_descendant(tree: &HashMap<Vec<u8>, IndexEntry>, root: &[u8]) -> bool {
+    tree.keys().any(|path| {
+        path.len() > root.len() && path.starts_with(root) && path.get(root.len()) == Some(&b'/')
+    })
+}
+
 fn two_way_merge(
     repo: &Repository,
     current_index: &Index,
     old_tree: &HashMap<Vec<u8>, IndexEntry>,
     new_tree: &HashMap<Vec<u8>, IndexEntry>,
+    allow_clean_gitlink_removal: bool,
 ) -> Result<Index> {
     let mut result = stage0_index_map(current_index);
     let current = stage0_index_map(current_index);
@@ -1004,7 +1011,12 @@ fn two_way_merge(
                     remove_index_descendants(&mut result, &path);
                 }
                 Some(c) if same_blob(c, o) => {
-                    require_uptodate(repo, c)?;
+                    let pure_gitlink_removal = allow_clean_gitlink_removal
+                        && c.mode == MODE_GITLINK
+                        && !tree_has_strict_descendant(new_tree, &path);
+                    if !pure_gitlink_removal {
+                        require_uptodate(repo, c)?;
+                    }
                     result.remove(&path);
                     remove_index_descendants(&mut result, &path);
                 }
@@ -1029,7 +1041,12 @@ fn two_way_merge(
                 }
                 Some(c) if same_blob(c, o) => {
                     if !same_blob(o, n) {
-                        require_uptodate(repo, c)?;
+                        let pure_gitlink_oid_change = c.mode == MODE_GITLINK
+                            && o.mode == MODE_GITLINK
+                            && n.mode == MODE_GITLINK;
+                        if !pure_gitlink_oid_change {
+                            require_uptodate(repo, c)?;
+                        }
                     }
                     result.insert(path.clone(), n.clone());
                     remove_index_descendants_not_in_tree(&mut result, &path, new_tree);
@@ -1082,11 +1099,18 @@ pub(crate) fn reset_keep_twoway_index(
     current_index: &Index,
     head_tree_oid: ObjectId,
     target_tree_oid: ObjectId,
+    allow_clean_gitlink_removal: bool,
 ) -> Result<Index> {
     let prot = PathProtection::load(&repo.git_dir);
     let head_map = tree_to_map(tree_to_index_entries(repo, &head_tree_oid, "", prot)?);
     let target_map = tree_to_map(tree_to_index_entries(repo, &target_tree_oid, "", prot)?);
-    two_way_merge(repo, current_index, &head_map, &target_map)
+    two_way_merge(
+        repo,
+        current_index,
+        &head_map,
+        &target_map,
+        allow_clean_gitlink_removal,
+    )
 }
 
 /// When the index matches tree A (ours), Git also requires the working tree file to match
@@ -2166,7 +2190,7 @@ pub fn am_clean_index(
 
     let head_map = tree_to_map(tree_to_index_entries(repo, &head_tree_oid, "", prot)?);
     let orig_map = tree_to_map(tree_to_index_entries(repo, &orig_tree_oid, "", prot)?);
-    let mut phase2 = two_way_merge(repo, &phase1, &head_map, &orig_map)?;
+    let mut phase2 = two_way_merge(repo, &phase1, &head_map, &orig_map, false)?;
 
     apply_sparse_checkout(&repo.git_dir, repo.work_tree.as_deref(), &mut phase2, false)?;
 

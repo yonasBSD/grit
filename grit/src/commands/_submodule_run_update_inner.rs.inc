@@ -22,12 +22,13 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
         reference_roots.push(resolved);
     }
 
-    trace_submodule_job_tasks_if_needed(args.jobs);
+    trace_submodule_job_tasks_if_needed(Some(&repo), args.jobs);
 
     // Validate explicit path arguments against the index gitlink set (git's
     // module_list_compute): a pathspec matching no gitlink is an error. Replace the raw paths
     // with worktree-relative normalized ones so filtering works from a subdirectory.
-    let normalized_paths = validate_submodule_pathspecs(&repo, work_tree, &args.paths)?;
+    let raw_paths = args.paths.clone();
+    let normalized_paths = validate_submodule_pathspecs(&repo, work_tree, &raw_paths)?;
     let args = &UpdateArgs {
         paths: normalized_paths,
         ..args.clone()
@@ -38,7 +39,7 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
             &repo,
             &InitArgs {
                 quiet: false,
-                paths: args.paths.clone(),
+                paths: raw_paths,
             },
             args.quiet,
         )?;
@@ -69,6 +70,7 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
     let local_cfg = parse_local_config(&repo.git_dir)?;
 
     let mut any_failure = false;
+    let mut clone_retry_failures: Vec<(String, String)> = Vec::new();
 
     for m in &selected {
         if !grit_lib::gitmodules::check_submodule_name(&m.name) {
@@ -91,11 +93,25 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
         }
 
         let update_key = format!("submodule.{}.update", m.name);
-        let update_strategy = config_last_value(&local_cfg, &update_key)
+        let local_update_strategy = config_last_value(&local_cfg, &update_key);
+        if m.update
+            .as_deref()
+            .is_some_and(|u| u.trim_start().starts_with('!'))
+        {
+            bail!(
+                "fatal: invalid value for 'submodule.{}.update' in .gitmodules",
+                m.name
+            );
+        }
+        let update_strategy = local_update_strategy
+            .clone()
             .or_else(|| m.update.clone())
             .unwrap_or_default();
 
         if update_strategy == "none" && !args.checkout && !args.remote {
+            if args.recursive {
+                eprintln!("Skipping submodule '{msg_path}'");
+            }
             continue;
         }
 
@@ -142,6 +158,9 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
             continue;
         };
 
+        validate_submodule_path(work_tree, &m.path)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
         let modules_dir = submodule_separate_git_dir(&repo, work_tree, &m.name, &m.path)?;
         if let Some(outer) = submodule_gitdir_outer_conflict(&modules_dir, &m.name) {
             bail!(
@@ -155,9 +174,9 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
         // commit: nested `.gitmodules` paths may still need `submodule update` (t5531 nested clone).
         if !args.remote
             && !args.force
-            && !args.recursive
             && sub_path.join(".git").exists()
             && read_submodule_head(&sub_path).as_deref() == Some(recorded_oid)
+            && submodule_worktree_clean_for_update(&modules_dir, &sub_path)
         {
             continue;
         }
@@ -186,6 +205,7 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
             true
         };
 
+        let mut depth_limited_clone = false;
         if needs_clone {
             if modules_dir.join("HEAD").exists() {
                 attach_existing_submodule_worktree(&grit_bin, &modules_dir, &sub_path)?;
@@ -201,6 +221,28 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                     &config_last_value(&local_cfg, &url_key).unwrap_or_else(|| m.url.clone()),
                     &m.url,
                 );
+                let mut clone_reference_roots = reference_roots.clone();
+                if clone_reference_roots.is_empty() {
+                    match superproject_submodule_reference_roots(&repo.git_dir, &m.name) {
+                        Ok(roots) => clone_reference_roots = roots,
+                        Err(e) if args.recursive || args.implicit_recursive => {
+                            let msg = e.to_string();
+                            eprintln!("{msg}");
+                            eprintln!("Failed to clone '{}'. Retry scheduled", m.name);
+                            clone_retry_failures.push((m.name.clone(), msg));
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                let clone_alternate_strategy = if !args.dissociate && !clone_reference_roots.is_empty() {
+                    Some(
+                        superproject_submodule_alternate_error_strategy(&repo.git_dir)?
+                            .unwrap_or_else(|| "die".to_string()),
+                    )
+                } else {
+                    None
+                };
 
                 // git refuses to clone over an occupied path: a regular file, or a non-empty
                 // directory that is not itself the submodule checkout (t7400.52/53).
@@ -231,9 +273,6 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                     }
                 }
 
-                validate_submodule_path(work_tree, &m.path)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-
                 let clone_src_str =
                     resolve_submodule_super_url(work_tree, &repo.git_dir, &clone_url)?;
 
@@ -256,11 +295,19 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                     .arg("--no-checkout")
                     .arg("--separate-git-dir")
                     .arg(&modules_dir)
-                    .arg(&clone_src_str)
-                    .arg(&sub_path)
                     .current_dir(work_tree)
                     .env_remove("GIT_DIR")
                     .env_remove("GIT_WORK_TREE");
+                for r in &clone_reference_roots {
+                    clone_cmd.arg("--reference").arg(r);
+                }
+                if args.dissociate {
+                    clone_cmd.arg("--dissociate");
+                }
+                if let Some(ref format) = args.ref_format {
+                    clone_cmd.arg(format!("--ref-format={format}"));
+                }
+                clone_cmd.arg(&clone_src_str).arg(&sub_path);
                 if args.quiet {
                     clone_cmd.arg("--quiet");
                 }
@@ -273,6 +320,22 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                         m.shallow,
                     )
                 });
+                depth_limited_clone = depth_clone.is_some();
+                if depth_clone == Some(1)
+                    && std::env::var("GIT_TEST_PROTOCOL_VERSION").as_deref() == Ok("0")
+                {
+                    if let Some(remote_repo) = local_repo_from_url(&clone_src_str, work_tree) {
+                        let remote_head = refs::resolve_ref(&remote_repo.git_dir, "HEAD").ok();
+                        let recorded = ObjectId::from_hex(recorded_oid).ok();
+                        if remote_head != recorded
+                            && !uploadpack_allows_reachable_sha1_in_want(&remote_repo.git_dir)
+                        {
+                            eprintln!("Direct fetching of that commit failed.");
+                            any_failure = true;
+                            continue;
+                        }
+                    }
+                }
                 if let Some(d) = depth_clone {
                     clone_cmd.arg("--depth").arg(d.to_string());
                 }
@@ -286,14 +349,20 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                     eprintln!("error: failed to clone submodule from '{clone_src_str}'");
                     bail!("failed to clone submodule '{}'", m.name);
                 }
+                if !args.quiet {
+                    eprintln!("done.");
+                }
                 set_submodule_core_worktree(&grit_bin, &modules_dir, &sub_path);
 
-                if !reference_roots.is_empty() {
+                if !args.dissociate && !clone_reference_roots.is_empty() {
                     write_submodule_object_alternates(
                         &modules_dir,
                         &repo.git_dir,
-                        &reference_roots,
+                        &clone_reference_roots,
                     )?;
+                }
+                if let Some(strategy) = clone_alternate_strategy.as_deref() {
+                    write_submodule_alternate_inheritance_config(&modules_dir, strategy)?;
                 }
 
                 if args.init {
@@ -330,8 +399,11 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
             )?;
         }
 
-        let shell_update = config_last_value(&local_cfg, &update_key)
-            .filter(|u| u.trim_start().starts_with('!'));
+        let shell_update = if args.checkout || args.rebase || args.merge {
+            None
+        } else {
+            local_update_strategy.filter(|u| u.trim_start().starts_with('!'))
+        };
 
         if let Some(cmd_tpl) = shell_update {
             let expanded =
@@ -358,6 +430,8 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                 );
             }
         } else {
+            let mut remote_update_branch: Option<String> = None;
+            let mut remote_nested_cfg: Option<ConfigFile> = None;
             let checkout_oid = if args.remote {
                 let nested_cfg_path = if sub_path.join(".git").is_file() {
                     modules_dir.join("config")
@@ -366,6 +440,7 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                 };
                 let nested_content = fs::read_to_string(&nested_cfg_path)?;
                 let nested_cfg = ConfigFile::parse(&nested_cfg_path, &nested_content, ConfigScope::Local)?;
+                remote_nested_cfg = Some(nested_cfg.clone());
                 let used_local_fetch =
                     submodule_fetch_origin_local_path(&sub_path, &nested_cfg, args.quiet)?;
                 if !used_local_fetch {
@@ -396,12 +471,14 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                     } else {
                         branch
                     };
+                    remote_update_branch = Some(b.clone());
                     grit_subprocess(&grit_bin)
                         .args(["rev-parse", &format!("origin/{b}")])
                         .current_dir(&sub_path)
                         .output()
                         .context("failed to resolve remote tracking branch")?
                 } else {
+                    remote_update_branch = Some(resolve_submodule_remote_branch_name(&repo, m, &local_cfg));
                     grit_subprocess(&grit_bin)
                         .args(["rev-parse", "origin/HEAD"])
                         .current_dir(&sub_path)
@@ -411,6 +488,7 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
 
                 if !output.status.success() {
                     let branch = resolve_submodule_remote_branch_name(&repo, m, &local_cfg);
+                    remote_update_branch = Some(branch.clone());
                     output = grit_subprocess(&grit_bin)
                         .args(["rev-parse", &format!("origin/{branch}")])
                         .current_dir(&sub_path)
@@ -444,7 +522,7 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                 bail!("failed to checkout submodule commit: No such file or directory (os error 2)");
             }
 
-            let checkout_force = true;
+            let checkout_force = args.force || needs_clone;
 
             // When the submodule worktree is already at the recorded commit there is normally
             // nothing to do. But `--force` must still re-check out the worktree to discard local
@@ -477,29 +555,48 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
             match effective.as_str() {
                 "rebase" => {
                     let mut pull_cmd = grit_subprocess(&grit_bin);
+                    pull_cmd.arg("pull").arg("--rebase");
+                    if args.quiet {
+                        pull_cmd.arg("--quiet");
+                    }
                     pull_cmd
-                        .args(["pull", "--rebase", ".", &checkout_oid])
+                        .args([".", &checkout_oid])
                         .current_dir(&sub_path)
                         .env_remove("GIT_DIR")
                         .env_remove("GIT_WORK_TREE");
-                    if args.quiet {
-                        pull_cmd.args(["--quiet"]);
+                    let output = pull_cmd.output().context("submodule pull --rebase")?;
+                    if !args.quiet {
+                        io::stdout().write_all(&output.stdout)?;
+                        if output.status.success() {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            let filtered = stderr
+                                .lines()
+                                .filter(|line| *line != "Already up to date.")
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            if !filtered.is_empty() {
+                                eprintln!("{filtered}");
+                            }
+                        } else {
+                            io::stderr().write_all(&output.stderr)?;
+                        }
                     }
-                    let st = pull_cmd.status().context("submodule pull --rebase")?;
-                    if !st.success() {
+                    if !output.status.success() {
                         bail!("submodule update failed for '{}'", m.path);
                     }
                 }
                 "merge" => {
                     let mut pull_cmd = grit_subprocess(&grit_bin);
+                    pull_cmd.arg("pull");
+                    if args.quiet {
+                        pull_cmd.arg("--quiet");
+                        pull_cmd.stdout(Stdio::null()).stderr(Stdio::null());
+                    }
                     pull_cmd
-                        .args(["pull", ".", &checkout_oid])
+                        .args([".", &checkout_oid])
                         .current_dir(&sub_path)
                         .env_remove("GIT_DIR")
                         .env_remove("GIT_WORK_TREE");
-                    if args.quiet {
-                        pull_cmd.args(["--quiet"]);
-                    }
                     let st = pull_cmd.status().context("submodule pull merge")?;
                     if !st.success() {
                         bail!("submodule update failed for '{}'", m.path);
@@ -558,10 +655,24 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
 
             if args.remote {
                 stage_gitlink_in_super_index(&repo, &m.path, &checkout_oid)?;
+                if let (Some(branch), Some(nested_cfg)) =
+                    (remote_update_branch.as_deref(), remote_nested_cfg.as_ref())
+                {
+                    sync_remote_update_branch_for_decoration(
+                        &modules_dir,
+                        branch,
+                        &checkout_oid,
+                        nested_cfg,
+                        &sub_path,
+                    )?;
+                }
+            }
+            if depth_limited_clone {
+                fs::write(modules_dir.join("shallow"), format!("{checkout_oid}\n"))?;
             }
 
-            if matches!(effective.as_str(), "" | "checkout") || args.remote {
-                eprintln!(
+            if !args.quiet && (matches!(effective.as_str(), "" | "checkout") || args.remote) {
+                println!(
                     "Submodule path '{}': checked out '{}'",
                     msg_path, checkout_oid
                 );
@@ -583,6 +694,12 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                 attach_existing_submodule_worktree(&grit_bin, &modules_dir, &sub_path)?;
             }
         }
+    }
+
+    if let Some((name, msg)) = clone_retry_failures.first() {
+        eprintln!("{msg}");
+        eprintln!("Failed to clone '{name}' a second time, aborting");
+        bail!("failed to clone submodule '{name}'");
     }
 
     if any_failure {
@@ -611,12 +728,17 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                 depth: args.depth,
                 jobs: args.jobs,
                 filter: args.filter.clone(),
+                ref_format: args.ref_format.clone(),
                 recursive: recurse_nested,
                 implicit_recursive: args.implicit_recursive,
                 reference: args.reference.clone(),
+                dissociate: args.dissociate,
                 no_recommend_shallow: args.no_recommend_shallow,
             };
-            run_update_inner(&nested, Some(sub_path.clone()))?;
+            if let Err(e) = run_update_inner(&nested, Some(sub_path.clone())) {
+                let msg_path = submodule_display_path_from_cwd(&sub_path);
+                bail!("{e}\nfatal: Failed to recurse into submodule path '{msg_path}'");
+            }
         }
     }
 

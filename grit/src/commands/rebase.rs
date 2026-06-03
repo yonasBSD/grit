@@ -19,9 +19,7 @@ use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use grit_lib::config::ConfigSet;
-use grit_lib::diff::{
-    self, count_changes, diff_index_to_tree, diff_index_to_worktree, DiffEntry, DiffStatus,
-};
+use grit_lib::diff::{self, count_changes, diff_index_to_tree, diff_index_to_worktree, DiffEntry};
 use grit_lib::hooks::{run_commit_hook, run_hook, CommitHookEnv, HookResult};
 use grit_lib::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_SYMLINK, MODE_TREE};
 use grit_lib::merge_base::{ancestor_closure, fork_point, is_ancestor, merge_bases_first_vs_rest};
@@ -54,7 +52,6 @@ use super::commit::{
 use super::merge::refresh_index_stat_cache_from_worktree;
 use super::replay::merge_trees_for_single_cherry_pick;
 use super::stash;
-use super::submodule::parse_gitmodules_with_repo;
 use crate::ident::{resolve_email, resolve_name, IdentRole};
 
 #[derive(Clone, Copy, Debug)]
@@ -3315,48 +3312,6 @@ fn apply_autostash_after_ff(repo: &Repository, autostash_oid: &ObjectId) -> Resu
     Ok(())
 }
 
-/// Drop unstaged gitlink diffs for paths covered by `submodule.<name>.ignore=dirty|all`, matching
-/// Git's rebase dirty check (t3426 `rebase interactive ignores modified submodules`).
-fn filter_unstaged_gitlinks_for_submodule_ignore(
-    repo: &Repository,
-    cfg: &ConfigSet,
-    mut entries: Vec<DiffEntry>,
-) -> Result<Vec<DiffEntry>> {
-    let Some(wt) = repo.work_tree.as_deref() else {
-        return Ok(entries);
-    };
-    let modules = parse_gitmodules_with_repo(wt, Some(repo)).unwrap_or_default();
-    if modules.is_empty() {
-        return Ok(entries);
-    }
-
-    entries.retain(|e| {
-        if e.old_mode != "160000" || e.new_mode != "160000" {
-            return true;
-        }
-        if !matches!(e.status, DiffStatus::Modified | DiffStatus::TypeChanged) {
-            return true;
-        }
-        let path = e.path();
-        let Some(sm) = modules.iter().find(|m| m.path == path || m.name == path) else {
-            return true;
-        };
-        let key = format!("submodule.{}.ignore", sm.name);
-        let raw = cfg.get(&key).or_else(|| sm.ignore.clone());
-        let Some(ref v) = raw else {
-            return true;
-        };
-        let v = v.trim();
-        // `dirty` / `all` suppress unstaged gitlink noise in the superproject (including when the
-        // submodule's checked-out commit differs from the recorded gitlink).
-        if v.eq_ignore_ascii_case("dirty") || v.eq_ignore_ascii_case("all") {
-            return false;
-        }
-        true
-    });
-    Ok(entries)
-}
-
 /// True when `name` is both a local branch and a tag pointing at different commits.
 ///
 /// `git rebase --fork-point` fails in this case (t3431) while a plain revision parse would pick
@@ -3459,18 +3414,10 @@ fn do_rebase(
             let obj = repo.odb.read(oid).ok()?;
             parse_commit(&obj.data).ok().map(|c| c.tree)
         });
-        let ignore_submodules_all = config
-            .get("diff.ignoreSubmodules")
-            .as_deref()
-            .is_some_and(|v| v.eq_ignore_ascii_case("all"));
-        let mut staged =
-            diff_index_to_tree(&repo.odb, &idx, head_tree.as_ref(), ignore_submodules_all)?;
+        let ignore_submodules = true;
+        let staged = diff_index_to_tree(&repo.odb, &idx, head_tree.as_ref(), ignore_submodules)?;
         let mut unstaged = diff_index_to_worktree(&repo.odb, &idx, work_tree, false, false)?;
-        if ignore_submodules_all {
-            staged.retain(|e| e.old_mode != "160000" && e.new_mode != "160000");
-            unstaged.retain(|e| e.old_mode != "160000" && e.new_mode != "160000");
-        }
-        unstaged = filter_unstaged_gitlinks_for_submodule_ignore(&repo, &config, unstaged)?;
+        unstaged.retain(|e| e.old_mode != "160000" && e.new_mode != "160000");
         let dirty = !staged.is_empty() || !unstaged.is_empty();
         if dirty {
             if !want_autostash {

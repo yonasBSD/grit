@@ -593,6 +593,7 @@ pub fn run(mut args: Args) -> Result<()> {
         work_tree,
         DiffIndexToWorktreeOptions {
             index_mtime: Some(index_mtime),
+            ignore_submodule_untracked: untracked_mode == "no",
             ..Default::default()
         },
     )?;
@@ -1972,6 +1973,7 @@ fn format_short(
     let mut staged_map: std::collections::HashMap<String, char> = std::collections::HashMap::new();
     let mut unstaged_map: std::collections::HashMap<String, char> =
         std::collections::HashMap::new();
+    let unmerged = unmerged_paths_and_mask(index);
     let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_else(|_| ConfigSet::new());
     let cli_ignore = args.ignore_submodules.as_deref();
     let submodule_suppressed = |path: &str, oid: ObjectId| -> bool {
@@ -1979,6 +1981,9 @@ fn format_short(
     };
 
     for entry in staged {
+        if entry.status == DiffStatus::Unmerged {
+            continue;
+        }
         if entry.status == DiffStatus::Renamed || entry.status == DiffStatus::Copied {
             let key = entry.path().to_owned();
             staged_map.insert(key.clone(), entry.status.letter());
@@ -1991,6 +1996,9 @@ fn format_short(
     }
 
     for entry in unstaged {
+        if entry.status == DiffStatus::Unmerged {
+            continue;
+        }
         let path = entry.path().to_owned();
         if let Some(ie) = index.get(path.as_bytes(), 0) {
             if ie.mode == MODE_GITLINK && submodule_suppressed(&path, ie.oid) {
@@ -1999,6 +2007,14 @@ fn format_short(
         }
         unstaged_map.insert(path.clone(), entry.status.letter());
         paths.insert(path);
+    }
+
+    for (path, mask) in &unmerged {
+        let key = unmerged_v2_key(*mask);
+        let mut chars = key.chars();
+        staged_map.insert(path.clone(), chars.next().unwrap_or('U'));
+        unstaged_map.insert(path.clone(), chars.next().unwrap_or('U'));
+        paths.insert(path.clone());
     }
 
     for ie in &index.entries {
@@ -2026,7 +2042,11 @@ fn format_short(
         if let Some(ie) = index.get(path.as_bytes(), 0) {
             if ie.mode == MODE_GITLINK {
                 let f = submodule_porcelain_flags(work_tree, path, ie.oid);
-                if f.untracked {
+                if args.porcelain.is_some() {
+                    if f.new_commits || f.modified || f.untracked || y != ' ' {
+                        y = 'M';
+                    }
+                } else if f.untracked {
                     y = '?';
                 } else if f.modified {
                     y = 'm';

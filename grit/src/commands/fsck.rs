@@ -591,6 +591,9 @@ fn walk_reachable(
     let index_path = resolved_index_path_for_fsck(repo);
     if let Ok(idx) = repo.load_index_at(&index_path) {
         for e in &idx.entries {
+            if e.mode == MODE_GITLINK {
+                continue;
+            }
             if !e.oid.is_zero() {
                 queue.push_back((e.oid, None));
             }
@@ -598,7 +601,7 @@ fn walk_reachable(
         if let Some(ru) = &idx.resolve_undo {
             for rec in ru.values() {
                 for i in 0..3 {
-                    if rec.modes[i] != 0 && !rec.oids[i].is_zero() {
+                    if rec.modes[i] != 0 && rec.modes[i] != MODE_GITLINK && !rec.oids[i].is_zero() {
                         queue.push_back((rec.oids[i], None));
                     }
                 }

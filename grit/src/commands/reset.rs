@@ -80,7 +80,7 @@ fn effective_reset_recurse_submodules(repo: &Repository, args: &Args) -> Result<
     Ok(false)
 }
 
-fn submodule_update_after_reset(repo: &Repository) -> Result<()> {
+fn submodule_update_after_reset(repo: &Repository, force: bool) -> Result<()> {
     let work_tree = repo
         .work_tree
         .as_deref()
@@ -88,8 +88,11 @@ fn submodule_update_after_reset(repo: &Repository) -> Result<()> {
     let grit_bin = crate::grit_exe::grit_executable();
     let mut cmd = Command::new(&grit_bin);
     crate::grit_exe::strip_trace2_env(&mut cmd);
+    cmd.args(["submodule", "update", "--init", "--recursive"]);
+    if force {
+        cmd.arg("--force");
+    }
     let status = cmd
-        .args(["submodule", "update", "--init", "--recursive"])
         .current_dir(work_tree)
         .status()
         .context("spawning submodule update after reset")?;
@@ -1192,7 +1195,15 @@ fn reset_paths(
 
     let resolved_specs: Vec<String> = paths
         .iter()
-        .map(|p| crate::pathspec::resolve_pathspec(p, work_tree, prefix_opt))
+        .map(|p| {
+            let resolved = crate::pathspec::resolve_pathspec(p, work_tree, prefix_opt);
+            let trimmed = resolved.trim_end_matches('/');
+            if trimmed.is_empty() {
+                resolved
+            } else {
+                trimmed.to_owned()
+            }
+        })
         .collect();
 
     let expanded_paths: Vec<String> = if paths.is_empty() {
@@ -1498,6 +1509,7 @@ Use '--' to separate paths from revisions, like this:\n\
                 &old_index,
                 head_tree_oid,
                 target_tree_oid,
+                true,
             )?;
             preserve_index_cache_flags_from(&old_index, &mut phase1);
             if repo.work_tree.is_some() {
@@ -1511,7 +1523,13 @@ Use '--' to separate paths from revisions, like this:\n\
                 }
                 // Selective checkout like Git's single `unpack_trees` pass: when the twoway result
                 // keeps the same blob as the pre-reset index, do not overwrite a dirty work tree.
-                checkout_merge_reset_worktree(repo, &old_index, &mut phase1)?;
+                checkout_merge_reset_worktree(
+                    repo,
+                    &old_index,
+                    &mut phase1,
+                    recurse_submodules,
+                    recurse_submodules,
+                )?;
             }
             build_merge_reset_index(repo, &phase1, head_oid, &target_oid)?
         }
@@ -1592,7 +1610,13 @@ Use '--' to separate paths from revisions, like this:\n\
                         bail!("Updating '{}' would lose untracked files.", path);
                     }
                 }
-                checkout_merge_reset_worktree(repo, &old_index, &mut new_index)?;
+                checkout_merge_reset_worktree(
+                    repo,
+                    &old_index,
+                    &mut new_index,
+                    recurse_submodules,
+                    recurse_submodules,
+                )?;
             }
             ResetMode::Keep => {
                 // Working tree was synced to the twoway-merge index inside the `Keep` arm
@@ -1605,7 +1629,7 @@ Use '--' to separate paths from revisions, like this:\n\
                     &mut new_index,
                     Some((&target_oid, Some(commit_spec))),
                     recurse_submodules,
-                    true,
+                    recurse_submodules,
                 ) {
                     if recurse_submodules {
                         let _ = rollback_reset_after_failed_submodule_update(
@@ -1658,7 +1682,7 @@ Use '--' to separate paths from revisions, like this:\n\
     {
         repo.write_index_at(&index_path, &mut new_index)
             .context("writing index before submodule update")?;
-        if let Err(e) = submodule_update_after_reset(repo) {
+        if let Err(e) = submodule_update_after_reset(repo, mode == ResetMode::Hard) {
             let _ = rollback_reset_after_failed_submodule_update(
                 repo,
                 &head,
@@ -1842,7 +1866,7 @@ fn check_merge_reset_worktree(
         let abs_path = work_tree.join(path_str.as_ref());
 
         match (idx_e, tgt_e) {
-            (None, Some(_)) => {
+            (None, Some(te)) => {
                 // The path is present in the target tree but absent from the index
                 // (stage 0), i.e. it is untracked. If something exists on disk at
                 // this path it would be clobbered by the reset. Git's `verify_absent`
@@ -1853,6 +1877,18 @@ fn check_merge_reset_worktree(
                 match std::fs::symlink_metadata(&abs_path) {
                     Ok(meta) => {
                         if meta.is_dir() {
+                            if te.mode == MODE_GITLINK
+                                && worktree_dir_is_empty_for_new_gitlink(&abs_path)
+                            {
+                                continue;
+                            }
+                            if te.mode == MODE_GITLINK
+                                && gitlink_replaces_clean_tracked_directory(
+                                    repo, &work_tree, &path, &index_map, &index_map,
+                                )?
+                            {
+                                continue;
+                            }
                             bail!("Updating '{}' would lose untracked files in it", path_str);
                         } else {
                             bail!("Updating '{}' would lose untracked files.", path_str);
@@ -1864,11 +1900,20 @@ fn check_merge_reset_worktree(
                 }
             }
             (Some(ie), None) => {
+                if ie.mode == MODE_GITLINK && !map_has_strict_path_descendant(&target_map, &path) {
+                    continue;
+                }
                 merge_reset_verify_worktree_matches_index(repo, ie, &abs_path, path_str.as_ref())?;
             }
             (Some(ie), Some(te)) => {
                 if ie.oid == te.oid && ie.mode == te.mode {
                     continue;
+                }
+                if ie.mode == MODE_GITLINK {
+                    if te.mode == MODE_GITLINK {
+                        continue;
+                    }
+                    bail!("Entry '{}' not uptodate. Cannot merge.", path_str);
                 }
                 merge_reset_verify_worktree_matches_index(repo, ie, &abs_path, path_str.as_ref())?;
             }
@@ -1877,6 +1922,11 @@ fn check_merge_reset_worktree(
     }
 
     Ok(())
+}
+
+fn map_has_strict_path_descendant(map: &HashMap<Vec<u8>, &IndexEntry>, parent: &[u8]) -> bool {
+    map.keys()
+        .any(|path| is_strict_path_descendant(path, parent))
 }
 
 fn merge_reset_verify_worktree_matches_index(
@@ -2662,6 +2712,8 @@ pub(crate) fn checkout_merge_reset_worktree(
     repo: &Repository,
     old_index: &Index,
     new_index: &mut Index,
+    recurse_submodules: bool,
+    force_submodule_removal: bool,
 ) -> Result<()> {
     let work_tree = match &repo.work_tree {
         Some(p) => p.clone(),
@@ -2681,6 +2733,21 @@ pub(crate) fn checkout_merge_reset_worktree(
     for old_path in old_paths.difference(&new_paths) {
         let rel = String::from_utf8_lossy(old_path).into_owned();
         let abs = work_tree.join(&rel);
+        if let Some(oe) = old_stage0.get(old_path) {
+            if oe.mode == MODE_GITLINK {
+                if force_submodule_removal {
+                    remove_submodule_worktree_for_reset(
+                        repo,
+                        &work_tree,
+                        &rel,
+                        recurse_submodules,
+                        true,
+                    )?;
+                    remove_empty_parent_dirs(&work_tree, &abs);
+                }
+                continue;
+            }
+        }
         if abs.is_file() || abs.is_symlink() {
             let _ = std::fs::remove_file(&abs);
         } else if abs.is_dir() {
@@ -2713,7 +2780,16 @@ pub(crate) fn checkout_merge_reset_worktree(
         if entry.mode == 0o160000 || entry.mode == MODE_GITLINK {
             let path_str = String::from_utf8_lossy(&entry.path).into_owned();
             let submodule_dir = work_tree.join(&path_str);
-            let _ = std::fs::create_dir_all(&submodule_dir);
+            if submodule_dir.is_file() || submodule_dir.is_symlink() {
+                let _ = std::fs::remove_file(&submodule_dir);
+            } else if submodule_dir.is_dir()
+                && old_stage0
+                    .get(&entry.path)
+                    .is_some_and(|old| old.mode != MODE_GITLINK)
+            {
+                let _ = std::fs::remove_dir_all(&submodule_dir);
+            }
+            std::fs::create_dir_all(&submodule_dir)?;
             continue;
         }
 
@@ -2892,6 +2968,29 @@ fn checkout_index_to_worktree(
         .map(|e| (e.path.as_slice(), e))
         .collect();
 
+    if !force_submodule_removal {
+        for old in old_index.entries.iter().filter(|e| e.stage() == 0) {
+            if old.mode != MODE_GITLINK {
+                continue;
+            }
+            let rel = String::from_utf8_lossy(&old.path);
+            let abs = work_tree.join(rel.as_ref());
+            if !abs.join(".git").exists() {
+                continue;
+            }
+            let same_path_replaced = new_index
+                .get(&old.path, 0)
+                .is_some_and(|new| new.mode != MODE_GITLINK);
+            let descendant_replaced = new_index
+                .entries
+                .iter()
+                .any(|new| new.stage() == 0 && is_strict_path_descendant(&new.path, &old.path));
+            if same_path_replaced || descendant_replaced {
+                bail!("Cannot update submodule:\n{}", rel);
+            }
+        }
+    }
+
     // Remove paths that are no longer present in the new index.
     // Sort by descending path length so nested files are removed before parent directories
     // (HashSet iteration order is unspecified; wrong order can leave stale files on disk).
@@ -2983,7 +3082,6 @@ fn checkout_index_to_worktree(
                         false,
                     )?;
                 }
-                continue;
             } else if entry.mode != MODE_GITLINK && abs_path.is_dir() {
                 // Avoid `remove_dir_all` for thousands of fresh empty placeholder dirs (synthetic
                 // submodule fixtures): an empty directory is already the desired state.
@@ -3139,6 +3237,10 @@ fn checkout_index_to_worktree(
     }
 
     Ok(())
+}
+
+fn is_strict_path_descendant(path: &[u8], parent: &[u8]) -> bool {
+    path.len() > parent.len() && path.starts_with(parent) && path.get(parent.len()) == Some(&b'/')
 }
 
 /// Remove a submodule work tree (and nested submodules when `recurse_submodules`) before dropping

@@ -36,6 +36,38 @@ use grit_lib::submodule_gitdir::{
     validate_submodule_path,
 };
 
+fn expand_tilde_path(value: &str) -> String {
+    if value == "~" {
+        return std::env::var("HOME").unwrap_or_else(|_| value.to_owned());
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{home}/{rest}");
+        }
+    }
+    value.to_owned()
+}
+
+fn effective_template_dir(args: &Args) -> Option<PathBuf> {
+    match &args.template {
+        Some(t) if t.is_empty() => None,
+        Some(t) => Some(PathBuf::from(t)),
+        None => {
+            if let Ok(tdir) = std::env::var("GIT_TEMPLATE_DIR") {
+                if !tdir.is_empty() {
+                    return Some(PathBuf::from(tdir));
+                }
+                return None;
+            }
+            let config = ConfigSet::load(None, true).unwrap_or_default();
+            config
+                .get("init.templateDir")
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| PathBuf::from(expand_tilde_path(&v)))
+        }
+    }
+}
+
 /// Arguments for `grit clone`.
 #[derive(Debug, ClapArgs)]
 #[command(about = "Clone a repository into a new directory")]
@@ -134,6 +166,10 @@ pub struct Args {
     )]
     pub recurse_submodules_specs: Vec<String>,
 
+    /// Do not recurse into submodules after cloning.
+    #[arg(long = "no-recurse-submodules")]
+    pub no_recurse_submodules: bool,
+
     /// Parallel jobs hint for submodule cloning (forwarded to `submodule update`).
     #[arg(short = 'j', long = "jobs", value_name = "N")]
     pub jobs: Option<usize>,
@@ -221,7 +257,7 @@ pub struct Args {
 impl Args {
     /// Whether `--recurse-submodules` was given (with or without a pathspec value).
     pub fn recurse_submodules(&self) -> bool {
-        !self.recurse_submodules_specs.is_empty()
+        !self.no_recurse_submodules && !self.recurse_submodules_specs.is_empty()
     }
 
     /// The submodule.active pathspecs to set when explicit `--recurse-submodules=<spec>` values
@@ -625,19 +661,34 @@ pub fn run(mut args: Args) -> Result<()> {
     let path_only = repo_path_str.split('?').next().unwrap_or("").to_string();
     let source_path = PathBuf::from(&path_only);
 
-    // Open the source repository, trying .git suffix if direct path fails
+    // Open the source repository, trying common Git local path variants if direct path fails.
     let (source, source_path) = match open_source_repo(&source_path) {
         Ok(s) => (s, source_path),
         Err(_) => {
-            // Try appending .git suffix
             let with_git = PathBuf::from(format!("{}.git", source_path.display()));
             match open_source_repo(&with_git) {
                 Ok(s) => (s, with_git),
                 Err(_) => {
-                    return Err(anyhow::anyhow!(
-                        "'{}' does not appear to be a git repository",
-                        args.repository
-                    ));
+                    let without_git = source_path
+                        .to_string_lossy()
+                        .strip_suffix(".git")
+                        .map(PathBuf::from);
+                    if let Some(without_git) = without_git {
+                        match open_source_repo(&without_git) {
+                            Ok(s) => (s, without_git),
+                            Err(_) => {
+                                return Err(anyhow::anyhow!(
+                                    "'{}' does not appear to be a git repository",
+                                    args.repository
+                                ));
+                            }
+                        }
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "'{}' does not appear to be a git repository",
+                            args.repository
+                        ));
+                    }
                 }
             }
         }
@@ -828,7 +879,7 @@ pub fn run(mut args: Args) -> Result<()> {
             .with_context(|| format!("cannot create directory '{}'", target_path.display()))?;
     }
 
-    let template_dir = args.template.as_ref().map(PathBuf::from);
+    let template_dir = effective_template_dir(&args);
 
     let git_work_tree_env = std::env::var_os("GIT_WORK_TREE").filter(|v| !v.is_empty());
 
@@ -1106,16 +1157,14 @@ pub fn run(mut args: Args) -> Result<()> {
         .context("setting up alternates")?;
         propagate_extensions_object_format(&source.git_dir, &dest.git_dir)?;
     } else {
-        let try_hardlink_objects = !args.no_hardlinks && !args.repository.starts_with("file://");
         let has_reference = !args.reference.is_empty() || !args.reference_if_able.is_empty();
-        // With `--reference`, match Git: do not copy loose/pack objects from the source into the
-        // new repo; they are reached via `objects/info/alternates` only (`t5501-fetch-push-alternates`).
+        let try_hardlink_objects = !args.no_hardlinks && !args.repository.starts_with("file://");
         if !has_reference {
             copy_objects(&source.git_dir, &dest.git_dir, try_hardlink_objects)
                 .context("copying objects")?;
+            merge_alternates_from_source_objects(&source.git_dir, &dest.git_dir.join("objects"))
+                .context("merging source alternates")?;
         }
-        merge_alternates_from_source_objects(&source.git_dir, &dest.git_dir.join("objects"))
-            .context("merging source alternates")?;
         append_reference_alternates(
             &dest.git_dir.join("objects"),
             &args.reference,
@@ -1125,13 +1174,11 @@ pub fn run(mut args: Args) -> Result<()> {
         // `--shared` (-s) borrows objects via `info/alternates`. A plain local clone (including
         // `git clone -l` without `-s`) materializes objects in the destination and must not leave a
         // lone `alternates` file — `t5605` checks `find objects -links 1`.
-        // With `--reference` / `--reference-if-able`, add the source `objects` dir via alternates;
-        // `add_alternate_objects_line` dedupes when the same path appears from references.
+        // With `--reference` / `--reference-if-able`, Git borrows from the explicit reference and
+        // does not add the source as another alternate.
         let alt_dir = dest.git_dir.join("objects/info");
         let _ = fs::create_dir_all(&alt_dir);
-        let should_add_source_alternate =
-            (args.shared && args.reference.is_empty() && args.reference_if_able.is_empty())
-                || has_reference;
+        let should_add_source_alternate = args.shared && !has_reference;
         if should_add_source_alternate {
             let source_objects = object_store_git_dir(&source.git_dir).join("objects");
             if let Ok(abs) = source_objects.canonicalize() {
@@ -1252,12 +1299,14 @@ pub fn run(mut args: Args) -> Result<()> {
             // `None` but init used `initial_fallback`. If the preferred name has no
             // remote-tracking ref but exactly one exists under `refs/remotes/<remote>/`, use
             // that (sole-branch clone when names disagree).
+            let source_head_detached =
+                source_head_symref.is_none() && source_head_oid.is_some() && head_branch.is_none();
             let preferred_branch = head_branch.as_deref().unwrap_or(initial_fallback.as_str());
             let source_unborn_preferred = source_head_symref.as_deref().is_some_and(|sr| {
                 let expected = format!("refs/heads/{preferred_branch}");
                 sr == expected && !clone_ref_file_exists(&source.git_dir, sr)
             });
-            let resolved_branch = if source_unborn_preferred {
+            let resolved_branch = if source_unborn_preferred || source_head_detached {
                 None
             } else {
                 resolve_remote_tracked_branch_name(&dest.git_dir, &remote_name, preferred_branch)
@@ -1285,6 +1334,8 @@ pub fn run(mut args: Args) -> Result<()> {
                             .context("setting up branch tracking")?;
                     }
                 }
+            } else if let Some(ref oid) = source_head_oid {
+                fs::write(dest.git_dir.join("HEAD"), format!("{oid}\n"))?;
             }
         }
     }
@@ -1477,7 +1528,6 @@ pub fn run(mut args: Args) -> Result<()> {
     if args.recurse_submodules() && !args.bare {
         if let Some(ref wt) = dest.work_tree {
             if let Err(e) = clone_submodules(wt, &dest, &args) {
-                let _ = fs::remove_dir_all(&target_path);
                 return Err(e).context("cloning submodules");
             }
         }
@@ -1524,7 +1574,7 @@ fn run_git_clone(args: Args) -> Result<()> {
     fs::create_dir_all(&target_path)
         .with_context(|| format!("cannot create directory '{}'", target_path.display()))?;
 
-    let template_dir = args.template.as_ref().map(PathBuf::from);
+    let template_dir = effective_template_dir(&args);
     let dest = if let Some(ref sep_git) = args.separate_git_dir {
         if sep_git.exists() && sep_git.read_dir()?.next().is_some() {
             bail!(
@@ -1749,7 +1799,6 @@ fn run_git_clone(args: Args) -> Result<()> {
     if args.recurse_submodules() && !args.bare {
         if let Some(ref wt) = dest.work_tree {
             if let Err(e) = clone_submodules(wt, &dest, &args) {
-                let _ = fs::remove_dir_all(&target_path);
                 return Err(e).context("cloning submodules");
             }
         }
@@ -1787,7 +1836,7 @@ fn run_ext_clone(args: Args) -> Result<()> {
     fs::create_dir_all(&target_path)
         .with_context(|| format!("cannot create directory '{}'", target_path.display()))?;
 
-    let template_dir = args.template.as_ref().map(PathBuf::from);
+    let template_dir = effective_template_dir(&args);
     let dest = if let Some(ref sep_git) = args.separate_git_dir {
         if sep_git.exists() && sep_git.read_dir()?.next().is_some() {
             bail!(
@@ -2014,7 +2063,6 @@ fn run_ext_clone(args: Args) -> Result<()> {
     if args.recurse_submodules() && !args.bare {
         if let Some(ref wt) = dest.work_tree {
             if let Err(e) = clone_submodules(wt, &dest, &args) {
-                let _ = fs::remove_dir_all(&target_path);
                 return Err(e).context("cloning submodules");
             }
         }
@@ -2102,7 +2150,7 @@ fn run_http_clone(args: Args) -> Result<()> {
 
     fs::create_dir_all(&target_path)
         .with_context(|| format!("cannot create directory '{}'", target_path.display()))?;
-    let template_dir = args.template.as_ref().map(PathBuf::from);
+    let template_dir = effective_template_dir(&args);
 
     if args.separate_git_dir.is_some() {
         bail!("--separate-git-dir is not supported for HTTP clones");
@@ -2632,7 +2680,7 @@ fn run_ssh_clone(args: Args) -> Result<()> {
             .with_context(|| format!("cannot create directory '{}'", target_path.display()))?;
     }
 
-    let template_dir = args.template.as_ref().map(PathBuf::from);
+    let template_dir = effective_template_dir(&args);
     let git_work_tree_env = std::env::var_os("GIT_WORK_TREE").filter(|v| !v.is_empty());
 
     let dest = if let Some(ref sep_git) = args.separate_git_dir {
@@ -2903,9 +2951,9 @@ fn run_ssh_clone(args: Args) -> Result<()> {
         if !has_reference {
             copy_objects(&source.git_dir, &dest.git_dir, !args.no_hardlinks)
                 .context("copying objects")?;
+            merge_alternates_from_source_objects(&source.git_dir, &dest.git_dir.join("objects"))
+                .context("merging source alternates")?;
         }
-        merge_alternates_from_source_objects(&source.git_dir, &dest.git_dir.join("objects"))
-            .context("merging source alternates")?;
         append_reference_alternates(
             &dest.git_dir.join("objects"),
             &args.reference,
@@ -2914,9 +2962,7 @@ fn run_ssh_clone(args: Args) -> Result<()> {
         .context("adding --reference alternates")?;
         let alt_dir = dest.git_dir.join("objects/info");
         let _ = fs::create_dir_all(&alt_dir);
-        let should_add_source_alternate =
-            (args.shared && args.reference.is_empty() && args.reference_if_able.is_empty())
-                || has_reference;
+        let should_add_source_alternate = args.shared && !has_reference;
         if should_add_source_alternate {
             let source_objects = object_store_git_dir(&source.git_dir).join("objects");
             if let Ok(abs) = source_objects.canonicalize() {
@@ -3167,7 +3213,6 @@ fn run_ssh_clone(args: Args) -> Result<()> {
     if args.recurse_submodules() && !args.bare {
         if let Some(ref wt) = dest.work_tree {
             if let Err(e) = clone_submodules(wt, &dest, &args) {
-                let _ = fs::remove_dir_all(&target_path);
                 return Err(e).context("cloning submodules");
             }
         }
@@ -3251,7 +3296,7 @@ fn run_ssh_network_clone(args: Args, spec: &crate::ssh_transport::SshUrl) -> Res
     fs::create_dir_all(&target_path)
         .with_context(|| format!("cannot create directory '{}'", target_path.display()))?;
     let ref_storage = resolved_clone_ref_storage(&args)?;
-    let template_dir = args.template.as_ref().map(PathBuf::from);
+    let template_dir = effective_template_dir(&args);
     let dest = if let Some(ref sep_git) = args.separate_git_dir {
         if sep_git.exists() && sep_git.read_dir()?.next().is_some() {
             bail!(
@@ -3462,16 +3507,7 @@ fn run_ssh_network_clone(args: Args, spec: &crate::ssh_transport::SshUrl) -> Res
 fn gitlink_paths_at_head(work_tree: &Path) -> Result<HashSet<String>> {
     let git_dir = work_tree.join(".git");
     let repo = Repository::open(&git_dir, Some(work_tree))?;
-    let head_content = fs::read_to_string(repo.git_dir.join("HEAD")).context("reading HEAD")?;
-    let head = head_content.trim();
-    let oid = if let Some(refname) = head.strip_prefix("ref: ") {
-        let ref_path = repo.git_dir.join(refname);
-        let oid_str =
-            fs::read_to_string(&ref_path).with_context(|| format!("reading ref {refname}"))?;
-        ObjectId::from_hex(oid_str.trim()).with_context(|| format!("invalid OID in {refname}"))?
-    } else {
-        ObjectId::from_hex(head).context("invalid OID in HEAD")?
-    };
+    let oid = refs::resolve_ref(&repo.git_dir, "HEAD").context("resolving HEAD")?;
     let obj = repo.odb.read(&oid).context("reading HEAD commit")?;
     let commit = parse_commit(&obj.data).context("parsing HEAD commit")?;
     let mut out = HashSet::new();
@@ -3504,64 +3540,6 @@ fn collect_gitlink_paths(
     Ok(())
 }
 
-/// When `submodule.alternateLocation` is `superproject`, derive `--reference` paths from each
-/// alternate object store that looks like a Git directory (Git `prepare_possible_alternates`).
-fn collect_superproject_submodule_references(
-    super_git_dir: &Path,
-    submodule_logical_name: &str,
-) -> Result<Vec<PathBuf>> {
-    let config_path = super_git_dir.join("config");
-    let config = match ConfigFile::from_path(&config_path, ConfigScope::Local)? {
-        Some(c) => c,
-        None => ConfigFile::parse(&config_path, "", ConfigScope::Local)?,
-    };
-    let loc = config_last_value_clone(&config, "submodule.alternateLocation");
-    if !matches!(loc.as_deref(), Some("superproject")) {
-        return Ok(Vec::new());
-    }
-    let strategy = config_last_value_clone(&config, "submodule.alternateErrorStrategy")
-        .unwrap_or_else(|| "die".to_string());
-
-    let objects_dir = super_git_dir.join("objects");
-    let alternates = grit_lib::pack::read_alternates_recursive(&objects_dir).unwrap_or_default();
-    let mut refs = Vec::new();
-    for alt_objects in alternates {
-        let Some(parent) = alt_objects.parent() else {
-            continue;
-        };
-        if parent.file_name().and_then(|s| s.to_str()) != Some("objects") {
-            continue;
-        }
-        let alt_git_dir = parent.parent().unwrap_or(parent);
-        let candidate = alt_git_dir.join("modules").join(submodule_logical_name);
-        let candidate = candidate.canonicalize().unwrap_or(candidate);
-        if candidate.join("HEAD").is_file() {
-            refs.push(candidate);
-            continue;
-        }
-        let msg = format!("path '{}' does not exist", candidate.display());
-        match strategy.as_str() {
-            "die" => {
-                bail!("fatal: submodule '{submodule_logical_name}' cannot add alternate: {msg}");
-            }
-            "info" => {
-                eprintln!("submodule '{submodule_logical_name}' cannot add alternate: {msg}");
-            }
-            _ => {}
-        }
-    }
-    Ok(refs)
-}
-
-fn config_last_value_clone(config: &ConfigFile, key: &str) -> Option<String> {
-    config
-        .entries
-        .iter()
-        .rev()
-        .find(|e| e.key == key)
-        .and_then(|e| e.value.clone())
-}
-
 fn clone_with_optional_superproject_refs(
     grit_bin: &Path,
     resolved_url: &str,
@@ -3571,6 +3549,7 @@ fn clone_with_optional_superproject_refs(
     separate_git_dir: Option<&Path>,
     no_checkout: bool,
     depth: Option<usize>,
+    ref_storage: Option<&str>,
 ) -> Result<std::process::ExitStatus> {
     let run = |with_refs: bool| -> Result<std::process::ExitStatus> {
         let mut cmd = std::process::Command::new(grit_bin);
@@ -3583,6 +3562,9 @@ fn clone_with_optional_superproject_refs(
         }
         if let Some(d) = depth {
             cmd.arg("--depth").arg(d.to_string());
+        }
+        if let Some(format) = ref_storage {
+            cmd.arg(format!("--ref-format={format}"));
         }
         if no_checkout {
             cmd.arg("--no-checkout");
@@ -3617,14 +3599,17 @@ fn clone_with_optional_superproject_refs(
 struct SubmoduleCloneJob {
     resolved_url: String,
     extra_refs: Vec<PathBuf>,
+    alternate_strategy: Option<String>,
     modules_dir: PathBuf,
     sub_dest: PathBuf,
     depth: Option<usize>,
     overlay_existing: bool,
+    ref_storage: Option<String>,
 }
 
 fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> Result<()> {
     let quiet = clone_args.quiet;
+    crate::commands::submodule::trace_submodule_job_tasks_if_needed(Some(repo), clone_args.jobs);
     let gitmodules_path = work_tree.join(".gitmodules");
     if !gitmodules_path.exists() {
         return Ok(());
@@ -3668,6 +3653,11 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
     let gitlink_paths = gitlink_paths_at_head(work_tree).unwrap_or_default();
 
     let super_shallow = repo.git_dir.join("shallow").is_file();
+    let submodule_ref_storage = if grit_lib::reftable::is_reftable_repo(&repo.git_dir) {
+        Some("reftable".to_owned())
+    } else {
+        clone_args.ref_format.clone()
+    };
     let mut jobs: Vec<SubmoduleCloneJob> = Vec::new();
 
     for sm in &modules {
@@ -3690,7 +3680,17 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
             &sm.url,
         )?;
 
-        let extra_refs = collect_superproject_submodule_references(&repo.git_dir, &sm.name)?;
+        let extra_refs = crate::commands::submodule::superproject_submodule_reference_roots(
+            &repo.git_dir,
+            &sm.name,
+        )?;
+        let alternate_strategy = if extra_refs.is_empty() {
+            None
+        } else {
+            crate::commands::submodule::superproject_submodule_alternate_error_strategy(
+                &repo.git_dir,
+            )?
+        };
 
         if submodule_path_config_enabled(&store) {
             ensure_submodule_gitdir_config(work_tree, &store, &mut super_cfg, &sm.name)
@@ -3741,10 +3741,12 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
         jobs.push(SubmoduleCloneJob {
             resolved_url,
             extra_refs,
+            alternate_strategy,
             modules_dir,
             sub_dest,
             depth,
             overlay_existing,
+            ref_storage: submodule_ref_storage.clone(),
         });
     }
 
@@ -3774,6 +3776,7 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                 Some(&j.modules_dir),
                 true,
                 j.depth,
+                j.ref_storage.as_deref(),
             )?;
             if !status.success() {
                 anyhow::bail!(
@@ -3787,6 +3790,12 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                 &j.modules_dir,
                 &j.sub_dest,
             );
+            if let Some(strategy) = j.alternate_strategy.as_deref() {
+                crate::commands::submodule::write_submodule_alternate_inheritance_config(
+                    &j.modules_dir,
+                    strategy,
+                )?;
+            }
         }
     } else {
         let mut handles = Vec::new();
@@ -3817,6 +3826,7 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                         Some(&j.modules_dir),
                         true,
                         j.depth,
+                        j.ref_storage.as_deref(),
                     );
                     match st {
                         Ok(s) if s.success() => {
@@ -3825,6 +3835,13 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                                 &j.modules_dir,
                                 &j.sub_dest,
                             );
+                            if let Some(strategy) = j.alternate_strategy.as_deref() {
+                                crate::commands::submodule::write_submodule_alternate_inheritance_config(
+                                    &j.modules_dir,
+                                    strategy,
+                                )
+                                .map_err(|e| e.to_string())?;
+                            }
                         }
                         Ok(_) => {
                             return Err(format!(
@@ -3860,6 +3877,9 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
     crate::grit_exe::strip_trace2_env(&mut upd);
     upd.args(["submodule", "update", "--init", "--recursive", "--force"])
         .current_dir(work_tree);
+    if quiet {
+        upd.arg("--quiet");
+    }
     if let Some(n) = clone_args.jobs {
         upd.arg("--jobs").arg(n.to_string());
     }
@@ -3913,6 +3933,7 @@ fn overlay_clone_submodule_contents(
         None,
         false,
         depth,
+        None,
     )?;
     if !status.success() {
         let _ = fs::remove_dir_all(&tmp);
@@ -5136,8 +5157,40 @@ fn apply_clone_config(git_dir: &Path, configs: &[String]) -> Result<()> {
         }
     }
 
+    if config_bool_value(&config, "extensions.submodulepathconfig")
+        && config_repository_format_version(&config) == 0
+    {
+        config.set("core.repositoryformatversion", "1")?;
+    }
+
     config.write().context("writing config")?;
     Ok(())
+}
+
+fn config_bool_value(config: &ConfigFile, key: &str) -> bool {
+    config
+        .entries
+        .iter()
+        .rev()
+        .find(|e| e.key == key)
+        .and_then(|e| e.value.as_deref())
+        .is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "true" | "yes" | "on" | "1"
+            )
+        })
+}
+
+fn config_repository_format_version(config: &ConfigFile) -> u32 {
+    config
+        .entries
+        .iter()
+        .rev()
+        .find(|e| e.key == "core.repositoryformatversion")
+        .and_then(|e| e.value.as_deref())
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0)
 }
 
 fn effective_clone_server_options(args: &Args, remote_name: &str) -> Result<Vec<String>> {

@@ -137,10 +137,6 @@ fn run_with_top_opts(top: SubmoduleTopOpts, args: Args) -> Result<()> {
         }
         Some(SubmoduleCommand::Update(mut a)) => {
             a.quiet |= top.quiet;
-            // Top-level `git submodule update` recurses into nested submodules like Git even without
-            // `--recursive` (`submodule.recurse` default behavior). Programmatic callers set this
-            // explicitly via `UpdateArgs::implicit_recursive`.
-            a.implicit_recursive = true;
             run_update(&a)
         }
         Some(SubmoduleCommand::Add(mut a)) => {
@@ -179,10 +175,10 @@ fn run_with_top_opts(top: SubmoduleTopOpts, args: Args) -> Result<()> {
     }
 }
 use grit_lib::config::{canonical_key, ConfigFile, ConfigScope, ConfigSet};
-use grit_lib::diff::{diff_index_to_tree, DiffEntry, DiffStatus};
+use grit_lib::diff::{diff_index_to_tree, format_mode, head_path_states, DiffEntry, DiffStatus};
 use grit_lib::error::Error as LibError;
 use grit_lib::gitmodules::check_submodule_name;
-use grit_lib::index::{Index, MODE_GITLINK};
+use grit_lib::index::{Index, IndexEntry, MODE_GITLINK};
 use grit_lib::merge_diff::blob_oid_at_path;
 use grit_lib::objects::{parse_commit, parse_tree, ObjectId, ObjectKind};
 use grit_lib::refs;
@@ -274,11 +270,26 @@ fn grit_subprocess(grit_bin: &Path) -> Command {
     cmd
 }
 
+/// Spawn grit for a superproject operation from an explicit git-dir/work-tree pair.
+fn superproject_subprocess(grit_bin: &Path, repo: &Repository, work_tree: &Path) -> Command {
+    let mut cmd = Command::new(grit_bin);
+    cmd.env("GIT_DIR", &repo.git_dir)
+        .env("GIT_WORK_TREE", work_tree);
+    grit_exe::strip_trace2_env(&mut cmd);
+    cmd
+}
+
 static SUBMODULE_JOBS_TRACE_EMITTED: AtomicBool = AtomicBool::new(false);
 
-/// Best-effort `GIT_TRACE` line for `submodule update --jobs` (t7406 greps for `N tasks`).
-fn trace_submodule_job_tasks_if_needed(jobs: Option<usize>) {
-    let Some(n) = jobs else {
+/// Best-effort `GIT_TRACE` line for submodule worker counts (t7406 greps for `N tasks`).
+pub(crate) fn trace_submodule_job_tasks_if_needed(repo: Option<&Repository>, jobs: Option<usize>) {
+    let configured = repo.and_then(|r| {
+        ConfigSet::load(Some(&r.git_dir), true)
+            .ok()
+            .and_then(|cfg| cfg.get("submodule.fetchJobs"))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+    });
+    let Some(n) = jobs.or(configured) else {
         return;
     };
     let Ok(trace_target) = std::env::var("GIT_TRACE") else {
@@ -494,17 +505,25 @@ pub struct UpdateArgs {
     #[arg(long)]
     pub filter: Option<String>,
 
+    /// Ref storage backend for newly cloned submodules.
+    #[arg(long = "ref-format", value_name = "FORMAT")]
+    pub ref_format: Option<String>,
+
     /// Recurse into nested submodules.
     #[arg(long)]
     pub recursive: bool,
 
-    /// When true, recurse into nested submodules like `git submodule update` (even without `--recursive`).
+    /// Internal recursion override for callers that need nested submodule updates.
     #[arg(skip)]
     pub implicit_recursive: bool,
 
     /// Borrow objects from this repository (repeatable). Writes `objects/info/alternates` in cloned submodules.
     #[arg(long = "reference", value_name = "REPO", action = clap::ArgAction::Append)]
     pub reference: Vec<String>,
+
+    /// Borrow objects from reference repositories only to reduce network transfer, then copy them locally.
+    #[arg(long = "dissociate")]
+    pub dissociate: bool,
 
     /// Ignore `.gitmodules` shallow recommendations (still shallow when the superproject is shallow).
     #[arg(long = "no-recommend-shallow")]
@@ -544,6 +563,10 @@ pub struct AddArgs {
     /// Borrow the objects from reference repositories.
     #[arg(long = "dissociate")]
     pub dissociate: bool,
+
+    /// Ref storage backend for the cloned submodule.
+    #[arg(long = "ref-format", value_name = "FORMAT")]
+    pub ref_format: Option<String>,
 
     /// URL of the submodule repository.
     pub url: String,
@@ -708,9 +731,11 @@ pub(crate) fn update_after_superproject_merge(init: bool, recursive: bool) -> Re
         depth: None,
         jobs: None,
         filter: None,
+        ref_format: None,
         recursive,
         implicit_recursive: false,
         reference: vec![],
+        dissociate: false,
         no_recommend_shallow: false,
     })
 }
@@ -730,9 +755,11 @@ pub(crate) fn update_after_superproject_rebase(init: bool, recursive: bool) -> R
         depth: None,
         jobs: None,
         filter: None,
+        ref_format: None,
         recursive,
         implicit_recursive: false,
         reference: vec![],
+        dissociate: false,
         no_recommend_shallow: false,
     })
 }
@@ -864,7 +891,8 @@ pub fn run_submodule_helper(rest: &[String]) -> Result<()> {
                 submodule_helper_usage();
             }
             let path = &rest[1];
-            let name = get_default_remote_for_path(path)?;
+            let cwd = std::env::current_dir().context("current directory")?;
+            let name = get_default_remote_for_path_in_super(path, &cwd)?;
             println!("{name}");
             Ok(())
         }
@@ -1630,7 +1658,9 @@ fn checkout_submodule_worktree(
 }
 
 fn submodule_worktree_clean_for_update(modules_dir: &Path, sub_path: &Path) -> bool {
-    let Ok(sub_repo) = Repository::open(modules_dir, Some(sub_path)) else {
+    let sub_repo = Repository::open(modules_dir, Some(sub_path))
+        .or_else(|_| Repository::discover(Some(sub_path)));
+    let Ok(sub_repo) = sub_repo else {
         return false;
     };
     let Ok(index) = sub_repo.load_index() else {
@@ -1690,6 +1720,96 @@ fn attach_submodule_head_to_default_branch(
         &format!("branch.{branch_name}.merge"),
         &format!("refs/heads/{branch_name}"),
     )?;
+    config.write()?;
+    Ok(())
+}
+
+fn local_origin_head_branch(local_cfg: &ConfigFile, sub_path: &Path) -> Option<String> {
+    let url = config_last_value(local_cfg, "remote.origin.url")?;
+    let url = url.trim();
+    if url.is_empty()
+        || url.starts_with("ext::")
+        || url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("git://")
+        || crate::ssh_transport::is_configured_ssh_url(url)
+    {
+        return None;
+    }
+
+    let mut remote_path = if let Some(stripped) = url.strip_prefix("file://") {
+        PathBuf::from(stripped)
+    } else {
+        PathBuf::from(url)
+    };
+    if remote_path.is_relative() {
+        remote_path = sub_path.join(remote_path);
+    }
+    let remote_repo = Repository::open(&remote_path, None)
+        .or_else(|_| Repository::discover(Some(&remote_path)))
+        .ok()?;
+    match resolve_head(&remote_repo.git_dir).ok()? {
+        HeadState::Branch { short_name, .. } => Some(short_name),
+        _ => None,
+    }
+}
+
+fn local_repo_from_url(url: &str, base: &Path) -> Option<Repository> {
+    let url = url.trim();
+    if url.is_empty()
+        || url.starts_with("ext::")
+        || url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("git://")
+        || crate::ssh_transport::is_configured_ssh_url(url)
+    {
+        return None;
+    }
+    let mut path = if let Some(stripped) = url.strip_prefix("file://") {
+        PathBuf::from(stripped)
+    } else {
+        PathBuf::from(url)
+    };
+    if path.is_relative() {
+        path = base.join(path);
+    }
+    Repository::open(&path, None)
+        .or_else(|_| Repository::discover(Some(&path)))
+        .ok()
+}
+
+fn uploadpack_allows_reachable_sha1_in_want(git_dir: &Path) -> bool {
+    ConfigSet::load(Some(git_dir), true)
+        .ok()
+        .and_then(|cfg| cfg.get_bool("uploadpack.allowReachableSHA1InWant"))
+        .and_then(Result::ok)
+        .unwrap_or(false)
+}
+
+fn sync_remote_update_branch_for_decoration(
+    sub_git_dir: &Path,
+    branch: &str,
+    checked_out_oid: &str,
+    local_cfg: &ConfigFile,
+    sub_path: &Path,
+) -> Result<()> {
+    let oid = ObjectId::from_hex(checked_out_oid.trim())
+        .with_context(|| format!("invalid submodule checkout oid '{checked_out_oid}'"))?;
+    let branch_ref = format!("refs/heads/{branch}");
+    refs::write_ref(sub_git_dir, &branch_ref, &oid)?;
+
+    if local_origin_head_branch(local_cfg, sub_path).as_deref() == Some(branch) {
+        refs::write_symbolic_ref(sub_git_dir, "HEAD", &branch_ref)?;
+    }
+
+    let config_path = sub_git_dir.join("config");
+    let mut config = if config_path.exists() {
+        let content = fs::read_to_string(&config_path)?;
+        ConfigFile::parse(&config_path, &content, ConfigScope::Local)?
+    } else {
+        ConfigFile::parse(&config_path, "", ConfigScope::Local)?
+    };
+    config.set("grit.submoduleUpdateRemoteDecorations", "true")?;
     config.write()?;
     Ok(())
 }
@@ -2040,6 +2160,10 @@ fn submodule_fetch_origin_local_path(
             );
         }
     }
+    for (refname, oid) in refs::list_refs(remote_git, "refs/tags/")? {
+        refs::write_ref(&sub_git_dir, &refname, &oid)?;
+        roots.push(oid);
+    }
     roots.sort_by_key(|o| o.to_hex());
     roots.dedup();
 
@@ -2056,7 +2180,11 @@ fn submodule_fetch_origin_local_path(
         }
     }
 
-    crate::commands::fetch::copy_reachable_objects(remote_git, &sub_git_dir, &roots)?;
+    crate::commands::fetch::copy_reachable_objects_skipping_gitlinks(
+        remote_git,
+        &sub_git_dir,
+        &roots,
+    )?;
 
     Ok(true)
 }
@@ -2273,9 +2401,11 @@ pub(crate) fn ensure_submodule_modules_gitdir(repo: &Repository, rel: &str) -> R
                 depth: None,
                 jobs: None,
                 filter: None,
+                ref_format: None,
                 recursive: true,
                 implicit_recursive: false,
                 reference: vec![],
+                dissociate: false,
                 no_recommend_shallow: false,
             },
             None,
@@ -2306,9 +2436,11 @@ pub(crate) fn ensure_submodule_modules_gitdir(repo: &Repository, rel: &str) -> R
                 depth: None,
                 jobs: None,
                 filter: None,
+                ref_format: None,
                 recursive: true,
                 implicit_recursive: false,
                 reference: vec![],
+                dissociate: false,
                 no_recommend_shallow: false,
             },
             Some(sm_wt.clone()),
@@ -2324,16 +2456,13 @@ fn run_update(args: &UpdateArgs) -> Result<()> {
 /// Populate `objects/info/alternates` for a submodule git dir (matches `git clone --reference`).
 fn write_submodule_object_alternates(
     modules_dir: &Path,
-    super_git_dir: &Path,
+    _super_git_dir: &Path,
     reference_roots: &[PathBuf],
 ) -> Result<()> {
     let dst_info = modules_dir.join("objects/info");
     fs::create_dir_all(&dst_info)?;
 
-    let super_objects = super_git_dir.join("objects");
-    let super_objects_abs = super_objects.canonicalize().unwrap_or(super_objects);
-
-    let mut lines = vec![super_objects_abs.to_string_lossy().to_string()];
+    let mut lines = Vec::new();
     for root in reference_roots {
         let ref_git = if root.join("HEAD").exists() {
             root.clone()
@@ -2350,6 +2479,81 @@ fn write_submodule_object_alternates(
     let content = lines.join("\n") + "\n";
     fs::write(dst_info.join("alternates"), content)?;
     Ok(())
+}
+
+/// Derive a submodule reference gitdir from the superproject's alternate object stores.
+pub(crate) fn superproject_submodule_reference_roots(
+    super_git_dir: &Path,
+    submodule_logical_name: &str,
+) -> Result<Vec<PathBuf>> {
+    let Some(strategy) = superproject_submodule_alternate_error_strategy(super_git_dir)? else {
+        return Ok(Vec::new());
+    };
+
+    let objects_dir = super_git_dir.join("objects");
+    let alternates = grit_lib::pack::read_alternates_recursive(&objects_dir).unwrap_or_default();
+    let mut refs = Vec::new();
+    for alt_objects in alternates {
+        if alt_objects.file_name().and_then(|s| s.to_str()) != Some("objects") {
+            continue;
+        }
+        let Some(alt_git_dir) = alt_objects.parent() else {
+            continue;
+        };
+        let candidate = alt_git_dir.join("modules").join(submodule_logical_name);
+        let candidate = candidate.canonicalize().unwrap_or(candidate);
+        if candidate.join("HEAD").is_file() {
+            refs.push(candidate);
+            continue;
+        }
+        let msg = format!("path '{}' does not exist", candidate.display());
+        match strategy.as_str() {
+            "die" => {
+                bail!("fatal: submodule '{submodule_logical_name}' cannot add alternate: {msg}");
+            }
+            "info" => {
+                eprintln!("submodule '{submodule_logical_name}' cannot add alternate: {msg}");
+            }
+            _ => {}
+        }
+    }
+    Ok(refs)
+}
+
+/// Return the configured strategy for superproject-derived submodule alternates.
+pub(crate) fn superproject_submodule_alternate_error_strategy(
+    super_git_dir: &Path,
+) -> Result<Option<String>> {
+    let config_path = super_git_dir.join("config");
+    let config = match ConfigFile::from_path(&config_path, ConfigScope::Local)? {
+        Some(c) => c,
+        None => ConfigFile::parse(&config_path, "", ConfigScope::Local)?,
+    };
+    let loc = config_last_value(&config, "submodule.alternatelocation");
+    if !matches!(loc.as_deref(), Some("superproject")) {
+        return Ok(None);
+    }
+    Ok(Some(
+        config_last_value(&config, "submodule.alternateerrorstrategy")
+            .unwrap_or_else(|| "die".to_string()),
+    ))
+}
+
+/// Configure a submodule clone to derive nested alternates from its own superproject alternates.
+pub(crate) fn write_submodule_alternate_inheritance_config(
+    git_dir: &Path,
+    strategy: &str,
+) -> Result<()> {
+    let config_path = git_dir.join("config");
+    let mut config = match ConfigFile::from_path(&config_path, ConfigScope::Local)? {
+        Some(c) => c,
+        None => ConfigFile::parse(&config_path, "", ConfigScope::Local)?,
+    };
+    config.set("submodule.alternateLocation", "superproject")?;
+    config.set("submodule.alternateErrorStrategy", strategy)?;
+    config
+        .write()
+        .context("writing submodule alternate inheritance config")
 }
 
 /// Remove `core.worktree` from a separate submodule git dir (Git `submodule_unset_core_worktree`).
@@ -2500,18 +2704,7 @@ fn is_nonbare_repository_dir(dir: &Path) -> bool {
 /// Resolve the gitlink `HEAD` of a submodule work tree to a commit OID, returning `None` when the
 /// repository has no commit checked out (git: `repo_resolve_gitlink_ref(.., "HEAD") < 0`).
 fn submodule_resolve_gitlink_head(sub_path: &Path) -> Option<String> {
-    let head = read_submodule_head(sub_path)?;
-    let head = head.trim();
-    // An unborn branch resolves to a ref path that does not exist yet → no commit.
-    if head.is_empty() || head.starts_with("ref:") {
-        return None;
-    }
-    // 40-hex (sha1) or 64-hex (sha256) commit id.
-    if head.len() >= 40 && head.bytes().all(|b| b.is_ascii_hexdigit()) {
-        Some(head.to_string())
-    } else {
-        None
-    }
+    grit_lib::diff::read_submodule_head_oid(sub_path).map(|oid| oid.to_hex())
 }
 
 fn run_add(args: &AddArgs) -> Result<()> {
@@ -2598,7 +2791,7 @@ fn run_add(args: &AddArgs) -> Result<()> {
     // Without --force, mirror git's `add --dry-run --ignore-missing --no-warn-embedded-repo`
     // probe so .gitignore and index-lock errors surface with git's wording.
     if !args.force {
-        let out = grit_subprocess(&grit_bin)
+        let out = superproject_subprocess(&grit_bin, &repo, work_tree)
             .arg("add")
             .arg("--dry-run")
             .arg("--ignore-missing")
@@ -2678,6 +2871,10 @@ fn run_add(args: &AddArgs) -> Result<()> {
         ConfigFile::parse(&local_config_path, "", ConfigScope::Local)?
     };
 
+    if !args.force && config_last_value(&local_config, &format!("submodule.{name}.url")).is_some() {
+        bail!("submodule name '{name}' already used");
+    }
+
     if submodule_path_config_enabled(&store) {
         ensure_submodule_gitdir_config(work_tree, &store, &mut local_config, &name)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -2735,6 +2932,14 @@ fn run_add(args: &AddArgs) -> Result<()> {
                 outer.display()
             );
         }
+        if args.force && modules_dir.exists() {
+            fs::remove_dir_all(&modules_dir).with_context(|| {
+                format!(
+                    "could not remove existing submodule git dir '{}'",
+                    modules_dir.display()
+                )
+            })?;
+        }
         // Only create the parent directory; git clone --separate-git-dir
         // will create the modules_dir itself.
         if let Some(parent) = modules_dir.parent() {
@@ -2766,7 +2971,7 @@ fn run_add(args: &AddArgs) -> Result<()> {
                 )
             })?
         } else if args.url.starts_with("./") || args.url.starts_with("../") {
-            let relative_base = ConfigSet::load(Some(&repo.git_dir), true)
+            let origin_base = ConfigSet::load(Some(&repo.git_dir), true)
                 .ok()
                 .and_then(|cfg| cfg.get("remote.origin.url"))
                 .and_then(|origin| {
@@ -2779,18 +2984,24 @@ fn run_add(args: &AddArgs) -> Result<()> {
                     } else {
                         work_tree.join(origin_path)
                     })
-                })
-                .unwrap_or_else(|| cwd.clone());
-            relative_base
-                .join(&args.url)
-                .canonicalize()
-                .with_context(|| {
-                    format!(
+                });
+            let cwd_candidate = cwd.join(&args.url);
+            let origin_candidate = origin_base.as_ref().map(|base| base.join(&args.url));
+            match origin_candidate
+                .as_ref()
+                .and_then(|candidate| candidate.canonicalize().ok())
+                .or_else(|| cwd_candidate.canonicalize().ok())
+            {
+                Some(path) => path,
+                None => {
+                    let display_base = origin_base.as_ref().unwrap_or(&cwd);
+                    bail!(
                         "cannot resolve relative submodule URL '{}' from '{}'",
                         args.url,
-                        relative_base.display()
-                    )
-                })?
+                        display_base.display()
+                    );
+                }
+            }
         } else {
             PathBuf::from(&args.url)
         };
@@ -2813,6 +3024,9 @@ fn run_add(args: &AddArgs) -> Result<()> {
         if args.dissociate {
             clone_cmd.arg("--dissociate");
         }
+        if let Some(ref format) = args.ref_format {
+            clone_cmd.arg(format!("--ref-format={format}"));
+        }
         for r in &args.reference {
             clone_cmd.arg("--reference").arg(r);
         }
@@ -2829,6 +3043,24 @@ fn run_add(args: &AddArgs) -> Result<()> {
         set_separate_gitdir_worktree(&grit_bin, &modules_dir, &sub_path);
     }
 
+    if let Some(ref branch) = args.branch {
+        let modules_dir = submodule_separate_git_dir(&repo, work_tree, &name, &path)?;
+        let remote_branch = format!("refs/remotes/origin/{branch}");
+        if let Ok(remote_tip) = refs::resolve_ref(&modules_dir, &remote_branch) {
+            checkout_submodule_worktree(
+                &grit_bin,
+                &repo,
+                work_tree,
+                &name,
+                &path,
+                &name,
+                &remote_tip.to_hex(),
+                args.quiet,
+            )?;
+            let _ = attach_submodule_head_to_named_branch(&modules_dir, branch);
+        }
+    }
+
     // Update .gitmodules.
     let gitmodules_path = work_tree.join(".gitmodules");
     let mut config = if gitmodules_path.exists() {
@@ -2840,10 +3072,14 @@ fn run_add(args: &AddArgs) -> Result<()> {
 
     config.set(&format!("submodule.{name}.path"), &path)?;
     config.set(&format!("submodule.{name}.url"), &args.url)?;
+    if let Some(ref branch) = args.branch {
+        config.set(&format!("submodule.{name}.branch"), branch)?;
+    }
     config.write()?;
 
     // Also register the submodule in the local .git/config (like git does).
-    local_config.set(&format!("submodule.{name}.url"), &args.url)?;
+    let local_url = resolve_submodule_super_url(work_tree, &repo.git_dir, &args.url)?;
+    local_config.set(&format!("submodule.{name}.url"), &local_url)?;
     if grit_lib::submodule_active::submodule_add_should_set_active(&repo, &path) {
         local_config.set(&format!("submodule.{name}.active"), "true")?;
     }
@@ -2853,7 +3089,7 @@ fn run_add(args: &AddArgs) -> Result<()> {
     // the add doesn't warn about the embedded git repository we just cloned on purpose. With
     // --force, pass `add --force` so an "ignore everything" .gitignore does not block staging
     // the submodule / `.gitmodules` (git's configure_added_submodule forces the gitlink add).
-    let mut add_cmd = Command::new(&grit_bin);
+    let mut add_cmd = superproject_subprocess(&grit_bin, &repo, work_tree);
     add_cmd.arg("add").arg("--no-warn-embedded-repo");
     if args.force {
         add_cmd.arg("--force");
@@ -2867,7 +3103,24 @@ fn run_add(args: &AddArgs) -> Result<()> {
         .context("failed to stage submodule")?;
 
     if !status.success() {
-        bail!("failed to stage submodule");
+        if let Some(oid) = read_submodule_head(&sub_path) {
+            let mut add_gitmodules = superproject_subprocess(&grit_bin, &repo, work_tree);
+            add_gitmodules
+                .arg("add")
+                .arg("--")
+                .arg(".gitmodules")
+                .current_dir(work_tree);
+            if !add_gitmodules
+                .status()
+                .context("failed to stage .gitmodules")?
+                .success()
+            {
+                bail!("failed to stage submodule");
+            }
+            stage_new_gitlink_in_super_index(&repo, work_tree, &path, &oid)?;
+        } else {
+            bail!("failed to stage submodule");
+        }
     }
 
     // `clone --no-checkout` leaves an empty work tree; populate it from the staged gitlink
@@ -2884,6 +3137,42 @@ fn run_add(args: &AddArgs) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn stage_new_gitlink_in_super_index(
+    repo: &Repository,
+    work_tree: &Path,
+    rel_path: &str,
+    oid_hex: &str,
+) -> Result<()> {
+    let oid = ObjectId::from_hex(oid_hex.trim())
+        .with_context(|| format!("invalid submodule OID '{oid_hex}' for path '{rel_path}'"))?;
+    let abs = work_tree.join(rel_path);
+    let meta = std::fs::metadata(&abs)
+        .with_context(|| format!("stat submodule path '{}'", abs.display()))?;
+    let index_path = repo.index_path();
+    let mut index = repo.load_index_at(&index_path)?;
+    index.remove_descendants_under_path(rel_path);
+    let entry = IndexEntry {
+        ctime_sec: meta.ctime() as u32,
+        ctime_nsec: meta.ctime_nsec() as u32,
+        mtime_sec: meta.mtime() as u32,
+        mtime_nsec: meta.mtime_nsec() as u32,
+        dev: meta.dev() as u32,
+        ino: meta.ino() as u32,
+        mode: MODE_GITLINK,
+        uid: meta.uid(),
+        gid: meta.gid(),
+        size: 0,
+        oid,
+        flags: rel_path.len().min(0xFFF) as u16,
+        flags_extended: None,
+        path: rel_path.as_bytes().to_vec(),
+        base_index_pos: 0,
+    };
+    index.add_or_replace(entry);
+    repo.write_index_at(&index_path, &mut index)?;
     Ok(())
 }
 
@@ -3968,11 +4257,22 @@ fn short_oid_in_submodule(grit_bin: &Path, sub_path: &Path, committish: &str) ->
 }
 
 fn submodule_rev_list_count(grit_bin: &Path, sub_path: &Path, range: &str) -> Result<i32> {
-    let out = grit_subprocess(grit_bin)
-        .args(["rev-list", "--first-parent", "--count", range, "--"])
+    submodule_rev_list_count_args(grit_bin, sub_path, &[range])
+}
+
+fn submodule_rev_list_count_args(grit_bin: &Path, sub_path: &Path, revs: &[&str]) -> Result<i32> {
+    let mut args = vec!["rev-list", "--first-parent", "--count"];
+    args.extend_from_slice(revs);
+    args.push("--");
+    let out = match grit_subprocess(grit_bin)
+        .args(args)
         .current_dir(sub_path)
         .output()
-        .context("rev-list --count in submodule")?;
+    {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(-1),
+        Err(e) => return Err(e).context("rev-list --count in submodule"),
+    };
     if !out.status.success() {
         return Ok(-1);
     }
@@ -3983,6 +4283,30 @@ fn submodule_rev_list_count(grit_bin: &Path, sub_path: &Path, range: &str) -> Re
     Ok(n)
 }
 
+fn submodule_log_side(
+    grit_bin: &Path,
+    sub_path: &Path,
+    include: &str,
+    exclude: &str,
+    prefix: char,
+    summary_limit: i32,
+) -> Result<()> {
+    let mut cmd = grit_subprocess(grit_bin);
+    cmd.current_dir(sub_path);
+    cmd.arg("log");
+    if summary_limit > 0 {
+        cmd.arg(format!("-{summary_limit}"));
+    }
+    let pretty = format!("--pretty=  {} %s", prefix);
+    let exclude = format!("^{exclude}");
+    cmd.args(["--first-parent", &pretty, include, &exclude, "--"]);
+    let st = cmd.status().context("submodule log for summary")?;
+    if !st.success() {
+        bail!("submodule log failed");
+    }
+    Ok(())
+}
+
 fn submodule_log_first_parent(
     grit_bin: &Path,
     sub_path: &Path,
@@ -3990,17 +4314,29 @@ fn submodule_log_first_parent(
     dst_abbrev: &str,
     summary_limit: i32,
 ) -> Result<()> {
-    let range = format!("{src_abbrev}...{dst_abbrev}");
-    let mut cmd = grit_subprocess(grit_bin);
-    cmd.current_dir(sub_path);
-    cmd.arg("log");
-    if summary_limit > 0 {
-        cmd.arg(format!("-{summary_limit}"));
+    let right_exclude = format!("^{src_abbrev}");
+    let left_exclude = format!("^{dst_abbrev}");
+    let right_count =
+        submodule_rev_list_count_args(grit_bin, sub_path, &[dst_abbrev, &right_exclude])?;
+    let left_count =
+        submodule_rev_list_count_args(grit_bin, sub_path, &[src_abbrev, &left_exclude])?;
+
+    let right_limit = if summary_limit > 0 { summary_limit } else { -1 };
+    if right_count != 0 {
+        submodule_log_side(grit_bin, sub_path, dst_abbrev, src_abbrev, '>', right_limit)?;
     }
-    cmd.args(["--pretty=  %m %s", "--first-parent", &range, "--"]);
-    let st = cmd.status().context("submodule log for summary")?;
-    if !st.success() {
-        bail!("submodule log failed");
+
+    let left_limit = if summary_limit > 0 {
+        let remaining = summary_limit - right_count.max(0);
+        if remaining <= 0 {
+            return Ok(());
+        }
+        remaining
+    } else {
+        -1
+    };
+    if left_count != 0 {
+        submodule_log_side(grit_bin, sub_path, src_abbrev, dst_abbrev, '<', left_limit)?;
     }
     Ok(())
 }
@@ -4048,7 +4384,45 @@ fn pathspec_selected(pathspecs: &[String], sm_path: &str) -> bool {
     if pathspecs.is_empty() {
         return true;
     }
+    if pathspecs.iter().any(|p| p == ".") {
+        return true;
+    }
     grit_lib::pathspec::matches_pathspec_list(sm_path, pathspecs)
+}
+
+fn summary_pathspec_from_cwd(work_tree: &Path, cwd: &Path, raw: &str) -> Option<String> {
+    if raw.starts_with(':') {
+        return Some(raw.to_string());
+    }
+    if raw == "." {
+        let rel = cwd.strip_prefix(work_tree).ok()?;
+        let s = rel
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        return Some(if s.is_empty() { ".".to_string() } else { s });
+    }
+    normalize_submodule_path_arg(work_tree, cwd, raw)
+}
+
+fn summary_arg_matches_gitlink(
+    work_tree: &Path,
+    cwd: &Path,
+    gitlinks: &[String],
+    raw: &str,
+) -> bool {
+    let Some(norm) = summary_pathspec_from_cwd(work_tree, cwd, raw) else {
+        return false;
+    };
+    if norm == "." {
+        return true;
+    }
+    gitlinks
+        .iter()
+        .any(|g| *g == norm || g.starts_with(&format!("{norm}/")))
+}
+
+fn summary_display_path_from_cwd(work_tree: &Path, cwd: &Path, sm_path: &str) -> String {
+    rev_parse::to_relative_path(&work_tree.join(sm_path), cwd).replace('\\', "/")
 }
 
 /// Working tree directory for a submodule given the path Git uses in the summary diff (often the
@@ -4161,31 +4535,52 @@ fn run_summary(args: &SummaryArgs, _quiet: bool) -> Result<()> {
     let repo = Repository::discover(None).context("not a git repository")?;
     let work_tree = repo.work_tree.as_ref().context("bare repository")?;
     let grit_bin = grit_exe::grit_executable();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| work_tree.to_path_buf());
+    let gitlinks = index_gitlink_paths(&repo);
 
     let mut commit_spec = "HEAD";
     let pathspecs: Vec<String> = if let Some(p) = args.rest.iter().position(|x| x.as_str() == "--")
     {
         let head_tokens = &args.rest[..p];
-        let tail = args.rest[p + 1..].to_vec();
+        let tail: Vec<String> = args.rest[p + 1..]
+            .iter()
+            .filter_map(|raw| summary_pathspec_from_cwd(work_tree, &cwd, raw))
+            .collect();
         if head_tokens.is_empty() {
             tail
-        } else if resolve_revision(&repo, &head_tokens[0]).is_ok() {
+        } else if !summary_arg_matches_gitlink(work_tree, &cwd, &gitlinks, &head_tokens[0])
+            && resolve_revision(&repo, &head_tokens[0]).is_ok()
+        {
             commit_spec = head_tokens[0].as_str();
-            let mut ps: Vec<String> = head_tokens[1..].to_vec();
+            let mut ps: Vec<String> = head_tokens[1..]
+                .iter()
+                .filter_map(|raw| summary_pathspec_from_cwd(work_tree, &cwd, raw))
+                .collect();
             ps.extend(tail);
             ps
         } else {
-            let mut ps = head_tokens.to_vec();
+            let mut ps: Vec<String> = head_tokens
+                .iter()
+                .filter_map(|raw| summary_pathspec_from_cwd(work_tree, &cwd, raw))
+                .collect();
             ps.extend(tail);
             ps
         }
     } else if args.rest.is_empty() {
         vec![]
-    } else if resolve_revision(&repo, &args.rest[0]).is_ok() {
+    } else if !summary_arg_matches_gitlink(work_tree, &cwd, &gitlinks, &args.rest[0])
+        && resolve_revision(&repo, &args.rest[0]).is_ok()
+    {
         commit_spec = args.rest[0].as_str();
-        args.rest[1..].to_vec()
+        args.rest[1..]
+            .iter()
+            .filter_map(|raw| summary_pathspec_from_cwd(work_tree, &cwd, raw))
+            .collect()
     } else {
-        args.rest.clone()
+        args.rest
+            .iter()
+            .filter_map(|raw| summary_pathspec_from_cwd(work_tree, &cwd, raw))
+            .collect()
     };
 
     let base_tree_oid = resolve_summary_base_tree(&repo, commit_spec)?;
@@ -4211,29 +4606,42 @@ fn run_summary(args: &SummaryArgs, _quiet: bool) -> Result<()> {
         // index gitlinks directly, NOT `.gitmodules` (which may be empty/unregistered — t7508).
         let mut out = Vec::new();
         for ie in &index.entries {
-            if ie.stage() != 0 || ie.mode != MODE_GITLINK || ie.skip_worktree() {
+            if ie.stage() != 0 || ie.skip_worktree() {
                 continue;
             }
             let path_str = String::from_utf8_lossy(&ie.path).into_owned();
             let sub_path = work_tree.join(&path_str);
-            let dst_oid = if let Some(h) = grit_lib::diff::read_submodule_head_oid(&sub_path) {
-                h
-            } else {
-                ObjectId::zero()
-            };
-            if ie.oid == dst_oid {
-                continue;
+            if ie.mode == MODE_GITLINK {
+                let dst_oid = if let Some(h) = grit_lib::diff::read_submodule_head_oid(&sub_path) {
+                    h
+                } else {
+                    ObjectId::zero()
+                };
+                if ie.oid == dst_oid {
+                    continue;
+                }
+                out.push(DiffEntry {
+                    status: DiffStatus::Modified,
+                    old_path: Some(path_str.clone()),
+                    new_path: Some(path_str),
+                    old_mode: format_mode(MODE_GITLINK),
+                    new_mode: format_mode(MODE_GITLINK),
+                    old_oid: ie.oid,
+                    new_oid: dst_oid,
+                    score: None,
+                });
+            } else if let Some(dst_oid) = grit_lib::diff::read_submodule_head_oid(&sub_path) {
+                out.push(DiffEntry {
+                    status: DiffStatus::TypeChanged,
+                    old_path: Some(path_str.clone()),
+                    new_path: Some(path_str),
+                    old_mode: format_mode(ie.mode),
+                    new_mode: format_mode(MODE_GITLINK),
+                    old_oid: ie.oid,
+                    new_oid: dst_oid,
+                    score: None,
+                });
             }
-            out.push(DiffEntry {
-                status: DiffStatus::Modified,
-                old_path: Some(path_str.clone()),
-                new_path: Some(path_str),
-                old_mode: format!("{:o}", MODE_GITLINK),
-                new_mode: format!("{:o}", MODE_GITLINK),
-                old_oid: ie.oid,
-                new_oid: dst_oid,
-                score: None,
-            });
         }
         out.sort_by(|a, b| a.path().cmp(b.path()));
         out
@@ -4280,6 +4688,59 @@ fn run_summary(args: &SummaryArgs, _quiet: bool) -> Result<()> {
                 entries.extend(extra);
                 entries.sort_by(|a, b| a.path().cmp(b.path()));
             }
+
+            let head_states = head_path_states(&repo.odb, base_tree_oid.as_ref())?;
+            let mut replacements: Vec<DiffEntry> = Vec::new();
+            for ie in &index.entries {
+                if ie.stage() != 0 || ie.skip_worktree() {
+                    continue;
+                }
+                let path_str = String::from_utf8_lossy(&ie.path).into_owned();
+                let sub_path = work_tree.join(&path_str);
+                if let Some(sub_head) = grit_lib::diff::read_submodule_head_oid(&sub_path) {
+                    if ie.mode == MODE_GITLINK && ie.oid == sub_head {
+                        continue;
+                    }
+                    let (old_mode, old_oid) = head_states
+                        .get(&path_str)
+                        .copied()
+                        .unwrap_or((0, ObjectId::zero()));
+                    let status = if old_mode == 0 {
+                        DiffStatus::Added
+                    } else if old_mode != MODE_GITLINK {
+                        DiffStatus::TypeChanged
+                    } else {
+                        DiffStatus::Modified
+                    };
+                    replacements.push(DiffEntry {
+                        status,
+                        old_path: (old_mode != 0).then_some(path_str.clone()),
+                        new_path: Some(path_str),
+                        old_mode: format_mode(old_mode),
+                        new_mode: format_mode(MODE_GITLINK),
+                        old_oid,
+                        new_oid: sub_head,
+                        score: None,
+                    });
+                } else if ie.mode == MODE_GITLINK && !work_tree.join(&path_str).exists() {
+                    replacements.push(DiffEntry {
+                        status: DiffStatus::Deleted,
+                        old_path: Some(path_str.clone()),
+                        new_path: None,
+                        old_mode: format_mode(MODE_GITLINK),
+                        new_mode: "000000".to_owned(),
+                        old_oid: ie.oid,
+                        new_oid: ObjectId::zero(),
+                        score: None,
+                    });
+                }
+            }
+            for replacement in replacements {
+                let key = replacement.path().to_string();
+                entries.retain(|e| e.path() != key);
+                entries.push(replacement);
+            }
+            entries.sort_by(|a, b| a.path().cmp(b.path()));
         }
         entries
     };
@@ -4295,6 +4756,7 @@ fn run_summary(args: &SummaryArgs, _quiet: bool) -> Result<()> {
         if !pathspec_selected(&pathspecs, sm_path) {
             continue;
         }
+        let display_path = summary_display_path_from_cwd(work_tree, &cwd, sm_path);
 
         if args.for_status
             && e.status != DiffStatus::Added
@@ -4307,21 +4769,25 @@ fn run_summary(args: &SummaryArgs, _quiet: bool) -> Result<()> {
             continue;
         }
 
+        let oid_src = e.old_oid;
+        let mut oid_dst = e.new_oid;
+        let src_gitlink = mode_is_gitlink(&e.old_mode);
+        let dst_gitlink = mode_is_gitlink(&e.new_mode);
+
         let sub_path = submodule_work_tree_for_summary(work_tree, sm_path);
-        if !args.cached && !sub_path.join(".git").exists() {
+        if !args.cached
+            && !sub_path.join(".git").exists()
+            && !oid_dst.is_zero()
+            && src_gitlink == dst_gitlink
+        {
             continue;
         }
 
-        let oid_src = e.old_oid;
-        let mut oid_dst = e.new_oid;
         if !args.cached && oid_dst.is_zero() && mode_is_gitlink(&e.new_mode) {
             if let Some(h) = grit_lib::diff::read_submodule_head_oid(&sub_path) {
                 oid_dst = h;
             }
         }
-
-        let src_gitlink = mode_is_gitlink(&e.old_mode);
-        let dst_gitlink = mode_is_gitlink(&e.new_mode);
 
         let src_hex = oid_src.to_hex();
         let dst_hex = oid_dst.to_hex();
@@ -4330,27 +4796,57 @@ fn run_summary(args: &SummaryArgs, _quiet: bool) -> Result<()> {
         let dst_abbrev = short_oid_in_submodule(&grit_bin, &sub_path, &dst_hex)
             .unwrap_or_else(|| dst_hex.chars().take(7).collect());
 
-        if e.status == DiffStatus::TypeChanged {
+        let null_side = oid_src.is_zero() || oid_dst.is_zero();
+        if (!null_side && src_gitlink != dst_gitlink) || e.status == DiffStatus::TypeChanged {
+            let gitlink_abbrev = if src_gitlink {
+                src_abbrev.as_str()
+            } else {
+                dst_abbrev.as_str()
+            };
+            let gitlink_count = if (src_gitlink || dst_gitlink) && sub_path.join(".git").exists() {
+                submodule_rev_list_count(&grit_bin, &sub_path, gitlink_abbrev).unwrap_or(-1)
+            } else {
+                -1
+            };
             if dst_gitlink && !src_gitlink {
-                writeln!(
+                write!(
                     out,
                     "* {} {}(blob)->{}(submodule)",
-                    sm_path, src_abbrev, dst_abbrev
+                    display_path, src_abbrev, dst_abbrev
                 )?;
+                if gitlink_count >= 0 {
+                    write!(out, " ({gitlink_count})")?;
+                }
+                writeln!(out, ":")?;
+                if gitlink_count > 0 {
+                    out.flush()?;
+                    submodule_log_one(&grit_bin, &sub_path, &dst_abbrev, '>')?;
+                }
             } else if src_gitlink && !dst_gitlink {
-                writeln!(
+                write!(
                     out,
                     "* {} {}(submodule)->{}(blob)",
-                    sm_path, src_abbrev, dst_abbrev
+                    display_path, src_abbrev, dst_abbrev
                 )?;
+                if gitlink_count >= 0 {
+                    write!(out, " ({gitlink_count})")?;
+                }
+                writeln!(out, ":")?;
+                if gitlink_count > 0 {
+                    out.flush()?;
+                    submodule_log_one(&grit_bin, &sub_path, &src_abbrev, '<')?;
+                }
             } else {
-                writeln!(out, "* {} {}...{}", sm_path, src_abbrev, dst_abbrev)?;
+                writeln!(out, "* {} {}...{}", display_path, src_abbrev, dst_abbrev)?;
             }
             writeln!(out)?;
             continue;
         }
 
-        let total_commits = if !src_abbrev.is_empty() && !dst_abbrev.is_empty() {
+        let submodule_repo_exists = sub_path.join(".git").exists();
+        let total_commits = if !submodule_repo_exists {
+            -1
+        } else if !src_abbrev.is_empty() && !dst_abbrev.is_empty() {
             if src_gitlink && dst_gitlink {
                 submodule_rev_list_count(
                     &grit_bin,
@@ -4364,7 +4860,7 @@ fn run_summary(args: &SummaryArgs, _quiet: bool) -> Result<()> {
             -1
         };
 
-        write!(out, "* {} {}...{}", sm_path, src_abbrev, dst_abbrev)?;
+        write!(out, "* {} {}...{}", display_path, src_abbrev, dst_abbrev)?;
         if total_commits < 0 {
             writeln!(out, ":")?;
         } else {
@@ -4386,6 +4882,12 @@ fn run_summary(args: &SummaryArgs, _quiet: bool) -> Result<()> {
             } else {
                 submodule_log_one(&grit_bin, &sub_path, &src_abbrev, '<')?;
             }
+        } else if total_commits < 0 && submodule_repo_exists && src_gitlink && dst_gitlink {
+            writeln!(
+                out,
+                "  Warn: {} doesn't contain commit {}",
+                display_path, src_hex
+            )?;
         }
         writeln!(out)?;
     }

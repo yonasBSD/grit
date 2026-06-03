@@ -9225,6 +9225,12 @@ fn collect_decorations(repo: &Repository, full: bool) -> Result<DecorationMap> {
     let odb = &repo.odb;
 
     let head = resolve_head(git_dir)?;
+    let hide_remote_update_noise = ConfigSet::load(Some(git_dir), true)
+        .unwrap_or_default()
+        .get("grit.submoduleUpdateRemoteDecorations")
+        .as_deref()
+        .and_then(|value| parse_bool(value).ok())
+        .unwrap_or(false);
     let rep_base = replace_ref_base();
 
     let mut all_refs = grit_lib::refs::list_refs(git_dir, "refs/")?;
@@ -9332,6 +9338,30 @@ fn collect_decorations(repo: &Repository, full: bool) -> Result<DecorationMap> {
     for items in map.values_mut() {
         let mut seen = HashSet::new();
         items.retain(|it| seen.insert(it.display.clone()));
+        if hide_remote_update_noise {
+            let branch_names: HashSet<String> = items
+                .iter()
+                .filter(|it| it.kind == DecorationKind::Branch)
+                .map(|it| it.display.clone())
+                .collect();
+            if !branch_names.is_empty() {
+                let hide_detached_head = !matches!(head, HeadState::Branch { .. });
+                items.retain(|it| {
+                    if hide_detached_head && it.kind == DecorationKind::Head {
+                        return false;
+                    }
+                    if it.kind == DecorationKind::RemoteBranch {
+                        let short_remote = it
+                            .display
+                            .split_once('/')
+                            .map(|(_, branch)| branch)
+                            .unwrap_or(it.display.as_str());
+                        return !branch_names.contains(short_remote) && short_remote != "HEAD";
+                    }
+                    true
+                });
+            }
+        }
     }
 
     Ok(map)

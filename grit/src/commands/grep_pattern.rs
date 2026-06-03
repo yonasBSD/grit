@@ -81,6 +81,10 @@ pub(crate) fn extract_pattern_tokens(rest: &[String]) -> Result<(Vec<PatternToke
                     i += 1;
                 }
             }
+            _ if a.starts_with("-e") && a.len() > 2 => {
+                tokens.push(PatternToken::Atom(a[2..].to_string()));
+                i += 1;
+            }
             "-f" | "--file" => {
                 if i + 1 < rest.len() {
                     let path = &rest[i + 1];

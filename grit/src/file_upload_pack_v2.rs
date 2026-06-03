@@ -50,6 +50,8 @@ fn spawn_upload_pack_readonly(
     let base = |c: &mut Command| {
         strip_trace2_env(c);
         c.env("GIT_PROTOCOL", "version=2")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());

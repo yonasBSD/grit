@@ -17,6 +17,7 @@ use grit_lib::config::ConfigSet;
 use grit_lib::index::{MODE_GITLINK, MODE_TREE};
 use grit_lib::merge_diff::{blob_text_for_diff, blob_text_for_diff_with_oid, diff_textconv_active};
 use grit_lib::objects::{parse_commit, parse_tree, ObjectId, ObjectKind};
+use grit_lib::promisor::repo_treats_promisor_packs;
 use grit_lib::refs::resolve_ref;
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse::{discover_optional, resolve_revision, show_prefix, split_treeish_colon};
@@ -449,6 +450,7 @@ fn run_inner(pattern_tokens: Vec<PatternToken>, mut args: Args) -> Result<()> {
     let repo_ref = repo.as_ref();
     let (first_pos_pattern, tree_ish, mut pathspecs) =
         parse_positional(&args, repo_ref, has_peeled_patterns)?;
+    let user_supplied_pathspecs = !pathspecs.is_empty();
     let cwd = std::env::current_dir().context("cannot get current directory")?;
     if let Some(r) = repo_ref {
         pathspecs = pathspecs_relative_to_cwd(r, &pathspecs);
@@ -480,10 +482,15 @@ fn run_inner(pattern_tokens: Vec<PatternToken>, mut args: Args) -> Result<()> {
     });
     // `pathspecs_relative_to_cwd` already rebased user pathspecs to repo-relative paths; do not
     // apply `show_prefix` again in `resolve_pathspec` (would double-prefix under subdirs, t7810 -f).
+    let resolve_prefix = if user_supplied_pathspecs {
+        None
+    } else {
+        pathspec_prefix.as_deref()
+    };
     pathspecs = if let Some(wt) = repo_ref.and_then(|r| r.work_tree.as_ref()) {
         pathspecs
             .into_iter()
-            .map(|p| resolve_pathspec(&p, wt, pathspec_prefix.as_deref()))
+            .map(|p| resolve_pathspec(&p, wt, resolve_prefix))
             .collect()
     } else {
         pathspecs
@@ -619,7 +626,7 @@ fn run_inner(pattern_tokens: Vec<PatternToken>, mut args: Args) -> Result<()> {
                 .or_else(|_| resolve_ref(&repo.git_dir, &format!("refs/heads/{tree_spec}")))
                 .with_context(|| format!("not a valid revision: '{tree_spec}'"))?;
 
-            let obj = repo.odb.read(&oid)?;
+            let obj = read_object_for_grep(repo, &oid)?;
             let tree_oid = if obj.kind == ObjectKind::Commit {
                 let commit = parse_commit(&obj.data)?;
                 commit.tree
@@ -629,7 +636,7 @@ fn run_inner(pattern_tokens: Vec<PatternToken>, mut args: Args) -> Result<()> {
                 bail!("'{}' is not a tree-ish", tree_spec);
             };
 
-            let tree_obj = repo.odb.read(&tree_oid)?;
+            let tree_obj = read_object_for_grep(repo, &tree_oid)?;
             let diff_attrs = if let Some(ref wt) = repo.work_tree {
                 let wt_attrs = load_diff_attrs(wt);
                 if wt_attrs.is_empty() {
@@ -929,7 +936,11 @@ fn grep_cached(
             is_directory: false,
             is_git_submodule: is_submodule,
         };
-        if !pathspecs.is_empty() && !any_pathspec_matches(&full_path, pathspecs, ps_ctx) {
+        let pathspec_matches_path =
+            pathspecs.is_empty() || any_pathspec_matches(&full_path, pathspecs, ps_ctx);
+        let pathspec_matches_descendant =
+            is_submodule && pathspec_may_match_descendant(&full_path, pathspecs);
+        if !pathspec_matches_path && !pathspec_matches_descendant {
             continue;
         }
 
@@ -950,12 +961,17 @@ fn grep_cached(
                 if let Some(work_tree) = &repo.work_tree {
                     let sub_path = work_tree.join(&path_str);
                     if let Ok(sub_repo) = open_submodule_repo(&sub_path) {
+                        let child_pathspecs: &[String] = if pathspec_matches_path {
+                            &[]
+                        } else {
+                            pathspecs
+                        };
                         if grep_cached(
                             &sub_repo,
                             &format!("{full_path}/"),
                             compiled,
                             args,
-                            pathspecs,
+                            child_pathspecs,
                             need_sep,
                             out,
                             open_paths,
@@ -975,7 +991,7 @@ fn grep_cached(
         }
 
         if entry.stage() != 0 && entry.mode != MODE_GITLINK && entry.mode != MODE_TREE {
-            let obj = match repo.odb.read(&entry.oid) {
+            let obj = match read_object_for_grep(repo, &entry.oid) {
                 Ok(o) => o,
                 Err(_) => continue,
             };
@@ -1044,7 +1060,7 @@ fn grep_cached(
             continue;
         }
 
-        let obj = match repo.odb.read(&entry.oid) {
+        let obj = match read_object_for_grep(repo, &entry.oid) {
             Ok(o) => o,
             Err(_) => continue,
         };
@@ -1149,7 +1165,11 @@ fn grep_worktree(
             is_directory: false,
             is_git_submodule: is_submodule,
         };
-        if !pathspecs.is_empty() && !any_pathspec_matches(&full_rel, pathspecs, ps_ctx) {
+        let pathspec_matches_path =
+            pathspecs.is_empty() || any_pathspec_matches(&full_rel, pathspecs, ps_ctx);
+        let pathspec_matches_descendant =
+            is_submodule && pathspec_may_match_descendant(&full_rel, pathspecs);
+        if !pathspec_matches_path && !pathspec_matches_descendant {
             continue;
         }
 
@@ -1168,12 +1188,17 @@ fn grep_worktree(
                     continue;
                 }
                 if let Ok(sub_repo) = open_submodule_repo(&sub_path) {
+                    let child_pathspecs: &[String] = if pathspec_matches_path {
+                        &[]
+                    } else {
+                        pathspecs
+                    };
                     if grep_worktree(
                         &sub_repo,
                         &format!("{display_path}/"),
                         compiled,
                         args,
-                        pathspecs,
+                        child_pathspecs,
                         need_sep,
                         out,
                         open_paths,
@@ -1280,7 +1305,7 @@ fn grep_worktree(
             if entry.intent_to_add() {
                 continue;
             }
-            let obj = match repo.odb.read(&entry.oid) {
+            let obj = match read_object_for_grep(repo, &entry.oid) {
                 Ok(o) => o,
                 Err(_) => continue,
             };
@@ -1671,6 +1696,24 @@ fn any_pathspec_matches(
     grit_lib::pathspec::matches_pathspec_list_with_context(path, pathspecs, ctx)
 }
 
+fn pathspec_may_match_descendant(path: &str, pathspecs: &[String]) -> bool {
+    if pathspecs.is_empty() {
+        return true;
+    }
+    let probes = [
+        format!("{path}/a"),
+        format!("{path}/file"),
+        format!("{path}/sub/a"),
+    ];
+    probes.iter().any(|probe| {
+        any_pathspec_matches(
+            probe,
+            pathspecs,
+            grit_lib::pathspec::PathspecMatchContext::default(),
+        )
+    })
+}
+
 /// Collapse `.`, `..`, and empty segments in a `/`-separated repo-relative path.
 fn normalize_repo_rel_path(path: &str) -> String {
     let mut stack: Vec<&str> = Vec::new();
@@ -2047,6 +2090,62 @@ fn open_submodule_repo(sub_path: &Path) -> Result<Repository> {
     }
 }
 
+fn open_submodule_repo_at_path(
+    repo: &Repository,
+    work_tree: &Path,
+    tree_path: &str,
+    local_name: &str,
+) -> Result<Repository> {
+    for candidate in [tree_path, local_name] {
+        let sub_path = work_tree.join(candidate);
+        if let Ok(sub_repo) = open_submodule_repo(&sub_path) {
+            return Ok(sub_repo);
+        }
+    }
+    for candidate in [tree_path, local_name] {
+        let git_dir = repo.git_dir.join("modules").join(candidate);
+        let sub_path = work_tree.join(candidate);
+        if let Ok(sub_repo) = Repository::open(&git_dir, Some(&sub_path)) {
+            return Ok(sub_repo);
+        }
+    }
+    anyhow::bail!("failed to open submodule at {tree_path}")
+}
+
+fn read_object_for_grep(
+    repo: &Repository,
+    oid: &ObjectId,
+) -> grit_lib::error::Result<grit_lib::objects::Object> {
+    match repo.read_replaced(oid) {
+        Ok(obj) => {
+            maybe_emit_promisor_fetch_trace(repo);
+            Ok(obj)
+        }
+        Err(err) if matches!(&err, grit_lib::error::Error::ObjectNotFound(_)) => {
+            if crate::commands::promisor_hydrate::try_lazy_fetch_promisor_object(repo, *oid).is_ok()
+            {
+                crate::trace2_emit_data_intmax("promisor", "fetch_count", 1);
+                repo.read_replaced(oid)
+            } else {
+                Err(err)
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn maybe_emit_promisor_fetch_trace(repo: &Repository) {
+    if std::env::var_os("GIT_TRACE2_EVENT").is_none()
+        && std::env::var_os("GIT_TRACE2_PERF").is_none()
+    {
+        return;
+    }
+    let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    if repo_treats_promisor_packs(&repo.git_dir, &config) {
+        crate::trace2_emit_data_intmax("promisor", "fetch_count", 1);
+    }
+}
+
 /// Try to resolve a string as a revision (commit/tree).
 fn is_revision(repo: Option<&Repository>, spec: &str) -> bool {
     let Some(repo) = repo else {
@@ -2381,11 +2480,35 @@ fn cwd_strip_repo_rel(repo: &Repository, repo_rel_path: &str, args: &Args) -> St
     if rel.is_empty() {
         return repo_rel_path.to_string();
     }
-    let prefix = format!("{rel}/");
-    if repo_rel_path.starts_with(&prefix) {
-        repo_rel_path[prefix.len()..].to_string()
+    repo_rel_path_from_cwd(rel, repo_rel_path)
+}
+
+fn repo_rel_path_from_cwd(cwd_rel: &str, repo_rel_path: &str) -> String {
+    let cwd_parts: Vec<&str> = cwd_rel
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    let path_parts: Vec<&str> = repo_rel_path
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+
+    let common = cwd_parts
+        .iter()
+        .zip(&path_parts)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut relative = Vec::new();
+    relative.extend(std::iter::repeat_n(
+        "..",
+        cwd_parts.len().saturating_sub(common),
+    ));
+    relative.extend(path_parts.iter().skip(common).copied());
+
+    if relative.is_empty() {
+        ".".to_string()
     } else {
-        repo_rel_path.to_string()
+        relative.join("/")
     }
 }
 
@@ -2869,7 +2992,11 @@ fn grep_tree(
             is_directory: is_tree,
             is_git_submodule: is_gitlink,
         };
-        if !pathspecs.is_empty() && !any_pathspec_matches(&full_name, pathspecs, ps_ctx) {
+        let pathspec_matches_path =
+            pathspecs.is_empty() || any_pathspec_matches(&full_name, pathspecs, ps_ctx);
+        let pathspec_matches_descendant =
+            (is_tree || is_gitlink) && pathspec_may_match_descendant(&full_name, pathspecs);
+        if !pathspec_matches_path && !pathspec_matches_descendant {
             continue;
         }
 
@@ -2877,12 +3004,16 @@ fn grep_tree(
         if is_gitlink {
             if args.recurse_submodules {
                 if let Some(work_tree) = &repo.work_tree {
-                    // Use just the entry name relative to this tree level, not full_name
-                    let local_name = name.to_string();
-                    let sub_path = work_tree.join(&local_name);
-                    if let Ok(sub_repo) = open_submodule_repo(&sub_path) {
+                    if let Ok(sub_repo) =
+                        open_submodule_repo_at_path(repo, work_tree, &full_name, &name)
+                    {
+                        let child_pathspecs: &[String] = if pathspec_matches_path {
+                            &[]
+                        } else {
+                            pathspecs
+                        };
                         // The entry.oid is the commit SHA of the submodule
-                        let sub_obj = match sub_repo.odb.read(&entry.oid) {
+                        let sub_obj = match read_object_for_grep(&sub_repo, &entry.oid) {
                             Ok(o) => o,
                             Err(_) => continue,
                         };
@@ -2894,7 +3025,7 @@ fn grep_tree(
                         } else {
                             continue;
                         };
-                        let sub_tree_obj = match sub_repo.odb.read(&sub_tree_oid) {
+                        let sub_tree_obj = match read_object_for_grep(&sub_repo, &sub_tree_oid) {
                             Ok(o) => o,
                             Err(_) => continue,
                         };
@@ -2911,7 +3042,7 @@ fn grep_tree(
                             0,
                             compiled,
                             args,
-                            pathspecs,
+                            child_pathspecs,
                             tree_name,
                             need_sep,
                             out,
@@ -2927,7 +3058,7 @@ fn grep_tree(
         }
 
         if is_tree {
-            let sub_obj = repo.odb.read(&entry.oid)?;
+            let sub_obj = read_object_for_grep(repo, &entry.oid)?;
             if grep_tree(
                 repo,
                 &sub_obj.data,
@@ -2951,7 +3082,7 @@ fn grep_tree(
                 }
             }
 
-            let obj = match repo.odb.read(&entry.oid) {
+            let obj = match read_object_for_grep(repo, &entry.oid) {
                 Ok(o) => o,
                 Err(_) => continue,
             };

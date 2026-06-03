@@ -740,6 +740,8 @@ pub(crate) fn spawn_upload_pack_with_proto(
         strip_trace2_env(&mut c);
         c.arg("upload-pack")
             .arg(rp.as_ref())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_TRACE_PACKET")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -757,6 +759,8 @@ pub(crate) fn spawn_upload_pack_with_proto(
         let mut c = Command::new(trimmed);
         strip_trace2_env(&mut c);
         c.arg(rp.as_ref())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_TRACE_PACKET")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -773,6 +777,8 @@ pub(crate) fn spawn_upload_pack_with_proto(
     strip_trace2_env(&mut c);
     c.arg("-c")
         .arg(&script)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_TRACE_PACKET")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
