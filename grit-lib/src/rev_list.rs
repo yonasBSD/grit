@@ -855,10 +855,21 @@ pub fn rev_list(
         HashSet::new()
     };
 
+    let mut traversal_missing = Vec::new();
+    let mut traversal_missing_seen = HashSet::new();
     let (mut included, _discovery_order) = if include.is_empty() {
         (HashSet::new(), Vec::new())
     } else if options.exclude_promisor_objects {
         walk_closure_ordered_excluding(&mut graph, &include, &excluded_promisor)?
+    } else if options.missing_action != MissingAction::Error {
+        walk_closure_ordered_with_missing(
+            &mut graph,
+            &include,
+            &HashSet::new(),
+            options.missing_action,
+            &mut traversal_missing,
+            &mut traversal_missing_seen,
+        )?
     } else {
         walk_closure_ordered(&mut graph, &include)?
     };
@@ -868,6 +879,16 @@ pub fn rev_list(
         walk_closure_ordered_excluding(&mut graph, &exclude, &excluded_promisor)?.0
     } else if options.exclude_first_parent_only {
         walk_closure_first_parent_only(&mut graph, &exclude)?
+    } else if options.missing_action != MissingAction::Error {
+        walk_closure_ordered_with_missing(
+            &mut graph,
+            &exclude,
+            &HashSet::new(),
+            options.missing_action,
+            &mut traversal_missing,
+            &mut traversal_missing_seen,
+        )?
+        .0
     } else {
         walk_closure(&mut graph, &exclude)?
     };
@@ -1322,6 +1343,17 @@ pub fn rev_list(
             .filter(|o| !emitted.contains(o))
             .collect::<BTreeSet<_>>()
             .into_iter()
+            .collect()
+    };
+
+    let missing_objects = if traversal_missing.is_empty() {
+        missing_objects
+    } else {
+        let mut seen = HashSet::new();
+        traversal_missing
+            .into_iter()
+            .chain(missing_objects)
+            .filter(|oid| seen.insert(*oid))
             .collect()
     };
 
@@ -2901,6 +2933,43 @@ fn walk_closure_ordered_excluding(
         }
         order.push(oid);
         for parent in graph.parents_of(oid)? {
+            queue.push_back(parent);
+        }
+    }
+    Ok((seen, order))
+}
+
+fn walk_closure_ordered_with_missing(
+    graph: &mut CommitGraph<'_>,
+    starts: &[ObjectId],
+    excluded: &HashSet<ObjectId>,
+    missing_action: MissingAction,
+    missing: &mut Vec<ObjectId>,
+    missing_seen: &mut HashSet<ObjectId>,
+) -> Result<(HashSet<ObjectId>, Vec<ObjectId>)> {
+    let mut seen = HashSet::new();
+    let mut order = Vec::new();
+    let mut queue = VecDeque::new();
+    for &start in starts {
+        queue.push_back(start);
+    }
+    while let Some(oid) = queue.pop_front() {
+        if excluded.contains(&oid) || seen.contains(&oid) {
+            continue;
+        }
+        let parents = match graph.parents_of(oid) {
+            Ok(parents) => parents,
+            Err(Error::ObjectNotFound(_)) if missing_action != MissingAction::Error => {
+                if missing_action == MissingAction::Print && missing_seen.insert(oid) {
+                    missing.push(oid);
+                }
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
+        seen.insert(oid);
+        order.push(oid);
+        for parent in parents {
             queue.push_back(parent);
         }
     }
@@ -4801,7 +4870,7 @@ fn collect_reachable_objects(
 /// the next commit, with global de-duplication of emitted object OIDs across the full walk.
 fn collect_reachable_objects_segmented(
     repo: &Repository,
-    _graph: &mut CommitGraph<'_>,
+    graph: &mut CommitGraph<'_>,
     commits: &[ObjectId],
     object_roots: &[RootObject],
     tip_annotated_tags: &HashMap<ObjectId, ObjectId>,
@@ -4848,15 +4917,21 @@ fn collect_reachable_objects_segmented(
                 result.push((tag_oid, "tag".to_owned()));
             }
         }
-        // Same as `collect_reachable_objects_in_commit_order`: Git lists objects in walk order with
-        // global OID de-duplication only (`emitted`), not parent-closure subtraction.
+        let parents = graph.parents_of(commit_oid)?;
+        let parent_union = union_parent_reachable_objects(
+            repo,
+            &parents,
+            missing_action,
+            &mut missing,
+            &mut missing_seen,
+        )?;
         collect_tree_objects_filtered(
             repo,
             commit.tree,
             "",
             0,
             false,
-            None,
+            Some(&parent_union),
             &mut tree_state,
             &mut emitted,
             &mut result,

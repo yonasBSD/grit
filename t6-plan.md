@@ -19,7 +19,9 @@ dependency/topic groups. Mark an item `[~]` when claimed and `[x]` only after th
   upstream `test-tool reach` helper operations, first-parent `%(is-base)` selection,
   multi-base `for-each-ref --merged` filtering, `rev-list --maximal-only`, and
   symmetric-difference topo ordering.
-- [ ] `t6022-rev-list-missing.sh` — 16/40 passing, 24 failing.
+- [~] `t6022-rev-list-missing.sh` — 26/40 passing, 14 failing after tolerating
+  missing commits in `--missing=allow-any`/`print` walks and applying parent-closure subtraction
+  during segmented `--objects` output.
 - [ ] `t6006-rev-list-format.sh` — 58/80 passing, 22 failing.
 - [ ] `t6007-rev-list-cherry-pick-file.sh` — 6/23 passing, 17 failing.
 - [ ] `t6012-rev-list-simplify.sh` — 26/42 passing, 16 failing.
