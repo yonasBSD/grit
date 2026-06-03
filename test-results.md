@@ -1,3 +1,7 @@
+## 2026-06-02 — t1 config kickoff
+
+- Focus harness: `./scripts/run-tests.sh t1300-config.sh --verbose` improved from 287/497 to 301/497 after config compatibility fixes for bare-key regexp output, empty boolean values, `GIT_CONFIG`, `--null`, and stdin-write rejection. Remaining failures are tracked under the t1 family work.
+
 ## 2026-06-02 — t7300-clean
 
 - Focus harness: `./scripts/run-tests.sh t7300-clean.sh` passes 55/55 after updating clean behavior for unreadable non-empty directories and preserving the harness global config file.

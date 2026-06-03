@@ -153,7 +153,7 @@ pub struct Args {
     pub show_scope: bool,
 
     /// Use NUL as delimiter.
-    #[arg(short = 'z')]
+    #[arg(short = 'z', long = "null")]
     pub null_terminated: bool,
 
     /// Show key names for --get-regexp.
@@ -690,7 +690,7 @@ fn cmd_get(
                 // Bare keys are boolean true; Git prints only the key unless a bool type is requested
                 // (t1300-config: get-regexp variable with no value vs get-regexp --bool).
                 if bare_boolean && !want_bool_text {
-                    print!("{} true{}", entry.key, terminator);
+                    print!("{}{}", entry.key, terminator);
                 } else {
                     let val = entry.value.as_deref().unwrap_or("true");
                     let val = format_typed_value(args, Some(&entry.key), val)?;
@@ -789,6 +789,7 @@ fn cmd_set(
     file_path: &Path,
     value_pattern: Option<&str>,
 ) -> Result<()> {
+    reject_stdin_write(file_path)?;
     // Validate --comment: must not contain LF
     if let Some(ref c) = args.comment {
         if c.contains('\n') {
@@ -843,6 +844,7 @@ fn cmd_unset(
     value_pattern: Option<&str>,
     preserve_empty_section_header_on_unset_all: bool,
 ) -> Result<()> {
+    reject_stdin_write(file_path)?;
     let mut config = ConfigFile::from_path(file_path, scope).context("reading config file")?;
 
     match config {
@@ -920,6 +922,7 @@ fn cmd_list(args: &Args, git_dir: Option<&Path>) -> Result<()> {
 }
 
 fn cmd_remove_section(scope: ConfigScope, file_path: &Path, name: &str) -> Result<()> {
+    reject_stdin_write(file_path)?;
     let mut config = ConfigFile::from_path(file_path, scope).context("reading config file")?;
 
     match config {
@@ -940,6 +943,7 @@ fn cmd_rename_section(
     old_name: &str,
     new_name: &str,
 ) -> Result<()> {
+    reject_stdin_write(file_path)?;
     let mut config = ConfigFile::from_path(file_path, scope).context("reading config file")?;
 
     match config {
@@ -961,6 +965,7 @@ fn cmd_add(
     scope: ConfigScope,
     file_path: &Path,
 ) -> Result<()> {
+    reject_stdin_write(file_path)?;
     let mut config = match ConfigFile::from_path(file_path, scope).context("reading config file")? {
         Some(cfg) => cfg,
         None => ConfigFile::parse(file_path, "", scope)?,
@@ -971,6 +976,7 @@ fn cmd_add(
 }
 
 fn cmd_edit(file_path: &Path) -> Result<()> {
+    reject_stdin_write(file_path)?;
     // Resolve editor: GIT_EDITOR env → core.editor config → VISUAL env → EDITOR env → vi
     let git_dir = resolve_git_dir();
     let config = ConfigSet::load(git_dir.as_deref(), true).unwrap_or_default();
@@ -995,6 +1001,15 @@ fn cmd_edit(file_path: &Path) -> Result<()> {
 
     if !status.success() {
         bail!("editor exited with status {}", status);
+    }
+    Ok(())
+}
+
+fn reject_stdin_write(file_path: &Path) -> Result<()> {
+    if file_path == Path::new("-") {
+        return Err(fatal_config_parse(
+            "fatal: writing to stdin is not supported",
+        ));
     }
     Ok(())
 }
@@ -1128,7 +1143,7 @@ fn cmd_blob(args: &Args, blob_spec: &str) -> Result<()> {
             if args.name_only {
                 print!("{}{}", entry.key, terminator);
             } else if bare_boolean && !want_bool_text {
-                print!("{} true{}", entry.key, terminator);
+                print!("{}{}", entry.key, terminator);
             } else {
                 let val = entry.value.as_deref().unwrap_or("true");
                 let val = format_typed_value(args, Some(&entry.key), val)?;
@@ -1365,6 +1380,11 @@ fn resolve_config_file(args: &Args, git_dir: Option<&Path>) -> Result<(ConfigSco
         let gd = git_dir.ok_or_else(|| anyhow::anyhow!("not in a git repository"))?;
         return resolve_worktree_config_file(gd);
     }
+    if let Ok(path) = std::env::var("GIT_CONFIG") {
+        if !path.is_empty() {
+            return Ok((ConfigScope::Local, PathBuf::from(path)));
+        }
+    }
     // Default: local
     if let Some(gd) = git_dir {
         let common = common_git_dir_for_config(gd);
@@ -1523,6 +1543,22 @@ fn load_config(
             }
         }
         return Ok(set);
+    }
+
+    if let Ok(path) = std::env::var("GIT_CONFIG") {
+        if !path.is_empty() {
+            let path = PathBuf::from(path);
+            let mut set = ConfigSet::new();
+            if let Some(f) = ConfigFile::from_path(&path, ConfigScope::Local)? {
+                if process_includes {
+                    set.merge_file_with_includes(&f, true, &load_opts.include_ctx)
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                } else {
+                    set.merge(&f);
+                }
+            }
+            return Ok(set);
+        }
     }
 
     // Default: full cascade
@@ -1718,7 +1754,8 @@ fn format_typed_value(args: &Args, config_key: Option<&str>, val: &str) -> Resul
     if args.type_bool_or_int || type_name == Some("bool-or-int") {
         // Try as named bool first
         match val.to_lowercase().as_str() {
-            "true" | "yes" | "on" | "" => return Ok("true".to_owned()),
+            "true" | "yes" | "on" => return Ok("true".to_owned()),
+            "" => return Ok("false".to_owned()),
             "false" | "no" | "off" => return Ok("false".to_owned()),
             _ => {}
         }

@@ -2094,17 +2094,14 @@ impl ConfigSet {
                 // Git's `git_config_from_file` surfaces parse errors in an included file as a
                 // fatal error (t0001 #102 `re-init reads matching includeIf.onbranch`). A missing
                 // include target is silently skipped (`from_path` -> `Ok(None)`).
-                match ConfigFile::from_path(&resolved, file.scope)? {
-                    Some(inc_file) => {
-                        Self::merge_with_includes(
-                            set,
-                            &inc_file,
-                            process_includes,
-                            depth + 1,
-                            ctx,
-                        )?;
-                    }
-                    None => {}
+                if let Some(inc_file) = ConfigFile::from_path(&resolved, file.scope)? {
+                    Self::merge_with_includes(
+                        set,
+                        &inc_file,
+                        process_includes,
+                        depth + 1,
+                        ctx,
+                    )?;
                 }
             }
         }
@@ -2123,12 +2120,12 @@ impl ConfigSet {
 /// Note: bare config keys are represented as `None` in [`ConfigEntry`] and
 /// are normalized to `"true"` by higher-level readers (`ConfigSet::get`).
 /// An explicit empty assignment (`key =` with no value) is stored as `""` and
-/// is treated as true for `--bool` / [`parse_bool`], consistent with bare keys
-/// (implicit true) and the harness expectations for `config --bool`.
+/// is treated as false for `--bool` / [`parse_bool`], while bare keys are stored
+/// as `None` and normalized to `"true"` before reaching this parser.
 pub fn parse_bool(s: &str) -> std::result::Result<bool, String> {
     match s.to_lowercase().as_str() {
         "true" | "yes" | "on" => Ok(true),
-        "" => Ok(true),
+        "" => Ok(false),
         "false" | "no" | "off" => Ok(false),
         _ => {
             // Try parsing as integer: 0 → false, non-zero → true
