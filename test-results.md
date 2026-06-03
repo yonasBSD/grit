@@ -1,3 +1,7 @@
+## 2026-06-03 — t13030-switch-quiet-verbose
+
+- Focus harness: `./scripts/run-tests.sh t13030-switch-quiet-verbose.sh --verbose` passes 30/30 after switching synthetic `master` branch references to `main`.
+
 ## 2026-06-03 — t12430-switch-merge-conflict
 
 - Focus harness: `./scripts/run-tests.sh t12430-switch-merge-conflict.sh --verbose` passes 32/32 after switching synthetic `master` branch references to `main`.

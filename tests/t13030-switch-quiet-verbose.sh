@@ -31,10 +31,10 @@ test_expect_success 'switch -c puts us on the new branch' '
 	test_cmp expect actual
 '
 
-test_expect_success 'switch back to master' '
-	(cd repo && grit switch master 2>/dev/null) &&
+test_expect_success 'switch back to main' '
+	(cd repo && grit switch main 2>/dev/null) &&
 	(cd repo && current_branch >../actual) &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 '
 
@@ -56,7 +56,7 @@ test_expect_success 'switch to nonexistent branch fails' '
 
 test_expect_success 'switch -c from specific commit' '
 	(cd repo &&
-	 grit switch master 2>/dev/null &&
+	 grit switch main 2>/dev/null &&
 	 first=$(git rev-parse HEAD~1) &&
 	 grit switch -c from-first "$first" 2>/dev/null &&
 	 git rev-parse HEAD >../actual &&
@@ -66,17 +66,17 @@ test_expect_success 'switch -c from specific commit' '
 
 test_expect_success 'switch --detach goes to detached HEAD' '
 	(cd repo &&
-	 grit switch master 2>/dev/null &&
-	 grit switch --detach master 2>/dev/null &&
+	 grit switch main 2>/dev/null &&
+	 grit switch --detach main 2>/dev/null &&
 	 current_branch >../actual) &&
 	echo "HEAD" >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'switch back to named branch from detached HEAD' '
-	(cd repo && grit switch master 2>/dev/null &&
+	(cd repo && grit switch main 2>/dev/null &&
 	 current_branch >../actual) &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 '
 
@@ -87,7 +87,7 @@ test_expect_success 'switch -c with branch that already exists fails' '
 
 test_expect_success 'switch preserves working tree on clean switch' '
 	(cd repo &&
-	 grit switch master 2>/dev/null &&
+	 grit switch main 2>/dev/null &&
 	 cat file.txt >../actual) &&
 	echo "hello" >expect &&
 	test_cmp expect actual
@@ -100,7 +100,7 @@ test_expect_success 'switch with dirty working tree carries changes' '
 	 current_branch >../actual) &&
 	echo "feature1" >expect &&
 	test_cmp expect actual &&
-	(cd repo && git checkout -- file.txt && grit switch master 2>/dev/null)
+	(cd repo && git checkout -- file.txt && grit switch main 2>/dev/null)
 '
 
 test_expect_success 'switch between branches with different content' '
@@ -108,7 +108,7 @@ test_expect_success 'switch between branches with different content' '
 	 grit switch -c content-branch 2>/dev/null &&
 	 echo branchdata >branchfile.txt && grit add branchfile.txt &&
 	 grit commit -m "branch content" &&
-	 grit switch master 2>/dev/null) &&
+	 grit switch main 2>/dev/null) &&
 	! test -f repo/branchfile.txt
 '
 
@@ -128,7 +128,7 @@ test_expect_success 'switch to same branch is no-op' '
 test_expect_success 'switch --detach to commit hash' '
 	(cd repo &&
 	 hash=$(git rev-parse HEAD) &&
-	 grit switch master 2>/dev/null &&
+	 grit switch main 2>/dev/null &&
 	 grit switch --detach "$hash" 2>/dev/null &&
 	 git rev-parse HEAD >../actual &&
 	 echo "$hash" >../expect) &&
@@ -137,21 +137,21 @@ test_expect_success 'switch --detach to commit hash' '
 
 test_expect_success 'switch -c creates branch at current HEAD by default' '
 	(cd repo &&
-	 grit switch master 2>/dev/null &&
-	 master_hash=$(git rev-parse HEAD) &&
+	 grit switch main 2>/dev/null &&
+	 main_hash=$(git rev-parse HEAD) &&
 	 grit switch -c at-head 2>/dev/null &&
 	 git rev-parse HEAD >../actual &&
-	 echo "$master_hash" >../expect) &&
+	 echo "$main_hash" >../expect) &&
 	test_cmp expect actual
 '
 
 test_expect_success 'switch with - goes to previous branch' '
 	(cd repo &&
-	 grit switch master 2>/dev/null &&
+	 grit switch main 2>/dev/null &&
 	 grit switch feature1 2>/dev/null &&
 	 grit switch - 2>/dev/null &&
 	 current_branch >../actual) &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 '
 
@@ -165,7 +165,7 @@ test_expect_success 'switch - again goes back' '
 
 test_expect_success 'switch -c from detached HEAD' '
 	(cd repo &&
-	 grit switch --detach master 2>/dev/null &&
+	 grit switch --detach main 2>/dev/null &&
 	 grit switch -c from-detached 2>/dev/null &&
 	 current_branch >../actual) &&
 	echo "from-detached" >expect &&
@@ -181,15 +181,15 @@ test_expect_success 'switch to branch with slashes in name' '
 '
 
 test_expect_success 'switch back from slashed branch' '
-	(cd repo && grit switch master 2>/dev/null &&
+	(cd repo && grit switch main 2>/dev/null &&
 	 current_branch >../actual) &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'list branches after multiple creates' '
 	(cd repo && git branch >../actual) &&
-	grep "master" actual &&
+	grep "main" actual &&
 	grep "feature1" actual &&
 	grep "content-branch" actual
 '
@@ -205,25 +205,25 @@ test_expect_success 'switch --detach with short hash' '
 
 test_expect_success 'switch -c with empty name fails' '
 	(cd repo &&
-	 grit switch master 2>/dev/null &&
+	 grit switch main 2>/dev/null &&
 	 ! grit switch -c "" 2>../err) &&
 	test -s err
 '
 
 test_expect_success 'switch --orphan creates empty branch' '
 	(cd repo &&
-	 grit switch master 2>/dev/null &&
+	 grit switch main 2>/dev/null &&
 	 grit switch --orphan empty-branch 2>../err &&
 	 current_branch >../actual) &&
 	echo "empty-branch" >expect &&
 	test_cmp expect actual
 '
 
-test_expect_success 'switch back to master from orphan' '
+test_expect_success 'switch back to main from orphan' '
 	(cd repo &&
-	 grit switch master 2>/dev/null &&
+	 grit switch main 2>/dev/null &&
 	 current_branch >../actual) &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 '
 
@@ -237,7 +237,7 @@ test_expect_success 'switch -q -c combined creates branch silently' '
 
 test_expect_success 'switch -c with tracking message' '
 	(cd repo &&
-	 grit switch master 2>/dev/null &&
+	 grit switch main 2>/dev/null &&
 	 grit switch -c tracked-branch 2>../actual) &&
 	grep -i "branch\|switch" actual
 '
