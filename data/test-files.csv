@@ -215,7 +215,7 @@ t11180-tag-sign-verify	t1	yes	36	36	0	true	ok	0
 t11260-cherry-pick-abort-continue	t1	yes	34	34	0	true	ok	0
 t11270-for-each-ref-merged	t1	yes	35	35	0	true	ok	0
 t11280-show-ref-exclude	t1	yes	34	34	0	true	ok	0
-t11290-update-ref-atomic-batch	t1	yes	33	32	1	false	ok	0
+t11290-update-ref-atomic-batch	t1	yes	33	33	0	true	ok	0
 t11300-symbolic-ref-head-detach	t1	yes	32	32	0	true	ok	0
 t11310-check-ignore-global	t1	yes	34	34	0	true	ok	0
 t11320-diff-no-index-exit	t1	yes	36	36	0	true	ok	0

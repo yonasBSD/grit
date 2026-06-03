@@ -430,10 +430,7 @@ fn run_implicit_stdin_batch(repo: &Repository, args: &Args, text: &str) -> Resul
     let mut seen_refs = HashSet::new();
     for line in text.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if matches!(
-            parts.first().copied(),
-            Some("update" | "create" | "delete" | "verify")
-        ) {
+        if matches!(parts.first().copied(), Some("update" | "create" | "delete")) {
             if let Some(refname) = parts.get(1) {
                 if !seen_refs.insert((*refname).to_owned()) {
                     return Err(anyhow::Error::from(GritError::Message(format!(
