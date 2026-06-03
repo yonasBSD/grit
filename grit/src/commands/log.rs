@@ -2402,6 +2402,7 @@ fn run_rev_list_log(
                     &combined_pathspecs,
                     args.first_parent,
                     args.simplify_merges,
+                    args.ancestry_path,
                 )?)
             }
         } else {
@@ -3013,6 +3014,7 @@ fn visible_parents_for_path_limited_log(
     pathspecs: &[String],
     first_parent_only: bool,
     simplify_merge_parents: bool,
+    preserve_direct_single_parent: bool,
 ) -> Result<Vec<ObjectId>> {
     let mut direct = load_raw_parents(repo, oid)?;
     if first_parent_only && direct.len() > 1 {
@@ -3028,6 +3030,8 @@ fn visible_parents_for_path_limited_log(
             boundary,
             pathspecs,
             first_parent_only,
+            preserve_direct_single_parent,
+            true,
             &mut seen,
             &mut out,
         )?;
@@ -3052,6 +3056,8 @@ fn collect_visible_path_limited_parent(
     boundary: &HashSet<ObjectId>,
     pathspecs: &[String],
     first_parent_only: bool,
+    preserve_direct_single_parent: bool,
+    direct_parent: bool,
     seen: &mut HashSet<ObjectId>,
     out: &mut Vec<ObjectId>,
 ) -> Result<()> {
@@ -3065,6 +3071,10 @@ fn collect_visible_path_limited_parent(
 
     let mut parents = load_raw_parents(repo, candidate)?;
     if parents.is_empty() {
+        return Ok(());
+    }
+    if direct_parent && preserve_direct_single_parent && parents.len() == 1 {
+        out.push(candidate);
         return Ok(());
     }
     if first_parent_only && parents.len() > 1 {
@@ -3083,6 +3093,8 @@ fn collect_visible_path_limited_parent(
             boundary,
             pathspecs,
             first_parent_only,
+            preserve_direct_single_parent,
+            false,
             seen,
             out,
         )?;

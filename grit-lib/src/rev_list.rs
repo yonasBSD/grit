@@ -3445,6 +3445,7 @@ fn commit_touches_paths(
 
     if ancestry_path
         && !ancestry_path_bottoms.is_empty()
+        && (!parent_rewrite || treesame_parents != parents.len())
         && treesame_parent_is_on_ancestry_bottom_side(
             graph,
             &treesame_parent_oids,

@@ -1071,7 +1071,7 @@ t6100-rev-list-in-order	t6	yes	3	3	0	true	ok	0
 t6101-rev-parse-parents	t6	yes	38	35	3	false	ok	0
 t6102-rev-list-unexpected-objects	t6	yes	22	22	0	true	ok	0
 t6110-rev-list-sparse	t6	yes	2	2	0	true	ok	0
-t6111-rev-list-treesame	t6	yes	65	54	11	false	ok	0
+t6111-rev-list-treesame	t6	yes	65	56	9	false	ok	0
 t6112-rev-list-filters-objects	t6	yes	54	53	1	false	ok	0
 t6113-rev-list-bitmap-filters	t6	yes	14	14	0	true	ok	0
 t6114-keep-packs	t6	yes	3	3	0	true	ok	0
