@@ -1403,18 +1403,16 @@ fn validate_repository_format(git_dir: &Path) -> Result<()> {
         return Err(Error::UnsupportedRepositoryFormatVersion(repo_version));
     }
 
-    if repo_version >= 1 {
-        if let Some(raw) = ref_storage.as_deref() {
-            let lower = raw.to_ascii_lowercase();
-            let name = lower
-                .split_once(':')
-                .map(|(prefix, _)| prefix)
-                .unwrap_or(lower.as_str());
-            if !matches!(name, "files" | "reftable") {
-                return Err(Error::Message(format!(
-                    "invalid value for 'extensions.refstorage': '{raw}'"
-                )));
-            }
+    if let Some(raw) = ref_storage.as_deref() {
+        let lower = raw.to_ascii_lowercase();
+        let name = lower
+            .split_once(':')
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(lower.as_str());
+        if !matches!(name, "files" | "reftable") {
+            return Err(Error::Message(format!(
+                "error: invalid value for 'extensions.refstorage': '{raw}'"
+            )));
         }
     }
 

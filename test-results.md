@@ -1,3 +1,7 @@
+## 2026-06-03 — t1500-rev-parse
+
+- Focus harness: `./scripts/run-tests.sh t1500-rev-parse.sh --verbose` passes 81/81 after invalid `extensions.refstorage` diagnostics match Git and shallow local clones have checkout-needed objects available while retaining shallow state.
+
 ## 2026-06-03 — t1507-rev-parse-upstream
 
 - Focus harness: `./scripts/run-tests.sh t1507-rev-parse-upstream.sh --verbose` passes 29/29 after `branch -t` accepts upstream-resolved remote-tracking refs as valid branch start points.

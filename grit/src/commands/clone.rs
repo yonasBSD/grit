@@ -1322,6 +1322,11 @@ pub fn run(mut args: Args) -> Result<()> {
         }
     }
 
+    if args.depth.is_some() && !args.bare && !args.no_checkout {
+        copy_objects(&source.git_dir, &dest.git_dir, false)
+            .context("copying checkout objects for shallow clone")?;
+    }
+
     if partial_blob_none {
         let filter_spec = filter_spec.as_deref().unwrap_or("blob:none");
         materialize_blob_none_partial_layout(&dest)
