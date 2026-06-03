@@ -107,6 +107,7 @@ pub fn run(args: Args) -> Result<()> {
     let mut use_color = false;
     let mut disk_usage_format: Option<DiskUsageFormat> = None;
     let mut show_parents = false;
+    let mut show_children = false;
     let mut not_mode = false;
     let mut _missing_explicit = false;
     let mut use_bitmap_index = false;
@@ -166,6 +167,9 @@ pub fn run(args: Args) -> Result<()> {
                 "--parents" => {
                     options.output_mode = OutputMode::Parents;
                     show_parents = true;
+                }
+                "--children" => {
+                    show_children = true;
                 }
                 "--quiet" => options.quiet = true,
                 "--stdin" => read_stdin = true,
@@ -761,6 +765,24 @@ pub fn run(args: Args) -> Result<()> {
     };
 
     let graft_parents = load_graft_parents(&repo.git_dir);
+
+    // Build the children decoration like Git's set_children(): iterate the output
+    // commit list in order and, for each commit, prepend it to each of its parents'
+    // children list. Prepending means a parent's children end up in reverse
+    // output order, matching Git's show_children().
+    let children_map: HashMap<ObjectId, Vec<ObjectId>> = if show_children {
+        let mut map: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+        for child in &result.commits {
+            let parents = commit_parents_for_output(&repo, *child, &graft_parents)?;
+            for parent in parents {
+                map.entry(parent).or_default().insert(0, *child);
+            }
+        }
+        map
+    } else {
+        HashMap::new()
+    };
+
     let object_type_commit_oid_only = options.objects
         && matches!(&options.output_mode, OutputMode::OidOnly)
         && object_type_filter_commit_only(options.filter.as_ref());
@@ -783,6 +805,22 @@ pub fn run(args: Args) -> Result<()> {
                 prefix = "+".to_owned();
             }
         }
+        let children_suffix = |oid: &ObjectId| -> String {
+            if !show_children {
+                return String::new();
+            }
+            match children_map.get(oid) {
+                Some(children) if !children.is_empty() => {
+                    let mut s = String::new();
+                    for child in children {
+                        s.push(' ');
+                        s.push_str(&child.to_hex());
+                    }
+                    s
+                }
+                _ => String::new(),
+            }
+        };
         if object_type_commit_oid_only && matches!(&options.output_mode, OutputMode::OidOnly) {
             println!("{oid}");
         } else {
@@ -826,20 +864,22 @@ pub fn run(args: Args) -> Result<()> {
                     // Same as Git `rev-list --parents`: always emit stored parent OIDs, even when
                     // those parents are outside the selected commit set (`-n`, etc.).
                     let parents = commit_parents_for_output(&repo, *oid, &graft_parents)?;
+                    let children = children_suffix(oid);
                     if parents.is_empty() {
-                        println!("{prefix}{oid}");
+                        println!("{prefix}{oid}{children}");
                     } else {
                         let rendered_parents = parents
                             .iter()
                             .map(ObjectId::to_hex)
                             .collect::<Vec<_>>()
                             .join(" ");
-                        println!("{prefix}{oid} {rendered_parents}");
+                        println!("{prefix}{oid} {rendered_parents}{children}");
                     }
                 }
                 _ => {
                     let rendered = render_commit(&repo, *oid, &options.output_mode, abbrev_len)?;
-                    println!("{prefix}{rendered}");
+                    let children = children_suffix(oid);
+                    println!("{prefix}{rendered}{children}");
                 }
             }
         }

@@ -7142,6 +7142,90 @@ pub fn append_format_patch_notes(repo: &Repository, oid: &ObjectId, body: &str) 
     format!("{}{}", body.trim_end_matches('\n'), extra)
 }
 
+/// Build a map of commit OID to its formatted `Notes:` block for display in
+/// `diff-tree --notes`. The block excludes surrounding blank lines; each entry
+/// looks like `Notes:\n    <line1>\n    <line2>`. Unlike the `git log` default
+/// note display, this is unconditional (the caller opted in with `--notes`).
+pub fn notes_blocks_for_display(repo: &Repository) -> std::collections::HashMap<ObjectId, String> {
+    use std::fmt::Write as _;
+    let mut blocks: std::collections::HashMap<ObjectId, String> = std::collections::HashMap::new();
+    for (header, refname) in collect_log_display_note_refs_unconditional(repo) {
+        let map = load_notes_map_for_ref(repo, &refname);
+        for (oid, note_data) in map {
+            let note_text = String::from_utf8_lossy(&note_data);
+            let entry = blocks.entry(oid).or_default();
+            if !entry.is_empty() {
+                entry.push('\n');
+            }
+            let _ = write!(entry, "{header}:");
+            for line in note_text.lines() {
+                let _ = write!(entry, "\n    {line}");
+            }
+        }
+    }
+    blocks
+}
+
+/// Same ref enumeration as `collect_log_display_note_refs` but without the
+/// `log_notes_enabled()` gate (used by `diff-tree --notes`, which is explicit).
+fn collect_log_display_note_refs_unconditional(repo: &Repository) -> Vec<(String, String)> {
+    let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let default_ref = std::env::var("GIT_NOTES_REF")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| cfg.get("core.notesRef").filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| "refs/notes/commits".to_string());
+
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    let mut push_ref = |refname: &str| {
+        if !seen.insert(refname.to_string()) {
+            return;
+        }
+        let short = refname.strip_prefix("refs/notes/").unwrap_or(refname);
+        let header = if refname == default_ref {
+            "Notes".to_string()
+        } else {
+            format!("Notes ({short})")
+        };
+        out.push((header, refname.to_string()));
+    };
+
+    push_ref(&default_ref);
+    match std::env::var("GIT_NOTES_DISPLAY_REF") {
+        Ok(s) if !s.is_empty() => {
+            for pat in s.split(':') {
+                let pat = pat.trim();
+                if pat.is_empty() {
+                    continue;
+                }
+                if let Ok(refs) = refs::list_refs_glob(&repo.git_dir, pat) {
+                    for (name, _) in refs {
+                        push_ref(&name);
+                    }
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(_) => {
+            for pat in cfg.get_all("notes.displayRef") {
+                let pat = pat.trim();
+                if pat.is_empty() {
+                    continue;
+                }
+                if let Ok(refs) = refs::list_refs_glob(&repo.git_dir, pat) {
+                    for (name, _) in refs {
+                        push_ref(&name);
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
 fn collect_log_display_note_refs(repo: &Repository) -> Vec<(String, String)> {
     if !log_notes_enabled() {
         return Vec::new();

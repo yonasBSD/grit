@@ -862,20 +862,26 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
             }
         }
 
-        // `--remove`: remove the path from the index. Missing paths, existing files, and
-        // directory/typechange cases are all dropped without error if tracked (matches
-        // `remove_file_from_index` semantics expected by the test suite). Exception: when
-        // the path is an existing directory on disk that is not itself tracked but has
-        // tracked children, git's `process_directory` errors (`add individual files
-        // instead`) instead of removing — so fall through to the directory handling below.
+        // `--remove` (plain, not `--force-remove`): matches git `builtin/update-index.c`
+        // `process_path`. Git only drops the entry when `lstat` FAILS (the path is gone
+        // from disk). When the path still exists on disk it falls through to
+        // `add_one_path`, which re-hashes and UPDATES the tracked entry. So here:
+        //   - path missing on disk        -> remove the entry (git remove_one_path)
+        //   - path is a regular file/link -> fall through to the normal stat/update path
+        //   - path is a directory         -> fall through to the directory handling below
+        //     (tracked gitlink stays; untracked dir with tracked children errors)
         if path_mode == PathMode::Remove {
-            let exact_tracked = index.get(&rel_bytes, 0).is_some();
-            let dir_on_disk = std::fs::symlink_metadata(&abs_path)
-                .map(|m| m.is_dir())
-                .unwrap_or(false);
-            if !(dir_on_disk && !exact_tracked) {
-                let _ = index.remove(&rel_bytes);
-                continue;
+            match std::fs::symlink_metadata(&abs_path) {
+                Err(_) => {
+                    // Gone from disk: remove the index entry (no error even if absent).
+                    let _ = index.remove(&rel_bytes);
+                    continue;
+                }
+                Ok(_) => {
+                    // Still on disk: fall through to re-stat / update the entry exactly
+                    // like git's add_one_path. (For an untracked existing file the
+                    // "not in the index" guard below produces git's error.)
+                }
             }
         }
 

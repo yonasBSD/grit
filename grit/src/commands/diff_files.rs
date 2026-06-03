@@ -760,6 +760,18 @@ fn parse_options(argv: &[String]) -> Result<Options> {
                 | "--glob-pathspecs"
                 | "--noglob-pathspecs"
                 | "--icase-pathspecs" => {}
+                _ if arg.starts_with("--max-depth=") => {
+                    // max-depth is not implemented for the worktree/index lane;
+                    // git only succeeds for -1 (unlimited recursion), which is
+                    // equivalent to the default behavior.
+                    let val = &arg["--max-depth=".len()..];
+                    let parsed = val
+                        .parse::<i32>()
+                        .with_context(|| format!("invalid --max-depth value: `{val}`"))?;
+                    if parsed != -1 {
+                        bail!("unsupported option: {arg}");
+                    }
+                }
                 _ if arg.starts_with('-')
                     && !arg.starts_with("--")
                     && arg.len() > 2

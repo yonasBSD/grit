@@ -1298,9 +1298,17 @@ fn diff_tree_vs_worktree(
                 change.status = 'T';
             }
         }
+        // For a gitlink the resolved submodule HEAD is the right side (used by `--submodule`
+        // patch rendering); raw plumbing re-zeros it. Regular blobs keep the zero placeholder and
+        // read their worktree content lazily at patch time.
+        let new_oid = if wt_snapshot.mode == MODE_GITLINK {
+            wt_snapshot.oid
+        } else {
+            zero_oid()
+        };
         change.new = Some(Snapshot {
             mode: wt_snapshot.mode,
-            oid: zero_oid(),
+            oid: new_oid,
         });
     }
     for path in remove_merged_paths {
@@ -1354,6 +1362,25 @@ fn diff_tree_vs_worktree(
                 continue;
             }
             let sub_head = read_submodule_head_oid(&abs);
+            // A gitlink whose worktree directory no longer exists is a deleted submodule: Git's
+            // `diff-lib.c` reports it as `M`/`T` with the new gitlink resolving to the null OID
+            // (the `(submodule deleted)` header). Detect this before the uninitialized check.
+            if sub_head.is_none() && !abs.exists() {
+                let old = tree_map.get(path).copied().or(Some(*index_snapshot));
+                merged.insert(
+                    path.clone(),
+                    RawChange {
+                        path: path.clone(),
+                        status: 'M',
+                        old,
+                        new: Some(Snapshot {
+                            mode: MODE_GITLINK,
+                            oid: zero_oid(),
+                        }),
+                    },
+                );
+                continue;
+            }
             // Uninitialized / empty submodule worktree: no resolvable HEAD — do not report as
             // modified vs index (matches Git; fixes `diff-index --ignore-submodules=none` on clones).
             if sub_head.is_none() {
@@ -1374,7 +1401,7 @@ fn diff_tree_vs_worktree(
                 && (dirty.modified || dirty.untracked);
             if head_differs_from_index || report_dirty_aligned {
                 let old = tree_map.get(path).copied().or(Some(*index_snapshot));
-                let new_oid = zero_oid();
+                let new_oid = sub_head.unwrap_or_else(zero_oid);
                 merged.insert(
                     path.clone(),
                     RawChange {
@@ -1538,9 +1565,13 @@ fn read_worktree_snapshot_from_meta(
     // file (`EISDIR`); matches Git and unblocks `merge` pre-checks (`t6437`).
     if metadata.is_dir() {
         if abs_path.join(".git").exists() {
+            // A populated submodule checkout: resolve its HEAD so `--submodule` patch output shows
+            // the real right-side commit. Raw plumbing re-zeros this via
+            // `raw_gitlink_new_is_worktree_zero`, matching Git.
+            let oid = read_submodule_head_oid(abs_path).unwrap_or_else(zero_oid);
             return Ok(Some(Snapshot {
                 mode: MODE_GITLINK,
-                oid: zero_oid(),
+                oid,
             }));
         }
         return Ok(None);
@@ -1908,6 +1939,22 @@ pub(crate) fn write_diff_index_name_status(
                     )?;
                 }
             }
+            // A broken (`-B`) in-place rewrite carries a similarity score on the
+            // surviving Modified/TypeChanged entry (e.g. `T100`).
+            (DiffStatus::Modified | DiffStatus::TypeChanged, Some(s)) => {
+                let letter = entry.status.letter();
+                if nul {
+                    write!(out, "{letter}{s:03}\0")?;
+                    out.write_all(entry.path().as_bytes())?;
+                    out.write_all(b"\0")?;
+                } else {
+                    writeln!(
+                        out,
+                        "{letter}{s:03}\t{}",
+                        quote_c_style(entry.path(), quote_fully)
+                    )?;
+                }
+            }
             _ => {
                 if nul {
                     write!(out, "{}\0", entry.status.letter())?;
@@ -1938,6 +1985,32 @@ fn raw_diff_index_show_index_oid_for_added(index: &Index, entry: &DiffEntry) -> 
     index
         .get(entry.path().as_bytes(), 0)
         .is_some_and(|e| e.skip_worktree() || e.assume_unchanged())
+}
+
+/// True when a gitlink raw entry's new side must print the all-zero OID.
+///
+/// For uncached `diff-index --raw`, Git reports a worktree-side submodule change (the recorded
+/// gitlink in the index still equals the tree gitlink, only the submodule's checked-out HEAD has
+/// moved) with the null OID on the new side, exactly like `diff-files`. When the index gitlink
+/// itself differs from the tree (a staged submodule bump), Git prints the real index OID. The
+/// `--submodule` patch path keeps the resolved HEAD regardless; this only adjusts raw output.
+/// See `t4027` #3.
+fn raw_gitlink_new_is_worktree_zero(
+    index: &Index,
+    entry: &DiffEntry,
+    diff_index_uncached: bool,
+) -> bool {
+    if !diff_index_uncached || entry.new_mode != "160000" || entry.new_oid == zero_oid() {
+        return false;
+    }
+    // Git shows the recorded index gitlink OID only when the index itself carries that gitlink
+    // commit (a staged submodule bump). When the new side instead came from the live worktree
+    // submodule HEAD (the index entry is the tree gitlink, a blob, or absent), Git prints the
+    // all-zero OID in raw plumbing output even though the `--submodule` patch uses the real HEAD.
+    let index_carries_new_gitlink = index
+        .get(entry.path().as_bytes(), 0)
+        .is_some_and(|e| canonicalize_mode(e.mode) == MODE_GITLINK && e.oid == entry.new_oid);
+    !index_carries_new_gitlink
 }
 
 fn write_raw_diff_entry_z(
@@ -1977,7 +2050,9 @@ fn write_raw_diff_entry_z(
                 None => entry.old_oid.to_hex(),
             }
         };
-        let new_oid = if entry.new_oid == zero_oid() {
+        let new_oid = if entry.new_oid == zero_oid()
+            || raw_gitlink_new_is_worktree_zero(index, entry, diff_index_uncached)
+        {
             "0".repeat(width)
         } else {
             match abbrev {
@@ -2054,7 +2129,9 @@ fn render_raw_diff_entry(
                 None => entry.old_oid.to_hex(),
             }
         };
-        let new_oid = if entry.new_oid == zero_oid() {
+        let new_oid = if entry.new_oid == zero_oid()
+            || raw_gitlink_new_is_worktree_zero(index, entry, diff_index_uncached)
+        {
             "0".repeat(width)
         } else {
             match abbrev {
@@ -2194,97 +2271,49 @@ fn write_submodule_log_commit_lines(
     if old_commit == z || new_commit == z {
         return Ok(());
     }
+    // Mirror Git's `print_submodule_diff_summary` (submodule.c): a single first-parent,
+    // left-right symmetric walk of `old...new` with the merge bases excluded, emitting
+    // commits in commit-date order (newest first). Left (old) side prints `<`, right (new)
+    // side prints `>`. This interleaves the two sides exactly like Git rather than grouping.
+    let _ = (fast_forward, fast_backward);
     let mut opts = RevListOptions::default();
     opts.first_parent = true;
-    if fast_forward {
-        let Ok(res) = rev_list(
-            sub_repo,
-            &[new_commit.to_hex()],
-            &[old_commit.to_hex()],
-            &opts,
-        ) else {
-            return Ok(());
+    opts.left_right = true;
+    opts.symmetric_left = Some(old_commit);
+    opts.symmetric_right = Some(new_commit);
+
+    let bases = merge_bases(sub_repo, old_commit, new_commit, true).unwrap_or_default();
+    let negatives: Vec<String> = bases.iter().map(ObjectId::to_hex).collect();
+
+    let Ok(res) = rev_list(
+        sub_repo,
+        &[old_commit.to_hex(), new_commit.to_hex()],
+        &negatives,
+        &opts,
+    ) else {
+        return Ok(());
+    };
+    for oid in &res.commits {
+        // Skip the merge bases / shared spine (only commits unique to one side are shown).
+        let is_left = match res.left_right_map.get(oid) {
+            Some(&v) => v,
+            None => continue,
         };
-        for oid in res.commits.iter().rev() {
-            let Ok(obj) = sub_repo.odb.read(oid) else {
-                continue;
-            };
-            if obj.kind != ObjectKind::Commit {
-                continue;
-            }
-            let Ok(c) = parse_commit(&obj.data) else {
-                continue;
-            };
-            let subject = submodule_commit_subject_line(&c);
+        let Ok(obj) = sub_repo.odb.read(oid) else {
+            continue;
+        };
+        if obj.kind != ObjectKind::Commit {
+            continue;
+        }
+        let Ok(c) = parse_commit(&obj.data) else {
+            continue;
+        };
+        let subject = submodule_commit_subject_line(&c);
+        if is_left {
+            writeln!(out, "  < {subject}")?;
+        } else {
             writeln!(out, "  > {subject}")?;
         }
-        return Ok(());
-    }
-    if fast_backward {
-        let Ok(res) = rev_list(
-            sub_repo,
-            &[old_commit.to_hex()],
-            &[new_commit.to_hex()],
-            &opts,
-        ) else {
-            return Ok(());
-        };
-        for oid in res.commits.iter().rev() {
-            let Ok(obj) = sub_repo.odb.read(oid) else {
-                continue;
-            };
-            if obj.kind != ObjectKind::Commit {
-                continue;
-            }
-            let Ok(c) = parse_commit(&obj.data) else {
-                continue;
-            };
-            let subject = submodule_commit_subject_line(&c);
-            writeln!(out, "  < {subject}")?;
-        }
-        return Ok(());
-    }
-    let Ok(fwd) = rev_list(
-        sub_repo,
-        &[new_commit.to_hex()],
-        &[old_commit.to_hex()],
-        &opts,
-    ) else {
-        return Ok(());
-    };
-    let Ok(bwd) = rev_list(
-        sub_repo,
-        &[old_commit.to_hex()],
-        &[new_commit.to_hex()],
-        &opts,
-    ) else {
-        return Ok(());
-    };
-    for oid in fwd.commits.iter().rev() {
-        let Ok(obj) = sub_repo.odb.read(oid) else {
-            continue;
-        };
-        if obj.kind != ObjectKind::Commit {
-            continue;
-        }
-        let Ok(c) = parse_commit(&obj.data) else {
-            continue;
-        };
-        let subject = submodule_commit_subject_line(&c);
-        writeln!(out, "  > {subject}")?;
-    }
-    for oid in bwd.commits.iter().rev() {
-        let Ok(obj) = sub_repo.odb.read(oid) else {
-            continue;
-        };
-        if obj.kind != ObjectKind::Commit {
-            continue;
-        }
-        let Ok(c) = parse_commit(&obj.data) else {
-            continue;
-        };
-        let subject = submodule_commit_subject_line(&c);
-        writeln!(out, "  < {subject}")?;
     }
     Ok(())
 }
@@ -2336,9 +2365,10 @@ pub(crate) fn write_submodule_diff_recursive(
         message = Some("(new submodule)");
     } else if new_commit == z {
         message = Some("(submodule deleted)");
-    }
-
-    if (old_commit != z && old_tree.is_none()) || (new_commit != z && new_tree.is_none()) {
+    } else if old_tree.is_none() || new_tree.is_none() {
+        // Git's `show_submodule_summary`: `(commits not present)` only when BOTH endpoints are
+        // real commits that the superproject ODB cannot resolve. A zero endpoint is always
+        // reported as `(new submodule)`/`(submodule deleted)` even if the other commit is absent.
         message = Some("(commits not present)");
     }
 
@@ -2368,6 +2398,11 @@ pub(crate) fn write_submodule_diff_recursive(
         }
         if !dirty.modified {
             // Untracked only: `Submodule … contains untracked content` — no commit-range header or patches.
+            return Ok(());
+        }
+        // Only `--submodule=diff` emits the inner per-file unified diff for dirty content; for
+        // `log`/`short` the `contains modified content` line (already printed) is the whole output.
+        if submodule_format != SubmodulePatchFormat::Diff {
             return Ok(());
         }
         // Modified working tree vs same recorded commit: show inner diff only (no `Submodule a..b:` line).
@@ -2580,7 +2615,8 @@ pub(crate) fn write_patch_entry(
             && entry.new_mode != "000000";
 
         if is_gitlink_to_blob {
-            // Submodule summary first, then blob delete (matches `git diff --submodule=log`).
+            // Submodule summary first (`(submodule deleted)`), then the blob **add** — the regular
+            // file is the new side of the typechange (matches `git diff --submodule=log`).
             write_submodule_diff_recursive(
                 out,
                 repo,
@@ -2594,18 +2630,18 @@ pub(crate) fn write_patch_entry(
                 context_lines,
                 indent_heuristic,
             )?;
-            let mut blob_del = entry.clone();
-            blob_del.status = DiffStatus::Deleted;
-            blob_del.old_mode = entry.new_mode.clone();
-            blob_del.old_oid = entry.new_oid;
-            blob_del.new_path = None;
-            blob_del.new_mode = "000000".to_owned();
-            blob_del.new_oid = z;
+            let mut blob_add = entry.clone();
+            blob_add.status = DiffStatus::Added;
+            blob_add.old_path = None;
+            blob_add.old_mode = "000000".to_owned();
+            blob_add.old_oid = z;
+            blob_add.new_mode = entry.new_mode.clone();
+            blob_add.new_oid = entry.new_oid;
             write_patch_entry_inner(
                 out,
                 repo,
                 odb,
-                &blob_del,
+                &blob_add,
                 context_lines,
                 work_tree,
                 "",

@@ -231,6 +231,11 @@ fn combine_one_parent(
             p_lno = p_lno.saturating_add(1);
         }
     }
+    // Trailer: p_lno[cnt + 1] is the end line number, read when a hunk extends to
+    // the end of the file (matches Git's `sline[cnt + 1].p_lno[n] = p_lno`).
+    if let Some(trailer) = slines.get_mut(cnt + 1) {
+        trailer.p_lno[n] = p_lno;
+    }
 }
 
 fn interesting(s: &Sline, all_mask: u32) -> bool {
@@ -427,7 +432,8 @@ fn dump_slines(slines: &[Sline], cnt: usize, num_parent: usize, context: usize) 
             rlines = rlines.saturating_sub(null_ctx as usize);
         }
 
-        out.push_str("@@@");
+        // Git emits `num_parent + 1` `@` characters on each side of a combined hunk
+        // header (e.g. `@@@` for a two-parent merge).
         for _ in 0..=num_parent {
             out.push('@');
         }
@@ -448,8 +454,10 @@ fn dump_slines(slines: &[Sline], cnt: usize, num_parent: usize, context: usize) 
             } else {
                 &[][..]
             };
+            // Each combined line is prefixed with exactly `num_parent` columns
+            // (one per parent), like Git's dump_sline(); there is no extra leading
+            // result-marker column.
             for seg in show_lost {
-                out.push('-');
                 for j in 0..num_parent {
                     if seg.parent_map & (1u32 << j) != 0 {
                         out.push('-');
@@ -464,13 +472,8 @@ fn dump_slines(slines: &[Sline], cnt: usize, num_parent: usize, context: usize) 
                 break;
             }
             let sl = &slines[lno - 1];
-            if sl.flag & (mark - 1) == 0 {
-                if context == 0 {
-                    continue;
-                }
-                out.push(' ');
-            } else {
-                out.push('+');
+            if sl.flag & (mark - 1) == 0 && context == 0 {
+                continue;
             }
             let mut p_mask = 1u32;
             for _ in 0..num_parent {
@@ -501,6 +504,11 @@ fn reuse_parent(slines: &mut [Sline], cnt: usize, i: usize, j: usize) {
             slines[lno].flag |= im;
         }
         slines[lno].p_lno[i] = slines[lno].p_lno[j];
+    }
+    // Mirror the trailer (sline[cnt + 1]) so an EOF-spanning hunk reports the right
+    // end line number for the reused parent.
+    if let Some(trailer) = slines.get_mut(cnt + 1) {
+        trailer.p_lno[i] = trailer.p_lno[j];
     }
 }
 

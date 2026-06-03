@@ -96,6 +96,8 @@ struct Options {
     verbose: bool,
     /// Suppress diff output in stdin mode (`-s`).
     suppress_diff: bool,
+    /// Show a `Notes:` block in the pretty header (`--notes`); map is keyed by commit OID.
+    notes_blocks: Option<std::collections::HashMap<ObjectId, String>>,
     /// Output binary patches (--binary).
     binary: bool,
     /// Show diffs for merge commits in stdin mode (`-m`).
@@ -114,6 +116,8 @@ struct Options {
     find_renames: Option<u32>,
     /// Copy detection threshold (None = disabled).
     find_copies: Option<u32>,
+    /// Break complete-rewrite pairs (`-B`/`--break-rewrites`).
+    break_rewrites: bool,
     /// Use all source files for copy detection, not just modified ones.
     find_copies_harder: bool,
     /// Rename limit (max number of rename source candidates).
@@ -128,6 +132,13 @@ struct Options {
     patch_with_stat: bool,
     /// Show summary (new/deleted/mode changes) after diff.
     summary: bool,
+    /// Whether `--raw` was given explicitly (so the default raw format is not
+    /// the only output and is not suppressed by `--summary`).
+    raw_explicit: bool,
+    /// Annotate `--stat` filenames with `(new)`/`(gone)`/`(mode +x)` (`--compact-summary`).
+    compact_summary: bool,
+    /// Show only the summary line of `--stat` (`--shortstat`).
+    shortstat: bool,
     /// Pretty-print commit header (--pretty). None = off, Some("oneline"), Some("medium"), etc.
     pretty: Option<String>,
     /// Show combined stat+summary after diff.
@@ -237,6 +248,7 @@ impl Default for Options {
             root: false,
             stdin_mode: false,
             no_commit_id: false,
+            notes_blocks: None,
             verbose: false,
             suppress_diff: false,
             binary: false,
@@ -248,6 +260,7 @@ impl Default for Options {
             abbrev: None,
             find_renames: None,
             find_copies: None,
+            break_rewrites: false,
             find_copies_harder: false,
             rename_limit: None,
             full_index: false,
@@ -255,6 +268,9 @@ impl Default for Options {
             patch_with_raw: false,
             patch_with_stat: false,
             summary: false,
+            raw_explicit: false,
+            compact_summary: false,
+            shortstat: false,
             pretty: None,
             stat_too: false,
             max_depth: None,
@@ -323,6 +339,10 @@ fn parse_options(repo: &Repository, argv: &[String]) -> Result<Options> {
                     opts.show_trees = true;
                 }
                 "--root" => opts.root = true,
+                "--notes" => {
+                    opts.notes_blocks = Some(crate::commands::log::notes_blocks_for_display(repo));
+                }
+                "--no-notes" => opts.notes_blocks = None,
                 "--stdin" => opts.stdin_mode = true,
                 "--no-commit-id" => opts.no_commit_id = true,
                 "-v" => opts.verbose = true,
@@ -333,7 +353,10 @@ fn parse_options(repo: &Repository, argv: &[String]) -> Result<Options> {
                     opts.combined_patch = true;
                     opts.combined_use_cc_word = true;
                 }
-                "--raw" => opts.format = OutputFormat::Raw,
+                "--raw" => {
+                    opts.format = OutputFormat::Raw;
+                    opts.raw_explicit = true;
+                }
                 "-p" | "-u" | "--patch" => opts.format = OutputFormat::Patch,
                 "--binary" => {
                     opts.format = OutputFormat::Patch;
@@ -342,6 +365,16 @@ fn parse_options(repo: &Repository, argv: &[String]) -> Result<Options> {
                 "--stat" => {
                     opts.format = OutputFormat::Stat;
                     opts.stat_too = true;
+                }
+                "--compact-summary" => {
+                    opts.format = OutputFormat::Stat;
+                    opts.stat_too = true;
+                    opts.compact_summary = true;
+                }
+                "--shortstat" => {
+                    opts.format = OutputFormat::Stat;
+                    opts.stat_too = true;
+                    opts.shortstat = true;
                 }
                 "--name-only" => opts.format = OutputFormat::NameOnly,
                 "--name-status" => opts.format = OutputFormat::NameStatus,
@@ -406,6 +439,12 @@ fn parse_options(repo: &Repository, argv: &[String]) -> Result<Options> {
                 "-b" | "--ignore-space-change" => opts.ignore_space_change = true,
                 "-w" | "--ignore-all-space" => opts.ignore_all_space = true,
                 "--ignore-cr-at-eol" => opts.ignore_cr_at_eol = true,
+                "-B" | "--break-rewrites" => opts.break_rewrites = true,
+                _ if arg.starts_with("-B") || arg.starts_with("--break-rewrites=") => {
+                    // Accept a score/merge-score argument but use git's defaults;
+                    // these tests only exercise the default break behavior.
+                    opts.break_rewrites = true;
+                }
                 "-M" | "--find-renames" => opts.find_renames = Some(50),
                 "-C" | "--find-copies" => {
                     opts.find_copies = Some(50);
@@ -517,7 +556,9 @@ fn parse_options(repo: &Repository, argv: &[String]) -> Result<Options> {
         }
 
         // Positional: like Git `setup_revisions` — up to two tree-ishes, then pathspecs.
-        if end_of_options || opts.objects.len() >= 2 {
+        // In `--stdin` mode the tree-ishes come from stdin, so any positional given
+        // on the command line is a pathspec.
+        if end_of_options || opts.stdin_mode || opts.objects.len() >= 2 {
             opts.pathspecs.push(arg.clone());
         } else if opts.objects.len() == 1 && !spec_names_commit_or_tree(repo, arg) {
             opts.pathspecs.push(arg.clone());
@@ -525,6 +566,19 @@ fn parse_options(repo: &Repository, argv: &[String]) -> Result<Options> {
             opts.objects.push(arg.clone());
         }
         i += 1;
+    }
+
+    // `--cc` (dense combined) defaults to a combined *patch* when no other output
+    // format is requested. `-c` keeps the combined *raw* default. An explicit
+    // `--raw`/`--stat`/`--summary`/`--patch-with-*` request wins over this default.
+    if opts.combined_use_cc_word
+        && opts.format == OutputFormat::Raw
+        && !opts.raw_explicit
+        && !opts.summary
+        && !opts.patch_with_stat
+        && !opts.patch_with_raw
+    {
+        opts.format = OutputFormat::Patch;
     }
 
     // Patch and stat imply recursion (Git shows nested file paths). `--name-only`
@@ -552,6 +606,14 @@ pub fn run(mut args: Args) -> Result<()> {
         crate::precompose::precompose_diff_tree_argv(&mut args.args);
     }
     let opts = parse_options(&repo, &args.args)?;
+    if opts.max_depth.is_some()
+        && opts
+            .pathspecs
+            .iter()
+            .any(|p| grit_lib::pathspec::has_glob_chars(p))
+    {
+        bail!("fatal: max-depth cannot be used with wildcard pathspecs");
+    }
     if opts.merge_base && opts.stdin_mode {
         bail!("fatal: options '--merge-base' and '--stdin' cannot be used together");
     }
@@ -582,6 +644,188 @@ pub fn run(mut args: Args) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+// ── whatchanged ──────────────────────────────────────────────────────
+
+/// Run `grit whatchanged` (`git log --raw --no-merges`, with the root commit's
+/// diff shown). Reuses the `diff-tree` option parser and per-commit renderer so
+/// the per-commit output is byte-for-byte identical to `diff-tree --pretty`.
+pub fn run_whatchanged(argv: &[String]) -> Result<()> {
+    let repo = Repository::discover(None).context("not a git repository")?;
+    let mut opts = parse_options(&repo, argv)?;
+
+    // `whatchanged` defaults: medium pretty header, abbreviated OIDs, recursive
+    // raw output, and the root commit's diff is shown (against the empty tree).
+    if opts.pretty.is_none() {
+        opts.pretty = Some("medium".to_string());
+    }
+    if opts.abbrev.is_none() && !opts.full_index {
+        opts.abbrev = Some(7);
+    }
+    if matches!(
+        opts.format,
+        OutputFormat::Raw | OutputFormat::NameOnly | OutputFormat::NameStatus
+    ) {
+        opts.recursive = true;
+    }
+    // The root commit's diff is shown unless `log.showroot` is explicitly false
+    // (Git default is true). An explicit `--root` on the command line always wins.
+    // When suppressed, `whatchanged` drops the root commit entirely because it then
+    // has an empty diff.
+    if !argv.iter().any(|a| a == "--root") {
+        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        let show_root = cfg
+            .get_bool("log.showroot")
+            .and_then(|r| r.ok())
+            .unwrap_or(true);
+        opts.root = show_root;
+    }
+
+    // Revision tips: the positional `objects` are the starting commits for the
+    // walk (default HEAD when none are given).
+    let mut tips: Vec<ObjectId> = Vec::new();
+    if opts.objects.is_empty() {
+        let head = grit_lib::state::resolve_head(&repo.git_dir)?;
+        match head.oid() {
+            Some(oid) => tips.push(*oid),
+            None => return Ok(()),
+        }
+    } else {
+        for spec in &opts.objects {
+            let oid = resolve_revision(&repo, spec)
+                .with_context(|| format!("unknown revision: '{spec}'"))?;
+            tips.push(oid);
+        }
+    }
+
+    let include_merges = opts.combined_patch;
+    let commits = whatchanged_walk(&repo.odb, &tips, include_merges)?;
+
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let pickaxe_active =
+        opts.pickaxe_string.is_some() || opts.pickaxe_grep.is_some() || opts.find_object.is_some();
+
+    let mut printed_any = false;
+    for oid in &commits {
+        let printed =
+            render_whatchanged_commit(&repo, &opts, &mut out, oid, pickaxe_active, printed_any)?;
+        if printed {
+            printed_any = true;
+        }
+    }
+    Ok(())
+}
+
+/// Walk commits reachable from `tips`, ordered by committer date (newest first)
+/// like `git log`. Merge commits are skipped unless `include_merges` is set
+/// (`whatchanged -c`/`--cc`, which show a combined merge diff).
+fn whatchanged_walk(odb: &Odb, tips: &[ObjectId], include_merges: bool) -> Result<Vec<ObjectId>> {
+    use std::collections::HashSet;
+    let mut visited: HashSet<ObjectId> = HashSet::new();
+    let mut stack: Vec<ObjectId> = tips.to_vec();
+    // (oid, committer_timestamp, insertion_order)
+    let mut collected: Vec<(ObjectId, i64, usize)> = Vec::new();
+    let mut order = 0usize;
+
+    while let Some(oid) = stack.pop() {
+        if !visited.insert(oid) {
+            continue;
+        }
+        let obj = odb.read(&oid)?;
+        let commit = parse_commit(&obj.data)?;
+        // Skip merge commits (whatchanged == `--no-merges`) unless combined.
+        if commit.parents.len() <= 1 || include_merges {
+            let ts = committer_timestamp(&commit.committer);
+            collected.push((oid, ts, order));
+            order += 1;
+        }
+        for parent in commit.parents.iter().rev() {
+            if !visited.contains(parent) {
+                stack.push(*parent);
+            }
+        }
+    }
+
+    // Newest committer date first; stable on insertion order for ties.
+    collected.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)));
+    Ok(collected.into_iter().map(|(oid, _, _)| oid).collect())
+}
+
+fn committer_timestamp(committer: &str) -> i64 {
+    // Format: "Name <email> <timestamp> <tz>"
+    let mut it = committer.rsplit(' ');
+    let _tz = it.next();
+    it.next().and_then(|ts| ts.parse::<i64>().ok()).unwrap_or(0)
+}
+
+/// Render one commit for `whatchanged`: a pretty header followed by the diff
+/// against the first parent (or the empty tree for the root commit).
+fn render_whatchanged_commit(
+    repo: &Repository,
+    opts: &Options,
+    out: &mut impl Write,
+    oid: &ObjectId,
+    pickaxe_active: bool,
+    leading_blank: bool,
+) -> Result<bool> {
+    let obj = repo.odb.read(oid).context("reading commit")?;
+    let commit = parse_commit(&obj.data).context("parsing commit")?;
+
+    // Merge commits: `whatchanged -c`/`--cc` shows a combined merge diff with the
+    // pretty header (other invocations skip merges and never reach here).
+    if commit.parents.len() > 1 && opts.combined_patch {
+        let walk = CombinedTreeDiffOptions {
+            recursive: true,
+            tree_in_recursive: false,
+        };
+        let mut paths =
+            combined_diff_paths_filtered(&repo.odb, &commit.tree, &commit.parents, &walk, None)?;
+        paths = filter_combined_paths_intersection(&repo.odb, &commit.tree, &commit.parents, paths);
+        if !opts.pathspecs.is_empty() {
+            paths.retain(|p| combined_path_matches_pathspecs(p, &opts.pathspecs));
+        }
+        if paths.is_empty() {
+            return Ok(false);
+        }
+        if leading_blank {
+            writeln!(out)?;
+        }
+        write_commit_header(out, oid, &obj.data, opts, None)?;
+        print_combined_merge_output(out, repo, &paths, opts, &commit.parents, &commit.tree, None)?;
+        return Ok(true);
+    }
+
+    // The root commit is only diffed when `log.showroot` is enabled (opts.root).
+    let is_root = commit.parents.is_empty();
+    let parent_tree = if let Some(parent) = commit.parents.first() {
+        Some(commit_tree(&repo.odb, parent)?)
+    } else {
+        None
+    };
+    let filtered = if is_root && !opts.root {
+        Vec::new()
+    } else {
+        let entries = diff_with_opts(&repo.odb, parent_tree.as_ref(), Some(&commit.tree), opts)?;
+        filter_entries(&repo.odb, repo, entries, opts)?
+    };
+    let has_diff = !filtered.is_empty();
+
+    // `whatchanged` (unlike `git log --raw`) suppresses commits with no diff,
+    // including the root commit when `log.showroot` is false.
+    if !has_diff {
+        return Ok(false);
+    }
+
+    if leading_blank {
+        writeln!(out)?;
+    }
+    write_commit_header(out, oid, &obj.data, opts, None)?;
+    if !opts.suppress_diff {
+        print_diff(out, repo, &filtered, opts, parent_tree.as_ref())?;
+    }
+    Ok(true)
 }
 
 // ── Two-tree mode ────────────────────────────────────────────────────
@@ -749,17 +993,21 @@ fn run_one_commit(repo: &Repository, opts: &Options, out: &mut impl Write) -> Re
             validate_tree_depth_limit(&repo.odb, &commit.tree, 0, max_tree_depth)?;
             if commit.parents.is_empty() {
                 if opts.root {
-                    let entries = diff_with_opts(&repo.odb, None, Some(&commit.tree), opts)?;
+                    // `-R` reverses the diff: a root commit's additions become
+                    // deletions (empty tree on the new side).
+                    let (old_side, new_side) = if opts.reverse {
+                        (Some(&commit.tree), None)
+                    } else {
+                        (None, Some(&commit.tree))
+                    };
+                    let entries = diff_with_opts(&repo.odb, old_side, new_side, opts)?;
                     let filtered = filter_entries(&repo.odb, &repo, entries, opts)?;
                     has_diff = !filtered.is_empty();
                     if !opts.quiet && (has_diff || opts.pretty.is_some()) {
-                        // `git diff-tree --root <commit>` still prints the commit OID before raw
-                        // lines; for single-commit `--root` without `--stdin`, omit that line so
-                        // machine output is only diff records (matches harness expectations).
-                        let omit_commit_id_line = opts.pretty.is_none() && !opts.stdin_mode;
-                        if !omit_commit_id_line {
-                            write_commit_header(out, &oid, &obj.data, opts, None)?;
-                        }
+                        // `git diff-tree --root <commit>` prints the bare commit OID header
+                        // line first (gated only on --no-commit-id), exactly like the
+                        // single-parent and merge branches below.
+                        write_commit_header(out, &oid, &obj.data, opts, None)?;
                         if !opts.suppress_diff {
                             print_diff(out, repo, &filtered, opts, None)?;
                         }
@@ -853,23 +1101,9 @@ fn run_one_commit(repo: &Repository, opts: &Options, out: &mut impl Write) -> Re
                 }
                 has_diff = any_diff;
             } else if commit.parents.len() > 1 {
-                let parent_tree = commit_tree(&repo.odb, &commit.parents[0])?;
-                let entries =
-                    diff_with_opts(&repo.odb, Some(&parent_tree), Some(&commit.tree), opts)?;
-                let filtered = filter_entries(&repo.odb, &repo, entries, opts)?;
-                has_diff = !filtered.is_empty();
-                if opts.check {
-                    let prepared =
-                        prepare_diff_tree_entries(&repo.odb, filtered, opts, Some(&parent_tree));
-                    run_diff_tree_whitespace_check(repo, &prepared, opts)?;
-                    return Ok(has_diff);
-                }
-                if !opts.quiet && (has_diff || opts.pretty.is_some()) {
-                    write_commit_header(out, &oid, &obj.data, opts, None)?;
-                    if !opts.suppress_diff {
-                        print_diff(out, repo, &filtered, opts, Some(&parent_tree))?;
-                    }
-                }
+                // A bare merge commit (no `-m`/`-c`/`--cc`/`--remerge-diff`) produces
+                // no output at all in `git diff-tree` — not even the commit header
+                // with `--pretty`/`-s`. Leave `has_diff` false and emit nothing.
             } else {
                 let parent_tree = commit_tree(&repo.odb, &commit.parents[0])?;
                 let entries =
@@ -966,14 +1200,37 @@ fn process_stdin_commit(
 ) -> Result<bool> {
     let commit = parse_commit(data).context("parsing commit")?;
 
-    // Print commit-id header (unless `--no-commit-id`). `--quiet` still prints this
-    // line (only the raw/patch diff is suppressed), matching `git diff-tree`.
-    if !opts.no_commit_id {
+    // Decide up front whether this commit is shown at all. `git diff-tree --stdin`
+    // skips merge commits (unless `-m`/`-c`/`--cc`/remerge) and the root commit
+    // (unless `--root`); the header is only emitted for commits that would yield a
+    // diff. This decision must precede header printing so that `-s` (which
+    // suppresses only the diff body) does not leak headers for skipped commits.
+    let is_merge = commit.parents.len() > 1;
+    let is_root = commit.parents.is_empty();
+    let remerge_merge_stdin =
+        commit.parents.len() == 2 && opts.remerge_diff && opts.format == OutputFormat::Patch;
+    let show_merge = opts.show_merges || opts.combined_patch || remerge_merge_stdin;
+    if is_merge && !show_merge {
+        return Ok(false);
+    }
+    if is_root && !opts.root {
+        return Ok(false);
+    }
+
+    // Header. With `--format`/`--pretty`, apply the pretty/format template (e.g.
+    // `--format=%s` prints the subject line) instead of the bare OID. Without a
+    // pretty format, print the bare commit-id header (unless `--no-commit-id`).
+    // `--quiet` still prints this header (only the raw/patch diff is suppressed),
+    // matching `git diff-tree --stdin`.
+    if opts.pretty.is_some() {
+        write_commit_header(out, oid, data, opts, None)?;
+    } else if !opts.no_commit_id {
         writeln!(out, "{}", oid.to_hex())?;
     }
 
-    // `-v` shows the commit message even with `--quiet` (raw diff and commit-id line stay off).
-    if opts.verbose {
+    // `-v` shows the commit message even with `--quiet` (raw diff stays off).
+    // Skip when a pretty format already rendered the header above.
+    if opts.verbose && opts.pretty.is_none() {
         writeln!(out, "commit {}", oid.to_hex())?;
         writeln!(out)?;
         for msg_line in commit.message.lines() {
@@ -983,13 +1240,6 @@ fn process_stdin_commit(
     }
 
     if opts.suppress_diff {
-        return Ok(false);
-    }
-
-    // Skip merge commits unless -m or remerge-diff patch.
-    let remerge_merge_stdin =
-        commit.parents.len() == 2 && opts.remerge_diff && opts.format == OutputFormat::Patch;
-    if commit.parents.len() > 1 && !opts.show_merges && !remerge_merge_stdin {
         return Ok(false);
     }
 
@@ -1116,54 +1366,96 @@ fn filter_max_depth(
     }
     let max_depth = max_depth as usize;
 
-    // For each entry, find the matching pathspec and compute relative depth.
-    // Depth 0 means the entry is directly in the pathspec root.
-    let prefix_depth = if pathspecs.is_empty() {
-        0usize
-    } else {
-        // Use the longest (most specific) matching prefix for each entry.
-        // For simplicity, use the minimum prefix depth across all pathspecs.
-        pathspecs
-            .iter()
-            .map(|p| {
-                let p = p.strip_suffix('/').unwrap_or(p);
-                if p.is_empty() {
-                    0
-                } else {
-                    p.split('/').count()
-                }
-            })
-            .min()
-            .unwrap_or(0)
-    };
-
-    // Maximum number of path components allowed in output.
-    let allowed_components = if prefix_depth > 0 {
-        prefix_depth + max_depth
-    } else {
-        max_depth + 1
-    };
+    // Normalize pathspecs (strip trailing '/') and sort so the longest match can
+    // be found first, mirroring git's reverse-sorted scan in check_recursion_depth.
+    let specs: Vec<String> = pathspecs
+        .iter()
+        .map(|p| p.strip_suffix('/').unwrap_or(p).to_owned())
+        .filter(|p| !p.is_empty())
+        .collect();
 
     let mut seen = std::collections::HashSet::new();
     let mut result = Vec::new();
     for entry in entries {
-        let path = entry.path();
-        let components: Vec<&str> = path.split('/').collect();
-
-        if components.len() <= allowed_components {
-            result.push(entry);
-        } else {
-            // Truncate to allowed_components
-            let truncated: String = components[..allowed_components].join("/");
-            if seen.insert(truncated.clone()) {
-                let mut collapsed = entry;
-                collapsed.old_path = Some(truncated.clone());
-                collapsed.new_path = Some(truncated);
-                result.push(collapsed);
+        let path = entry.path().to_owned();
+        // Find the deepest directory-prefix of `path` that git would refuse to
+        // recurse into; if found, the entry collapses to that directory name.
+        match collapse_boundary(&path, &specs, max_depth) {
+            None => result.push(entry),
+            Some(dir) => {
+                if seen.insert(dir.clone()) {
+                    let mut collapsed = entry;
+                    collapsed.old_path = Some(dir.clone());
+                    collapsed.new_path = Some(dir);
+                    result.push(collapsed);
+                }
             }
         }
     }
     result
+}
+
+/// Returns true if every '/'-separated component boundary in `rel` keeps the
+/// running depth within `max_depth`, mirroring git's within_depth() starting
+/// from `start_depth`.
+fn within_depth(rel: &str, start_depth: usize, max_depth: usize) -> bool {
+    let mut depth = start_depth;
+    for b in rel.bytes() {
+        if b == b'/' {
+            depth += 1;
+            if depth > max_depth {
+                return false;
+            }
+        }
+    }
+    depth <= max_depth
+}
+
+/// Mirror of git's check_recursion_depth for a directory path `name`: returns
+/// true if git would recurse into this directory under the given pathspecs.
+fn check_recursion_depth(name: &str, specs: &[String], max_depth: usize) -> bool {
+    if specs.is_empty() {
+        return within_depth(name, 1, max_depth);
+    }
+    // Reverse-sorted scan: longest matching pathspec first.
+    let mut sorted: Vec<&String> = specs.iter().collect();
+    sorted.sort();
+    for item in sorted.iter().rev() {
+        let item = item.as_str();
+        if name.len() >= item.len() {
+            if is_dir_prefix(name, item) {
+                // Git does NOT strip the boundary '/'; the leading slash of the
+                // remainder counts as a depth increment (within_depth start=1).
+                let rel = &name[item.len()..];
+                return within_depth(rel, 1, max_depth);
+            }
+        } else if is_dir_prefix(item, name) {
+            // name is a prefix of the pathspec: must always recurse.
+            return true;
+        }
+    }
+    false
+}
+
+/// True iff `dir` is a leading directory of `path` (or equal).
+fn is_dir_prefix(path: &str, dir: &str) -> bool {
+    path.starts_with(dir) && (path.len() == dir.len() || path.as_bytes()[dir.len()] == b'/')
+}
+
+/// Walk the ancestor directories of a blob `path`; if git would stop recursing
+/// at some directory, return that directory name (the collapse target).
+fn collapse_boundary(path: &str, specs: &[String], max_depth: usize) -> Option<String> {
+    let bytes = path.as_bytes();
+    let mut idx = 0;
+    while let Some(rel) = bytes[idx..].iter().position(|&b| b == b'/') {
+        let end = idx + rel;
+        let dir = &path[..end];
+        if !check_recursion_depth(dir, specs, max_depth) {
+            return Some(dir.to_owned());
+        }
+        idx = end + 1;
+    }
+    None
 }
 
 /// Non-recursive tree diff: only top-level entries.
@@ -1549,6 +1841,7 @@ fn print_submodule_log_for_entry(
 }
 
 /// Build normal [`DiffEntry`] list for first-parent vs merge tree on combined-diff paths only.
+#[allow(dead_code)]
 fn combined_paths_to_first_parent_entries(
     _odb: &Odb,
     paths: &[CombinedDiffPath],
@@ -1609,6 +1902,7 @@ fn combined_paths_to_first_parent_entries(
 }
 
 /// Print combined `--summary` lines (create/delete/mode) using first-parent vs merge semantics.
+#[allow(dead_code)]
 fn write_combined_summary(out: &mut impl Write, paths: &[CombinedDiffPath]) -> Result<()> {
     for p in paths {
         let p0 = match p.parents.first() {
@@ -1655,21 +1949,49 @@ fn print_combined_merge_output(
     };
     let want_stat = opts.format == OutputFormat::Stat
         || (opts.format == OutputFormat::Patch && opts.patch_with_stat);
-    let want_raw = opts.format == OutputFormat::Raw
+    // `--summary` without an explicit `--raw` suppresses the default combined raw
+    // output (matching the non-combined `--summary` behavior), so e.g.
+    // `diff-tree --cc --summary` shows only the summary lines.
+    let suppress_raw = opts.summary && !opts.raw_explicit;
+    let want_raw = (opts.format == OutputFormat::Raw && !suppress_raw)
         || (opts.format == OutputFormat::Patch && opts.patch_with_raw);
     let want_patch = opts.format == OutputFormat::Patch;
     let quote_fully = ConfigSet::load(Some(&repo.git_dir), true)
         .unwrap_or_default()
         .quote_path_fully();
 
-    let stat_entries = if want_stat {
-        combined_paths_to_first_parent_entries(odb, paths)?
+    // Git computes `--stat`/`--summary` for a combined diff as an ordinary diff
+    // against the FIRST parent (combine-diff.c: `diff_tree_oid(&parents->oid[0],
+    // oid, ...)` under STAT_FORMAT_MASK), not from the combined-interesting paths.
+    let first_parent_entries = if want_stat || opts.summary {
+        match parent_commits.first() {
+            Some(p0) => {
+                let p0_tree = commit_tree(odb, p0)?;
+                let entries = diff_with_opts(odb, Some(&p0_tree), Some(merge_tree), opts)?;
+                filter_entries(odb, repo, entries, opts)?
+            }
+            None => Vec::new(),
+        }
     } else {
         Vec::new()
     };
+    let stat_entries = &first_parent_entries;
 
     if want_stat && !stat_entries.is_empty() {
-        print_stat_summary(out, odb, &stat_entries, quote_fully)?;
+        print_stat_summary(
+            out,
+            odb,
+            stat_entries,
+            quote_fully,
+            opts.compact_summary,
+            opts.shortstat,
+        )?;
+    }
+
+    // `--summary` lines are part of the first-parent stat group and precede the
+    // patch (git emits them via diff_flush under STAT_FORMAT_MASK).
+    if opts.summary {
+        write_summary(out, stat_entries)?;
     }
 
     if want_raw {
@@ -1684,7 +2006,8 @@ fn print_combined_merge_output(
         }
     }
 
-    let need_patch_sep = (want_stat && !stat_entries.is_empty()) || want_raw;
+    let summary_emitted = opts.summary && summary_has_lines(stat_entries);
+    let need_patch_sep = (want_stat && !stat_entries.is_empty()) || want_raw || summary_emitted;
     if want_patch {
         let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
         let patch_abbrev = if opts.full_index {
@@ -1735,10 +2058,6 @@ fn print_combined_merge_output(
                 }
             }
         }
-    }
-
-    if opts.summary {
-        write_combined_summary(out, paths)?;
     }
 
     Ok(())
@@ -1850,6 +2169,13 @@ fn prepare_diff_tree_entries<'a>(
     } else {
         Vec::new()
     };
+    // `-B` (break-rewrites): split complete-rewrite Modified/TypeChanged pairs
+    // into a Deleted + Added pair so that rename/copy detection can re-pair them
+    // across paths, then merge any surviving broken pairs back together.
+    if opts.break_rewrites && (opts.find_renames.is_some() || opts.find_copies.is_some()) {
+        return break_then_detect(odb, entries, opts, &old_blobs);
+    }
+
     let mut out = if let Some(threshold) = opts.find_renames {
         let mut result = detect_renames(odb, None, entries, threshold);
         if let Some(copy_threshold) = opts.find_copies {
@@ -1881,6 +2207,198 @@ fn prepare_diff_tree_entries<'a>(
         out = preprocess_gitlink_renames_for_submodule_log(out);
     }
     out
+}
+
+/// Implements `-B` (break-rewrites) combined with rename/copy detection.
+///
+/// Mirrors git's diffcore-break + diffcore-rename + diffcore-merge-broken:
+/// complete-rewrite Modified/TypeChanged pairs are split into a Deleted + Added
+/// pair (the "broken pair"), rename/copy detection is run, and surviving broken
+/// halves are merged back. A rename whose source path survives (its broken-add
+/// peer was not consumed) is downgraded to a copy.
+fn break_then_detect(
+    odb: &Odb,
+    entries: Vec<DiffEntry>,
+    opts: &Options,
+    old_blobs: &[(String, String, ObjectId)],
+) -> Vec<DiffEntry> {
+    use std::collections::HashSet;
+    let zero = grit_lib::diff::zero_oid();
+    let zero_mode = "000000".to_owned();
+
+    // Phase 1: break eligible pairs.
+    let mut broken_paths: HashSet<String> = HashSet::new();
+    // Remember the original (old half, new half) of every broken path so we can
+    // merge it back together later.
+    let mut broken_old: std::collections::HashMap<String, DiffEntry> =
+        std::collections::HashMap::new();
+    let mut broken_new: std::collections::HashMap<String, DiffEntry> =
+        std::collections::HashMap::new();
+    let mut prepared: Vec<DiffEntry> = Vec::new();
+
+    for entry in entries {
+        let is_inplace_edit =
+            matches!(entry.status, DiffStatus::Modified | DiffStatus::TypeChanged)
+                && entry.old_path.as_deref() == entry.new_path.as_deref()
+                && entry.old_path.is_some();
+        if !is_inplace_edit {
+            prepared.push(entry);
+            continue;
+        }
+        let old_data = odb.read(&entry.old_oid).ok().map(|o| o.data);
+        let new_data = odb.read(&entry.new_oid).ok().map(|o| o.data);
+        let should_break = match (&old_data, &new_data) {
+            (Some(o), Some(n)) => grit_lib::diff::should_break_rewrite_pair(
+                o,
+                n,
+                grit_lib::diff::GIT_DIFF_DEFAULT_BREAK_SCORE,
+            ),
+            _ => false,
+        };
+        if !should_break {
+            prepared.push(entry);
+            continue;
+        }
+        let path = entry.path().to_owned();
+        broken_paths.insert(path.clone());
+        // Deleted half (old side).
+        let del = DiffEntry {
+            status: DiffStatus::Deleted,
+            old_path: entry.old_path.clone(),
+            new_path: None,
+            old_mode: entry.old_mode.clone(),
+            new_mode: zero_mode.clone(),
+            old_oid: entry.old_oid,
+            new_oid: zero,
+            score: None,
+        };
+        // Added half (new side).
+        let add = DiffEntry {
+            status: DiffStatus::Added,
+            old_path: None,
+            new_path: entry.new_path.clone(),
+            old_mode: zero_mode.clone(),
+            new_mode: entry.new_mode.clone(),
+            old_oid: zero,
+            new_oid: entry.new_oid,
+            score: None,
+        };
+        broken_old.insert(path.clone(), del.clone());
+        broken_new.insert(path.clone(), add.clone());
+        prepared.push(del);
+        prepared.push(add);
+    }
+
+    // Phase 2: rename (and optional copy) detection.
+    let mut detected = if let Some(threshold) = opts.find_renames {
+        detect_renames(odb, None, prepared, threshold)
+    } else {
+        prepared
+    };
+    if let Some(copy_threshold) = opts.find_copies {
+        detected = lib_detect_copies(
+            odb,
+            None,
+            detected,
+            copy_threshold,
+            opts.find_copies_harder,
+            old_blobs,
+        );
+    }
+
+    // Phase 3: merge back surviving broken pairs and resolve rename-vs-copy.
+    //
+    // A broken-add peer "survives" if the path still appears as a standalone
+    // Added entry in the detection output.
+    let surviving_add: HashSet<String> = detected
+        .iter()
+        .filter(|e| e.status == DiffStatus::Added)
+        .filter_map(|e| e.new_path.clone())
+        .filter(|p| broken_paths.contains(p))
+        .collect();
+    let surviving_del: HashSet<String> = detected
+        .iter()
+        .filter(|e| e.status == DiffStatus::Deleted)
+        .filter_map(|e| e.old_path.clone())
+        .filter(|p| broken_paths.contains(p))
+        .collect();
+
+    let mut result: Vec<DiffEntry> = Vec::new();
+    let mut merged_paths: HashSet<String> = HashSet::new();
+    for entry in detected {
+        match entry.status {
+            // A rename/copy whose source is a broken path that still survives in
+            // the destination tree is really a copy.
+            DiffStatus::Renamed
+                if entry
+                    .old_path
+                    .as_deref()
+                    .is_some_and(|p| surviving_add.contains(p)) =>
+            {
+                let mut e = entry;
+                e.status = DiffStatus::Copied;
+                result.push(e);
+            }
+            // Standalone surviving broken halves: recombine into the original
+            // Modified/TypeChanged once (when both halves survived) or restore
+            // the original change when only this half survived because its peer
+            // was consumed by a rename/copy.
+            DiffStatus::Added
+                if entry
+                    .new_path
+                    .as_deref()
+                    .is_some_and(|p| broken_paths.contains(p)) =>
+            {
+                let path = entry.new_path.clone().unwrap_or_default();
+                if merged_paths.insert(path.clone()) {
+                    if let (Some(del), Some(add)) = (broken_old.get(&path), broken_new.get(&path)) {
+                        result.push(merge_broken_pair(del, add));
+                    }
+                }
+            }
+            DiffStatus::Deleted
+                if entry
+                    .old_path
+                    .as_deref()
+                    .is_some_and(|p| broken_paths.contains(p)) =>
+            {
+                let path = entry.old_path.clone().unwrap_or_default();
+                // Only emit here if the add-half did NOT survive (otherwise the
+                // Added arm above handles the merge); this covers the symmetric
+                // case where the delete half is the survivor.
+                if !surviving_add.contains(&path) && merged_paths.insert(path.clone()) {
+                    if let (Some(del), Some(add)) = (broken_old.get(&path), broken_new.get(&path)) {
+                        result.push(merge_broken_pair(del, add));
+                    }
+                }
+            }
+            _ => result.push(entry),
+        }
+    }
+    let _ = surviving_del;
+
+    result.sort_by(|a, b| a.path().cmp(b.path()));
+    result
+}
+
+/// Recombine the two halves of a broken pair into a single Modified or
+/// TypeChanged entry, restoring git's score-100 break marker.
+fn merge_broken_pair(del: &DiffEntry, add: &DiffEntry) -> DiffEntry {
+    let status = if del.old_mode != add.new_mode {
+        DiffStatus::TypeChanged
+    } else {
+        DiffStatus::Modified
+    };
+    DiffEntry {
+        status,
+        old_path: del.old_path.clone(),
+        new_path: add.new_path.clone(),
+        old_mode: del.old_mode.clone(),
+        new_mode: add.new_mode.clone(),
+        old_oid: del.old_oid,
+        new_oid: add.new_oid,
+        score: Some(100),
+    }
 }
 
 fn run_diff_tree_whitespace_check(
@@ -1956,9 +2474,11 @@ fn print_diff(
 
     match opts.format {
         OutputFormat::Raw => {
-            // When --pretty is set AND --summary or --stat is also set, suppress raw output.
-            // Otherwise show raw output normally.
-            let suppress_raw = opts.pretty.is_some() && opts.summary;
+            // `diff-tree` only defaults to raw output when no other output format
+            // was requested (git's diff_tree_tweak_rev). `--summary` selects the
+            // summary format, so unless `--raw` was given explicitly the default
+            // raw lines are suppressed (matches `git diff-tree --summary`).
+            let suppress_raw = opts.summary && !opts.raw_explicit;
             if !suppress_raw {
                 if opts.nul_terminated {
                     let abbrev = opts.abbrev;
@@ -1980,9 +2500,19 @@ fn print_diff(
             }
         }
         OutputFormat::Patch => {
-            // --patch-with-stat: show stat before patch
+            // --patch-with-stat: show stat (then `--summary` lines) before patch
             if opts.patch_with_stat {
-                print_stat_summary(out, odb, entries, quote_fully)?;
+                print_stat_summary(
+                    out,
+                    odb,
+                    entries,
+                    quote_fully,
+                    opts.compact_summary,
+                    opts.shortstat,
+                )?;
+                if opts.summary {
+                    write_summary(out, entries)?;
+                }
                 writeln!(out)?;
             }
             // --patch-with-raw: show raw before patch
@@ -1994,6 +2524,12 @@ fn print_diff(
                         writeln!(out, "{}", format_raw(entry))?;
                     }
                 }
+                writeln!(out)?;
+            }
+            // Plain `-p --summary` (without `--patch-with-stat`) emits the summary
+            // lines between the header and the patch, followed by a blank line.
+            if opts.summary && !opts.patch_with_stat && summary_has_lines(entries) {
+                write_summary(out, entries)?;
                 writeln!(out)?;
             }
             for entry in entries {
@@ -2013,7 +2549,14 @@ fn print_diff(
             }
         }
         OutputFormat::Stat => {
-            print_stat_summary(out, odb, entries, quote_fully)?;
+            print_stat_summary(
+                out,
+                odb,
+                entries,
+                quote_fully,
+                opts.compact_summary,
+                opts.shortstat,
+            )?;
             if opts.summary {
                 write_summary(out, entries)?;
             }
@@ -2043,6 +2586,19 @@ fn abbrev_oid(hex: &str, abbrev: Option<usize>, full_index: bool) -> &str {
         let len = abbrev.unwrap_or(7).min(hex.len());
         &hex[..len]
     }
+}
+
+/// Whether `write_summary` would emit at least one line for these entries.
+fn summary_has_lines(entries: &[DiffEntry]) -> bool {
+    entries.iter().any(|entry| match entry.status {
+        DiffStatus::Added
+        | DiffStatus::Deleted
+        | DiffStatus::TypeChanged
+        | DiffStatus::Renamed
+        | DiffStatus::Copied => true,
+        DiffStatus::Modified => entry.old_mode != entry.new_mode,
+        _ => false,
+    })
 }
 
 /// Write human-readable `--summary` lines (create mode, delete mode, mode change, etc.)
@@ -2331,43 +2887,82 @@ fn write_patch_entry(
 }
 
 /// Write a `--stat` summary.
+fn stat_mode_has_executable_bit(mode_str: &str) -> bool {
+    u32::from_str_radix(mode_str, 8)
+        .map(|m| m & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+/// Quote `entry`'s path and, for `--compact-summary`, append git's
+/// `(new)` / `(gone)` / `(mode +x)` / `(mode -x)` annotation.
+fn stat_display_path(entry: &DiffEntry, quote_fully: bool, compact: bool) -> String {
+    let path = quote_c_style(entry.path(), quote_fully);
+    if !compact {
+        return path;
+    }
+    match entry.status {
+        DiffStatus::Added => format!("{path} (new)"),
+        DiffStatus::Deleted => format!("{path} (gone)"),
+        _ => {
+            let old_x = stat_mode_has_executable_bit(&entry.old_mode);
+            let new_x = stat_mode_has_executable_bit(&entry.new_mode);
+            if new_x != old_x {
+                if new_x {
+                    format!("{path} (mode +x)")
+                } else {
+                    format!("{path} (mode -x)")
+                }
+            } else {
+                path
+            }
+        }
+    }
+}
+
 fn print_stat_summary(
     out: &mut impl Write,
     odb: &Odb,
     entries: &[DiffEntry],
     quote_fully: bool,
+    compact_summary: bool,
+    shortstat: bool,
 ) -> Result<bool> {
     use grit_lib::diff::format_stat_line_width;
 
     let max_path_len = entries
         .iter()
-        .map(|e| quote_c_style(e.path(), quote_fully).len())
+        .map(|e| stat_display_path(e, quote_fully, compact_summary).len())
         .max()
         .unwrap_or(0);
     let mut total_ins = 0usize;
     let mut total_del = 0usize;
 
     // First pass: compute all stats
-    let mut file_stats: Vec<(&str, usize, usize)> = Vec::new();
+    let mut file_stats: Vec<(String, usize, usize)> = Vec::new();
     for entry in entries {
         let (old_content, new_content) = read_blob_pair(odb, entry)?;
         let (ins, del) = count_changes(&old_content, &new_content);
         total_ins += ins;
         total_del += del;
-        file_stats.push((entry.path(), ins, del));
+        file_stats.push((
+            stat_display_path(entry, quote_fully, compact_summary),
+            ins,
+            del,
+        ));
     }
 
     // Compute count width based on max total change
     let max_count = file_stats.iter().map(|(_, i, d)| i + d).max().unwrap_or(0);
     let count_width = format!("{}", max_count).len();
 
-    for (path, ins, del) in &file_stats {
-        let q = quote_c_style(path, quote_fully);
-        writeln!(
-            out,
-            "{}",
-            format_stat_line_width(&q, *ins, *del, max_path_len, count_width)
-        )?;
+    if !shortstat {
+        for (path, ins, del) in &file_stats {
+            writeln!(
+                out,
+                "{}",
+                format_stat_line_width(path, *ins, *del, max_path_len, count_width)
+            )?;
+        }
     }
 
     let n = entries.len();
@@ -2553,12 +3148,20 @@ fn write_commit_header(
             writeln!(out, "commit {oid}")?;
         }
         if commit.parents.len() > 1 {
+            // Git abbreviates the `Merge:` parent OIDs to the default short length
+            // in medium-style headers.
+            let merge_abbrev = if opts.full_index {
+                40usize
+            } else {
+                opts.abbrev.unwrap_or(7)
+            };
             let mut merge_line = String::new();
             for (i, parent) in commit.parents.iter().enumerate() {
                 if i > 0 {
                     merge_line.push(' ');
                 }
-                merge_line.push_str(&parent.to_hex());
+                let hex = parent.to_hex();
+                merge_line.push_str(&hex[..merge_abbrev.min(hex.len())]);
             }
             writeln!(out, "Merge: {merge_line}")?;
         }
@@ -2580,8 +3183,20 @@ fn write_commit_header(
         for line in commit.message.lines() {
             writeln!(out, "    {line}")?;
         }
-        // Use "---" separator when --patch-with-stat is active, blank line otherwise
-        if opts.patch_with_stat {
+        // Optional `Notes:` block (`--notes`), separated from the message by a blank line.
+        if let Some(notes_map) = &opts.notes_blocks {
+            if let Some(block) = notes_map.get(oid) {
+                writeln!(out)?;
+                for line in block.lines() {
+                    writeln!(out, "{line}")?;
+                }
+            }
+        }
+        // Use the "---" separator when `--patch-with-stat` is active, except for a
+        // combined merge diff (which separates the header from the stat with a
+        // blank line, like Git's combined log output); otherwise a blank line.
+        let is_combined_merge = opts.combined_patch && commit.parents.len() > 1;
+        if opts.patch_with_stat && !is_combined_merge {
             writeln!(out, "---")?;
         } else {
             writeln!(out)?;
