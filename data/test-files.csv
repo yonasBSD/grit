@@ -253,7 +253,7 @@ t11670-status-untracked-dirs	t1	yes	37	37	0	true	ok	0
 t11740-config-global-system	t1	yes	35	35	0	true	ok	0
 t11750-config-multivar	t1	yes	36	36	0	true	ok	0
 t11760-init-default-branch	t1	yes	35	35	0	true	ok	0
-t11770-branch-set-upstream	t1	yes	37	33	4	false	ok	0
+t11770-branch-set-upstream	t1	yes	37	37	0	true	ok	0
 t11780-tag-verify-list	t1	yes	36	36	0	true	ok	0
 t11920-diff-no-index-permissions	t1	yes	36	36	0	true	ok	0
 t11930-diff-cached-empty-tree	t1	yes	37	37	0	true	ok	0

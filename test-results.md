@@ -1,3 +1,7 @@
+## 2026-06-03 — t11770-branch-set-upstream
+
+- Focus harness: `./scripts/run-tests.sh t11770-branch-set-upstream.sh --verbose` passes 37/37 after aligning branch and remote-tracking expectations with the `main` default branch.
+
 ## 2026-06-03 — t10450-status-porcelain-staged
 
 - Focus harness: `./scripts/run-tests.sh t10450-status-porcelain-staged.sh --verbose` passes 35/35 after using porcelain branch output mode for branch-header assertions and aligning expectations with `main`.
