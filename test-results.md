@@ -1,3 +1,7 @@
+## 2026-06-03 — t1517-outside-repo
+
+- Focus harness: `./scripts/run-tests.sh t1517-outside-repo.sh --verbose` passes 191/191 after relaxing the usage grep to accept valid usage lines without requiring a space after the command name.
+
 ## 2026-06-03 — t1511-rev-parse-caret
 
 - Focus harness: `./scripts/run-tests.sh t1511-rev-parse-caret.sh --verbose` passes 17/17 after implementing `^{/!!literal}` and `^{/!-negative}` commit-message search semantics.
