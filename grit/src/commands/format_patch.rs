@@ -1417,7 +1417,15 @@ fn diffstat_for_patch_entries(
 ) -> Result<String> {
     let mut files: Vec<FileStatInput> = Vec::with_capacity(entries.len());
     for entry in entries {
-        let path = entry.path().to_string();
+        // Renames/copies are displayed in the diffstat as `old => new` (pretty-printed).
+        let path = match entry.status {
+            DiffStatus::Renamed | DiffStatus::Copied => {
+                let old = entry.old_path.as_deref().unwrap_or("");
+                let new = entry.new_path.as_deref().unwrap_or("");
+                grit_lib::diff::format_rename_path(old, new)
+            }
+            _ => entry.path().to_string(),
+        };
         let old_raw = read_blob_raw(odb, &entry.old_oid);
         let new_raw = read_blob_raw(odb, &entry.new_oid);
         let binary = old_raw.contains(&0) || new_raw.contains(&0);
