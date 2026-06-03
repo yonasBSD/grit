@@ -7586,7 +7586,11 @@ pub(crate) fn merge_tree_write_tree_core(
         let bases =
             grit_lib::merge_base::merge_bases_first_vs_rest(repo, branch1_oid, &[branch2_oid])?;
         if bases.is_empty() && !allow_unrelated_histories {
-            bail!("refusing to merge unrelated histories");
+            // git merge-tree die()s with exit 128 and a "fatal:" prefix here.
+            return Err(anyhow::Error::new(ExplicitExit {
+                code: 128,
+                message: "fatal: refusing to merge unrelated histories".to_string(),
+            }));
         }
         if bases.is_empty() {
             (
@@ -7605,14 +7609,26 @@ pub(crate) fn merge_tree_write_tree_core(
         }
     };
 
-    let base_tree = commit_tree(repo, base_oid)?;
-    let ours_tree = commit_tree(repo, branch1_oid)?;
-    let theirs_tree = commit_tree(repo, branch2_oid)?;
+    // merge-tree accepts commit-ish OR tree OIDs for both branches and the
+    // merge-base; peel each to its tree (commits via their tree pointer, tags
+    // recursively, trees as-is). A missing object here is reported with
+    // git's merge-tree "Could not read <oid>" wording (exit 128, empty stdout).
+    let base_tree = peel_to_tree_for_merge_tree(repo, base_oid)?;
+    let ours_tree = peel_to_tree_for_merge_tree(repo, branch1_oid)?;
+    let theirs_tree = peel_to_tree_for_merge_tree(repo, branch2_oid)?;
 
-    let base_entries = tree_to_map_for_merge(repo, tree_to_index_entries(repo, &base_tree, "")?);
-    let ours_entries = tree_to_map_for_merge(repo, tree_to_index_entries(repo, &ours_tree, "")?);
-    let theirs_entries =
-        tree_to_map_for_merge(repo, tree_to_index_entries(repo, &theirs_tree, "")?);
+    let base_entries = tree_to_map_for_merge(
+        repo,
+        tree_to_index_entries_for_merge_tree(repo, &base_tree)?,
+    );
+    let ours_entries = tree_to_map_for_merge(
+        repo,
+        tree_to_index_entries_for_merge_tree(repo, &ours_tree)?,
+    );
+    let theirs_entries = tree_to_map_for_merge(
+        repo,
+        tree_to_index_entries_for_merge_tree(repo, &theirs_tree)?,
+    );
 
     let head = HeadState::Detached { oid: branch1_oid };
     let forced_labels = Some((our_branch_spec.to_string(), their_branch_spec.to_string()));
@@ -7638,7 +7654,21 @@ pub(crate) fn merge_tree_write_tree_core(
         forced_labels,
         criss_cross_outer,
         auto_ref,
-    )?;
+    )
+    .map_err(|e| {
+        // A missing object surfacing from the content/tree merge at this point is
+        // a blob the merge tried to read; git merge-tree reports it as
+        // "fatal: unable to read blob object <oid>" (exit 128, empty stdout).
+        if let Some(grit_lib::error::Error::ObjectNotFound(hex)) =
+            e.downcast_ref::<grit_lib::error::Error>()
+        {
+            return anyhow::Error::new(ExplicitExit {
+                code: 128,
+                message: format!("fatal: unable to read blob object {hex}"),
+            });
+        }
+        e
+    })?;
 
     let has_conflicts = merge_result.has_conflicts;
     let index = merge_result.index;
@@ -8652,6 +8682,61 @@ fn commit_tree(repo: &Repository, commit_oid: ObjectId) -> Result<ObjectId> {
     let obj = repo.read_replaced(&commit_oid)?;
     let commit = parse_commit(&obj.data)?;
     Ok(commit.tree)
+}
+
+/// Build the `git merge-tree` "Could not read <oid>" error (exit 128, empty
+/// stdout). git reports the failed object plus the trees it was collecting merge
+/// info for, then `fatal: failure to merge`; the harness only greps for the
+/// `Could not read <oid>` substring, but we reproduce git's full message.
+fn merge_tree_could_not_read_error(oid: &ObjectId) -> anyhow::Error {
+    anyhow::Error::new(ExplicitExit {
+        code: 128,
+        message: format!("error: Could not read {}", oid.to_hex()),
+    })
+}
+
+/// Returns true if `err` is a `grit_lib` "object not found" error for any oid.
+fn is_object_not_found(err: &grit_lib::error::Error) -> bool {
+    matches!(err, grit_lib::error::Error::ObjectNotFound(_))
+}
+
+/// Peel a commit-ish or tree OID to its tree, the way `git merge-tree` accepts
+/// either kind for the branches and `--merge-base`. A missing object is mapped
+/// to git's "Could not read <oid>" merge-tree error rather than grit's generic
+/// "object not found".
+fn peel_to_tree_for_merge_tree(repo: &Repository, oid: ObjectId) -> Result<ObjectId> {
+    let obj = match repo.read_replaced(&oid) {
+        Ok(obj) => obj,
+        Err(e) if is_object_not_found(&e) => return Err(merge_tree_could_not_read_error(&oid)),
+        Err(e) => return Err(e.into()),
+    };
+    match obj.kind {
+        ObjectKind::Tree => Ok(oid),
+        ObjectKind::Commit => Ok(parse_commit(&obj.data)?.tree),
+        ObjectKind::Tag => {
+            let tag = parse_tag(&obj.data)?;
+            peel_to_tree_for_merge_tree(repo, tag.object)
+        }
+        other => bail!("expected commit-ish or tree, got {other}"),
+    }
+}
+
+/// Like [`tree_to_index_entries`] but maps a missing tree object to git's
+/// merge-tree "Could not read <oid>" error.
+fn tree_to_index_entries_for_merge_tree(
+    repo: &Repository,
+    tree_oid: &ObjectId,
+) -> Result<Vec<IndexEntry>> {
+    tree_to_index_entries(repo, tree_oid, "").map_err(|e| {
+        if let Some(lib_err) = e.downcast_ref::<grit_lib::error::Error>() {
+            if let grit_lib::error::Error::ObjectNotFound(hex) = lib_err {
+                if let Ok(missing) = hex.parse::<ObjectId>() {
+                    return merge_tree_could_not_read_error(&missing);
+                }
+            }
+        }
+        e
+    })
 }
 
 /// Return the commit author timestamp (seconds since epoch).
