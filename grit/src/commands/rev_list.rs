@@ -1215,6 +1215,10 @@ pub fn run(args: Args) -> Result<()> {
         return Ok(());
     }
 
+    if options.boundary && options.maximal_only {
+        bail!("options '--boundary' and '--maximal-only' cannot be used together");
+    }
+
     let emit_record = |record: &str| {
         if zero_terminated {
             print!("{record}\0");
@@ -1226,6 +1230,11 @@ pub fn run(args: Args) -> Result<()> {
     let print_object = |oid: &grit_lib::objects::ObjectId, path: &str| {
         if options.no_object_names {
             emit_record(&oid.to_string());
+        } else if zero_terminated {
+            emit_record(&oid.to_string());
+            if !path.is_empty() {
+                emit_record(&format!("path={path}"));
+            }
         } else if path.is_empty() {
             if result.bitmap_object_format {
                 emit_record(&oid.to_string());
@@ -1295,7 +1304,7 @@ pub fn run(args: Args) -> Result<()> {
             }
         };
         if object_type_commit_oid_only && matches!(&options.output_mode, OutputMode::OidOnly) {
-            println!("{oid}");
+            emit_record(&oid.to_string());
         } else {
             match &options.output_mode {
                 OutputMode::Format(fmt) => {
@@ -1350,20 +1359,20 @@ pub fn run(args: Args) -> Result<()> {
                     let parents = commit_parents_for_output(&repo, *oid, &graft_parents)?;
                     let children = children_suffix(oid);
                     if parents.is_empty() {
-                        println!("{prefix}{oid}{children}");
+                        emit_record(&format!("{prefix}{oid}{children}"));
                     } else {
                         let rendered_parents = parents
                             .iter()
                             .map(ObjectId::to_hex)
                             .collect::<Vec<_>>()
                             .join(" ");
-                        println!("{prefix}{oid} {rendered_parents}{children}");
+                        emit_record(&format!("{prefix}{oid} {rendered_parents}{children}"));
                     }
                 }
                 _ => {
                     let rendered = render_commit(&repo, *oid, &options.output_mode, abbrev_len)?;
                     let children = children_suffix(oid);
-                    println!("{prefix}{rendered}{children}");
+                    emit_record(&format!("{prefix}{rendered}{children}"));
                 }
             }
         }
@@ -1515,7 +1524,12 @@ pub fn run(args: Args) -> Result<()> {
     // Print boundary commits
     if options.boundary {
         for oid in &result.boundary_commits {
-            println!("-{oid}");
+            if zero_terminated {
+                emit_record(&oid.to_string());
+                emit_record("boundary=yes");
+            } else {
+                println!("-{oid}");
+            }
         }
     }
 

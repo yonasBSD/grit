@@ -1365,3 +1365,10 @@ Updated: 2026-06-01
   `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
   --allow-dirty` (existing warning backlog remains and unrelated auto-fixes were reverted), and
   `cargo test -p grit-lib --lib`.
+- t6000 zero-terminated output focus: after making `rev-list -z` NUL-delimit commits, emit
+  `path=<path>` and `boundary=yes` metadata records, and reject `--boundary --maximal-only`, the
+  direct debug run passes 22/23 and `./scripts/run-tests.sh t6000-rev-list-misc.sh` improves from
+  18/23 to 22/23 with refreshed `data/test-files.csv` plus dashboards. Also ran `cargo fmt`,
+  `cargo check -p grit-cli`, `cargo build -p grit-cli`, `cargo build --release -p grit-cli`,
+  `cargo clippy --fix --allow-dirty` (existing warning backlog remains and unrelated auto-fixes
+  were reverted), and `cargo test -p grit-lib --lib`.

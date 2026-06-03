@@ -32,7 +32,7 @@ dependency/topic groups. Mark an item `[~]` when claimed and `[x]` only after th
   symmetric range handling.
 - [x] `t6012-rev-list-simplify.sh` — 42/42 passing after completing path-limited
   `--simplify-merges --show-pulls` graph ordering.
-- [~] `t6000-rev-list-misc.sh` — 18/23 passing, 5 failing.
+- [~] `t6000-rev-list-misc.sh` — 22/23 passing, 1 failing.
 - [ ] `t6003-rev-list-topo-order.sh` — 23/36 passing, 13 failing.
 - [ ] `t6019-rev-list-ancestry-path.sh` — 5/18 passing, 13 failing.
 - [ ] `t6137-rev-parse-misc.sh` — 23/34 passing, 11 failing.
