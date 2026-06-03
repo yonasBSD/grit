@@ -271,6 +271,11 @@ fn parse_word_diff_from_argv() -> (WordDiffModeCli, Option<String>) {
 
 fn effective_word_diff(args: &Args, stdout_is_tty: bool) -> Option<EffectiveWordDiff> {
     let (mut mode, regex_override) = parse_word_diff_from_argv();
+    // git: `--word-diff-regex=<re>` implies word-diff in plain mode unless a mode is
+    // given explicitly (see Documentation/diff-options.txt and t4034 subtest 15).
+    if args.word_diff_regex.is_some() && mode == WordDiffModeCli::None && args.word_diff.is_none() {
+        mode = WordDiffModeCli::Plain;
+    }
     if args.color_words.is_some() {
         mode = WordDiffModeCli::Color;
     }
@@ -1257,11 +1262,11 @@ pub struct Args {
     pub no_relative: bool,
 
     /// Colorize the output. Values: always, never, auto.
-    #[arg(long = "color", value_name = "WHEN", default_missing_value = "always", num_args = 0..=1)]
+    #[arg(long = "color", value_name = "WHEN", default_missing_value = "always", num_args = 0..=1, require_equals = true)]
     pub color: Option<String>,
 
     /// Show a word-level diff with `[-removed-]{+added+}` markers.
-    #[arg(long = "word-diff", value_name = "MODE", default_missing_value = "plain", num_args = 0..=1)]
+    #[arg(long = "word-diff", value_name = "MODE", default_missing_value = "plain", num_args = 0..=1, require_equals = true, overrides_with = "word_diff")]
     pub word_diff: Option<String>,
 
     /// Regular expression that defines a word for word diff (Git `--word-diff-regex`).
