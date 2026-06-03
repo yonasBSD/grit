@@ -1,3 +1,7 @@
+## 2026-06-03 — t12630-rev-parse-is-bare
+
+- Focus harness: `./scripts/run-tests.sh t12630-rev-parse-is-bare.sh --verbose` passes 33/33 after wrapping setup blocks that changed into repositories.
+
 ## 2026-06-03 — t10230-cherry-pick-range
 
 - Focus harness: `./scripts/run-tests.sh t10230-cherry-pick-range.sh --verbose` passes 31/31 after switching synthetic `master` branch references to `main`.
