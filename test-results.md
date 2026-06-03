@@ -1,3 +1,7 @@
+## 2026-06-03 — t1509-root-work-tree
+
+- Marked out of scope (`in_scope=skip`) because the test explicitly requires writable `/`, `IKNOWWHATIAMDOING=YES`, and non-root execution; it is unsafe for the shared VM harness.
+
 ## 2026-06-03 — t1020-subdirectory
 
 - Focus harness: `./scripts/run-tests.sh t1020-subdirectory.sh --verbose` passes 15/15 after fixing subdirectory pathspec prefixing, shell-alias `GIT_PREFIX`, and external diff working-directory handling.
