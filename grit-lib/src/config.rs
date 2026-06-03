@@ -225,6 +225,15 @@ pub fn canonical_key(raw: &str) -> Result<String> {
 
 // ── Parser ──────────────────────────────────────────────────────────
 
+fn git_config_nosystem_enabled() -> bool {
+    std::env::var("GIT_CONFIG_NOSYSTEM").ok().is_some_and(|v| {
+        !matches!(
+            v.to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        )
+    })
+}
+
 /// Display path for config diagnostics (matches [`config_error_path_display`] for public callers).
 #[must_use]
 pub fn config_file_display_for_error(path: &Path) -> String {
@@ -1827,7 +1836,7 @@ impl ConfigSet {
         let ctx = opts.include_ctx.clone();
 
         // System config
-        if opts.include_system && std::env::var("GIT_CONFIG_NOSYSTEM").is_err() {
+        if opts.include_system && !git_config_nosystem_enabled() {
             let system_path = std::env::var("GIT_CONFIG_SYSTEM")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::path::PathBuf::from("/etc/gitconfig"));
@@ -1922,7 +1931,7 @@ impl ConfigSet {
         };
 
         // System
-        if std::env::var("GIT_CONFIG_NOSYSTEM").is_err() {
+        if !git_config_nosystem_enabled() {
             let system_path = std::env::var("GIT_CONFIG_SYSTEM")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::path::PathBuf::from("/etc/gitconfig"));
@@ -2017,7 +2026,7 @@ impl ConfigSet {
             command_line_relative_include_is_error: false,
         };
 
-        if include_system && std::env::var("GIT_CONFIG_NOSYSTEM").is_err() {
+        if include_system && !git_config_nosystem_enabled() {
             let system_path = std::env::var("GIT_CONFIG_SYSTEM")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::path::PathBuf::from("/etc/gitconfig"));

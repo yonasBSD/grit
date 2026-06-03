@@ -1656,7 +1656,13 @@ fn load_config(
         let system_path = std::env::var("GIT_CONFIG_SYSTEM")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/etc/gitconfig"));
-        if let Some(f) = ConfigFile::from_path(&system_path, ConfigScope::System)? {
+        let Some(f) = ConfigFile::from_path(&system_path, ConfigScope::System)? else {
+            return Err(fatal_config_parse(format!(
+                "fatal: unable to read config file '{}': No such file or directory",
+                system_path.display()
+            )));
+        };
+        {
             if process_includes {
                 set.merge_file_with_includes(&f, true, &load_opts.include_ctx)
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -1670,41 +1676,47 @@ fn load_config(
     if args.global {
         let mut set = ConfigSet::new();
         if let Some(path) = global_config_path() {
-            if let Some(f) = ConfigFile::from_path(&path, ConfigScope::Global)? {
-                if process_includes {
-                    set.merge_file_with_includes(&f, true, &load_opts.include_ctx)
-                        .map_err(|e| anyhow::anyhow!("{}", e))?;
-                } else {
-                    set.merge(&f);
-                }
+            let Some(f) = ConfigFile::from_path(&path, ConfigScope::Global)? else {
+                return Err(fatal_config_parse(format!(
+                    "fatal: unable to read config file '{}': No such file or directory",
+                    path.display()
+                )));
+            };
+            if process_includes {
+                set.merge_file_with_includes(&f, true, &load_opts.include_ctx)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            } else {
+                set.merge(&f);
             }
         }
         return Ok(set);
     }
 
     if args.local {
+        let gd = git_dir.ok_or_else(|| {
+            fatal_config_parse("fatal: --local can only be used inside a git repository")
+        })?;
         let mut set = ConfigSet::new();
-        if let Some(gd) = git_dir {
-            let common = common_git_dir_for_config(gd);
-            if let Some(f) = ConfigFile::from_path(&common.join("config"), ConfigScope::Local)? {
-                if process_includes {
-                    set.merge_file_with_includes(&f, true, &load_opts.include_ctx)
-                        .map_err(|e| anyhow::anyhow!("{}", e))?;
-                } else {
-                    set.merge(&f);
-                }
+        let common = common_git_dir_for_config(gd);
+        if let Some(f) = ConfigFile::from_path(&common.join("config"), ConfigScope::Local)? {
+            if process_includes {
+                set.merge_file_with_includes(&f, true, &load_opts.include_ctx)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            } else {
+                set.merge(&f);
             }
         }
         return Ok(set);
     }
 
     if args.worktree {
+        let gd = git_dir.ok_or_else(|| {
+            fatal_config_parse("fatal: --worktree can only be used inside a git repository")
+        })?;
         let mut set = ConfigSet::new();
-        if let Some(gd) = git_dir {
-            let (scope, p) = resolve_worktree_config_file(gd)?;
-            if let Some(f) = ConfigFile::from_path(&p, scope)? {
-                set.merge(&f);
-            }
+        let (scope, p) = resolve_worktree_config_file(gd)?;
+        if let Some(f) = ConfigFile::from_path(&p, scope)? {
+            set.merge(&f);
         }
         return Ok(set);
     }
