@@ -225,7 +225,27 @@ pub fn compute_range_diff_body(
     new_range: &str,
     creation_factor: Option<usize>,
 ) -> Result<String> {
+    compute_range_diff_body_with_notes(repo, old_range, new_range, creation_factor, true, &[])
+}
+
+/// Compute a range-diff body with explicit note-display controls.
+///
+/// `notes_refs` accepts full notes ref names. When `no_notes` is true, notes are suppressed even
+/// if refs are supplied.
+pub fn compute_range_diff_body_with_notes(
+    repo: &Repository,
+    old_range: &str,
+    new_range: &str,
+    creation_factor: Option<usize>,
+    no_notes: bool,
+    notes_refs: &[String],
+) -> Result<String> {
     let args = Args::parse_from(["grit range-diff"]);
+    let args = Args {
+        no_notes,
+        notes: notes_refs.to_vec(),
+        ..args
+    };
     let creation = creation_factor
         .map(|c| c as u64)
         .unwrap_or(DEFAULT_CREATION_FACTOR as u64);
