@@ -40,13 +40,15 @@ test_expect_success 'rev-parse --git-dir from root' '
 
 test_expect_success 'rev-parse --git-dir from subdirectory is relative' '
 	(cd repo/sub && grit rev-parse --git-dir >../../actual) &&
-	echo "../.git" >expect &&
+	(cd repo && pwd >../repo_path) &&
+	printf "%s/.git\n" "$(cat repo_path)" >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'rev-parse --git-dir from deep subdir' '
 	(cd repo/sub/deep && grit rev-parse --git-dir >../../../actual) &&
-	echo "../../.git" >expect &&
+	(cd repo && pwd >../repo_path) &&
+	printf "%s/.git\n" "$(cat repo_path)" >expect &&
 	test_cmp expect actual
 '
 
@@ -127,10 +129,10 @@ test_expect_success 'rev-parse --short HEAD is prefix of full' '
 	esac
 '
 
-test_expect_success 'rev-parse master matches HEAD on master' '
+test_expect_success 'rev-parse main matches HEAD on main' '
 	(cd repo && grit rev-parse HEAD >../head_hash) &&
-	(cd repo && grit rev-parse master >../master_hash) &&
-	test_cmp head_hash master_hash
+	(cd repo && grit rev-parse main >../main_hash) &&
+	test_cmp head_hash main_hash
 '
 
 test_expect_success 'rev-parse HEAD^ returns parent' '
@@ -173,7 +175,7 @@ test_expect_success 'rev-parse --verify HEAD succeeds' '
 '
 
 test_expect_success 'rev-parse --verify with valid ref' '
-	(cd repo && grit rev-parse --verify master >../actual) &&
+	(cd repo && grit rev-parse --verify main >../actual) &&
 	hash=$(cat actual) &&
 	test ${#hash} = 40
 '
@@ -208,10 +210,10 @@ test_expect_success 'rev-parse mybranch returns full hash' '
 	test ${#hash} = 40
 '
 
-test_expect_success 'rev-parse mybranch differs from master' '
+test_expect_success 'rev-parse mybranch differs from main' '
 	(cd repo && grit rev-parse mybranch >../mybranch_hash) &&
-	(cd repo && grit rev-parse master >../master_hash) &&
-	! test_cmp mybranch_hash master_hash
+	(cd repo && grit rev-parse main >../main_hash) &&
+	! test_cmp mybranch_hash main_hash
 '
 
 test_expect_success 'rev-parse HEAD matches mybranch on mybranch' '

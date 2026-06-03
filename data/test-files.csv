@@ -379,7 +379,7 @@ t13180-log-patch-stat	t1	yes	35	35	0	true	ok	0
 t13190-log-format-body	t1	yes	36	36	0	true	ok	0
 t13200-rev-list-walk-options	t1	yes	35	22	13	false	ok	0
 t13210-rev-list-count-all	t1	yes	33	33	0	true	ok	0
-t13220-rev-parse-worktree	t1	yes	36	31	5	false	ok	0
+t13220-rev-parse-worktree	t1	yes	36	36	0	true	ok	0
 t13230-rev-parse-upstream	t1	yes	35	27	8	false	ok	0
 t13240-config-get-all-values	t1	yes	32	32	0	true	ok	0
 t13250-config-section-names	t1	yes	31	31	0	true	ok	0

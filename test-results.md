@@ -1,3 +1,7 @@
+## 2026-06-03 — t13220-rev-parse-worktree
+
+- Focus harness: `./scripts/run-tests.sh t13220-rev-parse-worktree.sh --verbose` passes 36/36 after aligning branch expectations with `main` and expecting absolute `--git-dir` paths from subdirectories.
+
 ## 2026-06-03 — t12700-add-edit-intent
 
 - Focus harness: `./scripts/run-tests.sh t12700-add-edit-intent.sh --verbose` passes 37/37 after correcting intent-to-add porcelain expectations to Git's ` A` worktree-added status.
