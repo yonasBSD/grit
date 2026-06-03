@@ -1,4 +1,10 @@
 
+## 2026-06-03 — t5001-archive-attr
+
+- Focus harness: `./scripts/run-tests.sh t5001-archive-attr.sh --verbose` passes 44/44 after tree/worktree/bare archive attribute sourcing and export-subst fixes.
+- Regression harness: `./scripts/run-tests.sh --timeout 600 t5000-tar-tree.sh t5002-archive-attr-pattern.sh t5004-archive-corner-cases.sh --verbose` passes 90/90, 19/19, and 14/14.
+
+
 ## 2026-06-03 — t5000-tar-tree
 
 - Focus harness: `./scripts/run-tests.sh --timeout 600 t5000-tar-tree.sh --verbose` passes 90/90 after archive filter streaming and archive option/pathspec/remote fixes.

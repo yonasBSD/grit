@@ -15,7 +15,9 @@
   - Completed `t5000-tar-tree.sh` (90/90) after fixing archive filter streaming, ordered
     prefix/add-file semantics, configured format inference, remote URL/list/tar.gz/unreachable
     behavior, scoped pathspecs, glob archive pathspecs, and bare tree attrs for attr pathspecs.
-  - Next focus: `t5001-archive-attr.sh`, then `t5003-archive-zip.sh`.
+  - Completed `t5001-archive-attr.sh` (44/44) after adding tree/worktree/bare archive
+    attribute sourcing and missing export-subst placeholders.
+  - Next focus: `t5003-archive-zip.sh`.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

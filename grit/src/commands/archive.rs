@@ -4,6 +4,7 @@
 //! `export-ignore` / `export-subst`, ordered `--prefix` / `--add-file`, pathspecs, gzip and
 //! `tar.*` config filters, and `--remote` via the upload-archive protocol.
 
+use crate::commands::describe::{describe_object, DescribeOptions};
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
 use flate2::write::GzEncoder;
@@ -51,6 +52,7 @@ pub(crate) enum ArchiveToken {
     AddFile(PathBuf),
     Mtime(String),
     Verbose,
+    WorktreeAttributes,
     EndOfOptions,
 }
 
@@ -182,6 +184,10 @@ pub(crate) fn parse_archive_argv(rest: &[String]) -> Result<ParsedArchive> {
                     p.tokens.push(ArchiveToken::Verbose);
                     i += 1;
                 }
+                "--worktree-attributes" => {
+                    p.tokens.push(ArchiveToken::WorktreeAttributes);
+                    i += 1;
+                }
                 _ => bail!("unknown option: {a}"),
             }
             continue;
@@ -280,6 +286,12 @@ fn collect_prefix_addfile(p: &ParsedArchive) -> Result<(String, Vec<ArchiveAddFi
 
 fn verbose_flag(p: &ParsedArchive) -> bool {
     p.tokens.iter().any(|t| matches!(t, ArchiveToken::Verbose))
+}
+
+fn worktree_attributes_flag(p: &ParsedArchive) -> bool {
+    p.tokens
+        .iter()
+        .any(|t| matches!(t, ArchiveToken::WorktreeAttributes))
 }
 
 fn execute(p: ParsedArchive) -> Result<()> {
@@ -390,6 +402,7 @@ pub(crate) fn archive_bytes_for_repo(
         commit_oid,
         &add_files,
         verbose_flag(p),
+        worktree_attributes_flag(p),
         format,
     )
 }
@@ -539,21 +552,6 @@ fn scope_pathspecs(specs: &[String], cwd_prefix: Option<&str>) -> Result<Vec<Str
         .collect()
 }
 
-fn root_gitattributes_from_tree(
-    repo: &Repository,
-    tree_data: &[u8],
-) -> Result<Vec<grit_lib::crlf::AttrRule>> {
-    for entry in parse_tree(tree_data)? {
-        if entry.name == b".gitattributes" {
-            let obj = repo.odb.read(&entry.oid)?;
-            if let Ok(content) = String::from_utf8(obj.data) {
-                return Ok(grit_lib::crlf::parse_gitattributes_content(&content));
-            }
-        }
-    }
-    Ok(Vec::new())
-}
-
 fn committer_unix_secs(committer: &str) -> Option<u64> {
     let pos = committer.rfind('>')?;
     let rest = committer[pos + 1..].trim();
@@ -675,6 +673,56 @@ fn tree_data_for_cwd_prefix(
     Ok(data)
 }
 
+fn archive_attr_rules(
+    repo: &Repository,
+    tree_data: &[u8],
+    worktree_attributes: bool,
+) -> Result<Vec<grit_lib::crlf::AttrRule>> {
+    if worktree_attributes {
+        if let Some(work_tree) = repo.work_tree.as_ref() {
+            return Ok(load_gitattributes(work_tree));
+        }
+    }
+
+    let mut rules = gitattributes_from_tree_recursive(repo, tree_data)?;
+    if let Ok(content) = std::fs::read_to_string(repo.git_dir.join("info/attributes")) {
+        rules.extend(grit_lib::crlf::parse_gitattributes_content(&content));
+    }
+    Ok(rules)
+}
+
+fn gitattributes_from_tree_recursive(
+    repo: &Repository,
+    tree_data: &[u8],
+) -> Result<Vec<grit_lib::crlf::AttrRule>> {
+    let mut rules = Vec::new();
+    collect_gitattributes_from_tree(repo, tree_data, &mut rules)?;
+    Ok(rules)
+}
+
+fn collect_gitattributes_from_tree(
+    repo: &Repository,
+    tree_data: &[u8],
+    rules: &mut Vec<grit_lib::crlf::AttrRule>,
+) -> Result<()> {
+    let entries = parse_tree(tree_data)?;
+    for entry in &entries {
+        if entry.name == b".gitattributes" {
+            let obj = repo.odb.read(&entry.oid)?;
+            if let Ok(content) = String::from_utf8(obj.data) {
+                rules.extend(grit_lib::crlf::parse_gitattributes_content(&content));
+            }
+        }
+    }
+    for entry in entries {
+        if entry.mode == 0o040000 {
+            let obj = repo.odb.read(&entry.oid)?;
+            collect_gitattributes_from_tree(repo, &obj.data, rules)?;
+        }
+    }
+    Ok(())
+}
+
 fn build_archive(
     repo: &Repository,
     config: &ConfigSet,
@@ -689,19 +737,17 @@ fn build_archive(
     commit_oid: Option<ObjectId>,
     add_files: &[ArchiveAddFile],
     verbose: bool,
+    worktree_attributes: bool,
     format: &str,
 ) -> Result<Vec<u8>> {
     let conv = ConversionConfig::from_config(config);
-    let work_tree = repo.work_tree.clone().unwrap_or_default();
-    let mut attr_rules = load_gitattributes(&work_tree);
+    let attr_rules = archive_attr_rules(repo, tree_data, worktree_attributes)?;
     let max_tree_depth = resolve_max_tree_depth(config)?;
 
     let scoped_tree = tree_data_for_cwd_prefix(repo, tree_data, cwd_prefix)?;
-    if attr_rules.is_empty() {
-        attr_rules = root_gitattributes_from_tree(repo, tree_data)?;
-    }
 
     let mut entries: Vec<ArchiveEntry> = Vec::new();
+    let mut describe_substituted = false;
     if !pathspecs.is_empty() {
         for ps in pathspecs {
             let one = vec![ps.clone()];
@@ -735,6 +781,7 @@ fn build_archive(
         commit_oid.as_ref(),
         &mut entries,
         verbose,
+        &mut describe_substituted,
     )?;
 
     prune_empty_directory_entries(&mut entries);
@@ -1035,6 +1082,7 @@ fn collect_entries(
     commit_oid: Option<&ObjectId>,
     entries: &mut Vec<ArchiveEntry>,
     verbose: bool,
+    describe_substituted: &mut bool,
 ) -> Result<()> {
     if depth > max_tree_depth {
         bail!(
@@ -1122,6 +1170,7 @@ fn collect_entries(
                 commit_oid,
                 entries,
                 verbose,
+                describe_substituted,
             )?;
         } else {
             let blob = repo.odb.read(&entry.oid)?;
@@ -1149,7 +1198,7 @@ fn collect_entries(
             };
             if fa.export_subst {
                 if let Some(oid) = commit_oid {
-                    data = format_subst(&data, &oid.to_hex());
+                    data = format_subst(repo, &data, oid, describe_substituted);
                 }
             }
             if verbose {
@@ -1192,14 +1241,21 @@ fn resolve_max_tree_depth(config: &ConfigSet) -> Result<usize> {
     Ok(depth)
 }
 
-fn format_subst(data: &[u8], commit_hex: &str) -> Vec<u8> {
+fn format_subst(
+    repo: &Repository,
+    data: &[u8],
+    commit_oid: &ObjectId,
+    describe_substituted: &mut bool,
+) -> Vec<u8> {
+    let commit_hex = commit_oid.to_hex();
     let mut out = Vec::new();
     let mut i = 0usize;
     while i < data.len() {
         if i + 8 <= data.len() && &data[i..i + 8] == b"$Format:" {
             if let Some(end) = data[i + 8..].iter().position(|&b| b == b'$') {
                 let fmt = std::str::from_utf8(&data[i + 8..i + 8 + end]).unwrap_or("");
-                let expanded = expand_format_spec(fmt, commit_hex);
+                let expanded =
+                    expand_format_spec(repo, fmt, &commit_hex, commit_oid, describe_substituted);
                 out.extend_from_slice(expanded.as_bytes());
                 i += 8 + end + 1;
                 continue;
@@ -1211,7 +1267,13 @@ fn format_subst(data: &[u8], commit_hex: &str) -> Vec<u8> {
     out
 }
 
-fn expand_format_spec(spec: &str, commit_hex: &str) -> String {
+fn expand_format_spec(
+    repo: &Repository,
+    spec: &str,
+    commit_hex: &str,
+    commit_oid: &ObjectId,
+    describe_substituted: &mut bool,
+) -> String {
     let mut out = String::new();
     let mut s = spec;
     while !s.is_empty() {
@@ -1220,8 +1282,25 @@ fn expand_format_spec(spec: &str, commit_hex: &str) -> String {
             s = rest;
             continue;
         }
+        if let Some(rest) = s.strip_prefix("%h") {
+            out.push_str(&commit_hex[..commit_hex.len().min(7)]);
+            s = rest;
+            continue;
+        }
         if let Some(rest) = s.strip_prefix("%n") {
             out.push('\n');
+            s = rest;
+            continue;
+        }
+        if let Some(rest) = s.strip_prefix("%(describe)") {
+            if !*describe_substituted {
+                if let Ok(desc) =
+                    describe_object(repo, *commit_oid, &DescribeOptions::default_for_format())
+                {
+                    out.push_str(&desc);
+                    *describe_substituted = true;
+                }
+            }
             s = rest;
             continue;
         }
