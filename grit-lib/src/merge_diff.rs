@@ -920,20 +920,37 @@ fn result_line_differs_from_parent(parent: &str, result: &str) -> Vec<bool> {
 }
 
 /// Combined hunk body for two parents (Git `dump_sline` / `diff --cc` line prefixes).
-#[allow(dead_code)]
+///
+/// Emits, like combine-diff.c `dump_sline`: first the per-parent deletion rows for any
+/// parent line absent from the result (`-` in that parent's column, space in the other),
+/// then the result rows with `+` in each column where the line differs from that parent.
 fn combined_hunk_two_parents(a: &str, b: &str, result: &str) -> String {
     let la: Vec<&str> = a.lines().collect();
     let lb: Vec<&str> = b.lines().collect();
     let lr: Vec<&str> = result.lines().collect();
 
-    let d0 = result_line_differs_from_parent(a, result);
-    let d1 = result_line_differs_from_parent(b, result);
-
     let old_a = la.len().max(1) as u32;
     let old_b = lb.len().max(1) as u32;
     let new_c = lr.len().max(1) as u32;
 
+    // Parent lines that do not survive into the result.
+    let result_set: std::collections::HashSet<&&str> = lr.iter().collect();
+
     let mut body = String::new();
+    // Per-parent deletion rows: parent0 (column 0), then parent1 (column 1).
+    for line in &la {
+        if !result_set.contains(line) {
+            body.push_str(&format!("- {line}\n"));
+        }
+    }
+    for line in &lb {
+        if !result_set.contains(line) {
+            body.push_str(&format!(" -{line}\n"));
+        }
+    }
+
+    let d0 = result_line_differs_from_parent(a, result);
+    let d1 = result_line_differs_from_parent(b, result);
     for (i, line) in lr.iter().enumerate() {
         let c0 = if d0.get(i).copied().unwrap_or(true) {
             '+'

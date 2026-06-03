@@ -1374,7 +1374,7 @@ fn diff_tree_vs_worktree(
                 && (dirty.modified || dirty.untracked);
             if head_differs_from_index || report_dirty_aligned {
                 let old = tree_map.get(path).copied().or(Some(*index_snapshot));
-                let new_oid = zero_oid();
+                let new_oid = sub_head.unwrap_or_else(zero_oid);
                 merged.insert(
                     path.clone(),
                     RawChange {
