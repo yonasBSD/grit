@@ -1071,6 +1071,16 @@ pub fn run(mut args: Args) -> Result<()> {
         } else {
             None
         };
+        // Git derives the patch filename from only the FIRST line of the subject (it stops at the
+        // first newline), even though the Subject header flattens a multi-line subject onto one line.
+        let filename_subject = first_subject_line(&display_msg);
+        let filename = build_patch_filename(
+            &file_prefix,
+            patch_num,
+            filename_subject,
+            filename_max_length,
+        );
+
         let patch = format_single_patch(
             &repo,
             &repo.odb,
@@ -1087,17 +1097,8 @@ pub fn run(mut args: Args) -> Result<()> {
             &thread.references_for(seq),
             encode_email_headers,
             solo_extra.as_deref(),
+            &filename,
         )?;
-
-        // Git derives the patch filename from only the FIRST line of the subject (it stops at the
-        // first newline), even though the Subject header flattens a multi-line subject onto one line.
-        let filename_subject = first_subject_line(&display_msg);
-        let filename = build_patch_filename(
-            &file_prefix,
-            patch_num,
-            filename_subject,
-            filename_max_length,
-        );
         emit_output(
             &mut single_buf,
             to_single,
@@ -1538,9 +1539,58 @@ fn diffstat_for_patch_entries(
         let mut buf = Vec::new();
         write_diffstat_block(&mut buf, &files, &dstat_opts)?;
         out.push_str(&String::from_utf8_lossy(&buf));
+
+        // git format-patch emits `--summary` lines (create/delete mode, mode change,
+        // rename/copy) right after the diffstat.
+        out.push_str(&format_summary_lines(entries));
     }
 
     Ok(out)
+}
+
+/// `--summary` lines for the diffstat (git's `show_stats`/`show_rename_copy`): file
+/// creations, deletions, mode changes, and renames/copies.
+fn format_summary_lines(entries: &[grit_lib::diff::DiffEntry]) -> String {
+    use grit_lib::diff::DiffStatus;
+    let mut out = String::new();
+    for entry in entries {
+        match entry.status {
+            DiffStatus::Added => {
+                out.push_str(&format!(" create mode {} {}\n", entry.new_mode, entry.path()));
+            }
+            DiffStatus::Deleted => {
+                out.push_str(&format!(" delete mode {} {}\n", entry.old_mode, entry.path()));
+            }
+            DiffStatus::Modified | DiffStatus::TypeChanged
+                if entry.old_mode != entry.new_mode =>
+            {
+                out.push_str(&format!(
+                    " mode change {} => {} {}\n",
+                    entry.old_mode,
+                    entry.new_mode,
+                    entry.path()
+                ));
+            }
+            DiffStatus::Renamed => {
+                let sim = entry.score.unwrap_or(100);
+                out.push_str(&format!(
+                    " rename {} => {} ({sim}%)\n",
+                    entry.old_path.as_deref().unwrap_or(""),
+                    entry.new_path.as_deref().unwrap_or("")
+                ));
+            }
+            DiffStatus::Copied => {
+                let sim = entry.score.unwrap_or(100);
+                out.push_str(&format!(
+                    " copy {} => {} ({sim}%)\n",
+                    entry.old_path.as_deref().unwrap_or(""),
+                    entry.new_path.as_deref().unwrap_or("")
+                ));
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn read_blob_raw(odb: &Odb, oid: &ObjectId) -> Vec<u8> {
@@ -1827,6 +1877,7 @@ fn format_single_patch(
     references: &[String],
     encode_email_headers: bool,
     solo_extra: Option<&str>,
+    attachment_filename: &str,
 ) -> Result<String> {
     let mut out = String::new();
     let charset_label = rfc2047_charset_label(log_output_encoding);
@@ -1963,7 +2014,10 @@ fn format_single_patch(
         .filter(|b| !b.is_empty())
         .map(|b| format!("------------{b}"));
     let use_mime = opts.attach.is_some() || opts.inline.is_some();
-    let boundary = mime_boundary.unwrap_or_else(|| "------------grit-patch-boundary".to_owned());
+    // Default MIME boundary is git's version string with the fixed `------------` prefix
+    // (builtin/log.c make_cover_letter / mime boundary uses `git_version_string`).
+    let boundary =
+        mime_boundary.unwrap_or_else(|| format!("------------{}", git_version_string()));
 
     // From line
     let from_oid = if opts.zero_commit {
@@ -2062,10 +2116,11 @@ fn format_single_patch(
     out.push('\n');
 
     if use_mime {
-        // MIME multipart: description part, then patch as attachment
+        // MIME multipart: preamble, description part, then patch as attachment.
+        out.push_str("This is a multi-part message in MIME format.\n");
         out.push_str(&format!("--{boundary}\n"));
         out.push_str(&format!(
-            "Content-Type: text/plain; charset={charset_label}\n"
+            "Content-Type: text/plain; charset={charset_label}; format=fixed\n"
         ));
         out.push_str("Content-Transfer-Encoding: 8bit\n");
         out.push('\n');
@@ -2073,6 +2128,9 @@ fn format_single_patch(
             out.push_str(&format!("From: {ibf}\n\n"));
         }
         if !body_with_signoff.is_empty() {
+            // git's MIME text/plain part keeps the blank line that separates the (omitted)
+            // subject from the body, so a non-empty body is preceded by a blank line.
+            out.push('\n');
             out.push_str(&mboxrd_escape(&body_with_signoff, opts.mboxrd));
             out.push('\n');
         }
@@ -2085,17 +2143,17 @@ fn format_single_patch(
         out.push_str(&stat_block);
         out.push('\n');
 
-        // Patch attachment part
+        // Patch attachment part. Git names the part after the patch's filename
+        // (`0001-<subject>.patch`).
         out.push_str(&format!("--{boundary}\n"));
         let disposition = if opts.inline.is_some() {
             "inline"
         } else {
             "attachment"
         };
-        let subject_line = flatten_subject(&commit_msg_unicode);
-        let filename = format!("{}.patch", sanitize_subject(&subject_line));
+        let filename = attachment_filename;
         out.push_str(&format!(
-            "Content-Type: text/x-patch; charset={charset_label}\n"
+            "Content-Type: text/x-patch; name=\"{filename}\"\n"
         ));
         out.push_str("Content-Transfer-Encoding: 8bit\n");
         out.push_str(&format!(
@@ -2114,7 +2172,11 @@ fn format_single_patch(
                 }
             }
         }
+        // A blank line separates the patch body from the closing boundary, and git emits
+        // two trailing blank lines after it.
+        out.push('\n');
         out.push_str(&format!("--{boundary}--\n"));
+        out.push('\n');
         out.push('\n');
     } else {
         // Standard (non-MIME) patch format
@@ -2159,7 +2221,11 @@ fn format_single_patch(
         out.push_str(extra);
     }
 
-    write_signature(&mut out, opts.signature.as_deref());
+    // MIME (--attach / --inline) patches carry no `-- \n<signature>` trailer; the closing
+    // boundary terminates the message instead.
+    if !use_mime {
+        write_signature(&mut out, opts.signature.as_deref());
+    }
 
     Ok(out)
 }
