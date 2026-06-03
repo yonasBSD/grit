@@ -947,6 +947,52 @@ fn ordered_note_fragments_from_argv(
     ))
 }
 
+fn last_ordered_note_fragment_is_reuse_message() -> bool {
+    let argv: Vec<String> = std::env::args().collect();
+    let Some(notes_pos) = argv.iter().position(|a| a == "notes") else {
+        return false;
+    };
+    let mut i = notes_pos + 1;
+    while i < argv.len() {
+        if matches!(argv[i].as_str(), "add" | "append" | "edit") {
+            i += 1;
+            break;
+        }
+        i += 1;
+    }
+    let mut last_is_reuse = false;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "-m" | "--message" | "-F" | "--file" | "-c" | "--reedit-message" => {
+                last_is_reuse = false;
+                i += 2;
+                continue;
+            }
+            "-C" | "--reuse-message" => {
+                last_is_reuse = true;
+                i += 2;
+                continue;
+            }
+            _ => {}
+        }
+        if argv[i].starts_with("--message=")
+            || argv[i].starts_with("--file=")
+            || argv[i].starts_with("--reedit-message=")
+            || (argv[i].starts_with("-m") && argv[i].len() > 2)
+            || (argv[i].starts_with("-F") && argv[i].len() > 2)
+            || (argv[i].starts_with("-c") && argv[i].len() > 2)
+        {
+            last_is_reuse = false;
+        } else if argv[i].starts_with("--reuse-message=")
+            || (argv[i].starts_with("-C") && argv[i].len() > 2)
+        {
+            last_is_reuse = true;
+        }
+        i += 1;
+    }
+    last_is_reuse
+}
+
 /// Launch the editor on a temporary file and return its contents.
 fn launch_editor(repo: &Repository, initial: &str) -> Result<String> {
     let editor = resolve_editor(repo);
@@ -1065,7 +1111,7 @@ fn add_note(
     } else if stripspace {
         true
     } else {
-        !only_minus_c
+        !only_minus_c && !last_ordered_note_fragment_is_reuse_message()
     };
     if should_strip {
         combined = String::from_utf8_lossy(&stripspace_process(
@@ -1210,7 +1256,7 @@ Please use 'git notes add -f -m/-F/-c/-C' instead."
     } else if stripspace {
         true
     } else {
-        !only_minus_c
+        !only_minus_c && !last_ordered_note_fragment_is_reuse_message()
     };
     if should_strip {
         combined = String::from_utf8_lossy(&stripspace_process(
