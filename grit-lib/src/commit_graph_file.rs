@@ -561,6 +561,37 @@ impl CommitGraphChain {
         }
     }
 
+    /// Existing changed-path Bloom filter bytes for `oid`, if present in any layer
+    /// whose Bloom settings are compatible with `want`. Returns `Some(bytes)` (possibly
+    /// empty for an empty/no-change filter) when the filter can be reused verbatim, or
+    /// `None` when no compatible filter exists. Used by the writer to backfill / reuse
+    /// already-computed filters (Git counts these as `filter_not_computed`).
+    pub fn existing_filter_bytes(
+        &self,
+        oid: &ObjectId,
+        want: &BloomFilterSettings,
+    ) -> Option<Vec<u8>> {
+        let (layer_idx, lex) = self.find_commit(oid)?;
+        let layer = &self.layers[layer_idx];
+        let settings = layer.bloom_settings.as_ref()?;
+        if settings.hash_version != want.hash_version
+            || settings.num_hashes != want.num_hashes
+            || settings.bits_per_entry != want.bits_per_entry
+        {
+            return None;
+        }
+        // Git only reuses a loaded filter when its on-disk length is non-zero
+        // (`get_or_compute_bloom_filter`: `if (filter->data && filter->len)`).
+        // A zero-length entry means the filter was skipped (over the
+        // `--max-new-filters` budget) and must be (re)computed. Empty-diff
+        // filters are stored with length 1 (a single zero byte) and so are
+        // reused. Truncated-large filters are length 1 (0xff) and reused too.
+        match layer.bloom_filter_slice(lex) {
+            Some(s) if !s.is_empty() => Some(s.to_vec()),
+            _ => None,
+        }
+    }
+
     /// Lexicographic position in the full chain, or `None` if not in any layer.
     pub fn find_commit(&self, oid: &ObjectId) -> Option<(usize, u32)> {
         for (i, layer) in self.layers.iter().enumerate() {

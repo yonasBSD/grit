@@ -248,6 +248,7 @@ pub fn build_commit_graph_bytes(
     base_chain: Option<&CommitGraphChain>,
     base_graph_hashes: &[[u8; 20]],
     max_new_filters: Option<u32>,
+    existing_filters: &HashMap<ObjectId, Vec<u8>>,
 ) -> crate::error::Result<(Vec<u8>, BloomWriteStats)> {
     let base_count: u32 = base_chain.map(CommitGraphChain::total_commits).unwrap_or(0);
 
@@ -339,6 +340,15 @@ pub fn build_commit_graph_bytes(
         let mut cur = 0u32;
         for oid in sorted_oids {
             let info = &infos[oid];
+            // Reuse a filter already present (in a compatible layer) for this commit
+            // instead of recomputing it. Git counts these as `filter_not_computed`.
+            if let Some(existing) = existing_filters.get(oid) {
+                bloom_stats.filter_not_computed += 1;
+                cur += existing.len() as u32;
+                indexes.push(cur);
+                data_payload.extend_from_slice(existing);
+                continue;
+            }
             let compute = bloom_stats.filter_computed < max_new;
             let (bytes, outcome) = if compute {
                 crate::commit_graph_file::bloom_filter_for_commit_write(

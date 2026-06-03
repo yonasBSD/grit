@@ -559,6 +559,22 @@ fn cmd_write(
             (None, &[])
         };
 
+    // Reuse changed-path Bloom filters that already exist on disk for any commit we
+    // are about to (re)write, instead of recomputing them. Git counts these as
+    // `filter_not_computed` and never recomputes a filter that is already present
+    // (including empty filters for commits with no changes). This drives the
+    // `--max-new-filters` backfill semantics.
+    let mut existing_filters: HashMap<ObjectId, Vec<u8>> = HashMap::new();
+    if write_bloom {
+        if let Some(chain) = CommitGraphChain::load(&objects_dir) {
+            for oid in &layer_oids {
+                if let Some(bytes) = chain.existing_filter_bytes(oid, &bloom) {
+                    existing_filters.insert(*oid, bytes);
+                }
+            }
+        }
+    }
+
     let (bytes, bstats) = build_commit_graph_bytes(
         &layer_oids,
         &infos,
@@ -568,6 +584,7 @@ fn cmd_write(
         base_for_build,
         hashes_for_build,
         max_new,
+        &existing_filters,
     )?;
 
     if write_bloom {
