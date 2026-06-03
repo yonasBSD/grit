@@ -1354,6 +1354,25 @@ fn diff_tree_vs_worktree(
                 continue;
             }
             let sub_head = read_submodule_head_oid(&abs);
+            // A gitlink whose worktree directory no longer exists is a deleted submodule: Git's
+            // `diff-lib.c` reports it as `M`/`T` with the new gitlink resolving to the null OID
+            // (the `(submodule deleted)` header). Detect this before the uninitialized check.
+            if sub_head.is_none() && !abs.exists() {
+                let old = tree_map.get(path).copied().or(Some(*index_snapshot));
+                merged.insert(
+                    path.clone(),
+                    RawChange {
+                        path: path.clone(),
+                        status: 'M',
+                        old,
+                        new: Some(Snapshot {
+                            mode: MODE_GITLINK,
+                            oid: zero_oid(),
+                        }),
+                    },
+                );
+                continue;
+            }
             // Uninitialized / empty submodule worktree: no resolvable HEAD — do not report as
             // modified vs index (matches Git; fixes `diff-index --ignore-submodules=none` on clones).
             if sub_head.is_none() {
@@ -2336,6 +2355,11 @@ pub(crate) fn write_submodule_diff_recursive(
         }
         if !dirty.modified {
             // Untracked only: `Submodule … contains untracked content` — no commit-range header or patches.
+            return Ok(());
+        }
+        // Only `--submodule=diff` emits the inner per-file unified diff for dirty content; for
+        // `log`/`short` the `contains modified content` line (already printed) is the whole output.
+        if submodule_format != SubmodulePatchFormat::Diff {
             return Ok(());
         }
         // Modified working tree vs same recorded commit: show inner diff only (no `Submodule a..b:` line).
