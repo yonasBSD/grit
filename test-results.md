@@ -601,3 +601,7 @@ Updated: 2026-06-01
   TREESAME merge parent and rebuilding `target/release/grit`,
   `./scripts/run-tests.sh t6111-rev-list-treesame.sh --verbose` improves to 20/65 and refreshed
   `data/test-files.csv` plus dashboards.
+- t6111 parent rewrite focus: after applying visible-parent rewriting to non-graph path-limited
+  parent output and rebuilding `target/release/grit`,
+  `./scripts/run-tests.sh t6111-rev-list-treesame.sh --verbose` improves to 22/65 and refreshed
+  `data/test-files.csv` plus dashboards.

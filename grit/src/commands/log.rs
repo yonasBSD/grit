@@ -2260,6 +2260,19 @@ fn run_rev_list_log(
         || args.patch_with_stat;
 
     let mut shown = 0usize;
+    let parent_format_requested = args
+        .format
+        .as_deref()
+        .is_some_and(|fmt| fmt.contains("%P") || fmt.contains("%p"));
+    let rewrite_path_limited_parents =
+        !combined_pathspecs.is_empty() && (args.show_parents || parent_format_requested);
+    let included_for_parent_rewrite: HashSet<ObjectId> = if rewrite_path_limited_parents {
+        result.commits.iter().copied().collect()
+    } else {
+        HashSet::new()
+    };
+    let first_parent_through_omitted =
+        !args.full_history && !args.ancestry_path && !args.simplify_merges;
     for oid in result.commits {
         let obj = repo.odb.read(&oid)?;
         let commit = parse_commit(&obj.data)?;
@@ -2299,6 +2312,19 @@ fn run_rev_list_log(
             continue;
         }
 
+        let parent_override = if rewrite_path_limited_parents {
+            Some(visible_parents_for_graph(
+                repo,
+                oid,
+                &included_for_parent_rewrite,
+                args.first_parent,
+                first_parent_through_omitted,
+                args.simplify_merges,
+            )?)
+        } else {
+            None
+        };
+
         if is_format_separator && shown > 0 {
             if args.null_terminator {
                 write!(out, "\0")?;
@@ -2320,7 +2346,7 @@ fn run_rev_list_log(
             &head_state,
             &mut notes_cache,
             &repo.odb,
-            None,
+            parent_override.as_deref(),
             false,
             None,
             None,

@@ -45,7 +45,7 @@
   - Completed file: `t6438-submodule-directory-file-conflicts.sh` (56/56) after protecting
     checked-out submodules during replacement merges and resolving no-ff directory-to-submodule
     merges whose directory side matches the merge base.
-  - Current claimed file: `t6111-rev-list-treesame.sh` at 20/65, focused on path-limited
+  - Current claimed file: `t6111-rev-list-treesame.sh` at 22/65, focused on path-limited
     TREESAME traversal and parent rewriting.
   - Execution logs: `logs/2026-06-02_1427-t6-for-each-ref.md`,
     `logs/2026-06-02_1655-t6200-fmt-merge-msg-extra.md`,
