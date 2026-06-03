@@ -919,7 +919,14 @@ fn run_one_commit(repo: &Repository, opts: &Options, out: &mut impl Write) -> Re
             validate_tree_depth_limit(&repo.odb, &commit.tree, 0, max_tree_depth)?;
             if commit.parents.is_empty() {
                 if opts.root {
-                    let entries = diff_with_opts(&repo.odb, None, Some(&commit.tree), opts)?;
+                    // `-R` reverses the diff: a root commit's additions become
+                    // deletions (empty tree on the new side).
+                    let (old_side, new_side) = if opts.reverse {
+                        (Some(&commit.tree), None)
+                    } else {
+                        (None, Some(&commit.tree))
+                    };
+                    let entries = diff_with_opts(&repo.odb, old_side, new_side, opts)?;
                     let filtered = filter_entries(&repo.odb, &repo, entries, opts)?;
                     has_diff = !filtered.is_empty();
                     if !opts.quiet && (has_diff || opts.pretty.is_some()) {
