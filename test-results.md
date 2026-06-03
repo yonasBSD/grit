@@ -1,4 +1,10 @@
 
+## 2026-06-03 — t5303-pack-corruption-resilience
+
+- Focus harness: `./scripts/run-tests.sh t5303-pack-corruption-resilience.sh --verbose` passes 36/36 after common-prefix delta chain, loose/redundant base recovery, pack inflated-size validation, and `test-tool delta -p` fixes.
+- Regression harness: `./scripts/run-tests.sh t5302-pack-index.sh t5302-show-index.sh t5303-pack-corruption.sh t5325-reverse-index.sh --verbose` passes 36/36, 17/17, 25/25, and 16/16.
+
+
 ## 2026-06-03 — t5303-pack-corruption-resilience partial
 
 - Focus harness: `./scripts/run-tests.sh t5303-pack-corruption-resilience.sh --verbose` improved to 24/36 after descending-size common-prefix blob deltas and loose-base REF_DELTA recovery.

@@ -98,6 +98,10 @@ pub struct Args {
     #[arg(long = "keep-true-parents")]
     pub keep_true_parents: bool,
 
+    /// Do not reuse existing deltas (accepted for compatibility).
+    #[arg(long = "no-reuse-delta")]
+    pub no_reuse_delta: bool,
+
     /// Suppress progress output (accepted for compat).
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
@@ -3062,7 +3066,12 @@ fn read_object_from_repo(repo: &Repository, oid: &ObjectId) -> Result<grit_lib::
                 Err(_) if pack_index_is_v1(&idx.idx_path) => {
                     return Ok(grit_lib::objects::Object::new(ObjectKind::Blob, Vec::new()));
                 }
-                Err(e) => return Err(e),
+                Err(_) => {
+                    if let Ok(obj) = repo.odb.read(oid) {
+                        return Ok(obj);
+                    }
+                    continue;
+                }
             }
         }
     }
@@ -3096,7 +3105,12 @@ fn read_object_from_repo(repo: &Repository, oid: &ObjectId) -> Result<grit_lib::
                 Err(_) if pack_index_is_v1(&idx.idx_path) => {
                     return Ok(grit_lib::objects::Object::new(ObjectKind::Blob, Vec::new()));
                 }
-                Err(e) => return Err(e),
+                Err(_) => {
+                    if let Ok(obj) = repo.odb.read(oid) {
+                        return Ok(obj);
+                    }
+                    continue;
+                }
             }
         }
     }

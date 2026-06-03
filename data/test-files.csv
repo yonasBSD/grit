@@ -869,7 +869,7 @@ t5301-sliding-window	t5	yes	6	6	0	true	ok	0
 t5302-pack-index	t5	yes	36	36	0	true	ok	0
 t5302-show-index	t5	yes	17	17	0	true	ok	0
 t5303-pack-corruption	t5	yes	25	25	0	true	ok	0
-t5303-pack-corruption-resilience	t5	yes	36	24	12	false	ok	0
+t5303-pack-corruption-resilience	t5	yes	36	36	0	true	ok	0
 t5304-prune	t5	yes	32	9	23	false	ok	0
 t5304-prune-packed	t5	yes	20	7	13	false	ok	0
 t5305-include-tag	t5	yes	15	12	3	false	ok	0

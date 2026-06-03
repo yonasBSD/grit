@@ -1464,6 +1464,24 @@ fn run_test_tool_online_cpus(rest: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn run_test_tool_delta(rest: &[String]) -> Result<()> {
+    if rest.len() != 5 {
+        bail!("usage: test-tool delta (-d|-p) <from_file> <data_file> <out_file>");
+    }
+    match rest[1].as_str() {
+        "-p" => {
+            let base = std::fs::read(&rest[2]).with_context(|| format!("read {}", rest[2]))?;
+            let delta = std::fs::read(&rest[3]).with_context(|| format!("read {}", rest[3]))?;
+            let result = grit_lib::unpack_objects::apply_delta(&base, &delta)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            std::fs::write(&rest[4], result).with_context(|| format!("write {}", rest[4]))?;
+            Ok(())
+        }
+        "-d" => bail!("test-tool delta: delta generation is not implemented"),
+        _ => bail!("usage: test-tool delta (-d|-p) <from_file> <data_file> <out_file>"),
+    }
+}
+
 /// `test-tool lazy-init-name-hash` — exercise case-folding name/dir hash init (t3008, perf tests).
 fn run_test_tool_lazy_init_name_hash(rest: &[String]) -> Result<()> {
     use anyhow::Context;
@@ -6072,6 +6090,7 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
                     let args = preprocess_test_tool_args(rest)?;
                     test_tool_pack_deltas::run(&args)
                 }
+                "delta" => run_test_tool_delta(rest),
                 "dump-reftable" => {
                     // Supports `-b` (dump per-block stats) used by t0613.
                     let mut dump_blocks = false;
