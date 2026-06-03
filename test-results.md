@@ -1,3 +1,7 @@
+## 2026-06-03 — t11980-log-author-committer-format
+
+- Focus harness: `./scripts/run-tests.sh t11980-log-author-committer-format.sh --verbose` passes 39/39 after wrapping setup in a subshell and teaching log raw-argv hydration to parse `--skip[=<n>]`, so `-n1 --skip=1` selects the expected parent commit.
+
 ## 2026-06-03 — t13120-diff-no-index-dir-file
 
 - Focus harness: `./scripts/run-tests.sh t13120-diff-no-index-dir-file.sh --verbose` passes 37/37 after wrapping setup `cd repo` in a subshell so diff working-tree tests run from the expected trash root.

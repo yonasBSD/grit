@@ -261,7 +261,7 @@ t11940-diff-tree-merge-base	t1	yes	33	17	16	false	ok	0
 t11950-diff-stat-binary-text	t1	yes	33	33	0	true	ok	0
 t11960-diff-index-renamed	t1	yes	33	33	0	true	ok	0
 t11970-status-ignored-tracked	t1	yes	32	30	2	false	ok	0
-t11980-log-author-committer-format	t1	yes	39	3	36	false	ok	0
+t11980-log-author-committer-format	t1	yes	39	39	0	true	ok	0
 t11990-log-relative-date	t1	yes	34	34	0	true	ok	0
 t1200-read-tree-merge	t1	yes	29	29	0	true	ok	0
 t12000-rev-list-topo-order	t1	yes	34	34	0	true	ok	0

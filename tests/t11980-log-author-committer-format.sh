@@ -4,6 +4,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+    (
     grit init repo &&
     cd repo &&
     git config user.email "t@t.com" &&
@@ -16,6 +17,7 @@ test_expect_success 'setup' '
     grit add file.txt &&
     GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" \
     grit commit -m "initial"
+    )
 '
 
 test_expect_success 'format %an shows author name' '
