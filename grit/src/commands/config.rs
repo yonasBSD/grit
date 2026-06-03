@@ -186,7 +186,7 @@ pub struct Args {
 
     // ── URL match flags ──
     /// Get the best-matching value for the given URL.
-    #[arg(long = "get-urlmatch", value_name = "KEY", num_args = 1)]
+    #[arg(long = "get-urlmatch", value_name = "KEY", num_args = 0..=1, default_missing_value = "")]
     pub get_urlmatch_key: Option<String>,
 
     /// Get the color setting (legacy): returns ANSI code for the color, with default.
@@ -474,11 +474,19 @@ pub fn run(args: Args) -> Result<()> {
         return cmd_get(&args, &get_args, git_dir.as_deref(), None);
     }
 
-    if let Some(ref key) = args.get_urlmatch_key {
-        if args.positional.is_empty() {
-            bail!("usage: git config --get-urlmatch <key> <URL>");
-        }
-        return cmd_get_urlmatch(&args, key, &args.positional[0], git_dir.as_deref());
+    if let Some(ref key_raw) = args.get_urlmatch_key {
+        let (key, url) = if key_raw.is_empty() {
+            if args.positional.len() < 2 {
+                bail!("usage: git config --get-urlmatch <key> <URL>");
+            }
+            (args.positional[0].as_str(), args.positional[1].as_str())
+        } else {
+            if args.positional.is_empty() {
+                bail!("usage: git config --get-urlmatch <key> <URL>");
+            }
+            (key_raw.as_str(), args.positional[0].as_str())
+        };
+        return cmd_get_urlmatch(&args, key, url, git_dir.as_deref());
     }
 
     if let Some(ref key) = args.get_color_key {
@@ -711,7 +719,7 @@ fn cmd_get(
         for entry in matches {
             let bare_boolean = entry.value.is_none();
             let want_bool_text = regexp_type_requests_bool_output(args);
-            let prefix = config_entry_prefix(args, entry, cwd.as_deref());
+            let prefix = config_entry_prefix_for_get(args, get_args, entry, cwd.as_deref());
             if args.name_only {
                 print!("{}{}{}", prefix, entry.key, terminator);
             } else if get_args.show_names {
@@ -834,18 +842,18 @@ fn cmd_get(
     }) {
         Some((entry, val)) => {
             let val = format_typed_value(args, Some(&get_args.key), &val)?;
-            let prefix = config_entry_prefix(args, entry, cwd.as_deref());
+            let prefix = config_entry_prefix_for_get(args, get_args, entry, cwd.as_deref());
             print!("{prefix}{val}{terminator}");
             Ok(())
         }
         None => {
             if let Some(ref default) = get_args.default {
                 let val = format_default_value(args, default)?;
-                if args.show_origin {
-                    print!("command line:	");
-                }
-                if args.show_scope {
+                if args.show_scope || get_args.show_scope {
                     print!("command	");
+                }
+                if args.show_origin || get_args.show_origin {
+                    print!("command line:	");
                 }
                 print_default_value(args, &val, terminator);
                 return Ok(());
@@ -1004,6 +1012,22 @@ fn config_entry_prefix(
         prefix.push_str(&format!("{}\t", entry.scope));
     }
     if args.show_origin {
+        prefix.push_str(&config_origin_prefix(entry, cwd));
+    }
+    prefix
+}
+
+fn config_entry_prefix_for_get(
+    args: &Args,
+    get_args: &GetArgs,
+    entry: &grit_lib::config::ConfigEntry,
+    cwd: Option<&Path>,
+) -> String {
+    let mut prefix = String::new();
+    if args.show_scope || get_args.show_scope {
+        prefix.push_str(&format!("{}	", entry.scope));
+    }
+    if args.show_origin || get_args.show_origin {
         prefix.push_str(&config_origin_prefix(entry, cwd));
     }
     prefix
@@ -1543,6 +1567,8 @@ fn load_config(
                 } else {
                     args.includes && !args.no_includes
                 }
+            } else if args.system || args.global || args.local || args.worktree {
+                args.includes && !args.no_includes
             } else {
                 !args.no_includes
             }
