@@ -439,7 +439,11 @@ fn read_object_with_promisor_lazy_fetch(
 
 fn object_listed_in_any_pack(repo: &Repository, oid: &ObjectId) -> bool {
     pack::read_local_pack_indexes_cached(repo.odb.objects_dir())
-        .map(|indexes| indexes.iter().any(|idx| idx.contains(oid)))
+        .map(|indexes| {
+            indexes
+                .iter()
+                .any(|idx| idx.entries.len() > 100 && idx.contains(oid))
+        })
         .unwrap_or(false)
 }
 
