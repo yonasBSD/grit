@@ -1,3 +1,7 @@
+## 2026-06-03 — t13150-diff-stat-insertions-deletions
+
+- Focus harness: `./scripts/run-tests.sh t13150-diff-stat-insertions-deletions.sh --verbose` passes 42/42; no additional code changes were required beyond refreshing the recorded harness status.
+
 ## 2026-06-03 — t11970-status-ignored-tracked
 
 - Focus harness: `./scripts/run-tests.sh t11970-status-ignored-tracked.sh --verbose` passes 32/32 after using branch output mode for the porcelain branch-header check and aligning branch-name expectations with `main`.
