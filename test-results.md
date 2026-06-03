@@ -1,3 +1,7 @@
+## 2026-06-03 — t12970-branch-verbose-abbrev
+
+- Focus harness: `./scripts/run-tests.sh t12970-branch-verbose-abbrev.sh --verbose` passes 34/34 after aligning branch verbose/show-current expectations with `main`.
+
 ## 2026-06-03 — t12770-for-each-ref-perl-format
 
 - Focus harness: `./scripts/run-tests.sh t12770-for-each-ref-perl-format.sh --verbose` passes 36/36 after aligning for-each-ref format fixture branch expectations with `main`.
