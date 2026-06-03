@@ -31,7 +31,7 @@ test_expect_success 'setup second branch with divergent history' '
     git checkout branchA &&
     echo a1 >a1.txt && grit add a1.txt && grit commit -m "a1" &&
     echo a2 >a2.txt && grit add a2.txt && grit commit -m "a2" &&
-    git checkout master)
+    git checkout main)
 '
 
 test_expect_success 'rev-list --all includes both branches' '
@@ -52,17 +52,17 @@ test_expect_success 'rev-list --all contains branchA commits' '
     grep "$branchA_tip" ../all_commits)
 '
 
-test_expect_success 'rev-list --all contains master commits' '
+test_expect_success 'rev-list --all contains main commits' '
     (cd repo && grit rev-list --all >../all_commits &&
-    master_tip=$(git rev-parse master) &&
-    grep "$master_tip" ../all_commits)
+    main_tip=$(git rev-parse main) &&
+    grep "$main_tip" ../all_commits)
 '
 
 test_expect_success 'setup third branch' '
     (cd repo && git branch branchB &&
     git checkout branchB &&
     echo b1 >b1.txt && grit add b1.txt && grit commit -m "b1" &&
-    git checkout master)
+    git checkout main)
 '
 
 test_expect_success 'rev-list --all with three branches' '
@@ -116,10 +116,10 @@ test_expect_success 'rev-list --all --skip=2 --max-count=2' '
     test_cmp expect actual
 '
 
-test_expect_success 'rev-list master vs rev-list --all differs' '
-    (cd repo && grit rev-list master >../master_only) &&
+test_expect_success 'rev-list main vs rev-list --all differs' '
+    (cd repo && grit rev-list main >../main_only) &&
     (cd repo && grit rev-list --all >../all_commits) &&
-    ! test_cmp master_only all_commits
+    ! test_cmp main_only all_commits
 '
 
 test_expect_success 'rev-list branchA vs --all differs' '
@@ -135,9 +135,9 @@ test_expect_success 'rev-list --all deduplicates shared commits' '
     test_cmp sorted_uniq sorted
 '
 
-test_expect_success 'rev-list master branchA union matches rev-list with both' '
-    (cd repo && grit rev-list master branchA >../actual) &&
-    (cd repo && git rev-list master branchA >../expect) &&
+test_expect_success 'rev-list main branchA union matches rev-list with both' '
+    (cd repo && grit rev-list main branchA >../actual) &&
+    (cd repo && git rev-list main branchA >../expect) &&
     test_cmp expect actual
 '
 
@@ -148,19 +148,19 @@ test_expect_success 'rev-list --all --first-parent' '
 '
 
 test_expect_success 'rev-list branch range with --all context' '
-    (cd repo && grit rev-list master..branchA >../actual) &&
-    (cd repo && git rev-list master..branchA >../expect) &&
+    (cd repo && grit rev-list main..branchA >../actual) &&
+    (cd repo && git rev-list main..branchA >../expect) &&
     test_cmp expect actual
 '
 
-test_expect_success 'rev-list branch range count master..branchA' '
-    (cd repo && grit rev-list --count master..branchA >../actual) &&
+test_expect_success 'rev-list branch range count main..branchA' '
+    (cd repo && grit rev-list --count main..branchA >../actual) &&
     echo 2 >expect &&
     test_cmp expect actual
 '
 
-test_expect_success 'rev-list branch range count master..branchB' '
-    (cd repo && grit rev-list --count master..branchB >../actual) &&
+test_expect_success 'rev-list branch range count main..branchB' '
+    (cd repo && grit rev-list --count main..branchB >../actual) &&
     echo 1 >expect &&
     test_cmp expect actual
 '
@@ -174,14 +174,14 @@ test_expect_success 'rev-list --all output is valid hex hashes' '
 
 test_expect_success 'rev-list --all matches rev-list of all branch names combined' '
     (cd repo && grit rev-list --all >../actual &&
-    grit rev-list master branchA branchB >../combined) &&
+    grit rev-list main branchA branchB >../combined) &&
     sort actual >sorted_all &&
     sort combined >sorted_combined &&
     test_cmp sorted_combined sorted_all
 '
 
-test_expect_success 'setup additional commit on master' '
-    (cd repo && git checkout master &&
+test_expect_success 'setup additional commit on main' '
+    (cd repo && git checkout main &&
     echo extra >extra.txt && grit add extra.txt && grit commit -m "c4")
 '
 

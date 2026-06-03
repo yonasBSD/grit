@@ -1,3 +1,7 @@
+## 2026-06-03 — t12610-rev-list-all-branches
+
+- Focus harness: `./scripts/run-tests.sh t12610-rev-list-all-branches.sh --verbose` passes 32/32 after aligning rev-list multi-branch fixture references with `main`.
+
 ## 2026-06-03 — t11600-symbolic-ref-bare-worktree
 
 - Focus harness: `./scripts/run-tests.sh t11600-symbolic-ref-bare-worktree.sh --verbose` passes 31/31 after isolating setup and using absolute repo paths to avoid CWD leakage.
