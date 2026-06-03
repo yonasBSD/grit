@@ -388,6 +388,7 @@ pub fn run(args: Args) -> Result<()> {
     let mut path_mode = false;
     let mut default_rev: Option<String> = None;
     let mut no_commit_header = false;
+    let mut raw_commit_header = false;
     let mut use_color = false;
     let mut disk_usage_format: Option<DiskUsageFormat> = None;
     let mut show_parents = false;
@@ -798,6 +799,7 @@ pub fn run(args: Args) -> Result<()> {
                 }
                 "--filter-print-omitted" => options.filter_print_omitted = true,
                 "--filter-provided-objects" => options.filter_provided_objects = true,
+                "--header" => raw_commit_header = true,
                 "--no-commit-header" => no_commit_header = true,
                 "--commit-header" => no_commit_header = false,
                 "--oneline" => options.output_mode = OutputMode::Format("oneline".to_owned()),
@@ -1364,6 +1366,22 @@ pub fn run(args: Args) -> Result<()> {
                     println!("{prefix}{rendered}{children}");
                 }
             }
+        }
+        if raw_commit_header {
+            let object = repo
+                .odb
+                .read(oid)
+                .with_context(|| format!("failed to read commit object {oid}"))?;
+            if object.kind != ObjectKind::Commit {
+                bail!("object {oid} is not a commit");
+            }
+            let mut stdout = std::io::stdout();
+            stdout
+                .write_all(&object.data)
+                .context("failed to write rev-list commit header")?;
+            stdout
+                .write_all(b"\0")
+                .context("failed to write rev-list commit header separator")?;
         }
         Ok(())
     };

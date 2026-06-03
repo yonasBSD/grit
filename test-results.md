@@ -1358,3 +1358,10 @@ Updated: 2026-06-01
   dashboards. Also ran `cargo fmt`, `cargo check -p grit-cli`, `cargo build -p grit-cli`,
   `cargo build --release -p grit-cli`, `cargo clippy --fix --allow-dirty` (existing warning
   backlog remains and unrelated auto-fixes were reverted), and `cargo test -p grit-lib --lib`.
+- t6000 raw header focus: after accepting `rev-list --header` and writing raw commit object bytes
+  plus NUL after each commit line, the direct debug run advances through test 18 and
+  `./scripts/run-tests.sh t6000-rev-list-misc.sh` improves from 17/23 to 18/23 with refreshed
+  `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog remains and unrelated auto-fixes were reverted), and
+  `cargo test -p grit-lib --lib`.
