@@ -1975,6 +1975,28 @@ fn raw_diff_index_show_index_oid_for_added(index: &Index, entry: &DiffEntry) -> 
         .is_some_and(|e| e.skip_worktree() || e.assume_unchanged())
 }
 
+/// True when a gitlink raw entry's new side must print the all-zero OID.
+///
+/// For uncached `diff-index --raw`, Git reports a worktree-side submodule change (the recorded
+/// gitlink in the index still equals the tree gitlink, only the submodule's checked-out HEAD has
+/// moved) with the null OID on the new side, exactly like `diff-files`. When the index gitlink
+/// itself differs from the tree (a staged submodule bump), Git prints the real index OID. The
+/// `--submodule` patch path keeps the resolved HEAD regardless; this only adjusts raw output.
+/// See `t4027` #3.
+fn raw_gitlink_new_is_worktree_zero(
+    index: &Index,
+    entry: &DiffEntry,
+    diff_index_uncached: bool,
+) -> bool {
+    if !diff_index_uncached || entry.new_mode != "160000" || entry.new_oid == zero_oid() {
+        return false;
+    }
+    // Worktree-driven only when the index gitlink still equals the old (tree) gitlink.
+    index
+        .get(entry.path().as_bytes(), 0)
+        .is_some_and(|e| e.oid == entry.old_oid)
+}
+
 fn write_raw_diff_entry_z(
     out: &mut impl Write,
     entry: &DiffEntry,
@@ -2012,7 +2034,9 @@ fn write_raw_diff_entry_z(
                 None => entry.old_oid.to_hex(),
             }
         };
-        let new_oid = if entry.new_oid == zero_oid() {
+        let new_oid = if entry.new_oid == zero_oid()
+            || raw_gitlink_new_is_worktree_zero(index, entry, diff_index_uncached)
+        {
             "0".repeat(width)
         } else {
             match abbrev {
@@ -2089,7 +2113,9 @@ fn render_raw_diff_entry(
                 None => entry.old_oid.to_hex(),
             }
         };
-        let new_oid = if entry.new_oid == zero_oid() {
+        let new_oid = if entry.new_oid == zero_oid()
+            || raw_gitlink_new_is_worktree_zero(index, entry, diff_index_uncached)
+        {
             "0".repeat(width)
         } else {
             match abbrev {
