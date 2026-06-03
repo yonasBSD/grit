@@ -26,8 +26,8 @@ test_expect_success 'rev-parse HEAD resolves to 40-char hash' '
     grep "^[0-9a-f]\{40\}$" actual
 '
 
-test_expect_success 'rev-parse master resolves same as HEAD' '
-    (cd repo && grit rev-parse master >../actual) &&
+test_expect_success 'rev-parse main resolves same as HEAD' '
+    (cd repo && grit rev-parse main >../actual) &&
     (cd repo && grit rev-parse HEAD >../expect) &&
     test_cmp expect actual
 '
@@ -38,8 +38,8 @@ test_expect_success 'rev-parse --verify HEAD' '
     test_cmp expect actual
 '
 
-test_expect_success 'rev-parse --verify master' '
-    (cd repo && grit rev-parse --verify master >../actual) &&
+test_expect_success 'rev-parse --verify main' '
+    (cd repo && grit rev-parse --verify main >../actual) &&
     (cd repo && grit rev-parse HEAD >../expect) &&
     test_cmp expect actual
 '
@@ -129,14 +129,14 @@ test_expect_success 'rev-parse tag resolves same as --verify tag' '
     test_cmp plain verified
 '
 
-test_expect_success 'rev-parse master~1' '
-    (cd repo && grit rev-parse master~1 >../actual) &&
+test_expect_success 'rev-parse main~1' '
+    (cd repo && grit rev-parse main~1 >../actual) &&
     (cd repo && grit rev-parse HEAD~1 >../expect) &&
     test_cmp expect actual
 '
 
-test_expect_success 'rev-parse master~2' '
-    (cd repo && grit rev-parse master~2 >../actual) &&
+test_expect_success 'rev-parse main~2' '
+    (cd repo && grit rev-parse main~2 >../actual) &&
     (cd repo && grit rev-parse HEAD~2 >../expect) &&
     test_cmp expect actual
 '
@@ -147,8 +147,8 @@ test_expect_success 'rev-parse tag~1' '
     test_cmp expect actual
 '
 
-test_expect_success 'rev-parse --short master' '
-    (cd repo && grit rev-parse --short master >../actual) &&
+test_expect_success 'rev-parse --short main' '
+    (cd repo && grit rev-parse --short main >../actual) &&
     (cd repo && grit rev-parse --short HEAD >../expect) &&
     test_cmp expect actual
 '
@@ -222,11 +222,11 @@ test_expect_success 'rev-parse --show-toplevel works after branch creation' '
 '
 
 test_expect_success 'rev-parse HEAD from different branches is correct' '
-    (cd repo && grit rev-parse HEAD >../master_head) &&
+    (cd repo && grit rev-parse HEAD >../main_head) &&
     (cd repo && grit checkout feature) &&
     (cd repo && grit rev-parse HEAD >../feature_head) &&
-    ! test_cmp master_head feature_head &&
-    (cd repo && grit checkout master)
+    ! test_cmp main_head feature_head &&
+    (cd repo && grit checkout main)
 '
 
 test_done

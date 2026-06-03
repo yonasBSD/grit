@@ -267,7 +267,7 @@ t1200-read-tree-merge	t1	yes	29	29	0	true	ok	0
 t12000-rev-list-topo-order	t1	yes	34	34	0	true	ok	0
 t12010-rev-list-after-before	t1	yes	35	35	0	true	ok	0
 t12020-rev-parse-show-prefix	t1	yes	36	36	0	true	ok	0
-t12030-rev-parse-default	t1	yes	35	27	8	false	ok	0
+t12030-rev-parse-default	t1	yes	35	35	0	true	ok	0
 t12040-config-unset-all	t1	yes	33	33	0	true	ok	0
 t12050-config-edit-file	t1	yes	33	33	0	true	ok	0
 t12060-init-bare-permissions	t1	yes	35	35	0	true	ok	0

@@ -1,3 +1,7 @@
+## 2026-06-03 — t12030-rev-parse-default
+
+- Focus harness: `./scripts/run-tests.sh t12030-rev-parse-default.sh --verbose` passes 35/35 after aligning rev-parse default branch references with `main`.
+
 ## 2026-06-03 — t12910-rev-list-header-format
 
 - Focus harness: `./scripts/run-tests.sh t12910-rev-list-header-format.sh --verbose` passes 32/32 after aligning rev-list range fixture references with `main`.
