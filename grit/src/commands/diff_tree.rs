@@ -96,6 +96,8 @@ struct Options {
     verbose: bool,
     /// Suppress diff output in stdin mode (`-s`).
     suppress_diff: bool,
+    /// Show a `Notes:` block in the pretty header (`--notes`); map is keyed by commit OID.
+    notes_blocks: Option<std::collections::HashMap<ObjectId, String>>,
     /// Output binary patches (--binary).
     binary: bool,
     /// Show diffs for merge commits in stdin mode (`-m`).
@@ -246,6 +248,7 @@ impl Default for Options {
             root: false,
             stdin_mode: false,
             no_commit_id: false,
+            notes_blocks: None,
             verbose: false,
             suppress_diff: false,
             binary: false,
@@ -336,6 +339,10 @@ fn parse_options(repo: &Repository, argv: &[String]) -> Result<Options> {
                     opts.show_trees = true;
                 }
                 "--root" => opts.root = true,
+                "--notes" => {
+                    opts.notes_blocks = Some(crate::commands::log::notes_blocks_for_display(repo));
+                }
+                "--no-notes" => opts.notes_blocks = None,
                 "--stdin" => opts.stdin_mode = true,
                 "--no-commit-id" => opts.no_commit_id = true,
                 "-v" => opts.verbose = true,
@@ -549,7 +556,9 @@ fn parse_options(repo: &Repository, argv: &[String]) -> Result<Options> {
         }
 
         // Positional: like Git `setup_revisions` — up to two tree-ishes, then pathspecs.
-        if end_of_options || opts.objects.len() >= 2 {
+        // In `--stdin` mode the tree-ishes come from stdin, so any positional given
+        // on the command line is a pathspec.
+        if end_of_options || opts.stdin_mode || opts.objects.len() >= 2 {
             opts.pathspecs.push(arg.clone());
         } else if opts.objects.len() == 1 && !spec_names_commit_or_tree(repo, arg) {
             opts.pathspecs.push(arg.clone());
@@ -647,7 +656,18 @@ pub fn run_whatchanged(argv: &[String]) -> Result<()> {
     ) {
         opts.recursive = true;
     }
-    opts.root = true;
+    // The root commit's diff is shown unless `log.showroot` is explicitly false
+    // (Git default is true). An explicit `--root` on the command line always wins.
+    // When suppressed, `whatchanged` drops the root commit entirely because it then
+    // has an empty diff.
+    if !argv.iter().any(|a| a == "--root") {
+        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        let show_root = cfg
+            .get_bool("log.showroot")
+            .and_then(|r| r.ok())
+            .unwrap_or(true);
+        opts.root = show_root;
+    }
 
     // Revision tips: the positional `objects` are the starting commits for the
     // walk (default HEAD when none are given).
@@ -673,8 +693,13 @@ pub fn run_whatchanged(argv: &[String]) -> Result<()> {
     let pickaxe_active =
         opts.pickaxe_string.is_some() || opts.pickaxe_grep.is_some() || opts.find_object.is_some();
 
+    let mut printed_any = false;
     for oid in &commits {
-        render_whatchanged_commit(&repo, &opts, &mut out, oid, pickaxe_active)?;
+        let printed =
+            render_whatchanged_commit(&repo, &opts, &mut out, oid, pickaxe_active, printed_any)?;
+        if printed {
+            printed_any = true;
+        }
     }
     Ok(())
 }
@@ -728,30 +753,40 @@ fn render_whatchanged_commit(
     out: &mut impl Write,
     oid: &ObjectId,
     pickaxe_active: bool,
-) -> Result<()> {
+    leading_blank: bool,
+) -> Result<bool> {
     let obj = repo.odb.read(oid).context("reading commit")?;
     let commit = parse_commit(&obj.data).context("parsing commit")?;
 
+    // The root commit is only diffed when `log.showroot` is enabled (opts.root).
+    let is_root = commit.parents.is_empty();
     let parent_tree = if let Some(parent) = commit.parents.first() {
         Some(commit_tree(&repo.odb, parent)?)
     } else {
         None
     };
-    let entries = diff_with_opts(&repo.odb, parent_tree.as_ref(), Some(&commit.tree), opts)?;
-    let filtered = filter_entries(&repo.odb, repo, entries, opts)?;
+    let filtered = if is_root && !opts.root {
+        Vec::new()
+    } else {
+        let entries = diff_with_opts(&repo.odb, parent_tree.as_ref(), Some(&commit.tree), opts)?;
+        filter_entries(&repo.odb, repo, entries, opts)?
+    };
     let has_diff = !filtered.is_empty();
 
-    // With a pickaxe / find-object filter active, only commits whose change
-    // matches are shown at all (git's commit-level history simplification).
-    if pickaxe_active && !has_diff {
-        return Ok(());
+    // `whatchanged` (unlike `git log --raw`) suppresses commits with no diff,
+    // including the root commit when `log.showroot` is false.
+    if !has_diff {
+        return Ok(false);
     }
 
+    if leading_blank {
+        writeln!(out)?;
+    }
     write_commit_header(out, oid, &obj.data, opts, None)?;
     if !opts.suppress_diff {
         print_diff(out, repo, &filtered, opts, parent_tree.as_ref())?;
     }
-    Ok(())
+    Ok(true)
 }
 
 // ── Two-tree mode ────────────────────────────────────────────────────
@@ -1140,6 +1175,23 @@ fn process_stdin_commit(
 ) -> Result<bool> {
     let commit = parse_commit(data).context("parsing commit")?;
 
+    // Decide up front whether this commit is shown at all. `git diff-tree --stdin`
+    // skips merge commits (unless `-m`/`-c`/`--cc`/remerge) and the root commit
+    // (unless `--root`); the header is only emitted for commits that would yield a
+    // diff. This decision must precede header printing so that `-s` (which
+    // suppresses only the diff body) does not leak headers for skipped commits.
+    let is_merge = commit.parents.len() > 1;
+    let is_root = commit.parents.is_empty();
+    let remerge_merge_stdin =
+        commit.parents.len() == 2 && opts.remerge_diff && opts.format == OutputFormat::Patch;
+    let show_merge = opts.show_merges || opts.combined_patch || remerge_merge_stdin;
+    if is_merge && !show_merge {
+        return Ok(false);
+    }
+    if is_root && !opts.root {
+        return Ok(false);
+    }
+
     // Header. With `--format`/`--pretty`, apply the pretty/format template (e.g.
     // `--format=%s` prints the subject line) instead of the bare OID. Without a
     // pretty format, print the bare commit-id header (unless `--no-commit-id`).
@@ -1163,13 +1215,6 @@ fn process_stdin_commit(
     }
 
     if opts.suppress_diff {
-        return Ok(false);
-    }
-
-    // Skip merge commits unless -m or remerge-diff patch.
-    let remerge_merge_stdin =
-        commit.parents.len() == 2 && opts.remerge_diff && opts.format == OutputFormat::Patch;
-    if commit.parents.len() > 1 && !opts.show_merges && !remerge_merge_stdin {
         return Ok(false);
     }
 
@@ -3062,6 +3107,15 @@ fn write_commit_header(
         // Indent commit message
         for line in commit.message.lines() {
             writeln!(out, "    {line}")?;
+        }
+        // Optional `Notes:` block (`--notes`), separated from the message by a blank line.
+        if let Some(notes_map) = &opts.notes_blocks {
+            if let Some(block) = notes_map.get(oid) {
+                writeln!(out)?;
+                for line in block.lines() {
+                    writeln!(out, "{line}")?;
+                }
+            }
         }
         // Use "---" separator when --patch-with-stat is active, blank line otherwise
         if opts.patch_with_stat {
