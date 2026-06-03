@@ -843,6 +843,25 @@ pub fn rev_list(
     };
     included.retain(|oid| !excluded.contains(oid));
 
+    // Default dense path limiting is not just a post-walk filter: when a merge is TREESAME to a
+    // parent for the pathspec, Git follows only that parent and never walks the other sides.
+    // `--full-history`, `--ancestry-path`, and `--simplify-merges` intentionally keep the full
+    // parent walk and simplify later.
+    if !options.paths.is_empty()
+        && !options.full_history
+        && !options.ancestry_path
+        && !options.simplify_merges
+    {
+        included = walk_dense_path_limited_closure(
+            repo,
+            &mut graph,
+            &include,
+            &excluded,
+            &options.paths,
+            options.sparse,
+        )?;
+    }
+
     if options.simplify_by_decoration {
         let decorated = all_ref_tips(repo, &RefExclusions::default())?;
         included.retain(|oid| decorated.contains(oid));
@@ -3442,6 +3461,106 @@ fn commit_touches_paths(
     }
 
     Ok(sparse)
+}
+
+fn walk_dense_path_limited_closure(
+    repo: &Repository,
+    graph: &mut CommitGraph<'_>,
+    tips: &[ObjectId],
+    excluded: &HashSet<ObjectId>,
+    paths: &[String],
+    sparse: bool,
+) -> Result<HashSet<ObjectId>> {
+    let mut walked = HashSet::new();
+    let mut selected = HashSet::new();
+    let mut queue: VecDeque<ObjectId> = tips.iter().copied().collect();
+
+    while let Some(oid) = queue.pop_front() {
+        if excluded.contains(&oid) || !walked.insert(oid) {
+            continue;
+        }
+
+        let action = dense_path_limited_action(repo, graph, oid, paths, sparse)?;
+        if action.visible {
+            selected.insert(oid);
+        }
+
+        for parent in action.parents_to_walk {
+            if !excluded.contains(&parent) && !walked.contains(&parent) {
+                queue.push_back(parent);
+            }
+        }
+    }
+
+    Ok(selected)
+}
+
+struct DensePathAction {
+    visible: bool,
+    parents_to_walk: Vec<ObjectId>,
+}
+
+fn dense_path_limited_action(
+    repo: &Repository,
+    graph: &mut CommitGraph<'_>,
+    oid: ObjectId,
+    paths: &[String],
+    sparse: bool,
+) -> Result<DensePathAction> {
+    let commit = load_commit(repo, oid)?;
+    let parents = graph.parents_of(oid)?;
+    let commit_map: HashMap<String, ObjectId> =
+        flatten_tree(repo, commit.tree, "")?.into_iter().collect();
+
+    if parents.is_empty() {
+        let ctx = crate::pathspec::PathspecMatchContext {
+            is_directory: false,
+            is_git_submodule: false,
+        };
+        let visible = sparse
+            || commit_map
+                .keys()
+                .any(|path| crate::pathspec::matches_pathspec_list_with_context(path, paths, ctx));
+        return Ok(DensePathAction {
+            visible,
+            parents_to_walk: Vec::new(),
+        });
+    }
+
+    let mut treesame = Vec::new();
+    let mut differs_any = false;
+    for parent_oid in &parents {
+        let parent = load_commit(repo, *parent_oid)?;
+        let parent_map: HashMap<String, ObjectId> =
+            flatten_tree(repo, parent.tree, "")?.into_iter().collect();
+        if path_differs_for_specs(&commit_map, &parent_map, paths) {
+            differs_any = true;
+        } else {
+            treesame.push(*parent_oid);
+        }
+    }
+
+    let parents_to_walk = if parents.len() > 1 {
+        match treesame.first().copied() {
+            Some(parent) => vec![parent],
+            None => parents.clone(),
+        }
+    } else {
+        parents.clone()
+    };
+
+    let visible = if sparse {
+        true
+    } else if parents.len() > 1 {
+        treesame.is_empty()
+    } else {
+        differs_any
+    };
+
+    Ok(DensePathAction {
+        visible,
+        parents_to_walk,
+    })
 }
 
 /// Whether `oid` would be included in a dense path-limited history walk for `paths`.

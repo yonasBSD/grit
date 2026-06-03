@@ -45,8 +45,8 @@
   - Completed file: `t6438-submodule-directory-file-conflicts.sh` (56/56) after protecting
     checked-out submodules during replacement merges and resolving no-ff directory-to-submodule
     merges whose directory side matches the merge base.
-  - Next t6 work should follow the highest-value remaining row from the grouped CSV unless a
-    dependency-focused sequence is clearly more efficient.
+  - Current claimed file: `t6111-rev-list-treesame.sh` at 20/65, focused on path-limited
+    TREESAME traversal and parent rewriting.
   - Execution logs: `logs/2026-06-02_1427-t6-for-each-ref.md`,
     `logs/2026-06-02_1655-t6200-fmt-merge-msg-extra.md`,
     `logs/2026-06-02_1710-t6040-tracking-info.md`,
@@ -55,7 +55,8 @@
     `logs/2026-06-03_0810-t6018-rev-list-glob.md`,
     `logs/2026-06-03_0816-t6002-rev-list-bisect.md`,
     `logs/2026-06-03_0824-t6423-merge-rename-directories.md`,
-    `logs/2026-06-03_1332-t6438-submodule-directory-file-conflicts.md`.
+    `logs/2026-06-03_1332-t6438-submodule-directory-file-conflicts.md`,
+    `logs/2026-06-03_1348-t6111-rev-list-treesame.md`.
 
 ---
 

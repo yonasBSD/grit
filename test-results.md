@@ -597,3 +597,7 @@ Updated: 2026-06-01
   matches the merge base and rebuilding `target/release/grit`,
   `./scripts/run-tests.sh t6438-submodule-directory-file-conflicts.sh --verbose` passes 56/56 and
   refreshed `data/test-files.csv` plus dashboards.
+- t6111 TREESAME focus: after making default dense path-limited traversal follow only one
+  TREESAME merge parent and rebuilding `target/release/grit`,
+  `./scripts/run-tests.sh t6111-rev-list-treesame.sh --verbose` improves to 20/65 and refreshed
+  `data/test-files.csv` plus dashboards.
