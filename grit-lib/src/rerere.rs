@@ -370,6 +370,7 @@ fn find_three_way_conflicts(index: &Index) -> Vec<String> {
 }
 
 /// Add/add (and similar): unmerged path with stages 2 and 3 but no stage 1.
+#[allow(dead_code)]
 fn find_two_way_unmerged(index: &Index) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -401,6 +402,7 @@ fn find_two_way_unmerged(index: &Index) -> Vec<String> {
     out
 }
 
+#[allow(dead_code)]
 fn all_rerere_conflict_paths(index: &Index) -> Vec<String> {
     let mut paths: BTreeSet<String> = BTreeSet::new();
     for p in find_three_way_conflicts(index) {
@@ -1133,34 +1135,65 @@ pub fn rerere_diff_for_path(repo: &Repository, path: &str) -> Result<Option<Stri
     Ok(Some(out))
 }
 
-/// Paths with unresolved conflict markers in the worktree (same set as `rerere status` in typical tests).
+/// Paths still needing resolution, matching Git's `rerere_remaining`
+/// (`builtin/rerere.c` "remaining"): start from the MERGE_RR list (the
+/// conflicts rerere is tracking), then walk the index. An index conflict that
+/// has been RESOLVED (no unmerged stages) marks the matching MERGE_RR entry as
+/// resolved; a PUNTED conflict (unmerged but not rerere-handled, e.g.
+/// rename/rename) is inserted into the list. Finally emit every MERGE_RR entry
+/// that was not marked resolved.
 pub fn rerere_remaining_lines(repo: &Repository) -> Result<Vec<String>> {
     let config = ConfigSet::load(Some(&repo.git_dir), true)?;
     if !rerere_enabled(&config, &repo.git_dir) {
         return Ok(Vec::new());
     }
-    let wt = match &repo.work_tree {
-        Some(w) => w,
-        None => return Ok(Vec::new()),
-    };
     let index_path = repo.git_dir.join("index");
     if !index_path.exists() {
         return Ok(Vec::new());
     }
     let index = repo.load_index_at(&index_path)?;
-    let mut out = Vec::new();
-    for path in all_rerere_conflict_paths(&index) {
-        let fp = wt.join(&path);
-        if !fp.exists() {
-            continue;
-        }
-        let content = fs::read_to_string(&fp).unwrap_or_default();
-        let marker_size = conflict_marker_size(&path);
-        if handle_path(&content, marker_size, None) == 1 {
-            out.push(path);
-        }
+
+    // Tracked conflicts come from MERGE_RR; map path -> resolved?.
+    let merge_rr = read_merge_rr(&repo.git_dir)?;
+    // Preserve the MERGE_RR insertion/sorted order for output.
+    let mut entries: Vec<(String, bool)> = merge_rr.keys().map(|p| (p.clone(), false)).collect();
+    let mut index_of: BTreeMap<String, usize> = BTreeMap::new();
+    for (i, (p, _)) in entries.iter().enumerate() {
+        index_of.insert(p.clone(), i);
     }
-    Ok(out)
+
+    let mut i = 0usize;
+    while i < index.entries.len() {
+        let path = String::from_utf8_lossy(&index.entries[i].path).to_string();
+        let (next, ty) = check_one_conflict(&index, i);
+        match ty {
+            // PUNTED: an unmerged path rerere does not track (e.g. rename/rename)
+            // — surface it as remaining.
+            1 => {
+                if let Some(&idx) = index_of.get(&path) {
+                    entries[idx].1 = false;
+                } else {
+                    index_of.insert(path.clone(), entries.len());
+                    entries.push((path, false));
+                }
+            }
+            // RESOLVED: the index has no unmerged stages for this path, so the
+            // tracked conflict (if any) is now resolved.
+            0 => {
+                if let Some(&idx) = index_of.get(&path) {
+                    entries[idx].1 = true;
+                }
+            }
+            _ => {}
+        }
+        i = next;
+    }
+
+    Ok(entries
+        .into_iter()
+        .filter(|(_, resolved)| !*resolved)
+        .map(|(p, _)| p)
+        .collect())
 }
 
 /// Drop recorded resolution for `path` (working tree must show conflict markers).
