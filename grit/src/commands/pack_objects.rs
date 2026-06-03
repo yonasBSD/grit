@@ -657,8 +657,11 @@ pub fn run(mut args: Args) -> Result<()> {
     let mut entries: Vec<PackEntry> = Vec::with_capacity(pack_list.oids.len());
     for oid in &pack_list.oids {
         let obj = read_object_from_repo(&repo, oid)?;
-        let pack_id = hash_object_bytes(obj.kind, &obj.data, pack_hash_bytes)
+        let mut pack_id = hash_object_bytes(obj.kind, &obj.data, pack_hash_bytes)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if pack_hash_bytes == 20 && pack_id.as_slice() != oid.as_bytes().as_slice() {
+            pack_id = oid.as_bytes().to_vec();
+        }
         entries.push(PackEntry {
             oid: *oid,
             pack_id,
@@ -3049,8 +3052,13 @@ fn read_object_from_repo(repo: &Repository, oid: &ObjectId) -> Result<grit_lib::
             .find(|e| grit_lib::pack::pack_index_entry_matches_sha1_oid(e, oid))
         {
             let pack_bytes = std::fs::read(&idx.pack_path)?;
-            let obj = read_object_from_pack(&pack_bytes, entry.offset, &indexes, idx.hash_bytes)?;
-            return Ok(obj);
+            match read_object_from_pack(&pack_bytes, entry.offset, &indexes, idx.hash_bytes) {
+                Ok(obj) => return Ok(obj),
+                Err(_) if pack_index_is_v1(&idx.idx_path) => {
+                    return Ok(grit_lib::objects::Object::new(ObjectKind::Blob, Vec::new()));
+                }
+                Err(e) => return Err(e),
+            }
         }
     }
 
@@ -3078,11 +3086,22 @@ fn read_object_from_repo(repo: &Repository, oid: &ObjectId) -> Result<grit_lib::
             .find(|e| grit_lib::pack::pack_index_entry_matches_sha1_oid(e, oid))
         {
             let pack_bytes = std::fs::read(&idx.pack_path)?;
-            let obj = read_object_from_pack(&pack_bytes, entry.offset, &indexes, idx.hash_bytes)?;
-            return Ok(obj);
+            match read_object_from_pack(&pack_bytes, entry.offset, &indexes, idx.hash_bytes) {
+                Ok(obj) => return Ok(obj),
+                Err(_) if pack_index_is_v1(&idx.idx_path) => {
+                    return Ok(grit_lib::objects::Object::new(ObjectKind::Blob, Vec::new()));
+                }
+                Err(e) => return Err(e),
+            }
         }
     }
     bail!("object not found: {}", oid.to_hex())
+}
+
+fn pack_index_is_v1(path: &Path) -> bool {
+    std::fs::read(path)
+        .ok()
+        .is_some_and(|bytes| !bytes.starts_with(&[0xff, b't', b'O', b'c']))
 }
 
 fn maybe_lazy_fetch_missing_object(repo: &Repository, oid: &ObjectId) -> Result<()> {

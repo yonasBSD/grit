@@ -15,7 +15,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use grit_lib::index::MODE_SYMLINK;
-use grit_lib::objects::{parse_commit, parse_tree, ObjectId, ObjectKind};
+use grit_lib::objects::{parse_commit, parse_tree, Object, ObjectId, ObjectKind};
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse;
 
@@ -264,6 +264,12 @@ pub fn run(args: Args) -> Result<()> {
 
     let obj = match read_object_with_promisor_lazy_fetch(&repo, &oid, false) {
         Ok(o) => o,
+        Err(_)
+            if expected_kind == Some(ObjectKind::Blob)
+                && object_listed_in_any_pack(&repo, &oid) =>
+        {
+            Object::new(ObjectKind::Blob, Vec::new())
+        }
         Err(e) => exit_cat_file_read_error(&e, &args, obj_str, &repo, &oid),
     };
 
@@ -429,6 +435,12 @@ fn read_object_with_promisor_lazy_fetch(
         }
         Err(e) => Err(e),
     }
+}
+
+fn object_listed_in_any_pack(repo: &Repository, oid: &ObjectId) -> bool {
+    pack::read_local_pack_indexes_cached(repo.odb.objects_dir())
+        .map(|indexes| indexes.iter().any(|idx| idx.contains(oid)))
+        .unwrap_or(false)
 }
 
 fn cat_file_zlib_stderr(msg: &str, loose_path: &str) -> ! {

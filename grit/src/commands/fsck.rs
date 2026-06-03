@@ -18,7 +18,7 @@ use grit_lib::ident::fsck_commit_idents;
 use grit_lib::index::MODE_GITLINK;
 use grit_lib::objects::{parse_commit, parse_tree, tag_object_line_oid, ObjectId, ObjectKind};
 use grit_lib::odb::Odb;
-use grit_lib::pack::{read_local_pack_indexes, read_pack_index};
+use grit_lib::pack::{read_local_pack_indexes, read_pack_index, verify_pack_and_collect};
 use grit_lib::pack_rev::rev_path_for_index;
 use grit_lib::promisor::{
     promisor_expanded_object_ids, promisor_pack_object_ids, repo_treats_promisor_packs,
@@ -1225,6 +1225,12 @@ fn report_orphan_pack_indexes(objects_dir: &Path, issues: &mut Vec<Issue>) -> Re
         if !pack_path.is_file() {
             issues.push(Issue::FsckMessage(format!(
                 "bad object pack {stem}.pack (missing)"
+            )));
+            continue;
+        }
+        if let Err(err) = verify_pack_and_collect(&path) {
+            issues.push(Issue::FsckMessage(format!(
+                "bad object pack {stem}.pack ({err})"
             )));
         }
     }

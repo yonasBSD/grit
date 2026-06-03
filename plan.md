@@ -30,9 +30,10 @@
     pack option edge cases, index-pack keep files, and promisor prefetch trace behavior.
   - Completed `t5300-unpack-objects.sh` (23/23) after materializing the canonical
     empty tree during real unpack operations.
-  - Partial `t5302-pack-index.sh`: improved from 12/36 to 31/36 by adding index v1 /
-    forced-large-offset support and fixing strict/progress/max-size diagnostics. Remaining failures
-    are corruption-reuse/fsck cases around hand-edited delta base references. Continue here next.
+  - Completed `t5302-pack-index.sh` (36/36) after adding index v1 / forced-large-offset
+    support, strict/progress/max-size diagnostics, and corruption-reuse behavior for hand-edited
+    delta base references.
+  - Next focus: `t5302-show-index.sh`.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

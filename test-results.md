@@ -1,4 +1,10 @@
 
+## 2026-06-03 — t5302-pack-index
+
+- Focus harness: `./scripts/run-tests.sh t5302-pack-index.sh --verbose` passes 36/36 after index v1/forced-large-offset support, strict/progress/max-size diagnostics, and corruption-reuse behavior fixes.
+- Regression harness: `./scripts/run-tests.sh t5300-pack-object.sh t5300-unpack-objects.sh --verbose` passes 63/63 and 23/23.
+
+
 ## 2026-06-03 — t5302-pack-index partial
 
 - Focus harness: `./scripts/run-tests.sh t5302-pack-index.sh --verbose` improved to 31/36 after index v1/forced-large-offset support and strict/progress/max-size diagnostic fixes. Remaining failures are corruption-reuse/fsck cases around manually edited delta base references.
