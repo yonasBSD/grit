@@ -1275,3 +1275,10 @@ Updated: 2026-06-01
   `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
   --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
   `cargo test -p grit-lib --lib`.
+- t6120 blob describe focus: after adding blob lookup from `HEAD` and blob-specific error paths,
+  the direct verbose run reaches `--always with no refs falls back to commit hash` and
+  `./scripts/run-tests.sh t6120-describe.sh` improves from 95/105 to 102/105 with refreshed
+  `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
+  `cargo test -p grit-lib --lib`.

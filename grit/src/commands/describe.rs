@@ -11,7 +11,7 @@ use grit_lib::diff::{
 };
 use grit_lib::error::Error;
 use grit_lib::index::Index;
-use grit_lib::objects::{parse_commit, parse_tag, ObjectId, ObjectKind};
+use grit_lib::objects::{parse_commit, parse_tag, parse_tree, ObjectId, ObjectKind};
 use grit_lib::refs::list_refs;
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse::resolve_revision;
@@ -273,12 +273,22 @@ pub fn run(args: Args) -> Result<()> {
     let resolved_oid =
         resolve_revision(&repo, rev).with_context(|| format!("Not a valid object name {rev}"))?;
 
-    // Peel to commit (in case user passed a tag name which resolves to a tag object)
-    let target_oid = peel_to_commit(&repo, &resolved_oid)
-        .ok_or_else(|| anyhow::anyhow!("Not a valid commit: {rev}"))?;
-
     let mut options = DescribeOptions::from_args(&args);
     apply_ordered_pattern_options_from_argv(&mut options);
+
+    // Peel to commit (in case user passed a tag name which resolves to a tag object), or describe
+    // a blob by finding the first reachable commit/path that contains it.
+    let target_oid = if let Some(commit_oid) = peel_to_commit(&repo, &resolved_oid) {
+        commit_oid
+    } else {
+        let obj = repo.odb.read(&resolved_oid)?;
+        if obj.kind == ObjectKind::Blob {
+            let description = describe_blob(&repo, &resolved_oid, &options)?;
+            println!("{description}");
+            return Ok(());
+        }
+        bail!("fatal: {rev} is neither a commit nor blob");
+    };
 
     // Determine the dirty suffix before formatting the final description.
     let dirty_suffix = if args.dirty.is_some() || args.broken.is_some() {
@@ -395,6 +405,83 @@ fn describe_commit(
             }
         }
     }
+}
+
+fn describe_blob(
+    repo: &Repository,
+    blob_oid: &ObjectId,
+    options: &DescribeOptions,
+) -> Result<String> {
+    let head = resolve_head(&repo.git_dir).map_err(|_| {
+        anyhow::anyhow!(
+            "fatal: cannot search for blob '{}' on an unborn branch",
+            blob_oid.to_hex()
+        )
+    })?;
+    let head_oid = head.oid().ok_or_else(|| {
+        anyhow::anyhow!(
+            "fatal: cannot search for blob '{}' on an unborn branch",
+            blob_oid.to_hex()
+        )
+    })?;
+
+    let mut commits = Vec::new();
+    let mut queue = VecDeque::from([*head_oid]);
+    let mut seen = HashSet::from([*head_oid]);
+    while let Some(oid) = queue.pop_front() {
+        let Ok(obj) = repo.odb.read(&oid) else {
+            continue;
+        };
+        if obj.kind != ObjectKind::Commit {
+            continue;
+        }
+        let commit = parse_commit(&obj.data)?;
+        commits.push((oid, commit.tree));
+        for parent in commit.parents {
+            if seen.insert(parent) {
+                queue.push_back(parent);
+            }
+        }
+    }
+
+    for (commit_oid, tree_oid) in commits.into_iter().rev() {
+        if let Some(path) = find_blob_path_in_tree(repo, &tree_oid, blob_oid, "")? {
+            let commit_desc = describe_commit(repo, commit_oid, options, "")?;
+            return Ok(format!("{commit_desc}:{path}"));
+        }
+    }
+
+    bail!(
+        "fatal: blob '{}' not reachable from HEAD",
+        blob_oid.to_hex()
+    );
+}
+
+fn find_blob_path_in_tree(
+    repo: &Repository,
+    tree_oid: &ObjectId,
+    blob_oid: &ObjectId,
+    prefix: &str,
+) -> Result<Option<String>> {
+    let obj = repo.odb.read(tree_oid)?;
+    let entries = parse_tree(&obj.data)?;
+    for entry in entries {
+        let name = String::from_utf8_lossy(&entry.name);
+        let path = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if entry.oid == *blob_oid && entry.mode != grit_lib::index::MODE_TREE {
+            return Ok(Some(path));
+        }
+        if entry.mode == grit_lib::index::MODE_TREE {
+            if let Some(found) = find_blob_path_in_tree(repo, &entry.oid, blob_oid, &path)? {
+                return Ok(Some(found));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Check if the working tree has uncommitted changes.
