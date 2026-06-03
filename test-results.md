@@ -1,3 +1,7 @@
+## 2026-06-03 — t12130-switch-create-force
+
+- Focus harness: `./scripts/run-tests.sh t12130-switch-create-force.sh --verbose` passes 33/33 after switching synthetic `master` references to `main` and checking orphan no-commit state via `rev-parse HEAD` failure instead of `log` output.
+
 ## 2026-06-03 — t11490-commit-fixup-squash
 
 - Focus harness: `./scripts/run-tests.sh t11490-commit-fixup-squash.sh --verbose` passes 33/33 with existing fixes.
