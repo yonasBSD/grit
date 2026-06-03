@@ -1,3 +1,7 @@
+## 2026-06-03 — t11380-log-graph-all
+
+- Focus harness: `./scripts/run-tests.sh t11380-log-graph-all.sh --verbose` passes 33/33 after aligning log graph multi-branch fixture references with `main`.
+
 ## 2026-06-03 — t10200-switch-orphan-detach
 
 - Focus harness: `./scripts/run-tests.sh t10200-switch-orphan-detach.sh --verbose` passes 31/31 after aligning switch/orphan/detach fixture branch expectations with `main`.

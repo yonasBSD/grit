@@ -35,7 +35,7 @@ test_expect_success 'setup: create repo with branches and merges' '
 	echo "more feature" >>feature.txt &&
 	"$REAL_GIT" add feature.txt &&
 	"$REAL_GIT" commit -m "more feature work" &&
-	"$REAL_GIT" checkout master &&
+	"$REAL_GIT" checkout main &&
 	echo "main work" >main.txt &&
 	"$REAL_GIT" add main.txt &&
 	"$REAL_GIT" commit -m "main branch work" &&
@@ -44,7 +44,7 @@ test_expect_success 'setup: create repo with branches and merges' '
 	echo "release" >release.txt &&
 	"$REAL_GIT" add release.txt &&
 	"$REAL_GIT" commit -m "release prep" &&
-	"$REAL_GIT" checkout master &&
+	"$REAL_GIT" checkout main &&
 	echo "post-merge" >>file.txt &&
 	"$REAL_GIT" add file.txt &&
 	"$REAL_GIT" commit -m "post-merge commit"
@@ -112,7 +112,7 @@ test_expect_success 'log --graph shows commit hashes' '
 test_expect_success 'log with multiple branches shows commits from all' '
 	(
 	cd repo &&
-	git log --oneline master feature release >output &&
+	git log --oneline main feature release >output &&
 	grep -q "release prep" output &&
 	grep -q "feature commit" output &&
 	grep -q "initial commit" output
@@ -122,16 +122,16 @@ test_expect_success 'log with multiple branches shows commits from all' '
 test_expect_success 'log with multiple branches includes more than single branch' '
 	(
 	cd repo &&
-	git log --oneline master >master_out &&
-	git log --oneline master feature release >multi_out &&
-	test $(wc -l <multi_out) -ge $(wc -l <master_out)
+	git log --oneline main >main_out &&
+	git log --oneline main feature release >multi_out &&
+	test $(wc -l <multi_out) -ge $(wc -l <main_out)
 	)
 '
 
 test_expect_success 'log --graph with multiple branches' '
 	(
 	cd repo &&
-	git log --graph --oneline master feature release >output &&
+	git log --graph --oneline main feature release >output &&
 	grep -q "release prep" output &&
 	grep -q "more feature work" output
 	)
@@ -140,7 +140,7 @@ test_expect_success 'log --graph with multiple branches' '
 test_expect_success 'log --graph with multiple branches shows all commits' '
 	(
 	cd repo &&
-	git log --graph --oneline master feature release >output &&
+	git log --graph --oneline main feature release >output &&
 	grep -q "post-merge commit" output &&
 	grep -q "feature commit" output
 	)
@@ -154,7 +154,7 @@ test_expect_success 'log --oneline shows decoration by default' '
 	(
 	cd repo &&
 	git log --oneline -n 1 >output &&
-	grep -q "master" output
+	grep -q "main" output
 	)
 '
 
@@ -162,7 +162,7 @@ test_expect_success 'log --decorate shows branch names' '
 	(
 	cd repo &&
 	git log --oneline --decorate >output &&
-	grep -q "master" output &&
+	grep -q "main" output &&
 	grep -q "feature" output
 	)
 '
@@ -171,7 +171,7 @@ test_expect_success 'log --no-decorate hides branch names' '
 	(
 	cd repo &&
 	git log --oneline --no-decorate >output &&
-	! grep -q "(.*master" output
+	! grep -q "(.*main" output
 	)
 '
 
@@ -310,8 +310,8 @@ test_expect_success 'log --graph --oneline is consistent across runs' '
 test_expect_success 'log --oneline commit count matches real git' '
 	(
 	cd repo &&
-	git log --oneline master feature release >grit_out &&
-	"$REAL_GIT" log --oneline master feature release >git_out &&
+	git log --oneline main feature release >grit_out &&
+	"$REAL_GIT" log --oneline main feature release >git_out &&
 	test $(wc -l <grit_out) -eq $(wc -l <git_out)
 	)
 '
@@ -319,8 +319,8 @@ test_expect_success 'log --oneline commit count matches real git' '
 test_expect_success 'log commit subjects match real git' '
 	(
 	cd repo &&
-	git log --format="%s" master feature release >grit_subjects &&
-	"$REAL_GIT" log --format="%s" master feature release >git_subjects &&
+	git log --format="%s" main feature release >grit_subjects &&
+	"$REAL_GIT" log --format="%s" main feature release >git_subjects &&
 	sort grit_subjects >grit_sorted &&
 	sort git_subjects >git_sorted &&
 	test_cmp grit_sorted git_sorted
@@ -330,7 +330,7 @@ test_expect_success 'log commit subjects match real git' '
 test_expect_success 'log --graph with multiple branches produces output' '
 	(
 	cd repo &&
-	git log --graph --oneline master feature release >grit_out &&
+	git log --graph --oneline main feature release >grit_out &&
 	test -s grit_out &&
 	test $(wc -l <grit_out) -ge 7
 	)
