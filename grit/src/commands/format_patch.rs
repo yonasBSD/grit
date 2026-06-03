@@ -754,7 +754,18 @@ pub fn run(mut args: Args) -> Result<()> {
 
     to_list.extend(args.to.iter().cloned());
     cc_list.extend(args.cc.iter().cloned());
-    extra_headers.extend(args.add_header.iter().cloned());
+    // `--add-header` may carry To:/Cc: values; git folds those into the merged To/Cc headers
+    // rather than emitting them as separate header lines (matching `format.headers` handling).
+    for h in &args.add_header {
+        let h = h.trim_end_matches('\n');
+        if let Some(val) = h.strip_prefix("To:") {
+            to_list.push(val.trim().to_string());
+        } else if let Some(val) = h.strip_prefix("Cc:") {
+            cc_list.push(val.trim().to_string());
+        } else {
+            extra_headers.push(h.to_string());
+        }
+    }
 
     // Validate --from ident (a bare word with no '@' is rejected by git).
     if let Some(ref from_arg) = args.from {
@@ -764,7 +775,9 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     let from_header_mode = if args.no_from {
-        FromHeaderMode::Omit
+        // `--no-from` does not suppress the From header; it resets it to the commit author
+        // (overriding any format.from / --from), exactly like `format.from=false`.
+        FromHeaderMode::Author
     } else if let Some(ref from_arg) = args.from {
         if from_arg.is_empty() {
             FromHeaderMode::Committer
@@ -1254,7 +1267,9 @@ fn filter_ignore_if_in_upstream(
     commits: &mut Vec<(ObjectId, CommitData)>,
 ) -> Result<()> {
     if positive.len() != 1 || negative.len() != 1 {
-        anyhow::bail!("--ignore-if-in-upstream requires exactly one range (e.g. main..side)");
+        // Without a two-endpoint range (e.g. just `HEAD`) there is no upstream to compare
+        // patch-ids against, so git simply formats every commit without filtering anything.
+        return Ok(());
     }
     // Match `get_patch_ids` in Git: collect patch-ids from commits reachable from the range's
     // left endpoint but not from its right (`main..side` → `main` minus `side`).
