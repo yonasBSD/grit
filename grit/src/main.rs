@@ -5505,7 +5505,7 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         "verify-tag" => commands::verify_tag::run(parse_cmd_args(subcmd, rest)),
         "version" => commands::version::run(parse_cmd_args(subcmd, rest)),
         "web--browse" => commands::web_browse::run(parse_cmd_args(subcmd, rest)),
-        "whatchanged" => commands::whatchanged::run(parse_cmd_args(subcmd, rest)),
+        "whatchanged" => commands::whatchanged::run(rest),
         "worktree" => commands::worktree::run(parse_cmd_args(subcmd, rest)),
         "write-tree" => commands::write_tree::run(parse_cmd_args(subcmd, rest)),
         "test-tool" => {

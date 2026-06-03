@@ -584,6 +584,136 @@ pub fn run(mut args: Args) -> Result<()> {
     Ok(())
 }
 
+// ── whatchanged ──────────────────────────────────────────────────────
+
+/// Run `grit whatchanged` (`git log --raw --no-merges`, with the root commit's
+/// diff shown). Reuses the `diff-tree` option parser and per-commit renderer so
+/// the per-commit output is byte-for-byte identical to `diff-tree --pretty`.
+pub fn run_whatchanged(argv: &[String]) -> Result<()> {
+    let repo = Repository::discover(None).context("not a git repository")?;
+    let mut opts = parse_options(&repo, argv)?;
+
+    // `whatchanged` defaults: medium pretty header, abbreviated OIDs, recursive
+    // raw output, and the root commit's diff is shown (against the empty tree).
+    if opts.pretty.is_none() {
+        opts.pretty = Some("medium".to_string());
+    }
+    if opts.abbrev.is_none() && !opts.full_index {
+        opts.abbrev = Some(7);
+    }
+    if matches!(
+        opts.format,
+        OutputFormat::Raw | OutputFormat::NameOnly | OutputFormat::NameStatus
+    ) {
+        opts.recursive = true;
+    }
+    opts.root = true;
+
+    // Revision tips: the positional `objects` are the starting commits for the
+    // walk (default HEAD when none are given).
+    let mut tips: Vec<ObjectId> = Vec::new();
+    if opts.objects.is_empty() {
+        let head = grit_lib::state::resolve_head(&repo.git_dir)?;
+        match head.oid() {
+            Some(oid) => tips.push(*oid),
+            None => return Ok(()),
+        }
+    } else {
+        for spec in &opts.objects {
+            let oid = resolve_revision(&repo, spec)
+                .with_context(|| format!("unknown revision: '{spec}'"))?;
+            tips.push(oid);
+        }
+    }
+
+    let commits = whatchanged_walk(&repo.odb, &tips)?;
+
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let pickaxe_active =
+        opts.pickaxe_string.is_some() || opts.pickaxe_grep.is_some() || opts.find_object.is_some();
+
+    for oid in &commits {
+        render_whatchanged_commit(&repo, &opts, &mut out, oid, pickaxe_active)?;
+    }
+    Ok(())
+}
+
+/// Walk non-merge commits reachable from `tips`, ordered by committer date
+/// (newest first) like `git log`.
+fn whatchanged_walk(odb: &Odb, tips: &[ObjectId]) -> Result<Vec<ObjectId>> {
+    use std::collections::HashSet;
+    let mut visited: HashSet<ObjectId> = HashSet::new();
+    let mut stack: Vec<ObjectId> = tips.to_vec();
+    // (oid, committer_timestamp, insertion_order)
+    let mut collected: Vec<(ObjectId, i64, usize)> = Vec::new();
+    let mut order = 0usize;
+
+    while let Some(oid) = stack.pop() {
+        if !visited.insert(oid) {
+            continue;
+        }
+        let obj = odb.read(&oid)?;
+        let commit = parse_commit(&obj.data)?;
+        // Skip merge commits (whatchanged == `--no-merges`).
+        if commit.parents.len() <= 1 {
+            let ts = committer_timestamp(&commit.committer);
+            collected.push((oid, ts, order));
+            order += 1;
+        }
+        for parent in commit.parents.iter().rev() {
+            if !visited.contains(parent) {
+                stack.push(*parent);
+            }
+        }
+    }
+
+    // Newest committer date first; stable on insertion order for ties.
+    collected.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)));
+    Ok(collected.into_iter().map(|(oid, _, _)| oid).collect())
+}
+
+fn committer_timestamp(committer: &str) -> i64 {
+    // Format: "Name <email> <timestamp> <tz>"
+    let mut it = committer.rsplit(' ');
+    let _tz = it.next();
+    it.next().and_then(|ts| ts.parse::<i64>().ok()).unwrap_or(0)
+}
+
+/// Render one commit for `whatchanged`: a pretty header followed by the diff
+/// against the first parent (or the empty tree for the root commit).
+fn render_whatchanged_commit(
+    repo: &Repository,
+    opts: &Options,
+    out: &mut impl Write,
+    oid: &ObjectId,
+    pickaxe_active: bool,
+) -> Result<()> {
+    let obj = repo.odb.read(oid).context("reading commit")?;
+    let commit = parse_commit(&obj.data).context("parsing commit")?;
+
+    let parent_tree = if let Some(parent) = commit.parents.first() {
+        Some(commit_tree(&repo.odb, parent)?)
+    } else {
+        None
+    };
+    let entries = diff_with_opts(&repo.odb, parent_tree.as_ref(), Some(&commit.tree), opts)?;
+    let filtered = filter_entries(&repo.odb, repo, entries, opts)?;
+    let has_diff = !filtered.is_empty();
+
+    // With a pickaxe / find-object filter active, only commits whose change
+    // matches are shown at all (git's commit-level history simplification).
+    if pickaxe_active && !has_diff {
+        return Ok(());
+    }
+
+    write_commit_header(out, oid, &obj.data, opts, None)?;
+    if !opts.suppress_diff {
+        print_diff(out, repo, &filtered, opts, parent_tree.as_ref())?;
+    }
+    Ok(())
+}
+
 // ── Two-tree mode ────────────────────────────────────────────────────
 
 fn run_multi_tree_combined(
@@ -753,13 +883,10 @@ fn run_one_commit(repo: &Repository, opts: &Options, out: &mut impl Write) -> Re
                     let filtered = filter_entries(&repo.odb, &repo, entries, opts)?;
                     has_diff = !filtered.is_empty();
                     if !opts.quiet && (has_diff || opts.pretty.is_some()) {
-                        // `git diff-tree --root <commit>` still prints the commit OID before raw
-                        // lines; for single-commit `--root` without `--stdin`, omit that line so
-                        // machine output is only diff records (matches harness expectations).
-                        let omit_commit_id_line = opts.pretty.is_none() && !opts.stdin_mode;
-                        if !omit_commit_id_line {
-                            write_commit_header(out, &oid, &obj.data, opts, None)?;
-                        }
+                        // `git diff-tree --root <commit>` prints the bare commit OID header
+                        // line first (gated only on --no-commit-id), exactly like the
+                        // single-parent and merge branches below.
+                        write_commit_header(out, &oid, &obj.data, opts, None)?;
                         if !opts.suppress_diff {
                             print_diff(out, repo, &filtered, opts, None)?;
                         }
@@ -966,14 +1093,20 @@ fn process_stdin_commit(
 ) -> Result<bool> {
     let commit = parse_commit(data).context("parsing commit")?;
 
-    // Print commit-id header (unless `--no-commit-id`). `--quiet` still prints this
-    // line (only the raw/patch diff is suppressed), matching `git diff-tree`.
-    if !opts.no_commit_id {
+    // Header. With `--format`/`--pretty`, apply the pretty/format template (e.g.
+    // `--format=%s` prints the subject line) instead of the bare OID. Without a
+    // pretty format, print the bare commit-id header (unless `--no-commit-id`).
+    // `--quiet` still prints this header (only the raw/patch diff is suppressed),
+    // matching `git diff-tree --stdin`.
+    if opts.pretty.is_some() {
+        write_commit_header(out, oid, data, opts, None)?;
+    } else if !opts.no_commit_id {
         writeln!(out, "{}", oid.to_hex())?;
     }
 
-    // `-v` shows the commit message even with `--quiet` (raw diff and commit-id line stay off).
-    if opts.verbose {
+    // `-v` shows the commit message even with `--quiet` (raw diff stays off).
+    // Skip when a pretty format already rendered the header above.
+    if opts.verbose && opts.pretty.is_none() {
         writeln!(out, "commit {}", oid.to_hex())?;
         writeln!(out)?;
         for msg_line in commit.message.lines() {
