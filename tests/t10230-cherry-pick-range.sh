@@ -33,7 +33,7 @@ test_expect_success 'setup repo with two branches' '
 	test_tick &&
 	grit commit -m "feature-3" &&
 	grit tag f3 &&
-	grit switch master
+	grit switch main
 	)
 '
 
@@ -133,11 +133,11 @@ test_expect_success 'setup second repo for conflict tests' '
 	test_tick &&
 	grit commit -m "branch-a change" &&
 	grit tag a1 &&
-	grit switch master &&
-	echo "master-change" >conflict.txt &&
+	grit switch main &&
+	echo "main-change" >conflict.txt &&
 	grit add conflict.txt &&
 	test_tick &&
-	grit commit -m "master change"
+	grit commit -m "main change"
 	)
 '
 
@@ -159,7 +159,7 @@ test_expect_success 'cherry-pick --abort cleans up conflict' '
 	(
 	cd repo2 &&
 	grit cherry-pick --abort &&
-	cat conflict.txt | grep "master-change"
+	cat conflict.txt | grep "main-change"
 	)
 '
 
@@ -196,7 +196,7 @@ test_expect_success 'setup third repo for multiple cherry-picks' '
 	test_tick &&
 	grit commit -m "dev-4" &&
 	grit tag d4 &&
-	grit switch master
+	grit switch main
 	)
 '
 
@@ -277,7 +277,7 @@ test_expect_success 'setup repo4 for cherry-pick -n range' '
 	test_tick &&
 	grit commit -m "pick-2" &&
 	grit tag p2 &&
-	grit switch master
+	grit switch main
 	)
 '
 
@@ -319,14 +319,14 @@ test_expect_success 'cherry-pick onto branch with different file' '
 	echo extra >extra.txt &&
 	grit add extra.txt &&
 	test_tick &&
-	grit commit -m "add extra on master" &&
+	grit commit -m "add extra on main" &&
 	grit switch picks &&
 	echo p3 >p3.txt &&
 	grit add p3.txt &&
 	test_tick &&
 	grit commit -m "pick-3" &&
 	grit tag p3 &&
-	grit switch master &&
+	grit switch main &&
 	grit cherry-pick p3 &&
 	test_path_is_file p3.txt &&
 	test_path_is_file extra.txt
@@ -356,12 +356,12 @@ test_expect_success 'cherry-pick does not modify source branch' '
 test_expect_success 'cherry-pick from different branch preserves both histories' '
 	(
 	cd repo4 &&
-	grit switch master &&
-	grit log --oneline >master_log &&
+	grit switch main &&
+	grit log --oneline >main_log &&
 	grit switch picks &&
 	grit log --oneline >picks_log &&
-	! test_cmp master_log picks_log >/dev/null 2>&1 &&
-	grit switch master
+	! test_cmp main_log picks_log >/dev/null 2>&1 &&
+	grit switch main
 	)
 '
 

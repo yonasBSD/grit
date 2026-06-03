@@ -249,7 +249,7 @@ test_expect_success 'status -sb shows branch name' '
 	(
 	cd sr-repo &&
 	grit status -sb >"$TRASH_DIRECTORY/output/actual" &&
-	grep "^## master" "$TRASH_DIRECTORY/output/actual"
+	grep "^## main" "$TRASH_DIRECTORY/output/actual"
 	)
 '
 
@@ -257,7 +257,7 @@ test_expect_success 'status --porcelain -b shows branch header' '
 	(
 	cd sr-repo &&
 	grit status --porcelain -b >"$TRASH_DIRECTORY/output/actual" &&
-	grep "^## master" "$TRASH_DIRECTORY/output/actual"
+	grep "^## main" "$TRASH_DIRECTORY/output/actual"
 	)
 '
 

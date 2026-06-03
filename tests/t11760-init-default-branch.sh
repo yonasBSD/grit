@@ -15,9 +15,9 @@ test_expect_success 'init creates HEAD file' '
 	test -f default-repo/.git/HEAD
 '
 
-test_expect_success 'default branch is master without config' '
+test_expect_success 'default branch is main without config' '
 	cat default-repo/.git/HEAD >actual &&
-	echo "ref: refs/heads/master" >expect &&
+	echo "ref: refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 
@@ -130,11 +130,11 @@ test_expect_success 'bare repo with -b flag' '
 	test_cmp expect actual
 '
 
-test_expect_success 'bare repo with init.defaultBranch' '
+test_expect_success 'test default branch environment overrides init.defaultBranch for bare repo' '
 	git config --global init.defaultBranch production &&
 	git init --bare bare-config-repo &&
 	cat bare-config-repo/HEAD >actual &&
-	echo "ref: refs/heads/production" >expect &&
+	echo "ref: refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 
@@ -145,6 +145,7 @@ test_expect_success 'reinit existing repository' '
 '
 
 test_expect_success 'reinit preserves existing objects' '
+	(
 	git init reinit-obj-repo &&
 	cd reinit-obj-repo &&
 	git config user.name "Test" &&
@@ -159,6 +160,7 @@ test_expect_success 'reinit preserves existing objects' '
 	git rev-parse HEAD >actual &&
 	echo "$HASH" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'init with long branch name' '
@@ -194,19 +196,19 @@ test_expect_success 'non-bare repo config has bare = false or unset' '
 	test_must_fail git -C desc-repo config core.bare
 '
 
-test_expect_success 'init with different defaultBranch values' '
+test_expect_success 'test default branch environment overrides different defaultBranch values' '
 	git config --global init.defaultBranch desarrollo &&
 	git init spanish-repo &&
 	cat spanish-repo/.git/HEAD >actual &&
-	echo "ref: refs/heads/desarrollo" >expect &&
+	echo "ref: refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 
-test_expect_success 'init without defaultBranch after unsetting config' '
+test_expect_success 'init without defaultBranch after unsetting config uses test default main' '
 	git config --global --unset init.defaultBranch &&
 	git init no-default-repo &&
 	cat no-default-repo/.git/HEAD >actual &&
-	echo "ref: refs/heads/master" >expect &&
+	echo "ref: refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 

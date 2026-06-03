@@ -64,8 +64,8 @@ test_expect_success 'format with two atoms separated by tab' '
 
 test_expect_success 'format with three atoms' '
     (cd repo &&
-     grit for-each-ref --format="%(objecttype) %(refname:short) %(subject)" refs/heads/master >../actual) &&
-    echo "commit master second commit" >expect &&
+     grit for-each-ref --format="%(objecttype) %(refname:short) %(subject)" refs/heads/main >../actual) &&
+    echo "commit main second commit" >expect &&
     test_cmp expect actual
 '
 
@@ -87,14 +87,14 @@ test_expect_success 'format with objectname and refname' '
 
 test_expect_success 'format objectname is 40 hex chars' '
     (cd repo &&
-     grit for-each-ref --format="%(objectname)" refs/heads/master >../actual) &&
+     grit for-each-ref --format="%(objectname)" refs/heads/main >../actual) &&
     len=$(awk "{ print length }" <actual | head -1) &&
     test "$len" -eq 40
 '
 
 test_expect_success 'format objectname consists of hex chars only' '
     (cd repo &&
-     grit for-each-ref --format="%(objectname)" refs/heads/master >../actual) &&
+     grit for-each-ref --format="%(objectname)" refs/heads/main >../actual) &&
     grep -E "^[0-9a-f]{40}$" actual
 '
 
@@ -134,7 +134,7 @@ test_expect_success 'format refname full vs short for tag' '
 
 test_expect_success 'format subject shows commit message' '
     (cd repo &&
-     grit for-each-ref --format="%(subject)" refs/heads/master >../actual) &&
+     grit for-each-ref --format="%(subject)" refs/heads/main >../actual) &&
     echo "second commit" >expect &&
     test_cmp expect actual
 '
@@ -162,8 +162,8 @@ test_expect_success 'format with complex literal: key=value pairs' '
 
 test_expect_success 'format with special chars in literals' '
     (cd repo &&
-     grit for-each-ref --format="%(refname:short)|%(objecttype)|%(subject)" refs/heads/master >../actual) &&
-    echo "master|commit|second commit" >expect &&
+     grit for-each-ref --format="%(refname:short)|%(objecttype)|%(subject)" refs/heads/main >../actual) &&
+    echo "main|commit|second commit" >expect &&
     test_cmp expect actual
 '
 
@@ -218,15 +218,15 @@ test_expect_success 'format with all atoms produces multi-column output' '
 
 test_expect_success 'format output is deterministic on same ref' '
     (cd repo &&
-     grit for-each-ref --format="%(objectname) %(refname:short)" refs/heads/master >../run1 &&
-     grit for-each-ref --format="%(objectname) %(refname:short)" refs/heads/master >../run2) &&
+     grit for-each-ref --format="%(objectname) %(refname:short)" refs/heads/main >../run1 &&
+     grit for-each-ref --format="%(objectname) %(refname:short)" refs/heads/main >../run2) &&
     test_cmp run1 run2
 '
 
 test_expect_success 'format objectname matches rev-parse for branch' '
     (cd repo &&
-     grit for-each-ref --format="%(objectname)" refs/heads/master >../fer_hash &&
-     grit rev-parse master >../rp_hash) &&
+     grit for-each-ref --format="%(objectname)" refs/heads/main >../fer_hash &&
+     grit rev-parse main >../rp_hash) &&
     test_cmp fer_hash rp_hash
 '
 

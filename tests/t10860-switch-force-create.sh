@@ -7,7 +7,7 @@ test_description='grit switch --create, --detach, --orphan, and branch switching
 cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
-test_expect_success 'setup repository with master and commits' '
+test_expect_success 'setup repository with main and commits' '
 	(
 	grit init repo &&
 	cd repo &&
@@ -38,12 +38,12 @@ test_expect_success 'switch -c creates and switches to new branch' '
 	)
 '
 
-test_expect_success 'switch back to master' '
+test_expect_success 'switch back to main' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit symbolic-ref HEAD >head &&
-	grep "refs/heads/master" head
+	grep "refs/heads/main" head
 	)
 '
 
@@ -77,11 +77,11 @@ test_expect_success 'switch -c from a non-default branch' '
 test_expect_success 'switch - goes back to previous branch' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit switch feature1 &&
 	grit switch - &&
 	grit symbolic-ref HEAD >head &&
-	grep "refs/heads/master" head
+	grep "refs/heads/main" head
 	)
 '
 
@@ -90,7 +90,7 @@ test_expect_success 'switch - goes back to previous branch' '
 test_expect_success 'switch -c with start point creates branch at that commit' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	HEAD_OID=$(grit rev-parse HEAD) &&
 	PARENT_OID=$(grit rev-parse HEAD~1) &&
 	grit switch -c from-parent HEAD~1 &&
@@ -108,10 +108,10 @@ test_expect_success 'branch from start point does not have later files' '
 	)
 '
 
-test_expect_success 'switch back to master has all files' '
+test_expect_success 'switch back to main has all files' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	test -f file1.txt &&
 	test -f file2.txt &&
 	test -f file3.txt
@@ -132,7 +132,7 @@ test_expect_success 'current branch unchanged after failed switch -c' '
 	(
 	cd repo &&
 	grit symbolic-ref HEAD >head &&
-	grep "refs/heads/master" head
+	grep "refs/heads/main" head
 	)
 '
 
@@ -149,8 +149,8 @@ test_expect_success 'switch --detach HEAD puts us in detached HEAD' '
 test_expect_success 'switch --detach to specific commit' '
 	(
 	cd repo &&
-	PARENT=$(grit rev-parse master~1) &&
-	grit switch --detach master~1 &&
+	PARENT=$(grit rev-parse main~1) &&
+	grit switch --detach main~1 &&
 	ACTUAL=$(grit rev-parse HEAD) &&
 	test "$ACTUAL" = "$PARENT"
 	)
@@ -159,10 +159,10 @@ test_expect_success 'switch --detach to specific commit' '
 test_expect_success 'switch -d is short for --detach' '
 	(
 	cd repo &&
-	grit switch -d master &&
+	grit switch -d main &&
 	test_must_fail grit symbolic-ref HEAD 2>err &&
 	ACTUAL=$(grit rev-parse HEAD) &&
-	EXPECTED=$(grit rev-parse master) &&
+	EXPECTED=$(grit rev-parse main) &&
 	test "$ACTUAL" = "$EXPECTED"
 	)
 '
@@ -170,9 +170,9 @@ test_expect_success 'switch -d is short for --detach' '
 test_expect_success 'can switch back to branch from detached' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit symbolic-ref HEAD >head &&
-	grep "refs/heads/master" head
+	grep "refs/heads/main" head
 	)
 '
 
@@ -215,10 +215,10 @@ test_expect_success 'orphan commit has no parents' '
 	)
 '
 
-test_expect_success 'switch back to master after orphan' '
+test_expect_success 'switch back to main after orphan' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	test -f file1.txt &&
 	test -f file2.txt &&
 	test -f file3.txt
@@ -235,7 +235,7 @@ test_expect_success 'switch fails with uncommitted changes that conflict' '
 	grit switch -c has-dirty &&
 	echo "more" >>file1.txt &&
 	grit commit -a -m "dirty on has-dirty" &&
-	grit switch master &&
+	grit switch main &&
 	echo "conflict" >>file1.txt &&
 	test_must_fail grit switch has-dirty 2>err
 	)
@@ -276,7 +276,7 @@ test_expect_success 'switch with no arguments fails' '
 test_expect_success 'switch preserves untracked files' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	echo "untracked-data" >untracked.txt &&
 	grit switch feature1 &&
 	test -f untracked.txt &&
@@ -287,7 +287,7 @@ test_expect_success 'switch preserves untracked files' '
 test_expect_success 'switch -c preserves untracked files' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	echo "untracked2" >ut2.txt &&
 	grit switch -c new-with-untracked &&
 	test -f ut2.txt
@@ -299,7 +299,7 @@ test_expect_success 'switch -c preserves untracked files' '
 test_expect_success 'switch -c with tag as start point' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit tag v1.0 HEAD~1 &&
 	grit switch -c from-tag v1.0 &&
 	ACTUAL=$(grit rev-parse HEAD) &&
@@ -311,12 +311,12 @@ test_expect_success 'switch -c with tag as start point' '
 test_expect_success 'create multiple branches and round-trip between them' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit switch -c br-a &&
 	echo "a-content" >a-only.txt &&
 	grit add a-only.txt &&
 	grit commit -m "branch a file" &&
-	grit switch master &&
+	grit switch main &&
 	grit switch -c br-b &&
 	echo "b-content" >b-only.txt &&
 	grit add b-only.txt &&

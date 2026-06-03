@@ -6,9 +6,11 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup non-bare repo' '
+    (
     grit init repo && cd repo &&
     git config user.email "t@t.com" && git config user.name "T" &&
     echo hello >file.txt && grit add file.txt && grit commit -m "initial"
+    )
 '
 
 test_expect_success 'setup bare repo' '

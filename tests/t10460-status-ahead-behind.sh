@@ -27,7 +27,7 @@ test_expect_success 'status -sb shows tracking with no divergence' '
 	cd local &&
 	git status -sb >actual &&
 	head -1 actual >branch_line &&
-	grep "master\.\.\.origin/master" branch_line
+	grep "main\.\.\.origin/main" branch_line
 	)
 '
 

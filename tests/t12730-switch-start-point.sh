@@ -36,8 +36,8 @@ test_expect_success 'new branch is current branch' '
     test_cmp expect actual
 '
 
-test_expect_success 'switch back to master' '
-    (cd repo && grit switch master)
+test_expect_success 'switch back to main' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'switch -c with start-point creates branch at that commit' '
@@ -53,8 +53,8 @@ test_expect_success 'worktree reflects start-point content' '
     test_cmp expect actual
 '
 
-test_expect_success 'switch back to master again' '
-    (cd repo && grit switch master)
+test_expect_success 'switch back to main again' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'switch to existing branch' '
@@ -65,9 +65,9 @@ test_expect_success 'switch to existing branch' '
     test_cmp expect actual
 '
 
-test_expect_success 'switch to master and verify content' '
+test_expect_success 'switch to main and verify content' '
     (cd repo &&
-     grit switch master &&
+     grit switch main &&
      cat file.txt >../actual) &&
     echo "third" >expect &&
     test_cmp expect actual
@@ -75,7 +75,7 @@ test_expect_success 'switch to master and verify content' '
 
 test_expect_success 'switch --detach goes to detached HEAD' '
     (cd repo &&
-     grit switch --detach master &&
+     grit switch --detach main &&
      grit rev-parse HEAD >../actual) &&
     test_cmp third_hash actual
 '
@@ -87,7 +87,7 @@ test_expect_success 'HEAD is detached (not a symbolic ref)' '
 '
 
 test_expect_success 'switch back from detached HEAD' '
-    (cd repo && grit switch master)
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'switch --detach to specific commit' '
@@ -97,8 +97,8 @@ test_expect_success 'switch --detach to specific commit' '
     test_cmp second_hash actual
 '
 
-test_expect_success 'switch back to master from detached' '
-    (cd repo && grit switch master)
+test_expect_success 'switch back to main from detached' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'switch --orphan creates branch with no history' '
@@ -115,8 +115,8 @@ test_expect_success 'orphan branch has no commits yet' '
     test -s err
 '
 
-test_expect_success 'switch back to master from orphan' '
-    (cd repo && grit switch master)
+test_expect_success 'switch back to main from orphan' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'switch -c with tag-like ref as start-point' '
@@ -127,11 +127,11 @@ test_expect_success 'switch -c with tag-like ref as start-point' '
     test_cmp first_hash actual
 '
 
-test_expect_success 'switch back to master' '
-    (cd repo && grit switch master)
+test_expect_success 'switch back to main' '
+    (cd repo && grit switch main)
 '
 
-test_expect_success 'switch -c to another start-point from non-master branch' '
+test_expect_success 'switch -c to another start-point from non-main branch' '
     (cd repo &&
      grit switch from-first &&
      grit switch -c branched-from-first "$(cat ../second_hash)" &&
@@ -139,11 +139,11 @@ test_expect_success 'switch -c to another start-point from non-master branch' '
     test_cmp second_hash actual
 '
 
-test_expect_success 'switch back to master' '
-    (cd repo && grit switch master)
+test_expect_success 'switch back to main' '
+    (cd repo && grit switch main)
 '
 
-test_expect_success 'switch --detach from a non-master branch' '
+test_expect_success 'switch --detach from a non-main branch' '
     (cd repo &&
      grit switch feature1 &&
      grit switch --detach "$(cat ../first_hash)" &&
@@ -151,8 +151,8 @@ test_expect_success 'switch --detach from a non-master branch' '
     test_cmp first_hash actual
 '
 
-test_expect_success 'switch back to master from detached' '
-    (cd repo && grit switch master)
+test_expect_success 'switch back to main from detached' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'switch -c fails if branch already exists' '
@@ -182,12 +182,12 @@ test_expect_success 'branch list shows all created branches' '
     grep "from-first" actual &&
     grep "from-second" actual &&
     grep "from-tag" actual &&
-    grep "master" actual
+    grep "main" actual
 '
 
-test_expect_success 'switch to master and make a new commit' '
+test_expect_success 'switch to main and make a new commit' '
     (cd repo &&
-     grit switch master &&
+     grit switch main &&
      echo fourth >file.txt &&
      grit add file.txt &&
      grit commit -m "fourth" &&
@@ -201,8 +201,8 @@ test_expect_success 'switch -c from HEAD~1 works' '
     test_cmp third_hash actual
 '
 
-test_expect_success 'switch back to master' '
-    (cd repo && grit switch master)
+test_expect_success 'switch back to main' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'switch --detach HEAD~2 goes two back' '
@@ -212,8 +212,8 @@ test_expect_success 'switch --detach HEAD~2 goes two back' '
     test_cmp second_hash actual
 '
 
-test_expect_success 'switch to master' '
-    (cd repo && grit switch master)
+test_expect_success 'switch to main' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'switch preserves uncommitted compatible changes' '
@@ -221,7 +221,7 @@ test_expect_success 'switch preserves uncommitted compatible changes' '
      echo untracked >new-untracked.txt &&
      grit switch feature1 &&
      test -f new-untracked.txt) &&
-    (cd repo && rm -f new-untracked.txt && grit switch master)
+    (cd repo && rm -f new-untracked.txt && grit switch main)
 '
 
 test_expect_success 'switch -c with abbreviated hash' '
@@ -232,11 +232,11 @@ test_expect_success 'switch -c with abbreviated hash' '
     test_cmp first_hash actual
 '
 
-test_expect_success 'cleanup - back to master' '
-    (cd repo && grit switch master)
+test_expect_success 'cleanup - back to main' '
+    (cd repo && grit switch main)
 '
 
-test_expect_success 'final: master HEAD is fourth commit' '
+test_expect_success 'final: main HEAD is fourth commit' '
     (cd repo && grit rev-parse HEAD >../actual) &&
     test_cmp fourth_hash actual
 '

@@ -21,8 +21,8 @@ test_expect_success 'status --short shows clean repo' '
 '
 
 test_expect_success 'status --porcelain shows branch' '
-	(cd repo && grit status --porcelain >../actual) &&
-	grep "## master" actual
+	(cd repo && grit status --porcelain -b >../actual) &&
+	grep "## main" actual
 '
 
 test_expect_success 'check-ignore identifies ignored file' '
@@ -140,7 +140,7 @@ test_expect_success 'status long format shows sections' '
 
 test_expect_success 'status --short --branch shows branch name' '
 	(cd repo && grit status --short --branch >../actual) &&
-	grep "## master" actual
+	grep "## main" actual
 '
 
 test_expect_success 'commit staged and check status' '

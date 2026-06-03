@@ -108,6 +108,23 @@
   - Final sweep repair: `t7406-submodule-update.sh` is back to 70/70 after filtering the redundant
     successful `pull --rebase` stderr line from submodule rebase updates.
   - Final verification: `./scripts/run-tests.sh t7400-submodule-basic.sh t7401-submodule-summary.sh t7402-submodule-rebase.sh t7403-submodule-sync.sh t7406-submodule-update.sh t7407-submodule-foreach.sh t7408-submodule-reference.sh t7409-submodule-detached-work-tree.sh t7411-submodule-config.sh t7412-submodule-absorbgitdirs.sh t7413-submodule-is-active.sh t7414-submodule-mistakes.sh t7416-submodule-dash-url.sh t7417-submodule-path-url.sh t7418-submodule-sparse-gitmodules.sh t7419-submodule-set-branch.sh t7420-submodule-set-url.sh t7421-submodule-summary-add.sh t7422-submodule-output.sh t7423-submodule-symlinks.sh t7424-submodule-mixed-ref-formats.sh t7425-submodule-gitdir-path-extension.sh t7426-submodule-get-default-remote.sh t7506-status-submodule.sh t7814-grep-recurse-submodules.sh t7112-reset-submodule.sh` completed with every row at `failing=0`.
+---
+
+## Active task — t1 family 100% pass
+
+- [~] Make all `t1` family tests fully pass. Work one file at a time, grouped by dependency:
+  config/init/repo setup, refs, rev-parse, read-tree/sparse/submodule plumbing, rev-list/log,
+  diff/status, dependent porcelain, then skipped-row audit. Within each group choose the
+  non-green in-scope row with the largest `failing` count in `data/test-files.csv`, re-running
+  that file until `failing=0` before moving on.
+  - Starting point: 368 in-scope rows; 234 already fully passing; 134 in-scope rows non-green.
+  - Current progress: 8 in-scope `t1` rows remain non-green after refs optimize/config-env/bad-ref partial work.
+  - Current first focus group: config/init/repo setup, with `t1300-config.sh` still non-green (450/497, failing=47 in the latest CSV snapshot).
+  - Current refs focus: `t1461-refs-list.sh` is now 359/428 after tracking atom fixes.
+  - Skipped rows to audit after current in-scope rows are green: `t1016-compatObjectFormat`,
+    `t1400-update-ref`, `t1407-worktree-ref-store`, `t1415-worktree-refs`,
+    `t1419-exclude-refs`, `t1423-ref-backend`, `t1450-fsck`, `t1460-refs-migrate`.
+  - Execution log: `logs/2026-06-02_0000-t1-family.md`.
 
 ---
 

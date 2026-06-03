@@ -31,15 +31,15 @@ test_expect_success 'rev-parse HEAD output is 40-char hex' '
     test "$len" -eq 41
 '
 
-test_expect_success 'rev-parse master resolves same as HEAD' '
-    (cd repo && grit rev-parse master >../actual) &&
+test_expect_success 'rev-parse main resolves same as HEAD' '
+    (cd repo && grit rev-parse main >../actual) &&
     (cd repo && grit rev-parse HEAD >../expect) &&
     test_cmp expect actual
 '
 
-test_expect_success 'rev-parse feature resolves same as master' '
+test_expect_success 'rev-parse feature resolves same as main' '
     (cd repo && grit rev-parse feature >../actual) &&
-    (cd repo && grit rev-parse master >../expect) &&
+    (cd repo && grit rev-parse main >../expect) &&
     test_cmp expect actual
 '
 
@@ -85,8 +85,8 @@ test_expect_success 'rev-parse HEAD^{tree} peels to tree' '
     test_cmp expect actual
 '
 
-test_expect_success 'rev-parse master^{commit} matches HEAD^{commit}' '
-    (cd repo && grit rev-parse "master^{commit}" >../actual) &&
+test_expect_success 'rev-parse main^{commit} matches HEAD^{commit}' '
+    (cd repo && grit rev-parse "main^{commit}" >../actual) &&
     (cd repo && grit rev-parse "HEAD^{commit}" >../expect) &&
     test_cmp expect actual
 '
@@ -103,9 +103,9 @@ test_expect_success 'rev-parse --verify HEAD succeeds' '
     test_cmp expect actual
 '
 
-test_expect_success 'rev-parse --verify master succeeds' '
-    (cd repo && grit rev-parse --verify master >../actual) &&
-    (cd repo && git rev-parse --verify master >../expect) &&
+test_expect_success 'rev-parse --verify main succeeds' '
+    (cd repo && grit rev-parse --verify main >../actual) &&
+    (cd repo && git rev-parse --verify main >../expect) &&
     test_cmp expect actual
 '
 
@@ -124,13 +124,13 @@ test_expect_success 'rev-parse --verify nonexistent exits non-zero' '
 '
 
 test_expect_success 'rev-parse multiple refs' '
-    (cd repo && grit rev-parse HEAD master v1.0 >../actual) &&
-    (cd repo && git rev-parse HEAD master v1.0 >../expect) &&
+    (cd repo && grit rev-parse HEAD main v1.0 >../actual) &&
+    (cd repo && git rev-parse HEAD main v1.0 >../expect) &&
     test_cmp expect actual
 '
 
 test_expect_success 'rev-parse multiple refs line count' '
-    (cd repo && grit rev-parse HEAD master v1.0 >../actual) &&
+    (cd repo && grit rev-parse HEAD main v1.0 >../actual) &&
     wc -l <actual >count &&
     echo 3 >expect_count &&
     test_cmp expect_count count
@@ -193,7 +193,7 @@ test_expect_success 'rev-parse --is-inside-work-tree from subdir' '
 
 test_expect_success 'rev-parse tag resolves differently from branch' '
     (cd repo && grit rev-parse v1.0 >../tag_hash &&
-    grit rev-parse master >../branch_hash) &&
+    grit rev-parse main >../branch_hash) &&
     ! test_cmp tag_hash branch_hash
 '
 

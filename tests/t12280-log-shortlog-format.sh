@@ -4,7 +4,9 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
-    grit init repo && cd repo &&
+    grit init repo &&
+    (
+    cd repo &&
     git config user.email "alice@example.com" &&
     git config user.name "Alice Smith" &&
 	sane_unset GIT_AUTHOR_NAME &&
@@ -33,6 +35,7 @@ test_expect_success 'setup' '
     grit add file.txt &&
     GIT_AUTHOR_DATE="1700004000 +0000" GIT_COMMITTER_DATE="1700004000 +0000" \
     grit commit -m "fifth commit"
+    )
 '
 
 test_expect_success 'format %H shows full hash' '

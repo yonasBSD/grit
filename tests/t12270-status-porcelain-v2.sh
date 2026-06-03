@@ -18,8 +18,7 @@ test_expect_success 'setup' '
 
 test_expect_success 'porcelain shows nothing for clean repo' '
     (cd repo && grit status --porcelain >../actual) &&
-    echo "## master" >expect &&
-    test_cmp expect actual
+    test_must_be_empty actual
 '
 
 test_expect_success 'short shows nothing for clean repo' '
@@ -60,8 +59,7 @@ test_expect_success 'staged deletion shows D in first column' '
 test_expect_success 'commit and verify clean porcelain' '
     (cd repo && grit commit -m "del other" &&
      grit status --porcelain >../actual) &&
-    echo "## master" >expect &&
-    test_cmp expect actual
+    test_must_be_empty actual
 '
 
 test_expect_success 'both staged and unstaged shows MM' '
@@ -79,18 +77,18 @@ test_expect_success 'short format shows MM too' '
 test_expect_success 'porcelain -b includes branch header' '
     (cd repo && grit status --porcelain -b >../actual) &&
     head -1 actual >branch_line &&
-    echo "## master" >expect &&
+    echo "## main" >expect &&
     test_cmp expect branch_line
 '
 
-test_expect_success 'porcelain always includes branch with ## prefix' '
+test_expect_success 'porcelain without -b omits branch header' '
     (cd repo && grit status --porcelain >../actual) &&
-    grep "^## master$" actual
+    ! grep "^## main$" actual
 '
 
 test_expect_success 'short -b includes branch header' '
     (cd repo && grit status -s -b >../actual) &&
-    grep "^## master$" actual
+    grep "^## main$" actual
 '
 
 test_expect_success 'reset and test multiple untracked files' '
@@ -135,14 +133,13 @@ test_expect_success 'commit and test -z NUL termination' '
      echo "z1" >z1.txt && echo "z2" >z2.txt &&
      grit status --porcelain -z >../actual_raw) &&
     tr "\0" "\n" <actual_raw >actual &&
-    grep "^## master$" actual &&
     grep "^?? z1.txt$" actual &&
     grep "^?? z2.txt$" actual
 '
 
 test_expect_success 'long format shows branch info' '
     (cd repo && grit status >../actual) &&
-    grep "On branch master" actual
+    grep "On branch main" actual
 '
 
 test_expect_success 'long format shows untracked section' '
@@ -180,8 +177,7 @@ test_expect_success 'porcelain with nested directory additions' '
 test_expect_success 'porcelain after committing nested addition' '
     (cd repo && grit commit -m "add deep" &&
      grit status --porcelain >../actual) &&
-    echo "## master" >expect &&
-    test_cmp expect actual
+    test_must_be_empty actual
 '
 
 test_expect_success 'modify and delete in same status' '
@@ -201,8 +197,7 @@ test_expect_success 'porcelain entry count matches expected' '
 test_expect_success 'commit pending changes to reach clean state' '
     (cd repo && grit commit -m "pending" &&
      grit status --porcelain >../actual) &&
-    echo "## master" >expect &&
-    test_cmp expect actual
+    test_must_be_empty actual
 '
 
 test_expect_success 'gitignore setup' '

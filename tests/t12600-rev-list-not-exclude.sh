@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+    (
     grit init repo && cd repo &&
     git config user.email "t@t.com" && git config user.name "T" &&
     echo one >file.txt && grit add file.txt && grit commit -m "first" &&
@@ -16,7 +17,8 @@ test_expect_success 'setup' '
     git checkout side &&
     echo five >side.txt && grit add side.txt && grit commit -m "side-one" &&
     echo six >side2.txt && grit add side2.txt && grit commit -m "side-two" &&
-    git checkout master
+    git checkout main
+    )
 '
 
 test_expect_success 'rev-list HEAD lists all commits' '
@@ -38,49 +40,49 @@ test_expect_success 'rev-list side count' '
 '
 
 test_expect_success 'rev-list ^ref excludes ancestors' '
-    (cd repo && grit rev-list "^side" master >../actual) &&
-    (cd repo && git rev-list "^side" master >../expect) &&
+    (cd repo && grit rev-list "^side" main >../actual) &&
+    (cd repo && git rev-list "^side" main >../expect) &&
     test_cmp expect actual
 '
 
 test_expect_success 'rev-list ^ref exclusion shows only unique commits' '
-    (cd repo && grit rev-list --count "^side" master >../actual) &&
+    (cd repo && grit rev-list --count "^side" main >../actual) &&
     echo 1 >expect &&
     test_cmp expect actual
 '
 
-test_expect_success 'rev-list side..master is equivalent to ^side master' '
-    (cd repo && grit rev-list side..master >../actual) &&
-    (cd repo && grit rev-list "^side" master >../expect) &&
+test_expect_success 'rev-list side..main is equivalent to ^side main' '
+    (cd repo && grit rev-list side..main >../actual) &&
+    (cd repo && grit rev-list "^side" main >../expect) &&
     test_cmp expect actual
 '
 
-test_expect_success 'rev-list master..side shows side-only commits' '
-    (cd repo && grit rev-list master..side >../actual) &&
-    (cd repo && git rev-list master..side >../expect) &&
+test_expect_success 'rev-list main..side shows side-only commits' '
+    (cd repo && grit rev-list main..side >../actual) &&
+    (cd repo && git rev-list main..side >../expect) &&
     test_cmp expect actual
 '
 
-test_expect_success 'rev-list master..side count is 2' '
-    (cd repo && grit rev-list --count master..side >../actual) &&
+test_expect_success 'rev-list main..side count is 2' '
+    (cd repo && grit rev-list --count main..side >../actual) &&
     echo 2 >expect &&
     test_cmp expect actual
 '
 
-test_expect_success 'rev-list side..master count is 1' '
-    (cd repo && grit rev-list --count side..master >../actual) &&
+test_expect_success 'rev-list side..main count is 1' '
+    (cd repo && grit rev-list --count side..main >../actual) &&
     echo 1 >expect &&
     test_cmp expect actual
 '
 
-test_expect_success 'rev-list ^master side matches master..side' '
-    (cd repo && grit rev-list "^master" side >../actual) &&
-    (cd repo && grit rev-list master..side >../expect) &&
+test_expect_success 'rev-list ^main side matches main..side' '
+    (cd repo && grit rev-list "^main" side >../actual) &&
+    (cd repo && grit rev-list main..side >../expect) &&
     test_cmp expect actual
 '
 
 test_expect_success 'rev-list same..same is empty' '
-    (cd repo && grit rev-list master..master >../actual) &&
+    (cd repo && grit rev-list main..main >../actual) &&
     test_must_be_empty actual
 '
 
@@ -136,13 +138,13 @@ test_expect_success 'rev-list --first-parent HEAD' '
 '
 
 test_expect_success 'rev-list multiple refs lists union' '
-    (cd repo && grit rev-list master side >../actual) &&
-    (cd repo && git rev-list master side >../expect) &&
+    (cd repo && grit rev-list main side >../actual) &&
+    (cd repo && git rev-list main side >../expect) &&
     test_cmp expect actual
 '
 
 test_expect_success 'rev-list multiple refs count' '
-    (cd repo && grit rev-list --count master side >../actual) &&
+    (cd repo && grit rev-list --count main side >../actual) &&
     echo 6 >expect &&
     test_cmp expect actual
 '
@@ -203,14 +205,14 @@ test_expect_success 'rev-list empty range (ancestor..ancestor)' '
 '
 
 test_expect_success 'rev-list --count with range' '
-    (cd repo && grit rev-list --count side..master >../actual) &&
-    (cd repo && git rev-list --count side..master >../expect) &&
+    (cd repo && grit rev-list --count side..main >../actual) &&
+    (cd repo && git rev-list --count side..main >../expect) &&
     test_cmp expect actual
 '
 
 test_expect_success 'rev-list --reverse with range' '
-    (cd repo && grit rev-list --reverse master..side >../actual) &&
-    (cd repo && git rev-list --reverse master..side >../expect) &&
+    (cd repo && grit rev-list --reverse main..side >../actual) &&
+    (cd repo && git rev-list --reverse main..side >../expect) &&
     test_cmp expect actual
 '
 

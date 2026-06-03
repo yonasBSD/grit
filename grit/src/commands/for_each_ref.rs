@@ -3024,6 +3024,7 @@ fn resolve_upstream(
     }
 }
 
+
 /// Resolve the push destination for a branch.
 ///
 /// The push destination is determined by `remote.pushDefault` or

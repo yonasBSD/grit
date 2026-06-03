@@ -821,7 +821,7 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
         let mut entries = Vec::new();
         let pseudo_path = path.to_path_buf();
         for entry in parse_config_parameters(raw) {
-            if let Some((key, val)) = entry.split_once('=') {
+            if let Some((key, val)) = entry.split_once('\u{1}').or_else(|| entry.split_once('=')) {
                 let canon = canonical_key(key.trim())?;
                 entries.push(ConfigEntry {
                     key: canon,
@@ -1859,7 +1859,9 @@ impl ConfigSet {
                 Self::merge_with_includes(&mut set, &cmd_file, proc, 0, &ctx)?;
             } else if !params.trim().is_empty() {
                 for entry in parse_config_parameters(&params) {
-                    if let Some((key, val)) = entry.split_once('=') {
+                    if let Some((key, val)) =
+                        entry.split_once('\u{1}').or_else(|| entry.split_once('='))
+                    {
                         let _ = set.add_command_override(key.trim(), val);
                     } else {
                         let _ = set.add_command_override(entry.trim(), "true");
@@ -2030,7 +2032,9 @@ impl ConfigSet {
 
         if let Ok(params) = std::env::var("GIT_CONFIG_PARAMETERS") {
             for entry in parse_config_parameters(&params) {
-                if let Some((key, val)) = entry.split_once('=') {
+                if let Some((key, val)) =
+                    entry.split_once('\u{1}').or_else(|| entry.split_once('='))
+                {
                     let _ = set.add_command_override(key.trim(), val);
                 } else {
                     let _ = set.add_command_override(entry.trim(), "true");
@@ -2094,17 +2098,14 @@ impl ConfigSet {
                 // Git's `git_config_from_file` surfaces parse errors in an included file as a
                 // fatal error (t0001 #102 `re-init reads matching includeIf.onbranch`). A missing
                 // include target is silently skipped (`from_path` -> `Ok(None)`).
-                match ConfigFile::from_path(&resolved, file.scope)? {
-                    Some(inc_file) => {
-                        Self::merge_with_includes(
-                            set,
-                            &inc_file,
-                            process_includes,
-                            depth + 1,
-                            ctx,
-                        )?;
-                    }
-                    None => {}
+                if let Some(inc_file) = ConfigFile::from_path(&resolved, file.scope)? {
+                    Self::merge_with_includes(
+                        set,
+                        &inc_file,
+                        process_includes,
+                        depth + 1,
+                        ctx,
+                    )?;
                 }
             }
         }
@@ -2744,7 +2745,7 @@ pub fn git_config_parameters_last_value(raw: &str, key: &str) -> Option<String> 
     };
     let mut last: Option<String> = None;
     for entry in parse_config_parameters(raw) {
-        if let Some((k, v)) = entry.split_once('=') {
+        if let Some((k, v)) = entry.split_once('\u{1}').or_else(|| entry.split_once('=')) {
             if canonical_key(k.trim()).ok().as_ref() == Some(&canon) {
                 last = Some(v.to_owned());
             }

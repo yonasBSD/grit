@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	grit init repo &&
 	cd repo &&
 	git config user.email "t@t.com" &&
@@ -13,6 +14,7 @@ test_expect_success 'setup' '
 	echo hello >file.txt &&
 	grit add file.txt &&
 	grit commit -m "initial"
+	)
 '
 
 test_expect_success 'config --local sets value in repo config' '
@@ -34,18 +36,18 @@ test_expect_success 'config --worktree sets value in worktree config' '
 	test_cmp expect actual
 '
 
-test_expect_success 'worktree config creates .git/config.worktree file' '
-	(cd repo && test -f .git/config.worktree)
+test_expect_success 'worktree config falls back to local without worktreeConfig extension' '
+	(cd repo && test ! -f .git/config.worktree)
 '
 
-test_expect_success 'worktree value stored in config.worktree' '
-	(cd repo && grep "wt-val" .git/config.worktree >../actual) &&
+test_expect_success 'worktree value stored in local config without worktreeConfig extension' '
+	(cd repo && grep "wt-val" .git/config >../actual) &&
 	test -s actual
 '
 
-test_expect_success 'config --show-scope shows worktree scope' '
+test_expect_success 'config --show-scope shows fallback local scope for --worktree' '
 	(cd repo && grit config --show-scope --list >../actual) &&
-	grep "^worktree" actual
+	grep "^local.*test.wt=wt-val" actual
 '
 
 test_expect_success 'config --show-scope shows local scope' '
@@ -64,9 +66,9 @@ test_expect_success 'config --show-origin shows file path for local' '
 	grep "file:.*\.git/config	" actual
 '
 
-test_expect_success 'config --show-origin shows file path for worktree' '
+test_expect_success 'config --show-origin shows local file path for --worktree fallback' '
 	(cd repo && grit config --show-origin --list >../actual) &&
-	grep "config\.worktree" actual
+	grep "file:.*\.git/config	.*test.wt=wt-val" actual
 '
 
 test_expect_success 'worktree config overrides local for same key' '
@@ -124,7 +126,7 @@ test_expect_success 'config --local unset does not affect worktree' '
 	(cd repo && grit config --worktree scope.check "wt" &&
 	 grit config --local scope.check "local" &&
 	 grit config get scope.check >../actual) &&
-	echo "wt" >expect &&
+	echo "local" >expect &&
 	test_cmp expect actual
 '
 

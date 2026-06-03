@@ -30,7 +30,7 @@ test_expect_success 'setup: create repo with branches and tags' '
 	echo "feature" >feat.txt &&
 	"$REAL_GIT" add feat.txt &&
 	"$REAL_GIT" commit -m "feature commit" &&
-	"$REAL_GIT" checkout master &&
+	"$REAL_GIT" checkout main &&
 	echo "third" >>file.txt &&
 	"$REAL_GIT" add file.txt &&
 	"$REAL_GIT" commit -m "third commit" &&
@@ -76,20 +76,20 @@ test_expect_success 'rev-parse HEAD is deterministic' '
 # Section 3: Branch resolution
 ###########################################################################
 
-test_expect_success 'rev-parse master returns valid SHA-1' '
+test_expect_success 'rev-parse main returns valid SHA-1' '
 	(
 	cd repo &&
-	git rev-parse master >output &&
+	git rev-parse main >output &&
 	grep -qE "^[0-9a-f]{40}$" output
 	)
 '
 
-test_expect_success 'rev-parse master matches HEAD' '
+test_expect_success 'rev-parse main matches HEAD' '
 	(
 	cd repo &&
-	git rev-parse master >master_hash &&
+	git rev-parse main >main_hash &&
 	git rev-parse HEAD >head_hash &&
-	test_cmp master_hash head_hash
+	test_cmp main_hash head_hash
 	)
 '
 
@@ -110,12 +110,12 @@ test_expect_success 'rev-parse feature matches real git' '
 	)
 '
 
-test_expect_success 'rev-parse feature differs from master' '
+test_expect_success 'rev-parse feature differs from main' '
 	(
 	cd repo &&
 	git rev-parse feature >feat_hash &&
-	git rev-parse master >master_hash &&
-	! test_cmp feat_hash master_hash
+	git rev-parse main >main_hash &&
+	! test_cmp feat_hash main_hash
 	)
 '
 
@@ -266,10 +266,10 @@ test_expect_success 'rev-parse --verify HEAD matches rev-parse HEAD' '
 	)
 '
 
-test_expect_success 'rev-parse --verify master succeeds' '
+test_expect_success 'rev-parse --verify main succeeds' '
 	(
 	cd repo &&
-	git rev-parse --verify master >output &&
+	git rev-parse --verify main >output &&
 	grep -qE "^[0-9a-f]{40}$" output
 	)
 '
@@ -297,18 +297,18 @@ test_expect_success 'rev-parse --verify with tag' '
 test_expect_success 'rev-parse with two refs outputs two lines' '
 	(
 	cd repo &&
-	git rev-parse master feature >output &&
+	git rev-parse main feature >output &&
 	test $(wc -l <output) -eq 2
 	)
 '
 
-test_expect_success 'rev-parse master feature matches individual calls' '
+test_expect_success 'rev-parse main feature matches individual calls' '
 	(
 	cd repo &&
-	git rev-parse master >m &&
+	git rev-parse main >m &&
 	git rev-parse feature >f &&
 	cat m f >expected &&
-	git rev-parse master feature >actual &&
+	git rev-parse main feature >actual &&
 	test_cmp expected actual
 	)
 '

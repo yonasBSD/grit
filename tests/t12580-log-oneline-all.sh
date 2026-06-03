@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+    (
     grit init repo && cd repo &&
     git config user.email "t@t.com" && git config user.name "T" &&
     echo one >file.txt && grit add file.txt && grit commit -m "first" &&
@@ -16,7 +17,8 @@ test_expect_success 'setup' '
     git checkout side &&
     echo four >file4.txt && grit add file4.txt && grit commit -m "side-one" &&
     echo five >file5.txt && grit add file5.txt && grit commit -m "side-two" &&
-    git checkout master
+    git checkout main
+    )
 '
 
 test_expect_success 'log --oneline shows abbreviated hash and subject' '
@@ -80,9 +82,9 @@ test_expect_success 'log --oneline side branch shows side commits' '
     test_cmp expect actual
 '
 
-test_expect_success 'log --oneline master and side combined' '
-    (cd repo && grit log --oneline master side >../actual) &&
-    (cd repo && git log --oneline master side >../expect) &&
+test_expect_success 'log --oneline main and side combined' '
+    (cd repo && grit log --oneline main side >../actual) &&
+    (cd repo && git log --oneline main side >../expect) &&
     test_cmp expect actual
 '
 
@@ -99,7 +101,7 @@ test_expect_success 'log --oneline --no-decorate has no parens' '
 
 test_expect_success 'log --oneline --decorate shows branch names' '
     (cd repo && grit log --oneline --decorate >../actual) &&
-    grep "master" actual
+    grep "main" actual
 '
 
 test_expect_success 'log --oneline --decorate=short matches git' '
@@ -120,7 +122,7 @@ test_expect_success 'log --oneline --graph matches git' '
     test_cmp expect actual
 '
 
-test_expect_success 'log --oneline --first-parent on master' '
+test_expect_success 'log --oneline --first-parent on main' '
     (cd repo && grit log --oneline --first-parent >../actual) &&
     (cd repo && git log --oneline --first-parent >../expect) &&
     test_cmp expect actual
@@ -150,7 +152,7 @@ test_expect_success 'log --oneline --skip and -n combined on side' '
     test_cmp expect actual
 '
 
-test_expect_success 'log --oneline shows correct count on master' '
+test_expect_success 'log --oneline shows correct count on main' '
     (cd repo && grit log --oneline >../actual) &&
     wc -l <actual >count &&
     echo 2 >expect_count &&

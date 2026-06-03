@@ -19,17 +19,17 @@ test_expect_success 'setup' '
 
 test_expect_success 'branch with no args lists branches' '
 	(cd repo && grit branch >../actual) &&
-	grep "master" actual
+	grep "main" actual
 '
 
 test_expect_success 'current branch is marked with asterisk' '
 	(cd repo && grit branch >../actual) &&
-	grep "^\* master" actual
+	grep "^\* main" actual
 '
 
 test_expect_success 'branch --show-current shows current branch' '
 	(cd repo && grit branch --show-current >../actual) &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 '
 
@@ -47,7 +47,7 @@ test_expect_success 'branch creates second branch' '
 
 test_expect_success 'new branch does not switch to it' '
 	(cd repo && grit branch --show-current >../actual) &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 '
 
@@ -63,7 +63,7 @@ test_expect_success 'branch -v shows hash for each branch' '
 
 test_expect_success 'branch -vv shows verbose info' '
 	(cd repo && grit branch -vv >../actual) &&
-	grep "master" actual | grep "initial"
+	grep "main" actual | grep "initial"
 '
 
 test_expect_success 'branch -d deletes a branch' '
@@ -107,7 +107,7 @@ test_expect_success 'branch --list is equivalent to branch' '
 
 test_expect_success 'branch -a shows all branches' '
 	(cd repo && grit branch -a >../actual) &&
-	grep "master" actual &&
+	grep "main" actual &&
 	grep "feature1" actual
 '
 
@@ -131,11 +131,11 @@ test_expect_success 'branch -f overwrites existing branch' '
 
 test_expect_success 'branch --merged lists merged branches' '
 	(cd repo && grit branch --merged HEAD >../actual) &&
-	grep "master" actual
+	grep "main" actual
 '
 
 test_expect_success 'cannot delete current branch' '
-	(cd repo && test_must_fail grit branch -d master 2>../err) &&
+	(cd repo && test_must_fail grit branch -d main 2>../err) &&
 	test -s err
 '
 
@@ -174,11 +174,11 @@ test_expect_success 'branch -v aligns output' '
 
 test_expect_success 'for-each-ref shows branches with objecttype' '
 	(cd repo && grit for-each-ref --format="%(refname:short) %(objecttype)" refs/heads/ >../actual) &&
-	grep "master commit" actual
+	grep "main commit" actual
 '
 
 test_expect_success 'for-each-ref shows branches with objectname' '
-	(cd repo && grit for-each-ref --format="%(objectname)" refs/heads/master >../actual) &&
+	(cd repo && grit for-each-ref --format="%(objectname)" refs/heads/main >../actual) &&
 	test -s actual &&
 	# Should be 40-char hex
 	len=$(wc -c <actual) &&
@@ -186,20 +186,20 @@ test_expect_success 'for-each-ref shows branches with objectname' '
 '
 
 test_expect_success 'for-each-ref shows subject' '
-	(cd repo && grit for-each-ref --format="%(subject)" refs/heads/master >../actual) &&
+	(cd repo && grit for-each-ref --format="%(subject)" refs/heads/main >../actual) &&
 	echo "second" >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'for-each-ref with refname atom' '
-	(cd repo && grit for-each-ref --format="%(refname)" refs/heads/master >../actual) &&
-	echo "refs/heads/master" >expect &&
+	(cd repo && grit for-each-ref --format="%(refname)" refs/heads/main >../actual) &&
+	echo "refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'for-each-ref with refname:short atom' '
-	(cd repo && grit for-each-ref --format="%(refname:short)" refs/heads/master >../actual) &&
-	echo "master" >expect &&
+	(cd repo && grit for-each-ref --format="%(refname:short)" refs/heads/main >../actual) &&
+	echo "main" >expect &&
 	test_cmp expect actual
 '
 

@@ -52,11 +52,11 @@ test_expect_success 'show-ref output is non-empty' '
 	)
 '
 
-test_expect_success 'show-ref with pattern master' '
+test_expect_success 'show-ref with pattern main' '
 	(
 	cd repo &&
-	grit show-ref master >actual &&
-	"$REAL_GIT" show-ref master >expect &&
+	grit show-ref main >actual &&
+	"$REAL_GIT" show-ref main >expect &&
 	test_cmp expect actual
 	)
 '
@@ -231,8 +231,8 @@ test_expect_success 'show-ref --head --hash' '
 test_expect_success 'show-ref --verify with full refname' '
 	(
 	cd repo &&
-	grit show-ref --verify refs/heads/master >actual &&
-	"$REAL_GIT" show-ref --verify refs/heads/master >expect &&
+	grit show-ref --verify refs/heads/main >actual &&
+	"$REAL_GIT" show-ref --verify refs/heads/main >expect &&
 	test_cmp expect actual
 	)
 '
@@ -269,7 +269,7 @@ test_expect_success 'show-ref --verify HEAD' '
 test_expect_success 'show-ref --exists for existing ref succeeds' '
 	(
 	cd repo &&
-	grit show-ref --exists refs/heads/master
+	grit show-ref --exists refs/heads/main
 	)
 '
 
@@ -354,14 +354,14 @@ test_expect_success 'show-ref --heads output has no tags' '
 test_expect_success 'show-ref --quiet --verify existing ref exits 0' '
 	(
 	cd repo &&
-	grit show-ref --quiet --verify refs/heads/master
+	grit show-ref --quiet --verify refs/heads/main
 	)
 '
 
 test_expect_success 'show-ref --quiet --verify existing ref produces no output' '
 	(
 	cd repo &&
-	grit show-ref --quiet --verify refs/heads/master >actual &&
+	grit show-ref --quiet --verify refs/heads/main >actual &&
 	test_must_be_empty actual
 	)
 '

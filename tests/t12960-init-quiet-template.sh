@@ -14,8 +14,8 @@ test_expect_success 'init creates HEAD' '
     test -f repo/.git/HEAD
 '
 
-test_expect_success 'init HEAD points to refs/heads/master by default' '
-    echo "ref: refs/heads/master" >expect &&
+test_expect_success 'init HEAD points to refs/heads/main by default' '
+    echo "ref: refs/heads/main" >expect &&
     test_cmp expect repo/.git/HEAD
 '
 
@@ -122,7 +122,7 @@ test_expect_success 'reinit creates fresh config' '
 '
 
 test_expect_success 'reinit preserves HEAD' '
-    echo "ref: refs/heads/master" >expect &&
+    echo "ref: refs/heads/main" >expect &&
     test_cmp expect reinit_test/.git/HEAD
 '
 
@@ -150,7 +150,7 @@ test_expect_success 'template copies multiple files' '
 '
 
 test_expect_success 'template does not override HEAD' '
-    echo "ref: refs/heads/master" >expect &&
+    echo "ref: refs/heads/main" >expect &&
     test_cmp expect tpl_repo2/.git/HEAD
 '
 

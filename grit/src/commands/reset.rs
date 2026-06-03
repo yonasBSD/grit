@@ -1715,8 +1715,12 @@ Use '--' to separate paths from revisions, like this:\n\
     }
 
     new_index.clear_resolve_undo();
-    let cache_tree = build_cache_tree_from_index(&repo.odb, &new_index)?;
-    new_index.set_cache_tree(cache_tree);
+    if new_index.entries.iter().any(|entry| entry.oid.is_zero()) {
+        new_index.clear_cache_tree();
+    } else {
+        let cache_tree = build_cache_tree_from_index(&repo.odb, &new_index)?;
+        new_index.set_cache_tree(cache_tree);
+    }
     repo.write_index_at(&index_path, &mut new_index)
         .context("writing index")?;
     // For MIXED (and SOFT) resets, do NOT re-apply sparse-checkout. Git's `reset`

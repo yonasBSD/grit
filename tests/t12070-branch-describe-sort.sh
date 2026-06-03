@@ -28,23 +28,23 @@ test_expect_success 'setup repo with linear history' '
 
 test_expect_success 'branch with no args lists branches' '
 	(cd repo && grit branch >../actual) &&
-	grep "master" actual
+	grep "main" actual
 '
 
 test_expect_success 'current branch is marked with asterisk' '
 	(cd repo && grit branch >../actual) &&
-	grep "^\* master" actual
+	grep "^\* main" actual
 '
 
 test_expect_success 'branch --show-current shows current branch' '
 	(cd repo && grit branch --show-current >../actual) &&
-	echo master >expect &&
+	echo main >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'branch -l lists branches (same as no args)' '
 	(cd repo && grit branch -l >../actual) &&
-	grep "master" actual
+	grep "main" actual
 '
 
 # ── create branches ───────────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ test_expect_success 'branch create at specific SHA' '
 
 test_expect_success 'branch create does not switch to it' '
 	(cd repo && grit branch --show-current >../actual) &&
-	echo master >expect &&
+	echo main >expect &&
 	test_cmp expect actual
 '
 
@@ -115,7 +115,7 @@ test_expect_success 'branch -d deletes a branch' '
 '
 
 test_expect_success 'branch -d refuses to delete current branch' '
-	test_must_fail grit -C repo branch -d master
+	test_must_fail grit -C repo branch -d main
 '
 
 test_expect_success 'branch -D force deletes' '
@@ -177,7 +177,7 @@ test_expect_success 'branch -v shows different subjects for branches at differen
 
 test_expect_success 'branch list includes all created branches' '
 	(cd repo && grit branch >../actual) &&
-	grep "master" actual &&
+	grep "main" actual &&
 	grep "feature" actual &&
 	grep "old-branch" actual &&
 	grep "beta" actual &&
@@ -188,7 +188,7 @@ test_expect_success 'branch list includes all created branches' '
 
 test_expect_success 'branch -a lists all (no remotes means same as default)' '
 	(cd repo && grit branch -a >../actual) &&
-	grep "master" actual &&
+	grep "main" actual &&
 	grep "feature" actual
 '
 
@@ -215,10 +215,10 @@ test_expect_success 'checkout switches branch' '
 	test_cmp expect actual
 '
 
-test_expect_success 'switch back to master' '
-	(cd repo && grit checkout master) &&
+test_expect_success 'switch back to main' '
+	(cd repo && grit checkout main) &&
 	(cd repo && grit branch --show-current >../actual) &&
-	echo master >expect &&
+	echo main >expect &&
 	test_cmp expect actual
 '
 
@@ -241,7 +241,7 @@ test_expect_success 'clean up from-feature' '
 
 test_expect_success 'final branch list is clean' '
 	(cd repo && grit branch >../actual) &&
-	grep "master" actual &&
+	grep "main" actual &&
 	grep "feature" actual &&
 	grep "old-branch" actual &&
 	grep "overwrite-target" actual

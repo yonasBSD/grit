@@ -38,8 +38,8 @@ test_expect_success 'setup: create repo with branches and tags' '
 ###########################################################################
 
 test_expect_success 'for-each-ref %(objectname) shows full SHA for heads' '
-	(cd repo && grit for-each-ref --format="%(objectname)" refs/heads/master >../actual) &&
-	(cd repo && "$REAL_GIT" rev-parse master >../expect) &&
+	(cd repo && grit for-each-ref --format="%(objectname)" refs/heads/main >../actual) &&
+	(cd repo && "$REAL_GIT" rev-parse main >../expect) &&
 	test_cmp expect actual
 '
 
@@ -50,7 +50,7 @@ test_expect_success 'for-each-ref %(objectname) matches git for all heads' '
 '
 
 test_expect_success 'objectname is 40 hex chars' '
-	(cd repo && grit for-each-ref --format="%(objectname)" refs/heads/master >../actual) &&
+	(cd repo && grit for-each-ref --format="%(objectname)" refs/heads/main >../actual) &&
 	grep "^[0-9a-f]\{40\}$" actual
 '
 
@@ -63,14 +63,14 @@ test_expect_success 'for-each-ref %(objectname) for tags' '
 test_expect_success 'annotated tag objectname differs from tagged commit' '
 	(cd repo &&
 	 TAG_OBJ=$(grit for-each-ref --format="%(objectname)" refs/tags/v1.0) &&
-	 COMMIT=$("$REAL_GIT" rev-parse master) &&
+	 COMMIT=$("$REAL_GIT" rev-parse main) &&
 	 test "$TAG_OBJ" != "$COMMIT")
 '
 
 test_expect_success 'lightweight tag objectname equals commit' '
 	(cd repo &&
 	 TAG_OBJ=$(grit for-each-ref --format="%(objectname)" refs/tags/lightweight-tag) &&
-	 COMMIT=$("$REAL_GIT" rev-parse master) &&
+	 COMMIT=$("$REAL_GIT" rev-parse main) &&
 	 test "$TAG_OBJ" = "$COMMIT")
 '
 
@@ -79,7 +79,7 @@ test_expect_success 'lightweight tag objectname equals commit' '
 ###########################################################################
 
 test_expect_success 'for-each-ref %(objecttype) is commit for branches' '
-	(cd repo && grit for-each-ref --format="%(objecttype)" refs/heads/master >../actual) &&
+	(cd repo && grit for-each-ref --format="%(objecttype)" refs/heads/main >../actual) &&
 	echo "commit" >expect &&
 	test_cmp expect actual
 '
@@ -107,14 +107,14 @@ test_expect_success 'objecttype matches git for all refs' '
 ###########################################################################
 
 test_expect_success 'for-each-ref %(refname) shows full ref path' '
-	(cd repo && grit for-each-ref --format="%(refname)" refs/heads/master >../actual) &&
-	echo "refs/heads/master" >expect &&
+	(cd repo && grit for-each-ref --format="%(refname)" refs/heads/main >../actual) &&
+	echo "refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'for-each-ref %(refname:short) strips prefix' '
-	(cd repo && grit for-each-ref --format="%(refname:short)" refs/heads/master >../actual) &&
-	echo "master" >expect &&
+	(cd repo && grit for-each-ref --format="%(refname:short)" refs/heads/main >../actual) &&
+	echo "main" >expect &&
 	test_cmp expect actual
 '
 
@@ -141,7 +141,7 @@ test_expect_success 'refname:short matches git for all refs' '
 ###########################################################################
 
 test_expect_success 'for-each-ref %(subject) shows commit message' '
-	(cd repo && grit for-each-ref --format="%(subject)" refs/heads/master >../actual) &&
+	(cd repo && grit for-each-ref --format="%(subject)" refs/heads/main >../actual) &&
 	echo "second commit" >expect &&
 	test_cmp expect actual
 '
@@ -169,8 +169,8 @@ test_expect_success 'combined format: objectname + refname' '
 '
 
 test_expect_success 'combined format with literal text' '
-	(cd repo && grit for-each-ref --format="ref=%(refname:short) type=%(objecttype)" refs/heads/master >../actual) &&
-	(cd repo && "$REAL_GIT" for-each-ref --format="ref=%(refname:short) type=%(objecttype)" refs/heads/master >../expect) &&
+	(cd repo && grit for-each-ref --format="ref=%(refname:short) type=%(objecttype)" refs/heads/main >../actual) &&
+	(cd repo && "$REAL_GIT" for-each-ref --format="ref=%(refname:short) type=%(objecttype)" refs/heads/main >../expect) &&
 	test_cmp expect actual
 '
 

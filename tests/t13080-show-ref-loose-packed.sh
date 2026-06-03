@@ -36,7 +36,7 @@ test_expect_success 'show-ref lists all loose refs' '
 	(
 	cd repo &&
 	grit show-ref >../actual &&
-	grep "refs/heads/master" ../actual &&
+	grep "refs/heads/main" ../actual &&
 	grep "refs/heads/branch-one" ../actual &&
 	grep "refs/tags/v1.0" ../actual
 	)
@@ -45,9 +45,9 @@ test_expect_success 'show-ref lists all loose refs' '
 test_expect_success 'show-ref output format is SHA space refname' '
 	(
 	cd repo &&
-	grit show-ref refs/heads/master >../actual &&
-	SHA=$($REAL_GIT rev-parse master) &&
-	echo "$SHA refs/heads/master" >../expect &&
+	grit show-ref refs/heads/main >../actual &&
+	SHA=$($REAL_GIT rev-parse main) &&
+	echo "$SHA refs/heads/main" >../expect &&
 	test_cmp ../expect ../actual
 	)
 '
@@ -82,8 +82,8 @@ test_expect_success 'show-ref --head includes HEAD' '
 test_expect_success 'show-ref --verify with valid ref succeeds' '
 	(
 	cd repo &&
-	grit show-ref --verify refs/heads/master >../actual &&
-	SHA=$($REAL_GIT rev-parse master) &&
+	grit show-ref --verify refs/heads/main >../actual &&
+	SHA=$($REAL_GIT rev-parse main) &&
 	grep "$SHA" ../actual
 	)
 '
@@ -98,7 +98,7 @@ test_expect_success 'show-ref --verify with invalid ref fails' '
 test_expect_success 'show-ref --exists with valid ref returns 0' '
 	(
 	cd repo &&
-	grit show-ref --exists refs/heads/master
+	grit show-ref --exists refs/heads/main
 	)
 '
 
@@ -112,8 +112,8 @@ test_expect_success 'show-ref --exists with invalid ref returns nonzero' '
 test_expect_success 'show-ref --hash shows only SHA' '
 	(
 	cd repo &&
-	grit show-ref --hash refs/heads/master >../actual &&
-	SHA=$($REAL_GIT rev-parse master) &&
+	grit show-ref --hash refs/heads/main >../actual &&
+	SHA=$($REAL_GIT rev-parse main) &&
 	echo "$SHA" >../expect &&
 	test_cmp ../expect ../actual
 	)
@@ -122,8 +122,8 @@ test_expect_success 'show-ref --hash shows only SHA' '
 test_expect_success 'show-ref --hash with abbreviation' '
 	(
 	cd repo &&
-	grit show-ref --hash=7 refs/heads/master >../actual &&
-	SHA=$($REAL_GIT rev-parse --short=7 master) &&
+	grit show-ref --hash=7 refs/heads/main >../actual &&
+	SHA=$($REAL_GIT rev-parse --short=7 main) &&
 	echo "$SHA" >../expect &&
 	test_cmp ../expect ../actual
 	)
@@ -132,16 +132,16 @@ test_expect_success 'show-ref --hash with abbreviation' '
 test_expect_success 'show-ref --abbrev abbreviates SHAs' '
 	(
 	cd repo &&
-	grit show-ref --abbrev refs/heads/master >../actual &&
-	! grep "$($REAL_GIT rev-parse master)" ../actual &&
-	grep "refs/heads/master" ../actual
+	grit show-ref --abbrev refs/heads/main >../actual &&
+	! grep "$($REAL_GIT rev-parse main)" ../actual &&
+	grep "refs/heads/main" ../actual
 	)
 '
 
 test_expect_success 'show-ref --quiet suppresses output' '
 	(
 	cd repo &&
-	grit show-ref --quiet --verify refs/heads/master >../actual &&
+	grit show-ref --quiet --verify refs/heads/main >../actual &&
 	test ! -s ../actual
 	)
 '
@@ -169,7 +169,7 @@ test_expect_success 'pack all refs and show-ref still works' '
 	cd repo &&
 	$REAL_GIT pack-refs --all &&
 	grit show-ref >../actual &&
-	grep "refs/heads/master" ../actual &&
+	grep "refs/heads/main" ../actual &&
 	grep "refs/heads/branch-one" ../actual &&
 	grep "refs/tags/v1.0" ../actual
 	)
@@ -178,8 +178,8 @@ test_expect_success 'pack all refs and show-ref still works' '
 test_expect_success 'packed refs --verify works' '
 	(
 	cd repo &&
-	grit show-ref --verify refs/heads/master >../actual &&
-	SHA=$($REAL_GIT rev-parse master) &&
+	grit show-ref --verify refs/heads/main >../actual &&
+	SHA=$($REAL_GIT rev-parse main) &&
 	grep "$SHA" ../actual
 	)
 '
@@ -187,7 +187,7 @@ test_expect_success 'packed refs --verify works' '
 test_expect_success 'packed refs --exists works' '
 	(
 	cd repo &&
-	grit show-ref --exists refs/heads/master &&
+	grit show-ref --exists refs/heads/main &&
 	test_must_fail grit show-ref --exists refs/heads/nonexistent
 	)
 '
@@ -195,8 +195,8 @@ test_expect_success 'packed refs --exists works' '
 test_expect_success 'packed refs --hash works' '
 	(
 	cd repo &&
-	grit show-ref --hash refs/heads/master >../actual &&
-	SHA=$($REAL_GIT rev-parse master) &&
+	grit show-ref --hash refs/heads/main >../actual &&
+	SHA=$($REAL_GIT rev-parse main) &&
 	echo "$SHA" >../expect &&
 	test_cmp ../expect ../actual
 	)
@@ -232,7 +232,7 @@ test_expect_success 'show-ref shows both packed and new loose refs' '
 	(
 	cd repo &&
 	grit show-ref >../actual &&
-	grep "refs/heads/master" ../actual &&
+	grep "refs/heads/main" ../actual &&
 	grep "refs/heads/new-after-pack" ../actual
 	)
 '

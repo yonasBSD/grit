@@ -50,7 +50,7 @@ test_expect_success 'format with refname:short' '
 
 test_expect_success 'format with objectname gives full SHA' '
     (cd repo &&
-     grit for-each-ref --format="%(objectname)" refs/heads/master >../actual) &&
+     grit for-each-ref --format="%(objectname)" refs/heads/main >../actual) &&
     len=$(wc -c <actual) &&
     test "$len" -ge 40
 '
@@ -64,7 +64,7 @@ test_expect_success 'format with objecttype for branch is commit' '
 
 test_expect_success 'format with subject' '
     (cd repo &&
-     grit for-each-ref --format="%(subject)" refs/heads/master >../actual) &&
+     grit for-each-ref --format="%(subject)" refs/heads/main >../actual) &&
     echo "second commit" >expect &&
     test_cmp expect actual
 '
@@ -106,8 +106,8 @@ test_expect_success 'format with tab separator between atoms' '
 
 test_expect_success 'format with three atoms' '
     (cd repo &&
-     grit for-each-ref --format="%(objecttype) %(refname:short) %(subject)" refs/heads/master >../actual) &&
-    echo "commit master second commit" >expect &&
+     grit for-each-ref --format="%(objecttype) %(refname:short) %(subject)" refs/heads/main >../actual) &&
+    echo "commit main second commit" >expect &&
     test_cmp expect actual
 '
 
@@ -241,8 +241,8 @@ test_expect_success 'format with pipes as separator' '
 
 test_expect_success 'format with colons as separator' '
     (cd repo &&
-     grit for-each-ref --format="%(objecttype):%(refname:short):%(subject)" refs/heads/master >../actual) &&
-    echo "commit:master:second commit" >expect &&
+     grit for-each-ref --format="%(objecttype):%(refname:short):%(subject)" refs/heads/main >../actual) &&
+    echo "commit:main:second commit" >expect &&
     test_cmp expect actual
 '
 
@@ -253,7 +253,7 @@ test_expect_success 'all branches listed when using refs/heads/' '
     grep "beta" actual &&
     grep "gamma" actual &&
     grep "delta" actual &&
-    grep "master" actual &&
+    grep "main" actual &&
     grep "feature/login" actual &&
     grep "feature/signup" actual
 '

@@ -29,8 +29,8 @@ test_expect_success 'setup repository with merge commit' '
 	echo topic-change >topic.txt &&
 	$REAL_GIT add topic.txt &&
 	$REAL_GIT commit -m "topic work" &&
-	$REAL_GIT checkout master &&
-	$REAL_GIT merge topic -m "merge topic into master" &&
+	$REAL_GIT checkout main &&
+	$REAL_GIT merge topic -m "merge topic into main" &&
 	echo post-merge >post.txt &&
 	$REAL_GIT add post.txt &&
 	$REAL_GIT commit -m "post-merge commit"
@@ -40,7 +40,7 @@ test_expect_success 'setup repository with merge commit' '
 test_expect_success 'cherry-pick a simple non-merge commit' '
 	(
 	cd repo &&
-	$REAL_GIT checkout -b pick-simple master~3 &&
+	$REAL_GIT checkout -b pick-simple main~3 &&
 	TOPIC_SHA=$($REAL_GIT rev-parse topic) &&
 	grit cherry-pick "$TOPIC_SHA" &&
 	test -f topic.txt
@@ -70,8 +70,8 @@ test_expect_success 'cherry-pick creates a new commit with same message' '
 test_expect_success 'cherry-pick merge commit without -m fails' '
 	(
 	cd repo &&
-	$REAL_GIT checkout -b pick-nomain master~3 &&
-	MERGE_SHA=$($REAL_GIT rev-parse master~1) &&
+	$REAL_GIT checkout -b pick-nomain main~3 &&
+	MERGE_SHA=$($REAL_GIT rev-parse main~1) &&
 	test_must_fail grit cherry-pick "$MERGE_SHA"
 	)
 '
@@ -79,8 +79,8 @@ test_expect_success 'cherry-pick merge commit without -m fails' '
 test_expect_success 'cherry-pick merge commit with -m 1' '
 	(
 	cd repo &&
-	$REAL_GIT checkout -b pick-m1 master~3 &&
-	MERGE_SHA=$($REAL_GIT rev-parse master~1) &&
+	$REAL_GIT checkout -b pick-m1 main~3 &&
+	MERGE_SHA=$($REAL_GIT rev-parse main~1) &&
 	grit cherry-pick -m 1 "$MERGE_SHA" &&
 	test -f topic.txt
 	)
@@ -99,8 +99,8 @@ test_expect_success 'cherry-pick -m 1 brings topic side changes' '
 test_expect_success 'cherry-pick merge with -m 2 brings main side' '
 	(
 	cd repo &&
-	$REAL_GIT checkout -b pick-m2 master~3 &&
-	MERGE_SHA=$($REAL_GIT rev-parse master~1) &&
+	$REAL_GIT checkout -b pick-m2 main~3 &&
+	MERGE_SHA=$($REAL_GIT rev-parse main~1) &&
 	grit cherry-pick -m 2 "$MERGE_SHA" &&
 	test -f main.txt
 	)
@@ -119,7 +119,7 @@ test_expect_success 'cherry-pick -m 2 content is correct' '
 test_expect_success 'cherry-pick --no-commit stages but does not commit' '
 	(
 	cd repo &&
-	$REAL_GIT checkout -b pick-nocommit master~3 &&
+	$REAL_GIT checkout -b pick-nocommit main~3 &&
 	TOPIC_SHA=$($REAL_GIT rev-parse topic) &&
 	grit cherry-pick --no-commit "$TOPIC_SHA" &&
 	grit status >../actual &&
@@ -132,7 +132,7 @@ test_expect_success 'cherry-pick --no-commit HEAD unchanged' '
 	cd repo &&
 	$REAL_GIT checkout pick-nocommit &&
 	HEAD_NOW=$($REAL_GIT rev-parse HEAD) &&
-	EXPECTED=$($REAL_GIT rev-parse master~3) &&
+	EXPECTED=$($REAL_GIT rev-parse main~3) &&
 	test "$HEAD_NOW" = "$EXPECTED" &&
 	$REAL_GIT reset --hard
 	)
@@ -141,7 +141,7 @@ test_expect_success 'cherry-pick --no-commit HEAD unchanged' '
 test_expect_success 'cherry-pick with -x appends cherry-picked-from' '
 	(
 	cd repo &&
-	$REAL_GIT checkout -b pick-x master~3 &&
+	$REAL_GIT checkout -b pick-x main~3 &&
 	TOPIC_SHA=$($REAL_GIT rev-parse topic) &&
 	grit cherry-pick -x "$TOPIC_SHA" &&
 	$REAL_GIT log --format="%b" -1 >../actual &&
@@ -152,7 +152,7 @@ test_expect_success 'cherry-pick with -x appends cherry-picked-from' '
 test_expect_success 'cherry-pick with ref name works' '
 	(
 	cd repo &&
-	$REAL_GIT checkout -b pick-byref master~3 &&
+	$REAL_GIT checkout -b pick-byref main~3 &&
 	grit cherry-pick topic &&
 	test -f topic.txt
 	)
@@ -161,7 +161,7 @@ test_expect_success 'cherry-pick with ref name works' '
 test_expect_success 'cherry-pick with invalid SHA fails' '
 	(
 	cd repo &&
-	$REAL_GIT checkout master &&
+	$REAL_GIT checkout main &&
 	test_must_fail grit cherry-pick 0000000000000000000000000000000000000000
 	)
 '
@@ -169,7 +169,7 @@ test_expect_success 'cherry-pick with invalid SHA fails' '
 test_expect_success 'cherry-pick onto different parent creates new SHA' '
 	(
 	cd repo &&
-	$REAL_GIT checkout -b diff-sha master~2 &&
+	$REAL_GIT checkout -b diff-sha main~2 &&
 	TOPIC_SHA=$($REAL_GIT rev-parse topic) &&
 	grit cherry-pick "$TOPIC_SHA" &&
 	PICKED=$($REAL_GIT rev-parse HEAD) &&
@@ -200,8 +200,8 @@ test_expect_success 'cherry-pick preserves author email' '
 test_expect_success 'cherry-pick -m with invalid parent number fails' '
 	(
 	cd repo &&
-	$REAL_GIT checkout master &&
-	MERGE_SHA=$($REAL_GIT rev-parse master~1) &&
+	$REAL_GIT checkout main &&
+	MERGE_SHA=$($REAL_GIT rev-parse main~1) &&
 	test_must_fail grit cherry-pick -m 3 "$MERGE_SHA"
 	)
 '
@@ -209,8 +209,8 @@ test_expect_success 'cherry-pick -m with invalid parent number fails' '
 test_expect_success 'cherry-pick -m 1 on non-merge commit fails' '
 	(
 	cd repo &&
-	$REAL_GIT checkout master &&
-	NONMERGE=$($REAL_GIT rev-parse master~2) &&
+	$REAL_GIT checkout main &&
+	NONMERGE=$($REAL_GIT rev-parse main~2) &&
 	test_must_fail grit cherry-pick -m 1 "$NONMERGE"
 	)
 '
@@ -219,7 +219,7 @@ test_expect_success 'cherry-pick does not modify source branch' '
 	(
 	cd repo &&
 	BEFORE=$($REAL_GIT rev-parse topic) &&
-	$REAL_GIT checkout -b verify-source master~3 &&
+	$REAL_GIT checkout -b verify-source main~3 &&
 	grit cherry-pick topic &&
 	AFTER=$($REAL_GIT rev-parse topic) &&
 	test "$BEFORE" = "$AFTER"
@@ -229,7 +229,7 @@ test_expect_success 'cherry-pick does not modify source branch' '
 test_expect_success 'cherry-pick with conflict reports error and abort restores' '
 	(
 	cd repo &&
-	$REAL_GIT checkout -b conflict-base master~3 &&
+	$REAL_GIT checkout -b conflict-base main~3 &&
 	echo conflicting >topic.txt &&
 	$REAL_GIT add topic.txt &&
 	$REAL_GIT commit -m "conflict setup" &&
@@ -245,7 +245,7 @@ test_expect_success 'cherry-pick with conflict reports error and abort restores'
 test_expect_success 'cherry-pick onto orphan branch works or fails gracefully' '
 	(
 	cd repo &&
-	$REAL_GIT checkout master &&
+	$REAL_GIT checkout main &&
 	$REAL_GIT checkout --orphan orphan-branch &&
 	$REAL_GIT rm -rf . &&
 	echo orphan >orphan.txt &&
@@ -259,7 +259,7 @@ test_expect_success 'cherry-pick onto orphan branch works or fails gracefully' '
 test_expect_success 'cherry-pick --allow-empty-message on commit with no message body' '
 	(
 	cd repo &&
-	$REAL_GIT checkout -f master &&
+	$REAL_GIT checkout -f main &&
 	$REAL_GIT clean -fd &&
 	grit log --oneline -n 1 >../actual &&
 	grep "post-merge" ../actual
@@ -288,7 +288,7 @@ test_expect_success 'setup second repo for more picks' '
 test_expect_success 'cherry-pick single commit from feature branch' '
 	(
 	cd repo2 &&
-	$REAL_GIT checkout master &&
+	$REAL_GIT checkout main &&
 	FEAT1=$($REAL_GIT log feature~1 --format=%H --max-count=1) &&
 	grit cherry-pick "$FEAT1" &&
 	test -f feat1.txt
@@ -298,7 +298,7 @@ test_expect_success 'cherry-pick single commit from feature branch' '
 test_expect_success 'cherry-pick another commit from feature branch' '
 	(
 	cd repo2 &&
-	$REAL_GIT checkout master &&
+	$REAL_GIT checkout main &&
 	FEAT2=$($REAL_GIT rev-parse feature) &&
 	grit cherry-pick "$FEAT2" &&
 	test -f feat2.txt
@@ -308,7 +308,7 @@ test_expect_success 'cherry-pick another commit from feature branch' '
 test_expect_success 'cherry-picked files have correct content' '
 	(
 	cd repo2 &&
-	$REAL_GIT checkout master &&
+	$REAL_GIT checkout main &&
 	cat feat1.txt >../actual &&
 	echo "feat1" >../expect &&
 	test_cmp ../expect ../actual
@@ -318,7 +318,7 @@ test_expect_success 'cherry-picked files have correct content' '
 test_expect_success 'cherry-pick updates index' '
 	(
 	cd repo2 &&
-	$REAL_GIT checkout master &&
+	$REAL_GIT checkout main &&
 	grit ls-files >../actual &&
 	grep "feat1.txt" ../actual &&
 	grep "feat2.txt" ../actual
@@ -328,7 +328,7 @@ test_expect_success 'cherry-pick updates index' '
 test_expect_success 'cherry-pick log shows both picked commits' '
 	(
 	cd repo2 &&
-	$REAL_GIT checkout master &&
+	$REAL_GIT checkout main &&
 	grit log --oneline >../actual &&
 	grep "feature1" ../actual &&
 	grep "feature2" ../actual
@@ -338,7 +338,7 @@ test_expect_success 'cherry-pick log shows both picked commits' '
 test_expect_success 'cherry-pick commit count increased' '
 	(
 	cd repo2 &&
-	$REAL_GIT checkout master &&
+	$REAL_GIT checkout main &&
 	grit rev-list HEAD >../actual &&
 	test $(wc -l <../actual) -eq 3
 	)
@@ -347,7 +347,7 @@ test_expect_success 'cherry-pick commit count increased' '
 test_expect_success 'cherry-pick working tree is clean after pick' '
 	(
 	cd repo2 &&
-	$REAL_GIT checkout master &&
+	$REAL_GIT checkout main &&
 	grit status >../actual &&
 	grep -i "clean\|nothing to commit" ../actual
 	)

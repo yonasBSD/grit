@@ -33,18 +33,18 @@ test_expect_success 'porcelain: clean repo shows only branch header' '
 	(
 	cd repo &&
 	rm -f actual &&
-	grit status --porcelain >../status_out &&
+	grit status --porcelain -b >../status_out &&
 	line_count=$(wc -l <../status_out | tr -d " ") &&
 	test "$line_count" = "1" &&
 	grep "^##" ../status_out
 	)
 '
 
-test_expect_success 'porcelain: branch header shows master' '
+test_expect_success 'porcelain: branch header shows main' '
 	(
 	cd repo &&
-	grit status --porcelain >actual &&
-	grep "^## master" actual
+	grit status --porcelain -b >actual &&
+	grep "^## main" actual
 	)
 '
 
@@ -290,7 +290,7 @@ test_expect_success 'porcelain -b shows branch header' '
 	(
 	cd repo &&
 	grit status --porcelain -b >actual &&
-	grep "^## master" actual
+	grep "^## main" actual
 	)
 '
 
@@ -341,7 +341,7 @@ test_expect_success 'porcelain: fully clean repo shows only branch header' '
 	(
 	cd repo &&
 	rm -f actual decoded &&
-	grit status --porcelain >../status_out2 &&
+	grit status --porcelain -b >../status_out2 &&
 	line_count=$(wc -l <../status_out2 | tr -d " ") &&
 	test "$line_count" = "1"
 	)

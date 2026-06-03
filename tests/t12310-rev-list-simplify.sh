@@ -4,6 +4,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup complex history with multiple branches and merges' '
+    (
     grit init repo && cd repo &&
     git config user.email "t@t.com" &&
     git config user.name "T" &&
@@ -20,13 +21,13 @@ test_expect_success 'setup complex history with multiple branches and merges' '
     grit add b1-2.txt &&
     GIT_AUTHOR_DATE="1700002000 +0000" GIT_COMMITTER_DATE="1700002000 +0000" \
     grit commit -m "B1-second" &&
-    /usr/bin/git checkout master &&
+    /usr/bin/git checkout main &&
     /usr/bin/git checkout -b branch2 &&
     echo b2-1 >b2.txt &&
     grit add b2.txt &&
     GIT_AUTHOR_DATE="1700003000 +0000" GIT_COMMITTER_DATE="1700003000 +0000" \
     grit commit -m "B2-first" &&
-    /usr/bin/git checkout master &&
+    /usr/bin/git checkout main &&
     echo main1 >main1.txt &&
     grit add main1.txt &&
     GIT_AUTHOR_DATE="1700004000 +0000" GIT_COMMITTER_DATE="1700004000 +0000" \
@@ -37,6 +38,7 @@ test_expect_success 'setup complex history with multiple branches and merges' '
     grit add final.txt &&
     GIT_AUTHOR_DATE="1700007000 +0000" GIT_COMMITTER_DATE="1700007000 +0000" \
     grit commit -m "M-final"
+    )
 '
 
 test_expect_success 'rev-list HEAD lists all commits' '

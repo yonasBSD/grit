@@ -134,9 +134,12 @@ fn expand_internal_alias(
 ) -> Result<Vec<String>> {
     if let Some(shell_cmd) = alias_string.strip_prefix('!') {
         trace_start_command_shell(shell_cmd, alias_command, rest);
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let root = work_tree_root_for_shell_alias();
+        let prefix = git_prefix_for_cwd(&root, &cwd);
         let status = std::process::Command::new("sh")
             .current_dir(&root)
+            .env("GIT_PREFIX", prefix)
             .arg("-c")
             .arg(shell_cmd)
             .arg(format!("git-{alias_command}"))
@@ -179,6 +182,17 @@ fn expand_internal_alias(
     out.extend(parts);
     out.extend(rest.iter().cloned());
     Ok(out)
+}
+
+fn git_prefix_for_cwd(root: &Path, cwd: &Path) -> String {
+    let Ok(rel) = cwd.strip_prefix(root) else {
+        return String::new();
+    };
+    if rel.as_os_str().is_empty() {
+        String::new()
+    } else {
+        format!("{}/", rel.to_string_lossy().replace('\\', "/"))
+    }
 }
 
 fn work_tree_root_for_shell_alias() -> PathBuf {

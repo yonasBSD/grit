@@ -71,8 +71,10 @@ test_expect_success 'init --bare has no .git directory' '
 '
 
 test_expect_success 'init --bare config has bare=true' '
+	(
 	cd bare-repo &&
 	test "$(git config core.bare)" = "true"
+	)
 '
 
 test_expect_success 'init --bare HEAD points to branch ref' '
@@ -84,8 +86,10 @@ test_expect_success 'init --bare HEAD points to branch ref' '
 '
 
 test_expect_success 'non-bare init has bare=false' '
+	(
 	cd plain-repo &&
 	test "$(git config core.bare)" = "false"
+	)
 '
 
 ###########################################################################
@@ -111,6 +115,7 @@ test_expect_success 'init -b with --bare' '
 '
 
 test_expect_success 'init -b custom-name is functional' '
+	(
 	cd b-repo &&
 	git config user.name "Test" &&
 	git config user.email "t@t.com" &&
@@ -118,6 +123,7 @@ test_expect_success 'init -b custom-name is functional' '
 	git add file &&
 	git commit -m "on develop" &&
 	git log --oneline | grep "on develop"
+	)
 '
 
 ###########################################################################
@@ -125,17 +131,21 @@ test_expect_success 'init -b custom-name is functional' '
 ###########################################################################
 
 test_expect_success 'init config has repositoryformatversion' '
+	(
 	cd plain-repo &&
 	test "$(git config core.repositoryformatversion)" = "0"
+	)
 '
 
 test_expect_success 'init config has filemode' '
+	(
 	cd plain-repo &&
 	val=$(git config core.filemode) &&
 	case "$val" in
 	true|false) true ;;
 	*) false ;;
 	esac
+	)
 '
 
 ###########################################################################
@@ -143,6 +153,7 @@ test_expect_success 'init config has filemode' '
 ###########################################################################
 
 test_expect_success 'reinit in existing repo is safe' '
+	(
 	git init reinit-repo &&
 	cd reinit-repo &&
 	git config user.name "Test" &&
@@ -154,6 +165,7 @@ test_expect_success 'reinit in existing repo is safe' '
 	git init reinit-repo &&
 	cd reinit-repo &&
 	git log --oneline | grep "initial"
+	)
 '
 
 test_expect_success 'reinit does not destroy objects' '
@@ -169,9 +181,11 @@ test_expect_success 'reinit preserves config file' '
 '
 
 test_expect_success 'reinit does not lose commits' '
+	(
 	cd reinit-repo &&
 	git rev-parse HEAD >out &&
 	test -s out
+	)
 '
 
 ###########################################################################
@@ -184,6 +198,7 @@ test_expect_success 'init creates parent directories if needed' '
 '
 
 test_expect_success 'nested init repo is functional' '
+	(
 	cd nested/deep/repo &&
 	git config user.name "Test" &&
 	git config user.email "t@t.com" &&
@@ -191,6 +206,7 @@ test_expect_success 'nested init repo is functional' '
 	git add deep.txt &&
 	git commit -m "deep commit" &&
 	git log --oneline | grep "deep commit"
+	)
 '
 
 ###########################################################################
@@ -198,12 +214,15 @@ test_expect_success 'nested init repo is functional' '
 ###########################################################################
 
 test_expect_success 'freshly inited repo has clean status' '
+	(
 	git init fresh-repo &&
 	cd fresh-repo &&
 	git status >out 2>&1
+	)
 '
 
 test_expect_success 'freshly inited repo can add and commit' '
+	(
 	cd fresh-repo &&
 	git config user.name "Test" &&
 	git config user.email "t@t.com" &&
@@ -211,35 +230,44 @@ test_expect_success 'freshly inited repo can add and commit' '
 	git add f.txt &&
 	git commit -m "test" &&
 	git log --oneline | grep "test"
+	)
 '
 
 test_expect_success 'init repo can create branches' '
+	(
 	cd fresh-repo &&
 	git checkout -b feature &&
 	echo "feature work" >feat.txt &&
 	git add feat.txt &&
 	git commit -m "feature" &&
 	git log --oneline | grep "feature"
+	)
 '
 
 test_expect_success 'init repo can create tags' '
+	(
 	cd fresh-repo &&
 	git tag v0.1 &&
 	git tag -l >tags &&
 	grep "v0.1" tags
+	)
 '
 
 test_expect_success 'init repo config can be set and read' '
+	(
 	cd fresh-repo &&
 	git config custom.key value &&
 	test "$(git config custom.key)" = "value"
+	)
 '
 
 test_expect_success 'init in current directory (no path arg)' '
+	(
 	mkdir curdir-init &&
 	cd curdir-init &&
 	git init &&
 	test_path_is_dir .git
+	)
 '
 
 test_expect_success 'init sets up description file or info dir' '

@@ -248,7 +248,7 @@ test_expect_success 'log -g other@{u}@{now}' '
 	commit=$(git rev-parse HEAD) &&
 	cat >expect <<-EOF &&
 	commit $commit
-	Reflog: main@{Thu Apr 7 15:17:13 2005 -0700} (C O Mitter <committer@example.com>)
+	Reflog: main@{Thu Apr 7 15:18:13 2005 -0700} (C O Mitter <committer@example.com>)
 	Reflog message: branch: Created from HEAD
 	Author: A U Thor <author@example.com>
 	Date:   Thu Apr 7 15:15:13 2005 -0700

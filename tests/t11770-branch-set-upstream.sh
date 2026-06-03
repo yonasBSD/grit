@@ -28,12 +28,12 @@ R="$TRASH_DIRECTORY/repo"
 
 test_expect_success 'branch lists current branch' '
 	git -C "$R" branch >actual &&
-	grep "master" actual
+	grep "main" actual
 '
 
 test_expect_success 'branch shows current branch with asterisk' '
 	git -C "$R" branch >actual &&
-	grep "^\\* master" actual
+	grep "^\\* main" actual
 '
 
 test_expect_success 'create feature branch' '
@@ -49,27 +49,27 @@ test_expect_success 'create develop branch' '
 '
 
 test_expect_success 'branch -a lists all branches' '
-	git -C "$R" update-ref refs/remotes/origin/master HEAD &&
+	git -C "$R" update-ref refs/remotes/origin/main HEAD &&
 	git -C "$R" branch -a >actual &&
-	grep "master" actual &&
+	grep "main" actual &&
 	grep "feature" actual &&
-	grep "origin/master" actual
+	grep "origin/main" actual
 '
 
 test_expect_success 'branch -r lists remote branches' '
 	git -C "$R" branch -r >actual &&
-	grep "origin/master" actual
+	grep "origin/main" actual
 '
 
 test_expect_success 'branch -v shows commit info' '
 	git -C "$R" branch -v >actual &&
-	grep "master" actual &&
+	grep "main" actual &&
 	grep "second" actual
 '
 
 test_expect_success 'branch -vv shows verbose info' '
 	git -C "$R" branch -vv >actual &&
-	grep "master" actual
+	grep "main" actual
 '
 
 test_expect_success 'branch -d deletes merged branch' '
@@ -88,7 +88,7 @@ test_expect_success 'branch -D force deletes branch' '
 	echo "diverge" >diverge-file &&
 	git add diverge-file &&
 	git commit -m "diverge" &&
-	git checkout master &&
+	git checkout main &&
 	git branch -D to-force-delete &&
 	git branch >actual &&
 	! grep "to-force-delete" actual &&
@@ -101,7 +101,7 @@ test_expect_success 'branch -d on unmerged branch fails' '
 	echo "unmerged" >unmerged-file &&
 	git add unmerged-file &&
 	git commit -m "unmerged" &&
-	git checkout master &&
+	git checkout main &&
 	test_must_fail git branch -d unmerged-br 2>err &&
 	git branch -D unmerged-br &&
 	cd "$TRASH_DIRECTORY"
@@ -117,7 +117,7 @@ test_expect_success 'branch -m renames branch' '
 
 test_expect_success 'renamed branch points to same commit' '
 	git -C "$R" rev-parse renamed >actual &&
-	git -C "$R" rev-parse master >expect &&
+	git -C "$R" rev-parse main >expect &&
 	test_cmp expect actual
 '
 
@@ -144,18 +144,18 @@ test_expect_success 'both original and copy exist after -c' '
 
 test_expect_success 'branch --contains shows branches containing HEAD' '
 	git -C "$R" branch --contains HEAD >actual &&
-	grep "master" actual
+	grep "main" actual
 '
 
 test_expect_success 'branch --contains with older commit shows all' '
 	FIRST=$(git -C "$R" rev-parse HEAD~1) &&
 	git -C "$R" branch --contains "$FIRST" >actual &&
-	grep "master" actual
+	grep "main" actual
 '
 
 test_expect_success 'branch --merged HEAD shows merged branches' '
 	git -C "$R" branch --merged HEAD >actual &&
-	grep "master" actual
+	grep "main" actual
 '
 
 test_expect_success 'branch --no-merged HEAD shows unmerged branches' '
@@ -164,7 +164,7 @@ test_expect_success 'branch --no-merged HEAD shows unmerged branches' '
 	echo "diverge-content" >diverge.txt &&
 	git add diverge.txt &&
 	git commit -m "diverge" &&
-	git checkout master &&
+	git checkout main &&
 	git branch --no-merged HEAD >actual &&
 	grep "diverged" actual &&
 	git branch -D diverged &&
@@ -173,7 +173,7 @@ test_expect_success 'branch --no-merged HEAD shows unmerged branches' '
 
 test_expect_success 'branch --show-current shows current branch' '
 	git -C "$R" branch --show-current >actual &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 '
 
@@ -183,7 +183,7 @@ test_expect_success 'branch --show-current after checkout' '
 	git branch --show-current >actual &&
 	echo "develop" >expect &&
 	test_cmp expect actual &&
-	git checkout master &&
+	git checkout main &&
 	cd "$TRASH_DIRECTORY"
 '
 
@@ -212,7 +212,7 @@ test_expect_success 'branch -f forces branch to new commit' '
 '
 
 test_expect_success 'branch -f on current branch fails' '
-	test_must_fail git -C "$R" branch -f master HEAD~1 2>err
+	test_must_fail git -C "$R" branch -f main HEAD~1 2>err
 '
 
 test_expect_success 'create many branches' '
@@ -249,7 +249,7 @@ test_expect_success 'branch with dots in name' '
 '
 
 test_expect_success 'branch --no-track prevents tracking setup' '
-	git -C "$R" branch --no-track no-track-br master &&
+	git -C "$R" branch --no-track no-track-br main &&
 	test_must_fail git -C "$R" config branch.no-track-br.remote
 '
 
@@ -268,14 +268,14 @@ test_expect_success 'branch -vv shows manually set tracking' '
 
 test_expect_success 'branch -l is alias for --list' '
 	git -C "$R" branch -l >actual &&
-	grep "master" actual &&
+	grep "main" actual &&
 	grep "develop" actual
 '
 
 test_expect_success 'branch --list with pattern filters' '
 	git -C "$R" branch --list "multi-*" >actual &&
 	grep "multi-4" actual &&
-	! grep "master" actual
+	! grep "main" actual
 '
 
 test_done

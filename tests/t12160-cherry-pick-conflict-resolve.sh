@@ -245,12 +245,12 @@ test_expect_success 'setup for empty cherry-pick' '
 '
 
 test_expect_success 'cherry-pick resulting in empty change fails or warns' '
-    cd repo &&
+    (cd repo &&
     grit checkout empty-target &&
     test_must_fail grit cherry-pick empty-source &&
     grit cherry-pick --abort 2>/dev/null ||
     grit reset --hard HEAD 2>/dev/null ||
-    true
+    true)
 '
 
 test_expect_success 'setup for multiple sequential cherry-picks' '

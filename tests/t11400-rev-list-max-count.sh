@@ -259,16 +259,16 @@ test_expect_success 'setup: create branch with extra commits' '
 	echo "side2" >side2.txt &&
 	"$REAL_GIT" add side2.txt &&
 	"$REAL_GIT" commit -m "side commit 2" &&
-	"$REAL_GIT" checkout master
+	"$REAL_GIT" checkout main
 	)
 '
 
-test_expect_success 'rev-list side has more commits than master' '
+test_expect_success 'rev-list side has more commits than main' '
 	(
 	cd repo &&
-	git rev-list --count master >master_count &&
+	git rev-list --count main >main_count &&
 	git rev-list --count side >side_count &&
-	test $(cat side_count) -gt $(cat master_count)
+	test $(cat side_count) -gt $(cat main_count)
 	)
 '
 

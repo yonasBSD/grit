@@ -14,9 +14,9 @@ test_expect_success 'grit init creates a working repo' '
 	test -d normal-repo/.git/refs
 '
 
-test_expect_success 'grit init creates HEAD pointing to master' '
+test_expect_success 'grit init creates HEAD pointing to main' '
 	cat normal-repo/.git/HEAD >actual &&
-	echo "ref: refs/heads/master" >expect &&
+	echo "ref: refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 
@@ -52,9 +52,9 @@ test_expect_success 'bare repo has no .git subdirectory' '
 	! test -d bare-repo/.git
 '
 
-test_expect_success 'bare repo HEAD points to master' '
+test_expect_success 'bare repo HEAD points to main' '
 	cat bare-repo/HEAD >actual &&
-	echo "ref: refs/heads/master" >expect &&
+	echo "ref: refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 

@@ -8,6 +8,7 @@ cd "$(dirname "$0")" || exit 1
 REAL_GIT=/usr/bin/git
 
 test_expect_success 'setup' '
+	(
 	grit init repo &&
 	cd repo &&
 	$REAL_GIT config user.email "t@t.com" &&
@@ -15,6 +16,7 @@ test_expect_success 'setup' '
 	echo hello >file.txt &&
 	grit add file.txt &&
 	grit commit -m "initial"
+	)
 '
 
 # ── basic commit with message ────────────────────────────────────────────

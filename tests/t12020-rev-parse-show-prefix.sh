@@ -4,6 +4,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
     grit init repo &&
     cd repo &&
     git config user.email "t@t.com" &&
@@ -12,6 +13,7 @@ test_expect_success 'setup' '
     grit add file.txt &&
     grit commit -m "initial" &&
     mkdir -p sub/deep/nested
+	)
 '
 
 test_expect_success '--show-prefix at repo root is empty' '
@@ -124,8 +126,8 @@ test_expect_success 'rev-parse --verify HEAD from subdirectory' '
     grep "^[0-9a-f]\{40\}$" actual
 '
 
-test_expect_success 'rev-parse master from subdirectory' '
-    (cd repo/sub && grit rev-parse master >../../actual) &&
+test_expect_success 'rev-parse main from subdirectory' '
+    (cd repo/sub && grit rev-parse main >../../actual) &&
     (cd repo && grit rev-parse HEAD >../expect) &&
     test_cmp expect actual
 '

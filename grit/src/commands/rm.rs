@@ -226,9 +226,6 @@ pub fn run(mut args: Args) -> Result<()> {
             .entries
             .iter()
             .filter(|e| {
-                if e.stage() != 0 {
-                    return false;
-                }
                 let p = String::from_utf8_lossy(&e.path);
                 grit_lib::pathspec::matches_pathspec_list(&p, &full_specs)
             })

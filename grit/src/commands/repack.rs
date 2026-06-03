@@ -247,6 +247,14 @@ pub fn run(args: Args) -> Result<()> {
     let bare_repo = repo.work_tree.is_none();
     let pack_kept_objects = resolve_pack_kept_objects(&args, &cfg, full_repack_early, bare_repo);
 
+    let precious_objects = cfg
+        .get_bool("extensions.preciousobjects")
+        .and_then(|r| r.ok())
+        .unwrap_or(false);
+    if precious_objects && args.delete_old && (args.all || args.repack_all_unpack) {
+        anyhow::bail!("cannot delete packs in a precious-objects repo");
+    }
+
     if geometric > 0 && (args.all || args.repack_all_unpack) {
         anyhow::bail!("options '--geometric' and '-a' cannot be used together");
     }

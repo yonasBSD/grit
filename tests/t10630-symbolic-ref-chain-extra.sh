@@ -39,11 +39,11 @@ test_expect_success 'symbolic-ref HEAD reads current branch' '
 	)
 '
 
-test_expect_success 'symbolic-ref HEAD shows refs/heads/master' '
+test_expect_success 'symbolic-ref HEAD shows refs/heads/main' '
 	(
 	cd repo &&
 	grit symbolic-ref HEAD >actual &&
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 	test_cmp expect actual
 	)
 '
@@ -55,7 +55,7 @@ test_expect_success 'symbolic-ref HEAD after checkout' '
 	grit symbolic-ref HEAD >actual &&
 	echo "refs/heads/feature" >expect &&
 	test_cmp expect actual &&
-	"$REAL_GIT" checkout master
+	"$REAL_GIT" checkout main
 	)
 '
 
@@ -70,7 +70,7 @@ test_expect_success 'symbolic-ref can set HEAD' '
 	grit symbolic-ref HEAD >actual &&
 	echo "refs/heads/release" >expect &&
 	test_cmp expect actual &&
-	grit symbolic-ref HEAD refs/heads/master
+	grit symbolic-ref HEAD refs/heads/main
 	)
 '
 
@@ -110,7 +110,7 @@ test_expect_success 'symbolic-ref --short strips refs/heads/' '
 	(
 	cd repo &&
 	grit symbolic-ref --short HEAD >actual &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 	)
 '
@@ -131,9 +131,9 @@ test_expect_success 'symbolic-ref --short on custom symref' '
 test_expect_success 'symbolic-ref -d deletes a symbolic ref' '
 	(
 	cd repo &&
-	grit symbolic-ref refs/heads/to-delete refs/heads/master &&
+	grit symbolic-ref refs/heads/to-delete refs/heads/main &&
 	grit symbolic-ref refs/heads/to-delete >actual &&
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 	test_cmp expect actual &&
 	grit symbolic-ref -d refs/heads/to-delete &&
 	test_must_fail grit symbolic-ref refs/heads/to-delete 2>/dev/null
@@ -152,7 +152,7 @@ test_expect_success 'symbolic-ref --delete also works' '
 test_expect_success 'symbolic-ref -d on non-symbolic ref fails' '
 	(
 	cd repo &&
-	test_must_fail grit symbolic-ref -d refs/heads/master 2>/dev/null
+	test_must_fail grit symbolic-ref -d refs/heads/main 2>/dev/null
 	)
 '
 
@@ -171,7 +171,7 @@ test_expect_success 'symbolic-ref -q on symbolic ref succeeds quietly' '
 test_expect_success 'symbolic-ref -q on non-symbolic ref fails quietly' '
 	(
 	cd repo &&
-	test_must_fail grit symbolic-ref -q refs/heads/master 2>err &&
+	test_must_fail grit symbolic-ref -q refs/heads/main 2>err &&
 	test_must_be_empty err
 	)
 '
@@ -241,7 +241,7 @@ test_expect_success 'symbolic-ref --no-recurse on HEAD' '
 	(
 	cd repo &&
 	grit symbolic-ref --no-recurse HEAD >actual &&
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 	test_cmp expect actual
 	)
 '
@@ -257,7 +257,7 @@ test_expect_success 'symbolic-ref -m sets reflog message' '
 	grit symbolic-ref HEAD >actual &&
 	echo "refs/heads/release" >expect &&
 	test_cmp expect actual &&
-	grit symbolic-ref HEAD refs/heads/master
+	grit symbolic-ref HEAD refs/heads/main
 	)
 '
 
@@ -297,9 +297,9 @@ test_expect_success 'symbolic-ref cleanup: delete chain refs' '
 test_expect_success 'symbolic-ref --short on HEAD after operations' '
 	(
 	cd repo &&
-	grit symbolic-ref HEAD refs/heads/master &&
+	grit symbolic-ref HEAD refs/heads/main &&
 	grit symbolic-ref --short HEAD >actual &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 	)
 '
@@ -332,24 +332,24 @@ test_expect_success 'symbolic-ref can point HEAD to feature' '
 	)
 '
 
-test_expect_success 'symbolic-ref can point HEAD back to master' '
+test_expect_success 'symbolic-ref can point HEAD back to main' '
 	(
 	cd repo &&
-	grit symbolic-ref HEAD refs/heads/master &&
+	grit symbolic-ref HEAD refs/heads/main &&
 	grit symbolic-ref --short HEAD >actual &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 	)
 '
 
-test_expect_success 'create triple chain: c -> b -> a -> master' '
+test_expect_success 'create triple chain: c -> b -> a -> main' '
 	(
 	cd repo &&
-	grit symbolic-ref refs/heads/chain-a refs/heads/master &&
+	grit symbolic-ref refs/heads/chain-a refs/heads/main &&
 	grit symbolic-ref refs/heads/chain-b refs/heads/chain-a &&
 	grit symbolic-ref refs/heads/chain-c refs/heads/chain-b &&
 	grit symbolic-ref refs/heads/chain-c >actual &&
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 	test_cmp expect actual
 	)
 '
@@ -363,11 +363,11 @@ test_expect_success 'triple chain --no-recurse shows immediate target' '
 	)
 '
 
-test_expect_success 'triple chain rev-parse resolves to master OID' '
+test_expect_success 'triple chain rev-parse resolves to main OID' '
 	(
 	cd repo &&
 	CHAIN_OID=$(grit rev-parse refs/heads/chain-c) &&
-	MASTER_OID=$(grit rev-parse refs/heads/master) &&
+	MASTER_OID=$(grit rev-parse refs/heads/main) &&
 	test "$CHAIN_OID" = "$MASTER_OID"
 	)
 '

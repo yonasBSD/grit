@@ -25,14 +25,19 @@ test_expect_success 'setup local repo with remote' '
 	 $REAL_GIT config user.email "t@t.com" &&
 	 $REAL_GIT config user.name "T" &&
 	 $REAL_GIT remote add origin ../origin &&
-	 $REAL_GIT fetch origin)
+	 mkdir -p .git/objects/info &&
+	 echo "$(cd ../origin && pwd)/.git/objects" >.git/objects/info/alternates &&
+	 grit update-ref refs/remotes/origin/main "$($REAL_GIT -C ../origin rev-parse main)" &&
+	 grit update-ref refs/remotes/origin/feature "$($REAL_GIT -C ../origin rev-parse feature)" &&
+	 grit update-ref refs/remotes/origin/release "$($REAL_GIT -C ../origin rev-parse release)" &&
+	 grit branch --track main origin/main)
 '
 
 # ── listing remote branches ──────────────────────────────────────────────
 
 test_expect_success 'branch -r lists remote-tracking branches' '
 	(cd repo && grit branch -r >../actual) &&
-	grep "origin/master" actual
+	grep "origin/main" actual
 '
 
 test_expect_success 'branch -r shows feature' '
@@ -47,22 +52,22 @@ test_expect_success 'branch -r shows release' '
 
 test_expect_success 'branch -r does not show local branches' '
 	(cd repo &&
-	 $REAL_GIT checkout -b master origin/master &&
+	 $REAL_GIT checkout main &&
 	 grit branch -r >../actual) &&
-	! grep "^  master" actual
+	! grep "^  main" actual
 '
 
 # ── listing all branches ────────────────────────────────────────────────
 
 test_expect_success 'branch -a lists local and remote branches' '
 	(cd repo && grit branch -a >../actual) &&
-	grep "master" actual &&
-	grep "remotes/origin/master" actual
+	grep "main" actual &&
+	grep "remotes/origin/main" actual
 '
 
 test_expect_success 'branch -a shows current branch with asterisk' '
 	(cd repo && grit branch -a >../actual) &&
-	grep "^\\* master" actual
+	grep "^\\* main" actual
 '
 
 # ── verbose listing ──────────────────────────────────────────────────────
@@ -86,14 +91,14 @@ test_expect_success 'branch -r -v shows remote branches with commit info' '
 # ── tracking setup via git, verified by grit ─────────────────────────────
 
 test_expect_success 'tracking config set by git is readable by grit' '
-	(cd repo && grit config get branch.master.remote >../actual) &&
+	(cd repo && grit config get branch.main.remote >../actual) &&
 	echo "origin" >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'tracking merge ref is readable by grit' '
-	(cd repo && grit config get branch.master.merge >../actual) &&
-	echo "refs/heads/master" >expect &&
+	(cd repo && grit config get branch.main.merge >../actual) &&
+	echo "refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 
@@ -115,7 +120,7 @@ test_expect_success 'tracked branch merge ref is correct' '
 
 test_expect_success 'branch --show-current shows current branch' '
 	(cd repo && grit branch --show-current >../actual) &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 '
 
@@ -127,15 +132,15 @@ test_expect_success 'branch --show-current after checkout' '
 	test_cmp expect actual
 '
 
-test_expect_success 'switch back to master' '
-	(cd repo && $REAL_GIT checkout master)
+test_expect_success 'switch back to main' '
+	(cd repo && $REAL_GIT checkout main)
 '
 
 # ── --contains ───────────────────────────────────────────────────────────
 
 test_expect_success 'branch --contains HEAD lists current branch' '
 	(cd repo && grit branch --contains HEAD >../actual) &&
-	grep "master" actual
+	grep "main" actual
 '
 
 test_expect_success 'branch --contains shows all branches with that commit' '
@@ -147,7 +152,7 @@ test_expect_success 'branch --contains shows all branches with that commit' '
 
 test_expect_success 'branch --merged HEAD lists merged branches' '
 	(cd repo && grit branch --merged HEAD >../actual) &&
-	grep "master" actual
+	grep "main" actual
 '
 
 test_expect_success 'branch --merged includes identical branches' '
@@ -197,16 +202,16 @@ test_expect_success 'rename branch with -m' '
 '
 
 test_expect_success 'rename to existing name fails without -M' '
-	(cd repo && test_must_fail grit branch -m renamed master)
+	(cd repo && test_must_fail grit branch -m renamed main)
 '
 
 # ── branch copy ──────────────────────────────────────────────────────────
 
 test_expect_success 'copy current branch with -c' '
 	(cd repo &&
-	 grit branch -c copy-of-master &&
+	 grit branch -c copy-of-main &&
 	 grit branch >../actual) &&
-	grep "copy-of-master" actual
+	grep "copy-of-main" actual
 '
 
 # ── quiet mode ───────────────────────────────────────────────────────────

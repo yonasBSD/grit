@@ -13,6 +13,7 @@ cd "$(dirname "$0")" || exit 1
 ###########################################################################
 
 test_expect_success 'setup: create repo with branches for cherry-pick' '
+	(
 	"$REAL_GIT" init repo &&
 	cd repo &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -37,7 +38,8 @@ test_expect_success 'setup: create repo with branches for cherry-pick' '
 	echo "sideC" >other.txt &&
 	"$REAL_GIT" add other.txt &&
 	"$REAL_GIT" commit -m "add other.txt on side" &&
-	"$REAL_GIT" checkout master
+	"$REAL_GIT" checkout main
+	)
 '
 
 ###########################################################################
@@ -109,7 +111,7 @@ test_expect_success 'setup: create empty commit on side' '
 	(cd repo &&
 	 "$REAL_GIT" checkout side &&
 	 "$REAL_GIT" commit --allow-empty -m "empty commit on side" &&
-	 "$REAL_GIT" checkout master)
+	 "$REAL_GIT" checkout main)
 '
 
 test_expect_success 'cherry-pick empty commit with --allow-empty' '
@@ -137,6 +139,7 @@ test_expect_success 'cherry-pick empty commit without --allow-empty fails' '
 ###########################################################################
 
 test_expect_success 'setup: create conflicting branches' '
+	(
 	"$REAL_GIT" init conflict-repo &&
 	cd conflict-repo &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -152,8 +155,9 @@ test_expect_success 'setup: create conflicting branches' '
 	echo "other-change" >conflict.txt &&
 	"$REAL_GIT" add conflict.txt &&
 	"$REAL_GIT" commit -m "other change" &&
-	"$REAL_GIT" checkout master &&
+	"$REAL_GIT" checkout main &&
 	cd ..
+	)
 '
 
 test_expect_success 'cherry-pick conflicting commit fails' '
@@ -172,6 +176,7 @@ test_expect_success 'conflict markers are present in file after failed cherry-pi
 ###########################################################################
 
 test_expect_success 'setup: clean repo for no-commit tests' '
+	(
 	"$REAL_GIT" init nocommit-repo &&
 	cd nocommit-repo &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -184,8 +189,9 @@ test_expect_success 'setup: clean repo for no-commit tests' '
 	echo "picked" >picked.txt &&
 	"$REAL_GIT" add picked.txt &&
 	"$REAL_GIT" commit -m "to pick" &&
-	"$REAL_GIT" checkout master &&
+	"$REAL_GIT" checkout main &&
 	cd ..
+	)
 '
 
 test_expect_success 'cherry-pick -n stages changes without committing' '
@@ -212,6 +218,7 @@ test_expect_success 'after -n cherry-pick, changes are staged' '
 ###########################################################################
 
 test_expect_success 'setup: repo with multiple side commits for range' '
+	(
 	"$REAL_GIT" init range-repo &&
 	cd range-repo &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -224,8 +231,9 @@ test_expect_success 'setup: repo with multiple side commits for range' '
 	echo "r1" >r1.txt && "$REAL_GIT" add r1.txt && "$REAL_GIT" commit -m "range1" &&
 	echo "r2" >r2.txt && "$REAL_GIT" add r2.txt && "$REAL_GIT" commit -m "range2" &&
 	echo "r3" >r3.txt && "$REAL_GIT" add r3.txt && "$REAL_GIT" commit -m "range3" &&
-	"$REAL_GIT" checkout master &&
+	"$REAL_GIT" checkout main &&
 	cd ..
+	)
 '
 
 test_expect_success 'cherry-pick a range of commits' '
@@ -250,6 +258,7 @@ test_expect_success 'range cherry-pick created correct number of commits' '
 ###########################################################################
 
 test_expect_success 'cherry-pick -x appends cherry-pick line' '
+	(
 	"$REAL_GIT" init xrepo &&
 	cd xrepo &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -262,13 +271,14 @@ test_expect_success 'cherry-pick -x appends cherry-pick line' '
 	echo "xpick" >xpick.txt &&
 	"$REAL_GIT" add xpick.txt &&
 	"$REAL_GIT" commit -m "to-x-pick" &&
-	"$REAL_GIT" checkout master &&
+	"$REAL_GIT" checkout main &&
 	cd .. &&
 	(cd xrepo &&
 	 PICK=$("$REAL_GIT" rev-parse xbranch) &&
 	 grit cherry-pick -x "$PICK" &&
 	 grit log -n 1 --format="%b" >../actual) &&
 	grep "cherry picked from commit" actual
+	)
 '
 
 ###########################################################################
@@ -292,6 +302,7 @@ test_expect_success 'cherry-pick with no arguments fails' '
 '
 
 test_expect_success 'cherry-pick does not modify unrelated files' '
+	(
 	"$REAL_GIT" init unrelated-repo &&
 	cd unrelated-repo &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -304,7 +315,7 @@ test_expect_success 'cherry-pick does not modify unrelated files' '
 	echo "extra" >extra.txt &&
 	"$REAL_GIT" add extra.txt &&
 	"$REAL_GIT" commit -m "add extra" &&
-	"$REAL_GIT" checkout master &&
+	"$REAL_GIT" checkout main &&
 	cd .. &&
 	(cd unrelated-repo && cat keep.txt >../before) &&
 	(cd unrelated-repo &&
@@ -312,9 +323,11 @@ test_expect_success 'cherry-pick does not modify unrelated files' '
 	 grit cherry-pick "$PICK") &&
 	(cd unrelated-repo && cat keep.txt >../after) &&
 	test_cmp before after
+	)
 '
 
 test_expect_success 'cherry-pick matches git output for simple case' '
+	(
 	"$REAL_GIT" init match-repo &&
 	cd match-repo &&
 	"$REAL_GIT" config user.name "Test User" &&
@@ -327,7 +340,7 @@ test_expect_success 'cherry-pick matches git output for simple case' '
 	echo "new" >new.txt &&
 	"$REAL_GIT" add new.txt &&
 	"$REAL_GIT" commit -m "add new" &&
-	"$REAL_GIT" checkout master &&
+	"$REAL_GIT" checkout main &&
 	cd .. &&
 	(cd match-repo &&
 	 PICK=$("$REAL_GIT" rev-parse cpbranch) &&
@@ -340,6 +353,7 @@ test_expect_success 'cherry-pick matches git output for simple case' '
 	 "$REAL_GIT" cherry-pick "$PICK" &&
 	 "$REAL_GIT" log -n 1 --format="%s" >../git_out) &&
 	test_cmp git_out grit_out
+	)
 '
 
 test_done

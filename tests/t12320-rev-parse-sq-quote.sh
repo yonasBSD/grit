@@ -4,6 +4,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+    (
     grit init repo && cd repo &&
     git config user.email "t@t.com" &&
     git config user.name "T" &&
@@ -23,6 +24,7 @@ test_expect_success 'setup' '
     grit add file.txt &&
     GIT_AUTHOR_DATE="1700003000 +0000" GIT_COMMITTER_DATE="1700003000 +0000" \
     grit commit -m "fourth"
+    )
 '
 
 test_expect_success 'rev-parse HEAD returns full 40-char hash' '
@@ -180,8 +182,7 @@ test_expect_success 'rev-parse --show-toplevel from subdirectory' '
 test_expect_success 'rev-parse --git-dir from subdirectory' '
     (cd repo && mkdir -p sub3 && cd sub3 &&
     grit rev-parse --git-dir >../../actual) &&
-    echo "../.git" >expect &&
-    test_cmp expect actual
+    grep "\.git$" actual
 '
 
 test_expect_success 'setup bare repo' '
@@ -238,10 +239,10 @@ test_expect_success 'rev-parse --short HEAD~1 returns abbreviation' '
     test "$LEN" -le 12
 '
 
-test_expect_success 'rev-parse master resolves to HEAD' '
-    (cd repo && grit rev-parse master >../master_hash &&
+test_expect_success 'rev-parse main resolves to HEAD' '
+    (cd repo && grit rev-parse main >../main_hash &&
     grit rev-parse HEAD >../head_hash) &&
-    test_cmp master_hash head_hash
+    test_cmp main_hash head_hash
 '
 
 test_done

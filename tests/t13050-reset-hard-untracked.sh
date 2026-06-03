@@ -6,11 +6,13 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	grit init repo && cd repo &&
 	git config user.email "t@t.com" && git config user.name "T" &&
 	echo hello >file.txt && grit add file.txt && grit commit -m "first" &&
 	echo world >file2.txt && grit add file2.txt && grit commit -m "second" &&
 	echo third >file3.txt && grit add file3.txt && grit commit -m "third"
+	)
 '
 
 test_expect_success 'reset --soft moves HEAD but keeps index and working tree' '

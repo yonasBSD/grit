@@ -15,14 +15,14 @@ test_expect_success 'setup repo with initial commit' '
      grit commit -m "initial")
 '
 
-test_expect_success 'branch list shows master' '
+test_expect_success 'branch list shows main' '
     (cd repo && grit branch >../actual) &&
-    grep "master" actual
+    grep "main" actual
 '
 
 test_expect_success 'branch list marks current branch with asterisk' '
     (cd repo && grit branch >../actual) &&
-    grep "^\* master" actual
+    grep "^\* main" actual
 '
 
 test_expect_success 'branch create new branch' '
@@ -34,7 +34,7 @@ test_expect_success 'branch create new branch' '
 test_expect_success 'branch -v shows commit hash and subject' '
     (cd repo && grit branch -v >../actual) &&
     grep "feature" actual | grep "initial" &&
-    grep "master" actual | grep "initial"
+    grep "main" actual | grep "initial"
 '
 
 test_expect_success 'branch -v shows abbreviated hash' '
@@ -45,7 +45,7 @@ test_expect_success 'branch -v shows abbreviated hash' '
 
 test_expect_success 'branch -v marks current branch' '
     (cd repo && grit branch -v >../actual) &&
-    grep "^\* master" actual
+    grep "^\* main" actual
 '
 
 test_expect_success 'branch -vv output same format as -v' '
@@ -55,7 +55,7 @@ test_expect_success 'branch -vv output same format as -v' '
 
 test_expect_success 'branch --show-current shows current branch name' '
     (cd repo && grit branch --show-current >../actual) &&
-    echo "master" >expect &&
+    echo "main" >expect &&
     test_cmp expect actual
 '
 
@@ -65,11 +65,11 @@ test_expect_success 'branch --show-current after switching' '
     test_cmp expect actual
 '
 
-test_expect_success 'switch back to master' '
-    (cd repo && grit switch master)
+test_expect_success 'switch back to main' '
+    (cd repo && grit switch main)
 '
 
-test_expect_success 'create second commit on master' '
+test_expect_success 'create second commit on main' '
     (cd repo &&
      echo world >>file.txt &&
      grit add file.txt &&
@@ -79,17 +79,17 @@ test_expect_success 'create second commit on master' '
 test_expect_success 'branch -v shows different commits for diverged branches' '
     (cd repo && grit branch -v >../actual) &&
     grep "feature" actual | grep "initial" &&
-    grep "master" actual | grep "second commit"
+    grep "main" actual | grep "second commit"
 '
 
-test_expect_success 'branch --contains HEAD lists master' '
+test_expect_success 'branch --contains HEAD lists main' '
     (cd repo && grit branch --contains HEAD >../actual) &&
-    grep "master" actual
+    grep "main" actual
 '
 
 test_expect_success 'branch --merged HEAD lists branches' '
     (cd repo && grit branch --merged HEAD >../actual) &&
-    grep "master" actual
+    grep "main" actual
 '
 
 test_expect_success 'branch -d deletes merged branch' '
@@ -172,13 +172,13 @@ test_expect_success 'branch -v shows correct hash for start-point branch' '
 
 test_expect_success 'branch -a lists all branches' '
     (cd repo && grit branch -a >../actual) &&
-    grep "master" actual &&
+    grep "main" actual &&
     grep "feature" actual
 '
 
-test_expect_success 'branch --show-current on master' '
-    (cd repo && grit switch master && grit branch --show-current >../actual) &&
-    echo "master" >expect &&
+test_expect_success 'branch --show-current on main' '
+    (cd repo && grit switch main && grit branch --show-current >../actual) &&
+    echo "main" >expect &&
     test_cmp expect actual
 '
 

@@ -79,7 +79,7 @@ test_expect_success 'cleanup del-test2' '
 
 test_expect_success 'setup symbolic ref for deref tests' '
     (cd repo &&
-     grit symbolic-ref refs/heads/symlink refs/heads/master
+     grit symbolic-ref refs/heads/symlink refs/heads/main
     )
 '
 
@@ -89,10 +89,10 @@ test_expect_success 'update-ref through symref updates target by default' '
      grit add file.txt &&
      grit commit -m "second" &&
      new_head=$(grit rev-parse HEAD) &&
-     grit checkout master &&
+     grit checkout main &&
      old_head=$(grit rev-parse HEAD) &&
      grit update-ref refs/heads/symlink "$new_head" &&
-     grit rev-parse refs/heads/master >../actual &&
+     grit rev-parse refs/heads/main >../actual &&
      echo "$new_head" >../expect) &&
     test_cmp expect actual
 '
@@ -100,7 +100,7 @@ test_expect_success 'update-ref through symref updates target by default' '
 test_expect_success 'update-ref --no-deref on symref updates symref itself' '
     (cd repo &&
      head=$(grit rev-parse HEAD) &&
-     grit symbolic-ref refs/heads/symlink2 refs/heads/master &&
+     grit symbolic-ref refs/heads/symlink2 refs/heads/main &&
      grit update-ref --no-deref refs/heads/symlink2 "$head" &&
      grit rev-parse refs/heads/symlink2 >../actual &&
      echo "$head" >../expect) &&
@@ -188,14 +188,14 @@ test_expect_success 'stdin-deleted ref is gone' '
 test_expect_success 'update-ref --stdin with verify command' '
     (cd repo &&
      head=$(grit rev-parse HEAD) &&
-     printf "verify refs/heads/master %s\n" "$head" |
+     printf "verify refs/heads/main %s\n" "$head" |
      grit update-ref --stdin
     )
 '
 
 test_expect_success 'update-ref --stdin verify with wrong hash fails' '
     (cd repo &&
-     printf "verify refs/heads/master %s\n" "0000000000000000000000000000000000000001" |
+     printf "verify refs/heads/main %s\n" "0000000000000000000000000000000000000001" |
      test_must_fail grit update-ref --stdin
     )
 '

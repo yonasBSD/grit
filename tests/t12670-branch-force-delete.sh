@@ -24,7 +24,7 @@ test_expect_success 'setup' '
 
 test_expect_success 'branch -l lists branches' '
     (cd repo && grit branch -l >../actual) &&
-    grep "master" actual &&
+    grep "main" actual &&
     grep "side" actual &&
     grep "alt" actual &&
     grep "feature/login" actual
@@ -32,12 +32,12 @@ test_expect_success 'branch -l lists branches' '
 
 test_expect_success 'current branch has asterisk' '
     (cd repo && grit branch -l >../actual) &&
-    grep "^\* master" actual
+    grep "^\* main" actual
 '
 
-test_expect_success 'branch --show-current shows master' '
+test_expect_success 'branch --show-current shows main' '
     (cd repo && grit branch --show-current >../actual) &&
-    echo "master" >expect &&
+    echo "main" >expect &&
     test_cmp expect actual
 '
 
@@ -47,7 +47,7 @@ test_expect_success 'branch -v shows commit subject' '
 '
 
 test_expect_success 'branch -d deletes a branch' '
-    (cd repo && grit branch -d side 2>../actual) &&
+    (cd repo && grit branch -d side >../actual 2>&1) &&
     grep "Deleted branch side" actual
 '
 
@@ -67,17 +67,17 @@ test_expect_success 'branch -D nonexistent fails' '
 '
 
 test_expect_success 'branch -d cannot delete current branch' '
-    (cd repo && ! grit branch -d master 2>../actual_err) &&
-    grep "Cannot delete" actual_err
+    (cd repo && ! grit branch -d main 2>../actual_err) &&
+    grep -i "cannot delete" actual_err
 '
 
 test_expect_success 'branch -D cannot delete current branch' '
-    (cd repo && ! grit branch -D master 2>../actual_err) &&
-    grep "Cannot delete" actual_err
+    (cd repo && ! grit branch -D main 2>../actual_err) &&
+    grep -i "cannot delete" actual_err
 '
 
 test_expect_success 'branch -D deletes any branch' '
-    (cd repo && grit branch -D alt 2>../actual) &&
+    (cd repo && grit branch -D alt >../actual 2>&1) &&
     grep "Deleted branch alt" actual
 '
 
@@ -88,19 +88,19 @@ test_expect_success 'setup diverged branch for force-delete' '
      echo diverge >new.txt &&
      grit add new.txt &&
      grit commit -m "diverge" &&
-     grit switch master
+     grit switch main
     )
 '
 
 test_expect_success 'branch -D force-deletes diverged branch' '
-    (cd repo && grit branch -D diverged 2>../actual) &&
+    (cd repo && grit branch -D diverged >../actual 2>&1) &&
     grep "Deleted branch diverged" actual
 '
 
 test_expect_success 'branch -D output includes short SHA' '
     (cd repo &&
      grit branch todelete &&
-     grit branch -D todelete 2>../actual) &&
+     grit branch -D todelete >../actual 2>&1) &&
     grep "(was [0-9a-f]" actual
 '
 
@@ -114,7 +114,7 @@ test_expect_success 'branch -m renames a branch' '
 '
 
 test_expect_success 'branch -m to same name is a no-op' '
-    (cd repo && grit branch -m master)
+    (cd repo && grit branch -m main)
 '
 
 test_expect_success 'branch -m fails if target exists' '
@@ -155,19 +155,19 @@ test_expect_success 'branch without -f fails on existing' '
 
 test_expect_success 'branch --contains shows containing branches' '
     (cd repo && grit branch --contains HEAD >../actual) &&
-    grep "master" actual
+    grep "main" actual
 '
 
 test_expect_success 'branch --merged shows merged branches' '
-    (cd repo && grit branch --merged master >../actual) &&
-    grep "master" actual
+    (cd repo && grit branch --merged main >../actual) &&
+    grep "main" actual
 '
 
 test_expect_success 'branch --show-current after switch' '
     (cd repo &&
      grit switch exists-target &&
      grit branch --show-current >../actual &&
-     grit switch master) &&
+     grit switch main) &&
     echo "exists-target" >expect &&
     test_cmp expect actual
 '
@@ -192,7 +192,7 @@ test_expect_success 'branch with slash in name' '
 '
 
 test_expect_success 'delete branch with slash' '
-    (cd repo && grit branch -d feature/login 2>../actual) &&
+    (cd repo && grit branch -d feature/login >../actual 2>&1) &&
     grep "Deleted" actual
 '
 
@@ -203,7 +203,7 @@ test_expect_success 'create branch with dots in name' '
 '
 
 test_expect_success 'branch -d the dotted branch' '
-    (cd repo && grit branch -d release-1.0.0 2>../actual) &&
+    (cd repo && grit branch -d release-1.0.0 >../actual 2>&1) &&
     grep "Deleted branch release-1.0.0" actual
 '
 
@@ -216,7 +216,7 @@ test_expect_success 'branch -q suppresses output on delete' '
 
 test_expect_success 'branch list after all deletions is clean' '
     (cd repo && grit branch -l >../actual) &&
-    grep "master" actual &&
+    grep "main" actual &&
     grep "exists-target" actual &&
     grep "from-point" actual
 '

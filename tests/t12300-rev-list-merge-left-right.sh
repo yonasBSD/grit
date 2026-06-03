@@ -4,6 +4,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup repo with merge' '
+    (
     grit init repo && cd repo &&
     git config user.email "t@t.com" &&
     git config user.name "T" &&
@@ -24,7 +25,7 @@ test_expect_success 'setup repo with merge' '
     grit add side2.txt &&
     GIT_AUTHOR_DATE="1700002000 +0000" GIT_COMMITTER_DATE="1700002000 +0000" \
     grit commit -m "side-2" &&
-    /usr/bin/git checkout master &&
+    /usr/bin/git checkout main &&
     echo main1 >main1.txt &&
     grit add main1.txt &&
     GIT_AUTHOR_DATE="1700003000 +0000" GIT_COMMITTER_DATE="1700003000 +0000" \
@@ -34,6 +35,7 @@ test_expect_success 'setup repo with merge' '
     GIT_AUTHOR_DATE="1700004000 +0000" GIT_COMMITTER_DATE="1700004000 +0000" \
     grit commit -m "main-2" &&
     /usr/bin/git merge side -m "merge-side"
+    )
 '
 
 test_expect_success 'rev-list HEAD lists all commits including merge' '
@@ -154,9 +156,9 @@ test_expect_success 'setup: second merge with divergence' '
     grit add feat.txt &&
     GIT_AUTHOR_DATE="1700006000 +0000" GIT_COMMITTER_DATE="1700006000 +0000" \
     grit commit -m "feature-1" &&
-    /usr/bin/git checkout master &&
-    echo master3 >master3.txt &&
-    grit add master3.txt &&
+    /usr/bin/git checkout main &&
+    echo main3 >main3.txt &&
+    grit add main3.txt &&
     GIT_AUTHOR_DATE="1700007000 +0000" GIT_COMMITTER_DATE="1700007000 +0000" \
     grit commit -m "main-3" &&
     /usr/bin/git merge feature -m "merge-feature")

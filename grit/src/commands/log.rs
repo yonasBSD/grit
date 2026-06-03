@@ -1832,8 +1832,26 @@ fn hydrate_log_options_from_raw_argv(args: &mut Args) {
             }
         }
 
+        if args.skip.is_none() {
+            if let Some(rest) = arg.strip_prefix("--skip=") {
+                args.skip = rest.parse::<usize>().ok();
+                i += 1;
+                continue;
+            }
+            if arg == "--skip" && i + 1 < args.raw_argv_tail.len() {
+                args.skip = args.raw_argv_tail[i + 1].parse::<usize>().ok();
+                i += 2;
+                continue;
+            }
+        }
+
         if !args.oneline && arg == "--oneline" {
             args.oneline = true;
+            i += 1;
+            continue;
+        }
+        if arg == "--no-decorate" {
+            args.no_decorate = true;
             i += 1;
             continue;
         }

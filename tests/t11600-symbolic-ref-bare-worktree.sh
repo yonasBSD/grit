@@ -13,8 +13,9 @@ cd "$(dirname "$0")" || exit 1
 ###########################################################################
 
 test_expect_success 'setup: create regular repo' '
+	(
 	"$REAL_GIT" init -b main repo &&
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	"$REAL_GIT" config user.name "Test User" &&
 	"$REAL_GIT" config user.email "test@example.com" &&
 	echo "hello" >file.txt &&
@@ -25,6 +26,7 @@ test_expect_success 'setup: create regular repo' '
 	echo "more" >>file.txt &&
 	"$REAL_GIT" add file.txt &&
 	"$REAL_GIT" commit -m "second commit"
+	)
 '
 
 ###########################################################################
@@ -32,27 +34,27 @@ test_expect_success 'setup: create regular repo' '
 ###########################################################################
 
 test_expect_success 'symbolic-ref: read HEAD' '
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	"$GUST_BIN" symbolic-ref HEAD >actual &&
 	"$REAL_GIT" symbolic-ref HEAD >expected &&
 	test_cmp expected actual
 '
 
 test_expect_success 'symbolic-ref: HEAD points to refs/heads/main' '
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	"$GUST_BIN" symbolic-ref HEAD >actual &&
 	grep "refs/heads/main" actual
 '
 
 test_expect_success 'symbolic-ref --short HEAD: shows short name' '
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	"$GUST_BIN" symbolic-ref --short HEAD >actual &&
 	"$REAL_GIT" symbolic-ref --short HEAD >expected &&
 	test_cmp expected actual
 '
 
 test_expect_success 'symbolic-ref --short HEAD: is just branch name' '
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	"$GUST_BIN" symbolic-ref --short HEAD >actual &&
 	echo "main" >expected &&
 	test_cmp expected actual
@@ -63,7 +65,7 @@ test_expect_success 'symbolic-ref --short HEAD: is just branch name' '
 ###########################################################################
 
 test_expect_success 'symbolic-ref: create new symbolic ref' '
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	"$GUST_BIN" symbolic-ref refs/heads/alias refs/heads/feature &&
 	"$GUST_BIN" symbolic-ref refs/heads/alias >actual &&
 	echo "refs/heads/feature" >expected &&
@@ -71,7 +73,7 @@ test_expect_success 'symbolic-ref: create new symbolic ref' '
 '
 
 test_expect_success 'symbolic-ref: update symbolic ref target' '
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	"$GUST_BIN" symbolic-ref refs/heads/alias refs/heads/develop &&
 	"$GUST_BIN" symbolic-ref refs/heads/alias >actual &&
 	echo "refs/heads/develop" >expected &&
@@ -79,7 +81,7 @@ test_expect_success 'symbolic-ref: update symbolic ref target' '
 '
 
 test_expect_success 'symbolic-ref: set HEAD to feature' '
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	"$GUST_BIN" symbolic-ref HEAD refs/heads/feature &&
 	"$GUST_BIN" symbolic-ref HEAD >actual &&
 	echo "refs/heads/feature" >expected &&
@@ -87,7 +89,7 @@ test_expect_success 'symbolic-ref: set HEAD to feature' '
 '
 
 test_expect_success 'symbolic-ref: restore HEAD to main' '
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	"$GUST_BIN" symbolic-ref HEAD refs/heads/main &&
 	"$GUST_BIN" symbolic-ref HEAD >actual &&
 	echo "refs/heads/main" >expected &&
@@ -99,7 +101,7 @@ test_expect_success 'symbolic-ref: restore HEAD to main' '
 ###########################################################################
 
 test_expect_success 'symbolic-ref -d: delete symbolic ref' '
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	"$GUST_BIN" symbolic-ref refs/heads/to-delete refs/heads/main &&
 	"$GUST_BIN" symbolic-ref refs/heads/to-delete >actual &&
 	grep refs/heads/main actual &&
@@ -108,7 +110,7 @@ test_expect_success 'symbolic-ref -d: delete symbolic ref' '
 '
 
 test_expect_success 'symbolic-ref --delete: long form' '
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	"$GUST_BIN" symbolic-ref refs/heads/del2 refs/heads/main &&
 	"$GUST_BIN" symbolic-ref --delete refs/heads/del2 &&
 	test_must_fail "$GUST_BIN" symbolic-ref refs/heads/del2
@@ -119,19 +121,19 @@ test_expect_success 'symbolic-ref --delete: long form' '
 ###########################################################################
 
 test_expect_success 'symbolic-ref --quiet: no error output on non-symbolic ref' '
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	test_must_fail "$GUST_BIN" symbolic-ref --quiet refs/heads/main 2>err &&
 	test ! -s err
 '
 
 test_expect_success 'symbolic-ref: without --quiet shows error on non-symbolic' '
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	test_must_fail "$GUST_BIN" symbolic-ref refs/heads/main 2>err &&
 	test -s err
 '
 
 test_expect_success 'symbolic-ref -q: short form suppresses error' '
-	cd repo &&
+	cd "$TRASH_DIRECTORY"/repo &&
 	test_must_fail "$GUST_BIN" symbolic-ref -q refs/heads/main 2>err &&
 	test ! -s err
 '

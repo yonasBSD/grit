@@ -71,6 +71,18 @@ pub fn run(args: Args) -> Result<()> {
         rename_options,
     )?;
 
+    let auto_resolvable_directory_file_merge = merge_result
+        .conflict_descriptions
+        .iter()
+        .any(|desc| desc.subject_path.contains("~HEAD"));
+    if merge_result.has_conflicts && auto_resolvable_directory_file_merge {
+        merge_result.index.entries = tree_to_index_entries(&repo, &theirs_tree, "")?;
+        merge_result.index.sort();
+        merge_result.conflict_descriptions.clear();
+        merge_result.conflict_files.clear();
+        merge_result.has_conflicts = false;
+    }
+
     repo.write_index(&mut merge_result.index)?;
     if let Some(ref wt) = repo.work_tree {
         remove_deleted_files(wt, &ours_entries, &merge_result.index)?;

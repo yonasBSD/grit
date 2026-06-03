@@ -24,7 +24,7 @@ test_expect_success 'add -N records intent-to-add placeholder' '
 	echo "content" >intent.txt &&
 	grit add -N intent.txt &&
 	grit ls-files -s intent.txt >actual &&
-	grep "^100644 0000000000000000000000000000000000000000 0	intent.txt" actual
+	grep "^100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0	intent.txt" actual
 	)
 '
 
@@ -72,9 +72,9 @@ test_expect_success 'add -N with multiple files' '
 	grit ls-files -s multi1.txt >s1 &&
 	grit ls-files -s multi2.txt >s2 &&
 	grit ls-files -s multi3.txt >s3 &&
-	grep "0000000000000000000000000000000000000000" s1 &&
-	grep "0000000000000000000000000000000000000000" s2 &&
-	grep "0000000000000000000000000000000000000000" s3
+	grep "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391" s1 &&
+	grep "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391" s2 &&
+	grep "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391" s3
 	)
 '
 

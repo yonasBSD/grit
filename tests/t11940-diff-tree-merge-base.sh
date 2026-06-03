@@ -80,53 +80,53 @@ test_expect_success 'setup branches for merge-base tests' '
 		echo "feat1" >feat.txt &&
 		grit add feat.txt &&
 		grit commit -m "feature commit" &&
-		git checkout master &&
-		echo "master-only" >master.txt &&
-		grit add master.txt &&
-		grit commit -m "master commit"
+		git checkout main &&
+		echo "main-only" >main.txt &&
+		grit add main.txt &&
+		grit commit -m "main commit"
 	)
 '
 
 test_expect_success 'merge-base finds common ancestor' '
-	(cd repo && grit merge-base master feature >../actual) &&
+	(cd repo && grit merge-base main feature >../actual) &&
 	(cd repo && grit rev-parse HEAD~1 >../expect) &&
 	test_cmp expect actual
 '
 
 test_expect_success 'merge-base --is-ancestor for ancestor' '
 	(cd repo &&
-		BASE=$(grit merge-base master feature) &&
-		grit merge-base --is-ancestor "$BASE" master
+		BASE=$(grit merge-base main feature) &&
+		grit merge-base --is-ancestor "$BASE" main
 	)
 '
 
 test_expect_success 'merge-base --is-ancestor for non-ancestor fails' '
 	(cd repo &&
-		test_must_fail grit merge-base --is-ancestor master feature
+		test_must_fail grit merge-base --is-ancestor main feature
 	)
 '
 
 test_expect_success 'diff-tree between diverged branches' '
-	(cd repo && grit diff-tree --name-only -r master feature >../actual) &&
+	(cd repo && grit diff-tree --name-only -r main feature >../actual) &&
 	sort actual >actual_sorted &&
-	printf "feat.txt\nmaster.txt\n" >expect &&
+	printf "feat.txt\nmain.txt\n" >expect &&
 	test_cmp expect actual_sorted
 '
 
 test_expect_success 'diff-tree --name-status between diverged branches' '
-	(cd repo && grit diff-tree --name-status -r master feature >../actual) &&
+	(cd repo && grit diff-tree --name-status -r main feature >../actual) &&
 	grep "A.*feat.txt" actual &&
-	grep "D.*master.txt" actual
+	grep "D.*main.txt" actual
 '
 
 test_expect_success 'diff-tree -p between diverged branches' '
-	(cd repo && grit diff-tree -p master feature >../actual) &&
+	(cd repo && grit diff-tree -p main feature >../actual) &&
 	grep "+feat1" actual &&
-	grep "\-master-only" actual
+	grep "\-main-only" actual
 '
 
 test_expect_success 'diff-tree --stat between diverged branches' '
-	(cd repo && grit diff-tree --stat -r master feature >../actual) &&
+	(cd repo && grit diff-tree --stat -r main feature >../actual) &&
 	grep "2 files changed" actual
 '
 
@@ -144,16 +144,16 @@ test_expect_success 'setup deeper branch history' '
 
 test_expect_success 'merge-base still finds original fork point' '
 	(cd repo &&
-		grit merge-base master feature >../actual_base &&
-		grit rev-parse master~1 >../expect_base
+		grit merge-base main feature >../actual_base &&
+		grit rev-parse main~1 >../expect_base
 	) &&
 	test_cmp expect_base actual_base
 '
 
-test_expect_success 'diff-tree between master and deep feature' '
-	(cd repo && grit diff-tree --name-only -r master feature >../actual) &&
+test_expect_success 'diff-tree between main and deep feature' '
+	(cd repo && grit diff-tree --name-only -r main feature >../actual) &&
 	sort actual >actual_sorted &&
-	printf "feat.txt\nfeat2.txt\nfeat3.txt\nmaster.txt\n" >expect &&
+	printf "feat.txt\nfeat2.txt\nfeat3.txt\nmain.txt\n" >expect &&
 	test_cmp expect actual_sorted
 '
 
@@ -163,15 +163,15 @@ test_expect_success 'diff-tree -r with modified file across branches' '
 		echo "modified-on-feature" >file.txt &&
 		grit add file.txt &&
 		grit commit -m "modify file on feature" &&
-		git checkout master
+		git checkout main
 	) &&
-	(cd repo && grit diff-tree --name-status -r master feature >../actual) &&
+	(cd repo && grit diff-tree --name-status -r main feature >../actual) &&
 	grep "M.*file.txt" actual
 '
 
 test_expect_success 'setup second branch from same point' '
 	(cd repo &&
-		git checkout master &&
+		git checkout main &&
 		git checkout -b branch2 &&
 		echo "b2" >b2.txt &&
 		grit add b2.txt &&
@@ -179,19 +179,19 @@ test_expect_success 'setup second branch from same point' '
 	)
 '
 
-test_expect_success 'merge-base between two non-master branches' '
+test_expect_success 'merge-base between two non-main branches' '
 	(cd repo && grit merge-base feature branch2 >../actual) &&
 	test -s actual
 '
 
-test_expect_success 'diff-tree between two non-master branches' '
+test_expect_success 'diff-tree between two non-main branches' '
 	(cd repo && grit diff-tree --name-only -r feature branch2 >../actual) &&
 	grep "b2.txt" actual
 '
 
 test_expect_success 'diff-tree with deleted file between commits' '
 	(cd repo &&
-		git checkout master &&
+		git checkout main &&
 		grit rm file3.txt &&
 		grit commit -m "delete file3" &&
 		grit diff-tree --name-status -r HEAD~1 HEAD >../actual
@@ -225,7 +225,7 @@ test_expect_success 'diff-tree -p shows mode change patch' '
 
 test_expect_success 'merge-base with HEAD reference' '
 	(cd repo &&
-		git checkout master &&
+		git checkout main &&
 		grit merge-base HEAD branch2 >../actual
 	) &&
 	test -s actual

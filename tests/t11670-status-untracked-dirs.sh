@@ -19,8 +19,13 @@ test_expect_success 'setup: init repo with config' '
 	sane_unset GIT_AUTHOR_EMAIL &&
 	sane_unset GIT_COMMITTER_NAME &&
 	sane_unset GIT_COMMITTER_EMAIL &&
-	git add .bin &&
-	git commit -m "add bin wrappers"
+	if test -e .bin
+	then
+		git add .bin &&
+		git commit -m "add bin wrappers"
+	else
+		git commit --allow-empty -m "setup"
+	fi
 '
 
 test_expect_success 'setup: create initial commit' '

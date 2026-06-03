@@ -955,12 +955,17 @@ pub fn run(args: Args) -> Result<()> {
                 };
                 let common_git_dir =
                     refs::common_dir(&current.git_dir).unwrap_or_else(|| current.git_dir.clone());
+                let default_mode = if current.git_dir.join("commondir").exists() {
+                    PathDefaultMode::Canonical
+                } else {
+                    PathDefaultMode::RelativeToCwd
+                };
                 print_rev_parse_path(
                     &common_git_dir,
                     &cwd,
                     cli_prefix_path.as_deref(),
                     *fmt,
-                    PathDefaultMode::RelativeToCwd,
+                    default_mode,
                 );
             }
             Action::ShowAbsoluteGitDir => {

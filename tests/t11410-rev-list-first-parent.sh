@@ -28,19 +28,19 @@ test_expect_success 'setup: create repo with merges' '
 	echo "feature a more" >>a.txt &&
 	"$REAL_GIT" add a.txt &&
 	"$REAL_GIT" commit -m "feature-a more" &&
-	"$REAL_GIT" checkout master &&
-	echo "master work" >m.txt &&
+	"$REAL_GIT" checkout main &&
+	echo "main work" >m.txt &&
 	"$REAL_GIT" add m.txt &&
-	"$REAL_GIT" commit -m "master work 1" &&
+	"$REAL_GIT" commit -m "main work 1" &&
 	"$REAL_GIT" merge feature-a -m "merge feature-a" --no-edit &&
 	"$REAL_GIT" checkout -b feature-b &&
 	echo "feature b" >b.txt &&
 	"$REAL_GIT" add b.txt &&
 	"$REAL_GIT" commit -m "feature-b work" &&
-	"$REAL_GIT" checkout master &&
-	echo "master work 2" >>m.txt &&
+	"$REAL_GIT" checkout main &&
+	echo "main work 2" >>m.txt &&
 	"$REAL_GIT" add m.txt &&
-	"$REAL_GIT" commit -m "master work 2" &&
+	"$REAL_GIT" commit -m "main work 2" &&
 	"$REAL_GIT" merge feature-b -m "merge feature-b" --no-edit &&
 	echo "final" >>file.txt &&
 	"$REAL_GIT" add file.txt &&

@@ -108,6 +108,19 @@ pub fn test_tool_date(args: &[String]) -> Result<TestToolDateResult, String> {
             }
             Ok(TestToolDateResult::Output(lines))
         }
+        "timestamp" => {
+            let mut lines = Vec::new();
+            for a in rest {
+                let mut err = 0;
+                let t = approx::approxidate_careful(a, Some(&mut err));
+                lines.push(if err == 0 {
+                    format!("{a} -> {t}")
+                } else {
+                    format!("{a} -> bad")
+                });
+            }
+            Ok(TestToolDateResult::Output(lines))
+        }
         s if s.starts_with("show:") => {
             let format = s.strip_prefix("show:").unwrap_or("");
             let mut mode = parse_date_format(format).map_err(|e| e.to_string())?;

@@ -19,11 +19,11 @@ test_expect_success 'setup repository with initial commit' '
 	)
 '
 
-test_expect_success 'show-current on master/main branch' '
+test_expect_success 'show-current on main/main branch' '
 	(
 	cd repo &&
 	grit branch --show-current >actual &&
-	grep -qE "^(master|main)$" actual
+	grep -qE "^(main|main)$" actual
 	)
 '
 
@@ -38,12 +38,12 @@ test_expect_success 'create new branch and switch to it' '
 	)
 '
 
-test_expect_success 'switch back to master' '
+test_expect_success 'switch back to main' '
 	(
 	cd repo &&
-	grit checkout master &&
+	grit checkout main &&
 	grit branch --show-current >actual &&
-	echo "master" >expected &&
+	echo "main" >expected &&
 	test_cmp expected actual
 	)
 '
@@ -61,7 +61,7 @@ test_expect_success 'create and checkout branch in one step with checkout -b' '
 test_expect_success 'show-current after switching branches multiple times' '
 	(
 	cd repo &&
-	grit checkout master &&
+	grit checkout main &&
 	grit checkout feature &&
 	grit checkout newbranch &&
 	grit branch --show-current >actual &&
@@ -74,7 +74,7 @@ test_expect_success 'branch list shows all branches' '
 	(
 	cd repo &&
 	grit branch >actual &&
-	grep "master" actual &&
+	grep "main" actual &&
 	grep "feature" actual &&
 	grep "newbranch" actual
 	)
@@ -83,16 +83,16 @@ test_expect_success 'branch list shows all branches' '
 test_expect_success 'branch list marks current branch with asterisk' '
 	(
 	cd repo &&
-	grit checkout master &&
+	grit checkout main &&
 	grit branch >actual &&
-	grep "^\* master" actual
+	grep "^\* main" actual
 	)
 '
 
 test_expect_success 'create branch with slash in name' '
 	(
 	cd repo &&
-	grit checkout master &&
+	grit checkout main &&
 	grit branch work/sub-task &&
 	grit checkout work/sub-task &&
 	grit branch --show-current >actual &&
@@ -104,7 +104,7 @@ test_expect_success 'create branch with slash in name' '
 test_expect_success 'create branch from specific commit' '
 	(
 	cd repo &&
-	grit checkout master &&
+	grit checkout main &&
 	oid=$(grit rev-parse HEAD) &&
 	grit branch from-commit "$oid" &&
 	grit checkout from-commit &&
@@ -117,7 +117,7 @@ test_expect_success 'create branch from specific commit' '
 test_expect_success 'delete branch that is not checked out' '
 	(
 	cd repo &&
-	grit checkout master &&
+	grit checkout main &&
 	grit branch -d from-commit
 	)
 '
@@ -130,7 +130,7 @@ test_expect_success 'delete branch with -D (force)' '
 	grit add extra.txt &&
 	test_tick &&
 	grit commit -m "extra" &&
-	grit checkout master &&
+	grit checkout main &&
 	grit branch -D delete-me
 	)
 '
@@ -138,8 +138,8 @@ test_expect_success 'delete branch with -D (force)' '
 test_expect_success 'cannot delete current branch' '
 	(
 	cd repo &&
-	grit checkout master &&
-	! grit branch -d master 2>/dev/null
+	grit checkout main &&
+	! grit branch -d main 2>/dev/null
 	)
 '
 
@@ -156,9 +156,9 @@ test_expect_success 'show-current on detached HEAD is empty' '
 test_expect_success 'reattach to branch after detached HEAD' '
 	(
 	cd repo &&
-	grit checkout master &&
+	grit checkout main &&
 	grit branch --show-current >actual &&
-	echo "master" >expected &&
+	echo "main" >expected &&
 	test_cmp expected actual
 	)
 '
@@ -167,7 +167,7 @@ test_expect_success 'branch -v shows verbose info' '
 	(
 	cd repo &&
 	grit branch -v >actual &&
-	grep "master" actual &&
+	grep "main" actual &&
 	grep -qE "[0-9a-f]+" actual
 	)
 '
@@ -200,14 +200,14 @@ test_expect_success 'show-current after rename of current branch' '
 	grit branch --show-current >actual &&
 	echo "current-renamed" >expected &&
 	test_cmp expected actual &&
-	grit checkout master
+	grit checkout main
 	)
 '
 
 test_expect_success 'branch from another branch tip' '
 	(
 	cd repo &&
-	grit checkout master &&
+	grit checkout main &&
 	grit branch copied-branch current-renamed &&
 	grit branch >actual &&
 	grep "copied-branch" actual &&
@@ -218,16 +218,16 @@ test_expect_success 'branch from another branch tip' '
 test_expect_success 'branch --contains shows branches containing HEAD' '
 	(
 	cd repo &&
-	grit checkout master &&
+	grit checkout main &&
 	grit branch --contains HEAD >actual &&
-	grep "master" actual
+	grep "main" actual
 	)
 '
 
 test_expect_success 'branch --merged HEAD shows merged branches' '
 	(
 	cd repo &&
-	grit checkout master &&
+	grit checkout main &&
 	grit branch --merged HEAD >actual &&
 	test_line_count -gt 0 actual
 	)
@@ -270,15 +270,15 @@ test_expect_success 'delete multiple branches sequentially' '
 test_expect_success 'branch with --force overwrites existing' '
 	(
 	cd repo &&
-	grit checkout master &&
+	grit checkout main &&
 	echo "more" >more.txt &&
 	grit add more.txt &&
 	test_tick &&
 	grit commit -m "more" &&
 	grit branch --force feature &&
-	oid_master=$(grit rev-parse master) &&
+	oid_main=$(grit rev-parse main) &&
 	oid_feature=$(grit rev-parse feature) &&
-	test "$oid_master" = "$oid_feature"
+	test "$oid_main" = "$oid_feature"
 	)
 '
 
@@ -307,7 +307,7 @@ test_expect_success 'branch with hyphen in name' '
 	grit branch --show-current >actual &&
 	echo "my-hyphenated-branch" >expected &&
 	test_cmp expected actual &&
-	grit checkout master
+	grit checkout main
 	)
 '
 
@@ -319,7 +319,7 @@ test_expect_success 'branch with dots in name' '
 	grit branch --show-current >actual &&
 	echo "release.1.0" >expected &&
 	test_cmp expected actual &&
-	grit checkout master
+	grit checkout main
 	)
 '
 
@@ -334,14 +334,14 @@ test_expect_success 'branch -a lists all including remotes placeholder' '
 test_expect_success 'cleanup: delete test branches' '
 	(
 	cd repo &&
-	grit checkout master &&
+	grit checkout main &&
 	for b in feature newbranch work/sub-task current-renamed copied-branch \
 		multi-4 multi-5 multi-6 multi-7 multi-8 multi-9 multi-10 \
 		my-hyphenated-branch release.1.0 renamed; do
 		grit branch -D "$b" 2>/dev/null || true
 	done &&
 	grit branch >actual &&
-	grep "master" actual
+	grep "main" actual
 	)
 '
 

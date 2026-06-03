@@ -126,7 +126,7 @@ test_expect_success 'restore --source with branch name' '
 	(cd repo &&
 	 grit switch -c restore-branch 2>/dev/null &&
 	 echo branchval >file.txt && grit add file.txt && grit commit -m "branch" &&
-	 grit switch master 2>/dev/null &&
+	 grit switch main 2>/dev/null &&
 	 grit restore --source restore-branch file.txt &&
 	 cat file.txt >../actual) &&
 	echo "branchval" >expect &&

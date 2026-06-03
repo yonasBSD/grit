@@ -48,17 +48,17 @@ test_expect_success 'commit on new branch advances it' '
 	)
 '
 
-# ---- switch back to master ----
+# ---- switch back to main ----
 test_expect_success 'switch to existing branch' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	head_ref=$(grit symbolic-ref HEAD) &&
-	test "$head_ref" = "refs/heads/master"
+	test "$head_ref" = "refs/heads/main"
 	)
 '
 
-test_expect_success 'feature file not present on master' '
+test_expect_success 'feature file not present on main' '
 	(
 	cd repo &&
 	! test -f feature.txt
@@ -75,12 +75,12 @@ test_expect_success 'switch - goes back to previous branch' '
 	)
 '
 
-test_expect_success 'switch - again returns to master' '
+test_expect_success 'switch - again returns to main' '
 	(
 	cd repo &&
 	grit switch - &&
 	head_ref=$(grit symbolic-ref HEAD) &&
-	test "$head_ref" = "refs/heads/master"
+	test "$head_ref" = "refs/heads/main"
 	)
 '
 
@@ -120,10 +120,10 @@ test_expect_success 'can commit on orphan branch' '
 	)
 '
 
-test_expect_success 'orphan branch has no common ancestor with master' '
+test_expect_success 'orphan branch has no common ancestor with main' '
 	(
 	cd repo &&
-	test_must_fail grit merge-base master orphan1 2>err
+	test_must_fail grit merge-base main orphan1 2>err
 	)
 '
 
@@ -131,7 +131,7 @@ test_expect_success 'orphan branch has no common ancestor with master' '
 test_expect_success 'switch -d detaches HEAD at commit' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	head_oid=$(grit rev-parse HEAD) &&
 	grit switch -d HEAD &&
 	detached_oid=$(grit rev-parse HEAD) &&
@@ -149,9 +149,9 @@ test_expect_success 'HEAD is detached (not a symbolic ref)' '
 test_expect_success 'switch back to named branch from detached' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	head_ref=$(grit symbolic-ref HEAD) &&
-	test "$head_ref" = "refs/heads/master"
+	test "$head_ref" = "refs/heads/main"
 	)
 '
 
@@ -185,18 +185,18 @@ test_expect_success 'switch to branch_b shows its files' '
 test_expect_success 'switch carries non-conflicting worktree changes' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	echo "dirty" >file.txt &&
 	grit switch feature1 &&
 	test "$(cat file.txt)" = "dirty"
 	)
 '
 
-test_expect_success 'clean up and go back to master' '
+test_expect_success 'clean up and go back to main' '
 	(
 	cd repo &&
 	grit restore file.txt &&
-	grit switch master
+	grit switch main
 	)
 '
 
@@ -224,9 +224,9 @@ test_expect_success 'switch away from orphan to named branch' '
 	(
 	cd repo &&
 	grit switch --orphan temp_orphan &&
-	grit switch master &&
+	grit switch main &&
 	head_ref=$(grit symbolic-ref HEAD) &&
-	test "$head_ref" = "refs/heads/master"
+	test "$head_ref" = "refs/heads/main"
 	)
 '
 
@@ -235,7 +235,7 @@ test_expect_success 'branch lists all created branches' '
 	(
 	cd repo &&
 	grit branch >list &&
-	grep "master" list &&
+	grep "main" list &&
 	grep "feature1" list &&
 	grep "orphan1" list &&
 	grep "branch_a" list &&
@@ -247,7 +247,7 @@ test_expect_success 'branch lists all created branches' '
 test_expect_success 'switch -c fails if branch already exists' '
 	(
 	cd repo &&
-	test_must_fail grit switch -c master 2>err
+	test_must_fail grit switch -c main 2>err
 	)
 '
 
@@ -263,12 +263,12 @@ test_expect_success 'switch -d at tagged commit' '
 	)
 '
 
-test_expect_success 'switch back to master after detach at tag' '
+test_expect_success 'switch back to main after detach at tag' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	head_ref=$(grit symbolic-ref HEAD) &&
-	test "$head_ref" = "refs/heads/master"
+	test "$head_ref" = "refs/heads/main"
 	)
 '
 
@@ -286,7 +286,7 @@ test_expect_success 'orphan branch clears worktree from previous branch' '
 test_expect_success 'switch -c carries compatible uncommitted changes' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	echo "new_content" >new_uncommitted.txt &&
 	grit add new_uncommitted.txt &&
 	grit switch -c carry_branch &&

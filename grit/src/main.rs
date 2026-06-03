@@ -2677,6 +2677,21 @@ pub(crate) fn extract_globals(
             continue;
         }
 
+        if let Some(spec) = arg.strip_prefix("--config-env=") {
+            opts.config_overrides.push(resolve_config_env(spec)?);
+            i += 1;
+            continue;
+        }
+        if arg == "--config-env" {
+            i += 1;
+            let Some(spec) = items.get(i) else {
+                bail!("no config key given for --config-env");
+            };
+            opts.config_overrides.push(resolve_config_env(spec)?);
+            i += 1;
+            continue;
+        }
+
         // --attr-source=<tree-ish> or --attr-source <tree-ish>
         if let Some(val) = arg.strip_prefix("--attr-source=") {
             opts.attr_source = Some(val.to_owned());
@@ -2789,6 +2804,26 @@ pub(crate) fn extract_globals(
     }
 
     Ok((opts, subcmd, rest))
+}
+
+fn resolve_config_env(spec: &str) -> Result<String> {
+    let Some((key, envvar)) = spec.rsplit_once('=') else {
+        bail!("invalid config format: {spec}");
+    };
+    if key.is_empty() {
+        bail!("no config key given for --config-env");
+    }
+    if envvar.is_empty() {
+        bail!("missing environment variable name for configuration '{key}'");
+    }
+    let value = std::env::var(envvar).map_err(|_| {
+        anyhow::anyhow!("missing environment variable '{envvar}' for configuration '{key}'")
+    })?;
+    if key.contains('=') {
+        Ok(format!("{key}\u{1}{value}"))
+    } else {
+        Ok(format!("{key}={value}"))
+    }
 }
 
 /// Apply global options (env vars, chdir).

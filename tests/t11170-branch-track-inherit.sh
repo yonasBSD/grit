@@ -43,11 +43,11 @@ test_expect_success 'setup: create branches' '
 # Section 2: --show-current
 ###########################################################################
 
-test_expect_success 'branch --show-current shows master' '
+test_expect_success 'branch --show-current shows main' '
 	(
 	cd repo &&
 	grit branch --show-current >actual &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 	)
 '
@@ -68,15 +68,15 @@ test_expect_success 'branch --show-current after checkout' '
 	grit branch --show-current >actual &&
 	echo "feature" >expect &&
 	test_cmp expect actual &&
-	grit checkout master
+	grit checkout main
 	)
 '
 
-test_expect_success 'branch --show-current returns to master' '
+test_expect_success 'branch --show-current returns to main' '
 	(
 	cd repo &&
 	grit branch --show-current >actual &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 	)
 '
@@ -100,7 +100,7 @@ test_expect_success 'branch -v lists all branches' '
 	grep "feature" actual &&
 	grep "bugfix" actual &&
 	grep "release" actual &&
-	grep "master" actual
+	grep "main" actual
 	)
 '
 
@@ -108,7 +108,7 @@ test_expect_success 'branch -v marks current branch with asterisk' '
 	(
 	cd repo &&
 	grit branch -v >actual &&
-	grep "^\\* master" actual
+	grep "^\\* main" actual
 	)
 '
 
@@ -157,7 +157,7 @@ test_expect_success 'branch -m fails for nonexistent branch' '
 	(
 	cd repo &&
 	test_must_fail grit branch -m no-such-branch other-name 2>err &&
-	grep -i "not found" err
+	grep -i "no branch" err
 	)
 '
 
@@ -192,7 +192,7 @@ test_expect_success 'branch --contains HEAD includes all branches' '
 	(
 	cd repo &&
 	grit branch --contains HEAD >actual &&
-	grep "master" actual &&
+	grep "main" actual &&
 	grep "feature" actual
 	)
 '
@@ -211,7 +211,7 @@ test_expect_success 'branch --contains with first commit OID' '
 	cd repo &&
 	first_oid=$(grit rev-list HEAD | tail -1) &&
 	grit branch --contains "$first_oid" >actual &&
-	grep "master" actual
+	grep "main" actual
 	)
 '
 
@@ -235,16 +235,16 @@ test_expect_success 'setup: diverge feature branch' '
 	echo "feature-only" >feature.txt &&
 	grit add feature.txt &&
 	grit commit -m "feature work" &&
-	grit checkout master
+	grit checkout main
 	)
 '
 
-test_expect_success 'feature has different tip than master after diverge' '
+test_expect_success 'feature has different tip than main after diverge' '
 	(
 	cd repo &&
-	master_oid=$(grit rev-parse master) &&
+	main_oid=$(grit rev-parse main) &&
 	feature_oid=$(grit rev-parse feature) &&
-	test "$master_oid" != "$feature_oid"
+	test "$main_oid" != "$feature_oid"
 	)
 '
 
@@ -252,9 +252,9 @@ test_expect_success 'branch -v shows different OIDs after diverge' '
 	(
 	cd repo &&
 	grit branch -v >actual &&
-	master_line=$(grep "master" actual) &&
+	main_line=$(grep "main" actual) &&
 	feature_line=$(grep "feature" actual) &&
-	test "$master_line" != "$feature_line"
+	test "$main_line" != "$feature_line"
 	)
 '
 
@@ -266,11 +266,11 @@ test_expect_success 'branch -v shows feature commit message' '
 	)
 '
 
-test_expect_success 'branch --show-current still shows master' '
+test_expect_success 'branch --show-current still shows main' '
 	(
 	cd repo &&
 	grit branch --show-current >actual &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 	)
 '
@@ -375,7 +375,7 @@ test_expect_success 'branch with no args lists branches' '
 	(
 	cd repo &&
 	grit branch >actual &&
-	grep "master" actual
+	grep "main" actual
 	)
 '
 
@@ -392,7 +392,7 @@ test_expect_success 'branch -a shows local branches' '
 	(
 	cd repo &&
 	grit branch -a >actual &&
-	grep "master" actual &&
+	grep "main" actual &&
 	grep "alpha-first" actual
 	)
 '

@@ -211,7 +211,7 @@ test_expect_success 'setup: commit for -z test' '
 
 test_expect_success 'status --porcelain -b: shows branch header' '
 	(cd repo && grit status --porcelain -b >../actual) &&
-	grep "^## master" actual
+	grep "^## main" actual
 '
 
 # ---- multiple changes at once ----

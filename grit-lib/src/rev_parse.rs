@@ -2183,13 +2183,13 @@ fn resolve_base(
             warn_if_branch_refname_collides_with_abbrev_hex(repo, spec, oid);
             return Ok(oid);
         } else if matches.len() > 1 {
-            if commit_only_hex {
-                let oid = disambiguate_hex_by_peel(repo, spec, &matches, "commit")?;
+            if let Some(p) = peel_for_disambig {
+                let oid = disambiguate_hex_by_peel(repo, spec, &matches, p)?;
                 warn_if_branch_refname_collides_with_abbrev_hex(repo, spec, oid);
                 return Ok(oid);
             }
-            if let Some(p) = peel_for_disambig {
-                let oid = disambiguate_hex_by_peel(repo, spec, &matches, p)?;
+            if commit_only_hex {
+                let oid = disambiguate_hex_by_peel(repo, spec, &matches, "commit")?;
                 warn_if_branch_refname_collides_with_abbrev_hex(repo, spec, oid);
                 return Ok(oid);
             }

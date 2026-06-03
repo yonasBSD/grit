@@ -1977,7 +1977,13 @@ fn create_branch(
                     grit_lib::branch_tracking::remote_tracking_ref_is_mapped(repo, rref)
                 } else {
                     symbolic_full_name(repo, sp)
-                        .map(|f| f.starts_with("refs/heads/"))
+                        .map(|f| {
+                            f.starts_with("refs/heads/")
+                                || (f.starts_with("refs/remotes/")
+                                    && grit_lib::branch_tracking::remote_tracking_ref_is_mapped(
+                                        repo, &f,
+                                    ))
+                        })
                         .unwrap_or(false)
                 };
                 if !resolves_to_branch {

@@ -38,11 +38,11 @@ test_expect_success 'new branch has same commits as source' '
     test_line_count = 2 actual
 '
 
-test_expect_success 'switch back to master' '
+test_expect_success 'switch back to main' '
     (cd repo &&
-     grit switch master) &&
+     grit switch main) &&
     (cd repo && current_branch >../actual) &&
-    echo "master" >expect &&
+    echo "main" >expect &&
     test_cmp expect actual
 '
 
@@ -56,8 +56,8 @@ test_expect_success 'switch -c from specific start point' '
     test_line_count = 1 actual
 '
 
-test_expect_success 'switch master again' '
-    (cd repo && grit switch master)
+test_expect_success 'switch main again' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'switch -c fails if branch already exists' '
@@ -74,8 +74,8 @@ test_expect_success 'switch to existing branch by name' '
     test_cmp expect actual
 '
 
-test_expect_success 'switch master for detach tests' '
-    (cd repo && grit switch master)
+test_expect_success 'switch main for detach tests' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'switch --detach goes to detached HEAD' '
@@ -85,8 +85,8 @@ test_expect_success 'switch --detach goes to detached HEAD' '
      ! git symbolic-ref HEAD 2>/dev/null)
 '
 
-test_expect_success 'switch back to master from detached' '
-    (cd repo && grit switch master)
+test_expect_success 'switch back to main from detached' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'switch --detach with commit ref' '
@@ -96,8 +96,8 @@ test_expect_success 'switch --detach with commit ref' '
     test_line_count = 1 actual
 '
 
-test_expect_success 'switch master after detach' '
-    (cd repo && grit switch master)
+test_expect_success 'switch main after detach' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'switch preserves clean working tree across branches' '
@@ -106,14 +106,14 @@ test_expect_success 'switch preserves clean working tree across branches' '
      echo new >new.txt &&
      grit add new.txt &&
      grit commit -m "add new" &&
-     grit switch master &&
+     grit switch main &&
      test_path_is_missing new.txt &&
      grit switch clean-test &&
      test_path_is_file new.txt)
 '
 
-test_expect_success 'switch back to master' '
-    (cd repo && grit switch master)
+test_expect_success 'switch back to main' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'setup divergent branch for dirty-switch test' '
@@ -122,7 +122,7 @@ test_expect_success 'setup divergent branch for dirty-switch test' '
      echo different >file.txt &&
      grit add file.txt &&
      grit commit -m "diverge file.txt" &&
-     grit switch master)
+     grit switch main)
 '
 
 test_expect_success 'switch fails with conflicting dirty tracked file' '
@@ -148,8 +148,8 @@ test_expect_success 'switch -c creates branch and stays on it' '
     test_cmp expect actual
 '
 
-test_expect_success 'switch master for orphan test' '
-    (cd repo && grit switch master)
+test_expect_success 'switch main for orphan test' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'switch --orphan creates parentless branch' '
@@ -162,8 +162,8 @@ test_expect_success 'switch --orphan creates parentless branch' '
 
 test_expect_success 'orphan branch has no commits' '
     (cd repo &&
-     grit log --oneline >../actual 2>&1) &&
-    test ! -s actual
+	 test_must_fail grit rev-parse HEAD 2>../actual) &&
+	test -s actual
 '
 
 test_expect_success 'can commit on orphan branch' '
@@ -175,10 +175,10 @@ test_expect_success 'can commit on orphan branch' '
     test_line_count = 1 actual
 '
 
-test_expect_success 'switch back to master from orphan' '
-    (cd repo && grit switch master) &&
+test_expect_success 'switch back to main from orphan' '
+    (cd repo && grit switch main) &&
     (cd repo && current_branch >../actual) &&
-    echo "master" >expect &&
+    echo "main" >expect &&
     test_cmp expect actual
 '
 
@@ -188,19 +188,19 @@ test_expect_success 'switch to branch with different content' '
      echo branch-content >branch-file.txt &&
      grit add branch-file.txt &&
      grit commit -m "branch content" &&
-     grit switch master) &&
+     grit switch main) &&
     test_path_is_missing repo/branch-file.txt &&
     (cd repo && grit switch content-branch) &&
     test_path_is_file repo/branch-file.txt
 '
 
-test_expect_success 'switch master for listing' '
-    (cd repo && grit switch master)
+test_expect_success 'switch main for listing' '
+    (cd repo && grit switch main)
 '
 
 test_expect_success 'multiple branches exist after creation' '
     (cd repo && grit branch >../actual) &&
-    grep "master" actual &&
+    grep "main" actual &&
     grep "feature1" actual &&
     grep "clean-test" actual
 '
@@ -221,13 +221,13 @@ test_expect_success 'switch -c with untracked file succeeds' '
     test_cmp expect actual
 '
 
-test_expect_success 'switch master cleanup' '
+test_expect_success 'switch main cleanup' '
     (cd repo &&
      rm -f untracked.txt &&
-     grit switch master)
+     grit switch main)
 '
 
-test_expect_success 'switch back and verify master still has both commits' '
+test_expect_success 'switch back and verify main still has both commits' '
     (cd repo &&
      grit log --oneline >../actual) &&
     test_line_count = 2 actual
@@ -240,10 +240,10 @@ test_expect_success 'switch --detach preserves working tree files' '
      test_path_is_file second.txt)
 '
 
-test_expect_success 'final switch to master' '
-    (cd repo && grit switch master) &&
+test_expect_success 'final switch to main' '
+    (cd repo && grit switch main) &&
     (cd repo && current_branch >../actual) &&
-    echo "master" >expect &&
+    echo "main" >expect &&
     test_cmp expect actual
 '
 

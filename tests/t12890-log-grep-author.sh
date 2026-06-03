@@ -130,7 +130,7 @@ test_expect_success 'setup branch for merge' '
 	git checkout side &&
 	echo s1 >s1.txt && grit add s1.txt && grit commit -m "side-1" &&
 	echo s2 >s2.txt && grit add s2.txt && grit commit -m "side-2" &&
-	git checkout master)
+	git checkout main)
 '
 
 test_expect_success 'log side shows correct count' '
@@ -144,8 +144,8 @@ test_expect_success 'log side tip is side-2' '
 	test_cmp expect actual
 '
 
-test_expect_success 'log master tip is commit-E' '
-	(cd repo && grit log master -n1 --format="%s" >../actual) &&
+test_expect_success 'log main tip is commit-E' '
+	(cd repo && grit log main -n1 --format="%s" >../actual) &&
 	echo "commit-E" >expect &&
 	test_cmp expect actual
 '

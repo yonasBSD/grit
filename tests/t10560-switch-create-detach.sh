@@ -7,7 +7,7 @@ test_description='grit switch --create --detach and related options'
 cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
-test_expect_success 'setup repository with commits on master' '
+test_expect_success 'setup repository with commits on main' '
 	(
 	grit init repo &&
 	cd repo &&
@@ -36,12 +36,12 @@ test_expect_success 'switch -c creates and switches to new branch' '
 	)
 '
 
-test_expect_success 'switch back to master' '
+test_expect_success 'switch back to main' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit branch --show-current >out &&
-	grep "master" out
+	grep "main" out
 	)
 '
 
@@ -59,9 +59,9 @@ test_expect_success 'switch -c from specific start point' '
 test_expect_success 'switch -c to existing branch fails' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit switch -c temp-branch &&
-	grit switch master &&
+	grit switch main &&
 	test_must_fail grit switch -c temp-branch 2>err
 	)
 '
@@ -71,7 +71,7 @@ test_expect_success 'switch -c to existing branch fails' '
 test_expect_success 'switch --detach goes to detached HEAD' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	HEAD_SHA=$(grit rev-parse HEAD) &&
 	grit switch --detach HEAD &&
 	grit rev-parse HEAD >head_out &&
@@ -83,7 +83,7 @@ test_expect_success 'switch --detach goes to detached HEAD' '
 test_expect_success 'switch --detach to specific commit' '
 	(
 	cd repo &&
-	FIRST=$(grit rev-parse master~2) &&
+	FIRST=$(grit rev-parse main~2) &&
 	grit switch --detach "$FIRST" &&
 	grit rev-parse HEAD >head_out &&
 	echo "$FIRST" >expect &&
@@ -94,7 +94,7 @@ test_expect_success 'switch --detach to specific commit' '
 test_expect_success 'switch -d is alias for --detach' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	MAIN_HEAD=$(grit rev-parse HEAD) &&
 	grit switch -d HEAD &&
 	grit rev-parse HEAD >head_out &&
@@ -107,9 +107,9 @@ test_expect_success 'switch from detached HEAD to branch' '
 	(
 	cd repo &&
 	grit switch --detach HEAD~1 &&
-	grit switch master &&
+	grit switch main &&
 	grit branch --show-current >out &&
-	grep "master" out
+	grep "main" out
 	)
 '
 
@@ -135,7 +135,7 @@ test_expect_success 'orphan branch has no commits yet' '
 test_expect_success 'switch --orphan clears index' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit switch --orphan clean-orphan &&
 	grit ls-files >ls_out &&
 	test_must_be_empty ls_out
@@ -147,12 +147,12 @@ test_expect_success 'switch --orphan clears index' '
 test_expect_success 'switch fails with uncommitted changes that conflict' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit switch -c diverge1 &&
 	echo "diverge" >file1.txt &&
 	grit add file1.txt &&
 	grit commit -m "diverge file1" &&
-	grit switch master &&
+	grit switch main &&
 	echo "conflict" >file1.txt &&
 	test_must_fail grit switch diverge1 2>err
 	)
@@ -161,12 +161,12 @@ test_expect_success 'switch fails with uncommitted changes that conflict' '
 test_expect_success 'switch succeeds with uncommitted changes to unrelated files' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit checkout -- file1.txt &&
 	echo "unrelated" >unrelated_new.txt &&
 	grit switch -c safe-switch &&
 	test -f unrelated_new.txt &&
-	grit switch master &&
+	grit switch main &&
 	rm -f unrelated_new.txt
 	)
 '
@@ -176,7 +176,7 @@ test_expect_success 'switch succeeds with uncommitted changes to unrelated files
 test_expect_success 'switch -c creates branch visible in branch list' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit switch -c visible-branch &&
 	grit branch >branches &&
 	grep "visible-branch" branches
@@ -193,9 +193,9 @@ test_expect_success 'switch to nonexistent branch fails' '
 test_expect_success 'switch -c with already existing branch name fails' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit switch -c dup-test &&
-	grit switch master &&
+	grit switch main &&
 	test_must_fail grit switch -c dup-test 2>err
 	)
 '
@@ -205,12 +205,12 @@ test_expect_success 'switch -c with already existing branch name fails' '
 test_expect_success 'create and switch between multiple branches' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit switch -c branch-a &&
 	echo "a-content" >a.txt &&
 	grit add a.txt &&
 	grit commit -m "branch-a commit" &&
-	grit switch master &&
+	grit switch main &&
 	! test -f a.txt &&
 	grit switch -c branch-b &&
 	echo "b-content" >b.txt &&
@@ -228,10 +228,10 @@ test_expect_success 'create and switch between multiple branches' '
 test_expect_success 'switch preserves working tree for current branch' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	MAIN_FILES=$(grit ls-files | sort) &&
 	grit switch branch-a &&
-	grit switch master &&
+	grit switch main &&
 	MAIN_FILES2=$(grit ls-files | sort) &&
 	test "$MAIN_FILES" = "$MAIN_FILES2"
 	)
@@ -242,9 +242,9 @@ test_expect_success 'switch preserves working tree for current branch' '
 test_expect_success 'switch -- disambiguates branch from path' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit switch -c file1.txt-branch &&
-	grit switch master &&
+	grit switch main &&
 	grit switch -- file1.txt-branch &&
 	grit branch --show-current >out &&
 	grep "file1.txt-branch" out
@@ -256,7 +256,7 @@ test_expect_success 'switch -- disambiguates branch from path' '
 test_expect_success 'setup tags for detach tests' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit tag v1.0 HEAD~2 &&
 	grit tag v2.0 HEAD~1 &&
 	grit tag v3.0 HEAD
@@ -299,12 +299,12 @@ test_expect_success 'switch -c from tag start point' '
 
 # --- switch guess ---
 
-test_expect_success 'switch back to master after all tests' '
+test_expect_success 'switch back to main after all tests' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit branch --show-current >out &&
-	grep "master" out
+	grep "main" out
 	)
 '
 
@@ -328,9 +328,9 @@ test_expect_success 'switch -c with spaces in name fails' '
 test_expect_success 'switch -c from HEAD~N' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	grit switch -c from-head-1 HEAD~1 &&
-	EXPECTED=$(grit rev-parse master~1) &&
+	EXPECTED=$(grit rev-parse main~1) &&
 	ACTUAL=$(grit rev-parse HEAD) &&
 	test "$EXPECTED" = "$ACTUAL"
 	)

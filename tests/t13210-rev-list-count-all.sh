@@ -63,27 +63,27 @@ test_expect_success 'rev-list --all includes feature commits' '
 	test_cmp all_sorted feature_sorted
 '
 
-test_expect_success 'rev-list --count master' '
-	(cd repo && grit rev-list --count master >../actual) &&
+test_expect_success 'rev-list --count main' '
+	(cd repo && grit rev-list --count main >../actual) &&
 	echo "3" >expect &&
 	test_cmp expect actual
 '
 
-test_expect_success 'rev-list --count master..feature' '
-	(cd repo && grit rev-list --count master..feature >../actual) &&
+test_expect_success 'rev-list --count main..feature' '
+	(cd repo && grit rev-list --count main..feature >../actual) &&
 	echo "2" >expect &&
 	test_cmp expect actual
 '
 
-test_expect_success 'rev-list --count feature..master is 0' '
-	(cd repo && grit rev-list --count feature..master >../actual) &&
+test_expect_success 'rev-list --count feature..main is 0' '
+	(cd repo && grit rev-list --count feature..main >../actual) &&
 	echo "0" >expect &&
 	test_cmp expect actual
 '
 
-test_expect_success 'setup second branch from master' '
+test_expect_success 'setup second branch from main' '
 	(cd repo &&
-	 git checkout master &&
+	 git checkout main &&
 	 git checkout -b other &&
 	 echo F >f.txt && grit add f.txt && grit commit -m "F" &&
 	 echo G >g.txt && grit add g.txt && grit commit -m "G" &&
@@ -114,8 +114,8 @@ test_expect_success 'rev-list --all hashes are unique' '
 	test_cmp sorted unique
 '
 
-test_expect_success 'rev-list --count master..other' '
-	(cd repo && grit rev-list --count master..other >../actual) &&
+test_expect_success 'rev-list --count main..other' '
+	(cd repo && grit rev-list --count main..other >../actual) &&
 	echo "3" >expect &&
 	test_cmp expect actual
 '
@@ -132,11 +132,11 @@ test_expect_success 'rev-list --count feature..other' '
 	test_cmp expect actual
 '
 
-test_expect_success 'rev-list --all contains master HEAD' '
+test_expect_success 'rev-list --all contains main HEAD' '
 	(cd repo && grit rev-list --all >../all_hashes) &&
-	(cd repo && grit rev-parse master >../master_hash) &&
-	master=$(cat master_hash) &&
-	grep "$master" all_hashes
+	(cd repo && grit rev-parse main >../main_hash) &&
+	main=$(cat main_hash) &&
+	grep "$main" all_hashes
 '
 
 test_expect_success 'rev-list --all contains feature HEAD' '
@@ -164,15 +164,15 @@ test_expect_success 'rev-list --count HEAD..HEAD is 0' '
 	test_cmp expect actual
 '
 
-test_expect_success 'setup: add more commits to master' '
+test_expect_success 'setup: add more commits to main' '
 	(cd repo &&
-	 git checkout master &&
+	 git checkout main &&
 	 echo I >i.txt && grit add i.txt && grit commit -m "I" &&
 	 echo J >j.txt && grit add j.txt && grit commit -m "J")
 '
 
-test_expect_success 'rev-list --count master after additional commits' '
-	(cd repo && grit rev-list --count master >../actual) &&
+test_expect_success 'rev-list --count main after additional commits' '
+	(cd repo && grit rev-list --count main >../actual) &&
 	echo "5" >expect &&
 	test_cmp expect actual
 '
@@ -194,8 +194,8 @@ test_expect_success 'rev-list --all --skip=5' '
 '
 
 test_expect_success 'rev-list --count consistent with list length' '
-	(cd repo && grit rev-list --count master >../count_out) &&
-	(cd repo && grit rev-list master >../list_out) &&
+	(cd repo && grit rev-list --count main >../count_out) &&
+	(cd repo && grit rev-list main >../list_out) &&
 	count=$(cat count_out) &&
 	lines=$(wc -l <list_out) &&
 	test "$count" = "$lines"

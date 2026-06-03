@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::io::BufRead;
 
+use crate::check_ref_format::{check_refname_format, RefNameOptions};
 use crate::config::ConfigSet;
 use crate::diff::zero_oid;
 use crate::error::{Error, Result};
@@ -217,11 +218,13 @@ impl<'a, R: BufRead> Importer<'a, R> {
             }
             if let Some(rest) = trimmed.strip_prefix("commit ") {
                 let refname = rest.trim().to_string();
+                validate_fast_import_refname(&refname)?;
                 self.read_commit(&refname)?;
                 continue;
             }
             if let Some(rest) = trimmed.strip_prefix("reset ") {
                 let refname = rest.trim().to_string();
+                validate_fast_import_refname(&refname)?;
                 self.read_reset(&refname)?;
                 continue;
             }
@@ -831,6 +834,20 @@ impl<'a, R: BufRead> Importer<'a, R> {
         }
         Ok(oid)
     }
+}
+
+fn validate_fast_import_refname(refname: &str) -> Result<()> {
+    if refname == "HEAD" {
+        return Ok(());
+    }
+    let full = if refname.starts_with("refs/") {
+        refname.to_owned()
+    } else {
+        format!("refs/heads/{refname}")
+    };
+    check_refname_format(&full, &RefNameOptions::default())
+        .map(|_| ())
+        .map_err(|e| Error::IndexError(format!("fast-import: invalid ref name '{refname}': {e}")))
 }
 
 /// Blob payload source in a `N` (notemodify) command.

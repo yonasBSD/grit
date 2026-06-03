@@ -67,7 +67,7 @@ pub struct Args {
     pub file: Option<PathBuf>,
 
     /// Read config from a blob object (e.g. HEAD:.gitmodules).
-    #[arg(long = "blob", value_name = "BLOB_ISH")]
+    #[arg(long = "blob", value_name = "BLOB_ISH", global = true)]
     pub blob: Option<String>,
 
     // ── Legacy action flags ──
@@ -122,6 +122,10 @@ pub struct Args {
     #[arg(long = "remove-section")]
     pub remove_section: bool,
 
+    /// Open the config file in an editor (legacy).
+    #[arg(long = "edit")]
+    pub edit: bool,
+
     // ── Type flags ──
     /// Ensure the value is a valid boolean and canonicalize.
     #[arg(long = "bool", global = true)]
@@ -139,6 +143,10 @@ pub struct Args {
     #[arg(long = "path", global = true)]
     pub type_path: bool,
 
+    /// Interpret the value as an expiry date and print its timestamp.
+    #[arg(long = "expiry-date", global = true)]
+    pub type_expiry_date: bool,
+
     /// Type selector (alternative to individual flags).
     #[arg(long = "type", value_name = "TYPE", global = true)]
     pub type_name: Option<String>,
@@ -153,7 +161,7 @@ pub struct Args {
     pub show_scope: bool,
 
     /// Use NUL as delimiter.
-    #[arg(short = 'z')]
+    #[arg(short = 'z', long = "null")]
     pub null_terminated: bool,
 
     /// Show key names for --get-regexp.
@@ -178,7 +186,7 @@ pub struct Args {
 
     // ── URL match flags ──
     /// Get the best-matching value for the given URL.
-    #[arg(long = "get-urlmatch", value_name = "KEY", num_args = 1)]
+    #[arg(long = "get-urlmatch", value_name = "KEY", num_args = 0..=1, default_missing_value = "")]
     pub get_urlmatch_key: Option<String>,
 
     /// Get the color setting (legacy): returns ANSI code for the color, with default.
@@ -386,6 +394,10 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     // Legacy interface
+    if args.edit {
+        return cmd_edit(&file_path);
+    }
+
     if args.list {
         return cmd_list(&args, git_dir.as_deref());
     }
@@ -462,11 +474,19 @@ pub fn run(args: Args) -> Result<()> {
         return cmd_get(&args, &get_args, git_dir.as_deref(), None);
     }
 
-    if let Some(ref key) = args.get_urlmatch_key {
-        if args.positional.is_empty() {
-            bail!("usage: git config --get-urlmatch <key> <URL>");
-        }
-        return cmd_get_urlmatch(&args, key, &args.positional[0], git_dir.as_deref());
+    if let Some(ref key_raw) = args.get_urlmatch_key {
+        let (key, url) = if key_raw.is_empty() {
+            if args.positional.len() < 2 {
+                bail!("usage: git config --get-urlmatch <key> <URL>");
+            }
+            (args.positional[0].as_str(), args.positional[1].as_str())
+        } else {
+            if args.positional.is_empty() {
+                bail!("usage: git config --get-urlmatch <key> <URL>");
+            }
+            (key_raw.as_str(), args.positional[0].as_str())
+        };
+        return cmd_get_urlmatch(&args, key, url, git_dir.as_deref());
     }
 
     if let Some(ref key) = args.get_color_key {
@@ -651,26 +671,41 @@ fn cmd_get(
 ) -> Result<()> {
     let config = load_config(args, git_dir, ConfigReadIncludeMode::Lookup)?;
     let terminator = if args.null_terminated { '\0' } else { '\n' };
+    let cwd = std::env::current_dir().ok();
 
     // Handle --url for URL matching (subcommand interface)
     if let Some(ref url) = get_args.url {
-        let (section, variable) = match get_args.key.find('.') {
-            Some(i) => (&get_args.key[..i], &get_args.key[i + 1..]),
-            None => bail!("key does not contain a section: '{}'", get_args.key),
-        };
-        let entries =
-            grit_lib::config::get_urlmatch_entries(config.entries(), section, variable, url);
-        let Some(entry) = entries.last() else {
-            if let Some(ref default) = get_args.default {
-                let val = format_default_value(args, default)?;
-                print!("{val}{terminator}");
-                return Ok(());
+        if let Some(i) = get_args.key.find('.') {
+            let (section, variable) = (&get_args.key[..i], &get_args.key[i + 1..]);
+            let entries =
+                grit_lib::config::get_urlmatch_entries(config.entries(), section, variable, url);
+            let Some(entry) = entries.last() else {
+                if let Some(ref default) = get_args.default {
+                    let val = format_default_value(args, default)?;
+                    print_default_value(args, &val, terminator);
+                    return Ok(());
+                }
+                std::process::exit(1);
+            };
+            let val = entry.value.as_deref().unwrap_or("true");
+            let val = format_typed_value(args, Some(&get_args.key), val)?;
+            print!("{val}{terminator}");
+        } else {
+            let entries =
+                grit_lib::config::get_urlmatch_all_in_section(config.entries(), &get_args.key, url);
+            if entries.is_empty() {
+                std::process::exit(1);
             }
-            std::process::exit(1);
-        };
-        let val = entry.value.as_deref().unwrap_or("true");
-        let val = format_typed_value(args, Some(&get_args.key), val)?;
-        print!("{val}{terminator}");
+            for (var_key, val, scope) in &entries {
+                let val = format_typed_value(args, Some(var_key), val)?;
+                let prefix = if get_args.show_scope || args.show_scope {
+                    format!("{}	", scope)
+                } else {
+                    String::new()
+                };
+                print!("{prefix}{var_key} {val}{terminator}");
+            }
+        }
         return Ok(());
     }
 
@@ -684,17 +719,22 @@ fn cmd_get(
         for entry in matches {
             let bare_boolean = entry.value.is_none();
             let want_bool_text = regexp_type_requests_bool_output(args);
+            let prefix = config_entry_prefix_for_get(args, get_args, entry, cwd.as_deref());
             if args.name_only {
-                print!("{}{}", entry.key, terminator);
+                print!("{}{}{}", prefix, entry.key, terminator);
             } else if get_args.show_names {
                 // Bare keys are boolean true; Git prints only the key unless a bool type is requested
                 // (t1300-config: get-regexp variable with no value vs get-regexp --bool).
                 if bare_boolean && !want_bool_text {
-                    print!("{} true{}", entry.key, terminator);
+                    print!("{}{}{}", prefix, entry.key, terminator);
                 } else {
                     let val = entry.value.as_deref().unwrap_or("true");
                     let val = format_typed_value(args, Some(&entry.key), val)?;
-                    print!("{} {}{}", entry.key, val, terminator);
+                    if args.null_terminated {
+                        print!("{}\n{}{}", entry.key, val, terminator);
+                    } else {
+                        print!("{} {}{}", entry.key, val, terminator);
+                    }
                 }
             } else {
                 let val = entry.value.as_deref().unwrap_or("true");
@@ -713,7 +753,7 @@ fn cmd_get(
         if values.is_empty() {
             if let Some(ref default) = get_args.default {
                 let val = format_default_value(args, default)?;
-                print!("{val}{terminator}");
+                print_default_value(args, &val, terminator);
                 return Ok(());
             }
             std::process::exit(1);
@@ -736,7 +776,7 @@ fn cmd_get(
         }
         if let Some(ref default) = get_args.default {
             let d = format_default_value(args, default)?;
-            print!("{d}{terminator}");
+            print_default_value(args, &d, terminator);
             return Ok(());
         }
         std::process::exit(1);
@@ -746,6 +786,26 @@ fn cmd_get(
     // and find the last non-optional-missing one.
     let has_path_type = args.type_path || args.type_name.as_deref() == Some("path");
     if has_path_type {
+        if let Ok(canon) = grit_lib::config::canonical_key(&get_args.key) {
+            if let Some(entry) = config
+                .entries()
+                .iter()
+                .rev()
+                .find(|entry| entry.key == canon)
+            {
+                if entry.value.is_none() {
+                    let file = entry
+                        .file
+                        .as_deref()
+                        .map(grit_lib::config::config_file_display_for_error)
+                        .unwrap_or_else(|| "command line".to_owned());
+                    return Err(fatal_config_parse(format!(
+                        "fatal: bad config value for '{}' in file {file} at line {}",
+                        get_args.key, entry.line
+                    )));
+                }
+            }
+        }
         let all_values = config.get_all(&get_args.key);
         // Find the last value that isn't optional-missing
         let last_valid = all_values
@@ -759,22 +819,43 @@ fn cmd_get(
         }
         if let Some(ref default) = get_args.default {
             let val = format_default_value(args, default)?;
-            print!("{val}{terminator}");
+            print_default_value(args, &val, terminator);
             return Ok(());
         }
         std::process::exit(1);
     }
 
-    match config.get(&get_args.key) {
-        Some(val) => {
+    let canon = grit_lib::config::canonical_key(&get_args.key).ok();
+    let entry = canon.as_deref().and_then(|canon| {
+        config
+            .entries()
+            .iter()
+            .rev()
+            .find(|entry| entry.key == canon)
+    });
+    match entry.and_then(|entry| {
+        entry
+            .value
+            .clone()
+            .or_else(|| Some("true".to_owned()))
+            .map(|v| (entry, v))
+    }) {
+        Some((entry, val)) => {
             let val = format_typed_value(args, Some(&get_args.key), &val)?;
-            print!("{val}{terminator}");
+            let prefix = config_entry_prefix_for_get(args, get_args, entry, cwd.as_deref());
+            print!("{prefix}{val}{terminator}");
             Ok(())
         }
         None => {
             if let Some(ref default) = get_args.default {
                 let val = format_default_value(args, default)?;
-                print!("{val}{terminator}");
+                if args.show_scope || get_args.show_scope {
+                    print!("command	");
+                }
+                if args.show_origin || get_args.show_origin {
+                    print!("command line:	");
+                }
+                print_default_value(args, &val, terminator);
                 return Ok(());
             }
             std::process::exit(1);
@@ -789,6 +870,7 @@ fn cmd_set(
     file_path: &Path,
     value_pattern: Option<&str>,
 ) -> Result<()> {
+    reject_stdin_write(file_path)?;
     // Validate --comment: must not contain LF
     if let Some(ref c) = args.comment {
         if c.contains('\n') {
@@ -843,6 +925,7 @@ fn cmd_unset(
     value_pattern: Option<&str>,
     preserve_empty_section_header_on_unset_all: bool,
 ) -> Result<()> {
+    reject_stdin_write(file_path)?;
     let mut config = ConfigFile::from_path(file_path, scope).context("reading config file")?;
 
     match config {
@@ -881,45 +964,127 @@ fn cmd_unset(
     Ok(())
 }
 
+fn config_origin_prefix(entry: &grit_lib::config::ConfigEntry, cwd: Option<&Path>) -> String {
+    if entry.scope == ConfigScope::Command {
+        return "command line:\t".to_owned();
+    }
+    let Some(file) = entry.file.as_deref() else {
+        return if entry.scope == ConfigScope::Command {
+            "command line:\t".to_owned()
+        } else {
+            String::new()
+        };
+    };
+    if file == Path::new("-") {
+        return "standard input:\t".to_owned();
+    }
+    if file.to_string_lossy().starts_with(':') {
+        return "command line:\t".to_owned();
+    }
+    let display_path = if entry.scope == ConfigScope::Global {
+        file.display().to_string()
+    } else if let Some(cwd) = cwd {
+        file.strip_prefix(cwd)
+            .map(|rel| rel.display().to_string())
+            .unwrap_or_else(|_| file.display().to_string())
+    } else {
+        file.display().to_string()
+    };
+    format!("file:{}\t", quote_origin_path(&display_path))
+}
+
+fn quote_origin_path(path: &str) -> String {
+    if path.contains('"') || path.contains(' ') || path.contains('\t') {
+        let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{escaped}\"")
+    } else {
+        path.to_owned()
+    }
+}
+
+fn config_entry_prefix(
+    args: &Args,
+    entry: &grit_lib::config::ConfigEntry,
+    cwd: Option<&Path>,
+) -> String {
+    let mut prefix = String::new();
+    if args.show_scope {
+        prefix.push_str(&format!("{}\t", entry.scope));
+    }
+    if args.show_origin {
+        prefix.push_str(&config_origin_prefix(entry, cwd));
+    }
+    prefix
+}
+
+fn config_entry_prefix_for_get(
+    args: &Args,
+    get_args: &GetArgs,
+    entry: &grit_lib::config::ConfigEntry,
+    cwd: Option<&Path>,
+) -> String {
+    let mut prefix = String::new();
+    if args.show_scope || get_args.show_scope {
+        prefix.push_str(&format!("{}	", entry.scope));
+    }
+    if args.show_origin || get_args.show_origin {
+        prefix.push_str(&config_origin_prefix(entry, cwd));
+    }
+    prefix
+}
+
 fn cmd_list(args: &Args, git_dir: Option<&Path>) -> Result<()> {
     let config = load_config(args, git_dir, ConfigReadIncludeMode::List)?;
     let terminator = if args.null_terminated { '\0' } else { '\n' };
     let cwd = std::env::current_dir().ok();
 
     for entry in config.entries() {
-        let mut prefix = String::new();
-        if args.show_scope {
-            prefix.push_str(&format!("{}\t", entry.scope));
-        }
-        if args.show_origin {
-            if let Some(ref file) = entry.file {
-                // Use relative path if possible (matches git behavior)
-                let display_path = if let Some(ref cwd) = cwd {
-                    if let Ok(rel) = file.strip_prefix(cwd) {
-                        rel.display().to_string()
-                    } else {
-                        file.display().to_string()
-                    }
-                } else {
-                    file.display().to_string()
-                };
-                prefix.push_str(&format!("file:{}\t", display_path));
+        let prefix = config_entry_prefix(args, entry, cwd.as_deref());
+        let raw_val = entry.value.as_deref().unwrap_or("true");
+        let formatted = if args.type_int
+            || args.type_bool
+            || args.type_bool_or_int
+            || args.type_path
+            || args.type_expiry_date
+            || args.type_name.is_some()
+        {
+            if is_optional_missing_path(args, raw_val) {
+                continue;
             }
-        }
-        let val = entry.value.as_deref().unwrap_or("true");
+            match format_typed_value(args, Some(&entry.key), raw_val) {
+                Ok(v)
+                    if (args.type_path || args.type_name.as_deref() == Some("path"))
+                        && v.is_empty() =>
+                {
+                    continue;
+                }
+                Ok(v) => v,
+                Err(_) => continue,
+            }
+        } else {
+            raw_val.to_owned()
+        };
         if args.name_only {
             print!("{}{}{}", prefix, entry.key, terminator);
         } else if args.null_terminated {
-            // Git uses key=value\0 format with -z for --list
-            print!("{}{}={}{}", prefix, entry.key, val, terminator);
+            if entry.value.is_some() || formatted != "true" {
+                print!(
+                    "{}{}
+{}{}",
+                    prefix, entry.key, formatted, terminator
+                );
+            } else {
+                print!("{}{}{}", prefix, entry.key, terminator);
+            }
         } else {
-            print!("{}{}={}{}", prefix, entry.key, val, terminator);
+            print!("{}{}={}{}", prefix, entry.key, formatted, terminator);
         }
     }
     Ok(())
 }
 
 fn cmd_remove_section(scope: ConfigScope, file_path: &Path, name: &str) -> Result<()> {
+    reject_stdin_write(file_path)?;
     let mut config = ConfigFile::from_path(file_path, scope).context("reading config file")?;
 
     match config {
@@ -940,6 +1105,7 @@ fn cmd_rename_section(
     old_name: &str,
     new_name: &str,
 ) -> Result<()> {
+    reject_stdin_write(file_path)?;
     let mut config = ConfigFile::from_path(file_path, scope).context("reading config file")?;
 
     match config {
@@ -961,6 +1127,7 @@ fn cmd_add(
     scope: ConfigScope,
     file_path: &Path,
 ) -> Result<()> {
+    reject_stdin_write(file_path)?;
     let mut config = match ConfigFile::from_path(file_path, scope).context("reading config file")? {
         Some(cfg) => cfg,
         None => ConfigFile::parse(file_path, "", scope)?,
@@ -971,6 +1138,7 @@ fn cmd_add(
 }
 
 fn cmd_edit(file_path: &Path) -> Result<()> {
+    reject_stdin_write(file_path)?;
     // Resolve editor: GIT_EDITOR env → core.editor config → VISUAL env → EDITOR env → vi
     let git_dir = resolve_git_dir();
     let config = ConfigSet::load(git_dir.as_deref(), true).unwrap_or_default();
@@ -999,6 +1167,15 @@ fn cmd_edit(file_path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn reject_stdin_write(file_path: &Path) -> Result<()> {
+    if file_path == Path::new("-") {
+        return Err(fatal_config_parse(
+            "fatal: writing to stdin is not supported",
+        ));
+    }
+    Ok(())
+}
+
 /// Handle `--blob=<blob-ish>` — read config from a blob object (read-only).
 /// Handle `--get-urlmatch <key> <URL>`.
 fn cmd_get_urlmatch(args: &Args, key: &str, url: &str, git_dir: Option<&Path>) -> Result<()> {
@@ -1023,13 +1200,21 @@ fn cmd_get_urlmatch(args: &Args, key: &str, url: &str, git_dir: Option<&Path>) -
             std::process::exit(1);
         }
         for (var_key, val, scope) in &entries {
-            let val = format_typed_value(args, Some(var_key), val)?;
             let prefix = if args.show_scope {
-                format!("{}\t", scope)
+                format!("{}	", scope)
             } else {
                 String::new()
             };
-            print!("{prefix}{var_key} {val}{terminator}");
+            if val.is_empty()
+                && !args.type_bool
+                && !args.type_bool_or_int
+                && args.type_name.is_none()
+            {
+                print!("{prefix}{var_key}{terminator}");
+            } else {
+                let val = format_typed_value(args, Some(var_key), val)?;
+                print!("{prefix}{var_key} {val}{terminator}");
+            }
         }
     }
     Ok(())
@@ -1104,11 +1289,12 @@ fn cmd_blob(args: &Args, blob_spec: &str) -> Result<()> {
     // --list
     if args.list {
         for entry in config.entries() {
+            let prefix = blob_config_prefix(args.show_scope, args.show_origin, blob_spec);
             let val = entry.value.as_deref().unwrap_or("true");
             if args.name_only {
-                print!("{}{}", entry.key, terminator);
+                print!("{}{}{}", prefix, entry.key, terminator);
             } else {
-                print!("{}={}{}", entry.key, val, terminator);
+                print!("{}{}={}{}", prefix, entry.key, val, terminator);
             }
         }
         return Ok(());
@@ -1128,7 +1314,7 @@ fn cmd_blob(args: &Args, blob_spec: &str) -> Result<()> {
             if args.name_only {
                 print!("{}{}", entry.key, terminator);
             } else if bare_boolean && !want_bool_text {
-                print!("{} true{}", entry.key, terminator);
+                print!("{}{}", entry.key, terminator);
             } else {
                 let val = entry.value.as_deref().unwrap_or("true");
                 let val = format_typed_value(args, Some(&entry.key), val)?;
@@ -1230,13 +1416,17 @@ fn cmd_blob(args: &Args, blob_spec: &str) -> Result<()> {
                     None => std::process::exit(1),
                 }
             }
-            ConfigSubcommand::List(_) => {
+            ConfigSubcommand::List(list_args) => {
+                let show_scope = args.show_scope || list_args.show_scope;
+                let show_origin = args.show_origin || list_args.show_origin;
+                let name_only = args.name_only || list_args.name_only;
                 for entry in config.entries() {
+                    let prefix = blob_config_prefix(show_scope, show_origin, blob_spec);
                     let val = entry.value.as_deref().unwrap_or("true");
-                    if args.name_only {
-                        print!("{}{}", entry.key, terminator);
+                    if name_only {
+                        print!("{}{}{}", prefix, entry.key, terminator);
                     } else {
-                        print!("{}={}{}", entry.key, val, terminator);
+                        print!("{}{}={}{}", prefix, entry.key, val, terminator);
                     }
                 }
                 Ok(())
@@ -1246,6 +1436,17 @@ fn cmd_blob(args: &Args, blob_spec: &str) -> Result<()> {
     } else {
         bail!("--blob requires a key or --list");
     }
+}
+
+fn blob_config_prefix(show_scope: bool, show_origin: bool, blob_spec: &str) -> String {
+    let mut prefix = String::new();
+    if show_scope {
+        prefix.push_str("command\t");
+    }
+    if show_origin {
+        prefix.push_str(&format!("blob:{blob_spec}\t"));
+    }
+    prefix
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -1362,8 +1563,15 @@ fn resolve_config_file(args: &Args, git_dir: Option<&Path>) -> Result<(ConfigSco
         return Ok((ConfigScope::Global, path));
     }
     if args.worktree {
-        let gd = git_dir.ok_or_else(|| anyhow::anyhow!("not in a git repository"))?;
+        let gd = git_dir.ok_or_else(|| {
+            fatal_config_parse("fatal: --worktree can only be used inside a git repository")
+        })?;
         return resolve_worktree_config_file(gd);
+    }
+    if let Ok(path) = std::env::var("GIT_CONFIG") {
+        if !path.is_empty() {
+            return Ok((ConfigScope::Local, PathBuf::from(path)));
+        }
     }
     // Default: local
     if let Some(gd) = git_dir {
@@ -1413,6 +1621,8 @@ fn load_config(
                 } else {
                     args.includes && !args.no_includes
                 }
+            } else if args.system || args.global || args.local || args.worktree {
+                args.includes && !args.no_includes
             } else {
                 !args.no_includes
             }
@@ -1472,7 +1682,30 @@ fn load_config(
         let system_path = std::env::var("GIT_CONFIG_SYSTEM")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/etc/gitconfig"));
-        if let Some(f) = ConfigFile::from_path(&system_path, ConfigScope::System)? {
+        let Some(f) = ConfigFile::from_path(&system_path, ConfigScope::System)? else {
+            return Err(fatal_config_parse(format!(
+                "fatal: unable to read config file '{}': No such file or directory",
+                system_path.display()
+            )));
+        };
+        if process_includes {
+            set.merge_file_with_includes(&f, true, &load_opts.include_ctx)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+        } else {
+            set.merge(&f);
+        }
+        return Ok(set);
+    }
+
+    if args.global {
+        let mut set = ConfigSet::new();
+        if let Some(path) = global_config_path() {
+            let Some(f) = ConfigFile::from_path(&path, ConfigScope::Global)? else {
+                return Err(fatal_config_parse(format!(
+                    "fatal: unable to read config file '{}': No such file or directory",
+                    path.display()
+                )));
+            };
             if process_includes {
                 set.merge_file_with_includes(&f, true, &load_opts.include_ctx)
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -1483,46 +1716,49 @@ fn load_config(
         return Ok(set);
     }
 
-    if args.global {
-        let mut set = ConfigSet::new();
-        if let Some(path) = global_config_path() {
-            if let Some(f) = ConfigFile::from_path(&path, ConfigScope::Global)? {
-                if process_includes {
-                    set.merge_file_with_includes(&f, true, &load_opts.include_ctx)
-                        .map_err(|e| anyhow::anyhow!("{}", e))?;
-                } else {
-                    set.merge(&f);
-                }
-            }
-        }
-        return Ok(set);
-    }
-
     if args.local {
+        let gd = git_dir.ok_or_else(|| {
+            fatal_config_parse("fatal: --local can only be used inside a git repository")
+        })?;
         let mut set = ConfigSet::new();
-        if let Some(gd) = git_dir {
-            let common = common_git_dir_for_config(gd);
-            if let Some(f) = ConfigFile::from_path(&common.join("config"), ConfigScope::Local)? {
-                if process_includes {
-                    set.merge_file_with_includes(&f, true, &load_opts.include_ctx)
-                        .map_err(|e| anyhow::anyhow!("{}", e))?;
-                } else {
-                    set.merge(&f);
-                }
+        let common = common_git_dir_for_config(gd);
+        if let Some(f) = ConfigFile::from_path(&common.join("config"), ConfigScope::Local)? {
+            if process_includes {
+                set.merge_file_with_includes(&f, true, &load_opts.include_ctx)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            } else {
+                set.merge(&f);
             }
         }
         return Ok(set);
     }
 
     if args.worktree {
+        let gd = git_dir.ok_or_else(|| {
+            fatal_config_parse("fatal: --worktree can only be used inside a git repository")
+        })?;
         let mut set = ConfigSet::new();
-        if let Some(gd) = git_dir {
-            let (scope, p) = resolve_worktree_config_file(gd)?;
-            if let Some(f) = ConfigFile::from_path(&p, scope)? {
-                set.merge(&f);
-            }
+        let (scope, p) = resolve_worktree_config_file(gd)?;
+        if let Some(f) = ConfigFile::from_path(&p, scope)? {
+            set.merge(&f);
         }
         return Ok(set);
+    }
+
+    if let Ok(path) = std::env::var("GIT_CONFIG") {
+        if !path.is_empty() {
+            let path = PathBuf::from(path);
+            let mut set = ConfigSet::new();
+            if let Some(f) = ConfigFile::from_path(&path, ConfigScope::Local)? {
+                if process_includes {
+                    set.merge_file_with_includes(&f, true, &load_opts.include_ctx)
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                } else {
+                    set.merge(&f);
+                }
+            }
+            return Ok(set);
+        }
     }
 
     // Default: full cascade
@@ -1575,7 +1811,21 @@ fn default_supported(args: &Args) -> bool {
 
 /// Formats a default value and adds Git-compatible context on failure.
 fn format_default_value(args: &Args, val: &str) -> Result<String> {
-    format_typed_value(args, None, val).context("failed to format default config value")
+    format_typed_value(args, None, val).map_err(|err| {
+        if args.type_int || args.type_name.as_deref() == Some("int") {
+            fatal_config_parse(format!("fatal: bad numeric config value '{val}'"))
+        } else {
+            err.context("failed to format default config value")
+        }
+    })
+}
+
+fn print_default_value(args: &Args, val: &str, terminator: char) {
+    if args.type_name.as_deref() == Some("color") {
+        print!("{val}");
+    } else {
+        print!("{val}{terminator}");
+    }
 }
 
 /// Canonicalize a value for writing based on type flags.
@@ -1648,7 +1898,7 @@ fn canonicalize_value_for_set(args: &Args, config_key: &str, val: &str) -> Resul
     if type_name == Some("color") {
         match parse_color(val) {
             Ok(_) => return Ok(val.to_owned()),
-            Err(e) => bail!("{}", e),
+            Err(e) => bail!("cannot parse color: {}", e),
         }
     }
 
@@ -1700,7 +1950,7 @@ fn format_typed_value(args: &Args, config_key: Option<&str>, val: &str) -> Resul
             Err(err) => {
                 if let Some(key) = config_key {
                     return Err(fatal_config_parse(format!(
-                        "fatal: bad numeric config value '{val}' for '{key}'"
+                        "fatal: bad numeric config value '{val}' for '{key}' in file .git/config: invalid unit"
                     )));
                 }
                 bail!("{}", err);
@@ -1709,6 +1959,11 @@ fn format_typed_value(args: &Args, config_key: Option<&str>, val: &str) -> Resul
     }
 
     if args.type_path || type_name == Some("path") {
+        if val.starts_with("~/") && std::env::var_os("HOME").is_none() {
+            return Err(fatal_config_parse(format!(
+                "fatal: failed to expand user dir in: {val}"
+            )));
+        }
         return match grit_lib::config::parse_path_optional(val) {
             Some(p) => Ok(p),
             None => Ok(String::new()), // optional path missing — caller should check is_optional_missing_path
@@ -1718,7 +1973,8 @@ fn format_typed_value(args: &Args, config_key: Option<&str>, val: &str) -> Resul
     if args.type_bool_or_int || type_name == Some("bool-or-int") {
         // Try as named bool first
         match val.to_lowercase().as_str() {
-            "true" | "yes" | "on" | "" => return Ok("true".to_owned()),
+            "true" | "yes" | "on" => return Ok("true".to_owned()),
+            "" => return Ok("false".to_owned()),
             "false" | "no" | "off" => return Ok("false".to_owned()),
             _ => {}
         }
@@ -1743,7 +1999,7 @@ fn format_typed_value(args: &Args, config_key: Option<&str>, val: &str) -> Resul
         }
     }
 
-    if type_name == Some("expiry-date") {
+    if args.type_expiry_date || type_name == Some("expiry-date") {
         return format_expiry_date(val);
     }
 
@@ -1762,9 +2018,14 @@ fn format_expiry_date(val: &str) -> Result<String> {
         return Ok(n.to_string());
     }
 
-    if let Some(ts) = super::commit::parse_date_to_git_timestamp(trimmed) {
-        let epoch = ts.split_whitespace().next().unwrap_or(&ts);
-        return Ok(epoch.to_owned());
+    if let Ok((ts, _)) = grit_lib::git_date::parse::parse_date_basic(trimmed) {
+        return Ok(ts.to_string());
+    }
+
+    let mut err = 0;
+    let ts = grit_lib::git_date::approx::approxidate_careful(trimmed, Some(&mut err));
+    if err == 0 {
+        return Ok(ts.to_string());
     }
 
     bail!("invalid expiry date '{}'", val);

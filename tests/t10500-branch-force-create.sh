@@ -112,7 +112,7 @@ test_expect_success 'branch --force does not affect current branch' '
 	(
 	cd repo &&
 	grit branch --show-current >actual &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 	)
 '
@@ -143,7 +143,7 @@ test_expect_success 'branch -D force deletes branch' '
 test_expect_success 'branch -d cannot delete current branch' '
 	(
 	cd repo &&
-	test_must_fail grit branch -d master
+	test_must_fail grit branch -d main
 	)
 '
 
@@ -242,11 +242,11 @@ test_expect_success 'branch --copy copies branch' '
 
 # --- branch --show-current ---
 
-test_expect_success 'branch --show-current shows master' '
+test_expect_success 'branch --show-current shows main' '
 	(
 	cd repo &&
 	grit branch --show-current >actual &&
-	echo "master" >expect &&
+	echo "main" >expect &&
 	test_cmp expect actual
 	)
 '
@@ -285,7 +285,7 @@ test_expect_success 'branch --contains HEAD lists branches at HEAD' '
 	(
 	cd repo &&
 	grit branch --contains HEAD >actual &&
-	grep "master" actual
+	grep "main" actual
 	)
 '
 
@@ -295,7 +295,7 @@ test_expect_success 'branch --contains specific commit' '
 	grit branch -f feature1 HEAD &&
 	root=$(grit rev-parse HEAD~2) &&
 	grit branch --contains "$root" >actual &&
-	grep "master" actual &&
+	grep "main" actual &&
 	grep "feature1" actual
 	)
 '
@@ -306,7 +306,7 @@ test_expect_success 'branch --merged lists merged branches' '
 	(
 	cd repo &&
 	grit branch --merged HEAD >actual &&
-	grep "master" actual
+	grep "main" actual
 	)
 '
 
@@ -357,7 +357,7 @@ test_expect_success 'branch -a shows all branches' '
 	(
 	cd repo &&
 	grit branch -a >actual &&
-	grep "master" actual
+	grep "main" actual
 	)
 '
 
@@ -365,7 +365,7 @@ test_expect_success 'branch -l lists branches' '
 	(
 	cd repo &&
 	grit branch -l >actual &&
-	grep "master" actual
+	grep "main" actual
 	)
 '
 
@@ -373,7 +373,7 @@ test_expect_success 'branch with no args lists branches' '
 	(
 	cd repo &&
 	grit branch >actual &&
-	grep "master" actual
+	grep "main" actual
 	)
 '
 

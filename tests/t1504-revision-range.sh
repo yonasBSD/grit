@@ -215,21 +215,21 @@ test_expect_success 'rev-parse --git-dir shows .git' '
 	)
 '
 
-test_expect_success 'rev-parse master resolves to HEAD' '
+test_expect_success 'rev-parse main resolves to HEAD' '
 	(
 	cd revrange &&
-	master=$(git rev-parse master) &&
+	main=$(git rev-parse main) &&
 	head=$(git rev-parse HEAD) &&
-	test "$master" = "$head"
+	test "$main" = "$head"
 	)
 '
 
-test_expect_success 'rev-parse master~1 works' '
+test_expect_success 'rev-parse main~1 works' '
 	(
 	cd revrange &&
-	master_p=$(git rev-parse master~1) &&
+	main_p=$(git rev-parse main~1) &&
 	head_p=$(git rev-parse HEAD~1) &&
-	test "$master_p" = "$head_p"
+	test "$main_p" = "$head_p"
 	)
 '
 

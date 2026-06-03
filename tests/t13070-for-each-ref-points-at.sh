@@ -63,7 +63,7 @@ test_expect_success 'for-each-ref --format with refname' '
 	(
 	cd repo &&
 	grit for-each-ref --format="%(refname)" refs/heads/ >../actual &&
-	grep "refs/heads/master" ../actual &&
+	grep "refs/heads/main" ../actual &&
 	grep "refs/heads/branch-a" ../actual &&
 	grep "refs/heads/branch-b" ../actual
 	)
@@ -73,7 +73,7 @@ test_expect_success 'for-each-ref --format with refname:short' '
 	(
 	cd repo &&
 	grit for-each-ref --format="%(refname:short)" refs/heads/ >../actual &&
-	grep "^master$" ../actual &&
+	grep "^main$" ../actual &&
 	grep "^branch-a$" ../actual
 	)
 '
@@ -81,8 +81,8 @@ test_expect_success 'for-each-ref --format with refname:short' '
 test_expect_success 'for-each-ref --format with objectname' '
 	(
 	cd repo &&
-	grit for-each-ref --format="%(objectname)" refs/heads/master >../actual &&
-	HEAD_SHA=$($REAL_GIT rev-parse master) &&
+	grit for-each-ref --format="%(objectname)" refs/heads/main >../actual &&
+	HEAD_SHA=$($REAL_GIT rev-parse main) &&
 	echo "$HEAD_SHA" >../expect &&
 	test_cmp ../expect ../actual
 	)
@@ -91,7 +91,7 @@ test_expect_success 'for-each-ref --format with objectname' '
 test_expect_success 'for-each-ref --format with objecttype' '
 	(
 	cd repo &&
-	grit for-each-ref --format="%(objecttype)" refs/heads/master >../actual &&
+	grit for-each-ref --format="%(objecttype)" refs/heads/main >../actual &&
 	echo "commit" >../expect &&
 	test_cmp ../expect ../actual
 	)
@@ -119,7 +119,7 @@ test_expect_success 'for-each-ref --points-at HEAD shows branches at HEAD' '
 	(
 	cd repo &&
 	grit for-each-ref --format="%(refname:short)" --points-at HEAD refs/heads/ >../actual &&
-	grep "^master$" ../actual
+	grep "^main$" ../actual
 	)
 '
 
@@ -196,7 +196,7 @@ test_expect_success 'for-each-ref --sort=-refname orders reverse alphabetically'
 	cd repo &&
 	grit for-each-ref --format="%(refname:short)" --sort=-refname refs/heads/ >../actual &&
 	head -1 ../actual >../first &&
-	echo "master" >../expect &&
+	echo "main" >../expect &&
 	test_cmp ../expect ../first
 	)
 '
@@ -221,22 +221,22 @@ test_expect_success 'for-each-ref --contains HEAD includes HEAD branches' '
 	(
 	cd repo &&
 	grit for-each-ref --format="%(refname:short)" --contains HEAD refs/heads/ >../actual &&
-	grep "^master$" ../actual
+	grep "^main$" ../actual
 	)
 '
 
-test_expect_success 'for-each-ref --contains HEAD shows master' '
+test_expect_success 'for-each-ref --contains HEAD shows main' '
 	(
 	cd repo &&
 	grit for-each-ref --format="%(refname:short)" --contains HEAD refs/heads/ >../actual &&
-	grep "^master$" ../actual
+	grep "^main$" ../actual
 	)
 '
 
-test_expect_success 'for-each-ref --merged master shows all merged branches' '
+test_expect_success 'for-each-ref --merged main shows all merged branches' '
 	(
 	cd repo &&
-	grit for-each-ref --format="%(refname:short)" --merged master refs/heads/ >../actual &&
+	grit for-each-ref --format="%(refname:short)" --merged main refs/heads/ >../actual &&
 	grep "^branch-a$" ../actual &&
 	grep "^branch-b$" ../actual
 	)
@@ -245,8 +245,8 @@ test_expect_success 'for-each-ref --merged master shows all merged branches' '
 test_expect_success 'for-each-ref default format includes objectname' '
 	(
 	cd repo &&
-	HEAD_SHA=$($REAL_GIT rev-parse master) &&
-	grit for-each-ref refs/heads/master >../actual &&
+	HEAD_SHA=$($REAL_GIT rev-parse main) &&
+	grit for-each-ref refs/heads/main >../actual &&
 	grep "$HEAD_SHA" ../actual
 	)
 '
@@ -254,7 +254,7 @@ test_expect_success 'for-each-ref default format includes objectname' '
 test_expect_success 'for-each-ref default format includes objecttype' '
 	(
 	cd repo &&
-	grit for-each-ref refs/heads/master >../actual &&
+	grit for-each-ref refs/heads/main >../actual &&
 	grep "commit" ../actual
 	)
 '
@@ -262,8 +262,8 @@ test_expect_success 'for-each-ref default format includes objecttype' '
 test_expect_success 'for-each-ref default format includes refname' '
 	(
 	cd repo &&
-	grit for-each-ref refs/heads/master >../actual &&
-	grep "refs/heads/master" ../actual
+	grit for-each-ref refs/heads/main >../actual &&
+	grep "refs/heads/main" ../actual
 	)
 '
 
@@ -278,8 +278,8 @@ test_expect_success 'for-each-ref with no matching pattern returns empty' '
 test_expect_success 'for-each-ref --format with multiple atoms' '
 	(
 	cd repo &&
-	grit for-each-ref --format="%(objecttype) %(refname:short)" refs/heads/master >../actual &&
-	echo "commit master" >../expect &&
+	grit for-each-ref --format="%(objecttype) %(refname:short)" refs/heads/main >../actual &&
+	echo "commit main" >../expect &&
 	test_cmp ../expect ../actual
 	)
 '

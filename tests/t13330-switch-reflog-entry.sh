@@ -35,12 +35,12 @@ test_expect_success 'switch -c new branch is current' '
 	test_cmp expect actual
 '
 
-test_expect_success 'switch back to master' '
+test_expect_success 'switch back to main' '
 	(cd repo &&
-	 grit switch master &&
+	 grit switch main &&
 	 grit symbolic-ref HEAD >../actual
 	) &&
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 
@@ -64,7 +64,7 @@ test_expect_success 'switch to existing branch' '
 
 test_expect_success 'switch --detach goes to detached HEAD' '
 	(cd repo &&
-	 grit switch --detach master &&
+	 grit switch --detach main &&
 	 test_must_fail grit symbolic-ref HEAD 2>../err
 	) &&
 	test -s err
@@ -73,24 +73,24 @@ test_expect_success 'switch --detach goes to detached HEAD' '
 test_expect_success 'switch --detach HEAD is at correct commit' '
 	(cd repo &&
 	 grit rev-parse HEAD >../actual &&
-	 grit rev-parse master >../expect
+	 grit rev-parse main >../expect
 	) &&
 	test_cmp expect actual
 '
 
 test_expect_success 'switch back from detached HEAD to branch' '
 	(cd repo &&
-	 grit switch master &&
+	 grit switch main &&
 	 grit symbolic-ref HEAD >../actual
 	) &&
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 
 test_expect_success 'switch - goes to previous branch' '
 	(cd repo &&
 	 grit switch feature1 &&
-	 grit switch master &&
+	 grit switch main &&
 	 grit switch - &&
 	 grit symbolic-ref HEAD >../actual
 	) &&
@@ -120,12 +120,12 @@ test_expect_success 'switch --orphan clears the index' '
 	test_must_be_empty actual
 '
 
-test_expect_success 'switch back to master from orphan' '
+test_expect_success 'switch back to main from orphan' '
 	(cd repo &&
-	 grit switch master &&
+	 grit switch main &&
 	 grit symbolic-ref HEAD >../actual
 	) &&
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 
@@ -139,7 +139,7 @@ test_expect_success 'switch to nonexistent branch fails' '
 test_expect_success 'switch creates reflog entry' '
 	(cd repo &&
 	 grit switch feature1 &&
-	 grit switch master &&
+	 grit switch main &&
 	 cat .git/logs/HEAD >../actual
 	) &&
 	test -s actual
@@ -163,7 +163,7 @@ test_expect_success 'switch -c from-parent is at correct commit' '
 
 test_expect_success 'switch preserves working tree changes on clean switch' '
 	(cd repo &&
-	 grit switch master &&
+	 grit switch main &&
 	 echo untracked >untracked.txt &&
 	 grit switch feature1 &&
 	 test -f untracked.txt
@@ -172,11 +172,11 @@ test_expect_success 'switch preserves working tree changes on clean switch' '
 
 test_expect_success 'switch -c multiple branches' '
 	(cd repo &&
-	 grit switch master &&
+	 grit switch main &&
 	 grit switch -c b1 &&
-	 grit switch master &&
+	 grit switch main &&
 	 grit switch -c b2 &&
-	 grit switch master &&
+	 grit switch main &&
 	 grit switch -c b3 &&
 	 grit branch >../actual
 	) &&
@@ -187,10 +187,10 @@ test_expect_success 'switch -c multiple branches' '
 
 test_expect_success 'switch with files updates working tree' '
 	(cd repo &&
-	 grit switch master &&
+	 grit switch main &&
 	 echo branch-content >branch-file.txt &&
 	 grit add branch-file.txt &&
-	 grit commit -m "add branch-file on master" &&
+	 grit commit -m "add branch-file on main" &&
 	 grit switch feature1 &&
 	 test_path_is_missing branch-file.txt
 	)
@@ -198,7 +198,7 @@ test_expect_success 'switch with files updates working tree' '
 
 test_expect_success 'switch back shows the file again' '
 	(cd repo &&
-	 grit switch master &&
+	 grit switch main &&
 	 test_path_is_file branch-file.txt
 	)
 '
@@ -216,10 +216,10 @@ test_expect_success 'switch --detach to tag' '
 
 test_expect_success 'switch to branch from detached state' '
 	(cd repo &&
-	 grit switch master &&
+	 grit switch main &&
 	 grit symbolic-ref HEAD >../actual
 	) &&
-	echo "refs/heads/master" >expect &&
+	echo "refs/heads/main" >expect &&
 	test_cmp expect actual
 '
 
@@ -234,12 +234,12 @@ test_expect_success 'switch -c at tag creates branch at tag' '
 
 test_expect_success 'switch to branch with different tree content' '
 	(cd repo &&
-	 grit switch master &&
+	 grit switch main &&
 	 grit switch -c diverge &&
 	 echo divergent >divergent.txt &&
 	 grit add divergent.txt &&
 	 grit commit -m "diverge" &&
-	 grit switch master &&
+	 grit switch main &&
 	 test_path_is_missing divergent.txt &&
 	 grit switch diverge &&
 	 test_path_is_file divergent.txt
@@ -248,7 +248,7 @@ test_expect_success 'switch to branch with different tree content' '
 
 test_expect_success 'switch -c already-existing branch fails' '
 	(cd repo &&
-	 grit switch master &&
+	 grit switch main &&
 	 test_must_fail grit switch -c feature1 2>../err
 	) &&
 	test -s err
@@ -257,10 +257,10 @@ test_expect_success 'switch -c already-existing branch fails' '
 test_expect_success 'switch updates HEAD reflog' '
 	(cd repo &&
 	 grit switch feature1 &&
-	 grit switch master &&
+	 grit switch main &&
 	 tail -1 .git/logs/HEAD >../actual
 	) &&
-	grep "master" actual
+	grep "main" actual
 '
 
 test_expect_success 'switch -c with no commits on orphan' '
@@ -276,7 +276,7 @@ test_expect_success 'switch -c with no commits on orphan' '
 
 test_expect_success 'switch between unrelated branches' '
 	(cd repo &&
-	 grit switch master &&
+	 grit switch main &&
 	 grit switch clean-orphan &&
 	 grit symbolic-ref HEAD >../actual
 	) &&

@@ -6,6 +6,7 @@ cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
 test_expect_success 'setup' '
+	(
 	grit init repo && cd repo &&
 	git config user.email "alice@example.com" && git config user.name "Alice" &&
 	sane_unset GIT_AUTHOR_NAME &&
@@ -20,14 +21,15 @@ test_expect_success 'setup' '
 	git checkout topic &&
 	echo topic1 >topic.txt && grit add topic.txt && grit commit -m "topic one" &&
 	echo topic2 >topic2.txt && grit add topic2.txt && grit commit -m "topic two" &&
-	git checkout master
+	git checkout main
+	)
 '
 
 test_expect_success 'log --oneline shows abbreviated hash and subject' '
 	(cd repo && grit log -n1 --oneline >../actual) &&
 	(cd repo && grit log -n1 --format="%h" >../hash) &&
 	hash=$(cat hash) &&
-	echo "$hash (HEAD -> master, master) third commit" >expect &&
+	echo "$hash (HEAD -> main) third commit" >expect &&
 	test_cmp expect actual
 '
 

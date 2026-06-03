@@ -4146,6 +4146,10 @@ pub fn run(mut args: Args) -> Result<()> {
             if let Err(e) = grit_lib::repo::validate_repo_format(&git_dir) {
                 bail!("{}", e);
             }
+        } else if std::path::Path::new(".git").is_dir() {
+            if let Err(e) = grit_lib::repo::validate_repo_format(std::path::Path::new(".git")) {
+                bail!("{}", e);
+            }
         }
     }
 

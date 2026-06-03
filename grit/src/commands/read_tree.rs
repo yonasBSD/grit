@@ -450,6 +450,11 @@ pub fn run(args: Args) -> Result<()> {
             false,
         )?;
     }
+    if !old_index.entries.is_empty() {
+        if let Some(work_tree) = repo.work_tree.as_deref() {
+            grit_lib::diff::refresh_index_stat_content_verified(&mut new_index, work_tree);
+        }
+    }
     if !dry_run {
         write_index_with_cache_tree(&repo, &index_path, &mut new_index).context("writing index")?;
     }

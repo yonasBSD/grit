@@ -12,7 +12,7 @@ cd "$(dirname "$0")" || exit 1
 # Section 1: Setup
 ###########################################################################
 
-test_expect_success 'setup: create repo with commits on master' '
+test_expect_success 'setup: create repo with commits on main' '
 	(
 	"$REAL_GIT" init repo &&
 	cd repo &&
@@ -28,7 +28,7 @@ test_expect_success 'setup: create repo with commits on master' '
 	echo c >c.txt &&
 	"$REAL_GIT" add c.txt &&
 	"$REAL_GIT" commit -m "feature commit" &&
-	"$REAL_GIT" checkout master
+	"$REAL_GIT" checkout main
 	)
 '
 
@@ -164,7 +164,7 @@ test_expect_success 'branch lists all branches' '
 	(
 	cd repo &&
 	git branch >out &&
-	grep "master" out &&
+	grep "main" out &&
 	grep "feature" out
 	)
 '
@@ -173,7 +173,7 @@ test_expect_success 'branch marks current branch with asterisk' '
 	(
 	cd repo &&
 	git branch >out &&
-	grep "^[*] master" out
+	grep "^[*] main" out
 	)
 '
 
@@ -241,7 +241,7 @@ test_expect_success 'branch -D force deletes unmerged branch' '
 	echo x >x.txt &&
 	git add x.txt &&
 	git commit -m "unmerged work" &&
-	git checkout master &&
+	git checkout main &&
 	git branch -D temp-unmerged &&
 	git branch >out &&
 	! grep "temp-unmerged" out
@@ -251,7 +251,7 @@ test_expect_success 'branch -D force deletes unmerged branch' '
 test_expect_success 'branch -d refuses to delete current branch' '
 	(
 	cd repo &&
-	test_must_fail git branch -d master
+	test_must_fail git branch -d main
 	)
 '
 
@@ -287,7 +287,7 @@ test_expect_success 'branch -m preserves target commit through renames' '
 	(
 	cd repo &&
 	git rev-parse chain-c >chain &&
-	git rev-parse master >m &&
+	git rev-parse main >m &&
 	test_cmp chain m
 	)
 '
@@ -317,8 +317,8 @@ test_expect_success 'branch from tag-like ref' '
 test_expect_success 'branch --contains lists branches containing commit' '
 	(
 	cd repo &&
-	git branch --contains master >out &&
-	grep "master" out
+	git branch --contains main >out &&
+	grep "main" out
 	)
 '
 

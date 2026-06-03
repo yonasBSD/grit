@@ -27,9 +27,9 @@ test_expect_success 'init creates objects directory' '
 	test -d basic/.git/objects
 '
 
-test_expect_success 'init default branch is master' '
+test_expect_success 'init default branch is main' '
 	head_content=$(cat basic/.git/HEAD) &&
-	echo "ref: refs/heads/master" >expect &&
+	echo "ref: refs/heads/main" >expect &&
 	echo "$head_content" >actual &&
 	test_cmp expect actual
 '
@@ -59,6 +59,7 @@ test_expect_success 'init --quiet still creates valid repo' '
 '
 
 test_expect_success 'init --quiet repo is functional' '
+	(
 	cd quiet-repo &&
 	grit config user.email "test@example.com" &&
 	grit config user.name "Test" &&
@@ -68,6 +69,7 @@ test_expect_success 'init --quiet repo is functional' '
 	grit commit -m "test commit" &&
 	grit log --oneline >log_out &&
 	test_line_count = 1 log_out
+	)
 '
 
 # --- init --initial-branch / -b ---
@@ -89,6 +91,7 @@ test_expect_success 'init --initial-branch sets branch name' '
 '
 
 test_expect_success 'init -b custom branch is functional' '
+	(
 	cd branch-repo &&
 	grit config user.email "test@example.com" &&
 	grit config user.name "Test" &&
@@ -99,6 +102,7 @@ test_expect_success 'init -b custom branch is functional' '
 	grit branch --show-current >actual &&
 	echo "develop" >expect &&
 	test_cmp expect actual
+	)
 '
 
 test_expect_success 'init -b with unusual name' '
@@ -167,10 +171,12 @@ test_expect_success 'init --bare --quiet suppresses output' '
 # --- init in current directory ---
 
 test_expect_success 'init without directory inits cwd' '
+	(
 	mkdir init-cwd &&
 	cd init-cwd &&
 	grit init &&
 	test -d .git
+	)
 '
 
 # --- init directory creation ---
@@ -189,6 +195,7 @@ test_expect_success 'init into existing empty directory' '
 # --- reinit ---
 
 test_expect_success 'reinit existing repo does not destroy data' '
+	(
 	grit init reinit-repo &&
 	cd reinit-repo &&
 	grit config user.email "test@example.com" &&
@@ -203,6 +210,7 @@ test_expect_success 'reinit existing repo does not destroy data' '
 	grit log --oneline >log_out &&
 	test_line_count = 1 log_out &&
 	test -f data.txt
+	)
 '
 
 test_expect_success 'reinit --quiet suppresses reinit message' '

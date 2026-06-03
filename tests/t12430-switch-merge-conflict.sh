@@ -21,11 +21,11 @@ test_expect_success 'switch -c creates new branch' '
 	grep "\\* feature1" actual
 '
 
-test_expect_success 'switch back to master' '
+test_expect_success 'switch back to main' '
 	(cd repo &&
-	 grit switch master &&
+	 grit switch main &&
 	 grit branch >../actual) &&
-	grep "\\* master" actual
+	grep "\\* main" actual
 '
 
 test_expect_success 'switch to existing branch' '
@@ -35,8 +35,8 @@ test_expect_success 'switch to existing branch' '
 	grep "\\* feature1" actual
 '
 
-test_expect_success 'switch back to master again' '
-	(cd repo && grit switch master)
+test_expect_success 'switch back to main again' '
+	(cd repo && grit switch main)
 '
 
 test_expect_success 'switch -c from non-HEAD commit' '
@@ -50,8 +50,8 @@ test_expect_success 'switch -c from non-HEAD commit' '
 	test_cmp expect actual
 '
 
-test_expect_success 'switch back to master from from-first' '
-	(cd repo && grit switch master)
+test_expect_success 'switch back to main from from-first' '
+	(cd repo && grit switch main)
 '
 
 test_expect_success 'switch with uncommitted changes that do not conflict' '
@@ -66,7 +66,7 @@ test_expect_success 'switch with uncommitted changes that do not conflict' '
 test_expect_success 'cleanup and switch back' '
 	(cd repo &&
 	 rm -f newfile.txt &&
-	 grit switch master)
+	 grit switch main)
 '
 
 test_expect_success 'switch refuses with conflicting dirty worktree' '
@@ -75,10 +75,10 @@ test_expect_success 'switch refuses with conflicting dirty worktree' '
 	 echo conflict-side >common.txt &&
 	 grit add common.txt &&
 	 grit commit -m "conflict side" &&
-	 grit switch master &&
-	 echo master-side >common.txt &&
+	 grit switch main &&
+	 echo main-side >common.txt &&
 	 grit add common.txt &&
-	 grit commit -m "master side" &&
+	 grit commit -m "main side" &&
 	 echo dirty-local >common.txt &&
 	 test_must_fail grit switch conflict-branch 2>../errmsg) &&
 	grep -i "uncommitted\|changes\|overwritten\|conflict\|would be\|local" errmsg
@@ -96,18 +96,18 @@ test_expect_success 'switch --detach goes to detached HEAD' '
 '
 
 test_expect_success 'switch back from detached HEAD' '
-	(cd repo && grit switch master)
+	(cd repo && grit switch main)
 '
 
 test_expect_success 'switch -c with starting point' '
 	(cd repo &&
-	 grit switch -c from-master master &&
+	 grit switch -c from-main main &&
 	 grit branch >../actual) &&
-	grep "\\* from-master" actual
+	grep "\\* from-main" actual
 '
 
-test_expect_success 'switch back to master from from-master' '
-	(cd repo && grit switch master)
+test_expect_success 'switch back to main from from-main' '
+	(cd repo && grit switch main)
 '
 
 test_expect_success 'switch to nonexistent branch fails' '
@@ -130,9 +130,9 @@ test_expect_success 'switch updates working tree files' '
 	test_cmp expect actual
 '
 
-test_expect_success 'switch back and verify master content' '
+test_expect_success 'switch back and verify main content' '
 	(cd repo &&
-	 grit switch master &&
+	 grit switch main &&
 	 cat file.txt >../actual) &&
 	echo "second" >expect &&
 	test_cmp expect actual
@@ -151,7 +151,7 @@ test_expect_success 'cleanup staged changes' '
 	(cd repo &&
 	 grit reset HEAD staged.txt &&
 	 rm -f staged.txt &&
-	 grit switch master)
+	 grit switch main)
 '
 
 test_expect_success 'switch -c and immediately commit on new branch' '
@@ -165,8 +165,8 @@ test_expect_success 'switch -c and immediately commit on new branch' '
 	grep "quick commit" actual_first
 '
 
-test_expect_success 'switch back to master from quick-branch' '
-	(cd repo && grit switch master)
+test_expect_success 'switch back to main from quick-branch' '
+	(cd repo && grit switch main)
 '
 
 test_expect_success 'file from other branch is gone after switch' '
@@ -178,7 +178,7 @@ test_expect_success 'switch -c creates branch at correct point' '
 	(cd repo &&
 	 grit switch -c at-head &&
 	 grit rev-parse HEAD >../head_actual &&
-	 grit switch master &&
+	 grit switch main &&
 	 grit rev-parse HEAD >../head_expect) &&
 	test_cmp head_expect head_actual
 '
@@ -188,7 +188,7 @@ test_expect_success 'switch between branches preserves untracked files' '
 	 echo untracked >keepme.txt &&
 	 grit switch feature1 &&
 	 test_path_is_file keepme.txt &&
-	 grit switch master &&
+	 grit switch main &&
 	 test_path_is_file keepme.txt &&
 	 rm -f keepme.txt)
 '
@@ -197,12 +197,12 @@ test_expect_success 'switch --detach to specific commit' '
 	(cd repo &&
 	 grit switch --detach HEAD~1 &&
 	 grit rev-parse HEAD >../actual &&
-	 grit rev-parse master~1 >../expect) &&
+	 grit rev-parse main~1 >../expect) &&
 	test_cmp expect actual
 '
 
-test_expect_success 'switch back from detached to master' '
-	(cd repo && grit switch master)
+test_expect_success 'switch back from detached to main' '
+	(cd repo && grit switch main)
 '
 
 test_expect_success 'switch -c branch from tag' '
@@ -213,8 +213,8 @@ test_expect_success 'switch -c branch from tag' '
 	grep "\\* from-tag" actual
 '
 
-test_expect_success 'switch back to master from tag branch' '
-	(cd repo && grit switch master)
+test_expect_success 'switch back to main from tag branch' '
+	(cd repo && grit switch main)
 '
 
 test_expect_success 'switch to branch that was already checked out before' '
@@ -224,8 +224,8 @@ test_expect_success 'switch to branch that was already checked out before' '
 	grep "\\* feature1" actual
 '
 
-test_expect_success 'final switch to master' '
-	(cd repo && grit switch master)
+test_expect_success 'final switch to main' '
+	(cd repo && grit switch main)
 '
 
 test_done

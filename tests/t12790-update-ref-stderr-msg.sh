@@ -128,7 +128,7 @@ test_expect_success 'update-ref --no-deref on regular ref' '
 
 test_expect_success 'setup symbolic ref for --no-deref test' '
     (cd repo &&
-     grit symbolic-ref refs/heads/sym refs/heads/master
+     grit symbolic-ref refs/heads/sym refs/heads/main
     )
 '
 
@@ -141,9 +141,9 @@ test_expect_success '--no-deref updates symbolic ref itself' '
     test_cmp expect actual
 '
 
-test_expect_success 'master is unchanged after --no-deref on symbolic ref' '
+test_expect_success 'main is unchanged after --no-deref on symbolic ref' '
     (cd repo &&
-     grit rev-parse refs/heads/master >../actual &&
+     grit rev-parse refs/heads/main >../actual &&
      grit rev-parse HEAD >../expect) &&
     test_cmp expect actual
 '
@@ -256,24 +256,24 @@ test_expect_success 'update-ref on HEAD updates current branch' '
 
 test_expect_success 'restore HEAD to original' '
     (cd repo &&
-     grit checkout master &&
+     grit checkout main &&
      hash=$(grit log --oneline | tail -1 | awk "{print \$1}") &&
-     master_hash=$(grit rev-parse master) &&
-     test -n "$master_hash"
+     main_hash=$(grit rev-parse main) &&
+     test -n "$main_hash"
     )
 '
 
 test_expect_success 'update-ref --stdin with verify command' '
     (cd repo &&
      hash=$(grit rev-parse HEAD) &&
-     echo "verify refs/heads/master $hash" |
+     echo "verify refs/heads/main $hash" |
      grit update-ref --stdin
     )
 '
 
 test_expect_success 'update-ref --stdin verify with wrong hash fails' '
     (cd repo &&
-     echo "verify refs/heads/master 0000000000000000000000000000000000000001" |
+     echo "verify refs/heads/main 0000000000000000000000000000000000000001" |
      test_must_fail grit update-ref --stdin 2>../err
     )
 '

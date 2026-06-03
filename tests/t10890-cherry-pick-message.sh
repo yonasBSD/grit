@@ -55,7 +55,7 @@ test_expect_success 'setup repository with diverging branches' '
 	grit add file.txt &&
 	grit commit -m "conflict: modify file.txt" &&
 	CONFLICT_C1=$(grit rev-parse HEAD) &&
-	grit switch master &&
+	grit switch main &&
 	echo "$INITIAL" >"$TRASH_DIRECTORY/oid_initial" &&
 	echo "$MAIN_C1" >"$TRASH_DIRECTORY/oid_main_c1" &&
 	echo "$SIDE_C1" >"$TRASH_DIRECTORY/oid_side_c1" &&
@@ -194,7 +194,7 @@ test_expect_success 'setup: create side3 commit for no-commit test' '
 	grit commit -m "side: nc file" &&
 	NC_OID=$(grit rev-parse HEAD) &&
 	echo "$NC_OID" >"$TRASH_DIRECTORY/oid_nc" &&
-	grit switch master
+	grit switch main
 	)
 '
 
@@ -224,7 +224,7 @@ test_expect_success 'setup for combination tests' '
 	grit commit -m "side: combo file" &&
 	COMBO=$(grit rev-parse HEAD) &&
 	echo "$COMBO" >"$TRASH_DIRECTORY/oid_combo" &&
-	grit switch master
+	grit switch main
 	)
 '
 
@@ -255,7 +255,7 @@ test_expect_success 'setup side branch with sequential commits for multi-pick' '
 	MP2=$(grit rev-parse HEAD) &&
 	echo "$MP1" >"$TRASH_DIRECTORY/oid_mp1" &&
 	echo "$MP2" >"$TRASH_DIRECTORY/oid_mp2" &&
-	grit switch master
+	grit switch main
 	)
 '
 
@@ -311,10 +311,10 @@ test_expect_success 'setup: create commit already applied' '
 	grit commit -m "add already" &&
 	ALREADY=$(grit rev-parse HEAD) &&
 	echo "$ALREADY" >"$TRASH_DIRECTORY/oid_already" &&
-	grit switch master &&
+	grit switch main &&
 	echo "already" >already.txt &&
 	grit add already.txt &&
-	grit commit -m "add already on master"
+	grit commit -m "add already on main"
 	)
 '
 
@@ -366,7 +366,7 @@ test_expect_success 'cherry-pick with no args fails' '
 test_expect_success 'cherry-pick -n then manual commit preserves staged changes' '
 	(
 	cd repo &&
-	grit switch master &&
+	grit switch main &&
 	NC_OID=$(cat "$TRASH_DIRECTORY/oid_nc") &&
 	grit cherry-pick -n "$NC_OID" &&
 	test -f nc.txt &&
@@ -385,7 +385,7 @@ test_expect_success 'cherry-pick -x -n does not create commit but stages' '
 	grit add xn.txt &&
 	grit commit -m "side: xn file" &&
 	XN_OID=$(grit rev-parse HEAD) &&
-	grit switch master &&
+	grit switch main &&
 	BEFORE=$(grit rev-parse HEAD) &&
 	grit cherry-pick -x -n "$XN_OID" &&
 	AFTER=$(grit rev-parse HEAD) &&

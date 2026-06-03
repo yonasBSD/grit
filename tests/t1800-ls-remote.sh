@@ -62,7 +62,7 @@ test_expect_success 'ls-remote --symref shows symbolic ref line before HEAD' '
 
 test_expect_success 'ls-remote -q produces no output and exits 0' '
 	grit ls-remote -q remote >actual &&
-	test_must_fail test -s actual
+	! test -s actual
 '
 
 test_expect_success 'ls-remote with pattern filters to matching refs' '
@@ -152,7 +152,7 @@ test_expect_success 'ls-remote refs are sorted alphabetically' '
 
 test_expect_success 'ls-remote -q returns exit 0 with no output' '
 	grit ls-remote -q many-remote >actual &&
-	test_must_fail test -s actual
+	! test -s actual
 '
 
 test_expect_success 'ls-remote --symref shows ref: line for HEAD' '

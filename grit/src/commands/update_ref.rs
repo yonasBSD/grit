@@ -93,9 +93,9 @@ pub fn run(mut args: Args) -> Result<()> {
         ))));
     }
     let target_refname = effective_refname(&repo, refname, args.no_deref)?;
-    validate_update_refname(&target_refname)?;
 
     if args.delete {
+        validate_delete_refname(&target_refname)?;
         // `git update-ref -d <ref> [<old>]` — the optional old OID is the first "value"
         // positional; clap maps it to `new_value`. Prefer explicit `--` old if given.
         let old_from_positional = args.new_value.take();
@@ -136,6 +136,7 @@ pub fn run(mut args: Args) -> Result<()> {
         .new_value
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("new value required"))?;
+    validate_update_refname(&target_refname)?;
     let new_oid: ObjectId = resolve_oid_or_ref(&repo, new_str)?;
 
     let expected = parse_old_expectation(args.old_value.as_deref())?;
@@ -1170,6 +1171,25 @@ fn validate_update_refname(refname: &str) -> Result<()> {
     )
     .map(|_| ())
     .map_err(|_| anyhow::anyhow!("invalid ref format: {refname}"))
+}
+
+fn validate_delete_refname(refname: &str) -> Result<()> {
+    if validate_update_refname(refname).is_ok() {
+        return Ok(());
+    }
+    let safe_namespace = refname == "HEAD" || refname.starts_with("refs/");
+    let unsafe_path = Path::new(refname).is_absolute()
+        || Path::new(refname).components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        });
+    if safe_namespace && !unsafe_path {
+        Ok(())
+    } else {
+        bail!("refusing to update ref with bad name '{refname}'")
+    }
 }
 
 fn parse_old_expectation(raw: Option<&str>) -> Result<Option<OldExpectation>> {

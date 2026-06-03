@@ -55,6 +55,7 @@ pub fn run(args: Args) -> Result<()> {
 
     let kind = ObjectKind::from_str(&args.object_type)
         .with_context(|| format!("unknown object type '{}'", args.object_type))?;
+    validate_big_file_threshold_config()?;
 
     let use_filters = kind == ObjectKind::Blob && !args.no_filters;
     let repo = if args.write {
@@ -114,6 +115,19 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn validate_big_file_threshold_config() -> Result<()> {
+    let config = ConfigSet::load(None, true).unwrap_or_default();
+    if let Some(raw) = config.get("core.bigFileThreshold") {
+        if raw.trim_start().starts_with('-') {
+            bail!(
+                "bad numeric config value '{}' for 'core.bigfilethreshold'",
+                raw
+            );
+        }
+    }
     Ok(())
 }
 

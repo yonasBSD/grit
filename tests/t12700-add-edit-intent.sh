@@ -24,7 +24,7 @@ test_expect_success 'add -N marks file as intent-to-add' '
      echo new-content >new.txt &&
      grit add -N new.txt &&
      grit_status >../actual) &&
-    echo "AM new.txt" >expect &&
+    echo " A new.txt" >expect &&
     test_cmp expect actual
 '
 
@@ -45,7 +45,7 @@ test_expect_success 'add --intent-to-add long form works' '
      echo another >ita.txt &&
      grit add --intent-to-add ita.txt &&
      grit_status >../actual) &&
-    echo "AM ita.txt" >expect &&
+    echo " A ita.txt" >expect &&
     test_cmp expect actual
 '
 
@@ -64,9 +64,9 @@ test_expect_success 'add -N on multiple files' '
      grit_status >../actual) &&
     sort actual >actual_sorted &&
     cat >expect_sorted <<-\EOF &&
-	AM m1.txt
-	AM m2.txt
-	AM m3.txt
+	 A m1.txt
+	 A m2.txt
+	 A m3.txt
 	EOF
     test_cmp expect_sorted actual_sorted
 '
@@ -100,7 +100,7 @@ test_expect_success 'add -N on file in subdirectory' '
      echo nested >sub/deep/nested.txt &&
      grit add -N sub/deep/nested.txt &&
      grit_status >../actual) &&
-    echo "AM sub/deep/nested.txt" >expect &&
+    echo " A sub/deep/nested.txt" >expect &&
     test_cmp expect actual
 '
 
@@ -171,7 +171,7 @@ test_expect_success 'add -N on already ita file is idempotent' '
      grit add -N idem.txt &&
      grit add -N idem.txt &&
      grit_status >../actual) &&
-    echo "AM idem.txt" >expect &&
+    echo " A idem.txt" >expect &&
     test_cmp expect actual
 '
 
