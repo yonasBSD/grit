@@ -640,36 +640,53 @@ pub fn fsck_tag_mktag_trailer(data: &[u8]) -> Result<(), FsckError> {
 }
 
 fn fsck_tree(data: &[u8]) -> Result<(), FsckError> {
-    if parse_tree_gently(data).is_err() {
-        return Err(FsckError::new("badTree", "cannot be parsed as a tree"));
-    }
-    Ok(())
-}
-
-fn parse_tree_gently(data: &[u8]) -> Result<(), ()> {
     let mut pos = 0usize;
+    let mut names: Vec<Vec<u8>> = Vec::new();
     while pos < data.len() {
-        let sp = data[pos..].iter().position(|&b| b == b' ').ok_or(())?;
+        let sp = data[pos..]
+            .iter()
+            .position(|&b| b == b' ')
+            .ok_or_else(|| FsckError::new("badTree", "cannot be parsed as a tree"))?;
         let mode_bytes = &data[pos..pos + sp];
-        let mode_ok = std::str::from_utf8(mode_bytes)
+        let mode = std::str::from_utf8(mode_bytes)
             .ok()
-            .and_then(|s| u32::from_str_radix(s, 8).ok())
-            .is_some();
-        if !mode_ok {
-            return Err(());
+            .and_then(|s| u32::from_str_radix(s, 8).ok());
+        if !matches!(
+            mode,
+            Some(0o100644 | 0o100755 | 0o120000 | 0o040000 | 0o160000)
+        ) {
+            return Err(FsckError::new(
+                "badFilemode",
+                "malformed mode in tree entry",
+            ));
         }
         pos += sp + 1;
 
-        let nul = data[pos..].iter().position(|&b| b == 0).ok_or(())?;
+        let nul = data[pos..]
+            .iter()
+            .position(|&b| b == 0)
+            .ok_or_else(|| FsckError::new("badTree", "cannot be parsed as a tree"))?;
+        if nul == 0 {
+            return Err(FsckError::new("emptyName", "empty filename in tree entry"));
+        }
+        names.push(data[pos..pos + nul].to_vec());
         pos += nul + 1;
 
         if pos + 20 > data.len() {
-            return Err(());
+            return Err(FsckError::new("badTree", "cannot be parsed as a tree"));
         }
         if ObjectId::from_bytes(&data[pos..pos + 20]).is_err() {
-            return Err(());
+            return Err(FsckError::new("badTree", "cannot be parsed as a tree"));
         }
         pos += 20;
+    }
+    let mut sorted = names;
+    sorted.sort();
+    if sorted.windows(2).any(|w| w[0] == w[1]) {
+        return Err(FsckError::new(
+            "duplicateEntries",
+            "duplicateEntries: contains duplicate file entries",
+        ));
     }
     Ok(())
 }

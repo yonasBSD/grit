@@ -36,6 +36,10 @@ pub struct Args {
     #[arg(long = "no-filters")]
     pub no_filters: bool,
 
+    /// Pretend input came from this path when applying attributes and filters.
+    #[arg(long)]
+    pub path: Option<PathBuf>,
+
     /// Don't validate file content, just hash it (with --literally).
     #[arg(long)]
     pub literally: bool,
@@ -51,6 +55,12 @@ pub fn run(args: Args) -> Result<()> {
     }
     if args.stdin_paths && !args.files.is_empty() {
         bail!("can't pass filenames with --stdin-paths");
+    }
+    if args.stdin_paths && args.path.is_some() {
+        bail!("can't use --path with --stdin-paths");
+    }
+    if args.no_filters && args.path.is_some() {
+        bail!("can't use --path with --no-filters");
     }
 
     let kind = ObjectKind::from_str(&args.object_type)
@@ -80,12 +90,20 @@ pub fn run(args: Args) -> Result<()> {
         std::io::stdin()
             .read_to_end(&mut data)
             .context("reading stdin")?;
+        if let Some(path) = args.path.as_deref() {
+            data = filter_data_for_hash(data, path, kind, false, filter_context.as_ref())?;
+        }
         validate_object_data(kind, &data, args.literally)?;
         let oid = hash_and_maybe_write(kind, &data, odb.as_ref())?;
         println!("{oid}");
         for path in &args.files {
-            let file_data =
-                read_file_for_hash(path, kind, args.no_filters, filter_context.as_ref())?;
+            let file_data = read_file_for_hash(
+                path,
+                args.path.as_deref().unwrap_or(path),
+                kind,
+                args.no_filters,
+                filter_context.as_ref(),
+            )?;
             validate_object_data(kind, &file_data, args.literally)?;
             let file_oid = hash_and_maybe_write(kind, &file_data, odb.as_ref())?;
             println!("{file_oid}");
@@ -100,14 +118,21 @@ pub fn run(args: Args) -> Result<()> {
                 continue;
             }
             let path = PathBuf::from(line);
-            let data = read_file_for_hash(&path, kind, args.no_filters, filter_context.as_ref())?;
+            let data =
+                read_file_for_hash(&path, &path, kind, args.no_filters, filter_context.as_ref())?;
             validate_object_data(kind, &data, args.literally)?;
             let oid = hash_and_maybe_write(kind, &data, odb.as_ref())?;
             println!("{oid}");
         }
     } else {
         for path in &args.files {
-            let data = read_file_for_hash(path, kind, args.no_filters, filter_context.as_ref())?;
+            let data = read_file_for_hash(
+                path,
+                args.path.as_deref().unwrap_or(path),
+                kind,
+                args.no_filters,
+                filter_context.as_ref(),
+            )?;
             validate_object_data(kind, &data, args.literally)?;
             let oid = hash_and_maybe_write(kind, &data, odb.as_ref())?;
             println!("{oid}");
@@ -141,18 +166,29 @@ impl<'a> HashObjectFilterContext<'a> {
 
 fn read_file_for_hash(
     path: &Path,
+    filter_path: &Path,
     kind: ObjectKind,
     no_filters: bool,
     filter_context: Option<&HashObjectFilterContext<'_>>,
 ) -> Result<Vec<u8>> {
     let raw = std::fs::read(path).with_context(|| format!("cannot read '{}'", path.display()))?;
+    filter_data_for_hash(raw, filter_path, kind, no_filters, filter_context)
+}
+
+fn filter_data_for_hash(
+    raw: Vec<u8>,
+    filter_path: &Path,
+    kind: ObjectKind,
+    no_filters: bool,
+    filter_context: Option<&HashObjectFilterContext<'_>>,
+) -> Result<Vec<u8>> {
     if kind != ObjectKind::Blob || no_filters {
         return Ok(raw);
     }
     let Some(ctx) = filter_context else {
         return Ok(raw);
     };
-    let Some(rel_path) = filter_relative_path(path, ctx.repo.work_tree.as_deref()) else {
+    let Some(rel_path) = filter_relative_path(filter_path, ctx.repo.work_tree.as_deref()) else {
         return Ok(raw);
     };
     let file_attrs = crlf::get_file_attrs(&ctx.attrs, &rel_path, false, &ctx.config);

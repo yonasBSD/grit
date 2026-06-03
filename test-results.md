@@ -1,3 +1,7 @@
+## 2026-06-03 — t1007-hash-object
+
+- Focus harness: `./scripts/run-tests.sh t1007-hash-object.sh --verbose` passes 40/40 after `hash-object --path` applies attribute/filter context and tree validation reports malformed modes, empty filenames, and duplicate entries.
+
 ## 2026-06-03 — t11770-branch-set-upstream
 
 - Focus harness: `./scripts/run-tests.sh t11770-branch-set-upstream.sh --verbose` passes 37/37 after aligning branch and remote-tracking expectations with the `main` default branch.
