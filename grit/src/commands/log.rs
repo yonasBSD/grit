@@ -6905,6 +6905,29 @@ pub fn show_notes_display_enabled() -> bool {
     log_notes_enabled()
 }
 
+/// Build the format-patch `Notes:` block for an explicit, ordered `(header, refname)` list. The
+/// returned string (empty when there are no matching notes) is placed after the `---` separator and
+/// before the diffstat, each ref rendered as `\nNotes (<ref>):\n    <line>\n`.
+pub fn format_patch_notes_block(
+    repo: &Repository,
+    oid: &ObjectId,
+    refs: &[(String, String)],
+) -> String {
+    let mut extra = String::new();
+    for (header, refname) in refs {
+        let map = load_notes_map_for_ref(repo, refname);
+        if let Some(note_data) = map.get(oid) {
+            let note_text = String::from_utf8_lossy(note_data);
+            let _ = extra.write_char('\n');
+            let _ = writeln!(extra, "{header}:");
+            for line in note_text.lines() {
+                let _ = writeln!(extra, "    {line}");
+            }
+        }
+    }
+    extra
+}
+
 /// Append Git-style `Notes:` blocks to a format-patch body when note display is enabled.
 pub fn append_format_patch_notes(repo: &Repository, oid: &ObjectId, body: &str) -> String {
     if !log_notes_enabled() {

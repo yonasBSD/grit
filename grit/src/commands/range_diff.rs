@@ -196,7 +196,10 @@ fn run(args: Args) -> Result<()> {
         .unwrap_or(7)
         .clamp(4, 40);
 
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
     output(
+        &mut out,
         &repo,
         &mut branch1,
         &mut branch2,
@@ -210,6 +213,48 @@ fn run(args: Args) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+/// Compute a `range-diff` body for `format-patch --range-diff`, comparing the previous
+/// range (`old_range`, e.g. `boop~2..boop~1`) against the current series range
+/// (`new_range`, e.g. `<series base>..<series tip>`), and return it as a plain (no-color)
+/// string. Equivalent to `git range-diff [--creation-factor=N] <old_range> <new_range>`.
+pub fn compute_range_diff_body(
+    repo: &Repository,
+    old_range: &str,
+    new_range: &str,
+    creation_factor: Option<usize>,
+) -> Result<String> {
+    let args = Args::parse_from(["grit range-diff"]);
+    let creation = creation_factor
+        .map(|c| c as u64)
+        .unwrap_or(DEFAULT_CREATION_FACTOR as u64);
+
+    let rev1 = log_range_vec(old_range);
+    let rev2 = log_range_vec(new_range);
+    let log_extra: Vec<String> = Vec::new();
+
+    let mut branch1 = read_patches_from_log(repo, &rev1, &args, &log_extra)?;
+    let mut branch2 = read_patches_from_log(repo, &rev2, &args, &log_extra)?;
+
+    find_exact_matches(&mut branch1, &mut branch2);
+    get_correspondences(&mut branch1, &mut branch2, creation);
+
+    let mut buf: Vec<u8> = Vec::new();
+    output(
+        &mut buf,
+        repo,
+        &mut branch1,
+        &mut branch2,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        7,
+    )?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 fn parse_invocation(
@@ -785,6 +830,7 @@ fn get_correspondences(a: &mut [Patch], b: &mut [Patch], creation_factor: u64) {
 }
 
 fn output(
+    out: &mut impl Write,
     repo: &Repository,
     a: &mut [Patch],
     b: &mut [Patch],
@@ -796,8 +842,6 @@ fn output(
     dual_color: bool,
     abbrev_len: usize,
 ) -> Result<()> {
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
     let dual = use_color && dual_color;
     let max_n = 1 + a.len().max(b.len());
     let w = decimal_width(max_n);
@@ -817,7 +861,7 @@ fn output(
         if i < a.len() && a[i].matching < 0 {
             if !right_only {
                 write_pair_header(
-                    &mut out,
+                    &mut *out,
                     repo,
                     w,
                     Some((i, &a[i])),
@@ -836,7 +880,7 @@ fn output(
         while j < b.len() && b[j].matching < 0 {
             if !left_only {
                 write_pair_header(
-                    &mut out,
+                    &mut *out,
                     repo,
                     w,
                     None,
@@ -856,7 +900,7 @@ fn output(
             let ai_idx = bj.matching as usize;
             let ai = &a[ai_idx];
             write_pair_header(
-                &mut out,
+                &mut *out,
                 repo,
                 w,
                 Some((ai_idx, ai)),
@@ -871,7 +915,7 @@ fn output(
             if !no_patch && ai.full != bj.full {
                 let inner = diff_patches(&ai.full, &bj.full);
                 if stat_mode {
-                    write_stat_summary(&mut out, &inner)?;
+                    write_stat_summary(&mut *out, &inner)?;
                 } else if dual {
                     for line in inner.lines() {
                         writeln!(out, "    {}", render_inner_dual_color(line))?;

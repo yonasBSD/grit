@@ -4133,7 +4133,8 @@ fn preprocess_fetch_argv(rest: &[String]) -> Vec<String> {
 
 /// `git format-patch -3` uses a negative-looking revision count; clap otherwise parses `-3` as
 /// unknown short flags and leaves `--stdout` in `revisions`. Peel off `-<digits>` and pass the
-/// count via a hidden long option.
+/// count via a hidden long option. Also translate the various attached short forms (`-v<x>`,
+/// `-U<n>`, `-O<file>`) into long options clap understands, so they are not swallowed as revisions.
 fn preprocess_format_patch_argv(rest: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(rest.len() + 1);
     let mut max_count: Option<usize> = None;
@@ -4144,6 +4145,7 @@ fn preprocess_format_patch_argv(rest: &[String]) -> Vec<String> {
             out.extend_from_slice(&rest[i..]);
             break;
         }
+        // `-<digits>` count shorthand (e.g. `-3`).
         if arg.len() > 1
             && arg.starts_with('-')
             && arg.as_bytes().get(1).is_some_and(u8::is_ascii_digit)
@@ -4155,6 +4157,32 @@ fn preprocess_format_patch_argv(rest: &[String]) -> Vec<String> {
                     i += 1;
                     continue;
                 }
+            }
+        }
+        // `-v<x>` attached reroll count (anything after `-v`, including non-numeric like
+        // `-v4rev2` or `-v4.4` or `-v4---...`). Bare `-v <x>` is handled by clap (short option).
+        if let Some(val) = arg.strip_prefix("-v") {
+            if !val.is_empty() {
+                out.push(format!("--reroll-count={val}"));
+                i += 1;
+                continue;
+            }
+        }
+        // `-U<n>` attached unified context.
+        if let Some(val) = arg.strip_prefix("-U") {
+            if !val.is_empty() {
+                out.push(format!("--unified={val}"));
+                i += 1;
+                continue;
+            }
+        }
+        // `-O<file>` attached orderfile (clap can mis-parse paths starting with `.`).
+        if let Some(val) = arg.strip_prefix("-O") {
+            if !val.is_empty() && !val.starts_with('=') {
+                out.push("-O".to_owned());
+                out.push(val.to_owned());
+                i += 1;
+                continue;
             }
         }
         out.push(arg.clone());

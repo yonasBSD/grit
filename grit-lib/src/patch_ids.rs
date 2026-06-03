@@ -426,8 +426,19 @@ pub fn compute_patch_id(odb: &Odb, commit_oid: &ObjectId) -> Result<Option<Objec
     let mut result = [0u8; 20];
 
     for entry in &diffs {
-        let old_path = entry.old_path.as_deref().unwrap_or("");
-        let new_path = entry.new_path.as_deref().unwrap_or("");
+        // Git's patch-id header (`diff --git a/<x> b/<y>`) uses the present path on both sides for
+        // pure additions/deletions (e.g. `diff --git a/file b/file` for a new file), so fall back to
+        // the other side when one path is absent.
+        let old_path = entry
+            .old_path
+            .as_deref()
+            .or(entry.new_path.as_deref())
+            .unwrap_or("");
+        let new_path = entry
+            .new_path
+            .as_deref()
+            .or(entry.old_path.as_deref())
+            .unwrap_or("");
         let mut old_path_buf = old_path.as_bytes().to_vec();
         let mut new_path_buf = new_path.as_bytes().to_vec();
         let len1 = remove_space_bytes(&mut old_path_buf);
