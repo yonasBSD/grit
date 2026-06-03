@@ -1,4 +1,9 @@
 
+## 2026-06-03 — t5306-pack-nobase
+
+- Focus harness: `./scripts/run-tests.sh t5306-pack-nobase.sh --verbose` passes 4/4; no code changes required.
+
+
 ## 2026-06-03 — t5305-include-tag
 
 - Focus harness: `./scripts/run-tests.sh t5305-include-tag.sh --verbose` passes 15/15 after `--include-tag` annotated tag-chain inclusion and tag-of-tag rev-list object walk fixes.

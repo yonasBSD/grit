@@ -50,7 +50,9 @@
     `t5303-pack-corruption-resilience`, `t5313-pack-bounds-checks`, and `t5351-unpack-large-objects`.
   - Completed `t5305-include-tag.sh` (15/15) after adding `--include-tag` annotated
     tag-chain inclusion and tag-of-tag rev-list object walks.
-  - Next focus: `t5306-pack-nobase.sh`.
+  - Verified `t5306-pack-nobase.sh` (4/4); no code changes required beyond refreshing
+    the stale CSV/dashboard result.
+  - Next focus: `t5316-pack-delta-depth.sh`.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---
