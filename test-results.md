@@ -1,3 +1,7 @@
+## 2026-06-03 — t10890-cherry-pick-message
+
+- Focus harness: `./scripts/run-tests.sh t10890-cherry-pick-message.sh --verbose` passes 30/30 after switching synthetic `master` branch references to `main`.
+
 ## 2026-06-03 — t13360-cherry-pick-allow-empty
 
 - Focus harness: `./scripts/run-tests.sh t13360-cherry-pick-allow-empty.sh --verbose` passes 30/30 after wrapping cd-using setup blocks and switching synthetic `master` branch references to `main`.
