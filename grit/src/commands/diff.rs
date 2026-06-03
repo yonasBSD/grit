@@ -6175,6 +6175,8 @@ fn run_external_diff_for_patch(
             .arg(new_mode);
     }
     let mut child = cmd
+        .current_dir(external_diff_worktree_root())
+        .env("GIT_PREFIX", external_diff_git_prefix())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -6187,6 +6189,32 @@ fn run_external_diff_for_patch(
         bail!("external diff exited with {status}");
     }
     Ok(())
+}
+
+fn external_diff_worktree_root() -> PathBuf {
+    let mut cur = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    loop {
+        if cur.join(".git").exists() {
+            return cur;
+        }
+        if !cur.pop() {
+            break;
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn external_diff_git_prefix() -> String {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let root = external_diff_worktree_root();
+    let Ok(rel) = cwd.strip_prefix(root) else {
+        return String::new();
+    };
+    if rel.as_os_str().is_empty() {
+        String::new()
+    } else {
+        format!("{}/", rel.to_string_lossy().replace('\\', "/"))
+    }
 }
 
 fn mode_is_symlink_mode_str(mode: &str) -> bool {

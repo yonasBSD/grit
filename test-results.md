@@ -1,3 +1,7 @@
+## 2026-06-03 — t1020-subdirectory
+
+- Focus harness: `./scripts/run-tests.sh t1020-subdirectory.sh --verbose` passes 15/15 after fixing subdirectory pathspec prefixing, shell-alias `GIT_PREFIX`, and external diff working-directory handling.
+
 ## 2026-06-03 — t1405-main-ref-store
 
 - Focus harnesses: `./scripts/run-tests.sh t1405-main-ref-store.sh --verbose` passes 16/16 and `./scripts/run-tests.sh t1406-submodule-ref-store.sh --verbose` remains 15/15 after implementing main ref-store helper behavior and normalizing reflog entry order.

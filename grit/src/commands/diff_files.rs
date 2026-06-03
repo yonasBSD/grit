@@ -58,6 +58,7 @@ pub fn run(mut args: Args) -> Result<()> {
     let Some(work_tree) = repo.work_tree.clone() else {
         bail!("this operation must be run in a work tree");
     };
+    prefix_relative_pathspecs_from_cwd(&work_tree, &mut options.pathspecs);
 
     let index_path = effective_index_path(&repo)?;
     let index = repo.load_index_at(&index_path).context("loading index")?;
@@ -2023,6 +2024,32 @@ fn matches_pathspec(path: &str, pathspecs: &[String]) -> bool {
         pathspecs,
         grit_lib::pathspec::PathspecMatchContext::default(),
     )
+}
+
+fn prefix_relative_pathspecs_from_cwd(work_tree: &Path, pathspecs: &mut [String]) {
+    if pathspecs.is_empty() {
+        return;
+    }
+    let Ok(cwd) = env::current_dir() else {
+        return;
+    };
+    let Ok(rel) = cwd.strip_prefix(work_tree) else {
+        return;
+    };
+    if rel.as_os_str().is_empty() {
+        return;
+    }
+    let prefix = rel.to_string_lossy().replace('\\', "/");
+    for spec in pathspecs {
+        if spec.is_empty() || spec.starts_with('/') || spec.starts_with(":/") {
+            continue;
+        }
+        *spec = if spec == "." {
+            prefix.clone()
+        } else {
+            format!("{prefix}/{spec}")
+        };
+    }
 }
 
 /// Return the file type category for a mode: 0=blob (regular or executable), 2=symlink, 3=submodule, 4=other.
