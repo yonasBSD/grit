@@ -1,3 +1,7 @@
+## 2026-06-03 — t10790-init-reinit-structure
+
+- Focus harness: `./scripts/run-tests.sh t10790-init-reinit-structure.sh --verbose` passes 33/33 after applying the documented cwd-leak wrapper and correcting synthetic default-branch expectations to `main`.
+
 ## 2026-06-03 — t12660-init-shared-perm
 
 - Focus harness: `./scripts/run-tests.sh t12660-init-shared-perm.sh --verbose` passes 37/37 after correcting the synthetic default-branch expectations to `main`, matching the harness/Grit default.

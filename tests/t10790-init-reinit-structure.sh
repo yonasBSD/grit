@@ -27,9 +27,9 @@ test_expect_success 'init creates HEAD file' '
 	test_path_is_file basic-repo/.git/HEAD
 '
 
-test_expect_success 'HEAD points to refs/heads/master by default' '
+test_expect_success 'HEAD points to refs/heads/main by default' '
 	cat basic-repo/.git/HEAD >out &&
-	echo "ref: refs/heads/master" >expect &&
+	echo "ref: refs/heads/main" >expect &&
 	test_cmp expect out
 '
 
@@ -38,10 +38,12 @@ test_expect_success 'init creates config file' '
 '
 
 test_expect_success 'init config has bare = false' '
+	(
 	cd basic-repo &&
 	grit config get core.bare >out &&
 	echo "false" >expect &&
 	test_cmp expect out
+	)
 '
 
 test_expect_success 'init matches git directory structure' '
@@ -82,15 +84,17 @@ test_expect_success 'bare repo has no .git directory' '
 '
 
 test_expect_success 'bare repo config has bare = true' '
+	(
 	cd bare-repo &&
 	grit config get core.bare >out &&
 	echo "true" >expect &&
 	test_cmp expect out
+	)
 '
 
-test_expect_success 'bare repo HEAD points to master' '
+test_expect_success 'bare repo HEAD points to main' '
 	cat bare-repo/HEAD >out &&
-	echo "ref: refs/heads/master" >expect &&
+	echo "ref: refs/heads/main" >expect &&
 	test_cmp expect out
 '
 
@@ -136,6 +140,7 @@ test_expect_success 'reinit preserves HEAD' '
 '
 
 test_expect_success 'reinit preserves existing objects' '
+	(
 	cd reinit-repo &&
 	git config user.email "test@test.com" &&
 	git config user.name "Test" &&
@@ -148,15 +153,19 @@ test_expect_success 'reinit preserves existing objects' '
 	cd reinit-repo &&
 	grit rev-parse HEAD >hash_after &&
 	test_cmp hash_before hash_after
+	)
 '
 
 test_expect_success 'reinit preserves committed data' '
+	(
 	cd reinit-repo &&
 	grit log --oneline >out &&
 	grep "first" out
+	)
 '
 
 test_expect_success 'reinit preserves branches' '
+	(
 	cd reinit-repo &&
 	grit branch feature &&
 	cd .. &&
@@ -164,6 +173,7 @@ test_expect_success 'reinit preserves branches' '
 	cd reinit-repo &&
 	grit branch >out &&
 	grep "feature" out
+	)
 '
 
 ###########################################################################
@@ -245,10 +255,12 @@ test_expect_success 'bare init creates objects/pack directory' '
 '
 
 test_expect_success 'init creates description file or not (match git)' '
+	(
 	grit init desccheck &&
 	cd desccheck &&
 	grit rev-parse --git-dir >out &&
 	test "$(cat out)" = ".git"
+	)
 '
 
 test_expect_success 'bare repo has config file' '
