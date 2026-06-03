@@ -2676,6 +2676,22 @@ pub(crate) fn extract_globals(
             continue;
         }
 
+        // --config-env=<key>=<envvar> or --config-env <key>=<envvar>
+        if let Some(spec) = arg.strip_prefix("--config-env=") {
+            opts.config_overrides.push(resolve_config_env(spec)?);
+            i += 1;
+            continue;
+        }
+        if arg == "--config-env" {
+            i += 1;
+            let Some(spec) = items.get(i) else {
+                bail!("no config key given for --config-env");
+            };
+            opts.config_overrides.push(resolve_config_env(spec)?);
+            i += 1;
+            continue;
+        }
+
         // --attr-source=<tree-ish> or --attr-source <tree-ish>
         if let Some(val) = arg.strip_prefix("--attr-source=") {
             opts.attr_source = Some(val.to_owned());
@@ -2783,8 +2799,43 @@ pub(crate) fn extract_globals(
     Ok((opts, subcmd, rest))
 }
 
+fn resolve_config_env(spec: &str) -> Result<String> {
+    let Some((key, envvar)) = spec.rsplit_once('=') else {
+        bail!("invalid config format: {spec}");
+    };
+    if key.is_empty() {
+        bail!("invalid config format: {spec}");
+    }
+    if envvar.is_empty() {
+        bail!(
+            "missing environment variable name for configuration '{}': {spec}",
+            key
+        );
+    }
+    let value = std::env::var(envvar).with_context(|| {
+        format!(
+            "missing environment variable '{}' for configuration '{}'",
+            envvar, key
+        )
+    })?;
+    if key.contains('=') {
+        Ok(format!(
+            "\u{1}{}={}",
+            quote_config_parameter_atom(key),
+            quote_config_parameter_atom(&value)
+        ))
+    } else {
+        Ok(format!("{key}={value}"))
+    }
+}
+
+fn quote_config_parameter_atom(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("'{escaped}'")
+}
+
 /// Apply global options (env vars, chdir).
-fn apply_globals(opts: &GlobalOpts) -> Result<()> {
+pub(crate) fn apply_globals(opts: &GlobalOpts) -> Result<()> {
     if let Some(dir) = &opts.change_dir {
         if !dir.as_os_str().is_empty() {
             std::env::set_current_dir(dir)?;
@@ -2802,6 +2853,18 @@ fn apply_globals(opts: &GlobalOpts) -> Result<()> {
         std::env::set_var("GIT_NAMESPACE", ns);
     }
     if !opts.config_overrides.is_empty() {
+        for kv in &opts.config_overrides {
+            if kv.is_empty() {
+                bail!("empty config key");
+            }
+            if let Some((key, value)) = kv.split_once('=') {
+                if key.eq_ignore_ascii_case("core.bare") {
+                    grit_lib::config::parse_bool(value).map_err(|_| {
+                        anyhow::anyhow!("bad boolean config value '{value}' for 'core.bare'")
+                    })?;
+                }
+            }
+        }
         if opts.config_overrides.iter().any(|kv| {
             let lower = kv.to_ascii_lowercase();
             kv.contains('\n') || lower.contains("%0a")
@@ -2811,7 +2874,11 @@ fn apply_globals(opts: &GlobalOpts) -> Result<()> {
         let extra: String = opts
             .config_overrides
             .iter()
-            .map(|kv| format!("'{}'", kv))
+            .map(|kv| {
+                kv.strip_prefix('\u{1}')
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("'{}'", kv))
+            })
             .collect::<Vec<_>>()
             .join(" ");
         // Git's config reader applies the last occurrence of a key. Inherited
@@ -2923,22 +2990,118 @@ fn print_stash_push_help_upstream() -> ! {
 /// `git config --get-color <slot> <default>` allows a multi-word default (e.g. `-1 black`).
 /// The shell passes `-1` and `black` as separate argv entries; clap would treat `-1` as a flag.
 /// Join all arguments after the slot into one default string, like Git's argv consumption.
+fn config_type_name_from_flag(flag: &str, value: Option<&str>) -> Option<String> {
+    match flag {
+        "--bool" => Some("bool".to_owned()),
+        "--int" => Some("int".to_owned()),
+        "--bool-or-int" => Some("bool-or-int".to_owned()),
+        "--path" => Some("path".to_owned()),
+        "--expiry-date" => Some("expiry-date".to_owned()),
+        "--type" => value.map(str::to_owned),
+        _ => flag.strip_prefix("--type=").map(str::to_owned),
+    }
+}
+
+fn normalized_type_flag(ty: &str) -> String {
+    match ty {
+        "bool" => "--bool".to_owned(),
+        "int" => "--int".to_owned(),
+        "bool-or-int" => "--bool-or-int".to_owned(),
+        "path" => "--path".to_owned(),
+        "expiry-date" => "--expiry-date".to_owned(),
+        "color" => "--type=color".to_owned(),
+        other => format!("--type={other}"),
+    }
+}
+
+fn validate_config_type_name(ty: &str) {
+    const VALID: &[&str] = &["bool", "int", "bool-or-int", "path", "expiry-date", "color"];
+    if !VALID.contains(&ty) {
+        eprintln!("error: unrecognized --type argument, {ty}");
+        std::process::exit(129);
+    }
+}
+
+fn normalize_config_type_args(rest: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut active_type: Option<String> = None;
+    let mut type_insert_pos: Option<usize> = None;
+    let mut i = 0usize;
+    while i < rest.len() {
+        let arg = &rest[i];
+        if arg == "--" {
+            out.extend_from_slice(&rest[i..]);
+            break;
+        }
+        if arg == "--no-type" {
+            if let Some(pos) = type_insert_pos.take() {
+                out.remove(pos);
+            }
+            active_type = None;
+            i += 1;
+            continue;
+        }
+        if arg == "--type" {
+            let Some(value) = rest.get(i + 1) else {
+                out.push(arg.clone());
+                i += 1;
+                continue;
+            };
+            validate_config_type_name(value);
+            if let Some(existing) = &active_type {
+                if existing != value {
+                    eprintln!("error: only one type at a time");
+                    std::process::exit(129);
+                }
+            } else {
+                active_type = Some(value.clone());
+                type_insert_pos = Some(out.len());
+                out.push(normalized_type_flag(value));
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(ty) = config_type_name_from_flag(arg, None) {
+            validate_config_type_name(&ty);
+            if let Some(existing) = &active_type {
+                if existing != &ty {
+                    eprintln!("error: only one type at a time");
+                    std::process::exit(129);
+                }
+            } else {
+                active_type = Some(ty.clone());
+                type_insert_pos = Some(out.len());
+                out.push(normalized_type_flag(&ty));
+            }
+            i += 1;
+            continue;
+        }
+        out.push(arg.clone());
+        i += 1;
+    }
+    out
+}
+
+/// `git config --get-color <slot> <default>` allows a multi-word default (e.g. `-1 black`).
+/// The shell passes `-1` and `black` as separate argv entries; clap would treat `-1` as a flag.
+/// Join all arguments after the slot into one default string, like Git's argv consumption.
 fn preprocess_config_argv(rest: &[String]) -> Vec<String> {
+    let rest = normalize_config_type_args(rest);
     let Some(pos) = rest.iter().position(|a| a == "--get-color") else {
-        return rest.to_vec();
+        return rest;
     };
     let key_idx = pos + 1;
     if key_idx >= rest.len() {
-        return rest.to_vec();
+        return rest;
     }
     let mut tail_idx = key_idx + 1;
     if tail_idx >= rest.len() {
-        return rest.to_vec();
+        return rest;
     }
     if rest[tail_idx] == "--" {
         tail_idx += 1;
         if tail_idx >= rest.len() {
-            return rest.to_vec();
+            return rest;
         }
     }
     let default_str = rest[tail_idx..].join(" ");
@@ -7034,6 +7197,17 @@ fn run_test_tool_config(rest: &[String]) -> Result<()> {
         }
         "get_value" => {
             let key = rest.get(1).map(|s| s.as_str()).unwrap_or("");
+            if git_dir.is_none() {
+                if let Err(e) = ConfigFile::from_path(Path::new(".git/config"), ConfigScope::Local)
+                {
+                    let es = e.to_string();
+                    if es.starts_with("fatal: bad config line ") {
+                        eprintln!("{es}");
+                        std::process::exit(128);
+                    }
+                    return Err(anyhow::anyhow!("{}", e));
+                }
+            }
             let cfg = match ConfigSet::load(git_dir, true) {
                 Ok(c) => c,
                 Err(e) => {
