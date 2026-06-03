@@ -1438,7 +1438,7 @@ Aborting"
         }));
     }
     if !index_already_at_target {
-        bail_if_merge_would_overwrite_local_changes(repo, &old_entries, &new_index, false)?;
+        bail_if_merge_would_overwrite_local_changes(repo, &old_entries, &new_index, &[], false)?;
     }
 
     let ff_reflog = format!("{}: Fast-forward", merge_reflog_action(args));
@@ -2548,6 +2548,7 @@ Aborting"
             repo,
             &ours_entries,
             &merge_result.index,
+            &merge_result.conflict_files,
             append_strategy_failed,
         )?;
     }
@@ -2661,12 +2662,7 @@ Aborting"
         print_submodule_recursive_merge_advice(&merge_result.submodule_merge_advice);
         // Print per-file conflict messages to stdout (git sends these to stdout)
         for desc in &merge_result.conflict_descriptions {
-            if desc.kind == "binary" {
-                println!("warning: Cannot merge binary files: {}", desc.subject_path);
-                println!("Cannot merge binary files: {}", desc.subject_path);
-            } else {
-                println!("CONFLICT ({}): {}", desc.kind, desc.body);
-            }
+            print_merge_description(desc);
         }
         println!("Automatic merge failed; fix conflicts and then commit the result.");
         let rr = if args.no_rerere_autoupdate {
@@ -2830,6 +2826,8 @@ Aborting"
         let first_line = commit_data.message.lines().next().unwrap_or("");
         println!("[{branch} {short}] {first_line}");
 
+        print_merge_warnings(&merge_result.conflict_descriptions);
+
         // Print strategy message (to stdout, as git does)
         println!("Merge made by the '{}' strategy.", strategy_name);
 
@@ -2879,6 +2877,7 @@ fn bail_if_merge_would_overwrite_local_changes(
     repo: &Repository,
     old_entries: &HashMap<Vec<u8>, IndexEntry>,
     new_index: &Index,
+    conflict_files: &[(String, Vec<u8>)],
     append_strategy_failed: bool,
 ) -> Result<()> {
     let Some(work_tree) = repo.work_tree.as_deref() else {
@@ -3063,6 +3062,16 @@ fn bail_if_merge_would_overwrite_local_changes(
         }
     }
 
+    for (rel, _) in conflict_files {
+        if is_test_harness_meta_path(rel) || is_tracked_path(rel.as_bytes()) {
+            continue;
+        }
+        let abs = work_tree.join(rel);
+        if fs::symlink_metadata(&abs).is_ok() {
+            overwrite_untracked.insert(rel.clone());
+        }
+    }
+
     // Also protect untracked files nested beneath directories that turn into
     // files/symlinks in the merge result (directory→file transitions).
     for new_entry in &new_index.entries {
@@ -3122,7 +3131,7 @@ fn bail_if_merge_would_overwrite_local_changes(
         let mut msg = String::new();
         if !overwrite_local.is_empty() {
             msg.push_str(
-                "Your local changes to the following files would be overwritten by merge:\n",
+                "error: Your local changes to the following files would be overwritten by merge:\n",
             );
             for path in &overwrite_local {
                 msg.push_str(&format!("\t{path}\n"));
@@ -3131,13 +3140,9 @@ fn bail_if_merge_would_overwrite_local_changes(
         }
 
         if !overwrite_untracked.is_empty() {
-            if overwrite_local.is_empty() {
-                msg.push_str(
-                    "The following untracked working tree files would be overwritten by merge:\n",
-                );
-            } else {
-                msg.push_str("error: The following untracked working tree files would be overwritten by merge:\n");
-            }
+            msg.push_str(
+                "error: The following untracked working tree files would be overwritten by merge:\n",
+            );
             for path in &overwrite_untracked {
                 msg.push_str(&format!("\t{path}\n"));
             }
@@ -3695,6 +3700,13 @@ fn append_trace2_perf_line(path: &str, event: &str, data: &str) -> Result<()> {
     Ok(())
 }
 
+fn trace2_perf_region_enter(label: &str) {
+    let Ok(path) = std::env::var("GIT_TRACE2_PERF") else {
+        return;
+    };
+    let _ = append_trace2_perf_line(&path, "region_enter", label);
+}
+
 fn bail_if_merge_touches_present_skip_worktree(
     repo: &Repository,
     ours: &HashMap<Vec<u8>, IndexEntry>,
@@ -3956,7 +3968,13 @@ fn do_octopus_merge(
         sim_index.entries = sim_entries;
         sim_index.sort();
         if !args.autostash {
-            bail_if_merge_would_overwrite_local_changes(repo, &head_entries, &sim_index, false)?;
+            bail_if_merge_would_overwrite_local_changes(
+                repo,
+                &head_entries,
+                &sim_index,
+                &[],
+                false,
+            )?;
         }
     }
 
@@ -4798,7 +4816,13 @@ fn merge_abort() -> Result<()> {
             .context("building merge-abort index")?;
     crate::commands::reset::preserve_index_cache_flags_from(&old_index, &mut new_index);
     if repo.work_tree.is_some() {
-        crate::commands::reset::checkout_merge_reset_worktree(&repo, &old_index, &mut new_index)?;
+        crate::commands::reset::checkout_merge_reset_worktree(
+            &repo,
+            &old_index,
+            &mut new_index,
+            false,
+            false,
+        )?;
     }
     if let Some(wt) = repo.work_tree.as_deref() {
         grit_lib::diff::refresh_index_stat_content_verified(&mut new_index, wt);
@@ -5041,12 +5065,7 @@ fn finish_octopus_merge_on_conflict(
     repo.write_index(&mut conflict_index)?;
 
     for desc in &merge_result.conflict_descriptions {
-        if desc.kind == "binary" {
-            println!("warning: Cannot merge binary files: {}", desc.subject_path);
-            println!("Cannot merge binary files: {}", desc.subject_path);
-        } else {
-            println!("CONFLICT ({}): {}", desc.kind, desc.body);
-        }
+        print_merge_description(desc);
     }
     println!("Automatic merge failed; fix conflicts and then commit the result.");
     let rr = if args.no_rerere_autoupdate {
@@ -5085,6 +5104,26 @@ impl ConflictDescription {
     #[must_use]
     pub fn remerge_header_line(&self) -> String {
         format!("remerge CONFLICT ({}): {}", self.kind, self.body)
+    }
+}
+
+fn print_merge_description(desc: &ConflictDescription) {
+    if desc.kind == "binary" {
+        println!("warning: Cannot merge binary files: {}", desc.subject_path);
+        println!("Cannot merge binary files: {}", desc.subject_path);
+    } else if desc.kind == "warning" || desc.kind == "info" {
+        println!("{}", desc.body);
+    } else {
+        println!("CONFLICT ({}): {}", desc.kind, desc.body);
+    }
+}
+
+fn print_merge_warnings(conflict_descriptions: &[ConflictDescription]) {
+    for desc in conflict_descriptions
+        .iter()
+        .filter(|desc| desc.kind == "warning" || desc.kind == "info")
+    {
+        print_merge_description(desc);
     }
 }
 
@@ -5671,6 +5710,23 @@ fn merge_directory_renames_enabled_for_mode(
     }
 }
 
+fn merge_directory_renames_conflict_for_mode(
+    repo: &Repository,
+    mode: MergeDirectoryRenamesMode,
+) -> bool {
+    match mode {
+        MergeDirectoryRenamesMode::FromConfig => ConfigSet::load(Some(&repo.git_dir), true)
+            .ok()
+            .and_then(|config| {
+                config
+                    .get("merge.directoryrenames")
+                    .or_else(|| config.get("merge.directoryRenames"))
+            })
+            .map_or(true, |raw| raw.trim().eq_ignore_ascii_case("conflict")),
+        MergeDirectoryRenamesMode::Enabled | MergeDirectoryRenamesMode::Disabled => false,
+    }
+}
+
 fn same_object_kind(mode_a: u32, mode_b: u32) -> bool {
     fn bucket(m: u32) -> u8 {
         if m == MODE_SYMLINK {
@@ -5694,30 +5750,125 @@ fn parent_dir(path: &[u8]) -> Option<Vec<u8>> {
     Some(path[..slash].to_vec())
 }
 
-fn build_directory_rename_map(renames: &HashMap<Vec<u8>, Vec<u8>>) -> HashMap<Vec<u8>, Vec<u8>> {
-    let mut dir_map: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
-    let mut conflicting_sources: BTreeSet<Vec<u8>> = BTreeSet::new();
+fn parent_dir_or_root(path: &[u8]) -> Vec<u8> {
+    parent_dir(path).unwrap_or_default()
+}
 
+fn build_directory_rename_map(renames: &HashMap<Vec<u8>, Vec<u8>>) -> HashMap<Vec<u8>, Vec<u8>> {
+    let mut counts: BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, usize>> = BTreeMap::new();
     for (old_path, new_path) in renames {
-        let (Some(old_dir), Some(new_dir)) = (parent_dir(old_path), parent_dir(new_path)) else {
+        let Some(old_dir) = parent_dir(old_path) else {
             continue;
         };
-        if old_dir == new_dir || conflicting_sources.contains(&old_dir) {
+        let new_dir = parent_dir_or_root(new_path);
+        if old_dir == new_dir {
             continue;
         }
-        match dir_map.get(&old_dir) {
-            None => {
-                dir_map.insert(old_dir, new_dir);
+        *counts
+            .entry(old_dir)
+            .or_default()
+            .entry(new_dir)
+            .or_default() += 1;
+    }
+
+    let mut dir_map = HashMap::new();
+    for (old_dir, destinations) in counts {
+        let mut best: Option<(Vec<u8>, usize)> = None;
+        let mut tied = false;
+        for (new_dir, count) in destinations {
+            match best {
+                None => {
+                    best = Some((new_dir, count));
+                    tied = false;
+                }
+                Some((_, best_count)) if count > best_count => {
+                    best = Some((new_dir, count));
+                    tied = false;
+                }
+                Some((_, best_count)) if count == best_count => {
+                    tied = true;
+                }
+                Some(_) => {}
             }
-            Some(existing) if *existing == new_dir => {}
-            Some(_) => {
-                dir_map.remove(&old_dir);
-                conflicting_sources.insert(old_dir);
+        }
+        if !tied {
+            if let Some((new_dir, _)) = best {
+                dir_map.insert(old_dir, new_dir);
             }
         }
     }
 
     dir_map
+}
+
+fn directory_rename_split_ties(
+    renames: &HashMap<Vec<u8>, Vec<u8>>,
+) -> BTreeMap<Vec<u8>, Vec<Vec<u8>>> {
+    let mut counts: BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, usize>> = BTreeMap::new();
+    for (old_path, new_path) in renames {
+        let (Some(old_dir), Some(new_dir)) = (parent_dir(old_path), parent_dir(new_path)) else {
+            continue;
+        };
+        if old_dir == new_dir {
+            continue;
+        }
+        *counts
+            .entry(old_dir)
+            .or_default()
+            .entry(new_dir)
+            .or_default() += 1;
+    }
+
+    let mut ties = BTreeMap::new();
+    for (old_dir, destinations) in counts {
+        let max_count = destinations.values().copied().max().unwrap_or(0);
+        let tied: Vec<Vec<u8>> = destinations
+            .into_iter()
+            .filter_map(|(new_dir, count)| (count == max_count).then_some(new_dir))
+            .collect();
+        if tied.len() > 1 {
+            ties.insert(old_dir, tied);
+        }
+    }
+    ties
+}
+
+fn has_new_path_under_dir(
+    base: &HashMap<Vec<u8>, IndexEntry>,
+    side: &HashMap<Vec<u8>, IndexEntry>,
+    dir: &[u8],
+) -> bool {
+    side.keys().any(|path| {
+        path.len() > dir.len()
+            && path.starts_with(dir)
+            && path.get(dir.len()) == Some(&b'/')
+            && !base.contains_key(path)
+    })
+}
+
+fn new_paths_under_dir(
+    base: &HashMap<Vec<u8>, IndexEntry>,
+    side: &HashMap<Vec<u8>, IndexEntry>,
+    dir: &[u8],
+) -> Vec<Vec<u8>> {
+    let mut paths: Vec<Vec<u8>> = side
+        .keys()
+        .filter(|path| {
+            path.len() > dir.len()
+                && path.starts_with(dir)
+                && path.get(dir.len()) == Some(&b'/')
+                && !base.contains_key(*path)
+        })
+        .cloned()
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn has_path_under_dir(side: &HashMap<Vec<u8>, IndexEntry>, dir: &[u8]) -> bool {
+    side.keys().any(|path| {
+        path.len() > dir.len() && path.starts_with(dir) && path.get(dir.len()) == Some(&b'/')
+    })
 }
 
 /// Detect directory renames by comparing full subtrees between `base` and `side` (not only
@@ -5733,6 +5884,10 @@ fn infer_pure_directory_renames(
             if entry.mode == MODE_TREE {
                 continue;
             }
+            by_prefix
+                .entry(Vec::new())
+                .or_default()
+                .insert(path.clone(), (entry.mode, entry.oid));
             let mut slash_positions: Vec<usize> = Vec::new();
             for (idx, b) in path.iter().enumerate() {
                 if *b == b'/' {
@@ -5847,45 +6002,285 @@ fn remap_path_by_directory_renames(
     let (old_dir, new_dir) = best_match?;
     let suffix = &path[old_dir.len() + 1..];
     let mut rewritten = new_dir.clone();
-    rewritten.push(b'/');
+    if !rewritten.is_empty() {
+        rewritten.push(b'/');
+    }
     rewritten.extend_from_slice(suffix);
     Some(rewritten)
+}
+
+fn original_path_before_directory_rename(
+    path: &[u8],
+    dir_renames: &HashMap<Vec<u8>, Vec<u8>>,
+) -> Option<Vec<u8>> {
+    let mut best_match: Option<(&Vec<u8>, &Vec<u8>)> = None;
+    for (old_dir, new_dir) in dir_renames {
+        if path.len() <= new_dir.len() || !path.starts_with(new_dir) {
+            continue;
+        }
+        if path.get(new_dir.len()) != Some(&b'/') {
+            continue;
+        }
+        let should_replace = match best_match {
+            None => true,
+            Some((_, best_new)) => new_dir.len() > best_new.len(),
+        };
+        if should_replace {
+            best_match = Some((old_dir, new_dir));
+        }
+    }
+
+    let (old_dir, new_dir) = best_match?;
+    let suffix = &path[new_dir.len() + 1..];
+    let mut original = old_dir.clone();
+    original.push(b'/');
+    original.extend_from_slice(suffix);
+    Some(original)
+}
+
+fn directory_rename_conflict_label(
+    side_label: &str,
+    path: &[u8],
+    applied_dir_renames: &HashMap<Vec<u8>, Vec<u8>>,
+) -> String {
+    original_path_before_directory_rename(path, applied_dir_renames).map_or_else(
+        || side_label.to_owned(),
+        |original| format!("{side_label}:{}", String::from_utf8_lossy(&original)),
+    )
+}
+
+fn path_under_directory_rename_source(
+    path: &[u8],
+    dir_renames: &HashMap<Vec<u8>, Vec<u8>>,
+) -> bool {
+    dir_renames.keys().any(|dir| {
+        path.len() > dir.len() && path.starts_with(dir) && path.get(dir.len()) == Some(&b'/')
+    })
+}
+
+fn path_is_directory_rename_source(path: &[u8], dir_renames: &HashMap<Vec<u8>, Vec<u8>>) -> bool {
+    dir_renames.contains_key(path)
+}
+
+fn has_pure_addition_under_dir(
+    base: &HashMap<Vec<u8>, IndexEntry>,
+    side: &HashMap<Vec<u8>, IndexEntry>,
+    side_renames: &HashMap<Vec<u8>, Vec<u8>>,
+    dir: &[u8],
+) -> bool {
+    side.keys().any(|path| {
+        path.len() > dir.len()
+            && path.starts_with(dir)
+            && path.get(dir.len()) == Some(&b'/')
+            && !base.contains_key(path)
+            && !side_renames.values().any(|target| target == path)
+    })
+}
+
+fn should_suppress_directory_rename(
+    old_dir: &[u8],
+    new_dir: &[u8],
+    side_own_dir_renames: &HashMap<Vec<u8>, Vec<u8>>,
+    base: &HashMap<Vec<u8>, IndexEntry>,
+    side: &HashMap<Vec<u8>, IndexEntry>,
+    side_renames: &HashMap<Vec<u8>, Vec<u8>>,
+) -> bool {
+    if path_is_directory_rename_source(new_dir, side_own_dir_renames) {
+        return true;
+    }
+    path_under_directory_rename_source(new_dir, side_own_dir_renames)
+        && !has_pure_addition_under_dir(base, side, side_renames, old_dir)
+}
+
+fn path_under_nested_directory_rename_destination(
+    path: &[u8],
+    side_own_dir_renames: &HashMap<Vec<u8>, Vec<u8>>,
+    opposite_dir_renames: &HashMap<Vec<u8>, Vec<u8>>,
+) -> bool {
+    side_own_dir_renames.values().any(|dir| {
+        path.len() > dir.len()
+            && path.starts_with(dir)
+            && path.get(dir.len()) == Some(&b'/')
+            && path_under_directory_rename_source(dir, opposite_dir_renames)
+    })
+}
+
+fn suppressed_directory_renames(
+    dir_renames: &HashMap<Vec<u8>, Vec<u8>>,
+    side_own_dir_renames: &HashMap<Vec<u8>, Vec<u8>>,
+    base: &HashMap<Vec<u8>, IndexEntry>,
+    side: &HashMap<Vec<u8>, IndexEntry>,
+    side_renames: &HashMap<Vec<u8>, Vec<u8>>,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut suppressed: Vec<(Vec<u8>, Vec<u8>)> = dir_renames
+        .iter()
+        .filter(|(old_dir, new_dir)| {
+            should_suppress_directory_rename(
+                old_dir,
+                new_dir,
+                side_own_dir_renames,
+                base,
+                side,
+                side_renames,
+            )
+        })
+        .map(|(old_dir, new_dir)| (old_dir.clone(), new_dir.clone()))
+        .collect();
+    suppressed.sort();
+    suppressed
+}
+
+fn record_suppressed_directory_rename_warnings(
+    warnings: &mut Vec<ConflictDescription>,
+    base: &HashMap<Vec<u8>, IndexEntry>,
+    side: &HashMap<Vec<u8>, IndexEntry>,
+    suppressed: &[(Vec<u8>, Vec<u8>)],
+) {
+    for (old_dir, new_dir) in suppressed {
+        let old_s = String::from_utf8_lossy(old_dir).into_owned();
+        let new_s = String::from_utf8_lossy(new_dir).into_owned();
+        for path in new_paths_under_dir(base, side, old_dir) {
+            let path_s = String::from_utf8_lossy(&path).into_owned();
+            warnings.push(ConflictDescription {
+                kind: "warning",
+                body: format!("WARNING: Avoiding applying {old_s} -> {new_s} rename to {path_s}"),
+                subject_path: path_s,
+                remerge_anchor_path: None,
+                rename_rr_ours_dest: None,
+                rename_rr_theirs_dest: None,
+                auto_merge_hint_path: None,
+            });
+        }
+    }
+}
+
+#[derive(Default)]
+struct DirectoryRenameApplication {
+    path_collisions: Vec<(Vec<u8>, Vec<u8>)>,
+    multi_target_collisions: Vec<(Vec<u8>, Vec<Vec<u8>>)>,
+    applied_moves: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 fn apply_directory_renames_to_side(
     base: &HashMap<Vec<u8>, IndexEntry>,
     side_entries: &mut HashMap<Vec<u8>, IndexEntry>,
     side_renames: &mut HashMap<Vec<u8>, Vec<u8>>,
+    side_own_dir_renames: &HashMap<Vec<u8>, Vec<u8>>,
     opposite_dir_renames: &HashMap<Vec<u8>, Vec<u8>>,
-) {
+    opposite_entries_in_way: Option<&HashMap<Vec<u8>, IndexEntry>>,
+    opposite_rename_sources_in_way: Option<&HashMap<Vec<u8>, Vec<u8>>>,
+) -> DirectoryRenameApplication {
     if opposite_dir_renames.is_empty() {
-        return;
+        return DirectoryRenameApplication::default();
     }
 
-    for target_path in side_renames.values_mut() {
+    let original_side_rename_targets: BTreeSet<Vec<u8>> = side_renames.values().cloned().collect();
+    let mut rename_to_self_content_conflict_targets: BTreeSet<Vec<u8>> = BTreeSet::new();
+    for (source_path, target_path) in side_renames.iter_mut() {
         if let Some(remapped) = remap_path_by_directory_renames(target_path, opposite_dir_renames) {
+            let matching_opposite_rename_target =
+                side_entries.get(target_path).is_some_and(|entry| {
+                    opposite_entries_in_way
+                        .and_then(|entries| entries.get(&remapped))
+                        .is_some_and(|opposite| {
+                            opposite.oid == entry.oid && opposite.mode == entry.mode
+                        })
+                        && opposite_rename_sources_in_way.is_some_and(|renames| {
+                            renames.values().any(|target| target == &remapped)
+                        })
+                });
+            let rename_to_self_content_conflict = remapped == *source_path
+                && side_entries.get(target_path).is_some_and(|entry| {
+                    opposite_entries_in_way
+                        .and_then(|entries| entries.get(&remapped))
+                        .is_some_and(|opposite| {
+                            opposite.oid != entry.oid || opposite.mode != entry.mode
+                        })
+                });
+            if rename_to_self_content_conflict {
+                rename_to_self_content_conflict_targets.insert(target_path.clone());
+            }
+            if remapped != *target_path
+                && (side_entries.contains_key(&remapped)
+                    || (opposite_entries_in_way
+                        .is_some_and(|entries| entries.contains_key(&remapped))
+                        && !matching_opposite_rename_target
+                        && !rename_to_self_content_conflict)
+                    || opposite_rename_sources_in_way
+                        .is_some_and(|renames| renames.contains_key(&remapped))
+                    || path_has_tree_descendant(side_entries, &remapped))
+            {
+                continue;
+            }
             *target_path = remapped;
         }
     }
 
-    let original_paths: Vec<Vec<u8>> = side_entries.keys().cloned().collect();
+    let mut result = DirectoryRenameApplication::default();
+    let mut candidates: BTreeMap<Vec<u8>, Vec<Vec<u8>>> = BTreeMap::new();
+    let mut original_paths: Vec<Vec<u8>> = side_entries.keys().cloned().collect();
+    original_paths.sort();
     for old_path in original_paths {
         if base.contains_key(&old_path) {
+            continue;
+        }
+        if path_under_nested_directory_rename_destination(
+            &old_path,
+            side_own_dir_renames,
+            opposite_dir_renames,
+        ) && !original_side_rename_targets.contains(&old_path)
+            && !side_renames.values().any(|target| target == &old_path)
+        {
             continue;
         }
         let Some(new_path) = remap_path_by_directory_renames(&old_path, opposite_dir_renames)
         else {
             continue;
         };
-        if new_path == old_path || side_entries.contains_key(&new_path) {
+        if new_path == old_path {
+            continue;
+        }
+        if path_has_tree_descendant(side_entries, &new_path) {
+            continue;
+        }
+        candidates.entry(new_path).or_default().push(old_path);
+    }
+
+    for (new_path, mut old_paths) in candidates {
+        old_paths.sort();
+        if old_paths.len() > 1 {
+            result.multi_target_collisions.push((new_path, old_paths));
+            continue;
+        }
+        let Some(old_path) = old_paths.into_iter().next() else {
+            continue;
+        };
+        let matching_opposite_rename_target = side_entries.get(&old_path).is_some_and(|entry| {
+            opposite_entries_in_way
+                .and_then(|entries| entries.get(&new_path))
+                .is_some_and(|opposite| opposite.oid == entry.oid && opposite.mode == entry.mode)
+                && opposite_rename_sources_in_way
+                    .is_some_and(|renames| renames.values().any(|target| target == &new_path))
+        });
+        let rename_to_self_content_conflict =
+            rename_to_self_content_conflict_targets.contains(&old_path);
+        if side_entries.contains_key(&new_path)
+            || (opposite_entries_in_way.is_some_and(|entries| entries.contains_key(&new_path))
+                && !matching_opposite_rename_target
+                && !rename_to_self_content_conflict)
+            || opposite_rename_sources_in_way.is_some_and(|renames| renames.contains_key(&new_path))
+        {
+            result.path_collisions.push((old_path, new_path));
             continue;
         }
         let Some(mut entry) = side_entries.remove(&old_path) else {
             continue;
         };
         entry.path = new_path.clone();
+        result.applied_moves.push((old_path, new_path.clone()));
         side_entries.insert(new_path, entry);
     }
+    result
 }
 
 /// Perform tree-level three-way merge.
@@ -5920,6 +6315,10 @@ fn merge_trees(
     criss_cross_outer_merge: bool,
     mut auto_merge_paths: Option<&mut Vec<String>>,
 ) -> Result<MergeResult> {
+    trace2_perf_region_enter("collect_merge_info");
+    trace2_perf_region_enter("collect_merge_info");
+    trace2_perf_region_enter("process_entries");
+
     // Detect renames on each side
     let (mut ours_renames, mut theirs_renames) =
         detect_merge_renames(repo, base, ours, theirs, rename_options);
@@ -5927,30 +6326,204 @@ fn merge_trees(
     let mut theirs_entries = theirs.clone();
 
     let mut directory_rename_suggested: Vec<ConflictDescription> = Vec::new();
+    let mut dir_renames_applied_to_ours: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+    let mut dir_renames_applied_to_theirs: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+    let mut theirs_renames_pre_dir_for_labels: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
 
     if merge_directory_renames_enabled_for_mode(repo, merge_directory_renames_mode) {
-        let ours_dir_renames = merge_directory_rename_maps(
+        let directory_renames_conflict =
+            merge_directory_renames_conflict_for_mode(repo, merge_directory_renames_mode);
+        let mut ours_dir_renames = merge_directory_rename_maps(
             build_directory_rename_map(&ours_renames),
             infer_pure_directory_renames(base, &ours_entries),
         );
-        let theirs_dir_renames = merge_directory_rename_maps(
+        let mut theirs_dir_renames = merge_directory_rename_maps(
             build_directory_rename_map(&theirs_renames),
             infer_pure_directory_renames(base, &theirs_entries),
         );
+        let ours_dir_renames_unfiltered = ours_dir_renames.clone();
+        let theirs_dir_renames_unfiltered = theirs_dir_renames.clone();
+        ours_dir_renames.retain(|old_dir, _| {
+            !(has_path_under_dir(&ours_entries, old_dir)
+                && has_path_under_dir(&theirs_entries, old_dir))
+        });
+        theirs_dir_renames.retain(|old_dir, _| {
+            !(has_path_under_dir(&ours_entries, old_dir)
+                && has_path_under_dir(&theirs_entries, old_dir))
+        });
+        for (old_dir, destinations) in directory_rename_split_ties(&ours_renames) {
+            if !has_new_path_under_dir(base, &theirs_entries, &old_dir) {
+                continue;
+            }
+            let old_s = String::from_utf8_lossy(&old_dir);
+            let dests = destinations
+                .iter()
+                .map(|dir| format!("{}/", String::from_utf8_lossy(dir)))
+                .collect::<Vec<_>>()
+                .join(" vs. ");
+            directory_rename_suggested.push(ConflictDescription {
+                kind: "directory rename split",
+                body: format!(
+                    "CONFLICT (directory rename split): {old_s}/ was split between {dests}."
+                ),
+                subject_path: old_s.to_string(),
+                remerge_anchor_path: None,
+                rename_rr_ours_dest: None,
+                rename_rr_theirs_dest: None,
+                auto_merge_hint_path: None,
+            });
+        }
+        for (old_dir, destinations) in directory_rename_split_ties(&theirs_renames) {
+            if !has_new_path_under_dir(base, &ours_entries, &old_dir) {
+                continue;
+            }
+            let old_s = String::from_utf8_lossy(&old_dir);
+            let dests = destinations
+                .iter()
+                .map(|dir| format!("{}/", String::from_utf8_lossy(dir)))
+                .collect::<Vec<_>>()
+                .join(" vs. ");
+            directory_rename_suggested.push(ConflictDescription {
+                kind: "directory rename split",
+                body: format!(
+                    "CONFLICT (directory rename split): {old_s}/ was split between {dests}."
+                ),
+                subject_path: old_s.to_string(),
+                remerge_anchor_path: None,
+                rename_rr_ours_dest: None,
+                rename_rr_theirs_dest: None,
+                auto_merge_hint_path: None,
+            });
+        }
+        let suppressed_theirs_dir_renames_for_ours = suppressed_directory_renames(
+            &theirs_dir_renames,
+            &ours_dir_renames,
+            base,
+            &ours_entries,
+            &ours_renames,
+        );
+        let suppressed_ours_dir_renames_for_theirs = suppressed_directory_renames(
+            &ours_dir_renames,
+            &theirs_dir_renames,
+            base,
+            &theirs_entries,
+            &theirs_renames,
+        );
+        record_suppressed_directory_rename_warnings(
+            &mut directory_rename_suggested,
+            base,
+            &ours_entries,
+            &suppressed_theirs_dir_renames_for_ours,
+        );
+        record_suppressed_directory_rename_warnings(
+            &mut directory_rename_suggested,
+            base,
+            &theirs_entries,
+            &suppressed_ours_dir_renames_for_theirs,
+        );
+
+        let mut theirs_dir_renames_for_ours = theirs_dir_renames.clone();
+        theirs_dir_renames_for_ours.retain(|old_dir, new_dir| {
+            !should_suppress_directory_rename(
+                old_dir,
+                new_dir,
+                &ours_dir_renames,
+                base,
+                &ours_entries,
+                &ours_renames,
+            )
+        });
+        let mut ours_dir_renames_for_theirs = ours_dir_renames.clone();
+        ours_dir_renames_for_theirs.retain(|old_dir, new_dir| {
+            !should_suppress_directory_rename(
+                old_dir,
+                new_dir,
+                &theirs_dir_renames,
+                base,
+                &theirs_entries,
+                &theirs_renames,
+            )
+        });
+        dir_renames_applied_to_ours = theirs_dir_renames_for_ours.clone();
+        dir_renames_applied_to_theirs = ours_dir_renames_for_theirs.clone();
         let theirs_renames_pre_dir = theirs_renames.clone();
         let ours_renames_pre_dir = ours_renames.clone();
-        apply_directory_renames_to_side(
+        theirs_renames_pre_dir_for_labels = theirs_renames_pre_dir.clone();
+        let ours_dir_rename_result = apply_directory_renames_to_side(
             base,
             &mut ours_entries,
             &mut ours_renames,
-            &theirs_dir_renames,
+            &ours_dir_renames,
+            &theirs_dir_renames_for_ours,
+            directory_renames_conflict.then_some(&theirs_entries),
+            directory_renames_conflict.then_some(&theirs_renames),
         );
-        apply_directory_renames_to_side(
+        let theirs_dir_rename_result = apply_directory_renames_to_side(
             base,
             &mut theirs_entries,
             &mut theirs_renames,
-            &ours_dir_renames,
+            &theirs_dir_renames,
+            &ours_dir_renames_for_theirs,
+            directory_renames_conflict.then_some(&ours_entries),
+            directory_renames_conflict.then_some(&ours_renames),
         );
+        for (new_path, old_paths) in ours_dir_rename_result
+            .multi_target_collisions
+            .into_iter()
+            .chain(theirs_dir_rename_result.multi_target_collisions.into_iter())
+        {
+            let new_s = String::from_utf8_lossy(&new_path).into_owned();
+            let sources = old_paths
+                .iter()
+                .map(|path| String::from_utf8_lossy(path).into_owned())
+                .collect::<Vec<_>>()
+                .join(", ");
+            directory_rename_suggested.push(ConflictDescription {
+                kind: "implicit dir rename",
+                body: format!(
+                    "Cannot map more than one path to {new_s}; implicit renames would put {sources} there."
+                ),
+                subject_path: new_s.clone(),
+                remerge_anchor_path: Some(new_s),
+                rename_rr_ours_dest: None,
+                rename_rr_theirs_dest: None,
+                auto_merge_hint_path: None,
+            });
+        }
+        for (old_path, new_path) in ours_dir_rename_result
+            .path_collisions
+            .into_iter()
+            .filter(|(_, new_path)| {
+                directory_renames_conflict
+                    || !path_under_directory_rename_source(new_path, &theirs_dir_renames_unfiltered)
+            })
+            .chain(
+                theirs_dir_rename_result
+                    .path_collisions
+                    .into_iter()
+                    .filter(|(_, new_path)| {
+                        directory_renames_conflict
+                            || !path_under_directory_rename_source(
+                                new_path,
+                                &ours_dir_renames_unfiltered,
+                            )
+                    }),
+            )
+        {
+            let old_s = String::from_utf8_lossy(&old_path).into_owned();
+            let new_s = String::from_utf8_lossy(&new_path).into_owned();
+            directory_rename_suggested.push(ConflictDescription {
+                kind: "implicit dir rename",
+                body: format!(
+                    "Existing file/dir at {new_s} in the way of implicit directory rename from {old_s}."
+                ),
+                subject_path: old_s,
+                remerge_anchor_path: Some(new_s),
+                rename_rr_ours_dest: None,
+                rename_rr_theirs_dest: None,
+                auto_merge_hint_path: None,
+            });
+        }
 
         // Directory-rename-suggested notices (git merge-ort "file location" / t4301 -z records).
         let labels_pre = resolve_conflict_labels(repo, their_name, base_label_prefix);
@@ -5962,6 +6535,74 @@ fn merge_trees(
             Some((_, t)) => t.as_str(),
             None => their_name,
         };
+        for (old_path, new_path) in &ours_dir_rename_result.applied_moves {
+            if ours_renames_pre_dir
+                .values()
+                .any(|target| target == old_path)
+            {
+                continue;
+            }
+            let old_s = String::from_utf8_lossy(old_path).into_owned();
+            let new_s = String::from_utf8_lossy(new_path).into_owned();
+            let (kind, body) = if directory_renames_conflict {
+                (
+                    "directory rename suggested",
+                    format!(
+                        "CONFLICT (file location): {old_s} added in {ours_l_pre}, inside a directory that was renamed in {theirs_l_pre}, suggesting it should perhaps be moved to {new_s}."
+                    ),
+                )
+            } else {
+                (
+                    "info",
+                    format!(
+                        "Path updated: {old_s} added in {ours_l_pre}, inside a directory that was renamed in {theirs_l_pre}; moving it to {new_s}."
+                    ),
+                )
+            };
+            directory_rename_suggested.push(ConflictDescription {
+                kind,
+                body,
+                subject_path: new_s,
+                remerge_anchor_path: Some(old_s),
+                rename_rr_ours_dest: None,
+                rename_rr_theirs_dest: None,
+                auto_merge_hint_path: None,
+            });
+        }
+        for (old_path, new_path) in &theirs_dir_rename_result.applied_moves {
+            if theirs_renames_pre_dir
+                .values()
+                .any(|target| target == old_path)
+            {
+                continue;
+            }
+            let old_s = String::from_utf8_lossy(old_path).into_owned();
+            let new_s = String::from_utf8_lossy(new_path).into_owned();
+            let (kind, body) = if directory_renames_conflict {
+                (
+                    "directory rename suggested",
+                    format!(
+                        "CONFLICT (file location): {old_s} added in {theirs_l_pre}, inside a directory that was renamed in {ours_l_pre}, suggesting it should perhaps be moved to {new_s}."
+                    ),
+                )
+            } else {
+                (
+                    "info",
+                    format!(
+                        "Path updated: {old_s} added in {theirs_l_pre}, inside a directory that was renamed in {ours_l_pre}; moving it to {new_s}."
+                    ),
+                )
+            };
+            directory_rename_suggested.push(ConflictDescription {
+                kind,
+                body,
+                subject_path: new_s,
+                remerge_anchor_path: Some(old_s),
+                rename_rr_ours_dest: None,
+                rename_rr_theirs_dest: None,
+                auto_merge_hint_path: None,
+            });
+        }
         for (src, old_dest) in &theirs_renames_pre_dir {
             let Some(new_dest) = theirs_renames.get(src) else {
                 continue;
@@ -5977,11 +6618,23 @@ fn merge_trees(
             let old_s = String::from_utf8_lossy(old_dest).into_owned();
             let new_s = String::from_utf8_lossy(new_dest).into_owned();
             let src_s = String::from_utf8_lossy(src);
-            let body = format!(
-                "CONFLICT (file location): {src_s} renamed to {old_s} in {theirs_l_pre}, inside a directory that was renamed in {ours_l_pre}, suggesting it should perhaps be moved to {new_s}."
-            );
+            let (kind, body) = if directory_renames_conflict {
+                (
+                    "directory rename suggested",
+                    format!(
+                        "CONFLICT (file location): {src_s} renamed to {old_s} in {theirs_l_pre}, inside a directory that was renamed in {ours_l_pre}, suggesting it should perhaps be moved to {new_s}."
+                    ),
+                )
+            } else {
+                (
+                    "info",
+                    format!(
+                        "Path updated: {src_s} renamed to {old_s} in {theirs_l_pre}, inside a directory that was renamed in {ours_l_pre}; moving it to {new_s}."
+                    ),
+                )
+            };
             directory_rename_suggested.push(ConflictDescription {
-                kind: "directory rename suggested",
+                kind,
                 body,
                 subject_path: new_s,
                 remerge_anchor_path: Some(old_s),
@@ -6005,11 +6658,23 @@ fn merge_trees(
             let old_s = String::from_utf8_lossy(old_dest).into_owned();
             let new_s = String::from_utf8_lossy(new_dest).into_owned();
             let src_s = String::from_utf8_lossy(src);
-            let body = format!(
-                "CONFLICT (file location): {src_s} renamed to {old_s} in {ours_l_pre}, inside a directory that was renamed in {theirs_l_pre}, suggesting it should perhaps be moved to {new_s}."
-            );
+            let (kind, body) = if directory_renames_conflict {
+                (
+                    "directory rename suggested",
+                    format!(
+                        "CONFLICT (file location): {src_s} renamed to {old_s} in {ours_l_pre}, inside a directory that was renamed in {theirs_l_pre}, suggesting it should perhaps be moved to {new_s}."
+                    ),
+                )
+            } else {
+                (
+                    "info",
+                    format!(
+                        "Path updated: {src_s} renamed to {old_s} in {ours_l_pre}, inside a directory that was renamed in {theirs_l_pre}; moving it to {new_s}."
+                    ),
+                )
+            };
             directory_rename_suggested.push(ConflictDescription {
-                kind: "directory rename suggested",
+                kind,
                 body,
                 subject_path: new_s,
                 remerge_anchor_path: Some(old_s),
@@ -6059,6 +6724,13 @@ fn merge_trees(
     let mut conflict_files: Vec<(String, Vec<u8>)> = Vec::new();
     let mut conflict_descriptions: Vec<ConflictDescription> = Vec::new();
     conflict_descriptions.append(&mut directory_rename_suggested);
+    if conflict_descriptions.iter().any(|desc| {
+        desc.kind == "directory rename split"
+            || desc.kind == "implicit dir rename"
+            || desc.kind == "directory rename suggested"
+    }) {
+        has_conflicts = true;
+    }
     let mut submodule_merge_stdout: Vec<String> = Vec::new();
     let mut submodule_merge_advice: Vec<(String, String)> = Vec::new();
 
@@ -6323,13 +6995,23 @@ fn merge_trees(
                                 // first pass should stage the add/add; the second would duplicate.
                                 stage_entry(&mut index, oe, 2);
                                 stage_entry(&mut index, te_at_new, 3);
+                                let ours_marker_label = directory_rename_conflict_label(
+                                    ours_label,
+                                    ours_new_path,
+                                    &dir_renames_applied_to_ours,
+                                );
+                                let theirs_marker_label = directory_rename_conflict_label(
+                                    their_name,
+                                    ours_new_path,
+                                    &dir_renames_applied_to_theirs,
+                                );
                                 let conflict_content = match try_content_merge_add_add(
                                     repo,
                                     &new_path_str,
                                     oe,
                                     te_at_new,
-                                    ours_label,
-                                    their_name,
+                                    &ours_marker_label,
+                                    &theirs_marker_label,
                                     MergeFavor::None,
                                     diff_algorithm,
                                     merge_renormalize,
@@ -6412,13 +7094,50 @@ fn merge_trees(
                         if same_object_kind(resolved_entry.mode, te_at_new.mode) {
                             stage_entry(&mut index, resolved_entry, 2);
                             stage_entry(&mut index, te_at_new, 3);
+                            let competing_theirs_rename_src =
+                                theirs_renames.iter().find_map(|(src, dest)| {
+                                    if src.as_slice() != base_path.as_slice()
+                                        && dest.as_slice() == ours_new_path.as_slice()
+                                    {
+                                        Some(src.clone())
+                                    } else {
+                                        None
+                                    }
+                                });
+                            let ours_marker_label = if competing_theirs_rename_src.is_some() {
+                                format!("{ours_label}:{path_str}")
+                            } else {
+                                directory_rename_conflict_label(
+                                    ours_label,
+                                    ours_new_path,
+                                    &dir_renames_applied_to_ours,
+                                )
+                            };
+                            let theirs_marker_label = competing_theirs_rename_src
+                                .as_ref()
+                                .and_then(|src| theirs_renames_pre_dir_for_labels.get(src))
+                                .map_or_else(
+                                    || {
+                                        directory_rename_conflict_label(
+                                            their_name,
+                                            ours_new_path,
+                                            &dir_renames_applied_to_theirs,
+                                        )
+                                    },
+                                    |pre_dir_target| {
+                                        format!(
+                                            "{their_name}:{}",
+                                            String::from_utf8_lossy(pre_dir_target)
+                                        )
+                                    },
+                                );
                             let conflict_content = match try_content_merge_add_add(
                                 repo,
                                 &path_str,
                                 resolved_entry,
                                 te_at_new,
-                                ours_label,
-                                their_name,
+                                &ours_marker_label,
+                                &theirs_marker_label,
                                 MergeFavor::None,
                                 diff_algorithm,
                                 merge_renormalize,
@@ -6435,17 +7154,33 @@ fn merge_trees(
                                 | ContentMergeResult::BinaryConflict(content) => content,
                             };
                             conflict_files.push((path_str.clone(), conflict_content));
-                            conflict_descriptions.push(ConflictDescription {
-                                kind: "rename/add",
-                                body: format!("Merge conflict in {path_str}"),
-                                subject_path: path_str.clone(),
-                                remerge_anchor_path: Some(
-                                    String::from_utf8_lossy(base_path).into_owned(),
-                                ),
-                                rename_rr_ours_dest: None,
-                                rename_rr_theirs_dest: None,
-                                auto_merge_hint_path: None,
-                            });
+                            if let Some(theirs_src) = competing_theirs_rename_src.as_ref() {
+                                let ours_src_s = String::from_utf8_lossy(base_path);
+                                let theirs_src_s = String::from_utf8_lossy(theirs_src);
+                                conflict_descriptions.push(ConflictDescription {
+                                    kind: "rename/rename",
+                                    body: format!(
+                                        "{ours_src_s} renamed to {path_str} in {ours_label} and {theirs_src_s} renamed to {path_str} in {their_name}."
+                                    ),
+                                    subject_path: path_str.clone(),
+                                    remerge_anchor_path: Some(ours_src_s.into_owned()),
+                                    rename_rr_ours_dest: Some(path_str.clone()),
+                                    rename_rr_theirs_dest: Some(path_str.clone()),
+                                    auto_merge_hint_path: None,
+                                });
+                            } else {
+                                conflict_descriptions.push(ConflictDescription {
+                                    kind: "rename/add",
+                                    body: format!("Merge conflict in {path_str}"),
+                                    subject_path: path_str.clone(),
+                                    remerge_anchor_path: Some(
+                                        String::from_utf8_lossy(base_path).into_owned(),
+                                    ),
+                                    rename_rr_ours_dest: None,
+                                    rename_rr_theirs_dest: None,
+                                    auto_merge_hint_path: None,
+                                });
+                            }
                         } else {
                             let side_path = format!("{path_str}~{their_name}");
                             let side_path_bytes = side_path.as_bytes().to_vec();
@@ -6541,13 +7276,23 @@ fn merge_trees(
                             oe_at.path = theirs_new_path.clone();
                             stage_entry(&mut index, &oe_at, 2);
                             stage_entry(&mut index, te, 3);
+                            let ours_marker_label = directory_rename_conflict_label(
+                                ours_label,
+                                theirs_new_path,
+                                &dir_renames_applied_to_ours,
+                            );
+                            let theirs_marker_label = directory_rename_conflict_label(
+                                their_name,
+                                theirs_new_path,
+                                &dir_renames_applied_to_theirs,
+                            );
                             let rr_content = match try_content_merge_add_add(
                                 repo,
                                 &path_str,
                                 &oe_at,
                                 te,
-                                ours_label,
-                                their_name,
+                                &ours_marker_label,
+                                &theirs_marker_label,
                                 MergeFavor::None,
                                 diff_algorithm,
                                 merge_renormalize,
@@ -6578,6 +7323,28 @@ fn merge_trees(
                         } else {
                             stage_entry(&mut index, oe, 2);
                             stage_entry(&mut index, te, 3);
+                            if let Some(te_at_ours_target) = theirs_entries.get(ours_target) {
+                                if !base.contains_key(ours_target)
+                                    && index.get(ours_target, 3).is_none()
+                                    && (te_at_ours_target.oid != oe.oid
+                                        || te_at_ours_target.mode != oe.mode)
+                                {
+                                    stage_entry(&mut index, te_at_ours_target, 3);
+                                    let ours_target_s =
+                                        String::from_utf8_lossy(ours_target).into_owned();
+                                    conflict_descriptions.push(ConflictDescription {
+                                        kind: "rename/add",
+                                        body: format!("Merge conflict in {ours_target_s}"),
+                                        subject_path: ours_target_s,
+                                        remerge_anchor_path: Some(
+                                            String::from_utf8_lossy(base_path).into_owned(),
+                                        ),
+                                        rename_rr_ours_dest: None,
+                                        rename_rr_theirs_dest: None,
+                                        auto_merge_hint_path: None,
+                                    });
+                                }
+                            }
                             if let Ok(obj) = repo.odb.read(&oe.oid) {
                                 conflict_files.push((
                                     String::from_utf8_lossy(ours_target).to_string(),
@@ -6594,6 +7361,11 @@ fn merge_trees(
                     }
                 }
             }
+            continue;
+        }
+        if path_has_unmerged_entries(&index, theirs_new_path) {
+            handled_paths.insert(base_path.clone());
+            handled_paths.insert(theirs_new_path.clone());
             continue;
         }
         handled_paths.insert(base_path.clone());
@@ -6720,13 +7492,23 @@ fn merge_trees(
                             // source — Git reports rename/delete + add/add (stages 2 vs 3 only).
                             stage_entry(&mut index, oe_at_new, 2);
                             stage_entry(&mut index, te, 3);
+                            let ours_marker_label = directory_rename_conflict_label(
+                                ours_label,
+                                theirs_new_path,
+                                &dir_renames_applied_to_ours,
+                            );
+                            let theirs_marker_label = directory_rename_conflict_label(
+                                their_name,
+                                theirs_new_path,
+                                &dir_renames_applied_to_theirs,
+                            );
                             let conflict_content = match try_content_merge_add_add(
                                 repo,
                                 &new_path_str,
                                 oe_at_new,
                                 te,
-                                ours_label,
-                                their_name,
+                                &ours_marker_label,
+                                &theirs_marker_label,
                                 MergeFavor::None,
                                 diff_algorithm,
                                 merge_renormalize,
@@ -6774,6 +7556,18 @@ fn merge_trees(
                             auto_merge_hint_path: None,
                         });
                     }
+                } else if path_has_tree_descendant(&ours_entries, theirs_new_path) {
+                    let conflict_path = format!("{new_path_str}~{their_name}");
+                    let conflict_path_bytes = conflict_path.as_bytes().to_vec();
+                    let mut be_at_conflict = be.clone();
+                    be_at_conflict.path = conflict_path_bytes.clone();
+                    stage_entry(&mut index, &be_at_conflict, 1);
+                    let mut te_at_conflict = te.clone();
+                    te_at_conflict.path = conflict_path_bytes;
+                    stage_entry(&mut index, &te_at_conflict, 3);
+                    if let Ok(obj) = repo.odb.read(&te.oid) {
+                        conflict_files.push((conflict_path, obj.data));
+                    }
                 } else {
                     let mut be_at_new = be.clone();
                     be_at_new.path = theirs_new_path.clone();
@@ -6813,13 +7607,23 @@ fn merge_trees(
                     if same_object_kind(oe_at_new.mode, resolved_entry.mode) {
                         stage_entry(&mut index, oe_at_new, 2);
                         stage_entry(&mut index, resolved_entry, 3);
+                        let ours_marker_label = directory_rename_conflict_label(
+                            ours_label,
+                            theirs_new_path,
+                            &dir_renames_applied_to_ours,
+                        );
+                        let theirs_marker_label = directory_rename_conflict_label(
+                            their_name,
+                            theirs_new_path,
+                            &dir_renames_applied_to_theirs,
+                        );
                         let conflict_content = match try_content_merge_add_add(
                             repo,
                             &path_str,
                             oe_at_new,
                             resolved_entry,
-                            ours_label,
-                            their_name,
+                            &ours_marker_label,
+                            &theirs_marker_label,
                             MergeFavor::None,
                             diff_algorithm,
                             merge_renormalize,
@@ -7292,6 +8096,9 @@ fn merge_trees(
                             } else {
                                 stage_entry(&mut index, be, 1);
                                 stage_entry(&mut index, te, 3);
+                                if let Ok(obj) = repo.odb.read(&te.oid) {
+                                    conflict_files.push((path_str.clone(), obj.data));
+                                }
                                 let body = format!(
                                     "{path_str} deleted in {ours_label} and modified in {their_name}.  Version {their_name} of {path_str} left in tree."
                                 );
@@ -7361,6 +8168,9 @@ fn merge_trees(
                             } else {
                                 stage_entry(&mut index, be, 1);
                                 stage_entry(&mut index, oe, 2);
+                                if let Ok(obj) = repo.odb.read(&oe.oid) {
+                                    conflict_files.push((path_str.clone(), obj.data));
+                                }
                                 let body = format!(
                                     "{path_str} deleted in {their_name} and modified in {ours_label}.  Version {ours_label} of {path_str} left in tree."
                                 );
@@ -7421,8 +8231,16 @@ fn merge_trees(
                     &path_str,
                     oe,
                     te,
-                    ours_label,
-                    their_name,
+                    &directory_rename_conflict_label(
+                        ours_label,
+                        path,
+                        &dir_renames_applied_to_ours,
+                    ),
+                    &directory_rename_conflict_label(
+                        their_name,
+                        path,
+                        &dir_renames_applied_to_theirs,
+                    ),
                     favor,
                     diff_algorithm,
                     merge_renormalize,
@@ -7479,6 +8297,7 @@ fn merge_trees(
     }
 
     index.sort();
+    dedupe_index_entries_by_path_stage(&mut index);
 
     let index_has_unmerged = index.entries.iter().any(|e| e.stage() != 0);
     let has_conflicts = has_conflicts || index_has_unmerged;
@@ -7915,17 +8734,23 @@ pub(crate) fn replay_preprocess_directory_renames_for_trees(
         build_directory_rename_map(&theirs_renames),
         infer_pure_directory_renames(base, &theirs_entries),
     );
-    apply_directory_renames_to_side(
+    let _ = apply_directory_renames_to_side(
         base,
         &mut ours_entries,
         &mut ours_renames,
+        &ours_dir_renames,
         &theirs_dir_renames,
+        None,
+        None,
     );
-    apply_directory_renames_to_side(
+    let _ = apply_directory_renames_to_side(
         base,
         &mut theirs_entries,
         &mut theirs_renames,
+        &theirs_dir_renames,
         &ours_dir_renames,
+        None,
+        None,
     );
     (ours_entries, theirs_entries)
 }
@@ -8347,6 +9172,13 @@ fn remove_stage_zero_entry(index: &mut Index, path: &[u8]) {
     index
         .entries
         .retain(|entry| !(entry.stage() == 0 && entry.path == path));
+}
+
+fn dedupe_index_entries_by_path_stage(index: &mut Index) {
+    let mut seen: BTreeSet<(Vec<u8>, u8)> = BTreeSet::new();
+    index
+        .entries
+        .retain(|entry| seen.insert((entry.path.clone(), entry.stage())));
 }
 
 fn path_has_unmerged_entries(index: &Index, path: &[u8]) -> bool {

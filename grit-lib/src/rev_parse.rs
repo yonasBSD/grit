@@ -1062,6 +1062,12 @@ fn resolve_revision_impl(
         }
     }
 
+    if let Some(index_spec) = parse_index_colon_spec(spec) {
+        let path = normalize_colon_path_for_tree(repo, index_spec.raw_path)?;
+        return resolve_index_path_at_stage(repo, &path, index_spec.stage)
+            .map_err(|e| diagnose_index_path_error(repo, &path, index_spec.stage, e));
+    }
+
     // `tags/<name>` is Git's DWIM for `refs/tags/<name>` (t6101 `tags/start`).
     if let Some(tag_path) = spec.strip_prefix("tags/") {
         if !tag_path.is_empty() {

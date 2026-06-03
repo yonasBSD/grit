@@ -6,6 +6,7 @@ use clap::Args as ClapArgs;
 use grit_lib::error::Error as LibError;
 use grit_lib::git_date::approx::approxidate_careful;
 use grit_lib::merge_base;
+use grit_lib::ref_exclusions::{git_namespace_prefix, strip_git_namespace, RefExclusions};
 use grit_lib::refs;
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse::{
@@ -298,6 +299,7 @@ pub fn run(args: Args) -> Result<()> {
         Remotes(Option<String>),
         Glob(String),
         Exclude(String),
+        ExcludeHidden(String),
         LocalEnvVars,
         ResolveGitDir(String),
         Revision(String, bool, bool, bool), // (rev_spec, symbolic_full_name, symbolic_asis, strict_before_first_dd)
@@ -474,8 +476,9 @@ pub fn run(args: Args) -> Result<()> {
                     actions.push(Action::Exclude(pattern.to_owned()));
                 }
             } else if arg.starts_with("--exclude-hidden=") {
-                // --exclude-hidden=fetch/receive: accepted but currently a no-op
-                // (we don't have transfer.hideRefs support yet)
+                actions.push(Action::ExcludeHidden(
+                    arg.trim_start_matches("--exclude-hidden=").to_owned(),
+                ));
             } else if arg == "--show-ref-format" {
                 actions.push(Action::ShowRefFormat);
             } else if let Some(mode) = arg.strip_prefix("--show-object-format=") {
@@ -752,6 +755,7 @@ pub fn run(args: Args) -> Result<()> {
     // Process actions in order
     let mut saw_path_sep_output = false;
     let mut exclude_patterns: Vec<String> = Vec::new();
+    let mut ref_exclusions = RefExclusions::default();
     let _ = sq_output; // --sq accepted but output quoting deferred to callers
     let mut seen_ambiguous_revision = false;
     let mut deferred_fatal_stderr: Option<String> = None;
@@ -1041,7 +1045,7 @@ pub fn run(args: Args) -> Result<()> {
                 };
                 let all = grit_lib::refs::list_refs(&current.git_dir, "refs/bisect/")
                     .context("failed to list bisect refs")?;
-                let mut bad: Vec<String> = all
+                let mut bad: Vec<_> = all
                     .iter()
                     .filter(|(r, _)| {
                         r.starts_with("refs/bisect/bad")
@@ -1049,13 +1053,13 @@ pub fn run(args: Args) -> Result<()> {
                                 .get("refs/bisect/bad".len())
                                 .is_none_or(|b| *b == b'-')
                     })
-                    .map(|(r, _)| r.clone())
+                    .map(|(_, oid)| *oid)
                     .collect();
                 bad.sort();
-                for r in &bad {
-                    println!("{r}");
+                for oid in &bad {
+                    println!("{oid}");
                 }
-                let mut good: Vec<String> = all
+                let mut good: Vec<_> = all
                     .iter()
                     .filter(|(r, _)| {
                         r.starts_with("refs/bisect/good")
@@ -1063,11 +1067,11 @@ pub fn run(args: Args) -> Result<()> {
                                 .get("refs/bisect/good".len())
                                 .is_none_or(|b| *b == b'-')
                     })
-                    .map(|(r, _)| r.clone())
+                    .map(|(_, oid)| *oid)
                     .collect();
                 good.sort();
-                for r in &good {
-                    println!("^{r}");
+                for oid in &good {
+                    println!("^{oid}");
                 }
             }
             Action::MaxAge(date) => {
@@ -1250,21 +1254,51 @@ pub fn run(args: Args) -> Result<()> {
             }
             Action::Exclude(pattern) => {
                 exclude_patterns.push(pattern.clone());
+                ref_exclusions.add_excluded_ref(pattern.clone());
+            }
+            Action::ExcludeHidden(section) => {
+                if ref_exclusions.hidden_configured {
+                    eprintln!("fatal: --exclude-hidden= passed more than once");
+                    std::process::exit(128);
+                }
+                match section.as_str() {
+                    "fetch" | "receive" | "uploadpack" => {
+                        let Some(current) = repo.as_ref() else {
+                            bail!("not a git repository");
+                        };
+                        let config =
+                            grit_lib::config::ConfigSet::load(Some(&current.git_dir), true)?;
+                        ref_exclusions.load_hidden_refs_from_config(&config, section);
+                    }
+                    _ => {
+                        eprintln!("fatal: unsupported section for hidden refs: {section}");
+                        std::process::exit(128);
+                    }
+                }
             }
             Action::All => {
                 if let Some(current) = repo.as_ref() {
-                    let matching = grit_lib::refs::list_refs(&current.git_dir, "refs/")
-                        .context("failed to list refs")?;
+                    let matching = if ref_exclusions.hidden_configured {
+                        grit_lib::refs::list_refs_physical(&current.git_dir, "refs/")
+                    } else {
+                        grit_lib::refs::list_refs(&current.git_dir, "refs/")
+                    }
+                    .context("failed to list refs")?;
+                    let namespace_prefix = git_namespace_prefix();
                     for (refname, oid) in &matching {
-                        if !is_excluded(refname, &exclude_patterns) {
+                        if !ref_exclusions
+                            .ref_excluded(strip_git_namespace(refname, &namespace_prefix), refname)
+                        {
                             println!("{oid}");
                         }
                     }
                     exclude_patterns.clear();
+                    ref_exclusions.clear();
                 }
             }
             Action::Branches(pattern) => {
                 if let Some(current) = repo.as_ref() {
+                    reject_rev_parse_exclude_hidden_with("--branches", &ref_exclusions)?;
                     let matching = if let Some(pat) = pattern {
                         let full = normalize_ref_pattern("refs/heads/", pat);
                         grit_lib::refs::list_refs_glob(&current.git_dir, &full)
@@ -1274,15 +1308,18 @@ pub fn run(args: Args) -> Result<()> {
                             .context("failed to list branch refs")?
                     };
                     for (refname, oid) in &matching {
-                        if !is_excluded(refname, &exclude_patterns) {
+                        let short = refname.strip_prefix("refs/heads/").unwrap_or(refname);
+                        if !is_excluded(short, &exclude_patterns) {
                             println!("{oid}");
                         }
                     }
                     exclude_patterns.clear();
+                    ref_exclusions.clear();
                 }
             }
             Action::Tags(pattern) => {
                 if let Some(current) = repo.as_ref() {
+                    reject_rev_parse_exclude_hidden_with("--tags", &ref_exclusions)?;
                     let matching = if let Some(pat) = pattern {
                         let full = normalize_ref_pattern("refs/tags/", pat);
                         grit_lib::refs::list_refs_glob(&current.git_dir, &full)
@@ -1292,15 +1329,18 @@ pub fn run(args: Args) -> Result<()> {
                             .context("failed to list tag refs")?
                     };
                     for (refname, oid) in &matching {
-                        if !is_excluded(refname, &exclude_patterns) {
+                        let short = refname.strip_prefix("refs/tags/").unwrap_or(refname);
+                        if !is_excluded(short, &exclude_patterns) {
                             println!("{oid}");
                         }
                     }
                     exclude_patterns.clear();
+                    ref_exclusions.clear();
                 }
             }
             Action::Remotes(pattern) => {
                 if let Some(current) = repo.as_ref() {
+                    reject_rev_parse_exclude_hidden_with("--remotes", &ref_exclusions)?;
                     let matching = if let Some(pat) = pattern {
                         let full = normalize_ref_pattern("refs/remotes/", pat);
                         grit_lib::refs::list_refs_glob(&current.git_dir, &full)
@@ -1310,22 +1350,33 @@ pub fn run(args: Args) -> Result<()> {
                             .context("failed to list remote refs")?
                     };
                     for (refname, oid) in &matching {
-                        if !is_excluded(refname, &exclude_patterns) {
+                        let short = refname.strip_prefix("refs/remotes/").unwrap_or(refname);
+                        if !is_excluded(short, &exclude_patterns) {
                             println!("{oid}");
                         }
                     }
                     exclude_patterns.clear();
+                    ref_exclusions.clear();
                 }
             }
             Action::Glob(full) => {
                 if let Some(current) = repo.as_ref() {
-                    let matching = grit_lib::refs::list_refs_glob(&current.git_dir, full)
-                        .context("failed to list refs")?;
+                    let matching = if ref_exclusions.hidden_configured {
+                        list_refs_glob_physical_rev_parse(current, full)
+                    } else {
+                        Ok(grit_lib::refs::list_refs_glob(&current.git_dir, full)?)
+                    }
+                    .context("failed to list refs")?;
+                    let namespace_prefix = git_namespace_prefix();
                     for (refname, oid) in &matching {
-                        if !is_excluded(refname, &exclude_patterns) {
+                        if !ref_exclusions
+                            .ref_excluded(strip_git_namespace(refname, &namespace_prefix), refname)
+                        {
                             println!("{oid}");
                         }
                     }
+                    exclude_patterns.clear();
+                    ref_exclusions.clear();
                 }
             }
             Action::LocalEnvVars => {
@@ -1948,6 +1999,23 @@ fn is_excluded(refname: &str, patterns: &[String]) -> bool {
         }
     }
     false
+}
+
+fn reject_rev_parse_exclude_hidden_with(option: &str, exclusions: &RefExclusions) -> Result<()> {
+    if exclusions.hidden_configured {
+        bail!("options '--exclude-hidden' and '{option}' cannot be used together");
+    }
+    Ok(())
+}
+
+fn list_refs_glob_physical_rev_parse(
+    repo: &Repository,
+    pattern: &str,
+) -> Result<Vec<(String, grit_lib::objects::ObjectId)>> {
+    Ok(grit_lib::refs::list_refs_physical(&repo.git_dir, "refs/")?
+        .into_iter()
+        .filter(|(refname, _)| grit_lib::refs::ref_matches_glob(refname, pattern))
+        .collect())
 }
 
 /// Normalize a --glob pattern: prepend refs/ if needed, append /* if no glob chars.

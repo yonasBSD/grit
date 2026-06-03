@@ -31,12 +31,27 @@
     ignored broken/zero loose refs remove any preloaded entry from the refs list.
   - Completed rev-list bitmap filter file: `t6113-rev-list-bitmap-filters.sh` (14/14) after making
     `rev-list --objects --unpacked` emit the full object closure for unpacked commits.
-  - Next t6 work should continue with the remaining rev-list/revision traversal group unless a
-    higher-value dependency group is selected from the CSV.
+  - Completed hidden-ref exclusion file: `t6021-rev-list-exclude-hidden.sh` (62/62) after wiring
+    `rev-list` CLI parsing for `--exclude-hidden`/`--exclude`, applying exclusion-aware physical
+    pseudo-ref expansion, preserving Git's empty expansion behavior, and fixing a stale merge
+    reset-worktree caller that blocked release builds.
+  - Completed ref glob/exclude file: `t6018-rev-list-glob.sh` (95/95) after extending
+    pseudo-ref glob and exclude handling across `rev-list`, `rev-parse`, and `shortlog`.
+  - Completed rev-list bisection file: `t6002-rev-list-bisect.sh` (53/53) after adding
+    bisection midpoint selection, `--bisect-vars`, `--bisect-all`, bisect-ref defaults, and
+    `rev-parse --bisect` object output.
+  - Current claimed file: `t6423-merge-rename-directories.sh`, now 77/82. Remaining real
+    failures are `12i2`, `12n`, and `13e`; `9g` and `12h` remain expected failures.
+  - Next t6 work should follow the highest-value remaining row from the grouped CSV unless a
+    dependency-focused sequence is clearly more efficient.
   - Execution logs: `logs/2026-06-02_1427-t6-for-each-ref.md`,
     `logs/2026-06-02_1655-t6200-fmt-merge-msg-extra.md`,
     `logs/2026-06-02_1710-t6040-tracking-info.md`,
-    `logs/2026-06-02_2000-t6113-rev-list-bitmap-filters.md`.
+    `logs/2026-06-02_2000-t6113-rev-list-bitmap-filters.md`,
+    `logs/2026-06-03_0754-t6021-rev-list-exclude-hidden.md`,
+    `logs/2026-06-03_0810-t6018-rev-list-glob.md`,
+    `logs/2026-06-03_0816-t6002-rev-list-bisect.md`,
+    `logs/2026-06-03_0824-t6423-merge-rename-directories.md`.
 
 ---
 

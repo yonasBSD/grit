@@ -615,6 +615,109 @@ pub struct RevListResult {
     pub tip_annotated_tag_by_commit: HashMap<ObjectId, ObjectId>,
 }
 
+/// Per-commit bisection score for `rev-list --bisect*` output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BisectEntry {
+    /// Candidate commit object ID.
+    pub oid: ObjectId,
+    /// Number of candidate commits reachable from `oid`, including `oid`.
+    pub reaches: usize,
+    /// Git's bisection distance, `min(reaches, all - reaches)`.
+    pub distance: usize,
+}
+
+/// Bisection analysis result for a selected revision set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BisectSelection {
+    /// Best midpoint candidate, if the selected set is non-empty.
+    pub best: Option<BisectEntry>,
+    /// All candidates sorted as `--bisect-all` requires.
+    pub all: Vec<BisectEntry>,
+    /// Total number of commits in the bisection set.
+    pub total: usize,
+}
+
+/// Rank rev-list commits for Git-compatible bisection helpers.
+///
+/// # Parameters
+///
+/// - `repo` - repository used for parent lookup.
+/// - `commits` - selected commit set from a normal `rev-list` traversal.
+/// - `first_parent` - when true, follow only first parents while counting reachability.
+///
+/// # Returns
+///
+/// A [`BisectSelection`] containing the best midpoint plus the complete sorted candidate list.
+///
+/// # Errors
+///
+/// Returns repository/object errors when parent commits cannot be loaded.
+pub fn select_bisect_commits(
+    repo: &Repository,
+    commits: &[ObjectId],
+    first_parent: bool,
+) -> Result<BisectSelection> {
+    let total = commits.len();
+    if total == 0 {
+        return Ok(BisectSelection {
+            best: None,
+            all: Vec::new(),
+            total: 0,
+        });
+    }
+
+    let candidates: HashSet<ObjectId> = commits.iter().copied().collect();
+    let mut graph = CommitGraph::new(repo, first_parent);
+    let mut entries = Vec::with_capacity(commits.len());
+    for &oid in commits {
+        let reaches = count_reachable_candidates(&mut graph, oid, &candidates)?;
+        let distance = reaches.min(total.saturating_sub(reaches));
+        entries.push(BisectEntry {
+            oid,
+            reaches,
+            distance,
+        });
+    }
+
+    let mut sorted = entries.clone();
+    sorted.sort_by(|a, b| b.distance.cmp(&a.distance).then_with(|| a.oid.cmp(&b.oid)));
+
+    let mut best = None;
+    for entry in &entries {
+        if best
+            .as_ref()
+            .is_none_or(|current: &BisectEntry| entry.distance > current.distance)
+        {
+            best = Some(entry.clone());
+        }
+    }
+    Ok(BisectSelection {
+        best,
+        all: sorted,
+        total,
+    })
+}
+
+fn count_reachable_candidates(
+    graph: &mut CommitGraph<'_>,
+    oid: ObjectId,
+    candidates: &HashSet<ObjectId>,
+) -> Result<usize> {
+    let mut stack = vec![oid];
+    let mut seen = HashSet::new();
+    while let Some(current) = stack.pop() {
+        if !seen.insert(current) {
+            continue;
+        }
+        for parent in graph.parents_of(current)? {
+            if candidates.contains(&parent) {
+                stack.push(parent);
+            }
+        }
+    }
+    Ok(seen.len())
+}
+
 /// Resolve and walk revisions for the requested options.
 ///
 /// # Parameters

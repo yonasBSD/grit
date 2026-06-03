@@ -4,7 +4,7 @@
 //! and `refs.c`.
 
 use crate::config::ConfigSet;
-use crate::wildmatch::{wildmatch, WM_PATHNAME};
+use crate::wildmatch::wildmatch;
 
 /// One `transfer.hideRefs` / `<section>.hideRefs` prefix rule (after normalization).
 #[derive(Debug, Clone)]
@@ -63,7 +63,7 @@ impl RefExclusions {
     /// - `full_name` — storage path of the ref (e.g. `refs/heads/main`).
     pub fn ref_excluded(&self, stripped_name: Option<&str>, full_name: &str) -> bool {
         for pat in &self.excluded_refs {
-            if wildmatch(pat.as_bytes(), full_name.as_bytes(), WM_PATHNAME) {
+            if wildmatch(pat.as_bytes(), full_name.as_bytes(), 0) {
                 return true;
             }
         }

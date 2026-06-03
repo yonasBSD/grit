@@ -10,13 +10,14 @@ use grit_lib::objects::{parse_commit, parse_tree, ObjectId};
 use grit_lib::pack;
 use grit_lib::pathspec::matches_pathspec;
 use grit_lib::promisor::read_promisor_missing_oids;
+use grit_lib::ref_exclusions::RefExclusions;
 use grit_lib::reflog::{read_reflog_dwim, ReflogEntry};
 use grit_lib::repo::Repository;
 use grit_lib::rev_list::{
-    collect_revision_specs_with_stdin, commit_visible_for_dense_pathspecs, is_symmetric_diff,
-    merge_bases, render_commit, render_commit_with_color, rev_list, split_symmetric_diff,
-    tag_targets, FilterObjectKind, MissingAction, ObjectFilter, OrderingMode, OutputMode,
-    RevListOptions,
+    collect_revision_specs_with_stdin, commit_tips_from_named_refs,
+    commit_visible_for_dense_pathspecs, is_symmetric_diff, merge_bases, render_commit,
+    render_commit_with_color, rev_list, select_bisect_commits, split_symmetric_diff, tag_targets,
+    FilterObjectKind, MissingAction, ObjectFilter, OrderingMode, OutputMode, RevListOptions,
 };
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -75,6 +76,13 @@ enum DiskUsageFormat {
     Human,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BisectMode {
+    One,
+    Vars,
+    All,
+}
+
 fn push_ref_oids_as_specs(
     specs: &mut Vec<String>,
     not_mode: bool,
@@ -87,6 +95,151 @@ fn push_ref_oids_as_specs(
         } else {
             specs.push(s);
         }
+    }
+}
+
+fn push_ref_pairs_as_specs(
+    repo: &Repository,
+    specs: &mut Vec<String>,
+    not_mode: bool,
+    pairs: &[(String, ObjectId)],
+    exclusions: &mut RefExclusions,
+) -> Result<()> {
+    let tips = commit_tips_from_named_refs(repo, pairs, exclusions)
+        .context("failed to resolve ref tips")?;
+    push_ref_oids_as_specs(specs, not_mode, tips.into_iter());
+    exclusions.clear();
+    Ok(())
+}
+
+fn push_category_ref_pairs_as_specs(
+    repo: &Repository,
+    specs: &mut Vec<String>,
+    not_mode: bool,
+    pairs: &[(String, ObjectId)],
+    prefix: &str,
+    exclude_patterns: &[String],
+) -> Result<()> {
+    let filtered: Vec<(String, ObjectId)> = pairs
+        .iter()
+        .filter(|(refname, _)| {
+            let short = refname.strip_prefix(prefix).unwrap_or(refname);
+            !exclude_patterns
+                .iter()
+                .any(|pattern| grit_lib::refs::ref_matches_glob(short, pattern))
+        })
+        .cloned()
+        .collect();
+    let tips = commit_tips_from_named_refs(repo, &filtered, &RefExclusions::default())
+        .context("failed to resolve ref tips")?;
+    push_ref_oids_as_specs(specs, not_mode, tips.into_iter());
+    Ok(())
+}
+
+fn push_all_refs_as_specs(
+    repo: &Repository,
+    specs: &mut Vec<String>,
+    not_mode: bool,
+    exclusions: &mut RefExclusions,
+) -> Result<()> {
+    let mut pairs = Vec::new();
+    if let Ok(head_oid) = grit_lib::refs::resolve_ref(&repo.git_dir, "HEAD") {
+        pairs.push(("HEAD".to_owned(), head_oid));
+    }
+    pairs.extend(grit_lib::refs::list_refs_physical(&repo.git_dir, "refs/")?);
+    push_ref_pairs_as_specs(repo, specs, not_mode, &pairs, exclusions)
+}
+
+fn list_refs_glob_physical(repo: &Repository, pattern: &str) -> Result<Vec<(String, ObjectId)>> {
+    Ok(grit_lib::refs::list_refs_physical(&repo.git_dir, "refs/")?
+        .into_iter()
+        .filter(|(refname, _)| grit_lib::refs::ref_matches_glob(refname, pattern))
+        .collect())
+}
+
+fn normalize_glob_pattern(pattern: &str) -> String {
+    let full = if pattern.starts_with("refs/") {
+        pattern.to_owned()
+    } else {
+        format!("refs/{pattern}")
+    };
+    ensure_glob_suffix(&full)
+}
+
+fn normalize_ref_pattern(prefix: &str, pattern: &str) -> String {
+    ensure_glob_suffix(&format!("{prefix}{pattern}"))
+}
+
+fn ensure_glob_suffix(pattern: &str) -> String {
+    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+        return pattern.to_owned();
+    }
+    if pattern.ends_with('/') {
+        format!("{pattern}*")
+    } else {
+        format!("{pattern}/*")
+    }
+}
+
+fn reject_exclude_hidden_with(option: &str, exclusions: &RefExclusions) -> Result<()> {
+    if exclusions.hidden_configured {
+        bail!("options '--exclude-hidden' and '{option}' cannot be used together");
+    }
+    Ok(())
+}
+
+fn append_bisect_ref_specs(
+    repo: &Repository,
+    positive_specs: &mut Vec<String>,
+    negative_specs: &mut Vec<String>,
+) -> Result<()> {
+    let refs = grit_lib::refs::list_refs(&repo.git_dir, "refs/bisect/")
+        .context("failed to list bisect refs")?;
+    for (name, oid) in refs {
+        if name.starts_with("refs/bisect/bad")
+            && name
+                .as_bytes()
+                .get("refs/bisect/bad".len())
+                .is_none_or(|b| *b == b'-')
+        {
+            positive_specs.push(oid.to_hex());
+        } else if name.starts_with("refs/bisect/good")
+            && name
+                .as_bytes()
+                .get("refs/bisect/good".len())
+                .is_none_or(|b| *b == b'-')
+        {
+            negative_specs.push(oid.to_hex());
+        }
+    }
+    Ok(())
+}
+
+fn bisect_tag_decorations(repo: &Repository) -> Result<HashMap<ObjectId, Vec<String>>> {
+    let mut decorations: HashMap<ObjectId, Vec<String>> = HashMap::new();
+    for (name, oid) in
+        grit_lib::refs::list_refs(&repo.git_dir, "refs/tags/").context("failed to list tag refs")?
+    {
+        let short = name.strip_prefix("refs/tags/").unwrap_or(&name).to_owned();
+        decorations.entry(oid).or_default().push(short);
+    }
+    for names in decorations.values_mut() {
+        names.sort();
+    }
+    Ok(decorations)
+}
+
+fn estimate_bisect_steps(total: usize) -> usize {
+    if total < 3 {
+        return 0;
+    }
+    let n = usize::BITS as usize - 1 - total.leading_zeros() as usize;
+    let e = 1usize << n;
+    let x = total - e;
+    if e < 3 * x {
+        n
+    } else {
+        n.saturating_sub(1)
     }
 }
 
@@ -116,6 +269,10 @@ pub fn run(args: Args) -> Result<()> {
     let mut cli_date_order = false;
     let mut cli_author_date_order = false;
     let mut walk_reflog = false;
+    let mut ref_exclusions = RefExclusions::default();
+    let mut ref_exclude_patterns = Vec::new();
+    let mut saw_pseudo_ref = false;
+    let mut bisect_mode: Option<BisectMode> = None;
 
     let mut i = 0usize;
     while i < args.args.len() {
@@ -134,24 +291,14 @@ pub fn run(args: Args) -> Result<()> {
         if !end_of_options && arg.starts_with('-') {
             match arg.as_str() {
                 "--all" => {
-                    if not_mode {
-                        let matching = grit_lib::refs::list_refs(&repo.git_dir, "refs/")
-                            .context("failed to list refs")?;
-                        push_ref_oids_as_specs(
-                            &mut revision_specs,
-                            true,
-                            matching.into_iter().map(|(_, oid)| oid),
-                        );
-                        if let Ok(head_oid) = grit_lib::refs::resolve_ref(&repo.git_dir, "HEAD") {
-                            push_ref_oids_as_specs(
-                                &mut revision_specs,
-                                true,
-                                std::iter::once(head_oid),
-                            );
-                        }
-                    } else {
-                        options.all_refs = true;
-                    }
+                    saw_pseudo_ref = true;
+                    push_all_refs_as_specs(
+                        &repo,
+                        &mut revision_specs,
+                        not_mode,
+                        &mut ref_exclusions,
+                    )?;
+                    ref_exclude_patterns.clear();
                 }
                 "--first-parent" => options.first_parent = true,
                 "--ancestry-path" => options.ancestry_path = true,
@@ -177,6 +324,9 @@ pub fn run(args: Args) -> Result<()> {
                 "--test-bitmap" => test_bitmap = true,
                 "--unpacked" => unpacked_only = true,
                 "--disk-usage" => disk_usage_format = Some(DiskUsageFormat::Bytes),
+                "--bisect" => bisect_mode = Some(BisectMode::One),
+                "--bisect-vars" => bisect_mode = Some(BisectMode::Vars),
+                "--bisect-all" => bisect_mode = Some(BisectMode::All),
                 _ if arg.starts_with("--disk-usage=") => {
                     let value = arg.trim_start_matches("--disk-usage=");
                     disk_usage_format = Some(match value {
@@ -283,88 +433,160 @@ pub fn run(args: Args) -> Result<()> {
                     options.filter =
                         Some(grit_lib::rev_list::ObjectFilter::TreeDepth(depth as u64));
                 }
+                _ if arg.starts_with("--exclude=") => {
+                    let pattern = arg.trim_start_matches("--exclude=");
+                    ref_exclusions.add_excluded_ref(pattern);
+                    ref_exclude_patterns.push(pattern.to_owned());
+                }
+                _ if arg.starts_with("--exclude-hidden=") => {
+                    if ref_exclusions.hidden_configured {
+                        eprintln!("fatal: --exclude-hidden= passed more than once");
+                        std::process::exit(128);
+                    }
+                    let section = arg.trim_start_matches("--exclude-hidden=");
+                    match section {
+                        "fetch" | "receive" | "uploadpack" => {
+                            ref_exclusions.load_hidden_refs_from_config(&config, section);
+                        }
+                        _ => {
+                            eprintln!("fatal: unsupported section for hidden refs: {section}");
+                            std::process::exit(128);
+                        }
+                    }
+                }
                 _ if arg.starts_with("--glob=") => {
-                    let pattern = arg.trim_start_matches("--glob=");
-                    let matching = grit_lib::refs::list_refs_glob(&repo.git_dir, pattern)
+                    saw_pseudo_ref = true;
+                    let pattern = normalize_glob_pattern(arg.trim_start_matches("--glob="));
+                    let matching = list_refs_glob_physical(&repo, &pattern)
                         .context("failed to list glob refs")?;
-                    push_ref_oids_as_specs(
+                    push_ref_pairs_as_specs(
+                        &repo,
                         &mut revision_specs,
                         not_mode,
-                        matching.into_iter().map(|(_, oid)| oid),
-                    );
+                        &matching,
+                        &mut ref_exclusions,
+                    )?;
+                    ref_exclude_patterns.clear();
                 }
                 "--glob" => {
+                    saw_pseudo_ref = true;
                     // Detached option: next arg is the pattern.
                     i += 1;
                     if let Some(next) = args.args.get(i) {
-                        let matching = grit_lib::refs::list_refs_glob(&repo.git_dir, next)
+                        let pattern = normalize_glob_pattern(next);
+                        let matching = list_refs_glob_physical(&repo, &pattern)
                             .context("failed to list glob refs")?;
-                        push_ref_oids_as_specs(
+                        push_ref_pairs_as_specs(
+                            &repo,
                             &mut revision_specs,
                             not_mode,
-                            matching.into_iter().map(|(_, oid)| oid),
-                        );
+                            &matching,
+                            &mut ref_exclusions,
+                        )?;
+                        ref_exclude_patterns.clear();
                     }
                 }
                 "--branches" => {
+                    saw_pseudo_ref = true;
+                    reject_exclude_hidden_with("--branches", &ref_exclusions)?;
                     let matching = grit_lib::refs::list_refs(&repo.git_dir, "refs/heads/")
                         .context("failed to list branch refs")?;
-                    push_ref_oids_as_specs(
+                    push_category_ref_pairs_as_specs(
+                        &repo,
                         &mut revision_specs,
                         not_mode,
-                        matching.into_iter().map(|(_, oid)| oid),
-                    );
+                        &matching,
+                        "refs/heads/",
+                        &ref_exclude_patterns,
+                    )?;
+                    ref_exclusions.clear();
+                    ref_exclude_patterns.clear();
                 }
                 _ if arg.starts_with("--branches=") => {
+                    saw_pseudo_ref = true;
+                    reject_exclude_hidden_with("--branches", &ref_exclusions)?;
                     let pattern = arg.trim_start_matches("--branches=");
-                    let full_pattern = format!("refs/heads/{pattern}");
+                    let full_pattern = normalize_ref_pattern("refs/heads/", pattern);
                     let matching = grit_lib::refs::list_refs_glob(&repo.git_dir, &full_pattern)
                         .context("failed to list branch refs")?;
-                    push_ref_oids_as_specs(
+                    push_category_ref_pairs_as_specs(
+                        &repo,
                         &mut revision_specs,
                         not_mode,
-                        matching.into_iter().map(|(_, oid)| oid),
-                    );
+                        &matching,
+                        "refs/heads/",
+                        &ref_exclude_patterns,
+                    )?;
+                    ref_exclusions.clear();
+                    ref_exclude_patterns.clear();
                 }
                 "--tags" => {
+                    saw_pseudo_ref = true;
+                    reject_exclude_hidden_with("--tags", &ref_exclusions)?;
                     let matching = grit_lib::refs::list_refs(&repo.git_dir, "refs/tags/")
                         .context("failed to list tag refs")?;
-                    push_ref_oids_as_specs(
+                    push_category_ref_pairs_as_specs(
+                        &repo,
                         &mut revision_specs,
                         not_mode,
-                        matching.into_iter().map(|(_, oid)| oid),
-                    );
+                        &matching,
+                        "refs/tags/",
+                        &ref_exclude_patterns,
+                    )?;
+                    ref_exclusions.clear();
+                    ref_exclude_patterns.clear();
                 }
                 _ if arg.starts_with("--tags=") => {
+                    saw_pseudo_ref = true;
+                    reject_exclude_hidden_with("--tags", &ref_exclusions)?;
                     let pattern = arg.trim_start_matches("--tags=");
-                    let full_pattern = format!("refs/tags/{pattern}");
+                    let full_pattern = normalize_ref_pattern("refs/tags/", pattern);
                     let matching = grit_lib::refs::list_refs_glob(&repo.git_dir, &full_pattern)
                         .context("failed to list tag refs")?;
-                    push_ref_oids_as_specs(
+                    push_category_ref_pairs_as_specs(
+                        &repo,
                         &mut revision_specs,
                         not_mode,
-                        matching.into_iter().map(|(_, oid)| oid),
-                    );
+                        &matching,
+                        "refs/tags/",
+                        &ref_exclude_patterns,
+                    )?;
+                    ref_exclusions.clear();
+                    ref_exclude_patterns.clear();
                 }
                 "--remotes" => {
+                    saw_pseudo_ref = true;
+                    reject_exclude_hidden_with("--remotes", &ref_exclusions)?;
                     let matching = grit_lib::refs::list_refs(&repo.git_dir, "refs/remotes/")
                         .context("failed to list remote refs")?;
-                    push_ref_oids_as_specs(
+                    push_category_ref_pairs_as_specs(
+                        &repo,
                         &mut revision_specs,
                         not_mode,
-                        matching.into_iter().map(|(_, oid)| oid),
-                    );
+                        &matching,
+                        "refs/remotes/",
+                        &ref_exclude_patterns,
+                    )?;
+                    ref_exclusions.clear();
+                    ref_exclude_patterns.clear();
                 }
                 _ if arg.starts_with("--remotes=") => {
+                    saw_pseudo_ref = true;
+                    reject_exclude_hidden_with("--remotes", &ref_exclusions)?;
                     let pattern = arg.trim_start_matches("--remotes=");
-                    let full_pattern = format!("refs/remotes/{pattern}");
+                    let full_pattern = normalize_ref_pattern("refs/remotes/", pattern);
                     let matching = grit_lib::refs::list_refs_glob(&repo.git_dir, &full_pattern)
                         .context("failed to list remote refs")?;
-                    push_ref_oids_as_specs(
+                    push_category_ref_pairs_as_specs(
+                        &repo,
                         &mut revision_specs,
                         not_mode,
-                        matching.into_iter().map(|(_, oid)| oid),
-                    );
+                        &matching,
+                        "refs/remotes/",
+                        &ref_exclude_patterns,
+                    )?;
+                    ref_exclusions.clear();
+                    ref_exclude_patterns.clear();
                 }
                 "--alternate-refs" => {
                     // List refs from alternate object directories
@@ -638,11 +860,23 @@ pub fn run(args: Args) -> Result<()> {
     let (mut positive_specs, mut negative_specs, stdin_all_refs, stdin_paths) =
         collect_revision_specs_with_stdin(&repo.git_dir, &processed_specs, read_stdin)
             .context("failed to parse revision arguments")?;
+    if bisect_mode == Some(BisectMode::One)
+        && positive_specs.is_empty()
+        && negative_specs.is_empty()
+    {
+        append_bisect_ref_specs(&repo, &mut positive_specs, &mut negative_specs)?;
+    }
     if stdin_all_refs {
         options.all_refs = true;
     }
     if !stdin_paths.is_empty() {
         options.paths.extend(stdin_paths);
+    }
+    if ((saw_pseudo_ref && !options.all_refs)
+        || (read_stdin && negative_specs.is_empty() && !options.all_refs))
+        && positive_specs.is_empty()
+    {
+        return Ok(());
     }
 
     // If symmetric diff, resolve merge bases and set up positive/negative
@@ -716,6 +950,58 @@ pub fn run(args: Args) -> Result<()> {
     if options.objects && options.missing_action == MissingAction::Error {
         let max_tree_depth = object_depth_limit.unwrap_or(resolve_max_tree_depth(&config)?);
         validate_rev_list_tree_depth(&repo, &result.commits, max_tree_depth)?;
+    }
+
+    if let Some(mode) = bisect_mode {
+        let selection = select_bisect_commits(&repo, &result.commits, options.first_parent)
+            .context("failed to select bisection commit")?;
+        match mode {
+            BisectMode::One => {
+                if let Some(best) = selection.best {
+                    println!("{}", best.oid);
+                }
+            }
+            BisectMode::Vars => {
+                let best = selection
+                    .all
+                    .iter()
+                    .map(|entry| entry.distance)
+                    .max()
+                    .and_then(|max_distance| {
+                        result.commits.iter().rev().find_map(|oid| {
+                            selection
+                                .all
+                                .iter()
+                                .find(|entry| entry.oid == *oid && entry.distance == max_distance)
+                                .cloned()
+                        })
+                    });
+                if let Some(best) = best {
+                    let remaining = selection.total.saturating_sub(best.reaches);
+                    let count_after_test = remaining.max(best.reaches);
+                    println!("bisect_rev='{}'", best.oid);
+                    println!("bisect_nr={}", count_after_test.saturating_sub(1));
+                    println!("bisect_good={}", remaining.saturating_sub(1));
+                    println!("bisect_bad={}", best.reaches.saturating_sub(1));
+                    println!("bisect_all={}", selection.total);
+                    println!("bisect_steps={}", estimate_bisect_steps(selection.total));
+                }
+            }
+            BisectMode::All => {
+                let decorations = bisect_tag_decorations(&repo)?;
+                for entry in selection.all {
+                    let mut parts: Vec<String> = decorations
+                        .get(&entry.oid)
+                        .into_iter()
+                        .flat_map(|names| names.iter())
+                        .map(|name| format!("tag: {name}"))
+                        .collect();
+                    parts.push(format!("dist={}", entry.distance));
+                    println!("{} ({})", entry.oid, parts.join(", "));
+                }
+            }
+        }
+        return Ok(());
     }
 
     if options.count {

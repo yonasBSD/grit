@@ -18,7 +18,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 #[command(about = "Summarize git log output")]
 pub struct Args {
     /// Revisions to summarize (defaults to HEAD).
-    #[arg()]
+    #[arg(value_name = "REVISION", num_args = 0.., allow_hyphen_values = true, trailing_var_arg = true)]
     pub revisions: Vec<String>,
 
     /// Sort by number of commits per author (descending).
@@ -131,6 +131,42 @@ fn collect_from_repo(args: &Args, mailmap: &MailmapTable) -> Result<Vec<(String,
                 for (_, oid) in matching {
                     expanded_revs.push(oid.to_hex());
                 }
+            }
+        } else if rev == "--branches" {
+            let matching =
+                grit_lib::refs::list_refs(&repo.git_dir, "refs/heads/").unwrap_or_default();
+            for (_, oid) in matching {
+                expanded_revs.push(oid.to_hex());
+            }
+        } else if let Some(pattern) = rev.strip_prefix("--branches=") {
+            let full = normalize_shortlog_ref_pattern("refs/heads/", pattern);
+            let matching = grit_lib::refs::list_refs_glob(&repo.git_dir, &full).unwrap_or_default();
+            for (_, oid) in matching {
+                expanded_revs.push(oid.to_hex());
+            }
+        } else if rev == "--tags" {
+            let matching =
+                grit_lib::refs::list_refs(&repo.git_dir, "refs/tags/").unwrap_or_default();
+            for (_, oid) in matching {
+                expanded_revs.push(oid.to_hex());
+            }
+        } else if let Some(pattern) = rev.strip_prefix("--tags=") {
+            let full = normalize_shortlog_ref_pattern("refs/tags/", pattern);
+            let matching = grit_lib::refs::list_refs_glob(&repo.git_dir, &full).unwrap_or_default();
+            for (_, oid) in matching {
+                expanded_revs.push(oid.to_hex());
+            }
+        } else if rev == "--remotes" {
+            let matching =
+                grit_lib::refs::list_refs(&repo.git_dir, "refs/remotes/").unwrap_or_default();
+            for (_, oid) in matching {
+                expanded_revs.push(oid.to_hex());
+            }
+        } else if let Some(pattern) = rev.strip_prefix("--remotes=") {
+            let full = normalize_shortlog_ref_pattern("refs/remotes/", pattern);
+            let matching = grit_lib::refs::list_refs_glob(&repo.git_dir, &full).unwrap_or_default();
+            for (_, oid) in matching {
+                expanded_revs.push(oid.to_hex());
             }
         } else {
             expanded_revs.push(rev.clone());
@@ -449,6 +485,13 @@ fn resolve_revision(repo: &Repository, rev: &str) -> Result<ObjectId> {
         }
     }
 
+    let remote_path = repo.git_dir.join("refs/remotes").join(rev);
+    if let Ok(content) = std::fs::read_to_string(&remote_path) {
+        if let Ok(oid) = ObjectId::from_hex(content.trim()) {
+            return Ok(oid);
+        }
+    }
+
     anyhow::bail!("unknown revision '{rev}'");
 }
 
@@ -460,6 +503,19 @@ fn normalize_shortlog_glob(pattern: &str) -> String {
     };
     if !full.contains('*') && !full.contains('?') && !full.contains('[') {
         format!("{full}/*")
+    } else {
+        full
+    }
+}
+
+fn normalize_shortlog_ref_pattern(prefix: &str, pattern: &str) -> String {
+    let full = format!("{prefix}{pattern}");
+    if !full.contains('*') && !full.contains('?') && !full.contains('[') {
+        if full.ends_with('/') {
+            format!("{full}*")
+        } else {
+            format!("{full}/*")
+        }
     } else {
         full
     }

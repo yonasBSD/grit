@@ -5,6 +5,48 @@
 
 # Test Results
 
+Updated: 2026-06-03
+- t6 plan artifact: created `t6-plan.md` grouping current t6 rows by dependency/topic and claimed
+  `t6021-rev-list-exclude-hidden.sh` first as the highest-failing t6 row.
+- Build unblock: `cargo build --release -p grit-cli` initially failed because `merge --abort`
+  still called `checkout_merge_reset_worktree` with its old three-argument signature; the caller
+  now passes explicit non-recursive submodule flags and release builds complete.
+- t6 hidden-ref focus: direct `cd tests && sh t6021-rev-list-exclude-hidden.sh -v` passed 62/62
+  after adding `rev-list` CLI support for `--exclude-hidden`/`--exclude`, exclusion-aware physical
+  `--all`/`--glob` expansion, empty pseudo-ref expansion success, namespace stripping, duplicate
+  `--exclude-hidden` errors, and incompatibility errors for branches/tags/remotes.
+- Harness refresh: `./scripts/run-tests.sh t6021-rev-list-exclude-hidden.sh --verbose` passes
+  62/62 and regenerated `data/test-files.csv` plus dashboards.
+- t6 ref-glob focus: direct `cd tests && sh t6018-rev-list-glob.sh -v` and harness
+  `./scripts/run-tests.sh t6018-rev-list-glob.sh --verbose` both pass 95/95 after extending
+  pseudo-ref glob/exclude behavior across `rev-list`, `rev-parse`, and `shortlog`.
+- Verification for this increment: `cargo check -p grit-cli` and `cargo build --release -p
+  grit-cli` passed with the existing warning backlog.
+- t6 rev-list bisection focus: direct `cd tests && sh t6002-rev-list-bisect.sh -v` and harness
+  `./scripts/run-tests.sh t6002-rev-list-bisect.sh --verbose` both pass 53/53 after adding
+  `rev-list --bisect`, `--bisect-vars`, `--bisect-all`, bisect-ref defaulting, and
+  `rev-parse --bisect` object output.
+- Verification for this increment: `cargo fmt`, `cargo check -p grit-cli`, and
+  `cargo build --release -p grit-cli` passed with the existing warning backlog.
+- Next claimed t6 target: `t6423-merge-rename-directories.sh`.
+- t6 merge directory-rename focus: `./scripts/run-tests.sh t6423-merge-rename-directories.sh
+  --verbose` improved from 29/82 to 33/82 after path-qualified labels for directory-rename
+  add/add conflicts, majority destination selection for split directory renames, and tied split
+  conflict reporting.
+- Continued t6423 focus: the same harness now reports 36/82 after disabling directory rename
+  application when the source directory still exists on both sides of the merge.
+- Continued t6423 focus: `./scripts/run-tests.sh t6423-merge-rename-directories.sh --verbose`
+  now reports 40/82 after handling blocked implicit directory renames for same-side path
+  collisions and descendants, preserving pre-directory-rename labels for transitive
+  rename/rename cases, and avoiding duplicate same-target rename conflict staging.
+- Continued t6423 focus: `./scripts/run-tests.sh t6423-merge-rename-directories.sh --verbose`
+  now reports 42/82 after suppressing doubly-transitive directory rename application,
+  relocating D/F rename/delete stages, preserving explicit `:N:path^0` index-path parsing, and
+  writing plain modify/delete survivor blobs to the worktree.
+- Verification for this increment: `cargo fmt`, `cargo check -p grit-cli`, and
+  `cargo build --release -p grit-cli` passed with the existing warning backlog; `cargo test -p
+  grit-lib --lib` passed 238/238 after the rev-list bisection library change.
+
 Updated: 2026-06-02
 - t6 for-each-ref focus: `TZ=UTC ./scripts/run-tests.sh t6300-for-each-ref.sh` passes 429/429
   after ref-filter atom/sort/trailer/signature support, recursive tag peeling, and tag
@@ -516,3 +558,15 @@ Updated: 2026-06-01
   warnings; `cargo clippy --fix --allow-dirty` completed with the existing warning backlog and its
   unrelated `config.rs`/`filter_process.rs` auto-fixes were reverted; `cargo test -p grit-lib --lib`
   passed 238/238.
+- t6423 merge directory-rename focus: after rebuilding `target/release/grit`,
+  `./scripts/run-tests.sh t6423-merge-rename-directories.sh --verbose` now reports 75/82 and
+  refreshed `data/test-files.csv` plus dashboards. Remaining real failures are `12i2`, `12l` in
+  both directions, `12n`, and `13e`; `9g` and `12h` remain expected failures.
+- t6423 merge directory-rename focus: after preserving pure additions under nested mutual
+  directory renames and rebuilding `target/release/grit`,
+  `./scripts/run-tests.sh t6423-merge-rename-directories.sh --verbose` now reports 77/82 and
+  refreshed `data/test-files.csv` plus dashboards. Remaining real failures are `12i2`, `12n`, and
+  `13e`; `9g` and `12h` remain expected failures.
+- Checkpoint verification: `cargo fmt` ran; `cargo build -p grit-cli` passed with existing
+  warnings; `cargo clippy --fix --allow-dirty` completed but still reports the existing warning
+  backlog and unrelated auto-fixes were reverted; `cargo test -p grit-lib --lib` passed 238/238.
