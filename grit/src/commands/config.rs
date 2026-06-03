@@ -67,7 +67,7 @@ pub struct Args {
     pub file: Option<PathBuf>,
 
     /// Read config from a blob object (e.g. HEAD:.gitmodules).
-    #[arg(long = "blob", value_name = "BLOB_ISH")]
+    #[arg(long = "blob", value_name = "BLOB_ISH", global = true)]
     pub blob: Option<String>,
 
     // ── Legacy action flags ──
@@ -1281,7 +1281,7 @@ fn cmd_blob(args: &Args, blob_spec: &str) -> Result<()> {
     // --list
     if args.list {
         for entry in config.entries() {
-            let prefix = blob_config_prefix(args, blob_spec);
+            let prefix = blob_config_prefix(args.show_scope, args.show_origin, blob_spec);
             let val = entry.value.as_deref().unwrap_or("true");
             if args.name_only {
                 print!("{}{}{}", prefix, entry.key, terminator);
@@ -1408,11 +1408,14 @@ fn cmd_blob(args: &Args, blob_spec: &str) -> Result<()> {
                     None => std::process::exit(1),
                 }
             }
-            ConfigSubcommand::List(_) => {
+            ConfigSubcommand::List(list_args) => {
+                let show_scope = args.show_scope || list_args.show_scope;
+                let show_origin = args.show_origin || list_args.show_origin;
+                let name_only = args.name_only || list_args.name_only;
                 for entry in config.entries() {
-                    let prefix = blob_config_prefix(args, blob_spec);
+                    let prefix = blob_config_prefix(show_scope, show_origin, blob_spec);
                     let val = entry.value.as_deref().unwrap_or("true");
-                    if args.name_only {
+                    if name_only {
                         print!("{}{}{}", prefix, entry.key, terminator);
                     } else {
                         print!("{}{}={}{}", prefix, entry.key, val, terminator);
@@ -1427,13 +1430,13 @@ fn cmd_blob(args: &Args, blob_spec: &str) -> Result<()> {
     }
 }
 
-fn blob_config_prefix(args: &Args, blob_spec: &str) -> String {
+fn blob_config_prefix(show_scope: bool, show_origin: bool, blob_spec: &str) -> String {
     let mut prefix = String::new();
-    if args.show_scope {
-        prefix.push_str("command	");
+    if show_scope {
+        prefix.push_str("command\t");
     }
-    if args.show_origin {
-        prefix.push_str(&format!("blob:{blob_spec}	"));
+    if show_origin {
+        prefix.push_str(&format!("blob:{blob_spec}\t"));
     }
     prefix
 }
