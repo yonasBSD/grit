@@ -231,6 +231,19 @@ fn find_trailer_block_start(buf: &[u8], len: usize, rules: &[TrailerRule]) -> us
 
     loop {
         if l < end_of_title {
+            // Reached the title boundary without an intervening blank line: the post-title content
+            // is entirely candidate trailers. Mirror Git's blank-line decision using the same ratio
+            // so a trailer block flush against the title (e.g. `subject\n\nSigned-off-by: ...`) is
+            // recognized rather than treated as plain body.
+            if !only_spaces {
+                non_trailer_lines += possible_continuation_lines;
+                if recognized_prefix && trailer_lines * 3 >= non_trailer_lines {
+                    return end_of_title;
+                }
+                if trailer_lines > 0 && non_trailer_lines == 0 {
+                    return end_of_title;
+                }
+            }
             break;
         }
         let line_end = next_line_start(buf, l).min(len);
@@ -382,6 +395,18 @@ pub fn append_cherry_picked_from_line(msg: &mut String, full_hex: &str, config: 
 
 /// Append sign-off matching `append_signoff` in `sequencer.c` (no `APPEND_SIGNOFF_DEDUP`).
 pub fn append_signoff_trailer(msg: &mut String, sob_line: &str, config: &ConfigSet) {
+    append_signoff_trailer_with_dedup(msg, sob_line, config, false);
+}
+
+/// Append sign-off with optional `APPEND_SIGNOFF_DEDUP` (set by `format-patch --signoff`, which
+/// suppresses adding a sign-off that already exists anywhere in the trailer block, not just at the
+/// very end).
+pub fn append_signoff_trailer_with_dedup(
+    msg: &mut String,
+    sob_line: &str,
+    config: &ConfigSet,
+    dedup: bool,
+) {
     let rules = load_trailer_rules(config);
     let ignore_footer = 0usize;
     strbuf_complete_line(msg);
@@ -424,7 +449,7 @@ pub fn append_signoff_trailer(msg: &mut String, sob_line: &str, config: &ConfigS
         }
     }
 
-    let no_dup_sob = false;
+    let no_dup_sob = dedup;
     if has_footer != 3 && (!no_dup_sob || has_footer != 2) {
         let insert_at = msg.len() - ignore_footer;
         msg.insert_str(insert_at, sob_prefix);

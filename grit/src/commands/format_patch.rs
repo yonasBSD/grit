@@ -3601,7 +3601,14 @@ fn apply_signoff(
     let prefix = format!("{subject}\n\n");
     let mut msg = format!("{prefix}{body}");
     let sob_with_nl = format!("{sob}\n");
-    grit_lib::commit_trailers::append_signoff_trailer(&mut msg, &sob_with_nl, &config);
+    // format-patch --signoff uses APPEND_SIGNOFF_DEDUP: do not add a duplicate sign-off that is
+    // already present anywhere in the trailer block.
+    grit_lib::commit_trailers::append_signoff_trailer_with_dedup(
+        &mut msg,
+        &sob_with_nl,
+        &config,
+        true,
+    );
     // Strip the synthetic subject prefix back off.
     let mut msg = msg.split_off(prefix.len());
     // Drop one trailing newline (caller re-adds one).
