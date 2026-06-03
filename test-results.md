@@ -1,3 +1,7 @@
+## 2026-06-03 — t13040-restore-quiet-progress
+
+- Focus harness: `./scripts/run-tests.sh t13040-restore-quiet-progress.sh --verbose` passes 30/30 after aligning the branch switch in the synthetic restore fixture with the `main` default branch.
+
 ## 2026-06-03 — t12790-update-ref-stderr-msg
 
 - Focus harness: `./scripts/run-tests.sh t12790-update-ref-stderr-msg.sh --verbose` passes 33/33 after aligning synthetic default-branch references with `main`.
