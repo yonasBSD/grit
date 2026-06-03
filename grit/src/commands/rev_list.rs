@@ -63,6 +63,27 @@ fn resolve_max_tree_depth(config: &ConfigSet) -> Result<usize> {
     Ok(depth)
 }
 
+fn is_utf8_encoding(label: &str) -> bool {
+    matches!(label.trim().to_ascii_lowercase().as_str(), "utf-8" | "utf8")
+}
+
+fn effective_pretty_output_encoding(config: &ConfigSet) -> Option<String> {
+    config
+        .get("i18n.logOutputEncoding")
+        .or_else(|| config.get("i18n.logoutputencoding"))
+        .or_else(|| config.get("i18n.commitEncoding"))
+        .or_else(|| config.get("i18n.commitencoding"))
+        .filter(|label| !label.trim().is_empty() && !is_utf8_encoding(label))
+}
+
+fn encode_pretty_output(text: &str, encoding: Option<&str>) -> Vec<u8> {
+    match encoding {
+        None => text.as_bytes().to_vec(),
+        Some(label) => grit_lib::commit_encoding::encode_header_text(label, text)
+            .unwrap_or_else(|| text.as_bytes().to_vec()),
+    }
+}
+
 /// Arguments for `grit rev-list`.
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -356,6 +377,7 @@ fn estimate_bisect_steps(total: usize) -> usize {
 pub fn run(args: Args) -> Result<()> {
     let repo = Repository::discover(None).context("failed to discover repository")?;
     let config = ConfigSet::load(Some(&repo.git_dir), true)?;
+    let pretty_output_encoding = effective_pretty_output_encoding(&config);
 
     let mut options = RevListOptions::default();
     let mut object_depth_limit: Option<usize> = None;
@@ -1263,12 +1285,23 @@ pub fn run(args: Args) -> Result<()> {
                         use_color,
                     )?;
                     if is_named_format {
-                        print!("{rendered}");
+                        std::io::stdout()
+                            .write_all(&encode_pretty_output(
+                                &rendered,
+                                pretty_output_encoding.as_deref(),
+                            ))
+                            .context("failed to write rev-list output")?;
                         if !rendered.ends_with('\n') {
                             println!();
                         }
                     } else if !rendered.is_empty() {
-                        println!("{rendered}");
+                        std::io::stdout()
+                            .write_all(&encode_pretty_output(
+                                &rendered,
+                                pretty_output_encoding.as_deref(),
+                            ))
+                            .context("failed to write rev-list output")?;
+                        println!();
                     }
                 }
                 OutputMode::Parents => {

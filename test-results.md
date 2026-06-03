@@ -1211,3 +1211,10 @@ Updated: 2026-06-01
   dashboards. Also ran `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`
   (existing warning backlog remains), `cargo build -p grit-cli`, `cargo build --release -p
   grit-cli`, and `cargo test -p grit-lib --lib`.
+- t6006 completion: after re-encoding `rev-list` pretty output according to
+  `i18n.logOutputEncoding` or fallback `i18n.commitEncoding`, the direct debug run passes all
+  80 tests and `./scripts/run-tests.sh t6006-rev-list-format.sh` improves from 75/80 to 80/80 with
+  refreshed `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p
+  grit-cli`, `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
+  --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
+  `cargo test -p grit-lib --lib`.
