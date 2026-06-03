@@ -1,3 +1,7 @@
+## 2026-06-03 — t12600-rev-list-not-exclude
+
+- Focus harness: `./scripts/run-tests.sh t12600-rev-list-not-exclude.sh --verbose` passes 32/32 after wrapping setup in a subshell and switching synthetic `master` branch references to `main`.
+
 ## 2026-06-03 — t12290-log-cherry-mark
 
 - Focus harness: `./scripts/run-tests.sh t12290-log-cherry-mark.sh --verbose` passes 33/33 after wrapping setup in a subshell and switching synthetic `master` branch references to `main`.
