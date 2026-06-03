@@ -1,3 +1,7 @@
+## 2026-06-03 — t1405-main-ref-store
+
+- Focus harnesses: `./scripts/run-tests.sh t1405-main-ref-store.sh --verbose` passes 16/16 and `./scripts/run-tests.sh t1406-submodule-ref-store.sh --verbose` remains 15/15 after implementing main ref-store helper behavior and normalizing reflog entry order.
+
 ## 2026-06-03 — t11940-diff-tree-merge-base
 
 - Focus harness: `./scripts/run-tests.sh t11940-diff-tree-merge-base.sh --verbose` passes 33/33 after aligning diff-tree/merge-base fixture branch references with `main`.
