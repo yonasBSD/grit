@@ -566,7 +566,7 @@ t3203-branch-output	t3	yes	41	30	11	false	ok	0
 t3204-branch-name-interpretation	t3	yes	16	11	5	false	ok	0
 t3205-branch-color	t3	yes	4	4	0	true	ok	0
 t3206-branch-advanced	t3	yes	29	18	11	false	ok	0
-t3206-range-diff	t3	yes	48	45	3	false	ok	0
+t3206-range-diff	t3	yes	48	46	2	false	ok	0
 t3207-branch-submodule	t3	yes	20	20	0	true	ok	0
 t3210-pack-refs	t3	yes	29	27	2	false	ok	0
 t3211-peel-ref	t3	yes	8	8	0	true	ok	0

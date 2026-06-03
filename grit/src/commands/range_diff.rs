@@ -415,6 +415,8 @@ fn read_patches_from_log(
     let mut cmd = Command::new(&exe);
     cmd.arg("-C")
         .arg(repo_work_dir(repo))
+        .arg("-c")
+        .arg("diff.submodule=short")
         .arg("log")
         .arg("--no-color")
         .arg("--no-abbrev")

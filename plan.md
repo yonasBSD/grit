@@ -42,9 +42,8 @@
     and implementing branch creation propagation into active initialized submodules, recursive
     gitlink target selection, tracking propagation, all-or-nothing rollback, and rev-parse
     behavior for local branch absence when only `origin/<name>` exists.
-  - Current focus: `t3206-range-diff.sh` (48 total, 45 passed, 3 failing after making
-    range-diff's child log avoid `--date-order`, which had hidden a mode-only pathspec commit),
-    next in the
+  - Current focus: `t3206-range-diff.sh` (48 total, 46 passed, 2 failing after making log patch
+    output emit synthetic `Subproject commit` hunks for gitlink changes), next in the
     branch/refs/range-diff/pack-refs group.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 

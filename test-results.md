@@ -1,3 +1,13 @@
+## 2026-06-03 — t3206-range-diff gitlink partial
+
+- Focus harness improved from 45/48 to 46/48 after log patch output started emitting
+  `Subproject commit` hunks for gitlink changes, allowing range-diff to compare submodule commit
+  changes independently of `diff.submodule` display config.
+- Adjacent verification: `./scripts/run-tests.sh t3206-range-diff.sh t1507-rev-parse-upstream.sh`
+  reports `t3206` at 46/48 and keeps `t1507` at 29/29.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3206-range-diff pathspec partial
 
 - Focus harness improved from 44/48 to 45/48 after the internal range-diff `log` invocation stopped

@@ -10790,6 +10790,49 @@ fn log_write_patch_entry(
         DiffStatus::Unmerged => {}
     }
 
+    if entry.old_mode == "160000" || entry.new_mode == "160000" {
+        let old_content = if entry.old_oid == zero_oid() {
+            String::new()
+        } else {
+            format!("Subproject commit {}\n", entry.old_oid.to_hex())
+        };
+        let new_content = if entry.new_oid == zero_oid() {
+            String::new()
+        } else {
+            format!("Subproject commit {}\n", entry.new_oid.to_hex())
+        };
+        let display_old = if entry.status == DiffStatus::Added {
+            "/dev/null"
+        } else {
+            old_path
+        };
+        let display_new = if entry.status == DiffStatus::Deleted {
+            "/dev/null"
+        } else {
+            new_path
+        };
+        let (src_pfx, dst_pfx) = if args.no_prefix {
+            ("", "")
+        } else {
+            ("a/", "b/")
+        };
+        let patch = grit_lib::diff::unified_diff_with_prefix(
+            &old_content,
+            &new_content,
+            display_old,
+            display_new,
+            context_lines,
+            0,
+            src_pfx,
+            dst_pfx,
+            indent_heuristic,
+            config.quote_path_fully(),
+        );
+        let patch = apply_diff_output_indicators(&patch, args);
+        write!(out, "{patch}")?;
+        return Ok(());
+    }
+
     let path_for_attrs = entry.path();
     let use_textconv = !args.no_textconv;
     let textconv_patch = use_textconv && diff_textconv_active(git_dir, config, path_for_attrs);
