@@ -302,7 +302,7 @@ t12390-commit-cleanup-mode	t1	yes	34	34	0	true	ok	0
 t12400-add-pathspec-magic	t1	yes	45	45	0	true	ok	0
 t12410-rm-quiet-verbose	t1	yes	43	43	0	true	ok	0
 t12420-mv-symlink-dir	t1	yes	40	40	0	true	ok	0
-t12430-switch-merge-conflict	t1	yes	32	13	19	false	ok	0
+t12430-switch-merge-conflict	t1	yes	32	32	0	true	ok	0
 t12440-restore-overlay-no-overlay	t1	yes	33	33	0	true	ok	0
 t12450-reset-soft-amend	t1	yes	33	33	0	true	ok	0
 t12460-cherry-pick-sequence	t1	yes	36	30	6	false	ok	0
