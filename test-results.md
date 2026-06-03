@@ -1,3 +1,9 @@
+## 2026-06-03 — t3301-notes partial
+
+- Focus harness improved to 113/153 after `log --pretty=raw` stopped printing an extra trailing
+  blank line after the raw commit message body when notes are omitted.
+- Remaining failures cover notes message composition, display refs, copy, and rewrite behavior.
+
 ## 2026-06-03 — t3210-pack-refs
 
 - Focus harness: `./scripts/run-tests.sh t3210-pack-refs.sh` passes 29/29 after the synthetic

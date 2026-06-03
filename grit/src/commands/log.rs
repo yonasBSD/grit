@@ -8181,7 +8181,6 @@ fn format_commit(
                     grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
                 )?;
             }
-            writeln!(out)?;
             // `git log --pretty=raw` omits notes unless `--notes` / `--show-notes` is given.
             if matches!(
                 std::env::var("GIT_GRIT_LOG_NOTES_CLI").ok().as_deref(),
