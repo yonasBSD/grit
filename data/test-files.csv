@@ -110,7 +110,7 @@ t10120-config-unset-all	t1	yes	33	33	0	true	ok	0
 t1013-read-tree-submodule	t1	yes	68	7	61	false	ok	0
 t10130-init-bare-reinit	t1	yes	32	32	0	true	ok	0
 t1014-read-tree-confusing	t1	yes	28	28	0	true	ok	0
-t10140-branch-show-current	t1	yes	32	13	19	false	ok	0
+t10140-branch-show-current	t1	yes	32	32	0	true	ok	0
 t1015-read-index-unmerged	t1	yes	6	6	0	true	ok	0
 t10150-tag-delete-force	t1	yes	34	34	0	true	ok	0
 t1016-compatObjectFormat	t1	skip	21	0	0	false	ok	0

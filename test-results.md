@@ -1,3 +1,7 @@
+## 2026-06-03 — t10140-branch-show-current
+
+- Focus harness: `./scripts/run-tests.sh t10140-branch-show-current.sh --verbose` passes 32/32 after switching synthetic `master` branch references to `main`.
+
 ## 2026-06-03 — t12730-switch-start-point
 
 - Focus harness: `./scripts/run-tests.sh t12730-switch-start-point.sh --verbose` passes 36/36 after switching synthetic `master` branch references to `main`.
