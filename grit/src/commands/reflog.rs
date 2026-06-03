@@ -264,6 +264,8 @@ fn run_show(args: ShowArgs) -> Result<()> {
         expand_tabs: None,
         no_expand_tabs: false,
         expand_tabs_in_log: 0,
+        encoding: None,
+        log_output_encoding: None,
         reverse: false,
         first_parent: false,
         root: false,

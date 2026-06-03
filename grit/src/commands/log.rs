@@ -106,6 +106,15 @@ pub struct Args {
     #[arg(skip)]
     pub(crate) expand_tabs_in_log: usize,
 
+    /// Output the commit log in the given encoding (overrides `i18n.logOutputEncoding`).
+    #[arg(long = "encoding")]
+    pub encoding: Option<String>,
+
+    /// Effective log output encoding label (resolved after parsing): `--encoding`
+    /// > `i18n.logOutputEncoding` > UTF-8. `None` means no reencoding (UTF-8).
+    #[arg(skip)]
+    pub(crate) log_output_encoding: Option<String>,
+
     /// Show in reverse order.
     #[arg(long = "reverse")]
     pub reverse: bool,
@@ -1585,7 +1594,7 @@ fn resolve_decoration_display(
             },
         }
     }
-    for arg in std::env::args() {
+    for arg in std::env::args_os().map(|a| a.to_string_lossy().into_owned()) {
         if arg == "--no-decorate" {
             show = false;
             full = false;
@@ -1608,11 +1617,12 @@ fn resolve_decoration_display(
     }
     let oneline_like = log_uses_builtin_oneline(args);
     if oneline_like && !args.no_decorate && !show {
-        // Upstream Git only decorates `--oneline` for TTY/pager output, but many harness tests
-        // (and users comparing to `git log` in scripts) expect branch tips on every line; match
-        // that behavior unless `--no-decorate` is set.
-        show = true;
-        full = false;
+        // Upstream Git only auto-decorates default log output (including `--oneline`)
+        // when stdout is a terminal; piped/redirected output is left undecorated.
+        if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+            show = true;
+            full = false;
+        }
     }
     (show, full)
 }
@@ -4068,7 +4078,29 @@ pub fn run(mut args: Args) -> Result<()> {
         args.oneline,
     );
 
-    for raw in std::env::args() {
+    // Resolve the effective log output encoding: --encoding overrides
+    // i18n.logOutputEncoding; absent both, output stays UTF-8 (no reencoding).
+    {
+        let cfg = grit_lib::config::ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        let mut enc = args
+            .encoding
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                cfg.get("i18n.logOutputEncoding")
+                    .or_else(|| cfg.get("i18n.logoutputencoding"))
+            });
+        if let Some(label) = enc.as_deref() {
+            if label.eq_ignore_ascii_case("UTF-8") || label.eq_ignore_ascii_case("UTF8") {
+                enc = None;
+            }
+        }
+        args.log_output_encoding = enc;
+    }
+
+    for raw in std::env::args_os().map(|a| a.to_string_lossy().into_owned()) {
         if let Some(rest) = raw.strip_prefix("--ancestry-path=") {
             if !rest.is_empty() {
                 args.ancestry_path_bottom = Some(rest.to_owned());
@@ -7706,6 +7738,17 @@ fn run_symmetric_log(
     Ok(())
 }
 
+/// Encode a formatted log fragment for output. With no active output encoding
+/// (UTF-8), the UTF-8 bytes are returned verbatim; otherwise the string is
+/// reencoded to the target charset (Git's `logmsg_reencode`).
+fn encode_log_str(s: &str, encoding: Option<&str>) -> Vec<u8> {
+    match encoding {
+        None => s.as_bytes().to_vec(),
+        Some(label) => grit_lib::commit_encoding::encode_header_text(label, s)
+            .unwrap_or_else(|| s.as_bytes().to_vec()),
+    }
+}
+
 /// Format and print a single commit.
 ///
 /// When `parent_line_override` is set (e.g. `log --parents` after line-log rewrite), `%p` / `%P`
@@ -7751,9 +7794,12 @@ fn format_commit(
         } else {
             first_line.to_owned()
         };
+        let enc = args.log_output_encoding.as_deref();
         let abbrev = &hex[..abbrev_len.min(hex.len())];
         if let Some(src) = source_for_oneline {
-            writeln!(out, "{abbrev}\t{src} {first_line}")?;
+            let line = format!("{abbrev}\t{src} {first_line}");
+            out.write_all(&encode_log_str(&line, enc))?;
+            out.write_all(b"\n")?;
         } else {
             let oid_color = if use_color {
                 decoration_paint
@@ -7776,15 +7822,16 @@ fn format_commit(
                 decoration_paint,
                 head_for_decor,
             );
-            writeln!(
-                out,
+            let line = format!(
                 "{}{}{}{} {}",
                 oid_color,
                 &hex[..abbrev_len.min(hex.len())],
                 oid_reset,
                 dec,
                 first_line
-            )?;
+            );
+            out.write_all(&encode_log_str(&line, enc))?;
+            out.write_all(b"\n")?;
         }
         return Ok(());
     }
@@ -7833,14 +7880,16 @@ fn format_commit(
                 et,
                 signature_ref,
             );
+            let bytes = encode_log_str(&formatted, args.log_output_encoding.as_deref());
             if is_tformat {
+                out.write_all(&bytes)?;
                 if args.null_terminator {
-                    write!(out, "{formatted}\0")?;
+                    out.write_all(b"\0")?;
                 } else {
-                    writeln!(out, "{formatted}")?;
+                    out.write_all(b"\n")?;
                 }
             } else {
-                write!(out, "{formatted}")?;
+                out.write_all(&bytes)?;
             }
         }
         Some("raw") => {
