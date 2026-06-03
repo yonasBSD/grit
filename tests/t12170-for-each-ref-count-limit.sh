@@ -154,7 +154,7 @@ test_expect_success 'for-each-ref with multiple patterns' '
 
 test_expect_success 'for-each-ref format %(subject) on branch shows message' '
     (cd repo &&
-     grit for-each-ref --format="%(subject)" refs/heads/master >../actual) &&
+     grit for-each-ref --format="%(subject)" refs/heads/main >../actual) &&
     test -s actual
 '
 
@@ -167,7 +167,7 @@ test_expect_success 'for-each-ref format with multiple atoms' '
 
 test_expect_success 'for-each-ref format %(subject) shows commit message' '
     (cd repo &&
-     grit for-each-ref --format="%(subject)" refs/heads/master >../actual) &&
+     grit for-each-ref --format="%(subject)" refs/heads/main >../actual) &&
     echo "second" >expect &&
     test_cmp expect actual
 '
@@ -188,8 +188,8 @@ test_expect_success 'for-each-ref on lightweight tag shows commit type' '
 
 test_expect_success 'for-each-ref objectname matches rev-parse' '
     (cd repo &&
-     grit for-each-ref --format="%(objectname)" refs/heads/master >../actual &&
-     grit rev-parse master >../expect) &&
+     grit for-each-ref --format="%(objectname)" refs/heads/main >../actual &&
+     grit rev-parse main >../expect) &&
     test_cmp expect actual
 '
 

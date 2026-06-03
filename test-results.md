@@ -1,3 +1,7 @@
+## 2026-06-03 — t12170-for-each-ref-count-limit
+
+- Focus harness: `./scripts/run-tests.sh t12170-for-each-ref-count-limit.sh --verbose` passes 33/33 after aligning branch ref/rev expectations with the `main` default branch.
+
 ## 2026-06-03 — t1800-ls-remote
 
 - Focus harness: `./scripts/run-tests.sh t1800-ls-remote.sh --verbose` passes 24/24 after correcting synthetic quiet-output assertions to avoid unsupported `test_must_fail test ...` usage.
