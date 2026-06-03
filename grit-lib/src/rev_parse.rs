@@ -360,18 +360,17 @@ pub fn resolve_push_full_ref_for_branch(repo: &Repository, branch_short: &str) -
     let push_default = parse_config_value(&config_content, "push", "default");
     let push_default = push_default.as_deref().unwrap_or("simple");
 
+    if let Some(mapped) =
+        push_refspec_mapped_tracking(&config_content, &push_remote_name, branch_short)
+            .or_else(|| push_refspec_mapped_tracking_any_remote(&config_content, branch_short))
+    {
+        return Ok(mapped);
+    }
+
     if push_default == "nothing" {
         return Err(Error::Message(
             "fatal: push.default is nothing; no push destination".to_owned(),
         ));
-    }
-
-    if let Some(mapped) =
-        push_refspec_mapped_tracking(&config_content, &push_remote_name, branch_short)
-    {
-        if refs::resolve_ref(&repo.git_dir, &mapped).is_ok() {
-            return Ok(mapped);
-        }
     }
 
     let current_tracking = format!("refs/remotes/{push_remote_name}/{branch_short}");
@@ -408,6 +407,30 @@ pub fn resolve_push_full_ref_for_branch(repo: &Repository, branch_short: &str) -
     }
 }
 
+fn push_refspec_mapped_tracking_any_remote(
+    config_content: &str,
+    branch_short: &str,
+) -> Option<String> {
+    let mut remotes = Vec::new();
+    for line in config_content.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("[remote ") {
+            continue;
+        }
+        let Some(start) = trimmed.find('"') else {
+            continue;
+        };
+        let rest = &trimmed[start + 1..];
+        let Some(end) = rest.find('"') else {
+            continue;
+        };
+        remotes.push(rest[..end].to_owned());
+    }
+    remotes
+        .into_iter()
+        .find_map(|remote| push_refspec_mapped_tracking(config_content, &remote, branch_short))
+}
+
 fn push_refspec_mapped_tracking(
     config_content: &str,
     remote_name: &str,
@@ -440,10 +463,17 @@ fn push_refspec_mapped_tracking(
         };
         let left = left.trim();
         let right = right.trim();
-        if left != src_want {
+        let dest = if let Some(left_prefix) = left.strip_suffix('*') {
+            let Some(tail) = src_want.strip_prefix(left_prefix) else {
+                continue;
+            };
+            right.replace('*', tail)
+        } else if left == src_want {
+            right.to_owned()
+        } else {
             continue;
-        }
-        let Some(dest_branch) = right.strip_prefix("refs/heads/") else {
+        };
+        let Some(dest_branch) = dest.strip_prefix("refs/heads/") else {
             continue;
         };
         return Some(format!("refs/remotes/{remote_name}/{dest_branch}"));

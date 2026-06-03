@@ -1,3 +1,7 @@
+## 2026-06-03 — t1514-rev-parse-push
+
+- Focus harness: `./scripts/run-tests.sh t1514-rev-parse-push.sh --verbose` passes 9/9 after resolving `@{push}` from explicit remote push refspecs even when `push.default=nothing`, including wildcard refspecs.
+
 ## 2026-06-03 — t11500-add-chmod-intent
 
 - Focus harness: `./scripts/run-tests.sh t11500-add-chmod-intent.sh --verbose` passes 31/31 after correcting synthetic intent-to-add index OID expectations to Git's empty-blob ID.
