@@ -1,3 +1,7 @@
+## 2026-06-03 — t12540-diff-tree-cherry
+
+- Focus harness: `./scripts/run-tests.sh t12540-diff-tree-cherry.sh --verbose` passes 33/33 after aligning diff-tree/cherry fixture branch references with `main`.
+
 ## 2026-06-03 — t11380-log-graph-all
 
 - Focus harness: `./scripts/run-tests.sh t11380-log-graph-all.sh --verbose` passes 33/33 after aligning log graph multi-branch fixture references with `main`.

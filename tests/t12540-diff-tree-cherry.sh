@@ -166,78 +166,78 @@ test_expect_success 'setup: create branch for cherry tests' '
 '
 
 test_expect_success 'cherry: lists unmerged commits with + prefix' '
-	(cd repo && grit cherry master >../actual) &&
+	(cd repo && grit cherry main >../actual) &&
 	grep "^+" actual &&
 	line_count=$(wc -l <actual | tr -d " ") &&
 	test "$line_count" = "3"
 '
 
 test_expect_success 'cherry: matches git' '
-	(cd repo && grit cherry master >../grit_out &&
-	 "$REAL_GIT" cherry master >../git_out) &&
+	(cd repo && grit cherry main >../grit_out &&
+	 "$REAL_GIT" cherry main >../git_out) &&
 	test_cmp git_out grit_out
 '
 
 test_expect_success 'cherry -v: shows commit subjects' '
-	(cd repo && grit cherry -v master >../actual) &&
+	(cd repo && grit cherry -v main >../actual) &&
 	grep "feature commit 1" actual &&
 	grep "feature commit 2" actual &&
 	grep "feature commit 3" actual
 '
 
 test_expect_success 'cherry -v: matches git' '
-	(cd repo && grit cherry -v master >../grit_out &&
-	 "$REAL_GIT" cherry -v master >../git_out) &&
+	(cd repo && grit cherry -v main >../grit_out &&
+	 "$REAL_GIT" cherry -v main >../git_out) &&
 	test_cmp git_out grit_out
 '
 
 # ---- cherry after cherry-picking ----
 
-test_expect_success 'setup: advance master so cherry-pick creates a new commit' '
+test_expect_success 'setup: advance main so cherry-pick creates a new commit' '
 	(cd repo &&
-	 "$REAL_GIT" checkout master &&
-	 echo "master-only" >master-only.txt &&
-	 "$REAL_GIT" add master-only.txt &&
-	 "$REAL_GIT" commit -m "master diverges")
+	 "$REAL_GIT" checkout main &&
+	 echo "main-only" >main-only.txt &&
+	 "$REAL_GIT" add main-only.txt &&
+	 "$REAL_GIT" commit -m "main diverges")
 '
 
-test_expect_success 'setup: cherry-pick one commit to master' '
+test_expect_success 'setup: cherry-pick one commit to main' '
 	(cd repo &&
-	 feature_first=$("$REAL_GIT" rev-list master..feature | tail -1) &&
+	 feature_first=$("$REAL_GIT" rev-list main..feature | tail -1) &&
 	 "$REAL_GIT" cherry-pick "$feature_first")
 '
 
 test_expect_success 'cherry: cherry-picked commit shows - prefix' '
 	(cd repo &&
 	 "$REAL_GIT" checkout feature &&
-	 grit cherry master >../actual) &&
+	 grit cherry main >../actual) &&
 	grep "^-" actual &&
 	grep "^+" actual
 '
 
 test_expect_success 'cherry: after cherry-pick matches git' '
-	(cd repo && grit cherry master >../grit_out &&
-	 "$REAL_GIT" cherry master >../git_out) &&
+	(cd repo && grit cherry main >../grit_out &&
+	 "$REAL_GIT" cherry main >../git_out) &&
 	test_cmp git_out grit_out
 '
 
 test_expect_success 'cherry -v: after cherry-pick matches git' '
-	(cd repo && grit cherry -v master >../grit_out &&
-	 "$REAL_GIT" cherry -v master >../git_out) &&
+	(cd repo && grit cherry -v main >../grit_out &&
+	 "$REAL_GIT" cherry -v main >../git_out) &&
 	test_cmp git_out grit_out
 '
 
 # ---- cherry with explicit HEAD argument ----
 
 test_expect_success 'cherry: explicit HEAD arg matches git' '
-	(cd repo && grit cherry master feature >../grit_out &&
-	 "$REAL_GIT" cherry master feature >../git_out) &&
+	(cd repo && grit cherry main feature >../grit_out &&
+	 "$REAL_GIT" cherry main feature >../git_out) &&
 	test_cmp git_out grit_out
 '
 
 test_expect_success 'cherry -v: explicit HEAD arg matches git' '
-	(cd repo && grit cherry -v master feature >../grit_out &&
-	 "$REAL_GIT" cherry -v master feature >../git_out) &&
+	(cd repo && grit cherry -v main feature >../grit_out &&
+	 "$REAL_GIT" cherry -v main feature >../git_out) &&
 	test_cmp git_out grit_out
 '
 
@@ -245,19 +245,19 @@ test_expect_success 'cherry -v: explicit HEAD arg matches git' '
 
 test_expect_success 'setup: create limit ref' '
 	(cd repo &&
-	 limit_sha=$("$REAL_GIT" rev-list master..feature | tail -1) &&
+	 limit_sha=$("$REAL_GIT" rev-list main..feature | tail -1) &&
 	 "$REAL_GIT" tag limit-tag "$limit_sha")
 '
 
 test_expect_success 'cherry: with limit excludes earlier commits' '
-	(cd repo && grit cherry master feature limit-tag >../actual) &&
+	(cd repo && grit cherry main feature limit-tag >../actual) &&
 	line_count=$(wc -l <actual | tr -d " ") &&
 	test "$line_count" -lt 3
 '
 
 test_expect_success 'cherry: with limit matches git' '
-	(cd repo && grit cherry master feature limit-tag >../grit_out &&
-	 "$REAL_GIT" cherry master feature limit-tag >../git_out) &&
+	(cd repo && grit cherry main feature limit-tag >../grit_out &&
+	 "$REAL_GIT" cherry main feature limit-tag >../git_out) &&
 	test_cmp git_out grit_out
 '
 

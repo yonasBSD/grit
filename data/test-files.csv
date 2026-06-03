@@ -309,7 +309,7 @@ t12460-cherry-pick-sequence	t1	yes	36	36	0	true	ok	0
 t12470-for-each-ref-shell-format	t1	yes	34	34	0	true	ok	0
 t12520-diff-no-index-stdin	t1	yes	31	31	0	true	ok	0
 t12530-diff-cached-pathspec	t1	yes	37	37	0	true	ok	0
-t12540-diff-tree-cherry	t1	yes	33	19	14	false	ok	0
+t12540-diff-tree-cherry	t1	yes	33	33	0	true	ok	0
 t12550-diff-stat-summary-line	t1	yes	39	39	0	true	ok	0
 t12560-diff-index-worktree	t1	yes	36	36	0	true	ok	0
 t12570-status-rename-copy	t1	yes	38	38	0	true	ok	0
