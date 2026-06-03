@@ -1,3 +1,7 @@
+## 2026-06-03 — t1511-rev-parse-caret
+
+- Focus harness: `./scripts/run-tests.sh t1511-rev-parse-caret.sh --verbose` passes 17/17 after implementing `^{/!!literal}` and `^{/!-negative}` commit-message search semantics.
+
 ## 2026-06-03 — t12460-cherry-pick-sequence
 
 - Focus harness: `./scripts/run-tests.sh t12460-cherry-pick-sequence.sh --verbose` passes 36/36 after containing the repeated-empty-pick block in a subshell to prevent CWD leakage.
