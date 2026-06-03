@@ -2654,6 +2654,16 @@ pub fn run(mut args: Args) -> Result<()> {
         let mut cpaths =
             combined_diff_paths_trees(&repo.odb, &merge_tree, &parent_opts, &walk, None)?;
         cpaths = filter_combined_paths(cpaths, &paths);
+        // `-O<orderfile>` applies to combined diffs too (t4056).
+        if let Some(ref order_path) = args.order_file {
+            let patterns = read_orderfile_patterns(order_path, &cwd)?;
+            cpaths.sort_by_key(|p| {
+                patterns
+                    .iter()
+                    .position(|pat| orderfile_pattern_matches(pat, &p.path))
+                    .unwrap_or(patterns.len())
+            });
+        }
         let has_diff = !cpaths.is_empty();
         let abbrev_opt = if args.full_index || args.no_abbrev {
             None
@@ -2661,7 +2671,15 @@ pub fn run(mut args: Args) -> Result<()> {
             Some(args.abbrev.map(|n| n.max(4).min(40)).unwrap_or(7))
         };
         let mut stdout = io::stdout().lock();
-        if args.raw {
+        if args.name_only {
+            for p in &cpaths {
+                writeln!(
+                    stdout,
+                    "{}",
+                    grit_lib::quote_path::quote_c_style(&p.path, quote_path_fully)
+                )?;
+            }
+        } else if args.raw {
             for p in &cpaths {
                 writeln!(stdout, "{}", format_combined_raw_line(p, abbrev_opt))?;
             }
