@@ -543,6 +543,10 @@ pub struct Args {
     #[arg(long = "shortstat")]
     pub shortstat: bool,
 
+    /// Show a condensed summary of extended header info (created/deleted/renamed files).
+    #[arg(long = "summary")]
+    pub summary: bool,
+
     /// Bisect mode (accepted for compatibility).
     #[arg(long = "bisect")]
     pub bisect: bool,
@@ -11668,6 +11672,17 @@ fn log_print_stat_summary(
         },
     };
     write_diffstat_block(out, &files, &opts)?;
+    // `--summary`: condensed extended-header lines (create/delete/rename mode), emitted right
+    // after the diffstat totals and before the trailing blank that precedes the patch.
+    if args.summary {
+        let quote_fully = cfg.quote_path_fully();
+        crate::commands::diff::write_diff_summary(
+            out,
+            entries,
+            args.break_rewrites.is_some(),
+            quote_fully,
+        )?;
+    }
     if trailing_blank {
         writeln!(out)?;
     }

@@ -377,6 +377,7 @@ fn run_show(args: ShowArgs) -> Result<()> {
         default_revision: None,
         clear_decorations: false,
         shortstat: false,
+        summary: false,
         bisect: false,
         order_file: None,
         rotate_to: None,

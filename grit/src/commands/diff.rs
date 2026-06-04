@@ -9367,7 +9367,7 @@ fn write_numstat(
 
 /// Write only the names of changed files.
 /// Write `--summary` output for rename/copy/mode-change entries.
-fn write_diff_summary(
+pub(crate) fn write_diff_summary(
     out: &mut impl Write,
     entries: &[DiffEntry],
     break_rewrites: bool,
