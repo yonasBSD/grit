@@ -1775,14 +1775,21 @@ impl DirstatOptions {
     }
 }
 
+/// Apply a comma-separated `--dirstat` / `diff.dirstat` parameter string to `opts`.
+///
+/// Mirrors Git's `parse_dirstat_params`: every token is processed and *all* unrecognised
+/// tokens / malformed percentages accumulate into `errors` (one indented line each), rather
+/// than aborting at the first bad token. The caller decides whether a non-empty `errors`
+/// list is fatal (CLI `--dirstat`/`-X`) or merely a warning (`diff.dirstat` config). The
+/// `strict` flag only controls the error-message header, not when errors are collected.
 fn parse_dirstat_apply_tokens(
     params: &str,
     opts: &mut DirstatOptions,
-    strict: bool,
-    warnings: &mut Vec<String>,
-) -> Result<()> {
+    _strict: bool,
+    errors: &mut Vec<String>,
+) {
     if params.is_empty() {
-        return Ok(());
+        return;
     }
     for raw in params.split(',') {
         let p = raw.trim();
@@ -1803,36 +1810,40 @@ fn parse_dirstat_apply_tokens(
             match parse_dirstat_percentage_permille(p) {
                 Some(pm) => opts.permille = pm,
                 None => {
-                    let msg = format!(
-                        "Failed to parse --dirstat/-X option parameter:\n  Failed to parse dirstat cut-off percentage '{p}'\n"
-                    );
-                    if strict {
-                        bail!("{msg}");
-                    }
-                    warnings.push(format!(
-                        "Found errors in 'diff.dirstat' config variable:\n  Failed to parse dirstat cut-off percentage '{p}'\n"
+                    errors.push(format!(
+                        "  Failed to parse dirstat cut-off percentage '{p}'\n"
                     ));
                 }
             }
         } else {
-            let msg = format!(
-                "Failed to parse --dirstat/-X option parameter:\n  Unknown dirstat parameter '{p}'\n"
-            );
-            if strict {
-                bail!("{msg}");
-            }
-            warnings.push(format!(
-                "Found errors in 'diff.dirstat' config variable:\n  Unknown dirstat parameter '{p}'\n"
-            ));
+            errors.push(format!("  Unknown dirstat parameter '{p}'\n"));
         }
     }
-    Ok(())
+}
+
+/// Apply CLI `--dirstat`/`-X` tokens, accumulating into `cli_errors` (joined and reported
+/// fatally by the caller). Kept as a thin wrapper so existing call sites read naturally.
+fn parse_dirstat_apply_tokens_cli(
+    params: &str,
+    opts: &mut DirstatOptions,
+    cli_errors: &mut Vec<String>,
+) {
+    parse_dirstat_apply_tokens(params, opts, true, cli_errors);
 }
 
 fn parse_dirstat_params_lenient(params: &str) -> (DirstatOptions, Vec<String>) {
     let mut o = DirstatOptions::default();
-    let mut warnings = Vec::new();
-    let _ = parse_dirstat_apply_tokens(params, &mut o, false, &mut warnings);
+    let mut errors = Vec::new();
+    parse_dirstat_apply_tokens(params, &mut o, false, &mut errors);
+    // Config errors are reported as a single warning with all offending tokens.
+    let warnings = if errors.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!(
+            "Found errors in 'diff.dirstat' config variable:\n{}",
+            errors.concat()
+        )]
+    };
     (o, warnings)
 }
 
@@ -1971,6 +1982,7 @@ pub(crate) fn unstaged_patch_for_add_edit(
         false,
         true,
         None,
+        true,
         relative_prefix.as_deref(),
         resolve_indent_heuristic(&diff_config, false, false),
     )?;
@@ -2438,9 +2450,36 @@ pub fn run(mut args: Args) -> Result<()> {
                         args.find_renames = Some("50".to_owned());
                     }
                 }
-                // `-CC` is copy detection; combined diff is spelled `--cc` only (Git).
-                s if s == "-C" || s.starts_with("--find-copies") => {
-                    args.find_copies = Some("50".to_owned());
+                // `--find-copies-harder` enables copy detection *and* lets unmodified
+                // preimage files act as copy sources. Must precede the generic
+                // `--find-copies` arm below since it shares that prefix.
+                "--find-copies-harder" => {
+                    args.find_copies_harder = true;
+                    if args.find_copies.is_none() {
+                        args.find_copies = Some("50".to_owned());
+                    }
+                }
+                // `-C[<n>]` / `--find-copies[=<n>]` is copy detection (combined diff is `--cc`).
+                // A *second* `-C` (e.g. `git diff -C -C`) requests `--find-copies-harder`,
+                // matching Git's `diff_opt_parse`.
+                s if s == "-C"
+                    || (s.starts_with("-C")
+                        && s.len() > 2
+                        && s[2..].bytes().all(|b| b.is_ascii_digit() || b == b'%'))
+                    || s.starts_with("--find-copies") =>
+                {
+                    let val = if let Some(rest) = s.strip_prefix("--find-copies=") {
+                        rest.to_owned()
+                    } else if s.starts_with("-C") && s.len() > 2 {
+                        s[2..].to_owned()
+                    } else {
+                        "50".to_owned()
+                    };
+                    // Repeating bare `-C` / `--find-copies` upgrades to find-copies-harder.
+                    if (s == "-C" || s == "--find-copies") && args.find_copies.is_some() {
+                        args.find_copies_harder = true;
+                    }
+                    args.find_copies = Some(val);
                 }
                 "-l" => {
                     if rev_idx + 1 < revs.len() {
@@ -2458,10 +2497,6 @@ pub fn run(mut args: Args) -> Result<()> {
                 "--cc" => {
                     want_combined_diff = true;
                     combined_diff_dense = true;
-                }
-                "--find-copies-harder" => {
-                    args.find_copies_harder = true;
-                    args.find_copies = Some("50".to_owned());
                 }
                 s if s.starts_with("-S") => {
                     if s.len() > 2 {
@@ -2627,6 +2662,27 @@ pub fn run(mut args: Args) -> Result<()> {
     let mut symmetric_left_name = String::new();
     let mut symmetric_right_name = String::new();
     let mut symmetric_base_name = String::new();
+
+    // `git diff -C -C` (a repeated copy-detection flag) requests `--find-copies-harder`,
+    // letting unmodified preimage files act as copy sources. clap collapses the two `-C`
+    // tokens (`overrides_with`), so inspect raw argv directly: an explicit
+    // `--find-copies-harder`, or two or more bare `-C`/`--find-copies` flags.
+    {
+        let mut copy_flag_count = 0usize;
+        for a in raw_args.iter() {
+            if a == "--find-copies-harder" {
+                args.find_copies_harder = true;
+                if args.find_copies.is_none() {
+                    args.find_copies = Some("50".to_owned());
+                }
+            } else if a == "-C" || a == "--find-copies" {
+                copy_flag_count += 1;
+            }
+        }
+        if copy_flag_count >= 2 {
+            args.find_copies_harder = true;
+        }
+    }
 
     // -C implies -M (copy detection requires rename detection)
     if args.find_copies.is_some() && args.find_renames.is_none() {
@@ -3051,13 +3107,39 @@ pub fn run(mut args: Args) -> Result<()> {
 
     let entries = if let Some(threshold) = rename_threshold {
         if args.find_copies.is_some() {
+            // `--find-copies-harder` (`-C -C`) lets *unmodified* preimage files act as copy
+            // sources. Git seeds the rename pool with the whole preimage; replicate that by
+            // flattening the source tree into (path, mode, oid) tuples. Only the tree-based
+            // diff modes can supply a flat preimage cheaply; for index/worktree sources we
+            // fall back to the modified-only behaviour (empty slice).
+            //
+            // A rename limit (`-l <n>`) being hit disables the exhaustive scan: Git degrades
+            // to "only found copies from modified paths", so the unmodified preimage must not
+            // be added as copy sources (t4001 "many rename source candidates").
+            let rename_limited = args.rename_limit.is_some_and(|n| n > 0);
+            let source_tree_entries: Vec<(String, String, ObjectId)> = if args.find_copies_harder
+                && !rename_limited
+            {
+                source_tree_oid_for_find_copies_harder(&repo, &args, &revs, head_tree.as_ref())
+                    .and_then(|t| grit_lib::diff::head_path_states(&repo.odb, Some(&t)).ok())
+                    .map(|m| {
+                        m.into_iter()
+                            .map(|(p, (mode, oid))| {
+                                (p, grit_lib::diff::format_mode(mode), oid)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             detect_copies(
                 &repo.odb,
                 None,
                 entries,
                 threshold,
                 args.find_copies_harder,
-                &[],
+                &source_tree_entries,
             )
         } else {
             detect_renames(&repo.odb, None, entries, threshold)
@@ -3466,6 +3548,12 @@ pub fn run(mut args: Args) -> Result<()> {
     // `--no-patch` suppresses the unified patch without implying `--quiet`.
     let quiet_suppresses_stdout = args.quiet && !format_besides_unified_patch;
 
+    // External-diff exit-code bookkeeping: when an external driver runs, its
+    // `found_changes` (driven by the driver exit code under trustExitCode)
+    // overrides the entry-derived `has_diff` for `--exit-code` / `--quiet`.
+    let mut ext_diff_ran = false;
+    let mut ext_found_changes = false;
+
     for w in &dirstat_config_warnings {
         eprintln!("warning: {w}");
     }
@@ -3649,15 +3737,8 @@ pub fn run(mut args: Args) -> Result<()> {
                 }
                 let diff_config = grit_lib::config::ConfigSet::load(Some(&repo.git_dir), true)
                     .unwrap_or_default();
-                let external_diff_cmd = std::env::var("GIT_EXTERNAL_DIFF")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
-                    .or_else(|| {
-                        diff_config
-                            .get("diff.external")
-                            .filter(|s| !s.trim().is_empty())
-                    });
-                write_patch_with_prefix(
+                let external_diff = resolve_env_config_external_diff(&diff_config);
+                let summary = write_patch_with_prefix(
                     &mut out,
                     &repo,
                     &entries,
@@ -3691,16 +3772,101 @@ pub fn run(mut args: Args) -> Result<()> {
                     args.cached,
                     args.function_context,
                     args.no_ext_diff,
-                    external_diff_cmd.as_deref(),
+                    external_diff.as_ref().map(|(c, t)| (c.as_str(), *t)),
+                    true,
                     relative_prefix_for_paths.as_deref(),
                     indent_heuristic,
                 )?;
+                // Flush patch output before any external-diff "died" failure so the
+                // program's stdout (already written) is visible (t4020).
+                out.flush().ok();
+                if let Some(path) = summary.died_path {
+                    eprintln!("fatal: external diff died, stopping at {path}");
+                    std::process::exit(128);
+                }
+                if summary.invoked {
+                    ext_found_changes = summary.found_changes;
+                    ext_diff_ran = true;
+                }
             }
         }
     }
 
-    if (args.exit_code || args.quiet) && has_diff {
-        std::process::exit(1);
+    // `--quiet` suppressed the patch block above, so the external driver never
+    // ran. Git still invokes it (with stdout discarded) to learn `found_changes`
+    // from the exit code when an external diff is configured (t4020 #56-#64).
+    if quiet_suppresses_stdout && (args.exit_code || args.quiet) && !args.no_ext_diff {
+        let diff_config = grit_lib::config::ConfigSet::load(Some(&repo.git_dir), true)
+            .unwrap_or_default();
+        let env_cfg_ext = resolve_env_config_external_diff(&diff_config);
+        // Run when env/config OR any attribute driver could apply.
+        let any_attr_driver = entries.iter().any(|e| {
+            grit_lib::merge_diff::diff_attr_external_driver(
+                &repo.git_dir,
+                &diff_config,
+                e.path(),
+            )
+            .is_some()
+        });
+        if env_cfg_ext.is_some() || any_attr_driver {
+            let mut sink = io::sink();
+            let summary = write_patch_with_prefix(
+                &mut sink,
+                &repo,
+                &entries,
+                &repo.odb,
+                &repo.git_dir,
+                &diff_config,
+                3,
+                false,
+                None,
+                wt_for_content,
+                false,
+                7,
+                0,
+                args.binary,
+                args.break_rewrites,
+                args.irreversible_delete,
+                !args.no_textconv,
+                &src_prefix,
+                &dst_prefix,
+                quote_path_fully,
+                args.submodule.as_deref(),
+                submodule_ignore_flags_from_diff_arg(ignore_sm.unwrap_or("none")),
+                ignore_sm,
+                &diff_config,
+                &path_to_sm_name,
+                &gm_sub_ignore,
+                line_ignore,
+                &ws_mode,
+                &diff_algo_ctx,
+                diff_algo_cli,
+                args.cached,
+                args.function_context,
+                args.no_ext_diff,
+                env_cfg_ext.as_ref().map(|(c, t)| (c.as_str(), *t)),
+                false,
+                relative_prefix_for_paths.as_deref(),
+                indent_heuristic,
+            )?;
+            if let Some(path) = summary.died_path {
+                eprintln!("fatal: external diff died, stopping at {path}");
+                std::process::exit(128);
+            }
+            if summary.invoked {
+                ext_found_changes = summary.found_changes;
+                ext_diff_ran = true;
+            }
+        }
+    }
+
+    if args.exit_code || args.quiet {
+        // With an external driver, Git's `found_changes` (driven by the driver's
+        // exit code under trustExitCode) overrides the entry-derived `has_diff`.
+        let changed = if ext_diff_ran { ext_found_changes } else { has_diff };
+        if changed {
+            std::process::exit(1);
+        }
     }
 
     Ok(())
@@ -3851,14 +4017,7 @@ fn run_diff_blob_vs_file(
         .map(|v| v == "true")
         .unwrap_or(false);
 
-    let external_diff_cmd = std::env::var("GIT_EXTERNAL_DIFF")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            diff_config
-                .get("diff.external")
-                .filter(|s| !s.trim().is_empty())
-        });
+    let external_diff = resolve_env_config_external_diff(&diff_config);
     let relative_prefix_for_paths =
         resolve_diff_relative_prefix(Some(wt.as_ref()), &repo.git_dir, args);
 
@@ -3920,7 +4079,8 @@ fn run_diff_blob_vs_file(
             false,
             args.function_context,
             args.no_ext_diff,
-            external_diff_cmd.as_deref(),
+            external_diff.as_ref().map(|(c, t)| (c.as_str(), *t)),
+            true,
             relative_prefix_for_paths.as_deref(),
             indent_heuristic,
         )?;
@@ -5163,6 +5323,10 @@ fn diff_show_unified_patch_last_wins(argv: &[String]) -> bool {
             "--stat" | "--shortstat" | "--numstat" | "--raw" | "--name-only" | "--name-status"
             | "--summary" | "--compact-summary" | "--dirstat" | "--dirstat-by-file"
             | "--cumulative" => show = false,
+            // `-X` / `-X<param>` is the short form of `--dirstat` and likewise suppresses the
+            // unified patch. This scan runs on raw argv (pre-`-X`-translation), so handle it here.
+            "-X" => show = false,
+            s if s.starts_with("-X") => show = false,
             s if s.starts_with("--stat=") => show = false,
             s if s.starts_with("--dirstat=") => show = false,
             s if s.starts_with("--dirstat-by-file=") => show = false,
@@ -5436,22 +5600,42 @@ pub(crate) fn resolve_dirstat_options_from_cli(
         opts = o;
     }
 
+    // Each CLI dirstat option is parsed independently and, like Git's `parse_dirstat_opt`,
+    // dies with *all* of that option's bad tokens combined under one header.
+    let bail_on_cli_errors = |errs: Vec<String>| -> Result<()> {
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            bail!(
+                "Failed to parse --dirstat/-X option parameter:\n{}",
+                errs.concat()
+            )
+        }
+    };
+
     if cli.dirstat_cumulative_flag {
-        parse_dirstat_apply_tokens("cumulative", &mut opts, true, &mut warnings)?;
+        let mut errs = Vec::new();
+        parse_dirstat_apply_tokens_cli("cumulative", &mut opts, &mut errs);
+        bail_on_cli_errors(errs)?;
     }
 
     if let Some(ref p) = cli.dirstat_by_file {
-        parse_dirstat_apply_tokens("files", &mut opts, true, &mut warnings)?;
+        let mut errs = Vec::new();
+        parse_dirstat_apply_tokens_cli("files", &mut opts, &mut errs);
         if !p.is_empty() {
-            parse_dirstat_apply_tokens(p, &mut opts, true, &mut warnings)?;
+            parse_dirstat_apply_tokens_cli(p, &mut opts, &mut errs);
         }
+        bail_on_cli_errors(errs)?;
     }
 
     for param in &cli.dirstat {
-        if param.is_empty() {
-            opts = DirstatOptions::default();
-        } else {
-            parse_dirstat_apply_tokens(param, &mut opts, true, &mut warnings)?;
+        // Git's `parse_dirstat_params("")` is a no-op: a bare `--dirstat` enables dirstat
+        // output but applies no parameters, so the `diff.dirstat` config baseline (mode,
+        // cumulative, cut-off) is preserved rather than reset to the built-in defaults.
+        if !param.is_empty() {
+            let mut errs = Vec::new();
+            parse_dirstat_apply_tokens_cli(param, &mut opts, &mut errs);
+            bail_on_cli_errors(errs)?;
         }
     }
 
@@ -5491,6 +5675,16 @@ fn dirstat_damage_for_entry(
     mode: DirstatMode,
 ) -> u64 {
     let path = entry.path();
+
+    // Git's `show_dirstat`: before any mode-specific accounting, a pair whose pre-image and
+    // post-image blob OIDs are both valid and identical contributes zero damage — even in
+    // `--dirstat=files` mode. This is how a content-preserving rename/copy
+    // (`{src => dst}/... 0 0`) is excluded from the file count.
+    let z = zero_oid();
+    if entry.old_oid != z && entry.new_oid != z && entry.old_oid == entry.new_oid {
+        return 0;
+    }
+
     let old_raw = read_content_raw(odb, &entry.old_oid);
     let new_raw = read_content_raw_or_worktree(odb, &entry.new_oid, work_tree, path);
 
@@ -5584,6 +5778,11 @@ fn gather_dirstat_recursive(
         }
     }
 
+    // Git (`gather_dirstat` in diff.c): report a directory line for any directory other
+    // than the top level whose damage did not all funnel through a single sub-source
+    // (`sources != 1`). After printing in non-cumulative mode the directory's damage is
+    // *consumed* — it returns 0 so ancestors neither re-print nor double-count it. In all
+    // other cases the accumulated `sum` propagates upward unchanged.
     if base_len > 0 && sources != 1 && sum > 0 && changed_total > 0 {
         let permille_val = ((sum as u128) * 1000 / (changed_total as u128)) as u32;
         if permille_val >= permille {
@@ -5593,11 +5792,11 @@ fn gather_dirstat_recursive(
             // width-4 field provides the alignment).
             writeln!(out, "{:>4}.{}% {}", int_part, frac, &base[..base_len])?;
             if !cumulative {
-                return Ok(sum);
+                return Ok(0);
             }
         }
     }
-    Ok(if cumulative { 0 } else { sum })
+    Ok(sum)
 }
 
 pub(crate) fn write_dirstat(
@@ -6012,6 +6211,27 @@ fn resolve_commit_ish_for_merge_base(repo: &Repository, spec: &str) -> Result<Ob
 }
 
 /// Resolve a revision spec to a tree OID, handling both commit and tree objects.
+/// Resolve the preimage tree OID used to seed `--find-copies-harder` copy sources.
+///
+/// Mirrors the diff-mode dispatch above: a two-rev range diffs `revs[0]..revs[1]`
+/// (source = `revs[0]`), a single rev (or `--cached <rev>`) diffs against that rev's
+/// tree, and `--cached` with no rev diffs against `HEAD`. Index/worktree-only sources
+/// (`git diff`, `git diff <rev>`) have no cheap flat preimage here, so return `None`
+/// and let copy detection consider only modified files.
+fn source_tree_oid_for_find_copies_harder(
+    repo: &Repository,
+    args: &Args,
+    revs: &[String],
+    head_tree: Option<&ObjectId>,
+) -> Option<ObjectId> {
+    match (args.cached, revs.len()) {
+        (true, 0) => head_tree.copied(),
+        (_, 1) => commit_or_tree_oid(repo, &revs[0]).ok(),
+        (false, 2) => commit_or_tree_oid(repo, &revs[0]).ok(),
+        _ => None,
+    }
+}
+
 fn commit_or_tree_oid(repo: &Repository, spec: &str) -> Result<ObjectId> {
     let mut oid =
         resolve_revision(repo, spec).with_context(|| format!("unknown revision: '{spec}'"))?;
@@ -6683,73 +6903,246 @@ fn write_diff_header_with_prefix(
     Ok(())
 }
 
-/// Run `GIT_EXTERNAL_DIFF` / `diff.external` when set (Git-compatible argv: path, file, hex, mode ×2).
+/// One argv "side" (old or new) for an external diff invocation.
 ///
-/// Matches Git's `prepare_shell_cmd` + `run_command` with `use_shell=1`.
+/// Git's `prepare_temp_file` passes `/dev/null`, `"."`, `"."` for an invalid
+/// file side (the absent half of an add/delete) and a temp-file path, full hex,
+/// and 6-octal mode otherwise. We mirror that here.
+struct ExtDiffSide {
+    /// `temp->name`: temp-file path (or the worktree path for a borrowed file),
+    /// or `/dev/null` when the side is invalid.
+    name: String,
+    /// `temp->hex`: 40-char hex of the blob (`.` when invalid).
+    hex: String,
+    /// `temp->mode`: 6-octal mode (`.` when invalid).
+    mode: String,
+    /// Keep the temp dir alive for the duration of the call.
+    _tmp: Option<tempfile::TempDir>,
+}
+
+fn ext_diff_side(
+    raw: &[u8],
+    oid: &ObjectId,
+    mode: &str,
+    path: &str,
+    borrow_path: Option<&str>,
+    zero_hex: bool,
+) -> Result<ExtDiffSide> {
+    // mode "000000" marks the invalid side of an add/delete (DIFF_FILE_VALID == 0 in Git).
+    if mode == "000000" || mode.is_empty() {
+        return Ok(ExtDiffSide {
+            name: "/dev/null".to_owned(),
+            hex: ".".to_owned(),
+            mode: ".".to_owned(),
+            _tmp: None,
+        });
+    }
+    // Gitlinks: Git's `diff_populate_gitlink` puts `Subproject commit <hex>\n`
+    // into the temp blob rather than any tree/blob content (t4020 #72).
+    if mode == "160000" {
+        let content = format!("Subproject commit {}\n", oid.to_hex());
+        let base = path.rsplit('/').next().filter(|s| !s.is_empty());
+        let dir = tempfile::Builder::new()
+            .prefix("git-blob-")
+            .tempdir()
+            .context("temp dir for external diff")?;
+        let file_path = match base {
+            Some(b) => dir.path().join(b),
+            None => dir.path().join("blob"),
+        };
+        fs::write(&file_path, content.as_bytes())?;
+        return Ok(ExtDiffSide {
+            name: file_path.to_string_lossy().into_owned(),
+            hex: oid.to_hex(),
+            mode: mode.to_owned(),
+            _tmp: Some(dir),
+        });
+    }
+    // Git's `reuse_worktree_file`: a regular worktree file is borrowed in place,
+    // so the argv carries the real path; the OID is null because the file is not
+    // a registered blob. Symlinks (and other non-regular content) still go to a
+    // temp blob but keep the null OID.
+    let hex = if zero_hex {
+        zero_oid().to_hex()
+    } else {
+        oid.to_hex()
+    };
+    if let Some(path) = borrow_path {
+        return Ok(ExtDiffSide {
+            name: path.to_owned(),
+            hex,
+            mode: mode.to_owned(),
+            _tmp: None,
+        });
+    }
+    // Git's `prep_temp_blob` uses `mks_tempfile_dt("git-blob-XXXXXX", base)`:
+    // the blob is written into a randomly-named directory under a file whose
+    // name is the path's basename, so the argv path's basename is "pretty"
+    // (preserves the extension, t4020 #68).
+    let base = path.rsplit('/').next().filter(|s| !s.is_empty());
+    let dir = tempfile::Builder::new()
+        .prefix("git-blob-")
+        .tempdir()
+        .context("temp dir for external diff")?;
+    let file_path = match base {
+        Some(b) => dir.path().join(b),
+        None => dir.path().join("blob"),
+    };
+    fs::write(&file_path, raw)?;
+    Ok(ExtDiffSide {
+        name: file_path.to_string_lossy().into_owned(),
+        hex,
+        mode: mode.to_owned(),
+        _tmp: Some(dir),
+    })
+}
+
+/// Outcome of one external-diff invocation, mirroring `run_external_diff`.
+enum ExtDiffOutcome {
+    /// The program ran and was treated as a no-change (trustExitCode, rc==0).
+    NoChange,
+    /// The program ran (or was skipped) and a change is recorded.
+    Changed,
+    /// `fatal: external diff died, stopping at <name>` — caller must die(128).
+    Died(String),
+}
+
+/// Run `GIT_EXTERNAL_DIFF` / `diff.external` / a `diff.<name>.command` driver.
+///
+/// Mirrors Git's `run_external_diff` + `prepare_shell_cmd` (use_shell=1):
+/// argv is `cmd name old-file old-hex old-mode new-file new-hex new-mode [other]`,
+/// with `GIT_DIFF_PATH_COUNTER` / `GIT_DIFF_PATH_TOTAL` exported.
+#[allow(clippy::too_many_arguments)]
 fn run_external_diff_for_patch(
     out: &mut impl Write,
     cmd_line: &str,
     display_path: &str,
+    other_path: Option<&str>,
     old_raw: &[u8],
     new_raw: &[u8],
     old_oid: &ObjectId,
     new_oid: &ObjectId,
     old_mode: &str,
     new_mode: &str,
-) -> Result<()> {
+    old_borrow: Option<&str>,
+    old_zero_hex: bool,
+    new_borrow: Option<&str>,
+    new_zero_hex: bool,
+    path_counter: usize,
+    path_total: usize,
+    trust_exit_code: bool,
+    want_output: bool,
+) -> Result<ExtDiffOutcome> {
     let cmd_line = cmd_line.trim();
     if cmd_line.is_empty() {
         bail!("empty external diff command");
     }
-    let old_tmp = tempfile::NamedTempFile::new().context("temp file for external diff (old)")?;
-    let new_tmp = tempfile::NamedTempFile::new().context("temp file for external diff (new)")?;
-    fs::write(old_tmp.path(), old_raw)?;
-    fs::write(new_tmp.path(), new_raw)?;
-    let old_hex = old_oid.to_hex();
-    let new_hex = new_oid.to_hex();
+
+    // Git: `if (!pgm->trust_exit_code && !o->file) { o->found_changes = 1; return; }`
+    // Under --quiet with an untrusted driver we never even spawn the program.
+    if !trust_exit_code && !want_output {
+        return Ok(ExtDiffOutcome::Changed);
+    }
+
+    // Temp-file basenames follow each side's path: the old side uses `name`,
+    // the new side uses the rename destination (`other`) when present.
+    let new_path = other_path.unwrap_or(display_path);
+    let old_side = ext_diff_side(old_raw, old_oid, old_mode, display_path, old_borrow, old_zero_hex)?;
+    let new_side = ext_diff_side(new_raw, new_oid, new_mode, new_path, new_borrow, new_zero_hex)?;
+
     const SHELL_META: &[char] = &[
         '|', '&', ';', '<', '>', '(', ')', '$', '`', '\\', '"', '\'', ' ', '\t', '\n', '*', '?',
         '[', '#', '~', '=', '%',
     ];
     let needs_c = cmd_line.chars().any(|c| SHELL_META.contains(&c));
-    let mut cmd = Command::new("sh");
-    if needs_c {
-        let c_script = format!("{cmd_line} \"$@\"");
-        cmd.arg("-c")
-            .arg(&c_script)
-            .arg(cmd_line)
-            .arg(display_path)
-            .arg(old_tmp.path())
-            .arg(&old_hex)
-            .arg(old_mode)
-            .arg(new_tmp.path())
-            .arg(&new_hex)
-            .arg(new_mode);
-    } else {
-        cmd.arg(cmd_line)
-            .arg(display_path)
-            .arg(old_tmp.path())
-            .arg(&old_hex)
-            .arg(old_mode)
-            .arg(new_tmp.path())
-            .arg(&new_hex)
-            .arg(new_mode);
+
+    // Positional args after the program name: name, old(3), new(3), [other].
+    let mut pos: Vec<&str> = vec![
+        display_path,
+        &old_side.name,
+        &old_side.hex,
+        &old_side.mode,
+        &new_side.name,
+        &new_side.hex,
+        &new_side.mode,
+    ];
+    if let Some(other) = other_path {
+        pos.push(other);
     }
-    let mut child = cmd
-        .current_dir(external_diff_worktree_root())
+
+    let mut cmd;
+    if needs_c {
+        // sh -c "<cmd> \"$@\"" <cmd> <pos...>
+        cmd = Command::new("sh");
+        let c_script = format!("{cmd_line} \"$@\"");
+        cmd.arg("-c").arg(&c_script).arg(cmd_line);
+        for a in &pos {
+            cmd.arg(a);
+        }
+    } else {
+        // No shell metacharacters: exec the program directly.
+        cmd = Command::new(cmd_line);
+        for a in &pos {
+            cmd.arg(a);
+        }
+    }
+
+    cmd.current_dir(external_diff_worktree_root())
         .env("GIT_PREFIX", external_diff_git_prefix())
+        .env("GIT_DIFF_PATH_COUNTER", path_counter.to_string())
+        .env("GIT_DIFF_PATH_TOTAL", path_total.to_string())
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    // Git: `if (!o->file) cmd.no_stdout = 1;` — under --quiet the program's
+    // stdout is discarded; only its exit status matters.
+    if want_output {
+        cmd.stdout(Stdio::piped());
+    } else {
+        cmd.stdout(Stdio::null());
+    }
+
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to spawn external diff {cmd_line:?}"))?;
-    let mut stdout = child.stdout.take().context("external diff stdout")?;
-    io::copy(&mut stdout, out)?;
-    let status = child.wait().context("waiting for external diff")?;
-    if !status.success() {
-        bail!("external diff exited with {status}");
+    if want_output {
+        let mut stdout = child.stdout.take().context("external diff stdout")?;
+        io::copy(&mut stdout, out)?;
     }
-    Ok(())
+    let status = child.wait().context("waiting for external diff")?;
+    let rc = status.code().unwrap_or(-1);
+
+    // Git's exit-code interpretation in run_external_diff().
+    Ok(if !trust_exit_code && rc == 0 {
+        ExtDiffOutcome::Changed
+    } else if trust_exit_code && rc == 0 {
+        ExtDiffOutcome::NoChange
+    } else if trust_exit_code && rc == 1 {
+        ExtDiffOutcome::Changed
+    } else {
+        ExtDiffOutcome::Died(display_path.to_owned())
+    })
+}
+
+/// Resolve the `GIT_EXTERNAL_DIFF` (env) / `diff.external` (config) driver and
+/// its trust-exit-code flag. Env takes precedence over config; env trust comes
+/// from `GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE`, config trust from `diff.trustExitCode`.
+fn resolve_env_config_external_diff(config: &grit_lib::config::ConfigSet) -> Option<(String, bool)> {
+    if let Ok(cmd) = std::env::var("GIT_EXTERNAL_DIFF") {
+        if !cmd.trim().is_empty() {
+            let trust = std::env::var("GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE")
+                .ok()
+                .and_then(|v| grit_lib::config::parse_bool(v.as_str()).ok())
+                .unwrap_or(false);
+            return Some((cmd, trust));
+        }
+    }
+    let cmd = config.get("diff.external").filter(|s| !s.trim().is_empty())?;
+    let trust = config
+        .get("diff.trustExitCode")
+        .and_then(|v| grit_lib::config::parse_bool(v.as_str()).ok())
+        .unwrap_or(false);
+    Some((cmd, trust))
 }
 
 fn external_diff_worktree_root() -> PathBuf {
@@ -7199,11 +7592,18 @@ fn write_patch_with_prefix(
     cached: bool,
     function_context: bool,
     no_ext_diff: bool,
-    external_diff_cmd: Option<&str>,
+    external_diff: Option<(&str, bool)>,
+    want_external_output: bool,
     relative_prefix: Option<&str>,
     indent_heuristic: bool,
-) -> Result<()> {
+) -> Result<ExtDiffSummary> {
     let ignore_blank = ws_mode.ignore_blank_lines;
+    // External-diff bookkeeping mirroring Git's diff_options found_changes / die.
+    let mut ext_invoked = false;
+    let mut ext_found_changes = false;
+    let mut ext_died: Option<String> = None;
+    let mut ext_counter: usize = 0;
+    let mut ext_total: usize = 0;
     for entry in entries {
         let old_path = entry.old_path.as_deref().unwrap_or("/dev/null");
         let new_path = entry.new_path.as_deref().unwrap_or("/dev/null");
@@ -7288,23 +7688,119 @@ fn write_patch_with_prefix(
         let new_content_raw =
             read_content_raw_or_worktree(odb, &entry.new_oid, work_tree, &wt_path);
 
-        if !no_ext_diff {
-            if let Some(ext) = external_diff_cmd.filter(|s| !s.is_empty()) {
-                if entry.status != DiffStatus::Unmerged {
-                    let display = entry.path();
-                    run_external_diff_for_patch(
-                        out,
-                        ext,
-                        display,
-                        &old_content_raw,
-                        &new_content_raw,
-                        &entry.old_oid,
-                        &entry.new_oid,
-                        &entry.old_mode,
-                        &entry.new_mode,
-                    )?;
-                    continue;
+        if !no_ext_diff && entry.status != DiffStatus::Unmerged {
+            // Git precedence: a path's `diff=<name>` attribute driver
+            // (`diff.<name>.command`) trumps `GIT_EXTERNAL_DIFF` / `diff.external`.
+            let attr_driver = grit_lib::merge_diff::diff_attr_external_driver(
+                git_dir,
+                config,
+                path_for_attrs.as_str(),
+            );
+            let resolved: Option<(&str, bool)> = if let Some((ref c, t)) = attr_driver {
+                Some((c.as_str(), t))
+            } else {
+                external_diff.filter(|(s, _)| !s.is_empty())
+            };
+            if let Some((ext, trust)) = resolved {
+                ext_invoked = true;
+                ext_total = entries.len();
+                ext_counter += 1;
+                // `other` = the destination path for renames/copies (Git's `two->path`).
+                let display = entry.path();
+                let other = match entry.status {
+                    DiffStatus::Renamed | DiffStatus::Copied => entry
+                        .new_path
+                        .as_deref()
+                        .filter(|n| *n != display),
+                    _ => None,
+                };
+                // Git's `reuse_worktree_file`: the unstaged worktree side of a
+                // (non-`--cached`) diff carries a null OID. A *regular* worktree
+                // file is also borrowed in place — argv carries the real path
+                // instead of a temp file (t4020 #2/#68). Symlinks (#6) still go
+                // to a temp blob but keep the null OID. Gitlinks never borrow.
+                let new_is_worktree = !cached
+                    && work_tree.is_some()
+                    && entry.new_mode != "000000"
+                    && entry.new_mode != "160000";
+                let new_zero_hex = new_is_worktree;
+                let new_borrow: Option<String> = if new_is_worktree
+                    && mode_is_regular_blob_mode_str(&entry.new_mode)
+                {
+                    let p = repo_path_for_diff_side(new_path, relative_prefix);
+                    work_tree.and_then(|wt| {
+                        let full = wt.join(&p);
+                        full.symlink_metadata().ok().map(|_| p.clone())
+                    })
+                } else {
+                    None
+                };
+                // Git's `prep_temp_blob` runs `convert_to_working_tree` on each
+                // blob temp file, so e.g. `core.autocrlf` LF→CRLF applies to the
+                // bytes the driver sees (t4020 #69). Borrowed worktree files are
+                // already in working-tree form and are left untouched.
+                let conv_cfg = grit_lib::crlf::ConversionConfig::from_config(config);
+                let attr_rules = grit_lib::crlf::load_gitattributes(
+                    work_tree.unwrap_or_else(|| git_dir.parent().unwrap_or(git_dir)),
+                );
+                let convert_blob = |raw: &[u8], rel: &str, oid: &ObjectId| -> Vec<u8> {
+                    let fa = grit_lib::crlf::get_file_attrs(&attr_rules, rel, false, config);
+                    let oid_hex = oid.to_hex();
+                    grit_lib::crlf::convert_to_worktree_eager(
+                        raw,
+                        rel,
+                        &conv_cfg,
+                        &fa,
+                        Some(&oid_hex),
+                        None,
+                    )
+                    .unwrap_or_else(|_| raw.to_vec())
+                };
+                let old_conv: Vec<u8> = if entry.old_mode == "000000"
+                    || entry.old_mode == "160000"
+                    || entry.old_mode == "120000"
+                {
+                    old_content_raw.clone()
+                } else {
+                    convert_blob(&old_content_raw, path_for_attrs.as_str(), &entry.old_oid)
+                };
+                let new_conv: Vec<u8> = if new_borrow.is_some()
+                    || entry.new_mode == "000000"
+                    || entry.new_mode == "160000"
+                    || entry.new_mode == "120000"
+                {
+                    new_content_raw.clone()
+                } else {
+                    convert_blob(&new_content_raw, path_for_attrs.as_str(), &entry.new_oid)
+                };
+                match run_external_diff_for_patch(
+                    out,
+                    ext,
+                    display,
+                    other,
+                    &old_conv,
+                    &new_conv,
+                    &entry.old_oid,
+                    &entry.new_oid,
+                    &entry.old_mode,
+                    &entry.new_mode,
+                    None,
+                    false,
+                    new_borrow.as_deref(),
+                    new_zero_hex,
+                    ext_counter,
+                    ext_total,
+                    trust,
+                    want_external_output,
+                )? {
+                    ExtDiffOutcome::Changed => ext_found_changes = true,
+                    ExtDiffOutcome::NoChange => {}
+                    ExtDiffOutcome::Died(p) => {
+                        ext_died = Some(p);
+                        break;
+                    }
                 }
+                continue;
             }
         }
 
@@ -7493,8 +7989,21 @@ fn write_patch_with_prefix(
             entry.old_mode.as_str(),
             entry.new_mode.as_str(),
         );
+        // A `-diff` (binary) attribute forces `Binary files ... differ`, even on
+        // text content (t4020 #18). Symlinks still get a textual target patch.
+        let attr_unset_binary = entry.old_mode != "120000"
+            && entry.new_mode != "120000"
+            && grit_lib::merge_diff::diff_attr_forces_binary(git_dir, path_for_attrs.as_str());
+        // A bare `diff` (set) attribute forces a textual diff even for NUL-bearing
+        // content (t4020 #65), overriding the content-based binary heuristic.
+        let attr_force_text =
+            grit_lib::merge_diff::diff_attr_forces_text(git_dir, path_for_attrs.as_str());
         if !textconv_patch
-            && (forced_binary || is_binary(&old_content_raw) || is_binary(&new_content_raw))
+            && !attr_force_text
+            && (forced_binary
+                || attr_unset_binary
+                || is_binary(&old_content_raw)
+                || is_binary(&new_content_raw))
         {
             if show_binary {
                 // --binary: output a "GIT binary patch" block
@@ -7747,7 +8256,23 @@ fn write_patch_with_prefix(
             }
         }
     }
-    Ok(())
+    Ok(ExtDiffSummary {
+        invoked: ext_invoked,
+        found_changes: ext_found_changes,
+        died_path: ext_died,
+    })
+}
+
+/// Summary of external-diff invocations across one patch run.
+struct ExtDiffSummary {
+    /// True if at least one external driver was actually invoked (or skipped via
+    /// the untrusted-`--quiet` shortcut). When false, `found_changes` is
+    /// meaningless and the caller falls back to the entry-derived `has_diff`.
+    invoked: bool,
+    /// True if any external driver reported a change (Git's `found_changes`).
+    found_changes: bool,
+    /// If `Some(path)`, an external driver "died" at this path → exit 128.
+    died_path: Option<String>,
 }
 
 /// Strip trailing space from blank context lines in unified diff output.

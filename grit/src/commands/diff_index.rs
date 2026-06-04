@@ -1363,27 +1363,48 @@ fn diff_tree_vs_worktree(
             }
             let sub_head = read_submodule_head_oid(&abs);
             // A gitlink whose worktree directory no longer exists is a deleted submodule: Git's
-            // `diff-lib.c` reports it as `M`/`T` with the new gitlink resolving to the null OID
-            // (the `(submodule deleted)` header). Detect this before the uninitialized check.
+            // `diff-lib.c` reports it as a deletion (`D`, new mode 000000). `--submodule=log`/`diff`
+            // still render the `(submodule deleted)` summary from the deleted gitlink; `--submodule=
+            // short` renders the `deleted file mode 160000` / `-Subproject commit` block (t4041 #44).
             if sub_head.is_none() && !abs.exists() {
                 let old = tree_map.get(path).copied().or(Some(*index_snapshot));
                 merged.insert(
                     path.clone(),
                     RawChange {
                         path: path.clone(),
-                        status: 'M',
+                        status: 'D',
                         old,
-                        new: Some(Snapshot {
-                            mode: MODE_GITLINK,
-                            oid: zero_oid(),
-                        }),
+                        new: None,
                     },
                 );
                 continue;
             }
-            // Uninitialized / empty submodule worktree: no resolvable HEAD — do not report as
-            // modified vs index (matches Git; fixes `diff-index --ignore-submodules=none` on clones).
+            // Gitlink in the index, but a regular file/symlink now sits at the path: this is a
+            // submodule→blob typechange. Report `T` with the worktree blob on the new side so
+            // `--submodule` rendering emits the `(submodule deleted)` summary (with inner deleted
+            // files via the absorbed gitdir) followed by the blob add (t4060 #46).
             if sub_head.is_none() {
+                if let Ok(meta) = fs::symlink_metadata(&abs) {
+                    if meta.file_type().is_file() || meta.file_type().is_symlink() {
+                        if let Some(wt_snapshot) =
+                            read_worktree_snapshot_from_meta(repo, &abs, &meta)?
+                        {
+                            let old = tree_map.get(path).copied().or(Some(*index_snapshot));
+                            // Keep the real worktree blob hash on the new side so the typechange's
+                            // blob-add half shows `index 0000000..<hash>`; the content itself is read
+                            // lazily from the work tree at patch time (blob not in the ODB).
+                            merged.insert(
+                                path.clone(),
+                                RawChange {
+                                    path: path.clone(),
+                                    status: 'T',
+                                    old,
+                                    new: Some(wt_snapshot),
+                                },
+                            );
+                        }
+                    }
+                }
                 continue;
             }
             let tree_snap = tree_map.get(path).copied();
@@ -1501,9 +1522,17 @@ fn diff_tree_vs_worktree(
                         };
                         // Use zero OID for worktree side — the blob is not
                         // in the object database, matching git's behaviour.
+                        // Exception: a gitlink (submodule directory checked out where the index
+                        // records a blob) keeps its resolved submodule HEAD so `--submodule`
+                        // patch rendering shows the real right-side commit (blob→submodule
+                        // typechange, t4060 #17). Raw plumbing re-zeros it elsewhere.
                         let wt_placeholder = Snapshot {
                             mode: worktree_snapshot.mode,
-                            oid: zero_oid(),
+                            oid: if worktree_snapshot.mode == MODE_GITLINK {
+                                worktree_snapshot.oid
+                            } else {
+                                zero_oid()
+                            },
                         };
                         merged.insert(
                             path.clone(),
@@ -2318,6 +2347,30 @@ fn write_submodule_log_commit_lines(
     Ok(())
 }
 
+/// Locate the absorbed git directory of a submodule whose worktree is no longer present.
+///
+/// Git stores an absorbed submodule under `<super_git_dir>/modules/<name>`, keyed by the submodule
+/// logical *name* (from `.gitmodules`), which may differ from its path. Returns the path only if it
+/// exists and looks like a git directory.
+fn absorbed_submodule_gitdir(super_repo: &Repository, sub_path: &str) -> Option<PathBuf> {
+    let work_tree = super_repo.work_tree.as_deref()?;
+    let index = super_repo.load_index().ok();
+    let regs = grit_lib::submodule_config::load_submodule_registrations(
+        work_tree,
+        index.as_ref(),
+        Some(&super_repo.odb),
+    );
+    // Fall back to the path itself as the name (the common case where name == path).
+    let name = grit_lib::submodule_config::submodule_name_for_path(&regs, sub_path).unwrap_or(sub_path);
+    let gitdir =
+        grit_lib::submodule_gitdir::submodule_modules_git_dir(&super_repo.git_dir, name);
+    if grit_lib::submodule_gitdir::is_git_directory(&gitdir) {
+        Some(gitdir)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn write_submodule_diff_recursive(
     out: &mut impl Write,
     super_repo: &Repository,
@@ -2346,7 +2399,24 @@ pub(crate) fn write_submodule_diff_recursive(
         writeln!(out, "Submodule {sub_name} contains modified content")?;
     }
 
-    let sub_repo = Repository::discover(Some(&sub_path)).ok();
+    let mut sub_repo = Repository::discover(Some(&sub_path)).ok();
+    // `Repository::discover` walks up from a missing submodule path and may resolve to the
+    // *superproject* itself; that repo cannot read the submodule's objects. Treat it as "no
+    // submodule repo" so the absorbed-gitdir fallback below kicks in.
+    if sub_repo
+        .as_ref()
+        .is_some_and(|r| r.git_dir == super_repo.git_dir)
+    {
+        sub_repo = None;
+    }
+    // When the submodule worktree is gone (e.g. `mv sm sm-bak` or an outright delete) but its git
+    // directory was absorbed into `<super>/.git/modules/<name>`, Git still reads the submodule's
+    // objects from there to render the inner diff (t4060 #45/#46). Fall back to that gitdir.
+    if sub_repo.is_none() {
+        if let Some(gitdir) = absorbed_submodule_gitdir(super_repo, full_path_from_root) {
+            sub_repo = Repository::open(&gitdir, None).ok();
+        }
+    }
     let odb_for = sub_repo.as_ref().map(|r| &r.odb).unwrap_or(&super_repo.odb);
 
     let old_tree = if old_commit == z {
@@ -2494,7 +2564,47 @@ pub(crate) fn write_submodule_diff_recursive(
     if message == Some("(commits not present)") {
         return Ok(());
     }
-    if message.is_some() {
+    // For `(new submodule)`/`(submodule deleted)`, `--submodule=diff` still renders the
+    // inner per-file diff (empty-tree → new_tree for a new submodule, old_tree → empty-tree
+    // for a deleted one) whenever the submodule objects are reachable; the message is only a
+    // header annotation. `log`/`short` stop at the header. When the submodule repo is gone
+    // (e.g. `rm -rf sm`), both trees are None and the inner diff is empty, so only the header
+    // prints — matching Git.
+    let new_or_deleted = message == Some("(new submodule)") || message == Some("(submodule deleted)");
+    if message.is_some() && !(new_or_deleted && submodule_format == SubmodulePatchFormat::Diff) {
+        return Ok(());
+    }
+    if new_or_deleted && submodule_format == SubmodulePatchFormat::Diff {
+        let odb_inner = sub_repo.as_ref().map(|r| &r.odb).unwrap_or(&super_repo.odb);
+        let inner = diff_trees(odb_inner, old_tree.as_ref(), new_tree.as_ref(), "")?;
+        for e in &inner {
+            let inner_full = format!("{full_path_from_root}/{}", e.path());
+            if e.old_mode == "160000" || e.new_mode == "160000" {
+                write_patch_entry(
+                    out,
+                    super_repo,
+                    odb_inner,
+                    e,
+                    context_lines,
+                    None,
+                    SubmodulePatchFormat::Diff,
+                    submodule_ignore,
+                    &inner_full,
+                    indent_heuristic,
+                )?;
+            } else {
+                write_patch_entry_inner(
+                    out,
+                    super_repo,
+                    odb_inner,
+                    e,
+                    context_lines,
+                    None,
+                    full_path_from_root,
+                    indent_heuristic,
+                )?;
+            }
+        }
         return Ok(());
     }
 
@@ -3030,7 +3140,23 @@ pub(crate) fn write_patch_entry_inner(
             Vec::new()
         }
     } else {
-        read_blob_raw(odb, &entry.new_oid)
+        let blob = read_blob_raw(odb, &entry.new_oid);
+        // A dirty submodule's modified worktree blob is hashed (non-zero new_oid) but never
+        // written to the submodule ODB, so `read_blob_raw` comes up empty. Fall back to the
+        // worktree file so the inner `--submodule=diff` hunk shows the new content (t4060 #23).
+        if blob.is_empty()
+            && entry.new_oid != empty_blob_oid()
+            && entry.status != DiffStatus::Deleted
+        {
+            if let Some(wt) = work_tree {
+                let path = entry.new_path.as_deref().unwrap_or(new_path);
+                read_worktree_path_raw(&wt.join(path))
+            } else {
+                blob
+            }
+        } else {
+            blob
+        }
     };
 
     // Check for binary content

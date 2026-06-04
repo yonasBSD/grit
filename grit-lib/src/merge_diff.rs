@@ -460,6 +460,47 @@ pub fn diff_textconv_active(git_dir: &Path, config: &ConfigSet, path: &str) -> b
     diff_textconv_cmd_line(config, driver).is_some()
 }
 
+/// True when a path carries the `-diff` (or `diff=unset` / `binary`) attribute,
+/// which forces Git to emit `Binary files ... differ` regardless of content.
+#[must_use]
+pub fn diff_attr_forces_binary(git_dir: &Path, path: &str) -> bool {
+    matches!(attrs_for_repo_path(git_dir, path).diff_attr, DiffAttr::Unset)
+}
+
+/// True when a path carries a bare `diff` (set) attribute, which forces Git to
+/// produce a textual diff even when the blob contains NUL bytes (t4020 #65).
+#[must_use]
+pub fn diff_attr_forces_text(git_dir: &Path, path: &str) -> bool {
+    matches!(attrs_for_repo_path(git_dir, path).diff_attr, DiffAttr::Set)
+}
+
+/// Resolved external diff driver from a path's `diff=<name>` attribute.
+///
+/// Mirrors Git's `userdiff_find_by_path` → `drv->external`: when a path has a
+/// `diff=<name>` attribute and `diff.<name>.command` is configured, that driver
+/// takes precedence over `GIT_EXTERNAL_DIFF` / `diff.external`. The boolean is
+/// `diff.<name>.trustExitCode`.
+#[must_use]
+pub fn diff_attr_external_driver(
+    git_dir: &Path,
+    config: &ConfigSet,
+    path: &str,
+) -> Option<(String, bool)> {
+    let fa = attrs_for_repo_path(git_dir, path);
+    let DiffAttr::Driver(ref driver) = fa.diff_attr else {
+        return None;
+    };
+    let cmd = config.get(&format!("diff.{driver}.command"))?;
+    if cmd.trim().is_empty() {
+        return None;
+    }
+    let trust = config
+        .get(&format!("diff.{driver}.trustExitCode"))
+        .and_then(|v| parse_bool(v.as_str()).ok())
+        .unwrap_or(false);
+    Some((cmd, trust))
+}
+
 fn textconv_command_cwd(git_dir: &Path) -> std::path::PathBuf {
     git_dir.parent().unwrap_or(git_dir).to_path_buf()
 }

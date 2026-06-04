@@ -48,7 +48,8 @@ test_expect_success 'create C file with functions' '
 test_expect_success 'diff --cached shows hunk header with @@ markers' '
 	(
 	cd diff-func &&
-	sed -i "s/printf(\"hello/printf(\"world/" main.c &&
+	sed "s/printf(\"hello/printf(\"world/" main.c >main.c.new &&
+	mv main.c.new main.c &&
 	git add main.c &&
 	git diff --cached >actual &&
 	grep "^@@" actual
@@ -112,7 +113,8 @@ test_expect_success 'commit change and diff between commits' '
 test_expect_success 'diff -U1 --cached reduces context' '
 	(
 	cd diff-func &&
-	sed -i "s/return 0/return 42/" main.c &&
+	sed "s/return 0/return 42/" main.c >main.c.new &&
+	mv main.c.new main.c &&
 	git add main.c &&
 	git diff --cached -U1 >actual_1 &&
 	git diff --cached >actual_3 &&
@@ -208,7 +210,8 @@ test_expect_success 'create multi-function file' '
 test_expect_success 'diff --cached with change in func_b shows correct hunk' '
 	(
 	cd diff-func &&
-	sed -i "s/int b = 20/int b = 99/" multi.c &&
+	sed "s/int b = 20/int b = 99/" multi.c >multi.c.new &&
+	mv multi.c.new multi.c &&
 	git add multi.c &&
 	git diff --cached >actual &&
 	grep "^@@" actual &&
@@ -220,7 +223,8 @@ test_expect_success 'diff --cached with change in func_b shows correct hunk' '
 test_expect_success 'multiple changes in --cached show both changes' '
 	(
 	cd diff-func &&
-	sed -i "s/int x = 1/int x = 11/" multi.c &&
+	sed "s/int x = 1/int x = 11/" multi.c >multi.c.new &&
+	mv multi.c.new multi.c &&
 	git add multi.c &&
 	git diff --cached >actual &&
 	grep "^-.*int x = 1" actual &&

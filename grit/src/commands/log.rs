@@ -227,8 +227,13 @@ pub struct Args {
     pub date: Option<String>,
 
     /// Walk the reflog instead of the commit ancestry chain.
-    #[arg(short = 'g', long = "walk-reflogs", alias = "reflog")]
+    #[arg(short = 'g', long = "walk-reflogs")]
     pub walk_reflogs: bool,
+
+    /// Add every reflog entry as an additional starting commit (like `--all`,
+    /// but over reflogs). Unlike `--walk-reflogs`, output is ordinary commits.
+    #[arg(long = "reflog")]
+    pub reflog: bool,
 
     /// Show unified diff (patch) after each commit.
     #[arg(short = 'p', long = "patch")]
@@ -303,8 +308,12 @@ pub struct Args {
     pub remotes: Option<String>,
 
     /// Follow file renames (single file only).
-    #[arg(long = "follow")]
+    #[arg(long = "follow", overrides_with = "no_follow")]
     pub follow: bool,
+
+    /// Disable rename following (overrides `--follow` and `log.follow`).
+    #[arg(long = "no-follow", overrides_with = "follow")]
+    pub no_follow: bool,
 
     /// Filter by change type (A=added, M=modified, D=deleted, R=renamed, C=copied).
     /// Git ORs repeated `--diff-filter` options by concatenating their letters; collected raw
@@ -436,6 +445,17 @@ pub struct Args {
     /// Abbreviate commit hashes in output.
     #[arg(long = "abbrev-commit")]
     pub abbrev_commit: bool,
+
+    /// Disable commit-hash abbreviation (overrides `--abbrev-commit` and the
+    /// `log.abbrevCommit` config).
+    #[arg(long = "no-abbrev-commit")]
+    pub no_abbrev_commit: bool,
+
+    /// True when `--abbrev-commit` was given explicitly on the command line (as
+    /// opposed to being enabled by `log.abbrevCommit`). `--pretty=raw` honors
+    /// only the explicit flag. Set during `run()`; not a CLI argument itself.
+    #[arg(skip)]
+    pub abbrev_commit_explicit: bool,
 
     /// Color output.
     #[arg(long = "color", default_missing_value = "always", num_args = 0..=1, require_equals = true)]
@@ -1232,6 +1252,7 @@ fn run_line_log(
             repo,
             decorate_full,
             args.clear_decorations,
+            &build_decoration_filter(&args, &repo.git_dir),
         )?)
     };
 
@@ -1397,6 +1418,7 @@ fn run_line_log(
             &repo.odb,
             parent_override.as_deref(),
             true,
+            None,
             None,
             None,
             None,
@@ -1722,26 +1744,46 @@ fn resolve_decoration_display(
             },
         }
     }
+    // Scan raw argv in order so the last decoration directive wins, matching Git's
+    // last-wins handling of `--decorate`, `--decorate=<mode>`, and `--no-decorate`.
+    // Stop scanning at a bare `--` (end of options).
     for arg in std::env::args_os().map(|a| a.to_string_lossy().into_owned()) {
+        if arg == "--" {
+            break;
+        }
         if arg == "--no-decorate" {
             show = false;
             full = false;
-        } else if arg.starts_with("--decorate") {
+        } else if arg == "--decorate" {
             show = true;
-            full = arg == "--decorate=full";
-        }
-    }
-    if args.decorate.is_some() {
-        show = true;
-        if let Some(Some(mode)) = &args.decorate {
-            if mode == "full" {
-                full = true;
+            full = false;
+        } else if let Some(mode) = arg.strip_prefix("--decorate=") {
+            match mode.to_ascii_lowercase().as_str() {
+                "full" => {
+                    show = true;
+                    full = true;
+                }
+                "short" | "auto" => {
+                    show = true;
+                    full = false;
+                }
+                other => match parse_bool(other) {
+                    Ok(true) => {
+                        show = true;
+                        full = false;
+                    }
+                    Ok(false) => {
+                        show = false;
+                        full = false;
+                    }
+                    // Unknown mode: be permissive and enable short decorations.
+                    Err(_) => {
+                        show = true;
+                        full = false;
+                    }
+                },
             }
         }
-    }
-    if args.no_decorate {
-        show = false;
-        full = false;
     }
     let oneline_like = log_uses_builtin_oneline(args);
     if oneline_like && !args.no_decorate && !show {
@@ -2306,6 +2348,15 @@ fn extract_log_cli_revision_specs(
                     Err(err) => return Err(err.into()),
                 },
             }
+        } else if !after_end_of_options
+            && !has_dashdash
+            && (rev == ".." || rev == "...")
+            && cwd_relative_path_exists(repo, rev)
+        {
+            // A bare `..` / `...` is the empty range `HEAD..HEAD`, but Git's
+            // setup_revisions prefers an existing path of that name (e.g. `..`
+            // naming the parent directory from a subdirectory).
+            implied_pathspecs.push(rev.clone());
         } else {
             match resolve_revision_as_commit(repo, rev) {
                 Ok(_) => {
@@ -2356,7 +2407,6 @@ fn extract_log_cli_revision_specs(
     if !implied_pathspecs.is_empty() {
         validate_pathspec_scope(repo, &implied_pathspecs)?;
     }
-
     Ok((revision_specs, implied_pathspecs))
 }
 
@@ -2515,6 +2565,7 @@ fn run_rev_list_log(
             repo,
             decorate_full,
             args.clear_decorations,
+            &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
         None
@@ -2658,6 +2709,7 @@ fn run_rev_list_log(
                 &repo.odb,
                 parent_override.as_deref(),
                 false,
+                None,
                 None,
                 None,
                 None,
@@ -2960,6 +3012,7 @@ fn run_graph_log(
             repo,
             decorate_full_graph,
             args.clear_decorations,
+            &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
         None
@@ -3046,6 +3099,7 @@ fn run_graph_log(
                         &repo.odb,
                         Some(node.parents.as_slice()),
                         false,
+                        None,
                         None,
                         None,
                         None,
@@ -3679,6 +3733,7 @@ fn render_graph_commit_text(
                 use_mailmap,
                 args.expand_tabs_in_log,
                 None,
+                None,
             );
         }
         if fmt.contains('%') {
@@ -3698,6 +3753,7 @@ fn render_graph_commit_text(
                 mailmap,
                 use_mailmap,
                 args.expand_tabs_in_log,
+                None,
                 None,
             );
         }
@@ -3960,10 +4016,8 @@ impl AsciiGraph {
                 }
                 if self.num_parents == 0 {
                     self.width = self.width.saturating_add(2);
-                } else if !is_commit_in_columns && self.num_parents > 1 {
-                    // Keep width progression stable for detached columns.
-                    self.width = self.width.max((self.num_new_columns + 1) * 2);
                 }
+                let _ = is_commit_in_columns;
             } else {
                 self.insert_into_new_columns(col_oid, -1);
             }
@@ -4542,18 +4596,74 @@ pub fn run(mut args: Args) -> Result<()> {
         args.find_copies_harder = args.find_copies_parts.len() >= 2;
     }
 
-    // `--follow` implicitly enables copy detection with find-copies-harder (git revision.c sets
-    // DIFF_DETECT_COPY | DIFF_FIND_COPIES_HARDER), so a file that first appears as a copy of a
-    // still-existing file is rendered `C100 old new` and its history is followed back.
+    let repo = Repository::discover(None).context("not a git repository")?;
+    validate_notes_display_ref_config(&repo);
+
+    // `log.follow` enables `--follow` automatically, but unlike the explicit flag
+    // it is silently ignored when there is not exactly one pathspec or when a
+    // pathspec carries magic unsupported by `--follow`.
+    if !args.follow && !args.no_follow {
+        if let Ok(cfg) = ConfigSet::load(Some(&repo.git_dir), true) {
+            if cfg
+                .get_bool("log.follow")
+                .and_then(|r| r.ok())
+                .unwrap_or(false)
+            {
+                let raw = log_follow_candidate_pathspecs(&repo, &args);
+                let has_bad_magic = raw
+                    .iter()
+                    .any(|s| follow_unsupported_pathspec_magic(s).is_some());
+                if raw.len() == 1 && !has_bad_magic {
+                    args.follow = true;
+                }
+            }
+        }
+    }
+    if args.follow {
+        // `--follow` only accepts plain pathspecs (optionally with the `top` or
+        // `literal` magic). Reject other long-form magic with Git's message.
+        for spec in collect_log_raw_pathspecs(&args) {
+            if let Some(bad) = follow_unsupported_pathspec_magic(&spec) {
+                anyhow::bail!("fatal: pathspec magic not supported by --follow: {bad}");
+            }
+        }
+    }
+    // `--follow` implicitly enables copy detection with find-copies-harder (git
+    // revision.c sets DIFF_DETECT_COPY | DIFF_FIND_COPIES_HARDER), so a file that
+    // first appears as a copy of a still-existing file is followed back.
     if args.follow && !args.no_renames {
         if args.find_copies.is_none() {
             args.find_copies = Some("50".to_owned());
         }
         args.find_copies_harder = true;
     }
-
-    let repo = Repository::discover(None).context("not a git repository")?;
-    validate_notes_display_ref_config(&repo);
+    // Resolve `core.abbrev` into an explicit abbreviation length when `--abbrev`
+    // was not given on the command line, so all the `parse_abbrev` call sites
+    // (which only see `args.abbrev`) honor the config.
+    if args.abbrev.is_none() {
+        let resolved = resolve_abbrev_len(&None, &repo.git_dir);
+        if resolved != 7 {
+            args.abbrev = Some(resolved.to_string());
+        }
+    }
+    // `log.abbrevCommit` enables `--abbrev-commit` for the multi-line pretty
+    // formats. Record whether the flag was given explicitly first, since
+    // `--pretty=raw` honors only the explicit flag, not the config.
+    args.abbrev_commit_explicit = args.abbrev_commit && !args.no_abbrev_commit;
+    if args.no_abbrev_commit {
+        // `--no-abbrev-commit` overrides both `--abbrev-commit` and the config.
+        args.abbrev_commit = false;
+    } else if !args.abbrev_commit && !args.no_abbrev {
+        if let Ok(cfg) = ConfigSet::load(Some(&repo.git_dir), true) {
+            if cfg
+                .get_bool("log.abbrevCommit")
+                .and_then(|r| r.ok())
+                .unwrap_or(false)
+            {
+                args.abbrev_commit = true;
+            }
+        }
+    }
     if args.format.is_none() {
         args.format = args.pretty.clone();
     }
@@ -4787,6 +4897,39 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     let merged_argv = merge_log_revision_argv(&repo, &args)?;
+    // `%S` (source) needs each commit labeled with the named revision it was
+    // reached from. Only build the map when the format actually uses `%S`.
+    let format_uses_percent_s = args
+        .format
+        .as_deref()
+        .map(|fmt| {
+            let template = fmt
+                .strip_prefix("format:")
+                .or_else(|| fmt.strip_prefix("tformat:"))
+                .unwrap_or(fmt);
+            // A real `%S` placeholder (not `%%S` literal). Scan for an odd run of
+            // `%` immediately before `S`.
+            let bytes = template.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'%' {
+                    let mut pct = 0;
+                    while i < bytes.len() && bytes[i] == b'%' {
+                        pct += 1;
+                        i += 1;
+                    }
+                    if pct % 2 == 1 && i < bytes.len() && bytes[i] == b'S' {
+                        return true;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            false
+        })
+        .unwrap_or(false);
+    let mut percent_s_source_map: std::collections::HashMap<ObjectId, String> =
+        std::collections::HashMap::new();
     // Determine starting points and excluded commits (alternate / remote-tracking first; else
     // merged argv + stdin, matching Git `setup_revisions` for pseudo-options stripped before clap).
     let (mut start_oids, exclude_oids) = if args.alternate_refs {
@@ -4818,8 +4961,54 @@ pub fn run(mut args: Args) -> Result<()> {
         let mut start_oids = resolve_specs_to_commits_ignoring_missing(&repo, &pos_s, &args)?;
         let mut exclude_oids = resolve_specs_to_commits_ignoring_missing(&repo, &neg_s, &args)?;
 
+        if format_uses_percent_s {
+            // Label each commit with the named positive revision it was reached
+            // from. Each positive spec (in command-line order) seeds the walk
+            // with its own display name as the `%S` source.
+            // Seed from the *original* command-line specs so each side of a
+            // symmetric range `A...B` is labeled with its own name (positive
+            // splitting of `..`/`...` would otherwise drop the name).
+            let mut named_specs: Vec<String> = Vec::new();
+            for spec in &argv_specs {
+                if grit_lib::rev_list::is_symmetric_diff(spec) {
+                    if let Some((lhs, rhs)) = grit_lib::rev_list::split_symmetric_diff(spec) {
+                        named_specs.push(lhs);
+                        named_specs.push(rhs);
+                        continue;
+                    }
+                }
+                // Plain positive spec (skip `^neg` and `A..B` exclusion forms).
+                if !spec.starts_with('^') && grit_lib::rev_parse::split_double_dot_range(spec).is_none()
+                {
+                    named_specs.push(spec.clone());
+                }
+            }
+            let mut tips: Vec<(ObjectId, String)> = Vec::new();
+            for spec in &named_specs {
+                if let Ok(oid) = resolve_revision(&repo, spec) {
+                    // Peel annotated tags to the underlying commit so the walk
+                    // can follow parents; the label stays the spec name.
+                    let commit_oid = peel_to_commit_for_merge_base(&repo, oid).unwrap_or(oid);
+                    tips.push((commit_oid, spec.clone()));
+                }
+            }
+            percent_s_source_map =
+                build_named_source_map(&repo.odb, &tips, args.first_parent);
+        }
+
         if args.all {
             start_oids.extend(collect_all_ref_oids(&repo.git_dir)?);
+        }
+        if args.reflog {
+            // `--reflog` adds every reflog entry's old/new OID as a pending tip
+            // (Git's `add_reflogs_to_pending`); rev-list then dedupes and sorts.
+            let mut reflog_oids: Vec<ObjectId> =
+                grit_lib::reflog::all_reflog_oids(&repo.git_dir)?
+                    .into_iter()
+                    .collect();
+            // Stable order so dedupe/tie-breaks are deterministic.
+            reflog_oids.sort_by(|a, b| a.to_hex().cmp(&b.to_hex()));
+            start_oids.extend(reflog_oids);
         }
         if stdin_all_refs {
             stdin_merged_all_refs = true;
@@ -4835,6 +5024,7 @@ pub fn run(mut args: Args) -> Result<()> {
         let rev_input_given = !pos_s.is_empty()
             || !neg_s.is_empty()
             || args.all
+            || args.reflog
             || args.branches.is_some()
             || stdin_all_refs
             || (args.read_stdin && args.ignore_missing)
@@ -4931,6 +5121,7 @@ pub fn run(mut args: Args) -> Result<()> {
             &repo,
             decorate_full,
             args.clear_decorations,
+            &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
         None
@@ -4940,6 +5131,7 @@ pub fn run(mut args: Args) -> Result<()> {
             &repo,
             false,
             args.clear_decorations,
+            &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
         None
@@ -5134,6 +5326,7 @@ pub fn run(mut args: Args) -> Result<()> {
                     None,
                     None,
                     source_for_oneline,
+                    percent_s_source_map.get(&oid).map(|s| s.as_str()),
                 )?;
             }
 
@@ -5344,6 +5537,7 @@ pub fn run(mut args: Args) -> Result<()> {
                     None,
                     None,
                     source_for_oneline,
+                    percent_s_source_map.get(oid).map(|s| s.as_str()),
                 )?;
             }
 
@@ -5380,6 +5574,74 @@ pub fn run(mut args: Args) -> Result<()> {
 /// an unqualified `.git` context.
 /// Validate `:(...)` long magic words, matching git's pathspec.c `get_prefix`/magic parser.
 /// Returns the `fatal: Invalid pathspec magic '<word>' in '<spec>'` error for an unknown word.
+/// All raw pathspec strings (with magic intact) supplied to a `git log`
+/// invocation: the clap-collected pathspecs plus anything after `--`.
+fn collect_log_raw_pathspecs(args: &Args) -> Vec<String> {
+    let mut specs: Vec<String> = args.pathspecs.clone();
+    if let Some(pos) = args.raw_argv_tail.iter().position(|a| a == "--") {
+        specs.extend(args.raw_argv_tail[pos + 1..].iter().cloned());
+    }
+    // A pathspec given without a leading `--` lands in the `revisions`
+    // positional. Any token carrying long-form magic (`:(...)`) is a pathspec,
+    // so include those too (used only for `--follow` magic validation).
+    for tok in &args.revisions {
+        if tok.starts_with(":(") {
+            specs.push(tok.clone());
+        }
+    }
+    specs
+}
+
+/// Best-effort list of pathspec arguments for deciding whether `log.follow`
+/// applies (it only kicks in for exactly one pathspec). After `--`, every token
+/// is a pathspec; otherwise tokens that do not resolve as revisions are treated
+/// as pathspecs.
+fn log_follow_candidate_pathspecs(repo: &Repository, args: &Args) -> Vec<String> {
+    if let Some(pos) = args.raw_argv_tail.iter().position(|a| a == "--") {
+        return args.raw_argv_tail[pos + 1..].to_vec();
+    }
+    let mut specs: Vec<String> = args.pathspecs.clone();
+    for tok in &args.revisions {
+        if tok == "--" || tok.starts_with('-') {
+            continue;
+        }
+        if tok.starts_with(":(") {
+            specs.push(tok.clone());
+            continue;
+        }
+        // A trailing argument that does not name a commit is a pathspec.
+        if resolve_revision_as_commit(repo, tok).is_err() {
+            specs.push(tok.clone());
+        }
+    }
+    specs
+}
+
+/// If a pathspec carries long-form magic not supported by `--follow`, return the
+/// comma-separated list of offending magic words (matching Git's order), else
+/// `None`. Only `top` and `literal` are accepted by `--follow`.
+fn follow_unsupported_pathspec_magic(spec: &str) -> Option<String> {
+    let rest = spec.strip_prefix(":(")?;
+    let close = rest.find(')')?;
+    let magic_part = &rest[..close];
+    let mut bad: Vec<String> = Vec::new();
+    for raw in magic_part.split(',') {
+        let token = raw.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let word = token.split(':').next().unwrap_or(token);
+        if !matches!(word, "top" | "literal") {
+            bad.push(format!("'{word}'"));
+        }
+    }
+    if bad.is_empty() {
+        None
+    } else {
+        Some(bad.join(", "))
+    }
+}
+
 fn validate_pathspec_magic_words(pathspecs: &[String]) -> Result<()> {
     for spec in pathspecs {
         let Some(rest) = spec.strip_prefix(":(") else {
@@ -5588,14 +5850,23 @@ pub fn run_no_walk(
         Some(Some(s)) if s == "full" => true,
         _ => false,
     };
+    // A `%d` / `%D` / `%(decorate)` placeholder in the user format implies
+    // decoration even without an explicit `--decorate` (matching git log).
+    let format_requires_decorations = args.format.as_deref().is_some_and(|fmt| {
+        let template = fmt
+            .strip_prefix("format:")
+            .or_else(|| fmt.strip_prefix("tformat:"))
+            .unwrap_or(fmt);
+        template.contains("%d") || template.contains("%D") || template.contains("%(decorate")
+    });
     let decorations = if args.no_decorate {
         None
-    } else if args.decorate.is_some() {
-        // Explicitly requested decorations
+    } else if args.decorate.is_some() || format_requires_decorations {
         Some(collect_decorations_inner(
             repo,
             decorate_full,
             args.clear_decorations,
+            &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
         // Default: no decorations in no-walk mode (matches git behavior)
@@ -5616,19 +5887,24 @@ pub fn run_no_walk(
         commits.push((oid, info));
     }
 
-    // Sort by committer timestamp descending (same as regular log)
-    commits.sort_by(|a, b| {
-        let ts_a = committer_unix_seconds_for_ordering(&a.1.committer);
-        let ts_b = committer_unix_seconds_for_ordering(&b.1.committer);
-        ts_b.cmp(&ts_a)
-    });
+    // Sort by committer timestamp descending (same as regular log), unless
+    // `--no-walk=unsorted` was requested (then preserve the given order).
+    let unsorted = matches!(args.no_walk.as_deref(), Some("unsorted"));
+    if !unsorted {
+        commits.sort_by(|a, b| {
+            let ts_a = committer_unix_seconds_for_ordering(&a.1.committer);
+            let ts_b = committer_unix_seconds_for_ordering(&b.1.committer);
+            ts_b.cmp(&ts_a)
+        });
+    }
 
     if args.reverse {
         commits.reverse();
     }
 
     let stdout = io::stdout();
-    let mut out = stdout.lock();
+    let line_prefix = args.line_prefix.as_deref().unwrap_or("");
+    let mut out = LinePrefixWriter::new(stdout.lock(), line_prefix);
 
     let is_format_separator = args
         .format
@@ -5685,6 +5961,7 @@ pub fn run_no_walk(
                 &repo.odb,
                 None,
                 false,
+                None,
                 None,
                 None,
                 None,
@@ -6318,17 +6595,21 @@ fn run_reflog_walk(
         if let Some(ref fmt) = args.format {
             match fmt.as_str() {
                 "oneline" => {
-                    let abbrev = &entry.new_oid.to_hex()[..7];
-                    let subject = commit_data.message.lines().next().unwrap_or("");
-                    let subject = if et > 0 {
-                        grit_lib::tab_expand::expand_tabs_in_line(subject, et)
+                    // `git log -g --pretty=oneline` prints
+                    // `<hash> <selector>: <reflog message>` (the reflog selector
+                    // and message, not the commit subject).
+                    let full_hex = entry.new_oid.to_hex();
+                    let abbrev = &full_hex[..reflog_abbrev_len.min(full_hex.len())];
+                    let reflog_msg = entry.message.trim_end_matches('\n');
+                    let reflog_msg = if et > 0 {
+                        grit_lib::tab_expand::expand_tabs_in_line(reflog_msg, et)
                     } else {
-                        subject.to_owned()
+                        reflog_msg.to_owned()
                     };
                     if args.null_terminator {
-                        write!(out, "{} {}\0", abbrev, subject)?;
+                        write!(out, "{} {}: {}\0", abbrev, selector, reflog_msg)?;
                     } else {
-                        writeln!(out, "{} {}", abbrev, subject)?;
+                        writeln!(out, "{} {}: {}", abbrev, selector, reflog_msg)?;
                     }
                 }
                 "short" => {
@@ -6897,7 +7178,7 @@ struct CommitInfo {
 type CommitQueueKey = (std::cmp::Reverse<i64>, u64, ObjectId);
 
 /// Decoration category for `git log --decorate` coloring (`color.decorate.*`).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 enum DecorationKind {
     Branch,
     RemoteBranch,
@@ -8568,6 +8849,20 @@ fn run_symmetric_log(
         None
     };
 
+    // `%S` for a symmetric range labels each side's commits with its ref name.
+    let percent_s_source_map: std::collections::HashMap<ObjectId, String> = {
+        let template = args.format.as_deref().unwrap_or("");
+        if template.contains("%S") {
+            let tips = vec![
+                (lhs_oid, lhs_spec.to_owned()),
+                (rhs_oid, rhs_spec.to_owned()),
+            ];
+            build_named_source_map(&repo.odb, &tips, args.first_parent)
+        } else {
+            std::collections::HashMap::new()
+        }
+    };
+
     for (i, oid) in ordered.iter().enumerate() {
         if i > 0 && log_wants_blank_line_between_commits(args) {
             writeln!(out)?;
@@ -8601,6 +8896,7 @@ fn run_symmetric_log(
             log_marker,
             None,
             None,
+            percent_s_source_map.get(oid).map(|s| s.as_str()),
         )?;
     }
 
@@ -8615,6 +8911,46 @@ fn encode_log_str(s: &str, encoding: Option<&str>) -> Vec<u8> {
         None => s.as_bytes().to_vec(),
         Some(label) => grit_lib::commit_encoding::encode_header_text(label, s)
             .unwrap_or_else(|| s.as_bytes().to_vec()),
+    }
+}
+
+/// A writer that prepends a fixed prefix at the start of every output line
+/// (Git's `--line-prefix`). The prefix is emitted before the first byte and
+/// again immediately after each `\n`, except a trailing `\n` does not trigger a
+/// dangling prefix until the next byte arrives.
+struct LinePrefixWriter<'a, W: Write> {
+    inner: W,
+    prefix: &'a [u8],
+    at_line_start: bool,
+}
+
+impl<'a, W: Write> LinePrefixWriter<'a, W> {
+    fn new(inner: W, prefix: &'a str) -> Self {
+        LinePrefixWriter {
+            inner,
+            prefix: prefix.as_bytes(),
+            at_line_start: true,
+        }
+    }
+}
+
+impl<W: Write> Write for LinePrefixWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        for &b in buf {
+            if self.at_line_start {
+                self.inner.write_all(self.prefix)?;
+                self.at_line_start = false;
+            }
+            self.inner.write_all(&[b])?;
+            if b == b'\n' {
+                self.at_line_start = true;
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
     }
 }
 
@@ -8640,12 +8976,22 @@ fn format_commit(
     log_marker: Option<char>,
     merge_from_parent: Option<&ObjectId>,
     source_for_oneline: Option<&str>,
+    percent_s_source: Option<&str>,
 ) -> Result<()> {
     let hex = oid.to_hex();
     let abbrev_len = if args.no_abbrev {
         40
     } else {
         parse_abbrev(&args.abbrev)
+    };
+    // The `commit <hash>` header (and `tree`/`parent` in raw) is abbreviated under
+    // `--abbrev-commit` (or the builtin `--oneline`), otherwise it is the full hash.
+    let commit_hex: String = if (args.abbrev_commit || log_uses_builtin_oneline(args))
+        && !args.no_abbrev
+    {
+        hex[..abbrev_len.min(hex.len())].to_string()
+    } else {
+        hex.clone()
     };
     let display_parents = parent_line_override.unwrap_or(info.parents.as_slice());
     // The `(from <parent>)` marker uses the same abbreviation as the commit hash itself:
@@ -8756,6 +9102,7 @@ fn format_commit(
                 use_mailmap,
                 et,
                 signature_ref,
+                percent_s_source,
             );
             let bytes = encode_log_str(&formatted, args.log_output_encoding.as_deref());
             if is_tformat {
@@ -8770,7 +9117,14 @@ fn format_commit(
             }
         }
         Some("raw") => {
-            writeln!(out, "commit {hex}")?;
+            // `--pretty=raw` only abbreviates `commit` for an explicit
+            // `--abbrev-commit` flag, not for the `log.abbrevCommit` config.
+            let raw_commit_hex = if args.abbrev_commit_explicit && !args.no_abbrev {
+                &hex[..abbrev_len.min(hex.len())]
+            } else {
+                hex.as_str()
+            };
+            writeln!(out, "commit {raw_commit_hex}")?;
             writeln!(out, "tree {}", info.tree.to_hex())?;
             for parent in display_parents {
                 writeln!(out, "parent {}", parent.to_hex())?;
@@ -8801,7 +9155,7 @@ fn format_commit(
                 decoration_paint,
                 head_for_decor,
             );
-            writeln!(out, "commit {hex}{merge_suffix}{dec}")?;
+            writeln!(out, "commit {commit_hex}{merge_suffix}{dec}")?;
             if display_parents.len() > 1 {
                 let parent_abbrevs: Vec<String> = display_parents
                     .iter()
@@ -8839,9 +9193,9 @@ fn format_commit(
                 let r = decoration_paint
                     .map(|p| p.reset.as_str())
                     .unwrap_or("\x1b[m");
-                writeln!(out, "{c}commit {hex}{merge_suffix}{r}{dec}")?;
+                writeln!(out, "{c}commit {commit_hex}{merge_suffix}{r}{dec}")?;
             } else {
-                writeln!(out, "commit {hex}{merge_suffix}{dec}")?;
+                writeln!(out, "commit {commit_hex}{merge_suffix}{dec}")?;
             }
             if display_parents.len() > 1 {
                 let parent_abbrevs: Vec<String> = display_parents
@@ -8881,7 +9235,7 @@ fn format_commit(
                 decoration_paint,
                 head_for_decor,
             );
-            writeln!(out, "commit {hex}{merge_suffix}{dec}")?;
+            writeln!(out, "commit {commit_hex}{merge_suffix}{dec}")?;
             if display_parents.len() > 1 {
                 let parent_abbrevs: Vec<String> = display_parents
                     .iter()
@@ -8920,7 +9274,7 @@ fn format_commit(
                 decoration_paint,
                 head_for_decor,
             );
-            writeln!(out, "commit {hex}{merge_suffix}{dec}")?;
+            writeln!(out, "commit {commit_hex}{merge_suffix}{dec}")?;
             if display_parents.len() > 1 {
                 let parent_abbrevs: Vec<String> = display_parents
                     .iter()
@@ -8987,6 +9341,7 @@ fn format_commit(
                 use_mailmap,
                 et,
                 signature_ref,
+                percent_s_source,
             );
             let bytes = encode_log_str(&formatted, args.log_output_encoding.as_deref());
             out.write_all(&bytes)?;
@@ -9012,6 +9367,7 @@ fn format_commit(
                 use_mailmap,
                 et,
                 signature_ref,
+                percent_s_source,
             );
             writeln!(out, "{formatted}")?;
         }
@@ -9188,6 +9544,7 @@ fn apply_format_string(
     use_mailmap: bool,
     expand_tabs_in_log: usize,
     signature: Option<&grit_lib::signing::SignatureCheck>,
+    percent_s_source: Option<&str>,
 ) -> String {
     let hex = oid.to_hex();
     let commit_color = || {
@@ -9220,6 +9577,9 @@ fn apply_format_string(
         align: Align,
         trunc: Trunc,
         absolute: bool,
+        /// `%>>` (flush_left_and_steal): right-align but first reclaim trailing
+        /// spaces from the already-emitted output when the value overflows.
+        steal: bool,
     }
     // Git-style display width of a single character: control characters render
     // with zero columns, wide characters with two, everything else with one.
@@ -9344,6 +9704,7 @@ fn apply_format_string(
     fn parse_col_spec(
         chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
         align: Align,
+        steal: bool,
     ) -> Option<ColSpec> {
         // Check for | (absolute column) variant
         let absolute = if chars.peek() == Some(&'|') {
@@ -9411,6 +9772,7 @@ fn apply_format_string(
             align,
             trunc,
             absolute,
+            steal,
         })
     }
 
@@ -9427,7 +9789,7 @@ fn apply_format_string(
             if chars.peek() == Some(&'<') {
                 let mut probe = chars.clone();
                 probe.next(); // consume '<'
-                if let Some(spec) = parse_col_spec(&mut probe, Align::Left) {
+                if let Some(spec) = parse_col_spec(&mut probe, Align::Left, false) {
                     chars = probe;
                     pending_col = Some(spec);
                 } else {
@@ -9440,12 +9802,13 @@ fn apply_format_string(
                 probe.next(); // consume '>'
                 let parsed = if probe.peek() == Some(&'<') {
                     probe.next();
-                    parse_col_spec(&mut probe, Align::Center)
+                    parse_col_spec(&mut probe, Align::Center, false)
                 } else if probe.peek() == Some(&'>') {
                     probe.next();
-                    parse_col_spec(&mut probe, Align::Right)
+                    // `%>>` is flush_left_and_steal: right-align with stealing.
+                    parse_col_spec(&mut probe, Align::Right, true)
                 } else {
-                    parse_col_spec(&mut probe, Align::Right)
+                    parse_col_spec(&mut probe, Align::Right, false)
                 };
                 if let Some(spec) = parsed {
                     chars = probe;
@@ -9713,6 +10076,21 @@ fn apply_format_string(
                     } else {
                         result.push_str(subj);
                     }
+                }
+                Some('S') => {
+                    chars.next();
+                    // Source: the named revision this commit was reached from
+                    // (only populated when `git log --source`-style tracking is
+                    // active for the given command-line revisions).
+                    if let Some(src) = percent_s_source {
+                        result.push_str(src);
+                    }
+                }
+                Some('f') => {
+                    chars.next();
+                    // Sanitized subject line, suitable for a filename.
+                    let subj = info.message.lines().next().unwrap_or("");
+                    result.push_str(&crate::commands::format_patch::sanitize_subject(subj));
                 }
                 Some('b') => {
                     chars.next();
@@ -10015,8 +10393,12 @@ fn apply_format_string(
                 _ => result.push('%'),
             }
             // Apply add/space/del magic to the just-produced placeholder output.
-            if magic != Magic::None {
-                let produced_empty = result.len() == magic_start;
+            // Git (pretty.c format_commit_item) applies the column padding to the
+            // placeholder *first*, then inserts the magic char OUTSIDE the padded
+            // column. So when a column is pending, defer the magic until after the
+            // padding step below (inserting at `col_start`); otherwise apply it now.
+            let produced_empty = result.len() == magic_start;
+            if magic != Magic::None && pending_col.is_none() {
                 match magic {
                     Magic::AddLf => {
                         if !produced_empty {
@@ -10048,24 +10430,67 @@ fn apply_format_string(
             if let Some(spec) = pending_col.take() {
                 let added = result[col_start..].to_owned();
                 result.truncate(col_start);
-                if spec.absolute {
-                    // Absolute column: pad from start of current line to target column
+                // `%>>` (flush_left_and_steal): when the value overflows the
+                // column, reclaim trailing spaces already emitted on this line
+                // and credit them to the padding budget (Git pretty.c).
+                let mut effective_width = if spec.absolute {
                     let line_start = result.rfind('\n').map(|p| p + 1).unwrap_or(0);
                     let current_col = display_width(&result[line_start..]);
-                    let target_width = spec.width.saturating_sub(current_col);
+                    spec.width.saturating_sub(current_col)
+                } else {
+                    spec.width
+                };
+                if spec.steal {
+                    let line_start = result.rfind('\n').map(|p| p + 1).unwrap_or(0);
+                    let added_w = display_width(&added);
+                    while added_w > effective_width
+                        && result.len() > line_start
+                        && result.as_bytes()[result.len() - 1] == b' '
+                    {
+                        result.pop();
+                        effective_width += 1;
+                    }
+                }
+                if spec.absolute {
                     let mut adjusted_spec = ColSpec {
-                        width: target_width,
+                        width: effective_width,
                         align: spec.align,
                         trunc: spec.trunc,
                         absolute: false,
+                        steal: false,
                     };
                     // For absolute positioning, ensure minimum width matches the value length
-                    if target_width < display_width(&added) {
+                    if effective_width < display_width(&added) {
                         adjusted_spec.width = display_width(&added);
                     }
                     result.push_str(&apply_col(&adjusted_spec, &added));
                 } else {
-                    result.push_str(&apply_col(&spec, &added));
+                    let adjusted_spec = ColSpec {
+                        width: effective_width,
+                        align: spec.align,
+                        trunc: spec.trunc,
+                        absolute: false,
+                        steal: false,
+                    };
+                    result.push_str(&apply_col(&adjusted_spec, &added));
+                }
+                // Deferred magic: applied OUTSIDE the padded column (Git
+                // pretty.c inserts the magic char before the whole padded run).
+                if magic != Magic::None && !produced_empty {
+                    match magic {
+                        Magic::AddLf => result.insert(col_start, '\n'),
+                        Magic::AddSp => result.insert(col_start, ' '),
+                        Magic::DelLf => {
+                            let mut cut = col_start;
+                            while cut > 0 && result.as_bytes()[cut - 1] == b'\n' {
+                                cut -= 1;
+                            }
+                            if cut < col_start {
+                                result.replace_range(cut..col_start, "");
+                            }
+                        }
+                        Magic::None => {}
+                    }
                 }
             }
         } else {
@@ -10438,6 +10863,21 @@ fn resolve_revision_as_commit_after_precompose(repo: &Repository, rev: &str) -> 
 /// Whether `token` names an existing path in the worktree or the index. Git's `verify_filename`
 /// uses this to decide that a token which fails to resolve as a revision is actually a pathspec
 /// (e.g. `git log ichi` where `ichi` is a tracked file, used by `--follow`).
+/// True when `token`, resolved relative to the current directory, names an
+/// existing path inside the work tree (used to prefer a `..`/`.` pathspec over
+/// the empty `HEAD..HEAD` range).
+fn cwd_relative_path_exists(repo: &Repository, token: &str) -> bool {
+    let Some(work_tree) = repo.work_tree.as_deref() else {
+        return false;
+    };
+    let Ok(cwd) = std::env::current_dir() else {
+        return false;
+    };
+    let candidate = normalize_path(&cwd.join(token));
+    let work_tree_norm = normalize_path(work_tree);
+    candidate.starts_with(&work_tree_norm) && candidate.exists()
+}
+
 fn token_names_existing_path(repo: &Repository, token: &str) -> bool {
     // Short exclude magic sigils `:^` / `:!` name a path via their suffix; git's verify_filename
     // accepts `:^sub` as a pathspec only when `sub` exists (`:^does-not-exist` is ambiguous).
@@ -10518,6 +10958,111 @@ fn is_likely_pathspec_during_rev_parse(token: &str) -> bool {
         || token.contains(']')
 }
 
+/// Filter controlling which refs get decorated (`--decorate-refs`,
+/// `--decorate-refs-exclude`, and `log.excludeDecoration`).
+#[derive(Default, Clone)]
+struct DecorationFilter {
+    include: Vec<String>,
+    exclude: Vec<String>,
+    /// Excludes from `log.excludeDecoration` config (same effect as `exclude`,
+    /// but a matching `--decorate-refs` include overrides them, matching Git).
+    exclude_config: Vec<String>,
+}
+
+impl DecorationFilter {
+    fn is_empty(&self) -> bool {
+        self.include.is_empty() && self.exclude.is_empty() && self.exclude_config.is_empty()
+    }
+
+    /// Mirror Git's `ref_filter_match` (log-tree.c). Returns true if `refname`
+    /// (a full ref like `refs/heads/foo`) should be decorated.
+    fn matches(&self, refname: &str) -> bool {
+        // `--decorate-refs-exclude` (command line) is checked first.
+        for pat in &self.exclude {
+            if decoration_pattern_matches(pat, refname) {
+                return false;
+            }
+        }
+        // An explicit `--decorate-refs` include is decisive and overrides the
+        // config-based `log.excludeDecoration` exclusions (matching Git's
+        // `ref_filter_match` ordering).
+        if !self.include.is_empty() {
+            for pat in &self.include {
+                if decoration_pattern_matches(pat, refname) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        // `log.excludeDecoration` only applies when there is no include list.
+        for pat in &self.exclude_config {
+            if decoration_pattern_matches(pat, refname) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Normalize a `--decorate-refs[-exclude]` / `log.excludeDecoration` pattern the
+/// way Git's `normalize_glob_ref` (refs.c) does: prepend `refs/` unless it already
+/// starts with `refs/` or is exactly `HEAD`, then strip a single trailing `/`.
+fn normalize_glob_ref(pattern: &str) -> String {
+    let mut out = String::new();
+    if !pattern.starts_with("refs/") && pattern != "HEAD" {
+        out.push_str("refs/");
+    }
+    out.push_str(pattern);
+    if out.ends_with('/') {
+        out.pop();
+    }
+    out
+}
+
+/// Match a single (already-normalized) `--decorate-refs[-exclude]` pattern against
+/// a full refname, mirroring Git's `match_ref_pattern` (log-tree.c): glob patterns
+/// use `wildmatch`; non-glob patterns match as a prefix at a component boundary.
+fn decoration_pattern_matches(pattern: &str, refname: &str) -> bool {
+    let has_glob = pattern.bytes().any(|b| matches!(b, b'*' | b'?' | b'['));
+    if has_glob {
+        grit_lib::wildmatch::wildmatch(pattern.as_bytes(), refname.as_bytes(), 0)
+    } else {
+        // `skip_prefix(refname, pattern, &rest) && (!*rest || *rest == '/')`.
+        if let Some(rest) = refname.strip_prefix(pattern) {
+            rest.is_empty() || rest.starts_with('/')
+        } else {
+            false
+        }
+    }
+}
+
+/// Build the decoration filter from command-line args and `log.excludeDecoration`
+/// config.
+fn build_decoration_filter(args: &Args, git_dir: &Path) -> DecorationFilter {
+    let mut filter = DecorationFilter {
+        include: args.decorate_refs.iter().map(|p| normalize_glob_ref(p)).collect(),
+        exclude: args
+            .decorate_refs_exclude
+            .iter()
+            .map(|p| normalize_glob_ref(p))
+            .collect(),
+        exclude_config: Vec::new(),
+    };
+    // `--clear-decorations` drops the config-based exclusions (and Git's default
+    // hidden-ref exclusions, which grit doesn't apply here anyway).
+    if !args.clear_decorations {
+        if let Ok(cfg) = ConfigSet::load(Some(git_dir), true) {
+            for value in cfg.get_all("log.excludeDecoration") {
+                let v = value.trim();
+                if !v.is_empty() {
+                    filter.exclude_config.push(normalize_glob_ref(v));
+                }
+            }
+        }
+    }
+    filter
+}
+
 fn replace_ref_base() -> String {
     let mut base =
         std::env::var("GIT_REPLACE_REF_BASE").unwrap_or_else(|_| "refs/replace/".to_owned());
@@ -10570,7 +11115,7 @@ fn prepend_decoration(items: &mut Vec<DecorationItem>, item: DecorationItem) {
 /// order, so the final per-commit list matches upstream (e.g. `tag: A1` before `other/main` before
 /// `other/HEAD`).
 fn collect_decorations(repo: &Repository, full: bool) -> Result<DecorationMap> {
-    collect_decorations_inner(repo, full, false)
+    collect_decorations_inner(repo, full, false, &DecorationFilter::default())
 }
 
 /// Like [`collect_decorations`], but `clear_decorations` removes the default ref
@@ -10580,6 +11125,7 @@ fn collect_decorations_inner(
     repo: &Repository,
     full: bool,
     clear_decorations: bool,
+    filter: &DecorationFilter,
 ) -> Result<DecorationMap> {
     let mut map: DecorationMap = HashMap::new();
     let git_dir = &repo.git_dir;
@@ -10598,6 +11144,10 @@ fn collect_decorations_inner(
     all_refs.sort_by(|a, b| a.0.cmp(&b.0));
 
     for (refname, oid) in all_refs {
+        // Apply `--decorate-refs` / `--decorate-refs-exclude` / `log.excludeDecoration`.
+        if !filter.is_empty() && !refname.starts_with(&rep_base) && !filter.matches(&refname) {
+            continue;
+        }
         if refname.starts_with(&rep_base) {
             let Some(rest) = refname.strip_prefix(&rep_base) else {
                 continue;
@@ -10701,20 +11251,25 @@ fn collect_decorations_inner(
     }
 
     if let Some(oid) = head.oid() {
-        let hex = oid.to_hex();
-        prepend_decoration(
-            map.entry(hex).or_default(),
-            DecorationItem {
-                refname: Some("HEAD".to_string()),
-                display: "HEAD".to_owned(),
-                kind: DecorationKind::Head,
-            },
-        );
+        if filter.is_empty() || filter.matches("HEAD") {
+            let hex = oid.to_hex();
+            prepend_decoration(
+                map.entry(hex).or_default(),
+                DecorationItem {
+                    refname: Some("HEAD".to_string()),
+                    display: "HEAD".to_owned(),
+                    kind: DecorationKind::Head,
+                },
+            );
+        }
     }
 
     for items in map.values_mut() {
+        // Dedup truly identical decorations (same refname). A tag and a branch
+        // that happen to share a short name (e.g. `tag: reach` and `reach`) are
+        // distinct and both shown, matching Git.
         let mut seen = HashSet::new();
-        items.retain(|it| seen.insert(it.display.clone()));
+        items.retain(|it| seen.insert((it.kind, it.display.clone(), it.refname.clone())));
         if hide_remote_update_noise {
             let branch_names: HashSet<String> = items
                 .iter()
@@ -10770,6 +11325,12 @@ fn current_branch_decoration_index(items: &[DecorationItem], head: &HeadState) -
         HeadState::Branch { refname, .. } => refname.as_str(),
         _ => return None,
     };
+    // Only fold the branch into `HEAD -> branch` when the HEAD decoration is
+    // actually present. If HEAD was filtered out (e.g. by `--decorate-refs`),
+    // the branch must render on its own.
+    if !items.iter().any(|it| it.kind == DecorationKind::Head) {
+        return None;
+    }
     items
         .iter()
         .position(|it| it.kind == DecorationKind::Branch && it.refname.as_deref() == Some(refname))
@@ -11174,6 +11735,7 @@ fn write_commit_diff(
                 false,
                 None,
                 Some(parent_oid),
+                None,
                 None,
             )?;
             write_commit_diff_body(
@@ -12150,10 +12712,13 @@ fn commit_has_diff_status_not_in(
     args: &Args,
 ) -> Result<bool> {
     let entries = commit_diff_entries_for_filter(odb, info, args)?;
-    // Include commit if it has no changes of the excluded type
-    Ok(!entries
+    // Git's lowercase `--diff-filter` drops files whose status is in the exclude
+    // set; the commit is shown if at least one file survives that filter (an
+    // empty diff is not shown). So include the commit when any entry's status is
+    // NOT excluded.
+    Ok(entries
         .iter()
-        .any(|e| exclude_chars.contains(&e.status.letter())))
+        .any(|e| !exclude_chars.contains(&e.status.letter())))
 }
 
 /// Check if a commit has any changes matching the specified diff-filter status letters.
@@ -12331,7 +12896,12 @@ fn follow_filter(
                             retarget = Some(old_path.to_string());
                         }
                     }
-                    if entry.old_path.as_deref() == Some(tracked_path.as_str()) {
+                    // A *rename* away from the tracked path is a change to it (the
+                    // file disappears under this name). A *copy* from the tracked
+                    // path leaves the source unchanged, so it does not count.
+                    if entry.status == DiffStatus::Renamed
+                        && entry.old_path.as_deref() == Some(tracked_path.as_str())
+                    {
                         touches = true;
                     }
                 }
@@ -12357,6 +12927,85 @@ fn follow_filter(
     }
 
     Ok(result)
+}
+
+/// Build a map from commit OID → source name for the `%S` placeholder, seeded
+/// from the named positive revisions given on the command line.
+///
+/// Git propagates each commit's "source" from the named ref it was reached
+/// from, walking in commit-date order so that, when two tips both reach a
+/// commit, the tip whose traversal arrives first (highest committer date)
+/// wins. We mirror that with a date-ordered priority queue: pop the
+/// highest-dated pending commit, fix its label, then enqueue its parents with
+/// the same label (an already-labeled commit keeps its first label).
+fn build_named_source_map(
+    odb: &Odb,
+    tips: &[(ObjectId, String)],
+    first_parent: bool,
+) -> std::collections::HashMap<ObjectId, String> {
+    use std::cmp::Ordering;
+    use std::collections::BinaryHeap;
+
+    // Heap entry ordered by committer time (desc), then OID for determinism.
+    struct Entry {
+        time: i64,
+        oid: ObjectId,
+        label: String,
+    }
+    impl PartialEq for Entry {
+        fn eq(&self, other: &Self) -> bool {
+            self.time == other.time && self.oid == other.oid
+        }
+    }
+    impl Eq for Entry {}
+    impl Ord for Entry {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.time
+                .cmp(&other.time)
+                .then_with(|| self.oid.cmp(&other.oid))
+        }
+    }
+    impl PartialOrd for Entry {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    let mut source_map: std::collections::HashMap<ObjectId, String> =
+        std::collections::HashMap::new();
+    let mut heap: BinaryHeap<Entry> = BinaryHeap::new();
+    for (oid, label) in tips {
+        heap.push(Entry {
+            time: read_commit_timestamp(odb, oid),
+            oid: *oid,
+            label: label.clone(),
+        });
+    }
+    while let Some(Entry { oid, label, .. }) = heap.pop() {
+        if source_map.contains_key(&oid) {
+            continue;
+        }
+        source_map.insert(oid, label.clone());
+        if let Ok(obj) = odb.read(&oid) {
+            if let Ok(commit) = parse_commit(&obj.data) {
+                let parents: &[ObjectId] = if first_parent {
+                    commit.parents.first().map(std::slice::from_ref).unwrap_or(&[])
+                } else {
+                    &commit.parents
+                };
+                for p in parents {
+                    if !source_map.contains_key(p) {
+                        heap.push(Entry {
+                            time: read_commit_timestamp(odb, p),
+                            oid: *p,
+                            label: label.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    source_map
 }
 
 /// Build a map from commit OID → source ref name for --source.
@@ -12559,9 +13208,39 @@ fn collect_named_refs_from_dir(
 /// Parse the --abbrev value into a hash abbreviation length.
 fn parse_abbrev(abbrev: &Option<String>) -> usize {
     match abbrev {
-        Some(val) => val.parse::<usize>().unwrap_or(7),
+        Some(val) => clamp_abbrev(val.parse::<usize>().unwrap_or(7)),
         None => 7,
     }
+}
+
+/// Clamp an abbreviation length to Git's accepted range. The minimum is 4 and
+/// the maximum is the full hash length (40 for SHA-1).
+fn clamp_abbrev(n: usize) -> usize {
+    n.clamp(4, 40)
+}
+
+/// Resolve the commit-hash abbreviation length, honoring an explicit `--abbrev`
+/// and otherwise `core.abbrev` (where `false`/`no`/`off`/`0` mean "no
+/// abbreviation" and any number is clamped to `[4, 40]`).
+fn resolve_abbrev_len(abbrev: &Option<String>, git_dir: &Path) -> usize {
+    if let Some(val) = abbrev {
+        return clamp_abbrev(val.parse::<usize>().unwrap_or(7));
+    }
+    if let Ok(cfg) = ConfigSet::load(Some(git_dir), true) {
+        if let Some(raw) = cfg.get("core.abbrev") {
+            let v = raw.trim();
+            match v.to_ascii_lowercase().as_str() {
+                "false" | "no" | "off" | "0" => return 40,
+                "auto" | "" => return 7,
+                _ => {
+                    if let Ok(n) = v.parse::<usize>() {
+                        return clamp_abbrev(n);
+                    }
+                }
+            }
+        }
+    }
+    7
 }
 
 /// Load shallow boundary commit OIDs from `.git/shallow`.

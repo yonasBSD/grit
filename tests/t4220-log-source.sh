@@ -18,7 +18,7 @@ test_expect_success 'setup: repo with branches' '
 	git checkout -b feature &&
 	test_tick &&
 	echo c >file.txt && git add file.txt && git commit -m "feature-commit" &&
-	git checkout master
+	git checkout main
 	)
 '
 

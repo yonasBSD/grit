@@ -151,7 +151,7 @@ test_expect_success 'pathspec limits output' '
 	# both file.txt and other.txt are modified; ask for only other.txt
 	git diff-files -- other.txt >out &&
 	grep "other.txt" out &&
-	test_must_fail grep "file.txt" out
+	! grep "file.txt" out
 	)
 '
 
@@ -202,7 +202,7 @@ test_expect_success 'diff-files ignores untracked files' '
 	cd repo &&
 	printf "extra\n" >untracked.txt &&
 	git diff-files >out &&
-	test_must_fail grep "untracked.txt" out
+	! grep "untracked.txt" out
 	)
 '
 

@@ -646,6 +646,7 @@ fn add_commit(log: &mut Shortlog, oid: &ObjectId, commit: &CommitData, raw_body:
             &body_bytes,
             log.opts.abbrev,
             log.opts.date_mode.as_deref(),
+            &log.mailmap,
         )
     } else {
         subject_bytes(&body_bytes)
@@ -705,6 +706,7 @@ fn add_commit(log: &mut Shortlog, oid: &ObjectId, commit: &CommitData, raw_body:
                 &body_bytes,
                 log.opts.abbrev,
                 log.opts.date_mode.as_deref(),
+                &log.mailmap,
             );
             let key = String::from_utf8_lossy(&key_bytes).into_owned();
             if !needs_dedup || dups.insert(key.clone()) {
@@ -989,6 +991,7 @@ fn expand_format(
     body: &[u8],
     abbrev: usize,
     date_mode: Option<&str>,
+    mailmap: &MailmapTable,
 ) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     let bytes = fmt.as_bytes();
@@ -1015,13 +1018,13 @@ fn expand_format(
             b'a' => {
                 i += 1;
                 if i < bytes.len() {
-                    expand_ident(&mut out, bytes[i], &commit.author, date_mode);
+                    expand_ident(&mut out, bytes[i], &commit.author, date_mode, mailmap);
                 }
             }
             b'c' => {
                 i += 1;
                 if i < bytes.len() {
-                    expand_ident(&mut out, bytes[i], &commit.committer, date_mode);
+                    expand_ident(&mut out, bytes[i], &commit.committer, date_mode, mailmap);
                 }
             }
             other => {
@@ -1034,10 +1037,25 @@ fn expand_format(
     out
 }
 
-fn expand_ident(out: &mut Vec<u8>, code: u8, ident: &str, date_mode: Option<&str>) {
+fn expand_ident(
+    out: &mut Vec<u8>,
+    code: u8,
+    ident: &str,
+    date_mode: Option<&str>,
+    mailmap: &MailmapTable,
+) {
     match code {
-        b'n' | b'N' => out.extend_from_slice(extract_name(ident).as_bytes()),
-        b'e' | b'E' => out.extend_from_slice(extract_email(ident).as_bytes()),
+        // Lowercase = raw; capital = mailmapped (Git's %an vs %aN, %ae vs %aE).
+        b'n' => out.extend_from_slice(extract_name(ident).as_bytes()),
+        b'e' => out.extend_from_slice(extract_email(ident).as_bytes()),
+        b'N' => {
+            let (name, _email) = mapped_ident(ident, mailmap);
+            out.extend_from_slice(name.as_bytes());
+        }
+        b'E' => {
+            let (_name, email) = mapped_ident(ident, mailmap);
+            out.extend_from_slice(email.as_bytes());
+        }
         b'd' => out.extend_from_slice(format_date(ident, date_mode).as_bytes()),
         _ => {
             out.push(b'%');
@@ -1045,6 +1063,13 @@ fn expand_ident(out: &mut Vec<u8>, code: u8, ident: &str, date_mode: Option<&str
             out.push(code);
         }
     }
+}
+
+/// Map an ident's name/email through the mailmap.
+fn mapped_ident(ident: &str, mailmap: &MailmapTable) -> (String, String) {
+    let name = extract_name(ident).to_owned();
+    let email = extract_email(ident).to_owned();
+    mailmap.map_user(name, email)
 }
 
 /// Format a date field from an ident using git's date engine.

@@ -142,7 +142,7 @@ test_expect_success 'diff between adjacent commits shows only that change' '
 	grep "^diff --git a/file1 b/file1" output &&
 	grep "+line 3" output &&
 	# file2 should not appear (unchanged between commit2 and commit3)
-	test_must_fail grep "file2" output
+	! grep "file2" output
 	)
 '
 
@@ -440,8 +440,8 @@ test_expect_success 'diff branch to common ancestor shows only branch changes' '
 	cd repo &&
 	git diff $(cat ../commit2) $(cat ../commit_branch_a) >output &&
 	grep "+branch-a line" output &&
-	test_must_fail grep "file2" output &&
-	test_must_fail grep "file3" output
+	! grep "file2" output &&
+	! grep "file3" output
 	)
 '
 
@@ -497,7 +497,7 @@ test_expect_success 'diff --cached after partial staging shows only staged file'
 	git diff --cached >output &&
 	grep "^diff --git a/file1 b/file1" output &&
 	grep "+staged change" output &&
-	test_must_fail grep "file2" output &&
+	! grep "file2" output &&
 	git reset HEAD -- file1 &&
 	git checkout -- file1 file2
 	)
@@ -511,7 +511,7 @@ test_expect_success 'diff --cached --name-only after partial staging' '
 	git add file1 &&
 	git diff --cached --name-only >output &&
 	grep "^file1$" output &&
-	test_must_fail grep "^file2$" output &&
+	! grep "^file2$" output &&
 	git reset HEAD -- file1 &&
 	git checkout -- file1 file2
 	)
@@ -722,8 +722,8 @@ test_expect_success 'diff -U0 on big file shows minimal context' '
 	grep "^-line 50" output &&
 	grep "^+MODIFIED line 50" output &&
 	# With -U0 we should not see surrounding lines as context
-	test_must_fail grep "^ line 49" output &&
-	test_must_fail grep "^ line 51" output
+	! grep "^ line 49" output &&
+	! grep "^ line 51" output
 	)
 '
 
@@ -1125,8 +1125,8 @@ test_expect_success 'diff --cached shows only the staged file' '
 	git add afile &&
 	git diff --cached --name-only >output &&
 	grep "^afile$" output &&
-	test_must_fail grep "^bfile$" output &&
-	test_must_fail grep "^cfile$" output &&
+	! grep "^bfile$" output &&
+	! grep "^cfile$" output &&
 	git reset HEAD -- afile &&
 	git checkout -- afile
 	)
@@ -1142,7 +1142,7 @@ test_expect_success 'diff HEAD -- path restricts to that path' '
 	echo "mod-b" >>bfile &&
 	git diff HEAD -- afile >output &&
 	grep "afile" output &&
-	test_must_fail grep "bfile" output &&
+	! grep "bfile" output &&
 	git checkout -- afile bfile
 	)
 '
@@ -1716,7 +1716,8 @@ test_expect_success 'diff -U5 shows 5 context lines' '
 	cd diff-empty &&
 	for i in 1 2 3 4 5 6 7 8 9 10; do echo line$i; done >ctx.txt &&
 	git add ctx.txt && git commit -m ctx 2>/dev/null &&
-	sed -i "s/line5/LINE5/" ctx.txt &&
+	sed "s/line5/LINE5/" ctx.txt >ctx.txt.new &&
+	mv ctx.txt.new ctx.txt &&
 	git add ctx.txt && git commit -m ctx2 2>/dev/null &&
 	git diff -U5 HEAD~1 HEAD >output &&
 	grep "^-line5" output &&

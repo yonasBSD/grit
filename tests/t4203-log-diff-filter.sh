@@ -69,7 +69,7 @@ test_expect_success 'log --all shows commits from all branches' '
 	echo feat >feat.txt &&
 	git add feat.txt &&
 	git commit -m "feature commit" &&
-	git checkout master &&
+	git checkout main &&
 	git log --all --oneline >actual &&
 	grep "feature commit" actual &&
 	grep "delete f2" actual

@@ -335,6 +335,37 @@ pub fn run(mut args: Args) -> Result<()> {
         args.format = args.pretty.clone();
     }
 
+    // `git show` accepts `--pretty`/`--format` (and `-s`) *after* a revision
+    // (e.g. `git show -s HEAD --pretty=short`). Clap's `trailing_var_arg`
+    // captures everything after the first positional into `objects`, so pull
+    // any such formatting options back out and apply them, mirroring git's
+    // `setup_revisions` interleaving of options and revisions.
+    {
+        let mut kept: Vec<String> = Vec::with_capacity(args.objects.len());
+        let mut iter = args.objects.iter().peekable();
+        while let Some(tok) = iter.next() {
+            if let Some(v) = tok
+                .strip_prefix("--pretty=")
+                .or_else(|| tok.strip_prefix("--format="))
+            {
+                args.format = Some(v.to_owned());
+            } else if tok == "--pretty" || tok == "--format" {
+                if let Some(v) = iter.peek() {
+                    args.format = Some((*v).clone());
+                    iter.next();
+                } else {
+                    // Bare `--pretty` defaults to medium (git's behaviour).
+                    args.format = Some("medium".to_owned());
+                }
+            } else if tok == "-s" || tok == "--no-patch" {
+                args.no_patch = true;
+            } else {
+                kept.push(tok.clone());
+            }
+        }
+        args.objects = kept;
+    }
+
     // `--root` forces a root commit's diff against the empty tree even when
     // `log.showroot=false`. It is not a real object, so strip it from the list.
     let want_root = args.objects.iter().any(|s| s == "--root");
@@ -414,9 +445,14 @@ pub fn run(mut args: Args) -> Result<()> {
                 "medium" | "short" | "full" | "fuller" | "reference" | "oneline" | "raw" | "email"
             )
         });
+    // `--oneline` (with the diff suppressed) prints one line per commit and Git
+    // emits no blank line between them, like `--format=%s`.
+    let oneline_compact = (args.oneline || args.format.as_deref() == Some("oneline"))
+        && (args.quiet || args.no_patch);
     let compact_multi_subject = ((args.quiet || args.no_patch)
         && args.format.as_deref() == Some("%s"))
-        || user_format_name_listing;
+        || user_format_name_listing
+        || oneline_compact;
 
     let notes_map = load_notes_map(&repo);
 
@@ -1035,10 +1071,13 @@ fn show_commit(
     );
 
     if args.oneline || resolved_format.as_deref() == Some("oneline") {
-        // Mirror `git log --oneline`, which decorates the header line with the refs pointing at
-        // the commit (`<hash> (HEAD -> main) subject`). This keeps `git show --oneline` output
-        // byte-for-byte identical to `git log --oneline` for the same commit.
-        let decoration = crate::commands::log::oneline_decoration_for_hex(repo, &hex);
+        // Mirror `git log --oneline`, which auto-decorates the header line with the refs pointing
+        // at the commit only when writing to a terminal; piped/redirected output is undecorated.
+        let decoration = if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+            crate::commands::log::oneline_decoration_for_hex(repo, &hex)
+        } else {
+            String::new()
+        };
         let first_line = commit.message.lines().next().unwrap_or("");
         let first_line = if expand_tabs_in_log > 0 {
             grit_lib::tab_expand::expand_tabs_in_line(first_line, expand_tabs_in_log)
@@ -1199,8 +1238,7 @@ fn show_commit(
             if let Some(sig) = &signature_lines {
                 out.write_all(sig.as_bytes())?;
             }
-            let author_name = extract_name(&commit.author);
-            writeln!(out, "Author: {author_name}")?;
+            writeln!(out, "Author: {}", format_ident_display(&commit.author))?;
             writeln!(out)?;
             for line in commit.message.lines().take(1) {
                 writeln!(

@@ -1,0 +1,12 @@
+*   Merge branch 'side'
+<BLUE>|<RESET><CYAN>\<RESET>
+<BLUE>|<RESET> * side-2
+<BLUE>|<RESET> * side-1
+* <CYAN>|<RESET> Second
+* <CYAN>|<RESET> sixth
+* <CYAN>|<RESET> fifth
+* <CYAN>|<RESET> fourth
+<CYAN>|<RESET><CYAN>/<RESET>
+* third
+* second
+* initial

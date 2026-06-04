@@ -2829,6 +2829,11 @@ pub(crate) fn checkout_merge_reset_worktree(
             }
             if abs_path.is_dir() {
                 std::fs::remove_dir_all(&abs_path)?;
+            } else if abs_path.is_symlink() {
+                // A symlink → regular-file type change: remove the symlink first,
+                // otherwise the write would follow the link and clobber its target
+                // (t4020 #7 et al.).
+                std::fs::remove_file(&abs_path)?;
             }
             let attr_rules = grit_lib::crlf::load_gitattributes(&work_tree);
             let config = ConfigSet::load(Some(&repo.git_dir), true).ok();
@@ -3181,6 +3186,12 @@ fn checkout_index_to_worktree(
             }
             std::os::unix::fs::symlink(target, &abs_path)?;
         } else {
+            // A symlink → regular-file type change: remove the existing symlink
+            // first, else the write would follow the link and clobber its target
+            // (t4020 #7 et al.).
+            if abs_path.is_symlink() {
+                std::fs::remove_file(&abs_path)?;
+            }
             // Apply CRLF conversion if configured
             let data = if let (Some(ref cfg), Some(ref cv)) = (&config, &conv) {
                 let file_attrs = grit_lib::crlf::get_file_attrs(&attr_rules, &path_str, false, cfg);

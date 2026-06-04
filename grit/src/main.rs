@@ -4326,14 +4326,14 @@ fn preprocess_diff_args(rest: &[String]) -> Vec<String> {
                 continue;
             }
         }
+        // `-X` is the short form of `--dirstat`. Unlike a value option it never consumes a
+        // following space-separated token: bare `-X` becomes `--dirstat` (no params), and a
+        // parameter must be attached as `-X<param>` (→ `--dirstat=<param>`). Git's
+        // `-X 0 HEAD^..HEAD` parses `0` as a revision, not the cut-off, so the next argument
+        // must not be swallowed here.
         if arg == "-X" {
-            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
-                result.push(format!("--dirstat={}", rest[i + 1]));
-                i += 2;
-            } else {
-                result.push("--dirstat=".to_owned());
-                i += 1;
-            }
+            result.push("--dirstat".to_owned());
+            i += 1;
             continue;
         }
         if let Some(param) = arg.strip_prefix("-X") {
@@ -4414,6 +4414,34 @@ fn preprocess_show_argv(rest: &[String]) -> Vec<String> {
         if arg == "--" {
             out.extend_from_slice(&rest[i..]);
             break;
+        }
+        // `--dirstat<...>` is only valid as bare `--dirstat` or `--dirstat=<param>`; glued
+        // forms like `--dirstat10` are unrecognised (Git: "unrecognized argument").
+        if let Some(suffix) = arg.strip_prefix("--dirstat") {
+            if !suffix.is_empty() && !suffix.starts_with('=') {
+                eprintln!("fatal: unrecognized argument: {arg}");
+                std::process::exit(128);
+            }
+        }
+        // `-X` is `--dirstat`'s short form: bare `-X` → `--dirstat`, `-X<param>` →
+        // `--dirstat=<param>`. So `-X=20` yields the dirstat parameter `=20`, which is invalid.
+        if arg == "-X" {
+            out.push("--dirstat".to_owned());
+            i += 1;
+            continue;
+        }
+        if let Some(param) = arg.strip_prefix("-X") {
+            if !param.is_empty() {
+                if param.starts_with('=') || param.chars().next().is_some_and(|c| c == '=') {
+                    eprintln!(
+                        "fatal: Failed to parse --dirstat/-X option parameter:\n  Unknown dirstat parameter '{param}'\n"
+                    );
+                    std::process::exit(128);
+                }
+                out.push(format!("--dirstat={param}"));
+                i += 1;
+                continue;
+            }
         }
         if let Some(needle) = arg.strip_prefix("-S") {
             if !needle.is_empty() {
@@ -4774,6 +4802,14 @@ fn preprocess_log_args(rest: &[String]) -> Vec<String> {
         if arg.starts_with('-') && arg.len() > 1 && arg[1..].chars().all(|c| c.is_ascii_digit()) {
             result.push("-n".to_string());
             result.push(arg[1..].to_string());
+        } else if let Some(num) = arg.strip_prefix("-n").filter(|rest| {
+            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+        }) {
+            // Normalize `-n6` to `-n 6` so clap parses it as the max-count option
+            // instead of letting the `allow_hyphen_values` revisions positional
+            // swallow it (and every option that follows).
+            result.push("-n".to_string());
+            result.push(num.to_string());
         } else {
             result.push(arg.clone());
         }

@@ -97,10 +97,10 @@ test_expect_success 'log --oneline on side branch' '
 	)
 '
 
-test_expect_success 'log on master shows master commits' '
+test_expect_success 'log on main shows main commits' '
 	(
 	cd repo &&
-	git checkout master &&
+	git checkout main &&
 	git log --format="%s" >actual &&
 	head -1 actual >first_line &&
 	echo "third" >expect &&
@@ -109,10 +109,10 @@ test_expect_success 'log on master shows master commits' '
 	)
 '
 
-test_expect_success 'log --graph on master is linear' '
+test_expect_success 'log --graph on main is linear' '
 	(
 	cd repo &&
-	git checkout master &&
+	git checkout main &&
 	git log --graph --oneline --no-decorate >actual &&
 	test_line_count = 3 actual
 	)
@@ -121,7 +121,7 @@ test_expect_success 'log --graph on master is linear' '
 test_expect_success 'setup more branches' '
 	(
 	cd repo &&
-	git checkout master &&
+	git checkout main &&
 	git branch feature1 &&
 	git branch feature2 &&
 	git checkout feature1 &&
@@ -179,14 +179,14 @@ test_expect_success 'log --graph on feature1 is linear' '
 test_expect_success 'log -n 1 on each branch shows different commits' '
 	(
 	cd repo &&
-	git checkout master &&
-	git log -n1 --format="%s" >master_tip &&
+	git checkout main &&
+	git log -n1 --format="%s" >main_tip &&
 	git checkout feature1 &&
 	git log -n1 --format="%s" >f1_tip &&
 	git checkout feature2 &&
 	git log -n1 --format="%s" >f2_tip &&
-	! test_cmp master_tip f1_tip &&
-	! test_cmp master_tip f2_tip &&
+	! test_cmp main_tip f1_tip &&
+	! test_cmp main_tip f2_tip &&
 	! test_cmp f1_tip f2_tip
 	)
 '
@@ -223,25 +223,25 @@ test_expect_success 'log --skip combined with -n' '
 test_expect_success 'log --decorate shows branch names' '
 	(
 	cd repo &&
-	git checkout master &&
+	git checkout main &&
 	git log -n1 --oneline --decorate >actual &&
-	grep "master" actual
+	grep "main" actual
 	)
 '
 
 test_expect_success 'log --no-decorate hides branch names' '
 	(
 	cd repo &&
-	git checkout master &&
+	git checkout main &&
 	git log -n1 --oneline --no-decorate >actual &&
-	! grep "master" actual
+	! grep "main" actual
 	)
 '
 
 test_expect_success 'setup deep linear chain' '
 	(
 	cd repo &&
-	git checkout master &&
+	git checkout main &&
 	for i in $(seq 1 20); do
 		echo "change $i" >file &&
 		git add file &&
