@@ -4194,11 +4194,22 @@ fn print_list_cmds(categories: &str) {
 /// refspecs are about the **remote** repository, so the glob must stay intact. Restore it when
 /// we see the expanded form together with a negative `^` refspec (t5582).
 fn preprocess_fetch_argv(rest: &[String]) -> Vec<String> {
-    let has_negative = rest.iter().any(|s| s.starts_with('^'));
-    if !has_negative {
-        return rest.to_vec();
+    let mut deduped = Vec::with_capacity(rest.len());
+    let mut saw_keep = false;
+    for s in rest {
+        if s == "-k" || s == "--keep" {
+            if saw_keep {
+                continue;
+            }
+            saw_keep = true;
+        }
+        deduped.push(s.clone());
     }
-    let mut out = rest.to_vec();
+    let has_negative = deduped.iter().any(|s| s.starts_with('^'));
+    if !has_negative {
+        return deduped;
+    }
+    let mut out = deduped;
     for spec in &mut out {
         if !spec.starts_with("refs/heads/") || !spec.contains(':') || spec.contains('*') {
             continue;

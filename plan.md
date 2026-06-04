@@ -760,3 +760,7 @@ Only unskip if pursuing literal 100%:
 - i18n: `t0200`–`t0204` (gettext)
 - tracing: `t0210`–`t0213` (trace2)
 - other: `t0013-sha1dc`, `t0029-core-unsetenvvars`, `t0051-windows-named-pipe`, `t0612-reftable-jgit-compatibility`
+
+  - Partial `t5502-quickfetch.sh`: improved to 6/7 after count-objects alternate/empty-tree handling and repeated `-k` fetch parsing. Continue here; final failure still reports one local pack in the alternate-backed quickfetch case.
+
+  - Completed `t5502-quickfetch.sh` (7/7) after count-objects empty-tree/alternate-pack accounting and repeated `git fetch -k -k` parsing.

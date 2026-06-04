@@ -2289,3 +2289,15 @@ Updated: 2026-06-01
 
 - Marked six zero-count t5 rows as skipped after audit: `t5570-git-daemon`, `t5608-clone-2gb`, `t5700-protocol-v1`, `t5702-protocol-v2`, `t5731-protocol-v2-bundle-uri-git`, and `t5811-proto-disable-git`.
 - Regenerated dashboards with `python3 scripts/generate-dashboard-from-test-files.py`; no Rust code changed.
+
+## 2026-06-04 — t5502-quickfetch partial
+
+- Focus harness: `./scripts/run-tests.sh t5502-quickfetch.sh --verbose` improved to 6/7 after count-objects alternate/empty-tree handling and repeated `-k` fetch parsing.
+- Related verification: `./scripts/run-tests.sh t5304-prune.sh t5300-unpack-objects.sh t5503-tagfollow.sh --verbose` passes 32/32, 23/23, and 12/12.
+- Quality gates: `cargo check -p grit-cli` and `cargo test -p grit-lib --lib` completed; pre-existing unrelated warnings remain.
+
+## 2026-06-04 — t5502-quickfetch complete
+
+- Focus harness: `./scripts/run-tests.sh t5502-quickfetch.sh --verbose` passes 7/7 after count-objects empty-tree/alternate-pack accounting and repeated fetch `-k` handling.
+- Related verification: `./scripts/run-tests.sh t5329-pack-objects-cruft.sh t5331-pack-objects-stdin.sh t5304-prune.sh t5300-unpack-objects.sh t5503-tagfollow.sh --verbose` passes 25/25, 16/16, 32/32, 23/23, and 12/12.
+- Quality gates: `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`, and `cargo test -p grit-lib --lib` completed; pre-existing unrelated warnings remain.
