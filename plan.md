@@ -126,8 +126,10 @@
   - Completed: `t3402-rebase-merge.sh` (13/13) after rebase merge learned strategy-favor replay,
     orphan `-Xtheirs` replay, context-overlap conflict detection for show-current-patch/reapply
     cases, and partial-clone base-blob hydration.
-  - Current focus: `t3403-rebase-skip.sh` (20 total, 12 passed) after `rebase --skip` now rejects
-    incompatible extra options without consuming the in-progress rebase state.
+  - Completed: `t3403-rebase-skip.sh` (20/20) after `rebase --skip` now rejects incompatible extra
+    options without consuming state, empty picks leave Git-compatible advice/state, manual
+    `--allow-empty` commits reuse the original rebase pick author/message, and fixup/squash commits
+    that empty the amended commit fail.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ## Active task — t6 family 100% pass

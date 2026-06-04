@@ -5487,6 +5487,12 @@ fn rebase_onto_oid_from_state(rb_dir: &Path) -> Option<ObjectId> {
     ObjectId::from_hex(s.trim()).ok()
 }
 
+fn commit_tree_oid_for_rebase(repo: &Repository, oid: ObjectId) -> Result<ObjectId> {
+    let obj = repo.odb.read(&oid)?;
+    let commit = parse_commit(&obj.data)?;
+    Ok(commit.tree)
+}
+
 /// Cherry-pick a single commit onto current HEAD for rebase purposes.
 ///
 /// `rb_dir` is the active state directory (`rebase-apply` or `rebase-merge`), not `rebase_dir()`
@@ -5998,6 +6004,46 @@ fn cherry_pick_for_rebase(
 
     let has_conflicts =
         merged_index.entries.iter().any(|e| e.stage() != 0) || !merge_conflict_files.is_empty();
+
+    if !has_conflicts {
+        let merged_tree_oid = write_tree_from_index(&repo.odb, &merged_index, "")?;
+        if matches!(todo_cmd, RebaseTodoCmd::Fixup | RebaseTodoCmd::Squash) {
+            let head_obj = repo.odb.read(&head_oid)?;
+            let head_commit = parse_commit(&head_obj.data)?;
+            if let Some(amend_parent) = head_commit.parents.first() {
+                let parent_tree = commit_tree_oid_for_rebase(repo, *amend_parent)?;
+                if merged_tree_oid == parent_tree {
+                    eprintln!(
+                        "The previous cherry-pick is now empty, possibly due to conflict resolution."
+                    );
+                    eprintln!("hint: try \"git rebase --skip\"");
+                    bail!("nothing to commit");
+                }
+            }
+        }
+        if merged_tree_oid == head_tree_oid && !keep_empty {
+            fs::write(rb_dir.join("current"), format!("{}\n", commit_oid.to_hex()))?;
+            fs::write(
+                rb_dir.join("current-cmd"),
+                format!("{}\n", todo_cmd.as_str()),
+            )?;
+            fs::write(
+                rb_dir.join("stopped-sha"),
+                format!("{}\n", commit_oid.to_hex()),
+            )?;
+            fs::write(
+                git_dir.join("REBASE_HEAD"),
+                format!("{}\n", commit_oid.to_hex()),
+            )?;
+            let (message, _encoding, _raw_message) = transcoded_replayed_message(&commit, &config);
+            fs::write(git_dir.join("COMMIT_EDITMSG"), message)?;
+            eprintln!(
+                "The previous cherry-pick is now empty, possibly due to conflict resolution."
+            );
+            eprintln!("hint: try \"git rebase --skip\"");
+            bail!("nothing to commit");
+        }
+    }
 
     // Write index
     let old_index = load_index(repo)?;
