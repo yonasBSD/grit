@@ -10,5 +10,5 @@ repository = "https://github.com/schacon/grit"
 workspace = true
 
 [dependencies]
-grit-lib = { version = "0.2", path = "../grit-lib" }
+grit-lib = { version = "0.3", path = "../grit-lib" }
 anyhow.workspace = true
