@@ -230,6 +230,16 @@
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
+## 2026-06-04 — t3404-rebase-interactive submodule gitlink add partial
+
+- Focus harness improved to 70/132 after `git add <submodule>` started clearing unmerged stages
+  when staging the resolved gitlink.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t2013-checkout-submodule.sh t7400-submodule-basic.sh --verbose` keeps the adjacent submodule
+  files green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3301-notes partial
 
 - Focus harness improved to 113/153 after `log --pretty=raw` stopped printing an extra trailing
