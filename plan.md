@@ -115,8 +115,9 @@
     `-X<option>`, `-o`, rerere autoupdate, and reschedule-failed-exec flags so direct runs reach
     behavior assertions instead of option parsing failures. Rerere autoupdate continuation state
     is now persisted and direct tests 10-19 pass; merge strategy option replay and interactive
-    merge todo comment parsing are fixed. Current harness count is 22/30; remaining work is
-    skipped fixup message cleanup, patch cleanup before `break`, rescheduled exec behavior, and
+    merge todo comment parsing are fixed, and failed exec rescheduling now works for requested /
+    configured modes. Current harness count is 25/30; remaining work is skipped fixup message
+    cleanup, patch cleanup before `break`, no-reschedule continuation edge cases, and
     conflict-message editor/comment handling.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 

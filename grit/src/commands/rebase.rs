@@ -437,6 +437,10 @@ pub fn run(mut args: Args) -> Result<()> {
         return do_abort();
     }
     if args.r#continue {
+        if args.no_reschedule_failed_exec || args.reschedule_failed_exec {
+            eprintln!("error: unknown option `no-reschedule-failed-exec'");
+            std::process::exit(129);
+        }
         return do_continue();
     }
     if args.skip {
@@ -446,6 +450,10 @@ pub fn run(mut args: Args) -> Result<()> {
         return do_quit();
     }
     if args.edit_todo {
+        if args.no_reschedule_failed_exec || args.reschedule_failed_exec {
+            eprintln!("error: unknown option `no-reschedule-failed-exec'");
+            std::process::exit(129);
+        }
         return do_edit_todo();
     }
 
@@ -4086,6 +4094,14 @@ Use '--' to separate paths from revisions, like this:\n\
     }
     if args.reschedule_failed_exec {
         fs::write(rb_dir.join("reschedule-failed-exec"), "")?;
+    } else if !args.no_reschedule_failed_exec
+        && args.exec.is_some()
+        && config
+            .get_bool("rebase.rescheduleFailedExec")
+            .and_then(|r| r.ok())
+            .unwrap_or(false)
+    {
+        fs::write(rb_dir.join("reschedule-failed-exec"), "")?;
     }
     if args.no_reschedule_failed_exec {
         fs::write(rb_dir.join("no-reschedule-failed-exec"), "")?;
@@ -4895,12 +4911,21 @@ fn replay_remaining(
                         .with_context(|| format!("failed to execute: {}", exec_cmd))?;
                     if !status.success() {
                         let code = status.code().unwrap_or(1);
+                        let reschedule = rb_dir.join("reschedule-failed-exec").exists()
+                            && !rb_dir.join("no-reschedule-failed-exec").exists();
                         eprintln!(
                             "warning: execution failed for: {}\n\
                          hint: You can fix the problem, and then run\n\
                          hint:   grit rebase --continue",
                             exec_cmd
                         );
+                        if reschedule {
+                            eprintln!("hint: '{}' has been rescheduled", exec_cmd);
+                            let mut remaining = vec![format!("exec {exec_cmd}")];
+                            remaining.extend(todo[i + 1..].iter().map(|line| (*line).to_owned()));
+                            let refs: Vec<&str> = remaining.iter().map(String::as_str).collect();
+                            write_rebase_todo_slice(rb_dir, &refs)?;
+                        }
                         // The todo was already written as `todo[i+1..]` above (matching Git's
                         // `save_todo` with `!reschedule`, which drops the executing command). With
                         // `rebase.rescheduleFailedExec` unset (Git's default), a failed `exec` is
@@ -5149,14 +5174,30 @@ fn replay_remaining(
                                         })?;
                                     if !status.success() {
                                         let code = status.code().unwrap_or(1);
+                                        let reschedule = rb_dir
+                                            .join("reschedule-failed-exec")
+                                            .exists()
+                                            && !rb_dir.join("no-reschedule-failed-exec").exists();
                                         eprintln!(
                                             "warning: execution failed for: {}\n\
                                          hint: You can fix the problem, and then run\n\
                                          hint:   grit rebase --continue",
                                             global_exec
                                         );
-                                        let remaining: Vec<&str> = todo[i + 1..].to_vec();
-                                        write_rebase_todo_slice(rb_dir, &remaining)?;
+                                        let mut remaining: Vec<String> = Vec::new();
+                                        if reschedule {
+                                            eprintln!(
+                                                "hint: '{}' has been rescheduled",
+                                                global_exec
+                                            );
+                                            remaining.push(format!("exec {global_exec}"));
+                                        }
+                                        remaining.extend(
+                                            todo[i + 1..].iter().map(|line| (*line).to_owned()),
+                                        );
+                                        let remaining_refs: Vec<&str> =
+                                            remaining.iter().map(String::as_str).collect();
+                                        write_rebase_todo_slice(rb_dir, &remaining_refs)?;
                                         std::process::exit(code);
                                     }
                                 }
