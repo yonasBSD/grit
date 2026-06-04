@@ -3,6 +3,9 @@
 
 test_description='rev-list range and exclusion patterns'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 GIT_AUTHOR_NAME='A U Thor'
