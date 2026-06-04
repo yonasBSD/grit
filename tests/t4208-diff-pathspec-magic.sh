@@ -110,7 +110,9 @@ test_expect_success 'diff-tree with single file pathspec' '
 	cd repo &&
 	grit diff-tree HEAD -- Makefile >actual &&
 	grep "Makefile" actual &&
-	test_line_count = 1 actual
+	# diff-tree on a commit prints the commit id header line first
+	# (matches real git), so 1 changed file -> 2 lines total.
+	test_line_count = 2 actual
 	)
 '
 

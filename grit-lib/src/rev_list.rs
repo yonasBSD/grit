@@ -3820,6 +3820,17 @@ fn reorder_path_limited_graph_commits(
         return Ok(Vec::new());
     }
 
+    // For a default (non `--first-parent`) dense path-limited walk Git emits commits in
+    // commit-date priority order: when it pops a merge it inserts *all* of its parents into
+    // the date-sorted pending list, so a newer side branch is shown before an older
+    // first-parent ancestor. The caller already produced this order via `date_order_walk`,
+    // so reshuffling by first-parent topology here would be wrong (it would sink a newer
+    // side commit below the older first-parent spine — t4013 `log --patch-with-stat main --
+    // dir/`). Only the `--first-parent` walk wants the first-parent spine grouping below.
+    if !first_parent_only {
+        return Ok(commits.to_vec());
+    }
+
     let included: HashSet<ObjectId> = commits.iter().copied().collect();
     let grafts = crate::rev_parse::load_graft_parents(&repo.git_dir);
     let mut chain = Vec::new();
