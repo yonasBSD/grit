@@ -2869,9 +2869,12 @@ pub(crate) fn preflight_cherry_pick_cwd_obstruction(
             if entry.mode == MODE_GITLINK {
                 let mut prefix = entry.path.clone();
                 prefix.push(b'/');
+                let abs_path = work_tree.join(&path_str);
                 if new_stage0
                     .iter()
                     .any(|new_entry| new_entry.path.starts_with(&prefix))
+                    && (submodule_dir_has_non_dotgit_content(&abs_path)
+                        || abs_path.join(".git").exists())
                 {
                     bail!("cannot replace submodule directory {path_str}");
                 }
@@ -2893,7 +2896,12 @@ pub(crate) fn preflight_cherry_pick_cwd_obstruction(
                     written.insert(entry.path.clone());
                     continue;
                 }
-                if prev.mode == MODE_GITLINK && entry.mode != MODE_GITLINK && abs_path.is_dir() {
+                if prev.mode == MODE_GITLINK
+                    && entry.mode != MODE_GITLINK
+                    && abs_path.is_dir()
+                    && (submodule_dir_has_non_dotgit_content(&abs_path)
+                        || abs_path.join(".git").exists())
+                {
                     bail!("cannot replace submodule directory {path_str}");
                 }
             }
@@ -2949,6 +2957,13 @@ fn preflight_blob_write_vs_cwd_dir(
         }
     }
     Ok(())
+}
+
+fn submodule_dir_has_non_dotgit_content(path: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    entries.flatten().any(|entry| entry.file_name() != ".git")
 }
 
 fn checkout_merged_index(

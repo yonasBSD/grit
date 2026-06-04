@@ -1426,3 +1426,12 @@ Updated: 2026-06-01
   t3510-cherry-pick.sh` passed both files.
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3513-revert-submodule complete
+
+- Focus harness completed at 14/14 after revert's checkout path preserved dropped gitlink
+  directories while allowing empty-placeholder setup replacements.
+- Related verification: `./scripts/run-tests.sh t3513-revert-submodule.sh
+  t3512-cherry-pick-submodule.sh t3510-cherry-pick.sh` passed all three files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).

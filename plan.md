@@ -94,6 +94,9 @@
     for clean checkouts, preserving submodule working trees when gitlinks are removed/updated, and
     rejecting submodule-to-file/directory replacements that would overwrite populated submodule
     directories.
+  - Completed: `t3513-revert-submodule.sh` (14/14) after applying the same submodule checkout
+    preservation rules to revert while allowing revert's setup transitions to replace empty
+    gitlink placeholders.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ## Active task — t6 family 100% pass
