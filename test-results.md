@@ -2236,3 +2236,9 @@ Updated: 2026-06-01
 - Focus harness: `./scripts/run-tests.sh t5304-prune.sh --verbose` improved to 24/32 after `gc` learned to clean invalid orphan pack indexes and sidecar keeps.
 - Related verification: `./scripts/run-tests.sh t5304-prune-packed.sh t5312-prune-corruption.sh --verbose` passes 20/20 and 11/11.
 - Quality gate: `cargo check -p grit-cli` completed with pre-existing unrelated warnings.
+
+## 2026-06-04 — t5304-prune worktree reachability progress
+
+- Focus harness: `./scripts/run-tests.sh t5304-prune.sh --verbose` improved to 27/32 after linked worktree HEAD/index/reflog reachability roots were added.
+- Related verification: `./scripts/run-tests.sh t5304-prune-packed.sh t5312-prune-corruption.sh --verbose` passes 20/20 and 11/11.
+- Quality gate: `cargo check -p grit-cli` completed with pre-existing unrelated warnings.

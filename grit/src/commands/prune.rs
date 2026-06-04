@@ -352,22 +352,8 @@ fn collect_reachable(
         collect_reflog_oids(&repo.git_dir, &mut queue);
     }
 
-    if let Ok(index) = repo.load_index() {
-        for entry in &index.entries {
-            if !entry.oid.is_zero() {
-                queue.push_back(entry.oid);
-            }
-        }
-        if let Some(records) = &index.resolve_undo {
-            for record in records.values() {
-                for (mode, oid) in record.modes.iter().zip(record.oids.iter()) {
-                    if *mode != 0 && !oid.is_zero() {
-                        queue.push_back(*oid);
-                    }
-                }
-            }
-        }
-    }
+    collect_index_oids(repo, &repo.index_path(), &mut queue);
+    collect_linked_worktree_oids(repo, &mut queue);
 
     // Match `git/reachable.c` `add_rebase_files`: OIDs recorded in in-progress rebase state
     // must stay reachable so `git prune` cannot delete `orig-head` before `rebase --abort`
@@ -499,6 +485,60 @@ fn prune_stale_temporary_packs(
         }
     }
     Ok(())
+}
+
+fn collect_index_oids(repo: &Repository, index_path: &Path, queue: &mut VecDeque<ObjectId>) {
+    if let Ok(index) = repo.load_index_at(index_path) {
+        for entry in &index.entries {
+            if !entry.oid.is_zero() {
+                queue.push_back(entry.oid);
+            }
+        }
+        if let Some(records) = &index.resolve_undo {
+            for record in records.values() {
+                for (mode, oid) in record.modes.iter().zip(record.oids.iter()) {
+                    if *mode != 0 && !oid.is_zero() {
+                        queue.push_back(*oid);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_linked_worktree_oids(repo: &Repository, queue: &mut VecDeque<ObjectId>) {
+    let worktrees = repo.git_dir.join("worktrees");
+    let Ok(entries) = fs::read_dir(worktrees) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if !ft.is_dir() {
+            continue;
+        }
+        let wt_git = entry.path();
+        collect_worktree_head_oid(repo, &wt_git, queue);
+        collect_index_oids(repo, &wt_git.join("index"), queue);
+        collect_reflog_oids(&wt_git, queue);
+    }
+}
+
+fn collect_worktree_head_oid(repo: &Repository, wt_git: &Path, queue: &mut VecDeque<ObjectId>) {
+    let Ok(head) = fs::read_to_string(wt_git.join("HEAD")) else {
+        return;
+    };
+    let head = head.trim();
+    if let Ok(oid) = ObjectId::from_hex(head) {
+        queue.push_back(oid);
+        return;
+    }
+    if let Some(refname) = head.strip_prefix("ref: ") {
+        if let Ok(oid) = refs::resolve_ref(&repo.git_dir, refname.trim()) {
+            queue.push_back(oid);
+        }
+    }
 }
 
 /// Push the object id from a single-line file under `.git/` if present and valid hex.

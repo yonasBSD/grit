@@ -182,12 +182,12 @@
     validation and small-pack deletion-style OFS_DELTA generation.
   - Completed `t5304-prune-packed.sh` (20/20) after wrapping cd-using synthetic test
     bodies in subshells so `test_when_finished`/cwd state no longer leaks between cases.
-  - Partial `t5304-prune.sh`: improved to 24/32 after direct-prune expiration, extra-head,
+  - Partial `t5304-prune.sh`: improved to 27/32 after direct-prune expiration, extra-head,
     stale temporary pack, recent loose reachability, malformed `gc.pruneExpire` diagnostics,
     `gc --no-prune` / `--prune=never` repack handling, count-objects pack-garbage diagnostics,
-    shallow-file pruning, `gc.recentObjectsHook` reachability, and gc invalid pack-index cleanup.
-    Continue here; remaining failures cover linked-worktree reachability and expire-option stderr
-    wording, plus older gc expiration count expectations.
+    shallow-file pruning, `gc.recentObjectsHook` reachability, gc invalid pack-index cleanup, and
+    linked worktree HEAD/index/reflog reachability. Continue here; remaining failures cover
+    expire-option stderr wording and older gc expiration count expectations.
   - Completed `t5351-unpack-large-objects.sh` (7/7) after honoring large-object allocation
     limits, preserving existing packs during unpack, and emitting batch fsync counters.
   - Pack/index correctness subgroup complete: `t5300-pack-object`, `t5300-unpack-objects`,
