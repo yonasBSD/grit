@@ -2908,6 +2908,18 @@ fn apply_globals(opts: &GlobalOpts) -> Result<()> {
         std::env::set_var("GIT_NAMESPACE", ns);
     }
     if !opts.config_overrides.is_empty() {
+        for kv in &opts.config_overrides {
+            let (key, value) = kv
+                .split_once('\u{1}')
+                .or_else(|| kv.split_once('='))
+                .map_or((kv.as_str(), "true"), |(key, value)| (key, value));
+            let canon = grit_lib::config::canonical_key(key.trim())?;
+            if canon == "core.bare" {
+                grit_lib::config::parse_bool(value).map_err(|_| {
+                    anyhow::anyhow!("fatal: bad boolean config value '{value}' for 'core.bare'")
+                })?;
+            }
+        }
         if opts.config_overrides.iter().any(|kv| {
             let lower = kv.to_ascii_lowercase();
             kv.contains('\n') || lower.contains("%0a")
