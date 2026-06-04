@@ -5571,7 +5571,13 @@ fn replay_remaining(
                                 } else if edited_lines.first().copied() == Some(todo[i]) {
                                     edited_lines[1..].join("\n")
                                 } else {
-                                    edited_lines.join("\n")
+                                    let mut remaining_lines = edited_lines.clone();
+                                    if let Some(pos) =
+                                        remaining_lines.iter().position(|line| *line == todo[i])
+                                    {
+                                        remaining_lines.remove(pos);
+                                    }
+                                    remaining_lines.join("\n")
                                 };
                                 if remaining.is_empty() {
                                     String::new()
