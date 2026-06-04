@@ -2420,8 +2420,16 @@ fn apply_commit_msg_cleanup(msg: &str, mode: &str) -> String {
 fn cleanup_squash_editor_message(msg: &str, config: &ConfigSet) -> String {
     let normalized = msg.replace("\r\n", "\n");
     let mut kept = Vec::new();
+    let mut uncomment_section = false;
     for line in normalized.lines() {
         let trimmed = line.trim_start();
+        if trimmed.starts_with("# The commit message #") && trimmed.contains("will be skipped") {
+            uncomment_section = false;
+        } else if trimmed.starts_with("# This is the 1st commit message:")
+            || trimmed.starts_with("# This is the commit message #")
+        {
+            uncomment_section = true;
+        }
         let skip = trimmed.starts_with("# This is a combination of ")
             || trimmed.starts_with("# This is the ")
             || trimmed.starts_with("# The commit message #")
@@ -2429,6 +2437,12 @@ fn cleanup_squash_editor_message(msg: &str, config: &ConfigSet) -> String {
                 .strip_prefix("# ")
                 .is_some_and(|rest| rest.starts_with("fixup!") || rest.starts_with("squash!"));
         if !skip {
+            if uncomment_section {
+                if let Some(rest) = trimmed.strip_prefix("# ") {
+                    kept.push(rest);
+                    continue;
+                }
+            }
             kept.push(line);
         }
     }
