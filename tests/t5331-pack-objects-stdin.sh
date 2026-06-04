@@ -151,7 +151,6 @@ test_expect_success '--stdin-packs with broken links' '
 '
 
 test_expect_success 'pack-objects --stdin with duplicate packfile' '
-	(
 	test_when_finished "rm -fr repo" &&
 
 	git init repo &&
@@ -170,11 +169,9 @@ test_expect_success 'pack-objects --stdin with duplicate packfile' '
 		packed_objects generated-pack-*.idx >actual &&
 		test_cmp expect actual
 	)
-	)
 '
 
 test_expect_success 'pack-objects --stdin with same packfile excluded and included' '
-	(
 	test_when_finished "rm -fr repo" &&
 
 	git init repo &&
@@ -191,7 +188,6 @@ test_expect_success 'pack-objects --stdin with same packfile excluded and includ
 		git pack-objects --stdin-packs generated-pack <packfiles &&
 		packed_objects generated-pack-*.idx >packed-objects &&
 		test_must_be_empty packed-objects
-	)
 	)
 '
 
@@ -257,7 +253,6 @@ objects_in_packs () {
 }
 
 test_expect_success '--stdin-packs=follow walks into unknown packs' '
-	(
 	test_when_finished "rm -fr repo" &&
 
 	git init repo &&
@@ -326,11 +321,9 @@ test_expect_success '--stdin-packs=follow walks into unknown packs' '
 		objects_in_packs $P >actual &&
 		test_cmp expect actual
 	)
-	)
 '
 
 test_expect_success '--stdin-packs with promisors' '
-	(
 	test_when_finished "rm -fr repo" &&
 	git init repo &&
 	(
@@ -367,11 +360,9 @@ test_expect_success '--stdin-packs with promisors' '
 		test_cmp expect actual &&
 		rm -f $packdir/pack-$PACK.*
 	)
-	)
 '
 
 test_expect_success '--stdin-packs does not perform backfill fetch' '
-	(
 	test_when_finished "rm -rf remote client" &&
 
 	git init remote &&
@@ -386,7 +377,6 @@ test_expect_success '--stdin-packs does not perform backfill fetch' '
 		test_line_count -gt 1 packs &&
 		GIT_TRACE2_EVENT="$(pwd)/event.log" git pack-objects --stdin-packs pack <packs &&
 		test_grep ! "\"event\":\"child_start\"" event.log
-	)
 	)
 '
 

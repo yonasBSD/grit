@@ -691,7 +691,11 @@ pub fn run(mut args: Args) -> Result<()> {
     // Read all objects.
     let mut entries: Vec<PackEntry> = Vec::with_capacity(pack_list.oids.len());
     for oid in &pack_list.oids {
-        let obj = match read_object_from_repo(&repo, oid) {
+        let obj = match if args.stdin_packs {
+            read_object_from_repo_no_lazy(&repo, oid)
+        } else {
+            read_object_from_repo(&repo, oid)
+        } {
             Ok(obj) => obj,
             Err(_) if args.missing.as_deref() == Some("allow-any") => continue,
             Err(err) => return Err(err),
@@ -747,7 +751,7 @@ pub fn run(mut args: Args) -> Result<()> {
         pack_hash_bytes,
     )?;
 
-    if entries.is_empty() {
+    if entries.is_empty() && (!args.stdin_packs || args.non_empty) {
         // `--non-empty` with an empty result is success (no pack written), never
         // an error — matches Git's pack-objects `goto cleanup`.
         if !args.stdout && !args.quiet {
@@ -2428,6 +2432,15 @@ fn collect_pack_objects_from_rev_stdin_lines(
             have_roots.insert(oid);
             continue;
         }
+        if let Some((left, right)) = trimmed.split_once("..") {
+            if !left.contains('.') && !right.contains('.') {
+                let start = if left.is_empty() { "HEAD" } else { left };
+                let end = if right.is_empty() { "HEAD" } else { right };
+                negative.push(start.to_string());
+                positive.push(end.to_string());
+                continue;
+            }
+        }
         if let Some(neg) = trimmed.strip_prefix('^') {
             negative.push(neg.to_string());
         } else {
@@ -2868,7 +2881,7 @@ fn collect_stdin_packs_oids(
         missing_specs.sort();
         bail!("fatal: could not find pack '{}'", missing_specs[0]);
     }
-    let mut oids: Vec<ObjectId> = Vec::new();
+
     let mut exclude: HashSet<ObjectId> = HashSet::new();
     for trimmed in stdin_lines
         .iter()
@@ -2890,12 +2903,19 @@ fn collect_stdin_packs_oids(
             }
         }
     }
+
+    let mut promisor_exclude: HashSet<ObjectId> = HashSet::new();
     if args.exclude_promisor_objects {
         let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
         if repo_treats_promisor_packs(&repo.git_dir, &config) {
-            exclude.extend(promisor_pack_object_ids(&repo.git_dir.join("objects")));
+            promisor_exclude = promisor_pack_object_ids(&repo.git_dir.join("objects"));
+            exclude.extend(promisor_exclude.iter().copied());
         }
     }
+
+    let mut oids: Vec<ObjectId> = Vec::new();
+    let mut follow_roots: Vec<ObjectId> = Vec::new();
+    let mut seen_result: HashSet<ObjectId> = HashSet::new();
     let mut seen_included_specs: HashSet<String> = HashSet::new();
     for trimmed in stdin_lines
         .iter()
@@ -2905,24 +2925,38 @@ fn collect_stdin_packs_oids(
         if trimmed.starts_with('^') {
             continue;
         }
-        if excluded_specs.contains(&normalize_stdin_pack_spec_name(trimmed)) {
-            continue;
-        }
-        if !seen_included_specs.insert(normalize_stdin_pack_spec_name(trimmed)) {
+        let normalized = normalize_stdin_pack_spec_name(trimmed);
+        if !seen_included_specs.insert(normalized.clone()) {
             continue;
         }
         let idx_path = pack_index_path_for_stdin_pack_spec(&pack_dirs, trimmed)?;
+        if args.exclude_promisor_objects && idx_path.with_extension("promisor").is_file() {
+            bail!(
+                "packfile {} is a promisor but --exclude-promisor-objects was given",
+                idx_path.with_extension("pack").display()
+            );
+        }
+        if excluded_specs.contains(&normalized) {
+            continue;
+        }
         let idx = grit_lib::pack::read_pack_index(&idx_path)
             .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", idx_path.display()))?;
         for entry in idx.entries {
             if entry.oid.len() == 20 {
                 if let Ok(oid) = ObjectId::from_bytes(&entry.oid) {
-                    oids.push(oid);
+                    if args.stdin_packs_follow {
+                        follow_roots.push(oid);
+                        if !exclude.contains(&oid) && seen_result.insert(oid) {
+                            oids.push(oid);
+                        }
+                    } else {
+                        oids.push(oid);
+                    }
                 }
             }
         }
     }
-    // `--unpacked` additionally packs loose objects not present in any pack.
+
     if args.unpacked {
         let mut packed_any: HashSet<ObjectId> = HashSet::new();
         for pack_dir in &pack_dirs {
@@ -2943,16 +2977,83 @@ fn collect_stdin_packs_oids(
         collect_all_loose(&repo.odb, &mut loose)?;
         for oid in loose {
             if !exclude.contains(&oid) && !packed_any.contains(&oid) {
-                oids.push(oid);
+                if args.stdin_packs_follow {
+                    follow_roots.push(oid);
+                }
+                if seen_result.insert(oid) {
+                    oids.push(oid);
+                }
             }
         }
     }
+
+    if args.stdin_packs_follow {
+        add_stdin_pack_follow_reachable(
+            repo,
+            &mut oids,
+            &mut seen_result,
+            follow_roots,
+            &exclude,
+            &promisor_exclude,
+        );
+    }
+
     Ok(PackObjectList {
         oids,
         force_include: Vec::new(),
         thin_blob_deltas: Vec::new(),
         rev_list_stdin: false,
     })
+}
+
+fn add_stdin_pack_follow_reachable(
+    repo: &Repository,
+    oids: &mut Vec<ObjectId>,
+    seen_result: &mut HashSet<ObjectId>,
+    roots: Vec<ObjectId>,
+    exclude: &HashSet<ObjectId>,
+    promisor_exclude: &HashSet<ObjectId>,
+) {
+    let mut seen_walk = HashSet::new();
+    let mut queue: VecDeque<ObjectId> = roots.into_iter().collect();
+    while let Some(oid) = queue.pop_front() {
+        if !seen_walk.insert(oid) {
+            continue;
+        }
+        let Ok(obj) = read_object_from_repo_no_lazy(repo, &oid) else {
+            continue;
+        };
+        if promisor_exclude.contains(&oid) {
+            continue;
+        }
+        if !exclude.contains(&oid) && seen_result.insert(oid) {
+            oids.push(oid);
+        }
+        match obj.kind {
+            ObjectKind::Commit => {
+                if let Ok(commit) = parse_commit(&obj.data) {
+                    queue.push_back(commit.tree);
+                    queue.extend(commit.parents);
+                }
+            }
+            ObjectKind::Tree => {
+                if let Ok(entries) = parse_tree(&obj.data) {
+                    queue.extend(
+                        entries
+                            .into_iter()
+                            .filter(|entry| entry.mode != MODE_GITLINK)
+                            .map(|entry| entry.oid),
+                    );
+                }
+            }
+            ObjectKind::Tag => {
+                if let Ok(tag) = parse_tag(&obj.data) {
+                    queue.push_back(tag.object);
+                }
+            }
+            ObjectKind::Blob => {}
+        }
+    }
 }
 
 fn collect_incremental_repack_oids(repo: &Repository, args: &Args) -> Result<PackObjectList> {
@@ -3413,6 +3514,13 @@ fn read_object_from_repo(repo: &Repository, oid: &ObjectId) -> Result<grit_lib::
         }
     }
     bail!("object not found: {}", oid.to_hex())
+}
+
+fn read_object_from_repo_no_lazy(
+    repo: &Repository,
+    oid: &ObjectId,
+) -> Result<grit_lib::objects::Object> {
+    repo.odb.read(oid).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 fn pack_index_is_v1(path: &Path) -> bool {

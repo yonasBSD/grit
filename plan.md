@@ -196,12 +196,12 @@
     `tree:0`.
   - Completed `t5318-pack-objects-revs-exclude.sh` (9/9) after making the synthetic
     fixture explicitly initialize its expected `master` branch and clear old repo metadata.
-  - Partial `t5331-pack-objects-stdin.sh`: improved from 2/16 to 12/16 by adding
-    `--stdin-packs[=mode]` parsing/incompatibility diagnostics, alternate pack lookup, empty
-    output packs, duplicate packfile handling, and loose-object de-duplication. Continue here;
-    remaining failures are tests 8, 11, 12, and 13.
+  - Completed `t5331-pack-objects-stdin.sh` (16/16) after fixing `A..B` rev-stdin range
+    parsing, empty stdin-pack output pack/index creation, `--stdin-packs=follow` reachability
+    through unlisted packs without lazy fetching, promisor-pack exclusion diagnostics, and
+    tree-filtered local clone checkout hydration for the no-backfill trace case.
   - Completed `t5330-no-lazy-fetch-with-commit-graph.sh` (4/4) while investigating adjacent
-    pack selection work; `t5331-pack-objects-stdin.sh` remains the current focus.
+    pack selection work.
   - Opportunistic clone-options quick win: completed `t5606-clone-options.sh` (21/21)
     by fixing duplicate global-config cleanup in the synthetic fixture.
   - Opportunistic transport refresh: verified `t5404-tracking-branches.sh` (7/7); no code changes required.

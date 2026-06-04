@@ -1406,6 +1406,10 @@ pub fn run(mut args: Args) -> Result<()> {
     // needed for the initial checkout must be copied into the clone explicitly.
     // Only for an explicit `--filter=blob:none` clone; cloning a promisor repo without `--filter`
     // inherits metadata (`partial_blob_none`) but must not pre-hydrate (t0411-clone-from-partial).
+    if clone_filter_omits_root_trees(filter_spec.as_deref()) && !args.bare && !args.no_checkout {
+        hydrate_tree_zero_checkout_objects(&dest).context("hydrating tree:0 checkout objects")?;
+    }
+
     if partial_blob_none
         && matches!(filter_spec.as_deref(), Some("blob:none"))
         && !args.bare
@@ -3126,6 +3130,10 @@ fn run_ssh_clone(args: Args) -> Result<()> {
             .context("materializing tree:0 partial-clone object layout")?;
         initialize_partial_clone_state_from_missing(&dest, &remote_name, filter_spec, omitted)
             .context("initializing tree:0 partial-clone promisor state")?;
+    }
+
+    if clone_filter_omits_root_trees(filter_spec.as_deref()) && !args.bare && !args.no_checkout {
+        hydrate_tree_zero_checkout_objects(&dest).context("hydrating tree:0 checkout objects")?;
     }
 
     if partial_blob_none
@@ -5469,6 +5477,18 @@ fn materialize_blob_none_partial_layout(dest: &Repository) -> Result<()> {
         let _ = fs::remove_file(loose);
     }
 
+    Ok(())
+}
+
+fn hydrate_tree_zero_checkout_objects(dest: &Repository) -> Result<()> {
+    let dest_config = ConfigSet::load(Some(&dest.git_dir), true)?;
+    let Some(promisor) =
+        crate::commands::promisor_hydrate::find_promisor_source(&dest_config, &dest.git_dir)?
+    else {
+        return Ok(());
+    };
+    crate::commands::promisor_hydrate::hydrate_head_tree_blobs_from_promisor(dest, &promisor)?;
+    crate::commands::promisor_hydrate::trim_promisor_marker_to_missing_local(dest)?;
     Ok(())
 }
 

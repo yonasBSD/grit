@@ -2195,3 +2195,9 @@ Updated: 2026-06-01
 - Harness refresh: `./scripts/run-tests.sh t3405-rebase-malformed.sh` passed 5/5 with the current
   rebase implementation.
 - No code changes were required for this fixture.
+
+## 2026-06-04 — t5331-pack-objects-stdin
+
+- Focus harness: `./scripts/run-tests.sh t5331-pack-objects-stdin.sh --verbose` passes 16/16 after completing stdin-pack empty output, follow reachability, promisor exclusion, and no-backfill clone coverage.
+- Related verification: `./scripts/run-tests.sh t5300-pack-object.sh t5317-pack-objects-filter-objects.sh t5330-no-lazy-fetch-with-commit-graph.sh t5616-partial-clone.sh --verbose` passes 63/63, 33/33, 4/4, and 47/47 respectively.
+- Quality gates: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`, and `cargo test -p grit-lib --lib` completed; pre-existing warnings remain in unrelated files.

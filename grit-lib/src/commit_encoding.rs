@@ -123,7 +123,6 @@ pub fn ensure_body_trailing_newline(mut bytes: Vec<u8>) -> Vec<u8> {
 /// Whether `label` names an encoding Git can decode (ISO-8859-1 or any encoding
 /// resolvable via [`resolve`]). Unknown names (e.g. the test's `non-utf-8`) return
 /// false, matching Git's `logmsg_reencode` no-op fallback.
-#[must_use]
 pub fn is_known_encoding(label: &str) -> bool {
     is_iso_8859_1(label) || resolve(label).is_some()
 }

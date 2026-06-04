@@ -689,7 +689,7 @@ impl CommitGraphChain {
     /// Consult Bloom filters for a single-parent commit before diffing trees.
     pub fn bloom_precheck_for_paths(
         &self,
-        odb: &Odb,
+        _odb: &Odb,
         oid: ObjectId,
         pathspecs: &[String],
         bloom_cwd: Option<&str>,

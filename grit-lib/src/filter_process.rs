@@ -562,7 +562,7 @@ impl DelayedProcessCheckout {
 
         while !filters.is_empty() {
             let mut still_active: Vec<String> = Vec::new();
-            for cmd in filters.drain(..).collect::<Vec<_>>() {
+            for cmd in std::mem::take(&mut filters) {
                 let available = match list_available_blobs(&cmd) {
                     Ok(paths) => paths,
                     Err(_) => {
