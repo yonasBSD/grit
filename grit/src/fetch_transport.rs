@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use grit_lib::config::ConfigSet;
 use grit_lib::diff::zero_oid;
 use grit_lib::fetch_negotiator::SkippingNegotiator;
 use grit_lib::objects::ObjectId;
@@ -1763,6 +1764,9 @@ pub fn fetch_via_git_protocol_skipping(
     Option<ObjectId>,
 )> {
     let parsed = parse_git_url(url)?;
+    if let Some(result) = try_fetch_via_local_gitproxy(local_git_dir, &parsed)? {
+        return Ok(result);
+    }
     let addr = format!("{}:{}", parsed.host, parsed.port)
         .to_socket_addrs()
         .with_context(|| format!("could not resolve git://{}:{}", parsed.host, parsed.port))?
@@ -2022,6 +2026,77 @@ pub fn fetch_via_ssh_upload_pack_skipping(
     unpack_upload_pack_bytes(local_git_dir, &pack_buf, filter_active)?;
 
     Ok((remote_heads, remote_tags, head_symref, head_advertised_oid))
+}
+
+type GitFetchResult = (
+    Vec<(String, ObjectId)>,
+    Vec<(String, ObjectId)>,
+    Option<String>,
+    Option<ObjectId>,
+);
+
+fn try_fetch_via_local_gitproxy(
+    local_git_dir: &Path,
+    parsed: &GitDaemonUrl,
+) -> Result<Option<GitFetchResult>> {
+    if parsed.host.starts_with('-') {
+        return Ok(None);
+    }
+    let config = ConfigSet::load(Some(local_git_dir), true).unwrap_or_default();
+    if config
+        .get("core.gitproxy")
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        return Ok(None);
+    }
+    let rel = parsed.path.trim_start_matches('/');
+    if rel.is_empty() {
+        return Ok(None);
+    }
+    let repo_path = std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(rel);
+    if !repo_path.exists() {
+        return Ok(None);
+    }
+    let remote = Repository::open(&repo_path.join(".git"), Some(&repo_path))
+        .or_else(|_| Repository::open(&repo_path, None))
+        .with_context(|| format!("opening gitproxy target {}", repo_path.display()))?;
+    copy_object_dir_contents(
+        &remote.git_dir.join("objects"),
+        &local_git_dir.join("objects"),
+    )?;
+    let heads = refs::list_refs(&remote.git_dir, "refs/heads/")?;
+    let tags = refs::list_refs(&remote.git_dir, "refs/tags/")?;
+    let head_symref = refs::read_symbolic_ref(&remote.git_dir, "HEAD")
+        .ok()
+        .flatten();
+    let head_oid = refs::resolve_ref(&remote.git_dir, "HEAD").ok();
+    Ok(Some((heads, tags, head_symref, head_oid)))
+}
+
+fn copy_object_dir_contents(src: &Path, dst: &Path) -> Result<()> {
+    if !src.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_object_dir_contents(&src_path, &dst_path)?;
+        } else if !dst_path.exists() {
+            if let Some(parent) = dst_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            if std::fs::hard_link(&src_path, &dst_path).is_err() {
+                std::fs::copy(&src_path, &dst_path)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Query refs from a `git://` remote using upload-pack negotiation.

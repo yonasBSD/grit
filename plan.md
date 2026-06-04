@@ -78,6 +78,8 @@
     by suppressing synthetic `have` trace lines under the noop negotiator.
   - Opportunistic symlink pull/push quick win: completed `t5522-pull-symlink.sh` (4/4)
     by normalizing cwd-prefixed pathspecs.
+  - Opportunistic gitproxy quick win: completed `t5532-fetch-proxy.sh` (5/5) by
+    honoring local `core.gitproxy` git:// fetches.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

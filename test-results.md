@@ -1,4 +1,10 @@
 
+## 2026-06-04 — t5532-fetch-proxy
+
+- Focus harness: `./scripts/run-tests.sh t5532-fetch-proxy.sh --verbose` passes 5/5 after local `core.gitproxy` git:// fetch handling.
+- Regression harness: `./scripts/run-tests.sh t5570-git-daemon.sh t5532-fetch-proxy.sh --verbose` keeps `t5532` passing; `t5570` remains a zero-test row.
+
+
 ## 2026-06-04 — t5522-pull-symlink
 
 - Focus harness: `./scripts/run-tests.sh t5522-pull-symlink.sh --verbose` passes 4/4 after cwd-prefixed pathspec normalization.
