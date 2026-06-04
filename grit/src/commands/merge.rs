@@ -24,7 +24,9 @@ use grit_lib::hooks::{
     run_commit_hook, run_hook, run_reference_transaction_committed_for_head_update, CommitHookEnv,
     HookResult,
 };
-use grit_lib::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_SYMLINK, MODE_TREE};
+use grit_lib::index::{
+    Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_REGULAR, MODE_SYMLINK, MODE_TREE,
+};
 use grit_lib::merge_base::is_ancestor;
 use grit_lib::merge_file::{self, ConflictStyle, MergeFavor, MergeInput};
 use grit_lib::objects::{
@@ -5528,6 +5530,13 @@ fn detect_merge_renames(
             .unwrap_or(1000)
     };
     let zero_oid = ObjectId::zero();
+    let is_empty_regular_base = |entry: &IndexEntry| {
+        matches!(entry.mode, MODE_REGULAR | MODE_EXECUTABLE)
+            && repo
+                .odb
+                .read(&entry.oid)
+                .is_ok_and(|obj| obj.data.is_empty())
+    };
 
     // Build diff entries from base to side, handling the "add-source" pattern:
     // If base has path P with OID X, and side has path P with a DIFFERENT OID Y,
@@ -5547,6 +5556,9 @@ fn detect_merge_renames(
         // Find base entries whose OID appears at a different path in the side
         let mut exact_renames: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
         for (base_path, base_entry) in base {
+            if is_empty_regular_base(base_entry) {
+                continue;
+            }
             if let Some(side_entry) = side.get(base_path) {
                 // If the same blob is still present at the original path, this
                 // source was not renamed away; don't treat additional copies as
@@ -5650,6 +5662,9 @@ fn detect_merge_renames(
         let mut matched_targets: BTreeSet<Vec<u8>> = BTreeSet::new();
 
         for (base_path, base_entry) in base {
+            if is_empty_regular_base(base_entry) {
+                continue;
+            }
             if side.contains_key(base_path) {
                 // Path still exists in side — check if it's an add-source pattern
                 let side_entry = &side[base_path];
@@ -5705,6 +5720,12 @@ fn detect_merge_renames(
                 if let (Some(old), Some(new)) = (&e.old_path, &e.new_path) {
                     let old_bytes = old.as_bytes().to_vec();
                     let new_bytes = new.as_bytes().to_vec();
+                    if base
+                        .get(&old_bytes)
+                        .is_some_and(|entry| is_empty_regular_base(entry))
+                    {
+                        continue;
+                    }
                     if !map.contains_key(&old_bytes) && !matched_targets.contains(&new_bytes) {
                         map.insert(old_bytes, new_bytes.clone());
                         matched_targets.insert(new_bytes);
