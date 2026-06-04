@@ -456,6 +456,10 @@ pub fn run(mut args: Args) -> Result<()> {
         return do_continue();
     }
     if args.skip {
+        if args.verbose {
+            eprintln!("error: option --skip cannot be used with other options");
+            std::process::exit(129);
+        }
         return do_skip();
     }
     if args.quit {

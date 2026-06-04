@@ -1645,3 +1645,13 @@ Updated: 2026-06-01
   files.
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3403-rebase-skip partial
+
+- Focus harness is 12/20 after `rebase --skip` began rejecting incompatible extra options (e.g.
+  `-v`) without consuming the in-progress rebase state.
+- Related verification: `./scripts/run-tests.sh t3400-rebase.sh t3402-rebase-merge.sh
+  t3403-rebase-skip.sh t3422-rebase-incompatible-options.sh` kept `t3400`, `t3402`, and `t3422`
+  green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
