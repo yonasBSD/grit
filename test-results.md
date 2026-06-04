@@ -310,6 +310,11 @@
 - Focus harness: `./scripts/run-tests.sh t3441-rebase-exec.sh --verbose` passes 3/3 after wrapping
   ported fixture bodies to prevent `cd repo` from leaking between top-level tests.
 
+## 2026-06-04 — t3442-rebase-onto-upstream
+
+- Focus harness: `./scripts/run-tests.sh t3442-rebase-onto-upstream.sh --verbose` passes 3/3 after
+  wrapping ported fixture bodies to prevent `cd repo` from leaking between top-level tests.
+
 ## 2026-06-04 — t3404-rebase-interactive direct reword partial
 
 - Focus harness improved to 74/132 after interactive `reword` entries started replaying in the

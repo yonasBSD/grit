@@ -158,6 +158,8 @@
     command.
   - Completed: `t3441-rebase-exec.sh` (3/3) after wrapping the ported fixture bodies in subshells
     so the setup `cd repo` does not leak into later tests.
+  - Completed: `t3442-rebase-onto-upstream.sh` (3/3) after wrapping the ported fixture bodies in
+    subshells so the setup `cd repo` does not leak into later tests.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ---
