@@ -2272,3 +2272,9 @@ Updated: 2026-06-01
 - Focus harness: `./scripts/run-tests.sh t5329-pack-objects-cruft.sh --verbose` improved to 19/25 after one-step-off loose commits stopped being filtered from direct cruft packs.
 - Related verification: `./scripts/run-tests.sh t5331-pack-objects-stdin.sh t5304-prune.sh --verbose` passes 16/16 and 32/32.
 - Quality gates: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`, and `cargo test -p grit-lib --lib` completed; pre-existing unrelated warnings remain.
+
+## 2026-06-04 — t5329-pack-objects-cruft expiration/recent progress
+
+- Focus harness: `./scripts/run-tests.sh t5329-pack-objects-cruft.sh --verbose` improved to 23/25 after cruft expiration traversal, `--local`, empty cruft output, `hash-object -w` freshening, and recent-objects hook handling.
+- Related verification: `./scripts/run-tests.sh t5304-prune.sh t5331-pack-objects-stdin.sh t5605-clone-local.sh --verbose` passes 32/32, 16/16, and 23/23.
+- Quality gates: `cargo check -p grit-cli` and `cargo test -p grit-lib --lib` completed with pre-existing unrelated warnings.

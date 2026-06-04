@@ -1829,6 +1829,13 @@ fn remove_superseded_packs_after_full_repack(
     Ok(())
 }
 
+fn remove_generated_pack_family(pack_dir: &Path, hash: &str) {
+    let stem = format!("pack-{hash}");
+    let _ = fs::remove_file(pack_dir.join(format!("{stem}.pack")));
+    let _ = fs::remove_file(pack_dir.join(format!("{stem}.idx")));
+    remove_pack_sidecars(pack_dir, &stem);
+}
+
 pub(crate) fn remove_superseded_packs_multi(
     pack_dir: &Path,
     keep_pack_names: &[String],

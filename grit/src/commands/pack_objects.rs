@@ -670,7 +670,7 @@ pub fn run(mut args: Args) -> Result<()> {
         eprintln!("Enumerating objects: {}, done.", pack_list.oids.len());
     }
 
-    if pack_list.oids.is_empty() && !args.stdin_packs {
+    if pack_list.oids.is_empty() && !args.stdin_packs && !args.cruft {
         // `--non-empty` means "do not write an empty pack": Git's pack-objects
         // simply succeeds writing nothing (`if (non_empty && !nr_result) goto
         // cleanup;`), it never errors. A `repack --geometric --exclude-promisor-objects`
@@ -751,7 +751,7 @@ pub fn run(mut args: Args) -> Result<()> {
         pack_hash_bytes,
     )?;
 
-    if entries.is_empty() && (!args.stdin_packs || args.non_empty) {
+    if entries.is_empty() && (!args.stdin_packs || args.non_empty) && !args.cruft {
         // `--non-empty` with an empty result is success (no pack written), never
         // an error — matches Git's pack-objects `goto cleanup`.
         if !args.stdout && !args.quiet {
@@ -1176,7 +1176,7 @@ fn pack_stem_from_line(line: &str) -> String {
 /// `git pack-objects --cruft` stdin protocol: fresh pack basenames, `-` lines for packs to
 /// discard, optional retained packs (no `-`) that are neither fresh nor discarded (unknown packs
 /// on disk are treated as retained and skipped when gathering cruft candidates).
-fn collect_cruft_pack_stdin_oids(repo: &Repository) -> Result<PackObjectList> {
+fn collect_cruft_pack_stdin_oids(repo: &Repository, args: &Args) -> Result<PackObjectList> {
     let stdin = io::stdin();
     let mut fresh: HashSet<String> = HashSet::new();
     let mut discard: HashSet<String> = HashSet::new();
@@ -1250,12 +1250,164 @@ fn collect_cruft_pack_stdin_oids(repo: &Repository) -> Result<PackObjectList> {
     // `prepare_cruft_history`), and those objects must land in the cruft pack.
     oids.retain(|o| !fresh_oids.contains(o));
 
+    if args.local {
+        let alt_oids = alternate_object_ids(repo)?;
+        oids.retain(|o| !alt_oids.contains(o));
+    }
+    apply_cruft_expiration(repo, args, &mut oids)?;
+
     Ok(PackObjectList {
         oids: oids.into_iter().collect(),
         force_include: Vec::new(),
         thin_blob_deltas: Vec::new(),
         rev_list_stdin: false,
     })
+}
+
+fn alternate_object_ids(repo: &Repository) -> Result<HashSet<ObjectId>> {
+    let mut out = HashSet::new();
+    let alternates = grit_lib::pack::read_alternates_recursive(repo.odb.objects_dir())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    for objects_dir in alternates {
+        collect_all_loose_in_dir(&objects_dir, &mut out)?;
+        let indexes = grit_lib::pack::read_local_pack_indexes(&objects_dir)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        for idx in indexes {
+            for entry in idx.entries {
+                if entry.oid.len() == 20 {
+                    if let Ok(oid) = ObjectId::from_bytes(&entry.oid) {
+                        out.insert(oid);
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn apply_cruft_expiration(
+    repo: &Repository,
+    args: &Args,
+    oids: &mut BTreeSet<ObjectId>,
+) -> Result<()> {
+    let Some(threshold) = cruft_expiration_threshold(args.cruft_expiration.as_deref()) else {
+        return Ok(());
+    };
+    let candidates: HashSet<ObjectId> = oids.iter().copied().collect();
+    let mtimes = collect_cruft_mtime_map(repo, &oids.iter().copied().collect::<Vec<_>>())?;
+    let mut keep = HashSet::new();
+    let mut queue = VecDeque::new();
+    for oid in &candidates {
+        if mtimes.get(oid).copied().unwrap_or(0) >= threshold {
+            queue.push_back(*oid);
+        }
+    }
+    for oid in recent_objects_hook_oids(repo)? {
+        if candidates.contains(&oid) {
+            queue.push_back(oid);
+        }
+    }
+    while let Some(oid) = queue.pop_front() {
+        if !candidates.contains(&oid) || !keep.insert(oid) {
+            continue;
+        }
+        let Ok(obj) = read_object_from_repo(repo, &oid) else {
+            continue;
+        };
+        match obj.kind {
+            ObjectKind::Commit => {
+                if let Ok(commit) = parse_commit(&obj.data) {
+                    queue.push_back(commit.tree);
+                    queue.extend(commit.parents);
+                }
+            }
+            ObjectKind::Tree => {
+                if let Ok(entries) = parse_tree(&obj.data) {
+                    queue.extend(
+                        entries
+                            .into_iter()
+                            .filter(|entry| entry.mode != MODE_GITLINK)
+                            .map(|entry| entry.oid),
+                    );
+                }
+            }
+            ObjectKind::Tag => {
+                if let Ok(tag) = parse_tag(&obj.data) {
+                    queue.push_back(tag.object);
+                }
+            }
+            ObjectKind::Blob => {}
+        }
+    }
+    oids.retain(|oid| keep.contains(oid));
+    Ok(())
+}
+
+fn recent_objects_hook_oids(repo: &Repository) -> Result<Vec<ObjectId>> {
+    let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let hooks: Vec<String> = cfg
+        .entries()
+        .iter()
+        .filter(|entry| entry.key == "gc.recentobjectshook")
+        .filter_map(|entry| entry.value.clone())
+        .filter(|value| !value.trim().is_empty())
+        .collect();
+    let mut out = Vec::new();
+    for hook in hooks {
+        let mut cmd = std::process::Command::new(hook.trim());
+        if let Some(work_tree) = &repo.work_tree {
+            cmd.current_dir(work_tree);
+        }
+        let output = cmd
+            .output()
+            .with_context(|| format!("unable to enumerate additional recent objects with {hook}"))?;
+        if !output.status.success() {
+            bail!("unable to enumerate additional recent objects");
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Ok(oid) = ObjectId::from_hex(line.trim()) {
+                out.push(oid);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn cruft_expiration_threshold(raw: Option<&str>) -> Option<u32> {
+    let raw = raw.map(str::trim).filter(|s| !s.is_empty())?;
+    if raw.eq_ignore_ascii_case("never") {
+        return None;
+    }
+    if raw == "now" {
+        return filetime_now_u32().checked_add(1);
+    }
+    if raw.contains('-') {
+        return Some(0);
+    }
+    let normalized = raw.replace('.', " ").to_ascii_lowercase();
+    let parts: Vec<&str> = normalized.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let n = parts[0].parse::<u64>().ok()?;
+    let unit = parts[1].trim_end_matches('s');
+    let secs = match unit {
+        "second" => n,
+        "minute" => n.saturating_mul(60),
+        "hour" => n.saturating_mul(3600),
+        "day" => n.saturating_mul(86_400),
+        "week" => n.saturating_mul(7 * 86_400),
+        _ => return None,
+    };
+    let now = u64::from(filetime_now_u32());
+    Some(now.saturating_sub(secs).min(u64::from(u32::MAX)) as u32)
+}
+
+fn filetime_now_u32() -> u32 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs().min(u64::from(u32::MAX)) as u32)
+        .unwrap_or(0)
 }
 
 /// Effective maximum delta chain length for `pack-objects` (`--depth`), matching Git semantics:
@@ -2700,7 +2852,7 @@ fn collect_oids(repo: &Repository, args: &Args) -> Result<PackObjectList> {
     }
 
     if args.cruft && !args.incremental {
-        return collect_cruft_pack_stdin_oids(repo);
+        return collect_cruft_pack_stdin_oids(repo, args);
     }
 
     let stdin_lines: Vec<String> = io::stdin()
@@ -3287,6 +3439,30 @@ fn collect_all_loose(odb: &Odb, oids: &mut BTreeSet<ObjectId>) -> Result<()> {
     }
     Ok(())
 }
+
+fn collect_all_loose_in_dir(objects_dir: &Path, oids: &mut HashSet<ObjectId>) -> Result<()> {
+    for prefix in 0..=255u8 {
+        let hex_prefix = format!("{prefix:02x}");
+        let dir = objects_dir.join(&hex_prefix);
+        if !dir.exists() {
+            continue;
+        }
+        let rd = std::fs::read_dir(&dir)?;
+        for entry in rd {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.len() == 38 {
+                let full_hex = format!("{hex_prefix}{name_str}");
+                if let Ok(oid) = ObjectId::from_hex(&full_hex) {
+                    oids.insert(oid);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 
 /// For incremental `pack-objects --all --unpacked` with `--window=0`, order commit objects so the
 /// newest tip appears first and the first-parent chain follows (t5332 pack index order).

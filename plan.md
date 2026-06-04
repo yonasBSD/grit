@@ -188,11 +188,13 @@
     shallow-file pruning, `gc.recentObjectsHook` reachability, gc invalid pack-index cleanup,
     linked worktree HEAD/index/reflog reachability, missing-value `--expire` wording, gc
     post-repack prune-packed cleanup, and local-clone loose-object mtime preservation.
-  - Partial `t5329-pack-objects-cruft.sh`: improved from 4/25 to 19/25 after adding
-    `test-tool pack-mtimes`, writing `.mtimes` sidecars for cruft packs, fixing fixture
-    cleanup scope, accepting absolute hyphenated prune dates, and keeping one-step-off loose
-    commits in direct cruft packs. Continue here; remaining failures cover tree/blob expiration
-    semantics, `--local`, cruft freshening, and recentObjectsHook cruft reachability.
+  - Partial `t5329-pack-objects-cruft.sh`: improved from 4/25 to 23/25 after adding
+    `test-tool pack-mtimes`, writing `.mtimes` sidecars for cruft packs, fixing fixture cleanup
+    scope, accepting absolute hyphenated prune dates, keeping one-step-off loose commits in direct
+    cruft packs, adding cruft expiration traversal, `--local` alternate dropping, empty cruft pack
+    output, loose materialization for `hash-object -w`, and recentObjectsHook cruft roots. Continue
+    here; remaining failures are stale cruft-pack cleanup for `gc.recentObjectsHook` and dirty-hook
+    failure handling.
   - Refreshed adjacent clone-local row: `t5605-clone-local.sh` is back to 23/23 after rejecting
     explicit nonexistent `.git` clone sources and routing custom `git-upload-pack` templates
     through grit without the test-only dubious-owner override.
