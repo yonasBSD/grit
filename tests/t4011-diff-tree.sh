@@ -929,8 +929,7 @@ test_expect_success 'diff-tree -r output line count matches changed file count' 
 	commit_rsrc=$(cat ../commit_rsrc) &&
 	commit_rdst=$(cat ../commit_rdst) &&
 	git diff-tree -r "$commit_rsrc" "$commit_rdst" >out &&
-	count=$(wc -l <out) &&
-	test "$count" = "2"
+	test_line_count = 2 out
 	)
 '
 
