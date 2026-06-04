@@ -6534,15 +6534,17 @@ fn finish_rebase(
 
         let finish_branch = format!("{ra} (finish): {head_name} onto {}", onto_oid.to_hex());
         let finish_head = format!("{ra} (finish): returning to {head_name}");
-        let _ = append_reflog(
-            git_dir,
-            head_name,
-            &old_branch_oid,
-            &new_tip,
-            &ident,
-            &finish_branch,
-            false,
-        );
+        if old_branch_oid != new_tip {
+            let _ = append_reflog(
+                git_dir,
+                head_name,
+                &old_branch_oid,
+                &new_tip,
+                &ident,
+                &finish_branch,
+                false,
+            );
+        }
         let _ = append_reflog(
             git_dir,
             "HEAD",

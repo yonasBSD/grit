@@ -123,6 +123,13 @@
 - Current first failure is test 30: `git rebase -v -i --onto new-branch1 HEAD^` succeeds instead
   of stopping for the expected conflict before `--continue`.
 
+## 2026-06-04 — t3404-rebase-interactive branch reflog partial
+
+- Focus harness currently records 57/132 after no-op rebase finishes stopped appending branch
+  reflog entries that hide earlier reflog positions.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh t3400-rebase.sh
+  t3200-branch.sh --verbose` keeps `t3400` and `t3200` green.
+
 ## 2026-06-03 — t3301-notes partial
 
 - Focus harness improved to 113/153 after `log --pretty=raw` stopped printing an extra trailing
