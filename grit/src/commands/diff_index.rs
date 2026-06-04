@@ -3078,7 +3078,23 @@ pub(crate) fn write_patch_entry_inner(
             Vec::new()
         }
     } else {
-        read_blob_raw(odb, &entry.new_oid)
+        let blob = read_blob_raw(odb, &entry.new_oid);
+        // A dirty submodule's modified worktree blob is hashed (non-zero new_oid) but never
+        // written to the submodule ODB, so `read_blob_raw` comes up empty. Fall back to the
+        // worktree file so the inner `--submodule=diff` hunk shows the new content (t4060 #23).
+        if blob.is_empty()
+            && entry.new_oid != empty_blob_oid()
+            && entry.status != DiffStatus::Deleted
+        {
+            if let Some(wt) = work_tree {
+                let path = entry.new_path.as_deref().unwrap_or(new_path);
+                read_worktree_path_raw(&wt.join(path))
+            } else {
+                blob
+            }
+        } else {
+            blob
+        }
     };
 
     // Check for binary content
