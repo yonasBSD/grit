@@ -1363,20 +1363,18 @@ fn diff_tree_vs_worktree(
             }
             let sub_head = read_submodule_head_oid(&abs);
             // A gitlink whose worktree directory no longer exists is a deleted submodule: Git's
-            // `diff-lib.c` reports it as `M`/`T` with the new gitlink resolving to the null OID
-            // (the `(submodule deleted)` header). Detect this before the uninitialized check.
+            // `diff-lib.c` reports it as a deletion (`D`, new mode 000000). `--submodule=log`/`diff`
+            // still render the `(submodule deleted)` summary from the deleted gitlink; `--submodule=
+            // short` renders the `deleted file mode 160000` / `-Subproject commit` block (t4041 #44).
             if sub_head.is_none() && !abs.exists() {
                 let old = tree_map.get(path).copied().or(Some(*index_snapshot));
                 merged.insert(
                     path.clone(),
                     RawChange {
                         path: path.clone(),
-                        status: 'M',
+                        status: 'D',
                         old,
-                        new: Some(Snapshot {
-                            mode: MODE_GITLINK,
-                            oid: zero_oid(),
-                        }),
+                        new: None,
                     },
                 );
                 continue;
