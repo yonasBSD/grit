@@ -98,6 +98,12 @@ fi
 case "$*" in
 *"test-tool"*"bundle-uri"*) _http=0 ;;
 esac
+# System git's shell-based `git submodule` reads `GIT_EXEC_PATH` as a single directory; the
+# HTTP test harness prepends a temporary exec path for upload-pack wrappers, so keep submodule
+# operations on grit and let grit delegate only the HTTP clone step with a clean environment.
+case "$*" in
+*submodule*) _http=0 ;;
+esac
 # `git clone --bundle-uri` over HTTP is implemented in grit (t5558-clone-bundle-uri.sh).
 _clone=0
 _bundle_uri=0

@@ -98,6 +98,8 @@
     applying configured remote fetch refspecs during clone.
   - Opportunistic protocol-disable quick win: completed `t5810-proto-disable-local.sh` (54/54) by
     rejecting dash-prefixed relative fetch paths before upload-pack.
+  - Opportunistic ambiguous-transport quick win: completed `t5619-clone-local-ambiguous-transport.sh` (2/2) by
+    keeping HTTP submodule operations on grit while delegating their HTTP clone step cleanly.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

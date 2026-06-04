@@ -282,7 +282,7 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                 let src_trim = clone_src_str.trim_start();
                 let mut clone_cmd = if src_trim.starts_with("http://") || src_trim.starts_with("https://")
                 {
-                    let mut c = std::process::Command::new("git");
+                    let mut c = std::process::Command::new(system_git_binary());
                     c.env_remove("GIT_DIR");
                     c.env_remove("GIT_WORK_TREE");
                     crate::grit_exe::strip_trace2_env(&mut c);

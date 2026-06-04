@@ -1,4 +1,10 @@
 
+## 2026-06-04 — t5619-clone-local-ambiguous-transport
+
+- Focus harness: `./scripts/run-tests.sh t5619-clone-local-ambiguous-transport.sh --verbose` passes 2/2 after HTTP submodule operations stay on grit and use a clean system-git clone delegate.
+- Regression harness: `./scripts/run-tests.sh t5619-clone-local-ambiguous-transport.sh t5614-clone-submodules-shallow.sh t5531-deep-submodule-push.sh --verbose` keeps t5619 passing; t5614 and t5531 remain partially failing.
+
+
 ## 2026-06-04 — t5810-proto-disable-local
 
 - Focus harness: `./scripts/run-tests.sh t5810-proto-disable-local.sh --verbose` passes 54/54 after dash-prefixed relative fetch paths are rejected before upload-pack.

@@ -3015,7 +3015,18 @@ fn run_add(args: &AddArgs) -> Result<()> {
         };
         let clone_source_str = clone_source.to_string_lossy().into_owned();
 
-        let mut clone_cmd = grit_subprocess(&grit_bin);
+        let clone_src_trim = clone_source_str.trim_start();
+        let mut clone_cmd =
+            if clone_src_trim.starts_with("http://") || clone_src_trim.starts_with("https://") {
+                let mut c = Command::new(system_git_binary());
+                c.env_remove("GIT_DIR");
+                c.env_remove("GIT_WORK_TREE");
+                c.env_remove("GIT_EXEC_PATH");
+                crate::grit_exe::strip_trace2_env(&mut c);
+                c
+            } else {
+                grit_subprocess(&grit_bin)
+            };
         clone_cmd
             .arg("clone")
             .arg("--no-checkout")
@@ -3146,6 +3157,16 @@ fn run_add(args: &AddArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn system_git_binary() -> &'static str {
+    if std::path::Path::new("/usr/bin/git").is_file() {
+        "/usr/bin/git"
+    } else if std::path::Path::new("/bin/git").is_file() {
+        "/bin/git"
+    } else {
+        "git"
+    }
 }
 
 fn stage_new_gitlink_in_super_index(
