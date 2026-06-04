@@ -142,6 +142,9 @@
   - Completed: `t3416-rebase-onto-threedots.sh` (18/18) after branch-argument rebase now carries
     the pre-checkout upstream commit OID into replay setup instead of resolving tokens such as
     `HEAD` after checking out the branch being rebased.
+  - Completed: `t3419-rebase-patch-id.sh` (8/8) after sequencer-style replay resolves conflicts
+    where the replayed side and current upstream have the same blob content but the picked commit
+    carries a mode-only change.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ---

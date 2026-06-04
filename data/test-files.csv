@@ -606,7 +606,7 @@ t3415-rebase-autosquash	t3	yes	28	24	4	false	ok	0
 t3416-rebase-onto-threedots	t3	yes	18	18	0	true	ok	0
 t3417-rebase-whitespace-fix	t3	yes	4	4	0	true	ok	0
 t3418-rebase-continue	t3	yes	30	30	0	true	ok	0
-t3419-rebase-patch-id	t3	yes	8	6	2	false	ok	0
+t3419-rebase-patch-id	t3	yes	8	8	0	true	ok	0
 t3420-rebase-autostash	t3	yes	54	42	12	false	ok	0
 t3421-rebase-topology-linear	t3	yes	63	36	27	false	ok	0
 t3422-rebase-incompatible-options	t3	yes	52	52	0	true	ok	0
@@ -619,7 +619,7 @@ t3428-rebase-signoff	t3	yes	7	1	6	false	ok	0
 t3429-rebase-edit-todo	t3	yes	7	5	2	false	ok	0
 t3430-rebase-merges	t3	yes	34	2	32	false	ok	0
 t3431-rebase-fork-point	t3	yes	26	24	2	false	ok	0
-t3432-rebase-fast-forward	t3	yes	225	201	18	false	ok	0
+t3432-rebase-fast-forward	t3	yes	219	201	18	false	ok	0
 t3433-rebase-across-mode-change	t3	yes	4	1	3	false	ok	0
 t3434-rebase-i18n	t3	yes	6	1	5	false	ok	0
 t3435-rebase-gpg-sign	t3	skip	11	0	0	false	ok	0
@@ -1100,7 +1100,7 @@ t6302-for-each-ref-filter	t6	skip	51	0	0	false	ok	0
 t6304-for-each-ref-detached-head	t6	yes	10	10	0	true	ok	0
 t6400-merge-df	t6	yes	7	7	0	true	ok	0
 t6401-merge-criss-cross	t6	yes	4	4	0	true	ok	0
-t6402-merge-rename	t6	yes	46	46	0	true	ok	0
+t6402-merge-rename	t6	yes	46	45	1	false	ok	0
 t6403-merge-file	t6	yes	39	39	0	true	ok	0
 t6404-recursive-merge	t6	yes	6	5	1	false	ok	0
 t6405-merge-symlinks	t6	yes	7	7	0	true	ok	0

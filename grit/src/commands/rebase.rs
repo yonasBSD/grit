@@ -7886,6 +7886,13 @@ fn three_way_merge_with_content(
             (_, Some(oe), Some(te)) if same_blob(oe, te) => {
                 out.entries.push(oe.clone());
             }
+            // The replayed commit may change only the executable bit while `ours` already has the
+            // same blob content (e.g. a cherry-picked content change exists upstream). Git applies
+            // the picked mode in that case instead of attempting a textual merge of identical
+            // sides, which can otherwise produce spurious conflicts on large patch-id tests.
+            (_, Some(oe), Some(te)) if oe.oid == te.oid => {
+                out.entries.push(te.clone());
+            }
             // When base and ours differ, we must not take `theirs` without a real merge: that
             // silently drops the divergence between base and ours (t3407-rebase-abort: second pick
             // after `rebase --continue` must still conflict).

@@ -27,6 +27,18 @@
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
+## 2026-06-04 — t3419-rebase-patch-id
+
+- Focus harness: `./scripts/run-tests.sh t3419-rebase-patch-id.sh --verbose` passes 8/8 after
+  sequencer replay started resolving same-blob stage-2/stage-3 mode-only conflicts to the picked
+  side's mode.
+- Adjacent verification: `./scripts/run-tests.sh t3419-rebase-patch-id.sh
+  t3416-rebase-onto-threedots.sh t3407-rebase-abort.sh --verbose` all pass. `t6400-merge-df.sh`
+  also remains green; `t6402-merge-rename.sh` currently reports 45/46 on its mtime preservation
+  case and is outside the active t3 plan.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3301-notes partial
 
 - Focus harness improved to 113/153 after `log --pretty=raw` stopped printing an extra trailing
