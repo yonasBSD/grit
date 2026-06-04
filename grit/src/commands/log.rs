@@ -1232,6 +1232,7 @@ fn run_line_log(
             repo,
             decorate_full,
             args.clear_decorations,
+            &build_decoration_filter(&args, &repo.git_dir),
         )?)
     };
 
@@ -2515,6 +2516,7 @@ fn run_rev_list_log(
             repo,
             decorate_full,
             args.clear_decorations,
+            &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
         None
@@ -2960,6 +2962,7 @@ fn run_graph_log(
             repo,
             decorate_full_graph,
             args.clear_decorations,
+            &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
         None
@@ -4931,6 +4934,7 @@ pub fn run(mut args: Args) -> Result<()> {
             &repo,
             decorate_full,
             args.clear_decorations,
+            &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
         None
@@ -4940,6 +4944,7 @@ pub fn run(mut args: Args) -> Result<()> {
             &repo,
             false,
             args.clear_decorations,
+            &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
         None
@@ -5596,6 +5601,7 @@ pub fn run_no_walk(
             repo,
             decorate_full,
             args.clear_decorations,
+            &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
         // Default: no decorations in no-walk mode (matches git behavior)
@@ -9714,6 +9720,12 @@ fn apply_format_string(
                         result.push_str(subj);
                     }
                 }
+                Some('f') => {
+                    chars.next();
+                    // Sanitized subject line, suitable for a filename.
+                    let subj = info.message.lines().next().unwrap_or("");
+                    result.push_str(&crate::commands::format_patch::sanitize_subject(subj));
+                }
                 Some('b') => {
                     chars.next();
                     // Body: everything after the first paragraph separator (blank line)
@@ -10518,6 +10530,108 @@ fn is_likely_pathspec_during_rev_parse(token: &str) -> bool {
         || token.contains(']')
 }
 
+/// Filter controlling which refs get decorated (`--decorate-refs`,
+/// `--decorate-refs-exclude`, and `log.excludeDecoration`).
+#[derive(Default, Clone)]
+struct DecorationFilter {
+    include: Vec<String>,
+    exclude: Vec<String>,
+    /// Excludes from `log.excludeDecoration` config (same effect as `exclude`,
+    /// but a matching `--decorate-refs` include overrides them, matching Git).
+    exclude_config: Vec<String>,
+}
+
+impl DecorationFilter {
+    fn is_empty(&self) -> bool {
+        self.include.is_empty() && self.exclude.is_empty() && self.exclude_config.is_empty()
+    }
+
+    /// Mirror Git's `ref_filter_match` (log-tree.c). Returns true if `refname`
+    /// (a full ref like `refs/heads/foo`) should be decorated.
+    fn matches(&self, refname: &str) -> bool {
+        for pat in &self.exclude {
+            if decoration_pattern_matches(pat, refname) {
+                return false;
+            }
+        }
+        for pat in &self.exclude_config {
+            if decoration_pattern_matches(pat, refname) {
+                return false;
+            }
+        }
+        if !self.include.is_empty() {
+            for pat in &self.include {
+                if decoration_pattern_matches(pat, refname) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        true
+    }
+}
+
+/// Match a single `--decorate-refs[-exclude]` pattern against a full refname,
+/// trying the abbreviations Git's `ref_rev_parse_rules` would (full name and
+/// the name with `refs/`, `refs/tags/`, `refs/heads/`, `refs/remotes/` stripped).
+fn decoration_pattern_matches(pattern: &str, refname: &str) -> bool {
+    let has_glob = pattern.bytes().any(|b| matches!(b, b'*' | b'?' | b'['));
+    let mut candidates = vec![refname];
+    for prefix in [
+        "refs/",
+        "refs/tags/",
+        "refs/heads/",
+        "refs/remotes/",
+    ] {
+        if let Some(rest) = refname.strip_prefix(prefix) {
+            candidates.push(rest);
+        }
+    }
+    for cand in candidates {
+        if has_glob {
+            if grit_lib::wildmatch::wildmatch(
+                pattern.as_bytes(),
+                cand.as_bytes(),
+                grit_lib::wildmatch::WM_PATHNAME,
+            ) {
+                return true;
+            }
+        } else {
+            // Prefix match at a component boundary (`item->util` case).
+            if cand == pattern
+                || (cand.starts_with(pattern)
+                    && cand.as_bytes().get(pattern.len()) == Some(&b'/'))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Build the decoration filter from command-line args and `log.excludeDecoration`
+/// config.
+fn build_decoration_filter(args: &Args, git_dir: &Path) -> DecorationFilter {
+    let mut filter = DecorationFilter {
+        include: args.decorate_refs.clone(),
+        exclude: args.decorate_refs_exclude.clone(),
+        exclude_config: Vec::new(),
+    };
+    // `--clear-decorations` drops the config-based exclusions (and Git's default
+    // hidden-ref exclusions, which grit doesn't apply here anyway).
+    if !args.clear_decorations {
+        if let Ok(cfg) = ConfigSet::load(Some(git_dir), true) {
+            for value in cfg.get_all("log.excludeDecoration") {
+                let v = value.trim();
+                if !v.is_empty() {
+                    filter.exclude_config.push(v.to_owned());
+                }
+            }
+        }
+    }
+    filter
+}
+
 fn replace_ref_base() -> String {
     let mut base =
         std::env::var("GIT_REPLACE_REF_BASE").unwrap_or_else(|_| "refs/replace/".to_owned());
@@ -10570,7 +10684,7 @@ fn prepend_decoration(items: &mut Vec<DecorationItem>, item: DecorationItem) {
 /// order, so the final per-commit list matches upstream (e.g. `tag: A1` before `other/main` before
 /// `other/HEAD`).
 fn collect_decorations(repo: &Repository, full: bool) -> Result<DecorationMap> {
-    collect_decorations_inner(repo, full, false)
+    collect_decorations_inner(repo, full, false, &DecorationFilter::default())
 }
 
 /// Like [`collect_decorations`], but `clear_decorations` removes the default ref
@@ -10580,6 +10694,7 @@ fn collect_decorations_inner(
     repo: &Repository,
     full: bool,
     clear_decorations: bool,
+    filter: &DecorationFilter,
 ) -> Result<DecorationMap> {
     let mut map: DecorationMap = HashMap::new();
     let git_dir = &repo.git_dir;
@@ -10598,6 +10713,10 @@ fn collect_decorations_inner(
     all_refs.sort_by(|a, b| a.0.cmp(&b.0));
 
     for (refname, oid) in all_refs {
+        // Apply `--decorate-refs` / `--decorate-refs-exclude` / `log.excludeDecoration`.
+        if !filter.is_empty() && !refname.starts_with(&rep_base) && !filter.matches(&refname) {
+            continue;
+        }
         if refname.starts_with(&rep_base) {
             let Some(rest) = refname.strip_prefix(&rep_base) else {
                 continue;
@@ -10701,15 +10820,17 @@ fn collect_decorations_inner(
     }
 
     if let Some(oid) = head.oid() {
-        let hex = oid.to_hex();
-        prepend_decoration(
-            map.entry(hex).or_default(),
-            DecorationItem {
-                refname: Some("HEAD".to_string()),
-                display: "HEAD".to_owned(),
-                kind: DecorationKind::Head,
-            },
-        );
+        if filter.is_empty() || filter.matches("HEAD") {
+            let hex = oid.to_hex();
+            prepend_decoration(
+                map.entry(hex).or_default(),
+                DecorationItem {
+                    refname: Some("HEAD".to_string()),
+                    display: "HEAD".to_owned(),
+                    kind: DecorationKind::Head,
+                },
+            );
+        }
     }
 
     for items in map.values_mut() {

@@ -2688,7 +2688,7 @@ fn is_title_char(b: u8) -> bool {
 /// Sanitize a subject line for use as a filename, matching Git's `format_sanitized_subject`
 /// byte-for-byte: runs of non-title bytes collapse into a single `-`, consecutive `.` collapse
 /// into one, and trailing `.`/`-` are trimmed. Operates on raw bytes (non-ASCII → separators).
-fn sanitize_subject(subject: &str) -> String {
+pub(crate) fn sanitize_subject(subject: &str) -> String {
     let bytes = subject.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut space = 2i32;

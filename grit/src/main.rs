@@ -4724,6 +4724,14 @@ fn preprocess_log_args(rest: &[String]) -> Vec<String> {
         if arg.starts_with('-') && arg.len() > 1 && arg[1..].chars().all(|c| c.is_ascii_digit()) {
             result.push("-n".to_string());
             result.push(arg[1..].to_string());
+        } else if let Some(num) = arg.strip_prefix("-n").filter(|rest| {
+            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+        }) {
+            // Normalize `-n6` to `-n 6` so clap parses it as the max-count option
+            // instead of letting the `allow_hyphen_values` revisions positional
+            // swallow it (and every option that follows).
+            result.push("-n".to_string());
+            result.push(num.to_string());
         } else {
             result.push(arg.clone());
         }
