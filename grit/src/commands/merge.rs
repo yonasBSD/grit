@@ -7563,6 +7563,13 @@ fn merge_trees(
         if prepass_rr_sources.contains(base_path) {
             continue;
         }
+        if let Some(te) = theirs_entries.get(theirs_new_path) {
+            if te.mode != MODE_TREE && path_has_tree_descendant(&ours_entries, theirs_new_path) {
+                // Our side has paths under their rename destination. Let the directory/file pass
+                // relocate the renamed file and stage the D/F conflict symmetrically with case 1.
+                continue;
+            }
+        }
         if handled_paths.contains(base_path) {
             // Already handled by ours rename of the same source path. If both sides renamed
             // that source to different destinations, we must still stage `rename/rename(1to2)`
