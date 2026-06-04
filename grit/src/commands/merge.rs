@@ -1524,7 +1524,7 @@ pub(crate) fn create_virtual_merge_base(
     for &next in &ordered_bases[1..] {
         // Find the merge base of current and next
         let sub_bases = grit_lib::merge_base::merge_bases_first_vs_rest(repo, current, &[next])?;
-        let sub_base_oid = if sub_bases.is_empty() {
+        let (sub_base_oid, sub_base_label_prefix) = if sub_bases.is_empty() {
             // No common ancestor — use an empty tree as base
             let empty_tree = repo.odb.write(ObjectKind::Tree, &[])?;
             let commit_data = CommitData {
@@ -1539,11 +1539,17 @@ pub(crate) fn create_virtual_merge_base(
                 raw_message: None,
             };
             let commit_bytes = serialize_commit(&commit_data);
-            repo.odb.write(ObjectKind::Commit, &commit_bytes)?
+            (
+                repo.odb.write(ObjectKind::Commit, &commit_bytes)?,
+                "empty tree".to_string(),
+            )
         } else if sub_bases.len() > 1 {
-            create_virtual_merge_base(repo, &sub_bases, favor, merge_renormalize)?
+            (
+                create_virtual_merge_base(repo, &sub_bases, favor, merge_renormalize)?,
+                "merged common ancestors".to_string(),
+            )
         } else {
-            sub_bases[0]
+            (sub_bases[0], short_oid(sub_bases[0]))
         };
 
         // Merge current and next using sub_base_oid as base.
@@ -1574,7 +1580,7 @@ pub(crate) fn create_virtual_merge_base(
             &theirs_entries,
             &head,
             "Temporary merge branch 2",
-            "merged common ancestors",
+            &sub_base_label_prefix,
             &current.to_hex(),
             &next.to_hex(),
             favor,
@@ -5306,6 +5312,11 @@ fn resolve_conflict_labels(
 
     let base = if base_label_prefix == "empty tree" {
         "empty tree".to_string()
+    } else if theirs_name == "Temporary merge branch 2"
+        && (base_label_prefix == "merged common ancestors"
+            || base_label_prefix.chars().all(|c| c.is_ascii_hexdigit()))
+    {
+        base_label_prefix.to_string()
     } else if matches!(resolve_conflict_style(repo), ConflictStyle::ZealousDiff3)
         && base_label_prefix.chars().all(|c| c.is_ascii_hexdigit())
     {
@@ -8546,7 +8557,11 @@ fn merge_trees(
                     oe,
                     te,
                     ours_label,
-                    base_label,
+                    same_path_criss_cross_base_label(
+                        base_label,
+                        base_label_prefix,
+                        criss_cross_outer_merge,
+                    ),
                     their_name,
                     favor,
                     diff_algorithm,
@@ -9456,6 +9471,12 @@ fn try_content_merge(
         theirs_data = renormalize_merge_blob(&theirs_data);
     }
 
+    if ours_label.starts_with("Temporary merge branch")
+        || theirs_label.starts_with("Temporary merge branch")
+    {
+        base_data = lengthen_conflict_marker_lines(&base_data, 2);
+    }
+
     let base_driver_label = base_label.strip_suffix(":content").unwrap_or(base_label);
     match &merge_behavior {
         PathMergeBehavior::CustomDriver { command } => {
@@ -9721,6 +9742,54 @@ fn renormalize_merge_blob(data: &[u8]) -> Vec<u8> {
         return data.to_vec();
     }
     grit_lib::crlf::crlf_to_lf(data)
+}
+
+fn lengthen_conflict_marker_lines(data: &[u8], extra: usize) -> Vec<u8> {
+    if extra == 0 || merge_file::is_binary(data) {
+        return data.to_vec();
+    }
+
+    let mut out = Vec::with_capacity(data.len());
+    for line in data.split_inclusive(|byte| *byte == b'\n') {
+        if let Some(marker) = conflict_marker_line_kind(line) {
+            out.extend(std::iter::repeat_n(marker, extra));
+        }
+        out.extend_from_slice(line);
+    }
+    if !data.ends_with(b"\n") {
+        let tail = data.rsplit(|byte| *byte == b'\n').next().unwrap_or(data);
+        if tail.len() == data.len() {
+            return out;
+        }
+    }
+    out
+}
+
+fn conflict_marker_line_kind(line: &[u8]) -> Option<u8> {
+    let marker = *line.first()?;
+    if !matches!(marker, b'<' | b'|' | b'=' | b'>') {
+        return None;
+    }
+    let count = line.iter().take_while(|byte| **byte == marker).count();
+    if count < 7 {
+        return None;
+    }
+    match line.get(count) {
+        None | Some(b'\n' | b'\r' | b' ') => Some(marker),
+        _ => None,
+    }
+}
+
+fn same_path_criss_cross_base_label<'a>(
+    base_label: &'a str,
+    base_label_prefix: &'a str,
+    criss_cross_outer_merge: bool,
+) -> &'a str {
+    if criss_cross_outer_merge && base_label_prefix == "merged common ancestors" {
+        base_label_prefix
+    } else {
+        base_label
+    }
 }
 
 fn blobs_equivalent_after_renormalize(

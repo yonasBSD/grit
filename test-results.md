@@ -1,3 +1,15 @@
+## 2026-06-04 — t6416 nested virtual-base markers
+
+- Focus harness: `./scripts/run-tests.sh t6416-recursive-corner-cases.sh --verbose` improved
+  from 35/40 to 36/40 after recursive virtual-base merges started preserving Git-compatible
+  nested conflict marker labels and marker lengths.
+- `cargo build --release -p grit-cli` completed with the existing warning backlog.
+- `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`, and
+  `cargo test -p grit-lib --lib` completed with the existing warning backlog; unrelated
+  clippy auto-fixes were restored.
+- Broader `cargo test --workspace` and `./tests/harness/run.sh` were skipped for this focused t6
+  increment.
+
 ## 2026-06-04 — t6416 submodule criss-cross conflicts
 
 - Focus harness: `./scripts/run-tests.sh t6416-recursive-corner-cases.sh --verbose` improved from

@@ -40,3 +40,10 @@ Progress:
   35/40 passing, 2 failing, with 3 expected failures. Newly passing: submodule modify/modify,
   submodule add/add, and conflicting entry types (submodule vs symlink). Remaining ordinary
   failures: 38 and 40.
+- Fixed recursive virtual-base nested content by carrying the real sub-base marker label into
+  internal temporary-branch merges, lengthening pre-existing conflict marker lines when they are
+  merged again, and using the bare `merged common ancestors` label for same-path outer criss-cross
+  content conflicts.
+- Ran `./scripts/run-tests.sh t6416-recursive-corner-cases.sh --verbose`; improved to
+  36/40 passing, 1 failing, with 3 expected failures. Newly passing: virtual merge base with
+  nested conflicts. Remaining ordinary failure: 38.
