@@ -269,6 +269,16 @@
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
+## 2026-06-04 — t3404-rebase-interactive nested editor env partial
+
+- Focus harness improved to 80/132 after rebase editor subprocesses stopped inheriting internal
+  rebase-pick environment variables, allowing nested `git rebase --edit-todo` calls from editor
+  scripts.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3418-rebase-continue.sh t3415-rebase-autosquash.sh --verbose` keeps `t3418` and `t3415` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3301-notes partial
 
 - Focus harness improved to 113/153 after `log --pretty=raw` stopped printing an extra trailing

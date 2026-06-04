@@ -3498,15 +3498,17 @@ fn run_shell_editor(editor: &str, path: &Path) -> Result<std::process::ExitStatu
     let status = if editor.trim() == ":" {
         std::process::Command::new("true").status()
     } else {
-        std::process::Command::new("sh")
-            .arg("-c")
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c")
             .arg(format!("{} \"$@\"", editor))
             .arg(editor)
             .arg(path)
+            .env_remove(INTERNAL_REBASE_PICK_ENV)
+            .env_remove(INTERNAL_REBASE_FORCE_FF_ENV)
             .stdin(std::process::Stdio::inherit())
             .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()
+            .stderr(std::process::Stdio::inherit());
+        cmd.status()
     }
     .context("failed to run editor")?;
     Ok(status)
