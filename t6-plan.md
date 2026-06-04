@@ -106,7 +106,8 @@ Completed merge files include `t6060`, `t6401`, `t6403`, `t6405`, `t6406`, `t640
 - [x] `t6135-pathspec-with-attrs.sh` — 37/37 passing.
 - [ ] `t6131-pathspec-icase.sh` — 1/9 passing, 8 failing.
 - [ ] `t6136-pathspec-in-bare.sh` — 1/3 passing, 2 failing.
-- [ ] `t6133-pathspec-rev-dwim.sh` — 5/6 passing, 1 failing.
+- [x] `t6133-pathspec-rev-dwim.sh` — 6/6 passing after accepting noisy
+  `@{now ...}` reflog date selectors as revision syntax.
 
 Completed pathspec files: `t6130`, `t6132`, `t6133-pathspec-toplevel`, `t6134-*`, and
 `t6137-pathspec-wildcards-literal`.

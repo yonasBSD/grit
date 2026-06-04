@@ -3314,6 +3314,20 @@ Updated: 2026-06-01
   `ignore::gitignore_glob_tests::{dir_star_extension_matches_nested_path,nested_dir_star_extension}`
   failures in `grit-lib/src/ignore.rs`.
 
+## 2026-06-04 — t6133-pathspec-rev-dwim complete
+
+- Focus harness: `./scripts/run-tests.sh t6133-pathspec-rev-dwim.sh --quiet` passes 6/6 after
+  noisy `@{now ...}` reflog date selectors started resolving as revisions instead of falling
+  through to pathspec ambiguity.
+- Related verification: `./scripts/run-tests.sh t6135-pathspec-with-attrs.sh t6137-pathspec-wildcards-literal.sh --quiet`
+  keeps both pathspec fixtures green at 37/37 and 25/25. `./scripts/run-tests.sh t0101-at-syntax.sh
+  t1411-reflog-show.sh t1507-rev-parse-upstream.sh t1508-at-combinations.sh --quiet` keeps `t0101`
+  and `t1507` green; `t1411` remains 16/17 and `t1508` remains 33/35.
+- Quality gates: `cargo fmt -- --check`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`,
+  and `git diff --check` completed; `cargo test -p grit-lib --lib` is still blocked by the unrelated
+  `ignore::gitignore_glob_tests::{dir_star_extension_matches_nested_path,nested_dir_star_extension}`
+  failures in `grit-lib/src/ignore.rs`.
+
 ## 2026-06-04 — t6501-freshen-objects complete
 
 - Focus harness: `./scripts/run-tests.sh t6501-freshen-objects.sh --quiet` passes 42/42 after

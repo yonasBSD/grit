@@ -2818,7 +2818,7 @@ fn approxidate(s: &str) -> Option<i64> {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let lower = s.trim().to_ascii_lowercase();
-    if lower == "now" {
+    if lower.split_whitespace().next() == Some("now") {
         // Match Git's test harness: `test_tick` sets GIT_COMMITTER_DATE; `@{now}` must use that
         // clock, not wall time (t1507 `log -g other@{u}@{now}`).
         if let Ok(raw) =

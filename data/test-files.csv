@@ -412,7 +412,7 @@ t1407-worktree-ref-store	t1	skip	4	1	3	false	ok	0
 t1408-packed-refs	t1	yes	3	3	0	true	ok	0
 t1409-avoid-packing-refs	t1	yes	11	11	0	true	ok	0
 t1410-reflog	t1	yes	41	23	18	false	ok	0
-t1411-reflog-show	t1	yes	17	17	0	true	ok	0
+t1411-reflog-show	t1	yes	17	16	1	false	ok	0
 t1412-reflog-loop	t1	yes	3	3	0	true	ok	0
 t1413-reflog-detach	t1	yes	7	7	0	true	ok	0
 t1414-reflog-walk	t1	yes	12	12	0	true	ok	0
@@ -443,7 +443,7 @@ t1504-revision-range	t1	yes	28	28	0	true	ok	0
 t1505-rev-parse-last	t1	yes	7	7	0	true	ok	0
 t1506-rev-parse-diagnosis	t1	yes	30	30	0	true	ok	0
 t1507-rev-parse-upstream	t1	yes	29	29	0	true	ok	0
-t1508-at-combinations	t1	yes	35	35	0	true	ok	0
+t1508-at-combinations	t1	yes	35	33	2	false	ok	0
 t1509-root-work-tree	t1	skip	0	0	0	false	requires writable root and explicit IKNOWWHATIAMDOING	0
 t1510-repo-setup	t1	yes	109	109	0	true	ok	0
 t1511-rev-parse-caret	t1	yes	17	17	0	true	ok	0
@@ -1081,7 +1081,7 @@ t6120-name-rev	t6	yes	41	41	0	true	ok	0
 t6130-pathspec-noglob	t6	yes	21	21	0	true	ok	0
 t6131-pathspec-icase	t6	yes	9	1	8	false	ok	0
 t6132-pathspec-exclude	t6	yes	31	31	0	true	ok	0
-t6133-pathspec-rev-dwim	t6	yes	6	5	1	false	ok	0
+t6133-pathspec-rev-dwim	t6	yes	6	6	0	true	ok	0
 t6133-pathspec-toplevel	t6	yes	33	33	0	true	ok	0
 t6134-pathspec-in-submodule	t6	yes	3	3	0	true	ok	0
 t6134-pathspec-wildcard	t6	yes	32	32	0	true	ok	0
