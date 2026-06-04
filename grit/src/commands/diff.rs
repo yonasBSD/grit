@@ -2733,7 +2733,14 @@ pub fn run(mut args: Args) -> Result<()> {
                     &p.parents,
                     quote_path_fully,
                 ) {
-                    write!(stdout, "{patch}")?;
+                    match args.line_prefix.as_deref() {
+                        Some(prefix) if !prefix.is_empty() => {
+                            for line in patch.split_inclusive('\n') {
+                                write!(stdout, "{prefix}{line}")?;
+                            }
+                        }
+                        _ => write!(stdout, "{patch}")?,
+                    }
                 }
             }
         }
