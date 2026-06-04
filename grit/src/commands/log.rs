@@ -3986,10 +3986,8 @@ impl AsciiGraph {
                 }
                 if self.num_parents == 0 {
                     self.width = self.width.saturating_add(2);
-                } else if !is_commit_in_columns && self.num_parents > 1 {
-                    // Keep width progression stable for detached columns.
-                    self.width = self.width.max((self.num_new_columns + 1) * 2);
                 }
+                let _ = is_commit_in_columns;
             } else {
                 self.insert_into_new_columns(col_oid, -1);
             }
@@ -5740,10 +5738,18 @@ pub fn run_no_walk(
         Some(Some(s)) if s == "full" => true,
         _ => false,
     };
+    // A `%d` / `%D` / `%(decorate)` placeholder in the user format implies
+    // decoration even without an explicit `--decorate` (matching git log).
+    let format_requires_decorations = args.format.as_deref().is_some_and(|fmt| {
+        let template = fmt
+            .strip_prefix("format:")
+            .or_else(|| fmt.strip_prefix("tformat:"))
+            .unwrap_or(fmt);
+        template.contains("%d") || template.contains("%D") || template.contains("%(decorate")
+    });
     let decorations = if args.no_decorate {
         None
-    } else if args.decorate.is_some() {
-        // Explicitly requested decorations
+    } else if args.decorate.is_some() || format_requires_decorations {
         Some(collect_decorations_inner(
             repo,
             decorate_full,
