@@ -59,7 +59,9 @@ test_expect_success 'diff-tree --root -r correct file count' '
 	cd repo &&
 	ROOT=$(cat ../root_oid) &&
 	grit diff-tree --root -r $ROOT >../out &&
-	test_line_count = 3 ../out
+	# diff-tree on a commit prints the commit id header line first
+	# (matches real git), so 3 files -> 4 lines total.
+	test_line_count = 4 ../out
 	)
 '
 
@@ -242,7 +244,8 @@ test_expect_success 'diff-tree --root -r with many files at root' '
 	cd many-repo &&
 	ROOT=$(cat ../many_root) &&
 	grit diff-tree --root -r $ROOT >../out &&
-	test_line_count = 10 ../out
+	# commit id header line + 10 files = 11 lines (matches real git).
+	test_line_count = 11 ../out
 	)
 '
 
@@ -251,7 +254,8 @@ test_expect_success 'diff-tree --root -r --name-only with many files' '
 	cd many-repo &&
 	ROOT=$(cat ../many_root) &&
 	grit diff-tree --root -r --name-only $ROOT >../out &&
-	test_line_count = 10 ../out
+	# commit id header line + 10 files = 11 lines (matches real git).
+	test_line_count = 11 ../out
 	)
 '
 
