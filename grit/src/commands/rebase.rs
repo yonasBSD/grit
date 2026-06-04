@@ -5359,6 +5359,7 @@ fn replay_remaining(
                             );
                             let _ = write_rebase_patch_file(&repo, &rb_dir, &commit_oid);
                             let _ = fs::write(rb_dir.join("rebase-amend-continue"), "1\n");
+                            let _ = fs::write(rb_dir.join("rebase-edit-continue"), "1\n");
                             std::process::exit(0);
                         }
                         Err(_e) => {
@@ -6916,14 +6917,19 @@ fn do_continue() -> Result<()> {
         } else {
             hc.message.clone()
         };
-        let raw_msg = commit_message_after_prepare_hook(
-            &repo,
-            git_dir,
-            msg_src.trim(),
-            "message",
-            Some(":"),
-        )?;
-        let message = apply_commit_msg_cleanup(&raw_msg, rebase_commit_msg_cleanup(&config));
+        let message = if rb_dir.join("rebase-edit-continue").exists() {
+            let after_editor = run_commit_editor_for_reword(&repo, git_dir, msg_src.trim())?;
+            message_from_reword_editor(&after_editor, rebase_commit_msg_cleanup(&config), &config)?
+        } else {
+            let raw_msg = commit_message_after_prepare_hook(
+                &repo,
+                git_dir,
+                msg_src.trim(),
+                "message",
+                Some(":"),
+            )?;
+            apply_commit_msg_cleanup(&raw_msg, rebase_commit_msg_cleanup(&config))
+        };
         let new_oid = commit_from_merged_index(
             &repo,
             git_dir,
@@ -6941,6 +6947,7 @@ fn do_continue() -> Result<()> {
         record_rebase_in_rewritten_pending(git_dir, &rb_dir, &amend_old_oid, next_peek_amend)?;
         let _ = fs::remove_file(rb_dir.join("stopped-sha"));
         let _ = fs::remove_file(rb_dir.join("rebase-amend-continue"));
+        let _ = fs::remove_file(rb_dir.join("rebase-edit-continue"));
         let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
         return replay_remaining(
             &repo,
