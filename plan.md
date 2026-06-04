@@ -63,6 +63,8 @@
     `--stdin-packs[=mode]` parsing/incompatibility diagnostics, alternate pack lookup, empty
     output packs, duplicate packfile handling, and loose-object de-duplication. Continue here;
     remaining failures are tests 8, 11, 12, and 13.
+  - Completed `t5330-no-lazy-fetch-with-commit-graph.sh` (4/4) while investigating adjacent
+    pack selection work; `t5331-pack-objects-stdin.sh` remains the current focus.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

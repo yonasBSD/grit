@@ -1,4 +1,10 @@
 
+## 2026-06-03 — t5330-no-lazy-fetch-with-commit-graph
+
+- Focus harness: `./scripts/run-tests.sh t5330-no-lazy-fetch-with-commit-graph.sh --verbose` passes 4/4 after stale commit-graph/promisor fetch exit handling.
+- Regression harness: `./scripts/run-tests.sh t0410-partial-clone.sh --verbose` passes 38/38.
+
+
 ## 2026-06-03 — t5331-pack-objects-stdin second partial
 
 - Focus harness: `./scripts/run-tests.sh t5331-pack-objects-stdin.sh --verbose` improved to 12/16 after bare `--stdin-packs` parsing, empty output packs, duplicate packfile handling, loose-object de-duplication, and alternate pack lookup.

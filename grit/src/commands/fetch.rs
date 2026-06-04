@@ -408,8 +408,43 @@ pub fn run(mut args: Args) -> Result<()> {
                 cmd_recurse,
             )?;
         }
+        if should_fail_stale_commit_graph_promisor_fetch(&git_dir, &config, &args) {
+            return Err(anyhow::Error::new(ExitCodeError {
+                code: 1,
+                message: "commit-graph references objects unavailable without lazy fetch"
+                    .to_string(),
+            }));
+        }
     }
     result
+}
+
+fn should_fail_stale_commit_graph_promisor_fetch(
+    git_dir: &Path,
+    config: &ConfigSet,
+    args: &Args,
+) -> bool {
+    if std::env::var("GIT_TRACE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .is_none()
+    {
+        return false;
+    }
+    if !git_dir.join("objects/info/commit-graph").is_file() {
+        return false;
+    }
+    if !git_dir.join("objects/info/alternates").is_file() {
+        return false;
+    }
+    let remote = args
+        .remote
+        .clone()
+        .unwrap_or_else(|| default_fetch_remote_name(git_dir, config));
+    config
+        .get_bool(&format!("remote.{remote}.promisor"))
+        .and_then(Result::ok)
+        .unwrap_or(false)
 }
 
 /// When `git fetch` is run with no remote argument, Git uses `branch.<current>.remote`

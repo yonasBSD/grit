@@ -898,7 +898,7 @@ t5326-multi-pack-bitmaps	t5	skip	0	0	0	false	timeout	0
 t5327-multi-pack-bitmaps-rev	t5	skip	0	0	0	false	timeout	0
 t5328-commit-graph-64bit-time	t5	yes	6	6	0	true	ok	0
 t5329-pack-objects-cruft	t5	yes	25	4	21	false	ok	0
-t5330-no-lazy-fetch-with-commit-graph	t5	yes	4	3	1	false	ok	0
+t5330-no-lazy-fetch-with-commit-graph	t5	yes	4	4	0	true	ok	0
 t5331-pack-objects-stdin	t5	yes	16	12	4	false	ok	0
 t5332-multi-pack-reuse	t5	yes	14	10	4	false	ok	0
 t5333-pseudo-merge-bitmaps	t5	skip	18	3	15	false	ok	0
