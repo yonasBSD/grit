@@ -1710,6 +1710,12 @@ pub(crate) fn create_virtual_merge_base(
                     e.oid = repo.odb.write(ObjectKind::Blob, content)?;
                 }
                 push_entry(e)?;
+            } else if let Some(e3) = entries_at.iter().find(|e| e.stage() == 3).copied() {
+                let mut e = e3.clone();
+                if let Some(content) = conflict_content_map.get(&path) {
+                    e.oid = repo.odb.write(ObjectKind::Blob, content)?;
+                }
+                push_entry(e)?;
             }
         }
         final_entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -7091,7 +7097,12 @@ fn merge_trees(
             continue;
         }
         if let Some(oe) = ours_entries.get(ours_new_path) {
-            if oe.mode != MODE_TREE && path_has_tree_descendant(&theirs_entries, ours_new_path) {
+            let clean_theirs_directory_side = criss_cross_outer_merge
+                && path_descendants_match(&base, &theirs_entries, ours_new_path);
+            if oe.mode != MODE_TREE
+                && path_has_tree_descendant(&theirs_entries, ours_new_path)
+                && !clean_theirs_directory_side
+            {
                 // Their side has paths under our rename destination (e.g. `newfile/realfile`).
                 // A plain rename+content merge at `newfile` would clash with directory/file
                 // handling (t6422 rename/directory).
@@ -7616,7 +7627,12 @@ fn merge_trees(
             continue;
         }
         if let Some(te) = theirs_entries.get(theirs_new_path) {
-            if te.mode != MODE_TREE && path_has_tree_descendant(&ours_entries, theirs_new_path) {
+            let clean_ours_directory_side = criss_cross_outer_merge
+                && path_descendants_match(&base, &ours_entries, theirs_new_path);
+            if te.mode != MODE_TREE
+                && path_has_tree_descendant(&ours_entries, theirs_new_path)
+                && !clean_ours_directory_side
+            {
                 // Our side has paths under their rename destination. Let the directory/file pass
                 // relocate the renamed file and stage the D/F conflict symmetrically with case 1.
                 continue;
@@ -8802,15 +8818,15 @@ fn materialize_unmerged_entries_for_merge_tree_tree(
 
     for path in conflict_paths {
         let path_str = String::from_utf8_lossy(&path).into_owned();
-        let Some(stage2) = index.get(&path, 2).cloned() else {
+        let Some(stage_entry) = index.get(&path, 2).or_else(|| index.get(&path, 3)).cloned() else {
             continue;
         };
         let blob_oid = if let Some(content) = content_by_path.get(&path) {
             repo.odb.write(ObjectKind::Blob, content)?
         } else {
-            stage2.oid
+            stage_entry.oid
         };
-        let mut resolved = stage2;
+        let mut resolved = stage_entry;
         resolved.oid = blob_oid;
         resolved.flags &= 0x0FFF;
         index.remove(&path);

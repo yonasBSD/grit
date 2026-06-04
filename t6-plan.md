@@ -78,7 +78,7 @@ Completed rev-list/revision files: `t6004`, `t6005`, `t6007-rev-list-cherry-pick
   conflicted files, alternate `GIT_INDEX_FILE` writes land in the selected index,
   and unchanged-base file sides do not create D/F conflicts.
 - [x] `t6402-merge-rename.sh` — 46/46 passing.
-- [~] `t6416-recursive-corner-cases.sh` — 26/40 passing, 11 failing, with 3 expected failures.
+- [~] `t6416-recursive-corner-cases.sh` — 29/40 passing, 8 failing, with 3 expected failures.
 - [ ] `t6415-merge-dir-to-symlink.sh` — 13/24 passing, 11 failing.
 - [ ] `t6422-merge-rename-corner-cases.sh` — 11/20 passing, 9 failing, with 6 expected failures.
 - [ ] `t6430-merge-strategy-option.sh` — 0/6 passing, 6 failing.
