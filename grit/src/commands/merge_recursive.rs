@@ -71,12 +71,25 @@ pub fn run(args: Args) -> Result<()> {
         rename_options,
     )?;
 
-    let auto_resolvable_directory_file_merge = merge_result
+    let auto_resolved_directory_file_paths: Vec<Vec<u8>> = merge_result
         .conflict_descriptions
         .iter()
-        .any(|desc| desc.subject_path.contains("~HEAD"));
-    if merge_result.has_conflicts && auto_resolvable_directory_file_merge {
-        merge_result.index.entries = tree_to_index_entries(&repo, &theirs_tree, "")?;
+        .filter(|desc| desc.subject_path.contains("~HEAD"))
+        .map(|desc| desc.subject_path.as_bytes().to_vec())
+        .collect();
+    let only_auto_resolved_directory_file_conflicts = !auto_resolved_directory_file_paths
+        .is_empty()
+        && merge_result
+            .conflict_descriptions
+            .iter()
+            .all(|desc| desc.subject_path.contains("~HEAD"));
+    if merge_result.has_conflicts && only_auto_resolved_directory_file_conflicts {
+        merge_result.index.entries.retain(|entry| {
+            entry.stage() == 0
+                || !auto_resolved_directory_file_paths
+                    .iter()
+                    .any(|path| entry.path == *path)
+        });
         merge_result.index.sort();
         merge_result.conflict_descriptions.clear();
         merge_result.conflict_files.clear();

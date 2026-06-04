@@ -71,8 +71,9 @@ Completed rev-list/revision files: `t6004`, `t6005`, `t6007-rev-list-cherry-pick
 - [x] `t6423-merge-rename-directories.sh` — 80/82 passing, 0 failing, with 2 expected
   failures.
 - [x] `t6438-submodule-directory-file-conflicts.sh` — 56/56 passing.
-- [~] `t6430-merge-recursive.sh` — 28/36 passing, 8 failing after
-  normal checkout stopped applying the rebase-only submodule replacement refusal.
+- [~] `t6430-merge-recursive.sh` — 30/36 passing, 6 failing after
+  normal checkout stopped applying the rebase-only submodule replacement refusal and
+  clean `merge-recursive` D/F auto-resolution kept the merged index.
 - [ ] `t6402-merge-rename.sh` — 24/46 passing, 22 failing.
 - [ ] `t6416-recursive-corner-cases.sh` — 24/37 passing, 13 failing, with 3 expected failures.
 - [ ] `t6415-merge-dir-to-symlink.sh` — 13/24 passing, 11 failing.
