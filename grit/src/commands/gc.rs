@@ -17,6 +17,7 @@ use clap::Args as ClapArgs;
 use grit_lib::config::ConfigSet;
 use grit_lib::hooks::{run_hook, HookResult};
 use grit_lib::objects::ObjectId;
+use grit_lib::pack::read_pack_index;
 use grit_lib::promisor::{promisor_pack_object_ids, repo_treats_promisor_packs};
 use grit_lib::prune_packed::{prune_packed_objects, PrunePackedOptions};
 use grit_lib::reflog::{expire_reflog, expire_reflog_unreachable, list_reflog_refs};
@@ -191,6 +192,7 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     run_repack_for_gc(&repo, &cfg, quiet_effective, &args)?;
+    clean_invalid_pack_garbage_for_gc(&objects_dir)?;
 
     if !args.skip_foreground_tasks && !args.auto {
         // Expire reflogs before pruning so unreachable objects that are retained only by old
@@ -245,6 +247,32 @@ pub fn run(args: Args) -> Result<()> {
         args.no_quiet || (!quiet && effective_detach <= 0 && !args.skip_foreground_tasks);
     run_commit_graph_for_gc(&repo, &cfg, quiet_effective, commit_graph_progress)?;
 
+    Ok(())
+}
+
+fn clean_invalid_pack_garbage_for_gc(objects_dir: &Path) -> Result<()> {
+    let pack_dir = objects_dir.join("pack");
+    let rd = match fs::read_dir(&pack_dir) {
+        Ok(rd) => rd,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
+    for entry in rd {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("idx") {
+            continue;
+        }
+        let pack_path = path.with_extension("pack");
+        if pack_path.is_file() || read_pack_index(&path).is_ok() {
+            continue;
+        }
+        let keep_path = path.with_extension("keep");
+        let _ = fs::remove_file(&path);
+        if keep_path.is_file() {
+            let _ = fs::remove_file(keep_path);
+        }
+    }
     Ok(())
 }
 

@@ -181,10 +181,8 @@ fn scan_pack_garbage(objects_dir: &Path) -> Result<(usize, u64)> {
                 }
             }
             (None, Some(idx), None) => {
-                if !files.invalid_idx {
-                    eprintln!("warning: no corresponding .pack: {}", display_git_path(idx));
-                    garbage_count += 1;
-                }
+                eprintln!("warning: no corresponding .pack: {}", display_git_path(idx));
+                garbage_count += 1;
             }
             (None, None, Some(keep)) => {
                 eprintln!(
