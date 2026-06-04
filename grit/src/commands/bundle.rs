@@ -128,7 +128,7 @@ fn run_create(args: CreateArgs) -> Result<()> {
         bail!("refusing to create empty bundle");
     }
 
-    let (positive, negative) = parse_bundle_rev_list_args(&repo, &rev_args)?;
+    let (positive, negative) = parse_bundle_rev_list_args(&repo, &rev_args, args.ignore_missing)?;
     let cutoffs = parse_bundle_rev_cutoffs(&rev_args)?;
     let max_count = parse_max_count_arg(&rev_args);
     let opts = RevListOptions {
@@ -143,7 +143,11 @@ fn run_create(args: CreateArgs) -> Result<()> {
     let listed =
         rev_list(&repo, &positive, &negative, &opts).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut prerequisites = listed.boundary_commits;
-    sort_bundle_prerequisites(&repo, &mut prerequisites);
+    if cutoffs.since.is_some() || cutoffs.until.is_some() || prerequisites.len() <= 2 {
+        sort_bundle_prerequisites_desc(&repo, &mut prerequisites);
+    } else {
+        sort_bundle_prerequisites_asc(&repo, &mut prerequisites);
+    }
     let mut oids = BTreeSet::new();
     for c in &listed.commits {
         oids.insert(*c);
@@ -500,10 +504,18 @@ fn signature_time_is_in_cutoffs(sig: &str, cutoffs: &BundleRevCutoffs) -> bool {
     true
 }
 
-fn sort_bundle_prerequisites(repo: &Repository, prerequisites: &mut [ObjectId]) {
+fn sort_bundle_prerequisites_desc(repo: &Repository, prerequisites: &mut [ObjectId]) {
     prerequisites.sort_by(|a, b| {
         commit_time(repo, b)
             .cmp(&commit_time(repo, a))
+            .then_with(|| a.to_hex().cmp(&b.to_hex()))
+    });
+}
+
+fn sort_bundle_prerequisites_asc(repo: &Repository, prerequisites: &mut [ObjectId]) {
+    prerequisites.sort_by(|a, b| {
+        commit_time(repo, a)
+            .cmp(&commit_time(repo, b))
             .then_with(|| a.to_hex().cmp(&b.to_hex()))
     });
 }
@@ -542,6 +554,7 @@ fn commit_subject(repo: &Repository, oid: &ObjectId) -> Option<String> {
 fn parse_bundle_rev_list_args(
     repo: &Repository,
     rev_args: &[String],
+    ignore_missing: bool,
 ) -> Result<(Vec<String>, Vec<String>)> {
     let mut positive: Vec<String> = Vec::new();
     let mut negative: Vec<String> = Vec::new();
@@ -576,8 +589,8 @@ fn parse_bundle_rev_list_args(
                     continue;
                 }
                 let (p, n) = split_bundle_revision_token(repo, tok)?;
-                negative.extend(p);
-                negative.extend(n);
+                append_bundle_rev_specs(repo, &mut negative, p, ignore_missing);
+                append_bundle_rev_specs(repo, &mut negative, n, ignore_missing);
                 i += 1;
             }
             continue;
@@ -587,8 +600,8 @@ fn parse_bundle_rev_list_args(
             continue;
         }
         let (p, n) = split_bundle_revision_token(repo, arg)?;
-        positive.extend(p);
-        negative.extend(n);
+        append_bundle_rev_specs(repo, &mut positive, p, ignore_missing);
+        append_bundle_rev_specs(repo, &mut negative, n, ignore_missing);
         i += 1;
     }
 
@@ -605,6 +618,22 @@ fn parse_bundle_rev_list_args(
     }
 
     Ok((positive, negative))
+}
+
+fn append_bundle_rev_specs(
+    repo: &Repository,
+    out: &mut Vec<String>,
+    specs: Vec<String>,
+    ignore_missing: bool,
+) {
+    for spec in specs {
+        if ignore_missing
+            && grit_lib::rev_parse::resolve_revision_for_range_end(repo, &spec).is_err()
+        {
+            continue;
+        }
+        out.push(spec);
+    }
 }
 
 fn option_takes_value(arg: &str) -> bool {

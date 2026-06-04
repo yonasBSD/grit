@@ -2823,3 +2823,10 @@ Updated: 2026-06-01
   --release -p grit-cli`, `cargo clippy --fix --allow-dirty` (existing warning backlog and failed
   auto-fix attempts remain; unrelated `filter_process.rs` auto-fix restored), `cargo test -p
   grit-lib --lib`, and `git diff --check`.
+- t6020 ignore-missing prerequisite focus: `bundle create --ignore-missing` now drops missing
+  revision specs before rev-list, and non-cutoff bundle prerequisites are ordered to match t6020
+  verification headers. Focused `./scripts/run-tests.sh t6020-bundle-misc.sh --quiet` improves from
+  24/37 to 26/37. Ran `cargo fmt`, `cargo check -p grit-cli`, `cargo build --release -p
+  grit-cli`, `cargo clippy --fix --allow-dirty` (existing warning backlog and failed auto-fix
+  attempts remain; unrelated `filter_process.rs` auto-fix restored), `cargo test -p grit-lib
+  --lib`, and `git diff --check`.
