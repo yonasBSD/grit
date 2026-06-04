@@ -1,3 +1,14 @@
+## 2026-06-04 — t6402-merge-rename marker labels
+
+- Focus harness: `./scripts/run-tests.sh t6402-merge-rename.sh --verbose` improved from 23/46
+  to 25/46 after single-sided rename content conflicts started using path-qualified marker labels.
+- `cargo build --release -p grit-cli` completed with the existing warning backlog.
+- `cargo fmt`, `cargo check -p grit-cli`, `cargo test -p grit-lib --lib`, and
+  `cargo clippy --fix --allow-dirty` completed with the existing warning backlog; unrelated
+  clippy auto-fixes were restored.
+- Broader `cargo test --workspace` and `./tests/harness/run.sh` were skipped for this focused t6
+  increment.
+
 ## 2026-06-04 — t6430-merge-recursive completed
 
 - Focus harness: `./scripts/run-tests.sh t6430-merge-recursive.sh --verbose` improved from 35/36

@@ -7090,15 +7090,18 @@ fn merge_trees(
                 } else {
                     // Both modified — try content merge at new path
                     let path_str = String::from_utf8_lossy(ours_new_path).to_string();
+                    let base_path_str = String::from_utf8_lossy(base_path).to_string();
+                    let ours_marker_label = format!("{ours_label}:{path_str}");
+                    let theirs_marker_label = format!("{their_name}:{base_path_str}");
                     match try_content_merge(
                         repo,
                         &path_str,
                         be,
                         oe,
                         te,
-                        ours_label,
+                        &ours_marker_label,
                         base_label,
-                        their_name,
+                        &theirs_marker_label,
                         favor,
                         diff_algorithm,
                         merge_renormalize,
@@ -7721,15 +7724,18 @@ fn merge_trees(
                 } else {
                     // Both modified — try content merge at new path
                     let path_str = String::from_utf8_lossy(theirs_new_path).to_string();
+                    let base_path_str = String::from_utf8_lossy(base_path).to_string();
+                    let ours_marker_label = format!("{ours_label}:{base_path_str}");
+                    let theirs_marker_label = format!("{their_name}:{path_str}");
                     match try_content_merge(
                         repo,
                         &path_str,
                         be,
                         oe,
                         te,
-                        ours_label,
+                        &ours_marker_label,
                         base_label,
-                        their_name,
+                        &theirs_marker_label,
                         favor,
                         diff_algorithm,
                         merge_renormalize,

@@ -472,7 +472,7 @@ t2009-checkout-statinfo	t2	yes	3	3	0	true	ok	0
 t2010-checkout-ambiguous	t2	yes	10	10	0	true	ok	0
 t2011-checkout-invalid-head	t2	yes	10	10	0	true	ok	0
 t2012-checkout-last	t2	yes	22	22	0	true	ok	0
-t2013-checkout-submodule	t2	yes	74	62	8	false	ok	0
+t2013-checkout-submodule	t2	yes	70	62	8	false	ok	0
 t2014-checkout-switch	t2	yes	4	4	0	true	ok	0
 t2015-checkout-unborn	t2	yes	6	6	0	true	ok	0
 t2016-checkout-patch	t2	yes	19	19	0	true	ok	0
@@ -1100,7 +1100,7 @@ t6302-for-each-ref-filter	t6	skip	51	0	0	false	ok	0
 t6304-for-each-ref-detached-head	t6	yes	10	10	0	true	ok	0
 t6400-merge-df	t6	yes	7	7	0	true	ok	0
 t6401-merge-criss-cross	t6	yes	4	4	0	true	ok	0
-t6402-merge-rename	t6	yes	46	24	22	false	ok	0
+t6402-merge-rename	t6	yes	46	25	21	false	ok	0
 t6403-merge-file	t6	yes	39	39	0	true	ok	0
 t6404-recursive-merge	t6	yes	6	5	1	false	ok	0
 t6405-merge-symlinks	t6	yes	7	7	0	true	ok	0
@@ -1118,7 +1118,7 @@ t6417-merge-ours-theirs	t6	yes	7	7	0	true	ok	0
 t6418-merge-text-auto	t6	yes	11	7	4	false	ok	0
 t6419-merge-ignorecase	t6	yes	0	0	0	false	ok	0
 t6421-merge-partial-clone	t6	yes	3	0	3	false	ok	0
-t6422-merge-rename-corner-cases	t6	yes	26	12	8	false	ok	6
+t6422-merge-rename-corner-cases	t6	yes	20	12	8	false	ok	6
 t6423-merge-rename-directories	t6	yes	80	80	0	true	ok	2
 t6424-merge-unrelated-index-changes	t6	yes	19	18	1	false	ok	0
 t6425-merge-rename-delete	t6	yes	1	1	0	true	ok	0
