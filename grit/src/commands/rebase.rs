@@ -4106,6 +4106,30 @@ Use '--' to separate paths from revisions, like this:\n\
         commits.retain(|oid| !is_commit_tree_unchanged(&repo, oid).unwrap_or(false));
     }
 
+    if args.interactive
+        && args.onto.is_none()
+        && !args.no_ff
+        && !root_rebase_no_onto
+        && commits.len() == 1
+        && !is_commit_tree_unchanged(&repo, &commits[0]).unwrap_or(false)
+        && commit_tree_oid_for_rebase(&repo, commits[0])?
+            == commit_tree_oid_for_rebase(&repo, onto_oid)?
+    {
+        fast_forward_rebase(
+            &repo,
+            &head,
+            head_oid,
+            onto_oid,
+            onto_name_for_state.as_str(),
+            Some(head_oid),
+            head_oid,
+        )?;
+        if let Some(ref oid) = autostash_oid {
+            apply_autostash_after_ff(&repo, oid)?;
+        }
+        return Ok(());
+    }
+
     let hook_upstream = pre_rebase_upstream_label
         .as_deref()
         .unwrap_or_else(|| upstream_spec.as_str());

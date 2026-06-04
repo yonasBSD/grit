@@ -220,6 +220,16 @@
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
+## 2026-06-04 — t3404-rebase-interactive same-tree noop partial
+
+- Current focus harness records 69/132 after no-`--onto` interactive rebases learned to noop a
+  single non-begin-empty commit whose tree already equals the upstream tree.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3403-rebase-skip.sh t3424-rebase-empty.sh --verbose` keeps `t3403` green and refreshes
+  still-failing future target `t3424`.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3301-notes partial
 
 - Focus harness improved to 113/153 after `log --pretty=raw` stopped printing an extra trailing
