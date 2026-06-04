@@ -9980,12 +9980,35 @@ fn apply_directory_file_conflicts(
             }
         }
 
+        let relocated_base_entry = base.get(&path).or_else(|| {
+            let side_renames = if file_is_ours {
+                ours_renames
+            } else {
+                theirs_renames
+            };
+            let opposite_renames = if file_is_ours {
+                theirs_renames
+            } else {
+                ours_renames
+            };
+            side_renames
+                .iter()
+                .find(|(_, dest)| dest.as_slice() == path.as_slice())
+                .and_then(|(source, _)| {
+                    if opposite_renames.contains_key(source) {
+                        None
+                    } else {
+                        base.get(source)
+                    }
+                })
+        });
+
         if merge_ort_style {
             // merge-ort relocates the file to `path~SIDE` and records the unmerged
             // entry under that relocated name (not `path`, which is occupied by the
             // directory from the other side). `git add path~SIDE` then resolves it.
             let relocated = new_path_str.as_bytes().to_vec();
-            if let Some(be) = base.get(&path) {
+            if let Some(be) = relocated_base_entry {
                 let mut be_here = be.clone();
                 be_here.path = relocated.clone();
                 stage_entry(index, &be_here, 1);
@@ -10022,7 +10045,7 @@ fn apply_directory_file_conflicts(
             // git also stages the base version (stage 1) at the relocated `path~SIDE`
             // path when the file existed in the merge base, so the modify/delete shows
             // both `1 path~SIDE` and `2/3 path~SIDE` in the conflicted-file listing.
-            if let Some(be) = base.get(&path) {
+            if let Some(be) = relocated_base_entry {
                 let mut be_here = be.clone();
                 be_here.path = new_path_str.as_bytes().to_vec();
                 stage_entry(index, &be_here, 1);

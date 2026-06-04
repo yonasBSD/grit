@@ -1646,3 +1646,10 @@ Updated: 2026-06-01
   `cargo fmt`, `cargo check -p grit-cli`, `cargo build --release -p grit-cli`,
   `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` (existing warning backlog
   remains and unrelated auto-fixes were reverted).
+- t6402 relocated rename/delete D/F focus: after staging the base blob from the rename source for
+  relocated D/F conflicts whose destination did not exist in the base tree,
+  `./scripts/run-tests.sh t6402-merge-rename.sh --verbose` improves from 40/46 to 41/46 with
+  refreshed `data/test-files.csv` plus dashboards. Also ran `cargo fmt`,
+  `cargo check -p grit-cli`, `cargo build --release -p grit-cli`, `cargo test -p grit-lib --lib`,
+  and `cargo clippy --fix --allow-dirty` (existing warning backlog remains and unrelated
+  auto-fixes were reverted).
