@@ -2331,7 +2331,18 @@ fn update_squash_message_file(
         buf.push_str("# This is a combination of 2 commits.\n");
         buf.push_str("# The first commit's message is:\n\n");
         if cmd == RebaseTodoCmd::Fixup {
-            fs::write(&fixup_path, format!("{hsubj}\n{hbody}"))?;
+            let mut fixup_msg = String::new();
+            fixup_msg.push_str("# This is a combination of 2 commits.\n");
+            fixup_msg.push_str("# This is the 1st commit message:\n\n");
+            fixup_msg.push_str(hsubj);
+            fixup_msg.push('\n');
+            fixup_msg.push_str(hbody);
+            if !hbody.is_empty() && !hbody.ends_with('\n') {
+                fixup_msg.push('\n');
+            }
+            fixup_msg.push_str("\n# The commit message #2 will be skipped:\n\n");
+            append_commented(&mut fixup_msg, picked.message.lines().next().unwrap_or(""));
+            fs::write(&fixup_path, fixup_msg)?;
             append_commented(&mut buf, hsubj);
             if !hbody.is_empty() {
                 append_commented(&mut buf, hbody.trim_end_matches('\n'));
