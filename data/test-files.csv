@@ -1085,7 +1085,7 @@ t6133-pathspec-rev-dwim	t6	yes	6	5	1	false	ok	0
 t6133-pathspec-toplevel	t6	yes	33	33	0	true	ok	0
 t6134-pathspec-in-submodule	t6	yes	3	3	0	true	ok	0
 t6134-pathspec-wildcard	t6	yes	32	32	0	true	ok	0
-t6135-pathspec-with-attrs	t6	yes	37	25	12	false	ok	0
+t6135-pathspec-with-attrs	t6	yes	37	30	7	false	ok	0
 t6135-rev-list-merge-order	t6	yes	31	31	0	true	ok	0
 t6136-pathspec-in-bare	t6	yes	3	1	2	false	ok	0
 t6136-rev-list-date-range	t6	yes	31	31	0	true	ok	0

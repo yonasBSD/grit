@@ -21,6 +21,8 @@ use encoding_rs::UTF_8;
 
 use crate::config::ConfigSet;
 use crate::filter_process::{apply_process_clean, apply_process_smudge, FilterSmudgeMeta};
+use crate::objects::{parse_tree, ObjectId, ObjectKind};
+use crate::odb::Odb;
 
 /// What `core.autocrlf` is set to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,6 +338,78 @@ pub fn load_gitattributes_for_checkout(
     }
 
     rules
+}
+
+/// Load `.gitattributes` rules from `tree_oid` that can apply to `rel_path`.
+///
+/// `odb` supplies tree and blob objects, `tree_oid` is the root tree to read, and `rel_path` is the
+/// repository-relative path being matched.
+///
+/// Returns rules in root-to-leaf order. Missing, non-blob, or invalid UTF-8 `.gitattributes` entries
+/// are ignored, matching the best-effort behavior of the worktree loader.
+pub fn load_gitattributes_for_tree_path(
+    odb: &Odb,
+    tree_oid: &ObjectId,
+    rel_path: &str,
+) -> Vec<AttrRule> {
+    let mut rules = Vec::new();
+    load_gitattributes_blob_from_tree(odb, tree_oid, ".gitattributes", &mut rules);
+
+    let path = Path::new(rel_path);
+    if let Some(parent) = path.parent() {
+        let mut accum = PathBuf::new();
+        for comp in parent.components() {
+            accum.push(comp);
+            let ga_rel = accum.join(".gitattributes");
+            let ga_rel = ga_rel.to_string_lossy().replace('\\', "/");
+            load_gitattributes_blob_from_tree(odb, tree_oid, &ga_rel, &mut rules);
+        }
+    }
+
+    rules
+}
+
+fn load_gitattributes_blob_from_tree(
+    odb: &Odb,
+    tree_oid: &ObjectId,
+    ga_path: &str,
+    rules: &mut Vec<AttrRule>,
+) {
+    let Some(oid) = lookup_tree_path(odb, tree_oid, ga_path) else {
+        return;
+    };
+    let Ok(obj) = odb.read(&oid) else {
+        return;
+    };
+    if obj.kind != ObjectKind::Blob {
+        return;
+    }
+    if let Ok(content) = String::from_utf8(obj.data) {
+        parse_gitattributes(&content, rules);
+    }
+}
+
+fn lookup_tree_path(odb: &Odb, tree_oid: &ObjectId, rel_path: &str) -> Option<ObjectId> {
+    let mut current = *tree_oid;
+    let mut parts = rel_path.split('/').peekable();
+    while let Some(part) = parts.next() {
+        let obj = odb.read(&current).ok()?;
+        if obj.kind != ObjectKind::Tree {
+            return None;
+        }
+        let entries = parse_tree(&obj.data).ok()?;
+        let entry = entries
+            .iter()
+            .find(|entry| String::from_utf8_lossy(&entry.name) == part)?;
+        if parts.peek().is_none() {
+            return Some(entry.oid);
+        }
+        if entry.mode != 0o040000 {
+            return None;
+        }
+        current = entry.oid;
+    }
+    None
 }
 
 fn path_to_index_bytes(path: &Path) -> Vec<u8> {

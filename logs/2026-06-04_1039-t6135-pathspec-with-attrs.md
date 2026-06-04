@@ -23,3 +23,13 @@ Finish `t6135-pathspec-with-attrs.sh`, currently the largest failing t6 row at 7
   `cargo build --release -p grit-cli`, `./scripts/run-tests.sh t6135-pathspec-with-attrs.sh
   --quiet`, traced `t6416-recursive-corner-cases.sh` refresh to restore expected-failure accounting,
   and `git diff --check`.
+- Second increment teaches tree-ish `grep` to evaluate attr pathspecs with attributes loaded from
+  the searched tree, and to keep descending through trees when attr magic can match descendants.
+  Direct and official t6135 runs improve from 25/37 to 30/37. Remaining failures are `stash push`,
+  `add` variants, and status `builtin_objectmode` exclusion.
+- Validation for the second increment: `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo clippy --fix --allow-dirty` (existing warning backlog and failed auto-fix attempts remain;
+  restored the unrelated `filter_process.rs` auto-fix), `cargo test -p grit-lib --lib`,
+  `cargo build --release -p grit-cli`, direct and official
+  `t6135-pathspec-with-attrs.sh`, traced `t6416-recursive-corner-cases.sh` refresh, and
+  `git diff --check`.

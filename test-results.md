@@ -2776,3 +2776,11 @@ Updated: 2026-06-01
   `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty` (existing warning
   backlog and failed auto-fix attempts remain; unrelated `filter_process.rs` auto-fix restored),
   `cargo test -p grit-lib --lib`, `cargo build --release -p grit-cli`, and `git diff --check`.
+- t6135 tree grep attr pathspec focus: after loading root and ancestor `.gitattributes` blobs from
+  the searched tree and using object-aware attr pathspec matching in `grep` tree walks, direct and
+  official `t6135-pathspec-with-attrs.sh` runs improve from 25/37 to 30/37. Re-ran the traced
+  `t6416-recursive-corner-cases.sh` refresh to keep expected-failure accounting at 40 total,
+  37 passing, 0 failing, 3 expected failures. Ran `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo clippy --fix --allow-dirty` (existing warning backlog and failed auto-fix attempts remain;
+  unrelated `filter_process.rs` auto-fix restored), `cargo test -p grit-lib --lib`,
+  `cargo build --release -p grit-cli`, and `git diff --check`.

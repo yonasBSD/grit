@@ -649,6 +649,7 @@ fn run_inner(pattern_tokens: Vec<PatternToken>, mut args: Args) -> Result<()> {
             grep_tree(
                 repo,
                 &tree_obj.data,
+                &tree_oid,
                 "",
                 0,
                 &compiled,
@@ -1693,6 +1694,12 @@ fn any_pathspec_matches(
         return true;
     }
     grit_lib::pathspec::matches_pathspec_list_with_context(path, pathspecs, ctx)
+}
+
+fn pathspecs_use_attr_magic(pathspecs: &[String]) -> bool {
+    pathspecs
+        .iter()
+        .any(|spec| spec.starts_with(":(attr:") || spec.contains(",attr:"))
 }
 
 fn pathspec_may_match_descendant(path: &str, pathspecs: &[String]) -> bool {
@@ -2949,6 +2956,7 @@ fn grep_content(
 fn grep_tree(
     repo: &Repository,
     tree_data: &[u8],
+    root_tree_oid: &ObjectId,
     prefix: &str,
     _depth: usize,
     compiled: &CompiledGrep,
@@ -2962,6 +2970,7 @@ fn grep_tree(
 ) -> Result<bool> {
     let entries = parse_tree(tree_data)?;
     let mut found = false;
+    let attr_pathspecs = pathspecs_use_attr_magic(pathspecs);
 
     for entry in &entries {
         let name = String::from_utf8_lossy(&entry.name);
@@ -2979,10 +2988,25 @@ fn grep_tree(
             is_directory: is_tree,
             is_git_submodule: is_gitlink,
         };
-        let pathspec_matches_path =
-            pathspecs.is_empty() || any_pathspec_matches(&full_name, pathspecs, ps_ctx);
-        let pathspec_matches_descendant =
-            (is_tree || is_gitlink) && pathspec_may_match_descendant(&full_name, pathspecs);
+        let pathspec_matches_path = if pathspecs.is_empty() {
+            true
+        } else if attr_pathspecs {
+            let attr_rules = grit_lib::crlf::load_gitattributes_for_tree_path(
+                &repo.odb,
+                root_tree_oid,
+                &full_name,
+            );
+            grit_lib::pathspec::matches_pathspec_list_for_object(
+                &full_name,
+                entry.mode,
+                &attr_rules,
+                pathspecs,
+            )
+        } else {
+            any_pathspec_matches(&full_name, pathspecs, ps_ctx)
+        };
+        let pathspec_matches_descendant = (is_tree || is_gitlink)
+            && (attr_pathspecs || pathspec_may_match_descendant(&full_name, pathspecs));
         if !pathspec_matches_path && !pathspec_matches_descendant {
             continue;
         }
@@ -3025,6 +3049,7 @@ fn grep_tree(
                         if grep_tree(
                             &sub_repo,
                             &sub_tree_obj.data,
+                            &sub_tree_oid,
                             &full_name,
                             0,
                             compiled,
@@ -3049,6 +3074,7 @@ fn grep_tree(
             if grep_tree(
                 repo,
                 &sub_obj.data,
+                root_tree_oid,
                 &full_name,
                 _depth + 1,
                 compiled,
