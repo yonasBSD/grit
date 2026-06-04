@@ -7725,8 +7725,64 @@ fn merge_trees(
                                 auto_merge_hint_path: None,
                             });
                         } else {
-                            stage_entry(&mut index, oe, 2);
-                            stage_entry(&mut index, te, 3);
+                            let merged_entry = if let Some(be) = base.get(base_path) {
+                                let both_modified = oe.oid != be.oid && te.oid != be.oid;
+                                let merge_path = String::from_utf8_lossy(base_path).to_string();
+                                let ours_marker = format!("{ours_label}:{ours_tgt_utf}");
+                                let theirs_marker = format!("{their_name}:{theirs_tgt_utf}");
+                                if oe.oid == be.oid && oe.mode == be.mode {
+                                    te.clone()
+                                } else if te.oid == be.oid && te.mode == be.mode {
+                                    oe.clone()
+                                } else if oe.oid == te.oid && oe.mode == te.mode {
+                                    oe.clone()
+                                } else {
+                                    match try_content_merge(
+                                        repo,
+                                        &merge_path,
+                                        be,
+                                        oe,
+                                        te,
+                                        &ours_marker,
+                                        base_label,
+                                        &theirs_marker,
+                                        favor,
+                                        diff_algorithm,
+                                        merge_renormalize,
+                                        ignore_all_space,
+                                        ignore_space_change,
+                                        ignore_space_at_eol,
+                                        ignore_cr_at_eol,
+                                        if both_modified {
+                                            auto_merge_paths.as_deref_mut()
+                                        } else {
+                                            None
+                                        },
+                                    )? {
+                                        ContentMergeResult::Clean(oid, mode) => {
+                                            let mut e = oe.clone();
+                                            e.oid = oid;
+                                            e.mode = mode;
+                                            e
+                                        }
+                                        ContentMergeResult::Conflict(content)
+                                        | ContentMergeResult::BinaryConflict(content) => {
+                                            let oid = repo.odb.write(ObjectKind::Blob, &content)?;
+                                            let mut e = oe.clone();
+                                            e.oid = oid;
+                                            e
+                                        }
+                                    }
+                                }
+                            } else {
+                                oe.clone()
+                            };
+                            let mut ours_stage = merged_entry.clone();
+                            ours_stage.path = ours_target.clone();
+                            let mut theirs_stage = merged_entry.clone();
+                            theirs_stage.path = theirs_new_path.clone();
+                            stage_entry(&mut index, &ours_stage, 2);
+                            stage_entry(&mut index, &theirs_stage, 3);
                             if let Some(te_at_ours_target) = theirs_entries.get(ours_target) {
                                 if !base.contains_key(ours_target)
                                     && index.get(ours_target, 3).is_none()
@@ -7749,13 +7805,11 @@ fn merge_trees(
                                     });
                                 }
                             }
-                            if let Ok(obj) = repo.odb.read(&oe.oid) {
+                            if let Ok(obj) = repo.odb.read(&merged_entry.oid) {
                                 conflict_files.push((
                                     String::from_utf8_lossy(ours_target).to_string(),
-                                    obj.data,
+                                    obj.data.clone(),
                                 ));
-                            }
-                            if let Ok(obj) = repo.odb.read(&te.oid) {
                                 conflict_files.push((
                                     String::from_utf8_lossy(theirs_new_path).to_string(),
                                     obj.data,

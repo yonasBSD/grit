@@ -21,3 +21,8 @@ Progress:
 - Ran `./scripts/run-tests.sh t6416-recursive-corner-cases.sh --verbose`; improved to
   30/40 passing, 7 failing, with 3 expected failures. Newly passing: E1/D1. Remaining
   ordinary failures: 17, 28, 30, 32, 34, 38, and 40.
+- Fixed ordinary rename/rename(1to2) conflicts to stage the once-merged content at both
+  destinations. This matches D1/E4, where the virtual source is renamed to `a` and `a2`.
+- Ran `./scripts/run-tests.sh t6416-recursive-corner-cases.sh --verbose`; improved to
+  31/40 passing, 6 failing, with 3 expected failures. Newly passing: D1/E4. Remaining
+  ordinary failures: 28, 30, 32, 34, 38, and 40.

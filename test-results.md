@@ -1,3 +1,15 @@
+## 2026-06-04 — t6416 rename/rename(1to2) content
+
+- Focus harness: `./scripts/run-tests.sh t6416-recursive-corner-cases.sh --verbose` improved from
+  30/40 to 31/40 after rename/rename(1to2) conflicts started staging the once-merged content at
+  both destination paths.
+- `cargo build --release -p grit-cli` completed with the existing warning backlog.
+- `cargo fmt`, `cargo check -p grit-cli`, `cargo test -p grit-lib --lib`, and
+  `cargo clippy --fix --allow-dirty` completed with the existing warning backlog; unrelated
+  fmt/clippy auto-fixes were restored.
+- Broader `cargo test --workspace` and `./tests/harness/run.sh` were skipped for this focused t6
+  increment.
+
 ## 2026-06-04 — t6416 reverse D/F virtual-base rename
 
 - Focus harness: `./scripts/run-tests.sh t6416-recursive-corner-cases.sh --verbose` improved from
