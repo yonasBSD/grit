@@ -121,6 +121,8 @@
     note blobs, linked-worktree branch occupancy is enforced, `--update-refs` worktree comments use
     the configured comment character, and `--show-current-patch`/`REBASE_HEAD` conflict handling is
     implemented.
+  - Completed: `t3401-rebase-basic.sh` (32/32) after its synthetic cherry-pick/rebase-like
+    fixture explicitly requests the `master` initial branch it assumes.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ## Active task — t6 family 100% pass

@@ -1625,3 +1625,13 @@ Updated: 2026-06-01
   t3422-rebase-incompatible-options.sh t3301-notes.sh` passed all four files.
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3401-rebase-basic complete
+
+- Focus harness completed at 32/32 after its synthetic fixture explicitly requested the `master`
+  initial branch it assumes.
+- Related verification: `./scripts/run-tests.sh t3400-rebase.sh t3401-rebase-basic.sh
+  t3418-rebase-continue.sh t3422-rebase-incompatible-options.sh t3301-notes.sh` passed all five
+  files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
