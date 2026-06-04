@@ -7096,6 +7096,53 @@ fn do_continue() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("HEAD has no OID"))?
         .to_owned();
 
+    if interactive_continue {
+        let head_tree = commit_tree_oid_for_rebase(&repo, head_oid)?;
+        let current_tree = commit_tree_oid_for_rebase(&repo, current_oid)?;
+        let clean_ignoring_submodules =
+            diff_index_to_tree(&repo.odb, &index, Some(&head_tree), true)
+                .map(|diffs| diffs.is_empty())
+                .unwrap_or(false);
+        let current_diffs = diff_index_to_tree(&repo.odb, &index, Some(&current_tree), false)?;
+        let only_submodule_resolution_left = !current_diffs.is_empty()
+            && current_diffs.iter().all(|entry| {
+                entry.old_mode == "160000"
+                    || entry.new_mode == "160000"
+                    || (entry.old_mode.is_empty() && entry.new_mode == "160000")
+                    || (entry.new_mode.is_empty() && entry.old_mode == "160000")
+            });
+        if clean_ignoring_submodules && only_submodule_resolution_left {
+            if todo_lines_continue
+                .first()
+                .and_then(|line| {
+                    parse_rebase_replay_step(&repo, line, interactive_continue)
+                        .ok()
+                        .flatten()
+                })
+                .and_then(|step| match step {
+                    RebaseReplayStep::PickLike { oid, .. } | RebaseReplayStep::Edit(oid) => {
+                        Some(oid)
+                    }
+                    _ => None,
+                })
+                == Some(current_oid)
+            {
+                pop_first_nonempty_todo_line(&repo, &rb_dir)?;
+            }
+            let _ = fs::remove_file(rb_dir.join("current"));
+            let _ = fs::remove_file(rb_dir.join("current-cmd"));
+            let _ = fs::remove_file(rb_dir.join("current-final-fixup"));
+            return replay_remaining(
+                &repo,
+                &rb_dir,
+                autostash_continue,
+                backend_continue,
+                had_autostash_continue,
+                force_rewrite_continue,
+            );
+        }
+    }
+
     let new_oid = if matches!(todo_cmd, RebaseTodoCmd::Fixup | RebaseTodoCmd::Squash) {
         let head_obj = repo.odb.read(&head_oid)?;
         let hc = parse_commit(&head_obj.data)?;
