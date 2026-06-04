@@ -12489,10 +12489,13 @@ fn commit_has_diff_status_not_in(
     args: &Args,
 ) -> Result<bool> {
     let entries = commit_diff_entries_for_filter(odb, info, args)?;
-    // Include commit if it has no changes of the excluded type
-    Ok(!entries
+    // Git's lowercase `--diff-filter` drops files whose status is in the exclude
+    // set; the commit is shown if at least one file survives that filter (an
+    // empty diff is not shown). So include the commit when any entry's status is
+    // NOT excluded.
+    Ok(entries
         .iter()
-        .any(|e| exclude_chars.contains(&e.status.letter())))
+        .any(|e| !exclude_chars.contains(&e.status.letter())))
 }
 
 /// Check if a commit has any changes matching the specified diff-filter status letters.
