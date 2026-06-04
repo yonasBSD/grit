@@ -20,7 +20,7 @@ use grit_lib::config::ConfigSet;
 use grit_lib::diff::diff_index_to_worktree;
 use grit_lib::hooks::{run_commit_hook, CommitHookEnv, HookResult};
 use grit_lib::ident::parse_signature_times;
-use grit_lib::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_SYMLINK, MODE_TREE};
+use grit_lib::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_SYMLINK, MODE_TREE};
 use grit_lib::merge_file::{merge, ConflictStyle, MergeFavor, MergeInput};
 use grit_lib::merge_trees::{
     merge_trees_three_way, TheirsConflictLabel, TreeMergeConflictPresentation,
@@ -1080,11 +1080,9 @@ fn cherry_pick_one_commit(
     // a conflicted checkout). Conflict stages (1/2/3) are left untouched. This also gives `rerere`
     // (invoked below on the conflict path) an index whose clean paths match the working tree, so a
     // replayed/auto-staged resolution leaves `diff-files` clean (t3504 `--rerere-autoupdate`).
-    if has_conflicts {
-        refresh_index_stat_cache_from_worktree(repo, &mut merge_result.index)?;
-        repo.write_index(&mut merge_result.index)
-            .context("writing index")?;
-    }
+    refresh_index_stat_cache_from_worktree(repo, &mut merge_result.index)?;
+    repo.write_index(&mut merge_result.index)
+        .context("writing index")?;
 
     // Build the cherry-pick message (Git: `sequencer.c` + `commit.cleanup` when `-x`).
     let (cname, cemail) = committer_name_email(&config);
@@ -3033,10 +3031,24 @@ pub(crate) fn preflight_cherry_pick_cwd_obstruction(
         .filter(|e| e.stage() == 0)
         .map(|e| e.path.clone())
         .collect();
+    let new_stage0: Vec<&IndexEntry> = index.entries.iter().filter(|e| e.stage() == 0).collect();
 
     for entry in &old_index.entries {
         if entry.stage() == 0 && !new_paths.contains(&entry.path) {
             let path_str = String::from_utf8_lossy(&entry.path).into_owned();
+            if entry.mode == MODE_GITLINK {
+                let mut prefix = entry.path.clone();
+                prefix.push(b'/');
+                let abs_path = work_tree.join(&path_str);
+                if new_stage0
+                    .iter()
+                    .any(|new_entry| new_entry.path.starts_with(&prefix))
+                    && (submodule_dir_has_non_dotgit_content(&abs_path)
+                        || abs_path.join(".git").exists())
+                {
+                    bail!("cannot replace submodule directory {path_str}");
+                }
+            }
             if grit_lib::worktree_cwd::cwd_would_be_removed_with_repo_path(work_tree, &path_str) {
                 bail!("Refusing to remove the current working directory:\n{path_str}\n");
             }
@@ -3053,6 +3065,14 @@ pub(crate) fn preflight_cherry_pick_cwd_obstruction(
                 if same_blob(prev, entry) {
                     written.insert(entry.path.clone());
                     continue;
+                }
+                if prev.mode == MODE_GITLINK
+                    && entry.mode != MODE_GITLINK
+                    && abs_path.is_dir()
+                    && (submodule_dir_has_non_dotgit_content(&abs_path)
+                        || abs_path.join(".git").exists())
+                {
+                    bail!("cannot replace submodule directory {path_str}");
                 }
             }
             preflight_blob_write_vs_cwd_dir(repo, work_tree, &path_str, &abs_path, entry)?;
@@ -3109,6 +3129,13 @@ fn preflight_blob_write_vs_cwd_dir(
     Ok(())
 }
 
+fn submodule_dir_has_non_dotgit_content(path: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    entries.flatten().any(|entry| entry.file_name() != ".git")
+}
+
 fn checkout_merged_index(
     repo: &Repository,
     work_tree: &Path,
@@ -3132,6 +3159,9 @@ fn checkout_merged_index(
 
     for entry in &old_index.entries {
         if entry.stage() == 0 && !new_paths.contains(&entry.path) {
+            if entry.mode == MODE_GITLINK {
+                continue;
+            }
             let path_str = String::from_utf8_lossy(&entry.path).into_owned();
             if grit_lib::worktree_cwd::cwd_would_be_removed_with_repo_path(work_tree, &path_str) {
                 bail!("Refusing to remove the current working directory:\n{path_str}\n");
@@ -3214,10 +3244,10 @@ fn write_entry_to_worktree(
         }
         if abs_path.is_file() || abs_path.is_symlink() {
             let _ = fs::remove_file(abs_path);
-        } else if abs_path.is_dir() {
-            let _ = fs::remove_dir_all(abs_path);
         }
-        fs::create_dir_all(abs_path)?;
+        if !abs_path.is_dir() {
+            fs::create_dir_all(abs_path)?;
+        }
         return Ok(());
     }
 

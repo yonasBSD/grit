@@ -3482,6 +3482,11 @@ pub(crate) fn parse_cmd_args<T: Args + FromArgMatches>(subcmd: &str, rest: &[Str
     if rest.len() == 1 {
         let arg = rest[0].as_str();
         if matches!(arg, "-h" | "--help" | "--help-all") {
+            if subcmd == "replay" {
+                println!();
+                println!("usage: git replay ([--contained] --onto <newbase> | --advance <branch>) [--ref-action[=<mode>]] <revision-range>");
+                std::process::exit(if arg == "--help" { 0 } else { 129 });
+            }
             if let Some(syn) = commands::upstream_synopsis_help::synopsis_for_builtin(subcmd) {
                 let code = if subcmd == "submodule" || arg == "--help" {
                     0
@@ -4493,7 +4498,11 @@ fn preprocess_git_notes_display_argv(
         out.push(rest[i].clone());
         i += 1;
     }
-    out.extend(notes_tail);
+    if !notes_tail.is_empty() {
+        let mut reordered = notes_tail;
+        reordered.extend(out);
+        out = reordered;
+    }
     match cli_on {
         Some(true) => std::env::set_var("GIT_GRIT_LOG_NOTES_CLI", "on"),
         Some(false) => std::env::set_var("GIT_GRIT_LOG_NOTES_CLI", "off"),

@@ -113,12 +113,14 @@ test_expect_success 'ls-files -u entries have valid OIDs (40 hex chars)' '
 # Section 3: ls-files --stage with unmerged entries
 ###########################################################################
 
-test_expect_success 'ls-files -s shows only merged (stage 0) entries' '
+test_expect_success 'ls-files -s shows merged and unmerged stage entries' '
 	(
 	cd repo &&
 	grit ls-files -s >actual &&
 	grep "clean.txt" actual &&
-	! grep "conflict.txt" actual
+	grep "1.conflict.txt" actual &&
+	grep "2.conflict.txt" actual &&
+	grep "3.conflict.txt" actual
 	)
 '
 

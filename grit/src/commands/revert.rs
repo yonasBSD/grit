@@ -36,7 +36,7 @@ use grit_lib::rev_parse::resolve_revision;
 use grit_lib::state::{resolve_head, HeadState};
 use grit_lib::write_tree::write_tree_from_index;
 
-use super::checkout::checkout_index_to_worktree;
+use super::checkout::checkout_index_to_worktree_allowing_submodule_replacement;
 use super::cherry_pick::{
     bail_if_df_merge_would_remove_cwd, preflight_cherry_pick_cwd_obstruction,
 };
@@ -1574,7 +1574,9 @@ fn checkout_merged_index(
 ) -> Result<()> {
     let has_unmerged = index.entries.iter().any(|e| e.stage() != 0);
     if !has_unmerged {
-        return checkout_index_to_worktree(repo, old_index, index, work_tree, false, false, false);
+        return checkout_index_to_worktree_allowing_submodule_replacement(
+            repo, old_index, index, work_tree, false, false, true,
+        );
     }
 
     let mut stage0_only = Index::new();
@@ -1588,14 +1590,14 @@ fn checkout_merged_index(
         .cloned()
         .collect();
     stage0_only.sort();
-    checkout_index_to_worktree(
+    checkout_index_to_worktree_allowing_submodule_replacement(
         repo,
         old_index,
         &stage0_only,
         work_tree,
         false,
         false,
-        false,
+        true,
     )?;
 
     let mut written: HashSet<Vec<u8>> = HashSet::new();

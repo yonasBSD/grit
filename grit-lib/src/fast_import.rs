@@ -641,7 +641,7 @@ impl<'a, R: BufRead> Importer<'a, R> {
 
         if notes_ref && count_notes_in_index(&index) > 0 {
             let n = count_notes_in_index(&index);
-            rewrite_notes_fanout_in_index(&mut index, notes_fanout_for_count(n))?;
+            rewrite_notes_fanout_in_index(&self.repo.odb, &mut index, notes_fanout_for_count(n))?;
         }
 
         let tree_oid = write_tree_from_index(&self.repo.odb, &index, "")?;
@@ -952,7 +952,11 @@ fn remove_note_entries_for_target(index: &mut crate::index::Index, target: &Obje
     });
 }
 
-fn rewrite_notes_fanout_in_index(index: &mut crate::index::Index, fanout: usize) -> Result<()> {
+fn rewrite_notes_fanout_in_index(
+    odb: &crate::odb::Odb,
+    index: &mut crate::index::Index,
+    fanout: usize,
+) -> Result<()> {
     let mut notes: Vec<(ObjectId, ObjectId, u32)> = Vec::new();
     let mut kept = Vec::new();
     for e in index.entries.drain(..) {
@@ -969,7 +973,30 @@ fn rewrite_notes_fanout_in_index(index: &mut crate::index::Index, fanout: usize)
         }
     }
     index.entries = kept;
+    let mut by_commit: std::collections::BTreeMap<ObjectId, (ObjectId, u32)> =
+        std::collections::BTreeMap::new();
     for (commit_oid, blob_oid, mode) in notes {
+        if let Some((existing_oid, existing_mode)) = by_commit.get_mut(&commit_oid) {
+            if *existing_oid != blob_oid {
+                let existing = odb.read(existing_oid)?;
+                let incoming = odb.read(&blob_oid)?;
+                let mut existing_len = existing.data.len();
+                if existing_len > 0 && existing.data[existing_len - 1] == b'\n' {
+                    existing_len -= 1;
+                }
+                let mut data = Vec::with_capacity(existing_len + 2 + incoming.data.len());
+                data.extend_from_slice(&existing.data[..existing_len]);
+                data.push(b'\n');
+                data.push(b'\n');
+                data.extend_from_slice(&incoming.data);
+                *existing_oid = odb.write(ObjectKind::Blob, &data)?;
+            }
+            *existing_mode = mode;
+        } else {
+            by_commit.insert(commit_oid, (blob_oid, mode));
+        }
+    }
+    for (commit_oid, (blob_oid, mode)) in by_commit {
         let path = construct_note_path_with_fanout(&commit_oid, fanout);
         index.add_or_replace(index_entry(path, mode, blob_oid));
     }

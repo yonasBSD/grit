@@ -849,7 +849,7 @@ pub fn split_triple_dot_range(spec: &str) -> Option<(&str, &str)> {
 /// Like [`resolve_revision`], but does not treat a bare filename as an index path
 /// (matches `git rev-parse` / plumbing, where `file.txt` stays ambiguous).
 pub fn resolve_revision_without_index_dwim(repo: &Repository, spec: &str) -> Result<ObjectId> {
-    resolve_revision_impl(repo, spec, false, false, true, false, false, false, true)
+    resolve_revision_impl(repo, spec, false, false, true, false, false, false, false)
 }
 
 /// Resolve a revision string to an object ID.
@@ -2530,7 +2530,21 @@ fn resolve_reflog_oid(
     refname_raw: &str,
     index_or_date: ReflogSelector,
 ) -> Result<ObjectId> {
-    let entries = read_reflog(&repo.git_dir, refname)?;
+    let mut entries = read_reflog(&repo.git_dir, refname)?;
+    if refname == "HEAD" {
+        if let ReflogSelector::Index(index) = index_or_date {
+            if index >= entries.len() {
+                if let Ok(Some(branch_ref)) = crate::refs::read_symbolic_ref(&repo.git_dir, "HEAD")
+                {
+                    if let Ok(branch_entries) = read_reflog(&repo.git_dir, &branch_ref) {
+                        if index < branch_entries.len() {
+                            entries = branch_entries;
+                        }
+                    }
+                }
+            }
+        }
+    }
     let display = reflog_display_name(refname_raw, refname);
     match index_or_date {
         ReflogSelector::Index(index) => {
@@ -3565,6 +3579,13 @@ fn resolve_commit_message_search(
     let mut queue = std::collections::VecDeque::new();
     queue.push_back(start_oid);
     visited.insert(start_oid);
+    if let Ok(refs) = crate::refs::list_refs(&repo.git_dir, "refs/") {
+        for (_name, oid) in refs {
+            if visited.insert(oid) {
+                queue.push_back(oid);
+            }
+        }
+    }
 
     while let Some(oid) = queue.pop_front() {
         let obj = match repo.read_replaced(&oid) {

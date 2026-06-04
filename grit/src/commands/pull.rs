@@ -803,6 +803,7 @@ fn do_merge_or_rebase_after_fetch(
             reapply_cherry_picks: false,
             no_reapply_cherry_picks: false,
             verbose: false,
+            quiet: false,
             update_refs: false,
             no_update_refs: false,
             empty: None,
@@ -820,9 +821,14 @@ fn do_merge_or_rebase_after_fetch(
             no_autosquash: false,
             keep_empty: false,
             ignore_whitespace: false,
+            rerere_autoupdate: false,
+            no_rerere_autoupdate: false,
+            reschedule_failed_exec: false,
+            no_reschedule_failed_exec: false,
             committer_date_is_author_date: false,
             reset_author_date: false,
             edit_todo: false,
+            show_current_patch: false,
             no_verify: false,
         };
         super::rebase::run(rebase_args)?;

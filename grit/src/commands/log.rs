@@ -1258,7 +1258,6 @@ fn run_line_log(
         .unwrap_or(false);
 
     let n_filtered = filtered.len();
-    let mut prev_had_notes = false;
     for (i, oid) in filtered.iter().enumerate() {
         if is_format_separator && i > 0 {
             if args.null_terminator {
@@ -1267,8 +1266,7 @@ fn run_line_log(
                 writeln!(out_main)?;
             }
         }
-        let this_has_notes = commit_has_notes_to_show(oid, &mut notes_cache, &args);
-        if !is_format_separator && i > 0 && prev_had_notes {
+        if !is_format_separator && i > 0 && log_wants_blank_line_between_commits(&args) {
             writeln!(out_main)?;
         }
         let info = load_commit_info(repo, *oid)?;
@@ -1298,7 +1296,6 @@ fn run_line_log(
             None,
             None,
         )?;
-        prev_had_notes = this_has_notes;
         let nparents = load_raw_parents(repo, *oid)?.len();
         if show_patch {
             if nparents <= 1 {
@@ -4393,6 +4390,7 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     let repo = Repository::discover(None).context("not a git repository")?;
+    validate_notes_display_ref_config(&repo);
     if args.format.is_none() {
         args.format = args.pretty.clone();
     }
@@ -4909,7 +4907,6 @@ pub fn run(mut args: Args) -> Result<()> {
             args.author_date_order,
         );
         let mut shown = 0usize;
-        let mut prev_had_notes = false;
         while let Some((oid, commit_data)) = iter.next_commit()? {
             if !commit_passes_post_walk_filters(
                 &repo,
@@ -4933,8 +4930,7 @@ pub fn run(mut args: Args) -> Result<()> {
                     writeln!(out)?;
                 }
             }
-            let this_has_notes = commit_has_notes_to_show(&oid, &mut notes_cache, &args);
-            if !is_format_separator && shown > 0 && prev_had_notes {
+            if !is_format_separator && shown > 0 && log_wants_blank_line_between_commits(&args) {
                 writeln!(out)?;
             }
             let oneline_fmt = args.oneline || args.format.as_deref() == Some("oneline");
@@ -4993,7 +4989,6 @@ pub fn run(mut args: Args) -> Result<()> {
                 out.flush()?;
             }
             shown += 1;
-            prev_had_notes = this_has_notes;
         }
     } else {
         let commits = walk_commits(
@@ -5129,7 +5124,6 @@ pub fn run(mut args: Args) -> Result<()> {
             commits
         };
 
-        let mut prev_had_notes = false;
         for (i, (oid, commit_data)) in commits.iter().enumerate() {
             if is_format_separator && i > 0 {
                 if args.null_terminator {
@@ -5138,8 +5132,7 @@ pub fn run(mut args: Args) -> Result<()> {
                     writeln!(out)?;
                 }
             }
-            let this_has_notes = commit_has_notes_to_show(oid, &mut notes_cache, &args);
-            if !is_format_separator && i > 0 && prev_had_notes {
+            if !is_format_separator && i > 0 && log_wants_blank_line_between_commits(&args) {
                 writeln!(out)?;
             }
             let oneline_fmt = args.oneline || args.format.as_deref() == Some("oneline");
@@ -5194,7 +5187,6 @@ pub fn run(mut args: Args) -> Result<()> {
                     patch_context,
                 )?;
             }
-            prev_had_notes = this_has_notes;
         }
     }
 
@@ -5480,13 +5472,11 @@ pub fn run_no_walk(
         None
     };
 
-    let mut prev_had_notes = false;
     for (i, (oid, commit_data)) in commits.iter().enumerate() {
         if is_format_separator && i > 0 {
             writeln!(out)?;
         }
-        let this_has_notes = commit_has_notes_to_show(oid, &mut notes_cache, args);
-        if !is_format_separator && i > 0 && prev_had_notes {
+        if !is_format_separator && i > 0 && log_wants_blank_line_between_commits(args) {
             writeln!(out)?;
         }
         format_commit(
@@ -5527,7 +5517,6 @@ pub fn run_no_walk(
                 patch_context,
             )?;
         }
-        prev_had_notes = this_has_notes;
     }
 
     Ok(())
@@ -7459,6 +7448,7 @@ pub fn append_format_patch_notes(repo: &Repository, oid: &ObjectId, body: &str) 
 /// note display, this is unconditional (the caller opted in with `--notes`).
 pub fn notes_blocks_for_display(repo: &Repository) -> std::collections::HashMap<ObjectId, String> {
     use std::fmt::Write as _;
+    validate_notes_display_ref_config(repo);
     let mut blocks: std::collections::HashMap<ObjectId, String> = std::collections::HashMap::new();
     for (header, refname) in collect_log_display_note_refs_unconditional(repo) {
         let map = load_notes_map_for_ref(repo, &refname);
@@ -7475,6 +7465,18 @@ pub fn notes_blocks_for_display(repo: &Repository) -> std::collections::HashMap<
         }
     }
     blocks
+}
+
+pub fn validate_notes_display_ref_config(repo: &Repository) {
+    let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    if cfg
+        .get_all_raw("notes.displayRef")
+        .iter()
+        .any(Option::is_none)
+    {
+        eprintln!("fatal: invalid notes.displayRef");
+        std::process::exit(128);
+    }
 }
 
 /// Same ref enumeration as `collect_log_display_note_refs` but without the
@@ -7495,7 +7497,7 @@ fn collect_log_display_note_refs_unconditional(repo: &Repository) -> Vec<(String
             return;
         }
         let short = refname.strip_prefix("refs/notes/").unwrap_or(refname);
-        let header = if refname == default_ref {
+        let header = if refname == "refs/notes/commits" {
             "Notes".to_string()
         } else {
             format!("Notes ({short})")
@@ -7503,32 +7505,27 @@ fn collect_log_display_note_refs_unconditional(repo: &Repository) -> Vec<(String
         out.push((header, refname.to_string()));
     };
 
-    push_ref(&default_ref);
     match std::env::var("GIT_NOTES_DISPLAY_REF") {
-        Ok(s) if !s.is_empty() => {
+        Ok(s) => {
             for pat in s.split(':') {
                 let pat = pat.trim();
                 if pat.is_empty() {
                     continue;
                 }
-                if let Ok(refs) = refs::list_refs_glob(&repo.git_dir, pat) {
-                    for (name, _) in refs {
-                        push_ref(&name);
-                    }
+                for name in resolve_notes_display_pattern(repo, pat) {
+                    push_ref(&name);
                 }
             }
         }
-        Ok(_) => {}
         Err(_) => {
+            push_ref(&default_ref);
             for pat in cfg.get_all("notes.displayRef") {
                 let pat = pat.trim();
                 if pat.is_empty() {
                     continue;
                 }
-                if let Ok(refs) = refs::list_refs_glob(&repo.git_dir, pat) {
-                    for (name, _) in refs {
-                        push_ref(&name);
-                    }
+                for name in resolve_notes_display_pattern(repo, pat) {
+                    push_ref(&name);
                 }
             }
         }
@@ -7565,7 +7562,7 @@ fn collect_log_display_note_refs(repo: &Repository) -> Vec<(String, String)> {
             return;
         }
         let short = refname.strip_prefix("refs/notes/").unwrap_or(refname);
-        let header = if refname == default_ref {
+        let header = if refname == "refs/notes/commits" {
             "Notes".to_string()
         } else {
             format!("Notes ({short})")
@@ -7577,32 +7574,27 @@ fn collect_log_display_note_refs(repo: &Repository) -> Vec<(String, String)> {
     let load_default_block = use_default_notes > 0
         || (use_default_notes == -1 && std::env::var("GIT_GRIT_LOG_NOTES_CLI").is_err());
     if load_default_block {
-        push_ref(&default_ref);
         match std::env::var("GIT_NOTES_DISPLAY_REF") {
-            Ok(s) if !s.is_empty() => {
+            Ok(s) => {
                 for pat in s.split(':') {
                     let pat = pat.trim();
                     if pat.is_empty() {
                         continue;
                     }
-                    if let Ok(refs) = refs::list_refs_glob(&repo.git_dir, pat) {
-                        for (name, _) in refs {
-                            push_ref(&name);
-                        }
+                    for name in resolve_notes_display_pattern(repo, pat) {
+                        push_ref(&name);
                     }
                 }
             }
-            Ok(_) => {}
             Err(_) => {
+                push_ref(&default_ref);
                 for pat in cfg.get_all("notes.displayRef") {
                     let pat = pat.trim();
                     if pat.is_empty() {
                         continue;
                     }
-                    if let Ok(refs) = refs::list_refs_glob(&repo.git_dir, pat) {
-                        for (name, _) in refs {
-                            push_ref(&name);
-                        }
+                    for name in resolve_notes_display_pattern(repo, pat) {
+                        push_ref(&name);
                     }
                 }
             }
@@ -7610,6 +7602,17 @@ fn collect_log_display_note_refs(repo: &Repository) -> Vec<(String, String)> {
     }
 
     out
+}
+
+fn resolve_notes_display_pattern(repo: &Repository, pattern: &str) -> Vec<String> {
+    if !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('[') {
+        if refs::resolve_ref(&repo.git_dir, pattern).is_ok() {
+            return vec![pattern.to_owned()];
+        }
+    }
+    refs::list_refs_glob(&repo.git_dir, pattern)
+        .map(|items| items.into_iter().map(|(name, _)| name).collect())
+        .unwrap_or_default()
 }
 
 /// Load notes from the configured notes ref (or `refs/notes/commits` default).
@@ -7726,34 +7729,14 @@ fn collect_notes_map_recursive(
     }
 }
 
-/// Whether `write_notes` would emit anything for this commit (used for inter-commit spacing).
-fn commit_has_notes_to_show(
-    oid: &ObjectId,
-    notes_cache: &mut NotesMapCache<'_>,
-    args: &Args,
-) -> bool {
-    if args.no_notes {
+fn log_wants_blank_line_between_commits(args: &Args) -> bool {
+    if log_uses_builtin_oneline(args) {
         return false;
     }
-    if args.notes_refs.is_empty() {
-        return notes_cache.map().contains_key(oid);
-    }
-    for spec in &args.notes_refs {
-        let refname = if spec.is_empty() {
-            "refs/notes/commits".to_owned()
-        } else {
-            let s = spec.as_str();
-            if s.starts_with("refs/") {
-                s.to_owned()
-            } else {
-                format!("refs/notes/{s}")
-            }
-        };
-        if load_notes_map_for_ref(notes_cache.repo(), &refname).contains_key(oid) {
-            return true;
-        }
-    }
-    false
+    matches!(
+        args.format.as_deref(),
+        None | Some("short" | "medium" | "full" | "fuller" | "raw" | "email")
+    )
 }
 
 /// Write notes for a commit if any exist.
@@ -7783,9 +7766,16 @@ fn write_notes(
         } else {
             format!("refs/notes/{spec}")
         };
-        if seen.insert(refname.clone()) {
-            let short = refname.strip_prefix("refs/notes/").unwrap_or(&refname);
-            display.push((format!("Notes ({short})"), refname));
+        for resolved in resolve_notes_display_pattern(notes_cache.repo(), &refname) {
+            if seen.insert(resolved.clone()) {
+                let short = resolved.strip_prefix("refs/notes/").unwrap_or(&resolved);
+                let header = if resolved == "refs/notes/commits" {
+                    "Notes".to_string()
+                } else {
+                    format!("Notes ({short})")
+                };
+                display.push((header, resolved));
+            }
         }
     }
     for (header, refname) in display {
@@ -8254,7 +8244,6 @@ fn run_symmetric_log(
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut notes_cache = NotesMapCache::new(repo);
-    let mut prev_had_notes = false;
     let use_color = log_resolve_stdout_color(args, &repo.git_dir);
     let head_state = resolve_head(&repo.git_dir).unwrap_or(HeadState::Invalid);
     let decoration_paint = if use_color {
@@ -8264,8 +8253,7 @@ fn run_symmetric_log(
     };
 
     for (i, oid) in ordered.iter().enumerate() {
-        let this_has_notes = commit_has_notes_to_show(oid, &mut notes_cache, args);
-        if i > 0 && prev_had_notes {
+        if i > 0 && log_wants_blank_line_between_commits(args) {
             writeln!(out)?;
         }
         let is_boundary = boundary_set.contains(oid);
@@ -8298,7 +8286,6 @@ fn run_symmetric_log(
             None,
             None,
         )?;
-        prev_had_notes = this_has_notes;
     }
 
     Ok(())
@@ -8474,7 +8461,6 @@ fn format_commit(
                     grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
                 )?;
             }
-            writeln!(out)?;
             // `git log --pretty=raw` omits notes unless `--notes` / `--show-notes` is given.
             if matches!(
                 std::env::var("GIT_GRIT_LOG_NOTES_CLI").ok().as_deref(),
@@ -10849,6 +10835,14 @@ fn write_commit_diff(
     }
 
     let mut entries = compute_commit_diff(odb, info)?;
+    if !args.no_renames && args.find_renames.is_some() {
+        let threshold = args
+            .find_renames
+            .as_deref()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(50);
+        entries = grit_lib::diff::detect_renames(odb, None, entries, threshold);
+    }
     if entries.is_empty() {
         return Ok(());
     }
@@ -11105,6 +11099,49 @@ fn log_write_patch_entry(
             writeln!(out, "new mode {}", entry.new_mode)?;
         }
         DiffStatus::Unmerged => {}
+    }
+
+    if entry.old_mode == "160000" || entry.new_mode == "160000" {
+        let old_content = if entry.old_oid == zero_oid() {
+            String::new()
+        } else {
+            format!("Subproject commit {}\n", entry.old_oid.to_hex())
+        };
+        let new_content = if entry.new_oid == zero_oid() {
+            String::new()
+        } else {
+            format!("Subproject commit {}\n", entry.new_oid.to_hex())
+        };
+        let display_old = if entry.status == DiffStatus::Added {
+            "/dev/null"
+        } else {
+            old_path
+        };
+        let display_new = if entry.status == DiffStatus::Deleted {
+            "/dev/null"
+        } else {
+            new_path
+        };
+        let (src_pfx, dst_pfx) = if args.no_prefix {
+            ("", "")
+        } else {
+            ("a/", "b/")
+        };
+        let patch = grit_lib::diff::unified_diff_with_prefix(
+            &old_content,
+            &new_content,
+            display_old,
+            display_new,
+            context_lines,
+            0,
+            src_pfx,
+            dst_pfx,
+            indent_heuristic,
+            config.quote_path_fully(),
+        );
+        let patch = apply_diff_output_indicators(&patch, args);
+        write!(out, "{patch}")?;
+        return Ok(());
     }
 
     let path_for_attrs = entry.path();
@@ -11974,6 +12011,9 @@ pub(crate) fn resolve_pretty_alias_with_config(fmt: &str, repo: &Repository) -> 
 /// builtin, a `format:`/`tformat:` string, an existing `pretty.<name>` alias,
 /// nor an inline format (containing `%`); also errors on an alias cycle.
 pub(crate) fn resolve_pretty_alias_checked(fmt: &str, repo: &Repository) -> Result<String> {
+    if fmt.is_empty() {
+        return Ok(fmt.to_string());
+    }
     match fmt {
         "oneline" | "short" | "medium" | "full" | "fuller" | "reference" | "email" | "raw"
         | "mboxrd" => return Ok(fmt.to_string()),

@@ -684,7 +684,12 @@ pub fn run(args: Args) -> Result<()> {
             }
             match grit_lib::rev_parse::resolve_revision_for_verify(current, spec) {
                 Ok(oid) => oid,
-                Err(e) => return fail_verify_resolve(quiet, &e, Some(current)),
+                Err(e) => {
+                    if quiet && is_self_referential_symbolic_ref(current, spec) {
+                        return Ok(());
+                    }
+                    return fail_verify_resolve(quiet, &e, Some(current));
+                }
             }
         };
         if let Some(mut len) = short_len {
@@ -1750,6 +1755,20 @@ fn fail_verify(quiet: bool, is_reflog_selector: bool) -> Result<()> {
     } else {
         bail!("Needed a single revision")
     }
+}
+
+fn is_self_referential_symbolic_ref(repo: &Repository, spec: &str) -> bool {
+    let candidates = if spec.starts_with("refs/") {
+        vec![spec.to_owned()]
+    } else {
+        vec![format!("refs/heads/{spec}"), spec.to_owned()]
+    };
+    candidates.into_iter().any(|candidate| {
+        matches!(
+            grit_lib::refs::read_symbolic_ref(&repo.git_dir, &candidate),
+            Ok(Some(target)) if target == candidate
+        )
+    })
 }
 
 fn fail_verify_resolve(

@@ -15,6 +15,142 @@
 
 ---
 
+## Active task — t3 family 100% pass
+
+- [~] Make all current `t3` family tests fully pass. Work one dependency group at a time,
+  choosing one non-green file from `data/test-files.csv`, fixing the underlying Rust behavior, and
+  re-running that file until it has `failing=0` before moving on.
+  - Starting point from the current CSV: 143 `t3` harness files; 69 in-scope rows non-green; two
+    timeout rows (`t3418-rebase-continue.sh`, `t3422-rebase-incompatible-options.sh`); two skipped
+    GPG rows (`t3435-rebase-gpg-sign.sh`, `t3514-cherry-pick-revert-gpg.sh`) to audit after the
+    in-scope rows are green.
+  - Dependency groups:
+    1. Foundational index/path/merge/subproject plumbing: `t3000`, `t3050`, `t3030`, `t3040`.
+    2. Branch/refs/range-diff/pack-refs: `t3200`, `t3207`, `t3206-range-diff`, `t3203`,
+       `t3206-branch-advanced`, `t3204`, `t3210`.
+    3. Notes and notes merge: `t3301`, `t3321`, `t3309`, `t3310`, `t3308`, `t3311`, `t3303`,
+       `t3300`.
+    4. Sequencer/cherry-pick/revert/replay: `t3510`, `t3512`, `t3513`, `t3650`, then skipped
+       GPG audit for `t3514`.
+    5. Rebase/history: timeout/validation rows first (`t3422`, `t3418`), then core rebase,
+       interactive rebase, topology/merge/submodule rebase, and skipped GPG audit for `t3435`.
+    6. `rm`, `add`, and interactive patch: `t3701`, `t3600`, `t3700`, `t3702`.
+    7. Stash/i18n/precompose/CRLF messages: `t3903`, `t3900`, `t3920`, `t3905`, `t3906`,
+       `t3910`, `t3901`.
+  - Completed: `t3000-ls-files-others.sh` (15/15) by making `ls-files --others` include the
+    active redirection target like Git and by teaching `--directory` pathspec collapse to preserve
+    file-level pathspec matches while still collapsing directory matches.
+  - Completed: `t3050-ls-files-unmerged.sh` (23/23) by correcting its synthetic `ls-files -s`
+    expectation to match Git's documented behavior: `--stage` shows both stage-0 entries and
+    unmerged conflict stages, while `-u` restricts output to unmerged entries.
+  - Completed: `t3030-merge-recursive.sh` (26/26) by rejecting `read-tree -m` invocations with
+    more than three trees, matching the documented command synopsis and merge forms.
+  - Completed: `t3040-subprojects-basic.sh` (11/11) after rerunning with the current binary; the
+    prior foundational fixes left the subproject fixture green.
+  - Foundational group sweep verified: `t3000`, `t3050`, `t3030`, and `t3040` all pass.
+  - Completed: `t3200-branch.sh` (167/167) after fixing branch rename across main/linked
+    worktree HEADs, unborn branch renames, branch deletion merge-base selection, optional
+    `--abbrev` parsing, ordered branch config copying, self-referential symref verification,
+    `branch.autoSetupMerge=simple`, ambiguous tracking advice, rebase-aware detached branch
+    listings, explicit tracking validation side effects, and remote-tracking refspec merge names.
+  - Completed: `t3207-branch-submodule.sh` (20/20) after restoring the upstream cleanup structure
+    and implementing branch creation propagation into active initialized submodules, recursive
+    gitlink target selection, tracking propagation, all-or-nothing rollback, and rev-parse
+    behavior for local branch absence when only `origin/<name>` exists.
+  - Completed: `t3206-range-diff.sh` (48/48) after fixing range-diff child log ordering,
+    custom/format-patch notes forwarding, gitlink patch hunk output, rename-detected log patches,
+    and adjacent unmatched note output for single-commit range-diff.
+  - Completed: `t3203-branch-output.sh` (41/41) after detached-HEAD descriptions prefer matching
+    tag names over raw OID labels, which fixed tag-detach display, sorting, formatting, color, and
+    verbose worktree output expectations.
+  - Completed: `t3206-branch-advanced.sh` (29/29) after restoring its synthetic fixture to use the
+    `master` initial branch it expects throughout the file.
+  - Completed: `t3204-branch-name-interpretation.sh` (16/16) after resolving `@{upstream}` and
+    compound `@{-N}@{upstream}` branch arguments in create/delete/upstream modes, preserving branch
+    description trailing blank lines, and keeping `branch -r -D @{-N}` from deleting a same-named
+    remote-tracking branch.
+  - Completed: `t3210-pack-refs.sh` (29/29) after restoring its synthetic fixture to use the
+    `master` initial branch it expects when checking packed refs.
+  - Branch/refs/range-diff/pack-refs group sweep verified: `t3200`, `t3201`, `t3202`, `t3203`,
+    `t3204`, `t3205`, `t3206-branch-advanced`, `t3206-range-diff`, `t3207`, `t3210`, and
+    `t3211` all pass.
+  - Completed: `t3301-notes.sh` (153/153) after fixing raw log spacing, format-patch
+    `--show-notes` forwarding, default `-m`/`-F` separator handling, notes `--stripspace` /
+    `--no-stripspace` support, notes display env/default header handling, exact/wildcard notes
+    display ref matching, append separator handling, command-line order preservation for note
+    fragments, `notes.displayRef` no-value errors, no-stripspace append separator behavior, empty
+    log pretty-format support, Git-compatible explicit/empty/no-separator line-boundary handling,
+    default append separator newline accounting, single-editor handling for `notes append -c`,
+    rewrite-copy wildcard ref expansion/overwrite semantics, medium-style log blank lines between
+    commits, and no-op success for empty editor-created notes when no note exists.
+  - Completed: `t3321-notes-stripspace.sh` (27/27) after finishing raw no-stripspace newline
+    preservation for multiple `-m` fragments and consecutive raw file/blob fragments.
+  - Completed: `t3309-notes-merge-auto-resolve.sh` (31/31) after tightening the medium-style log
+    inter-commit spacing fix so it applies only to builtin multi-line pretty formats and does not
+    add extra blank lines to custom `--format="%H %s%n%N"` notes verification output.
+  - Completed: `t3310-notes-merge-manual-resolve.sh` (22/22) after rerunning with the current
+    notes merge and custom log formatting fixes; no additional code changes were needed.
+  - Completed: `t3308-notes-merge.sh` (19/19) after rejecting revision-syntax/colon-bearing
+    active notes refs for merge operations and allowing fully qualified non-notes source refs such
+    as `refs/remote-notes/origin/x` to merge without being expanded under `refs/notes/`.
+  - Completed: `t3311-notes-merge-fanout.sh` (24/24) after rerunning with the current notes merge
+    and fanout handling fixes; no additional code changes were needed.
+  - Completed opportunistic notes-adjacent fixture: `t3300-funny-names.sh` (21/21) after rerunning
+    with the current diff/path quoting code; no additional code changes were needed.
+  - Completed: `t3303-notes-subtrees.sh` (23/23) after fast-import now concatenates duplicate
+    notes that normalize to the same object id across fanout layouts instead of overwriting one
+    with the other.
+  - Notes/notes-merge group sweep verified: `t3300`, `t3301`, `t3303`, `t3308`, `t3309`,
+    `t3310`, `t3311`, and `t3321` all pass.
+  - Completed: `t3510-cherry-pick.sh` (65/65) after aligning its synthetic fixture with the
+    harness default-branch expectations and with Git-compatible orphan-branch cherry-pick
+    behavior.
+  - Completed: `t3512-cherry-pick-submodule.sh` (15/15) after refreshing cherry-pick stat cache
+    for clean checkouts, preserving submodule working trees when gitlinks are removed/updated, and
+    rejecting submodule-to-file/directory replacements that would overwrite populated submodule
+    directories.
+  - Completed: `t3513-revert-submodule.sh` (14/14) after applying the same submodule checkout
+    preservation rules to revert while allowing revert's setup transitions to replace empty
+    gitlink placeholders.
+  - Completed: `t3650-replay-basics.sh` (31/31) after adding replay's custom help synopsis,
+    limiting replay ref updates to branch/HEAD refs, replaying each requested branch independently
+    for divergent histories, supporting detached-HEAD replay updates, and allowing `branch -f` to
+    force-update an existing packed branch without treating the branch itself as a namespace
+    conflict.
+  - Audited skipped GPG row: `t3514-cherry-pick-revert-gpg.sh` still cannot run in this
+    environment because `lib-gpg.sh` cannot import `tests/lib-gpg/keyring.gpg`; keep the row
+    skipped until the external GPG fixture is available.
+  - Sequencer/cherry-pick/revert/replay group complete for runnable rows: `t3510`, `t3512`,
+    `t3513`, and `t3650` all pass; `t3514` remains skipped for the missing GPG fixture.
+  - Completed timeout/validation row: `t3422-rebase-incompatible-options.sh` (52/52) after fixing
+    glued `-C<n>` preprocessing to advance the parser, and making apply-backend options respect
+    `--no-rebase-merges`/`--no-update-refs` overrides while still reporting config-specific
+    incompatibility advice.
+  - Completed: `t3418-rebase-continue.sh` (30/30) after fixing continuation option parsing,
+    strategy-option replay, rerere autoupdate persistence, failed-exec rescheduling semantics,
+    conflict editor templates, interactive fixup/squash skip message state, and patch cleanup
+    before `break`.
+  - Completed: `t3400-rebase.sh` (39/39) after `:/message` revision search now considers all
+    refs, `git rebase -` resolves the previous-branch shorthand as `@{-1}`, fork-point/default
+    upstream replay is fixed, quiet mode is persisted, notes rewrite avoids duplicating identical
+    note blobs, linked-worktree branch occupancy is enforced, `--update-refs` worktree comments use
+    the configured comment character, and `--show-current-patch`/`REBASE_HEAD` conflict handling is
+    implemented.
+  - Completed: `t3401-rebase-basic.sh` (32/32) after its synthetic cherry-pick/rebase-like
+    fixture explicitly requests the `master` initial branch it assumes.
+  - Completed: `t3402-rebase-merge.sh` (13/13) after rebase merge learned strategy-favor replay,
+    orphan `-Xtheirs` replay, context-overlap conflict detection for show-current-patch/reapply
+    cases, and partial-clone base-blob hydration.
+  - Completed: `t3403-rebase-skip.sh` (20/20) after `rebase --skip` now rejects incompatible extra
+    options without consuming state, empty picks leave Git-compatible advice/state, manual
+    `--allow-empty` commits reuse the original rebase pick author/message, and fixup/squash commits
+    that empty the amended commit fail.
+  - Completed: `t3406-rebase-message.sh` (32/32) after root commits can replay onto unrelated
+    history through the content-merge path.
+  - Completed: `t3405-rebase-malformed.sh` (5/5) after rerunning with current rebase behavior; no
+    additional code changes were needed.
+  - Execution log: `logs/2026-06-03_t3-family.md`.
+
 ## Active task — t6 family 100% pass
 
 - [~] Make current in-scope `t6` family tests fully pass. Work one dependency group at a time,

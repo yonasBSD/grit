@@ -6536,6 +6536,49 @@ pub(crate) fn checkout_index_to_worktree(
     populate_gitlinks: bool,
     preserve_dropped_gitlink_dirs: bool,
 ) -> Result<()> {
+    checkout_index_to_worktree_inner(
+        repo,
+        old_index,
+        new_index,
+        work_tree,
+        force_write_all,
+        populate_gitlinks,
+        preserve_dropped_gitlink_dirs,
+        true,
+    )
+}
+
+pub(crate) fn checkout_index_to_worktree_allowing_submodule_replacement(
+    repo: &Repository,
+    old_index: &Index,
+    new_index: &Index,
+    work_tree: &std::path::Path,
+    force_write_all: bool,
+    populate_gitlinks: bool,
+    preserve_dropped_gitlink_dirs: bool,
+) -> Result<()> {
+    checkout_index_to_worktree_inner(
+        repo,
+        old_index,
+        new_index,
+        work_tree,
+        force_write_all,
+        populate_gitlinks,
+        preserve_dropped_gitlink_dirs,
+        false,
+    )
+}
+
+fn checkout_index_to_worktree_inner(
+    repo: &Repository,
+    old_index: &Index,
+    new_index: &Index,
+    work_tree: &std::path::Path,
+    force_write_all: bool,
+    populate_gitlinks: bool,
+    preserve_dropped_gitlink_dirs: bool,
+    refuse_submodule_replacement: bool,
+) -> Result<()> {
     let old_stage0: HashSet<Vec<u8>> = old_index
         .entries
         .iter()
@@ -6569,7 +6612,7 @@ pub(crate) fn checkout_index_to_worktree(
         .map(|e| (e.path.as_slice(), e))
         .collect();
 
-    if preserve_dropped_gitlink_dirs {
+    if refuse_submodule_replacement && preserve_dropped_gitlink_dirs {
         refuse_populated_submodule_tree_replacement(old_index, new_index, work_tree)?;
     }
 

@@ -28,7 +28,6 @@ test_no_branch () {
 }
 
 test_expect_success 'setup superproject and submodule' '
-	(
 	git config --global protocol.file.allow always &&
 	mkdir test_dirs &&
 	(
@@ -50,12 +49,10 @@ test_expect_success 'setup superproject and submodule' '
 		git -C super/sub submodule update --init
 	) &&
 	reset_test
-	)
 '
 
 # Test the argument parsing
 test_expect_success '--recurse-submodules should create branches' '
-	(
 	test_when_finished "reset_test" &&
 	(
 		cd super &&
@@ -65,11 +62,9 @@ test_expect_success '--recurse-submodules should create branches' '
 		git -C sub/sub-sub rev-parse branch-a &&
 		git -C second/sub rev-parse branch-a
 	)
-	)
 '
 
 test_expect_success '--recurse-submodules should die if submodule.propagateBranches is false' '
-	(
 	test_when_finished "reset_test" &&
 	(
 		cd super &&
@@ -77,11 +72,9 @@ test_expect_success '--recurse-submodules should die if submodule.propagateBranc
 		test_must_fail git -c submodule.propagateBranches=false branch --recurse-submodules branch-a 2>actual &&
 		test_cmp expected actual
 	)
-	)
 '
 
 test_expect_success '--recurse-submodules should fail when not creating branches' '
-	(
 	test_when_finished "reset_test" &&
 	(
 		cd super &&
@@ -93,11 +86,9 @@ test_expect_success '--recurse-submodules should fail when not creating branches
 		git rev-parse branch-a &&
 		git -C sub rev-parse branch-a
 	)
-	)
 '
 
 test_expect_success 'should respect submodule.recurse when creating branches' '
-	(
 	test_when_finished "reset_test" &&
 	(
 		cd super &&
@@ -105,11 +96,9 @@ test_expect_success 'should respect submodule.recurse when creating branches' '
 		git rev-parse branch-a &&
 		git -C sub rev-parse branch-a
 	)
-	)
 '
 
 test_expect_success 'should ignore submodule.recurse when not creating branches' '
-	(
 	test_when_finished "reset_test" &&
 	(
 		cd super &&
@@ -118,12 +107,10 @@ test_expect_success 'should ignore submodule.recurse when not creating branches'
 		test_no_branch . branch-a &&
 		git -C sub rev-parse branch-a
 	)
-	)
 '
 
 # Test branch creation behavior
 test_expect_success 'should create branches based off commit id in superproject' '
-	(
 	test_when_finished "reset_test" &&
 	(
 		cd super &&
@@ -140,11 +127,9 @@ test_expect_success 'should create branches based off commit id in superproject'
 		# Assert that the commit id of sub:second-branch matches super:branch-a and not sub:branch-a
 		test_cmp expected actual
 	)
-	)
 '
 
 test_expect_success 'should not create any branches if branch is not valid for all repos' '
-	(
 	test_when_finished "reset_test" &&
 	(
 		cd super &&
@@ -153,11 +138,9 @@ test_expect_success 'should not create any branches if branch is not valid for a
 		test_no_branch . branch-a &&
 		grep "submodule .sub.: fatal: a branch named .branch-a. already exists" actual
 	)
-	)
 '
 
 test_expect_success 'should create branches if branch exists and --force is given' '
-	(
 	test_when_finished "reset_test" &&
 	(
 		cd super &&
@@ -174,11 +157,9 @@ test_expect_success 'should create branches if branch exists and --force is give
 		# branch
 		! test_cmp expected actual-old-branch-a
 	)
-	)
 '
 
 test_expect_success 'should create branch when submodule is not in HEAD:.gitmodules' '
-	(
 	test_when_finished "reset_test" &&
 	(
 		cd super &&
@@ -194,11 +175,9 @@ test_expect_success 'should create branch when submodule is not in HEAD:.gitmodu
 		git -C sub2 rev-parse branch-c &&
 		git -C sub2/sub-sub rev-parse branch-c
 	)
-	)
 '
 
 test_expect_success 'should not create branches in inactive submodules' '
-	(
 	test_when_finished "reset_test" &&
 	test_config -C super submodule.sub.active false &&
 	(
@@ -207,11 +186,9 @@ test_expect_success 'should not create branches in inactive submodules' '
 		git rev-parse branch-a &&
 		test_no_branch sub branch-a
 	)
-	)
 '
 
 test_expect_success 'should set up tracking of local branches with track=always' '
-	(
 	test_when_finished "reset_test" &&
 	(
 		cd super &&
@@ -220,11 +197,9 @@ test_expect_success 'should set up tracking of local branches with track=always'
 		test_cmp_config -C sub . branch.branch-a.remote &&
 		test_cmp_config -C sub refs/heads/main branch.branch-a.merge
 	)
-	)
 '
 
 test_expect_success 'should set up tracking of local branches with explicit track' '
-	(
 	test_when_finished "reset_test" &&
 	(
 		cd super &&
@@ -233,11 +208,9 @@ test_expect_success 'should set up tracking of local branches with explicit trac
 		test_cmp_config -C sub . branch.branch-a.remote &&
 		test_cmp_config -C sub refs/heads/main branch.branch-a.merge
 	)
-	)
 '
 
 test_expect_success 'should not set up unnecessary tracking of local branches' '
-	(
 	test_when_finished "reset_test" &&
 	(
 		cd super &&
@@ -245,7 +218,6 @@ test_expect_success 'should not set up unnecessary tracking of local branches' '
 		git -C sub rev-parse main &&
 		test_cmp_config -C sub "" --default "" branch.branch-a.remote &&
 		test_cmp_config -C sub "" --default "" branch.branch-a.merge
-	)
 	)
 '
 
@@ -272,7 +244,6 @@ test_expect_success 'setup tests with remotes' '
 '
 
 test_expect_success 'should get fatal error upon branch creation when submodule is not in .git/modules' '
-	(
 	test_when_finished "reset_remote_test" &&
 	(
 		cd super-clone &&
@@ -288,11 +259,9 @@ test_expect_success 'should get fatal error upon branch creation when submodule 
 		git submodule update --init --recursive &&
 		git branch --recurse-submodules branch-b origin/branch-b
 	)
-	)
 '
 
 test_expect_success 'should set up tracking of remote-tracking branches by default' '
-	(
 	test_when_finished "reset_remote_test" &&
 	(
 		cd super-clone &&
@@ -306,11 +275,9 @@ test_expect_success 'should set up tracking of remote-tracking branches by defau
 		test_cmp_config -C sub/sub-sub origin branch.branch-a.remote &&
 		test_cmp_config -C sub/sub-sub refs/heads/branch-a branch.branch-a.merge
 	)
-	)
 '
 
 test_expect_success 'should not fail when unable to set up tracking in submodule' '
-	(
 	test_when_finished "reset_remote_test" &&
 	(
 		cd super-clone &&
@@ -321,11 +288,9 @@ test_expect_success 'should not fail when unable to set up tracking in submodule
 		test_cmp_config -C sub "" --default "" branch.branch-a.remote &&
 		test_cmp_config -C sub "" --default "" branch.branch-a.merge
 	)
-	)
 '
 
 test_expect_success '--track=inherit should set up tracking correctly' '
-	(
 	test_when_finished "reset_remote_test" &&
 	(
 		cd super-clone &&
@@ -345,11 +310,9 @@ test_expect_success '--track=inherit should set up tracking correctly' '
 		test_cmp_config -C sub/sub-sub other branch.branch-b.remote &&
 		test_cmp_config -C sub/sub-sub refs/heads/sub-sub-branch-a branch.branch-b.merge
 	)
-	)
 '
 
 test_expect_success '--no-track should not set up tracking' '
-	(
 	test_when_finished "reset_remote_test" &&
 	(
 		cd super-clone &&
@@ -360,7 +323,6 @@ test_expect_success '--no-track should not set up tracking' '
 		test_cmp_config -C sub "" --default "" branch.branch-a.merge &&
 		test_cmp_config -C sub/sub-sub "" --default "" branch.branch-a.remote &&
 		test_cmp_config -C sub/sub-sub "" --default "" branch.branch-a.merge
-	)
 	)
 '
 

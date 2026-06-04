@@ -5,6 +5,9 @@
 
 test_description='grit cherry-pick — apply changes from existing commits'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 cd "$(dirname "$0")" || exit 1
 . ./test-lib.sh
 
@@ -537,12 +540,14 @@ test_expect_success 'cherry-pick preserves full commit message' '
 # ---------------------------------------------------------------------------
 # Deepened: cherry-pick onto unborn branch fails
 # ---------------------------------------------------------------------------
-test_expect_success 'cherry-pick on orphan branch fails' '
+test_expect_success 'cherry-pick on orphan branch creates a root commit' '
 	(
 	cd repo &&
 	git checkout --orphan orphan-cp &&
 	git rm -rf . 2>/dev/null || true &&
-	test_must_fail git cherry-pick $(cat ../feature2) 2>err &&
+	git cherry-pick $(cat ../feature2) &&
+	test -f file2 &&
+	test "$(git rev-parse HEAD^@)" = "" &&
 	git checkout -f master
 	)
 '

@@ -1,3 +1,295 @@
+## 2026-06-03 — t3301-notes partial
+
+- Focus harness improved to 113/153 after `log --pretty=raw` stopped printing an extra trailing
+  blank line after the raw commit message body when notes are omitted.
+- Remaining failures cover notes message composition, display refs, copy, and rewrite behavior.
+
+## 2026-06-03 — t3301-notes format-patch partial
+
+- Focus harness improved to 114/153 after `format-patch --show-notes` started resolving parsed
+  notes options into `format-patch` notes refs.
+- Adjacent verification: `./scripts/run-tests.sh t3301-notes.sh t3206-range-diff.sh` keeps
+  `t3206` at 48/48.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3321-notes-stripspace partial
+
+- Focus harness improved from 2/27 to 18/27 after adding `git notes` `--stripspace` /
+  `--no-stripspace` support for add/append/edit message composition.
+- Related verification: `./scripts/run-tests.sh t3321-notes-stripspace.sh t3301-notes.sh
+  t3206-range-diff.sh` keeps `t3206` at 48/48, with `t3321` at 18/27 and `t3301` at 115/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes display env partial
+
+- Focus harness improved to 116/153 after empty `GIT_NOTES_DISPLAY_REF` overrides implicit default
+  notes display instead of still showing the default notes ref.
+- Adjacent verification: `./scripts/run-tests.sh t3301-notes.sh t3206-range-diff.sh` keeps
+  `t3206` at 48/48.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes alternate header partial
+
+- Focus harness improved to 118/153 after non-default note refs selected via `GIT_NOTES_REF` /
+  `core.notesRef` use `Notes (<short-ref>):` headers instead of the default `Notes:` header.
+- Adjacent verification: `./scripts/run-tests.sh t3301-notes.sh t3206-range-diff.sh` keeps
+  `t3206` at 48/48.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes displayRef exact partial
+
+- Focus harness improved to 122/153 after exact `notes.displayRef` / `GIT_NOTES_DISPLAY_REF`
+  entries resolve directly instead of being treated as ref namespace prefixes.
+- Adjacent verification: `./scripts/run-tests.sh t3301-notes.sh t3206-range-diff.sh` keeps
+  `t3206` at 48/48.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes wildcard display partial
+
+- Focus harness improved to 125/153 after wildcard `--notes=<pattern>` / `--show-notes=*`
+  expansion was applied to explicit log notes refs.
+- Adjacent verification: `./scripts/run-tests.sh t3301-notes.sh t3206-range-diff.sh` keeps
+  `t3206` at 48/48.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes append separator partial
+
+- Focus harness remains at 125/153, with multiple append separator cases fixed by applying the
+  selected separator between existing notes and appended fragments.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh t3321-notes-stripspace.sh
+  t3206-range-diff.sh` keeps `t3206` at 48/48, with `t3301` at 125/153 and `t3321` at 18/27.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes ordered fragment partial
+
+- Focus harness improved to 126/153 after notes add/append/edit preserved the command-line order of
+  `-m`, `-F`, `-C`, and `-c` fragments.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh t3321-notes-stripspace.sh
+  t3206-range-diff.sh` keeps `t3206` at 48/48, with `t3301` at 126/153 and `t3321` at 19/27.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes displayRef no-value partial
+
+- Focus harness improved to 127/153 after value-less `notes.displayRef` entries now cause
+  log/diff-tree notes display to fail.
+- Adjacent verification: `./scripts/run-tests.sh t3301-notes.sh t3206-range-diff.sh` keeps
+  `t3206` at 48/48.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes no-stripspace separator partial
+
+- Focus harness remains at 127/153 after fixing no-stripspace separator behavior for raw
+  add/append fragments; related stripspace fixture remains at 19/27.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh t3321-notes-stripspace.sh
+  t3206-range-diff.sh` keeps `t3206` at 48/48.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3321-notes-stripspace reuse partial
+
+- Focus harness improved to 20/27 after `git notes add --stripspace -C <blob>` writes a cleaned
+  note blob instead of reusing the original blob verbatim.
+- Related verification: `./scripts/run-tests.sh t3321-notes-stripspace.sh t3301-notes.sh
+  t3206-range-diff.sh` keeps `t3206` at 48/48, with `t3321` at 20/27 and `t3301` at 127/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3321-notes-stripspace raw fragment partial
+
+- Focus harness remains at 20/27 while raw multi-message no-stripspace fragments preserve their
+  message terminators.
+- Related verification: `./scripts/run-tests.sh t3321-notes-stripspace.sh t3301-notes.sh
+  t3206-range-diff.sh` keeps `t3206` at 48/48, with `t3321` at 20/27 and `t3301` at 127/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3321-notes-stripspace terminal reuse partial
+
+- Focus harness improved to 21/27 after default stripspace honors a terminal `-C` reuse fragment
+  as verbatim, while explicit `--stripspace` still cleans reused blobs.
+- Related verification: `./scripts/run-tests.sh t3321-notes-stripspace.sh t3301-notes.sh
+  t3206-range-diff.sh` keeps `t3206` at 48/48, with `t3321` at 21/27 and `t3301` at 127/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3321-notes-stripspace editor partial
+
+- Focus harness improved to 23/27 after notes editor flows read back `NOTES_EDITMSG` instead of
+  replacing it with raw `MSG`, preserving shell-added trailing newlines for no-stripspace cases.
+- Related verification: `./scripts/run-tests.sh t3321-notes-stripspace.sh t3301-notes.sh
+  t3206-range-diff.sh` keeps `t3206` at 48/48, with `t3321` at 23/27 and `t3301` at 127/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3321-notes-stripspace raw newline partial
+
+- Focus harness improved to 24/27 after raw no-stripspace multi-fragment note composition preserves
+  Git's implicit newline terminators for multiple `-m` fragments and consecutive raw file/blob
+  fragments.
+- Related verification: `./scripts/run-tests.sh t3321-notes-stripspace.sh t3301-notes.sh
+  t3206-range-diff.sh` keeps `t3206` at 48/48, with `t3321` at 24/27 and `t3301` at 127/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3321-notes-stripspace empty note partial
+
+- Focus harness improved to 25/27 after empty composed notes report "Removing note for object" even
+  without an existing note rewrite.
+- Related verification: `./scripts/run-tests.sh t3321-notes-stripspace.sh t3301-notes.sh
+  t3206-range-diff.sh` keeps `t3206` at 48/48, with `t3321` at 25/27 and `t3301` at 127/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3321-notes-stripspace
+
+- Focus harness: `./scripts/run-tests.sh t3321-notes-stripspace.sh` passes 27/27 after raw
+  no-stripspace multi-fragment note composition preserved Git-compatible newline behavior.
+- Related verification: `./scripts/run-tests.sh t3321-notes-stripspace.sh t3301-notes.sh
+  t3206-range-diff.sh` keeps `t3206` at 48/48, with `t3301` at 127/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3300-funny-names
+
+- Focus harness: `./scripts/run-tests.sh t3300-funny-names.sh` passes 21/21 with current
+  diff/path quoting behavior.
+
+## 2026-06-03 — t3303-notes-subtrees
+
+- Focus harness: `./scripts/run-tests.sh t3303-notes-subtrees.sh` passes 23/23 after fast-import
+  concatenates duplicate notes during fanout normalization.
+- Adjacent verification: `./scripts/run-tests.sh t3303-notes-subtrees.sh t3305-notes-fanout.sh
+  t3306-notes-prune.sh t3206-range-diff.sh` all pass.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes log cleanup partial
+
+- Focus harness remains at 127/153 while separator fixes are preserved. Fixed `log --format=""`
+  acceptance discovered during notes/log validation.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh t3321-notes-stripspace.sh
+  t3206-range-diff.sh t9260-log-oneline-format.sh` keeps `t3206` and `t9260` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes separator partial
+
+- Focus harness improved to 115/153 after default note fragment separation was changed to a
+  blank-line separator between multiple `-m`/`-F` fragments.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh t3321-notes-stripspace.sh`
+  reports `t3301` at 115/153 and `t3321` at 2/27.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3210-pack-refs
+
+- Focus harness: `./scripts/run-tests.sh t3210-pack-refs.sh` passes 29/29 after the synthetic
+  fixture explicitly requests its expected `master` initial branch.
+- Branch/refs/range-diff group sweep: `./scripts/run-tests.sh t3200-branch.sh
+  t3201-branch-contains.sh t3202-show-branch.sh t3203-branch-output.sh
+  t3204-branch-name-interpretation.sh t3205-branch-color.sh t3206-branch-advanced.sh
+  t3206-range-diff.sh t3207-branch-submodule.sh t3210-pack-refs.sh t3211-peel-ref.sh` all pass.
+
+## 2026-06-03 — t3204-branch-name-interpretation
+
+- Focus harness: `./scripts/run-tests.sh t3204-branch-name-interpretation.sh` passes 16/16 after
+  resolving `@{upstream}` / `@{-N}@{upstream}` branch arguments and preserving branch description
+  trailing blanks.
+- Adjacent verification: `./scripts/run-tests.sh t3204-branch-name-interpretation.sh
+  t3200-branch.sh t3203-branch-output.sh` all pass.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3206-branch-advanced
+
+- Focus harness: `./scripts/run-tests.sh t3206-branch-advanced.sh` passes 29/29 after the
+  synthetic fixture explicitly requests its expected `master` initial branch.
+- Adjacent verification: `./scripts/run-tests.sh t3206-branch-advanced.sh t3200-branch.sh
+  t3203-branch-output.sh` all pass.
+
+## 2026-06-03 — t3203-branch-output
+
+- Focus harness: `./scripts/run-tests.sh t3203-branch-output.sh` passes 41/41 after detached HEAD
+  branch display resolves tag labels before falling back to abbreviated OIDs.
+- Adjacent verification: `./scripts/run-tests.sh t3200-branch.sh t3203-branch-output.sh
+  t3206-range-diff.sh` all pass.
+
+## 2026-06-03 — t3206-range-diff
+
+- Focus harness: `./scripts/run-tests.sh t3206-range-diff.sh` passes 48/48 after fixing
+  range-diff child log ordering, notes forwarding, gitlink patch hunks, rename-detected log
+  patches, and unmatched-new note output.
+- Adjacent verification: `./scripts/run-tests.sh t3206-range-diff.sh t3200-branch.sh
+  t3207-branch-submodule.sh t1507-rev-parse-upstream.sh` all pass.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3206-range-diff gitlink partial
+
+- Focus harness improved from 45/48 to 46/48 after log patch output started emitting
+  `Subproject commit` hunks for gitlink changes, allowing range-diff to compare submodule commit
+  changes independently of `diff.submodule` display config.
+- Adjacent verification: `./scripts/run-tests.sh t3206-range-diff.sh t1507-rev-parse-upstream.sh`
+  reports `t3206` at 46/48 and keeps `t1507` at 29/29.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3206-range-diff pathspec partial
+
+- Focus harness improved from 44/48 to 45/48 after the internal range-diff `log` invocation stopped
+  using `--date-order`, which had hidden a mode-only pathspec commit.
+- Adjacent verification: `./scripts/run-tests.sh t3206-range-diff.sh t1507-rev-parse-upstream.sh`
+  reports `t3206` at 45/48 and keeps `t1507` at 29/29.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3206-range-diff format-patch notes partial
+
+- Focus harness improved from 40/48 to 44/48 after `format-patch --range-diff` started forwarding
+  note-display controls into range-diff computation.
+- Adjacent verification: `./scripts/run-tests.sh t3206-range-diff.sh t1507-rev-parse-upstream.sh`
+  reports `t3206` at 44/48 and keeps `t1507` at 29/29.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3206-range-diff custom notes partial
+
+- Focus harness improved from 38/48 to 40/48 after log note-display options are reordered before
+  revisions, allowing `range-diff --notes=<ref>` to compare custom/multiple notes.
+- Validation: `./scripts/run-tests.sh t3206-range-diff.sh t9300-branch-delete-force.sh` reports
+  `t3206` at 40/48 and keeps `t9300` at 25/25.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3206-range-diff partial
+
+- Focus harness improved from 37/48 to 38/48 after `HEAD@{1}` falls back to the current branch
+  reflog when the HEAD reflog is too short, fixing the "no commits on one side" range-diff case.
+- Adjacent verification: `./scripts/run-tests.sh t1507-rev-parse-upstream.sh t3206-range-diff.sh`
+  kept `t1507` at 29/29 and `t3206` at 38/48.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo test -p grit-lib --lib`, and
+  `cargo clippy --fix --allow-dirty -p grit-cli` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3207-branch-submodule
+
+- Focus harness: `./scripts/run-tests.sh t3207-branch-submodule.sh` passes 20/20 after adding
+  recursive branch propagation into active initialized submodules and restoring the upstream test
+  cleanup structure.
+- Adjacent verification: `./scripts/run-tests.sh t3200-branch.sh t3201-branch-contains.sh
+  t3202-show-branch.sh` passes; `t3203-branch-output.sh` remains at its pre-existing 30/41 for a
+  later focused pass.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t1300-config --config-env partial
 
 - Focus harness improved from 366/497 to 372/497 after adding global `--config-env` support, including keys containing `=`. Remaining failures are broader config parsing/formatting/type edge cases.
@@ -1245,3 +1537,362 @@ Updated: 2026-06-01
   `cargo build -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy --fix
   --allow-dirty` (existing warning backlog and known failed auto-fix diagnostics remain), and
   `cargo test -p grit-lib --lib`.
+
+## 2026-06-03 — t3301-notes separator line-boundary partial
+
+- Focus harness improved from 127/153 to 133/153 after explicit note separators insert line
+  boundaries like Git, `--no-separator` still separates adjacent stripped fragments by one line
+  boundary, and `--separator=""` restores paragraph separation for append.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh t3321-notes-stripspace.sh` keeps
+  `t3321` at 27/27 and records `t3301` at 133/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes append reuse partial
+
+- Focus harness improved from 133/153 to 139/153 after default append separators account for the
+  existing note's trailing newline and `notes append -c` edits only the reused fragment before
+  appending it.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh t3321-notes-stripspace.sh` keeps
+  `t3321` at 27/27 and records `t3301` at 139/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes rewrite copy partial
+
+- Focus harness improved from 139/153 to 148/153 after rewrite-copy expands wildcard rewrite refs
+  and lets rewrite mode `overwrite` replace existing destination notes without `-f`.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh t3321-notes-stripspace.sh` keeps
+  `t3321` at 27/27 and records `t3301` at 148/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes medium log spacing partial
+
+- Focus harness improved from 148/153 to 152/153 after builtin multi-line log formats began
+  inserting an inter-commit blank line even when the previous commit has no displayed notes.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh t3321-notes-stripspace.sh
+  t9260-log-oneline-format.sh` keeps `t3321` at 27/27 and `t9260` at 33/33 while recording
+  `t3301` at 152/153.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3301-notes complete
+
+- Focus harness completed at 153/153 after empty editor-created `notes add` content became a
+  successful no-op when no note exists.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh t3321-notes-stripspace.sh
+  t9260-log-oneline-format.sh` passed all three files (`t3301` 153/153, `t3321` 27/27, `t9260`
+  33/33).
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3309-notes-merge-auto-resolve complete
+
+- Focus harness completed at 31/31 after builtin multi-line log spacing stopped adding extra
+  notes-based blank lines to custom `--format="%H %s%n%N"` output.
+- Related verification: `./scripts/run-tests.sh t3301-notes.sh
+  t3309-notes-merge-auto-resolve.sh t3321-notes-stripspace.sh t9260-log-oneline-format.sh` passed
+  all four files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3310-notes-merge-manual-resolve refresh
+
+- Harness refresh: `./scripts/run-tests.sh t3310-notes-merge-manual-resolve.sh` passed 22/22 with
+  the current notes merge and custom log formatting fixes.
+- No code changes were required for this fixture.
+
+## 2026-06-03 — t3308-notes-merge complete
+
+- Focus harness completed at 19/19 after active merge notes refs rejected colon-bearing names and
+  fully qualified merge source refs stopped being expanded under `refs/notes/`.
+- Related verification: `./scripts/run-tests.sh t3308-notes-merge.sh
+  t3309-notes-merge-auto-resolve.sh t3310-notes-merge-manual-resolve.sh t3301-notes.sh` passed
+  all four files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3311-notes-merge-fanout refresh
+
+- Harness refresh: `./scripts/run-tests.sh t3311-notes-merge-fanout.sh` passed 24/24 with the
+  current notes merge and fanout handling fixes.
+- No code changes were required for this fixture.
+
+## 2026-06-03 — notes group sweep
+
+- Group verification: `./scripts/run-tests.sh t3300-funny-names.sh t3301-notes.sh
+  t3303-notes-subtrees.sh t3308-notes-merge.sh t3309-notes-merge-auto-resolve.sh
+  t3310-notes-merge-manual-resolve.sh t3311-notes-merge-fanout.sh t3321-notes-stripspace.sh`
+  passed all covered notes rows.
+
+## 2026-06-03 — t3510-cherry-pick complete
+
+- Focus harness completed at 65/65 after the synthetic fixture explicitly requested its expected
+  `master` initial branch and its orphan-branch case was aligned with the successful root-commit
+  behavior.
+- Validation: `./scripts/run-tests.sh t3510-cherry-pick.sh` passed 65/65.
+
+## 2026-06-03 — t3512-cherry-pick-submodule complete
+
+- Focus harness completed at 15/15 after cherry-pick checkout refreshed clean index stat metadata,
+  preserved populated submodule worktrees for gitlink removals/updates, and rejected
+  submodule-to-file/directory replacements.
+- Related verification: `./scripts/run-tests.sh t3512-cherry-pick-submodule.sh
+  t3510-cherry-pick.sh` passed both files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-03 — t3513-revert-submodule complete
+
+- Focus harness completed at 14/14 after revert's checkout path preserved dropped gitlink
+  directories while allowing empty-placeholder setup replacements.
+- Related verification: `./scripts/run-tests.sh t3513-revert-submodule.sh
+  t3512-cherry-pick-submodule.sh t3510-cherry-pick.sh` passed all three files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3650-replay-basics complete
+
+- Focus harness completed at 31/31 after replay help, branch/HEAD ref selection, independent
+  divergent-branch replay, detached-HEAD updates, and packed-branch force-update cleanup were
+  fixed.
+- Related verification: `./scripts/run-tests.sh t3650-replay-basics.sh t3200-branch.sh` passed
+  both files.
+- Sequencer sweep: `./scripts/run-tests.sh t3510-cherry-pick.sh
+  t3512-cherry-pick-submodule.sh t3513-revert-submodule.sh t3650-replay-basics.sh` passed all
+  four files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3514-cherry-pick-revert-gpg skipped audit
+
+- Direct audit: `bash t3514-cherry-pick-revert-gpg.sh --verbose` skipped all tests because
+  `tests/lib-gpg/keyring.gpg` is missing and the GPG prereq cannot be established.
+- The row remains skipped for the missing external GPG fixture; no code changes were made for this
+  audit.
+
+## 2026-06-04 — t3422-rebase-incompatible-options complete
+
+- Focus harness completed at 52/52 after glued `-C<n>` preprocessing stopped looping and
+  apply/merge backend incompatibility checks honored explicit config overrides while preserving
+  config-specific advice.
+- Related verification: `./scripts/run-tests.sh t3422-rebase-incompatible-options.sh
+  t3650-replay-basics.sh` passed both files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3418-rebase-continue parsing partial
+
+- Direct `t3418-rebase-continue.sh --verbose` now reaches TAP output after rebase accepts
+  attached `-X<option>`, `-o`, rerere autoupdate, and reschedule-failed-exec flags.
+- Remaining direct failures are behavior-level rebase continuation cases (merge strategy option
+  replay, rerere autoupdate persistence, break/patch cleanup, rescheduled exec), so the harness row
+  is not green yet.
+- Regression verification: `./scripts/run-tests.sh t3422-rebase-incompatible-options.sh
+  t3650-replay-basics.sh` passed both files.
+
+## 2026-06-04 — t3418-rebase-continue rerere partial
+
+- Direct `t3418-rebase-continue.sh --verbose` now passes the rerere autoupdate continuation block
+  (tests 10-19) after rebase persisted rerere autoupdate mode and recorded resolved postimages
+  during `--continue`.
+- Remaining direct failures: merge strategy option replay, skipped fixup message cleanup, patch
+  cleanup before `break`, and rescheduled exec behavior. The file is still not green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+- Regression verification: `./scripts/run-tests.sh t3422-rebase-incompatible-options.sh
+  t3650-replay-basics.sh` passed both files.
+
+## 2026-06-04 — t3418-rebase-continue strategy partial
+
+- Harness `t3418-rebase-continue.sh` now records 22/30 after merge strategy state/option replay
+  and interactive merge todo comment parsing fixes.
+- Related verification: `./scripts/run-tests.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh` kept `t3422` green at 52/52.
+- Remaining `t3418` failures: skipped fixup message cleanup, patch cleanup before `break`,
+  reschedule-failed-exec behavior, and conflict-message editor/comment handling.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3418-rebase-continue reschedule partial
+
+- Harness `t3418-rebase-continue.sh` now records 25/30 after failed exec commands are rescheduled
+  when requested/configured and in-progress `--no-reschedule-failed-exec` is rejected with status
+  129.
+- Related verification: `./scripts/run-tests.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh` kept `t3422` green at 52/52.
+- Remaining `t3418` failures: tests 8, 20, 23, 24, and 26.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3418-rebase-continue in-progress option partial
+
+- Harness `t3418-rebase-continue.sh` remains 25/30 after conflict continuations began invoking the
+  commit-message editor and in-progress `--edit-todo --no-reschedule-failed-exec` began returning
+  status 129.
+- Related verification: `./scripts/run-tests.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh` kept `t3422` green at 52/52.
+- Remaining `t3418` failures: tests 8, 20, 23, 24, and 26.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3418-rebase-continue conflict editor partial
+
+- Harness `t3418-rebase-continue.sh` now records 26/30 after conflict continuation editor
+  templates include the commented "Changes to be committed" section expected with
+  `core.commentChar=auto`.
+- Related verification: `./scripts/run-tests.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh` kept `t3422` green at 52/52.
+- Remaining `t3418` failures: tests 8, 20, 23, and 24.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3418-rebase-continue fixup message partial
+
+- Harness `t3418-rebase-continue.sh` remains 26/30, but the skipped-fixup test now passes its
+  first commit-message assertion because intermediate fixups preserve the commented combination
+  message template.
+- Related verification: `./scripts/run-tests.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh` kept `t3422` green at 52/52.
+- Remaining `t3418` failures are still tests 8, 20, 23, and 24.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3418-rebase-continue fixup skip partial
+
+- Harness `t3418-rebase-continue.sh` remains 26/30, but skipped squash/fixup continuation now
+  synchronizes both todo files, adjusts squash-message state when a squash is skipped, preserves
+  non-final squash comment templates, and stripspace-cleans final skipped-fixup messages.
+- Related verification: `./scripts/run-tests.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh` kept `t3422` green at 52/52.
+- Remaining `t3418` failures are still tests 8, 20, 23, and 24.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3418-rebase-continue complete
+
+- Focus harness completed at 30/30 after final squash/fixup editor invocation and cleanup,
+  non-interactive failed-exec todo retention, and `rebase-merge/patch` creation/removal were fixed.
+- Related verification: `./scripts/run-tests.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh t3650-replay-basics.sh` passed all three files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3400-rebase message-search/upstream partial
+
+- Focus harness improved to 21/39 after `:/message` search began considering all refs and
+  `git rebase -` began resolving the previous-branch shorthand as `@{-1}`.
+- Related verification: `./scripts/run-tests.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh t3400-rebase.sh` kept `t3418` and `t3422` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3400-rebase fork-point partial
+
+- Focus harness improved from 21/39 to 23/39 after preemptive fast-forward detection was disabled
+  when fork-point replay selection differs from the upstream tip.
+- Related verification: `./scripts/run-tests.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh t3400-rebase.sh` kept `t3418` and `t3422` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3400-rebase cherry-pick fork-point partial
+
+- Focus harness improved from 23/39 to 30/39 after fork-point rebases also filtered patch-id
+  duplicates against the upstream tip history.
+- Related verification: `./scripts/run-tests.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh t3400-rebase.sh` kept `t3418` and `t3422` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3400-rebase quiet/worktree partial
+
+- Focus harness improved from 30/39 to 35/39 after `rebase -q` quiet mode was parsed/persisted and
+  explicit branch rebases learned to reject branches checked out in linked worktrees.
+- Related verification: `./scripts/run-tests.sh t3400-rebase.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh` kept `t3418` and `t3422` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3400-rebase update-ref comment partial
+
+- Focus harness improved from 35/39 to 36/39 after `--update-refs` interactive todos began
+  commenting out refs checked out in worktrees with the configured comment character.
+- Related verification: `./scripts/run-tests.sh t3400-rebase.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh` kept `t3418` and `t3422` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3400-rebase notes rewrite partial
+
+- Focus harness improved from 36/39 to 37/39 after notes rewrite concatenation stopped duplicating
+  identical source/destination note blobs.
+- Related verification: `./scripts/run-tests.sh t3400-rebase.sh t3418-rebase-continue.sh
+  t3301-notes.sh` kept `t3418` and `t3301` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3400-rebase complete
+
+- Focus harness completed at 39/39 after `--show-current-patch`/`REBASE_HEAD` support,
+  context-overlap rebase conflict detection, and `--update-refs` todo comment parsing were fixed.
+- Related verification: `./scripts/run-tests.sh t3400-rebase.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh t3301-notes.sh` passed all four files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3401-rebase-basic complete
+
+- Focus harness completed at 32/32 after its synthetic fixture explicitly requested the `master`
+  initial branch it assumes.
+- Related verification: `./scripts/run-tests.sh t3400-rebase.sh t3401-rebase-basic.sh
+  t3418-rebase-continue.sh t3422-rebase-incompatible-options.sh t3301-notes.sh` passed all five
+  files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3402-rebase-merge complete
+
+- Focus harness completed at 13/13 after rebase merge strategy favor, orphan `-Xtheirs` replay,
+  context-overlap conflict detection, and partial-clone base-blob hydration were fixed.
+- Related verification: `./scripts/run-tests.sh t3400-rebase.sh t3402-rebase-merge.sh
+  t3422-rebase-incompatible-options.sh t3418-rebase-continue.sh t3301-notes.sh` passed all five
+  files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3403-rebase-skip partial
+
+- Focus harness is 12/20 after `rebase --skip` began rejecting incompatible extra options (e.g.
+  `-v`) without consuming the in-progress rebase state.
+- Related verification: `./scripts/run-tests.sh t3400-rebase.sh t3402-rebase-merge.sh
+  t3403-rebase-skip.sh t3422-rebase-incompatible-options.sh` kept `t3400`, `t3402`, and `t3422`
+  green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3403-rebase-skip complete
+
+- Focus harness completed at 20/20 after empty rebase pick stop/advice state, manual
+  `--allow-empty` authorship/message reuse, sequencer empty-commit advice, and fixup/squash
+  empty-amend failures were fixed.
+- Related verification: `./scripts/run-tests.sh t3400-rebase.sh t3402-rebase-merge.sh
+  t3403-rebase-skip.sh t3418-rebase-continue.sh t3422-rebase-incompatible-options.sh` passed all
+  five files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3406-rebase-message complete
+
+- Focus harness completed at 32/32 after rebase could replay root commits onto unrelated history
+  through the content-merge path.
+- Validation: `./scripts/run-tests.sh t3406-rebase-message.sh` passed 32/32.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3405-rebase-malformed refresh
+
+- Harness refresh: `./scripts/run-tests.sh t3405-rebase-malformed.sh` passed 5/5 with the current
+  rebase implementation.
+- No code changes were required for this fixture.

@@ -1691,7 +1691,7 @@ fn format_cover_letter(
             Some(v) => out.push_str(&format!("Range-diff against {v}:\n")),
             None => out.push_str("Range-diff:\n"),
         }
-        let body = compute_range_diff(repo, spec, commits, creation_factor)?;
+        let body = compute_range_diff(repo, spec, commits, creation_factor, patch_opts)?;
         out.push_str(&body);
         had_extra = true;
     }
@@ -3535,6 +3535,13 @@ fn resolve_notes_refs(args: &Args, config: &ConfigSet) -> Vec<(String, String)> 
             add(&mut refs, notes_value_to_ref(val));
         }
     }
+    if args.no_notes {
+        refs.clear();
+    } else {
+        for note in &args.notes {
+            add(&mut refs, notes_value_to_ref(note));
+        }
+    }
 
     refs.into_iter()
         .map(|refname| {
@@ -3751,7 +3758,7 @@ fn build_solo_interdiff_block(
             None => out.push_str("Range-diff:\n"),
         }
         // Unlike interdiff, the range-diff body is NOT indented in git's output.
-        let body = compute_range_diff(repo, spec, commits, creation_factor)?;
+        let body = compute_range_diff(repo, spec, commits, creation_factor, opts)?;
         out.push_str(&body);
     }
     Ok(Some(out))
@@ -3815,6 +3822,7 @@ fn compute_range_diff(
     spec: &str,
     commits: &[(ObjectId, CommitData)],
     creation_factor: Option<usize>,
+    patch_opts: &PatchOptions,
 ) -> Result<String> {
     let (first_oid, first_commit) = commits
         .first()
@@ -3827,7 +3835,25 @@ fn compute_range_diff(
         Some(parent) => format!("{}..{}", parent.to_hex(), last_oid.to_hex()),
         None => first_oid.to_hex(),
     };
-    crate::commands::range_diff::compute_range_diff_body(repo, spec, &new_range, creation_factor)
+    let notes_refs: Vec<String> = patch_opts
+        .notes_refs
+        .iter()
+        .map(|(_, refname)| {
+            if refname == "refs/notes/commits" {
+                String::new()
+            } else {
+                refname.clone()
+            }
+        })
+        .collect();
+    crate::commands::range_diff::compute_range_diff_body_with_notes(
+        repo,
+        spec,
+        &new_range,
+        creation_factor,
+        notes_refs.is_empty(),
+        &notes_refs,
+    )
 }
 
 /// Apply mboxrd `>From ` escaping to body lines if `mboxrd` is set.

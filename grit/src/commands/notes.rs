@@ -29,6 +29,7 @@ use crate::commands::worktree_refs;
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse::resolve_revision;
 use grit_lib::state::resolve_head;
+use grit_lib::stripspace::{process as stripspace_process, Mode as StripspaceMode};
 
 use std::io::{self, Read, Write};
 use time::OffsetDateTime;
@@ -91,6 +92,12 @@ pub enum NotesSubcommand {
         #[arg(long = "no-separator", conflicts_with = "separator")]
         no_separator: bool,
 
+        #[arg(long = "stripspace", conflicts_with = "no_stripspace")]
+        stripspace: bool,
+
+        #[arg(long = "no-stripspace")]
+        no_stripspace: bool,
+
         /// Object to annotate (defaults to HEAD).
         #[arg()]
         object: Option<String>,
@@ -138,6 +145,12 @@ pub enum NotesSubcommand {
         #[arg(long = "no-separator", conflicts_with = "separator")]
         no_separator: bool,
 
+        #[arg(long = "stripspace", conflicts_with = "no_stripspace")]
+        stripspace: bool,
+
+        #[arg(long = "no-stripspace")]
+        no_stripspace: bool,
+
         #[arg()]
         object: Option<String>,
     },
@@ -180,6 +193,12 @@ pub enum NotesSubcommand {
 
         #[arg(long = "no-separator", conflicts_with = "separator")]
         no_separator: bool,
+
+        #[arg(long = "stripspace", conflicts_with = "no_stripspace")]
+        stripspace: bool,
+
+        #[arg(long = "no-stripspace")]
+        no_stripspace: bool,
 
         #[arg()]
         object: Option<String>,
@@ -258,7 +277,7 @@ fn ensure_notes_ref_namespace(notes_ref: &str) -> Result<()> {
 /// Git refuses to add/edit/append/remove/copy when `--ref` / `GIT_NOTES_REF` uses revision syntax
 /// (`^{tree}`, `@{1}`, …) rather than a plain ref name under `refs/notes/`.
 fn ensure_notes_ref_is_plain_refname(notes_ref: &str) -> Result<()> {
-    if notes_ref.contains('^') || notes_ref.contains("@{") {
+    if notes_ref.contains('^') || notes_ref.contains("@{") || notes_ref.contains(':') {
         bail!("refusing to use notes ref {notes_ref}");
     }
     Ok(())
@@ -311,6 +330,8 @@ pub fn run(args: Args) -> Result<()> {
             allow_empty,
             separator,
             no_separator,
+            stripspace,
+            no_stripspace,
             object,
         }) => add_note(
             &repo,
@@ -323,10 +344,16 @@ pub fn run(args: Args) -> Result<()> {
             use_editor,
             force,
             allow_empty,
+            stripspace,
+            no_stripspace,
             if no_separator {
+                Some("")
+            } else if no_stripspace && separator.is_none() {
                 None
+            } else if separator.as_deref() == Some("") {
+                Some("\n")
             } else {
-                Some(separator.as_deref().unwrap_or("\n"))
+                Some(separator.as_deref().unwrap_or("\n\n"))
             },
         ),
         Some(NotesSubcommand::Show { object }) => show_note(&repo, &notes_ref, object.as_deref()),
@@ -344,6 +371,8 @@ pub fn run(args: Args) -> Result<()> {
             allow_empty,
             separator,
             no_separator,
+            stripspace,
+            no_stripspace,
             object,
         }) => append_or_edit_note(
             &repo,
@@ -356,10 +385,16 @@ pub fn run(args: Args) -> Result<()> {
             reedit_message.as_deref(),
             use_editor,
             allow_empty,
+            stripspace,
+            no_stripspace,
             if no_separator {
+                Some("")
+            } else if no_stripspace && separator.is_none() {
                 None
+            } else if separator.as_deref() == Some("") {
+                Some("\n")
             } else {
-                Some(separator.as_deref().unwrap_or("\n"))
+                Some(separator.as_deref().unwrap_or("\n\n"))
             },
         ),
         Some(NotesSubcommand::Edit {
@@ -371,6 +406,8 @@ pub fn run(args: Args) -> Result<()> {
             allow_empty,
             separator,
             no_separator,
+            stripspace,
+            no_stripspace,
             object,
         }) => append_or_edit_note(
             &repo,
@@ -383,10 +420,16 @@ pub fn run(args: Args) -> Result<()> {
             reedit_message.as_deref(),
             use_editor,
             allow_empty,
+            stripspace,
+            no_stripspace,
             if no_separator {
+                Some("")
+            } else if no_stripspace && separator.is_none() {
                 None
+            } else if separator.as_deref() == Some("") {
+                Some("\n")
             } else {
-                Some(separator.as_deref().unwrap_or("\n"))
+                Some(separator.as_deref().unwrap_or("\n\n"))
             },
         ),
         Some(NotesSubcommand::Copy {
@@ -765,12 +808,23 @@ fn append_separator(buf: &mut String, sep: Option<&str>) {
         return;
     };
     if s.is_empty() {
+        if !buf.ends_with('\n') {
+            buf.push('\n');
+        }
         return;
     }
-    if s.as_bytes().last() == Some(&b'\n') {
-        buf.push_str(s);
+    if !s.starts_with('\n') && !buf.ends_with('\n') {
+        buf.push('\n');
+    }
+    let separator = if buf.ends_with('\n') && s.starts_with('\n') {
+        &s[1..]
     } else {
-        buf.push_str(s);
+        s
+    };
+    if separator.as_bytes().last() == Some(&b'\n') {
+        buf.push_str(separator);
+    } else {
+        buf.push_str(separator);
         buf.push('\n');
     }
 }
@@ -809,6 +863,179 @@ fn load_blob_content(repo: &Repository, spec: &str) -> Result<Vec<u8>> {
     Ok(obj.data)
 }
 
+fn ordered_note_fragments_from_argv(
+    repo: &Repository,
+    add_newline_to_multiple_messages: bool,
+) -> Result<Option<Vec<String>>> {
+    enum Fragment {
+        Message(String),
+        Other(String),
+    }
+
+    let argv: Vec<String> = std::env::args().collect();
+    let Some(notes_pos) = argv.iter().position(|a| a == "notes") else {
+        return Ok(None);
+    };
+    let mut i = notes_pos + 1;
+    while i < argv.len() {
+        let arg = &argv[i];
+        if matches!(arg.as_str(), "add" | "append" | "edit") {
+            i += 1;
+            break;
+        }
+        i += 1;
+    }
+    let mut out = Vec::new();
+    let mut saw_fragment = false;
+    while i < argv.len() {
+        let arg = &argv[i];
+        match arg.as_str() {
+            "-m" | "--message" => {
+                if let Some(v) = argv.get(i + 1) {
+                    out.push(Fragment::Message(v.clone()));
+                    saw_fragment = true;
+                    i += 2;
+                    continue;
+                }
+            }
+            "-F" | "--file" => {
+                if let Some(v) = argv.get(i + 1) {
+                    out.push(Fragment::Other(read_note_file(&PathBuf::from(v))?));
+                    saw_fragment = true;
+                    i += 2;
+                    continue;
+                }
+            }
+            "-C" | "--reuse-message" | "-c" | "--reedit-message" => {
+                if let Some(v) = argv.get(i + 1) {
+                    out.push(Fragment::Other(
+                        String::from_utf8_lossy(&load_blob_content(repo, v)?).into_owned(),
+                    ));
+                    saw_fragment = true;
+                    i += 2;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        if let Some(v) = arg.strip_prefix("--message=") {
+            out.push(Fragment::Message(v.to_owned()));
+            saw_fragment = true;
+        } else if let Some(v) = arg.strip_prefix("--file=") {
+            out.push(Fragment::Other(read_note_file(&PathBuf::from(v))?));
+            saw_fragment = true;
+        } else if let Some(v) = arg.strip_prefix("--reuse-message=") {
+            out.push(Fragment::Other(
+                String::from_utf8_lossy(&load_blob_content(repo, v)?).into_owned(),
+            ));
+            saw_fragment = true;
+        } else if let Some(v) = arg.strip_prefix("--reedit-message=") {
+            out.push(Fragment::Other(
+                String::from_utf8_lossy(&load_blob_content(repo, v)?).into_owned(),
+            ));
+            saw_fragment = true;
+        } else if arg.starts_with("-m") && arg.len() > 2 {
+            out.push(Fragment::Message(arg[2..].to_owned()));
+            saw_fragment = true;
+        } else if arg.starts_with("-F") && arg.len() > 2 {
+            out.push(Fragment::Other(read_note_file(&PathBuf::from(&arg[2..]))?));
+            saw_fragment = true;
+        } else if arg.starts_with("-C") && arg.len() > 2 {
+            out.push(Fragment::Other(
+                String::from_utf8_lossy(&load_blob_content(repo, &arg[2..])?).into_owned(),
+            ));
+            saw_fragment = true;
+        } else if arg.starts_with("-c") && arg.len() > 2 {
+            out.push(Fragment::Other(
+                String::from_utf8_lossy(&load_blob_content(repo, &arg[2..])?).into_owned(),
+            ));
+            saw_fragment = true;
+        }
+        i += 1;
+    }
+    if !saw_fragment {
+        return Ok(None);
+    }
+    let multi = out.len() > 1;
+    let mut previous_other = false;
+    let last_index = out.len().saturating_sub(1);
+    Ok(Some(
+        out.into_iter()
+            .enumerate()
+            .map(|(idx, fragment)| match fragment {
+                Fragment::Message(mut value) => {
+                    if add_newline_to_multiple_messages && multi {
+                        if value.bytes().all(|b| b == b'\n') {
+                            if idx != last_index {
+                                value.push('\n');
+                            }
+                        } else if !value.ends_with('\n') {
+                            value.push('\n');
+                        }
+                    }
+                    previous_other = false;
+                    value
+                }
+                Fragment::Other(value) => {
+                    let value = if add_newline_to_multiple_messages && previous_other {
+                        format!("\n{value}")
+                    } else {
+                        value
+                    };
+                    previous_other = true;
+                    value
+                }
+            })
+            .collect(),
+    ))
+}
+
+fn last_ordered_note_fragment_is_reuse_message() -> bool {
+    let argv: Vec<String> = std::env::args().collect();
+    let Some(notes_pos) = argv.iter().position(|a| a == "notes") else {
+        return false;
+    };
+    let mut i = notes_pos + 1;
+    while i < argv.len() {
+        if matches!(argv[i].as_str(), "add" | "append" | "edit") {
+            i += 1;
+            break;
+        }
+        i += 1;
+    }
+    let mut last_is_reuse = false;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "-m" | "--message" | "-F" | "--file" | "-c" | "--reedit-message" => {
+                last_is_reuse = false;
+                i += 2;
+                continue;
+            }
+            "-C" | "--reuse-message" => {
+                last_is_reuse = true;
+                i += 2;
+                continue;
+            }
+            _ => {}
+        }
+        if argv[i].starts_with("--message=")
+            || argv[i].starts_with("--file=")
+            || argv[i].starts_with("--reedit-message=")
+            || (argv[i].starts_with("-m") && argv[i].len() > 2)
+            || (argv[i].starts_with("-F") && argv[i].len() > 2)
+            || (argv[i].starts_with("-c") && argv[i].len() > 2)
+        {
+            last_is_reuse = false;
+        } else if argv[i].starts_with("--reuse-message=")
+            || (argv[i].starts_with("-C") && argv[i].len() > 2)
+        {
+            last_is_reuse = true;
+        }
+        i += 1;
+    }
+    last_is_reuse
+}
+
 /// Launch the editor on a temporary file and return its contents.
 fn launch_editor(repo: &Repository, initial: &str) -> Result<String> {
     let editor = resolve_editor(repo);
@@ -830,12 +1057,8 @@ fn launch_editor(repo: &Repository, initial: &str) -> Result<String> {
         bail!("editor exited with non-zero status");
     }
 
-    let mut result = std::fs::read_to_string(&tmp_path)?;
+    let result = std::fs::read_to_string(&tmp_path)?;
     let _ = std::fs::remove_file(&tmp_path);
-    // Test harness `fake_editor` and Git's scripted flows inject `MSG` into the file via the editor.
-    if let Ok(msg) = std::env::var("MSG") {
-        result = msg;
-    }
     Ok(result)
 }
 
@@ -850,6 +1073,8 @@ fn add_note(
     use_editor: bool,
     force: bool,
     allow_empty: bool,
+    stripspace: bool,
+    no_stripspace: bool,
     separator: Option<&str>,
 ) -> Result<()> {
     let oid = resolve_object(repo, object)?;
@@ -860,21 +1085,28 @@ fn add_note(
         .find(|e| note_object_name(&e.path).as_deref() == Some(hex.as_str()))
         .and_then(|e| repo.odb.read(&e.oid).ok())
         .map(|obj| String::from_utf8_lossy(&obj.data).to_string());
-    let mut parts: Vec<String> = Vec::new();
-    for m in messages {
-        parts.push(m.clone());
-    }
-    for f in files {
-        parts.push(read_note_file(f)?);
-    }
-    if let Some(spec) = reuse_message {
-        let data = load_blob_content(repo, spec)?;
-        parts.push(String::from_utf8_lossy(&data).into_owned());
-    }
-    if let Some(spec) = reedit_message {
-        let data = load_blob_content(repo, spec)?;
-        parts.push(String::from_utf8_lossy(&data).into_owned());
-    }
+    let parts: Vec<String> = if let Some(ordered) =
+        ordered_note_fragments_from_argv(repo, no_stripspace && separator.is_none())?
+    {
+        ordered
+    } else {
+        let mut parts = Vec::new();
+        for m in messages {
+            parts.push(m.clone());
+        }
+        for f in files {
+            parts.push(read_note_file(f)?);
+        }
+        if let Some(spec) = reuse_message {
+            let data = load_blob_content(repo, spec)?;
+            parts.push(String::from_utf8_lossy(&data).into_owned());
+        }
+        if let Some(spec) = reedit_message {
+            let data = load_blob_content(repo, spec)?;
+            parts.push(String::from_utf8_lossy(&data).into_owned());
+        }
+        parts
+    };
     let has_cli = !parts.is_empty()
         || reuse_message.is_some()
         || reedit_message.is_some()
@@ -910,8 +1142,22 @@ fn add_note(
                 eprintln!("Removing note for object {hex}");
                 return Ok(());
             }
-            bail!("Aborting due to empty note");
+            return Ok(());
         }
+    }
+    let should_strip = if no_stripspace {
+        false
+    } else if stripspace {
+        true
+    } else {
+        !only_minus_c && !last_ordered_note_fragment_is_reuse_message()
+    };
+    if should_strip {
+        combined = String::from_utf8_lossy(&stripspace_process(
+            combined.as_bytes(),
+            &StripspaceMode::Default,
+        ))
+        .into_owned();
     }
     let empty = combined.trim().is_empty();
     entries.retain(|e| note_object_name(&e.path).as_deref() != Some(hex.as_str()));
@@ -923,11 +1169,11 @@ fn add_note(
                 &entries,
                 "Notes removed by 'git notes add'",
             )?;
-            eprintln!("Removing note for object {hex}");
         }
+        eprintln!("Removing note for object {hex}");
         return Ok(());
     }
-    let note_oid = if let Some(reuse) = reuse_message.filter(|_| only_minus_c) {
+    let note_oid = if let Some(reuse) = reuse_message.filter(|_| only_minus_c && !stripspace) {
         resolve_revision(repo, reuse)?
     } else {
         if !combined.ends_with('\n') && !combined.is_empty() {
@@ -955,6 +1201,8 @@ fn append_or_edit_note(
     reedit_message: Option<&str>,
     use_editor: bool,
     allow_empty: bool,
+    stripspace: bool,
+    no_stripspace: bool,
     separator: Option<&str>,
 ) -> Result<()> {
     if is_edit && (!messages.is_empty() || !files.is_empty() || reuse_message.is_some()) {
@@ -972,21 +1220,28 @@ Please use 'git notes add -f -m/-F/-c/-C' instead."
         .and_then(|e| repo.odb.read(&e.oid).ok())
         .map(|obj| String::from_utf8_lossy(&obj.data).to_string());
     let note_exists = existing.is_some();
-    let mut parts: Vec<String> = Vec::new();
-    for m in messages {
-        parts.push(m.clone());
-    }
-    for f in files {
-        parts.push(read_note_file(f)?);
-    }
-    if let Some(spec) = reuse_message {
-        let data = load_blob_content(repo, spec)?;
-        parts.push(String::from_utf8_lossy(&data).into_owned());
-    }
-    if let Some(spec) = reedit_message {
-        let data = load_blob_content(repo, spec)?;
-        parts.push(String::from_utf8_lossy(&data).into_owned());
-    }
+    let mut parts: Vec<String> = if let Some(ordered) =
+        ordered_note_fragments_from_argv(repo, no_stripspace && separator.is_none())?
+    {
+        ordered
+    } else {
+        let mut parts = Vec::new();
+        for m in messages {
+            parts.push(m.clone());
+        }
+        for f in files {
+            parts.push(read_note_file(f)?);
+        }
+        if let Some(spec) = reuse_message {
+            let data = load_blob_content(repo, spec)?;
+            parts.push(String::from_utf8_lossy(&data).into_owned());
+        }
+        if let Some(spec) = reedit_message {
+            let data = load_blob_content(repo, spec)?;
+            parts.push(String::from_utf8_lossy(&data).into_owned());
+        }
+        parts
+    };
     if !is_edit
         && messages.is_empty()
         && files.is_empty()
@@ -1011,16 +1266,18 @@ Please use 'git notes add -f -m/-F/-c/-C' instead."
         }
         if !frag.is_empty() {
             if !base.is_empty() {
-                if !base.ends_with('\n') {
-                    base.push('\n');
-                }
-                base.push('\n');
+                let base_separator = if no_stripspace && separator.is_none() {
+                    Some("\n")
+                } else {
+                    separator
+                };
+                append_separator(&mut base, base_separator);
             }
             base.push_str(&frag);
         }
         base
     };
-    if reedit_message.is_some() {
+    if reedit_message.is_some() && is_edit {
         combined = launch_editor(repo, &combined)?;
     } else if use_editor && has_cli && is_edit {
         combined = launch_editor(repo, &combined)?;
@@ -1032,6 +1289,25 @@ Please use 'git notes add -f -m/-F/-c/-C' instead."
         combined = edited;
     } else if is_edit && !has_cli && !use_editor && reedit_message.is_none() {
         combined = launch_editor(repo, existing.as_deref().unwrap_or(""))?;
+    }
+    let only_minus_c = reuse_message.is_some()
+        && messages.is_empty()
+        && files.is_empty()
+        && reedit_message.is_none()
+        && !use_editor;
+    let should_strip = if no_stripspace {
+        false
+    } else if stripspace {
+        true
+    } else {
+        !only_minus_c && !last_ordered_note_fragment_is_reuse_message()
+    };
+    if should_strip {
+        combined = String::from_utf8_lossy(&stripspace_process(
+            combined.as_bytes(),
+            &StripspaceMode::Default,
+        ))
+        .into_owned();
     }
     let empty = combined.trim().is_empty();
     entries.retain(|e| note_object_name(&e.path).as_deref() != Some(hex.as_str()));
@@ -1179,6 +1455,15 @@ struct RewriteCfg {
     combine: RewriteCombine,
 }
 
+fn expand_rewrite_ref(repo: &Repository, pattern: &str) -> Vec<String> {
+    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+        return grit_lib::refs::list_refs_glob(&repo.git_dir, pattern)
+            .map(|items| items.into_iter().map(|(name, _)| name).collect())
+            .unwrap_or_default();
+    }
+    vec![pattern.to_string()]
+}
+
 fn load_rewrite_cfg(repo: &Repository, cmd: &str) -> Result<Option<RewriteCfg>> {
     let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
     let key = format!("notes.rewrite.{cmd}");
@@ -1199,25 +1484,27 @@ fn load_rewrite_cfg(repo: &Repository, cmd: &str) -> Result<Option<RewriteCfg>> 
         for p in v.split(':') {
             let s = p.trim();
             if !s.is_empty() {
-                refs.push(s.to_string());
+                refs.extend(expand_rewrite_ref(repo, s));
             }
         }
     } else {
         for p in cfg.get_all("notes.rewriteRef") {
             let s = p.trim();
             if s.starts_with("refs/notes/") {
-                refs.push(s.to_string());
+                refs.extend(expand_rewrite_ref(repo, s));
             }
         }
         if refs.is_empty() {
             if let Some(s) = cfg.get("notes.rewriteRef") {
                 let s = s.trim();
                 if s.starts_with("refs/notes/") {
-                    refs.push(s.to_string());
+                    refs.extend(expand_rewrite_ref(repo, s));
                 }
             }
         }
     }
+    refs.sort();
+    refs.dedup();
     if !enabled || refs.is_empty() {
         return Ok(None);
     }
@@ -1269,6 +1556,7 @@ fn apply_rewrite_copy(
                 (None, None) => return Ok(()),
                 (None, Some(n)) => n,
                 (Some(c), None) => c,
+                (Some(c), Some(n)) if c == n => c,
                 (Some(c), Some(n)) => combine_notes_concatenate(repo, Some(&c), Some(&n))?,
             };
             entries.retain(|e| note_object_name(&e.path).as_deref() != Some(to_hex.as_str()));
@@ -1342,7 +1630,7 @@ fn copy_notes(
                         format!("failed to resolve '{}' as a valid ref.", parts[1])
                     })?;
                     for (_refname, ent) in trees.iter_mut() {
-                        if apply_rewrite_copy(repo, ent, &from_oid, &to_oid, force, rcfg.combine)
+                        if apply_rewrite_copy(repo, ent, &from_oid, &to_oid, true, rcfg.combine)
                             .is_err()
                         {
                             eprintln!(
@@ -2254,7 +2542,11 @@ fn merge_notes_dispatch(
         return merge_notes_commit_cmd(repo);
     }
     let src_raw = source_ref.context("must specify a notes ref to merge")?;
-    let remote_ref = expand_notes_ref(src_raw);
+    let remote_ref = if src_raw.starts_with("refs/") {
+        src_raw.to_owned()
+    } else {
+        expand_notes_ref(src_raw)
+    };
     let verbosity = i32::from(verbose).saturating_sub(i32::from(quiet));
     if verbosity > 0 {
         eprintln!("Merging notes from {remote_ref} into {notes_ref}");

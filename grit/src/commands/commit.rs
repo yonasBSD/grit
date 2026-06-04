@@ -1020,6 +1020,11 @@ pub fn run(mut args: Args) -> Result<()> {
                     );
                 }
             }
+            if had_cp_head {
+                eprintln!("hint: try \"git cherry-pick --skip\"");
+            } else if repo.git_dir.join("REBASE_HEAD").exists() {
+                eprintln!("hint: try \"git rebase --skip\"");
+            }
             bail!("nothing to commit, working tree clean");
         }
     }
@@ -3229,6 +3234,15 @@ fn build_initial_commit_buffer(
         return Ok(buf);
     }
 
+    if repo.git_dir.join("REBASE_HEAD").exists() {
+        if let Ok(msg) = fs::read_to_string(repo.git_dir.join("COMMIT_EDITMSG")) {
+            if !msg.is_empty() {
+                buf.push_str(&msg);
+                return Ok(buf);
+            }
+        }
+    }
+
     let squash_msg_path = repo.git_dir.join("SQUASH_MSG");
     if let Ok(msg) = fs::read_to_string(&squash_msg_path) {
         if !msg.is_empty() {
@@ -4249,10 +4263,13 @@ fn validate_amend_source_author(author: &str) -> Result<()> {
 }
 
 fn read_cherry_pick_head_author(repo: &Repository) -> Result<Option<String>> {
-    let path = repo.git_dir.join("CHERRY_PICK_HEAD");
-    if !path.exists() {
+    let path = if repo.git_dir.join("CHERRY_PICK_HEAD").exists() {
+        repo.git_dir.join("CHERRY_PICK_HEAD")
+    } else if repo.git_dir.join("REBASE_HEAD").exists() {
+        repo.git_dir.join("REBASE_HEAD")
+    } else {
         return Ok(None);
-    }
+    };
     let content = fs::read_to_string(&path).context("read CHERRY_PICK_HEAD")?;
     let hex = content.trim();
     if hex.is_empty() {

@@ -1024,7 +1024,12 @@ pub fn run(args: Args) -> Result<()> {
         // the final `dir/` vs individual-file shape, so the generic untracked-directory collapse
         // is skipped (it would wrongly fold the individually-listed ignored files together).
         let output_paths = if args.directory && !args.ignored {
-            let mut collapsed = collapse_to_directories(&filtered_untracked);
+            let mut collapsed = collapse_to_directories_for_pathspecs(
+                &filtered_untracked,
+                &indexed_paths,
+                &pathspec_lib_strings,
+                &attrs_for_eol,
+            );
             if args.no_empty_directory {
                 // Remove directory entries that have no file children
                 // (empty directory markers from walk_worktree end with '/')
@@ -1050,41 +1055,6 @@ pub fn run(args: Args) -> Result<()> {
             filtered_untracked
         };
 
-        // When stdout is redirected, Git sometimes omits the output file from `--others` so
-        // `ls-files -o >out` does not list `out` alongside other untracked paths (t6422). When
-        // `out` is the only untracked path, Git still lists it (one line) so `test_line_count = 1`
-        // passes for the "clean merge" cases.
-        #[cfg(target_os = "linux")]
-        let stdout_is_tty = atty::is(atty::Stream::Stdout);
-        #[cfg(target_os = "linux")]
-        let exclude_redirect_target: Option<Vec<u8>> = if show_others && !stdout_is_tty {
-            let abs_out = (|| {
-                let link = std::fs::read_link("/proc/self/fd/1").ok()?;
-                let abs = if link.is_absolute() {
-                    link
-                } else {
-                    Path::new("/proc/self/fd").join(link)
-                };
-                abs.canonicalize().ok()
-            })();
-            let redirect_display = abs_out.and_then(|abs_out| {
-                output_paths.iter().find_map(|display| {
-                    let path_str = String::from_utf8_lossy(display);
-                    let candidate = cwd.join(path_str.as_ref());
-                    let canon = candidate.canonicalize().ok()?;
-                    (canon == abs_out).then(|| display.clone())
-                })
-            });
-            redirect_display.and_then(|r| {
-                let n_other = output_paths.iter().filter(|p| **p != r).count();
-                (n_other >= 1).then_some(r)
-            })
-        } else {
-            None
-        };
-        #[cfg(not(target_os = "linux"))]
-        let exclude_redirect_target: Option<Vec<u8>> = None;
-
         // If --no-empty-directory removed entries, re-evaluate pathspec matching
         // based on what actually gets output.
         if args.no_empty_directory && !pathspec_filter.is_empty() && !output_paths.is_empty() {
@@ -1098,9 +1068,6 @@ pub fn run(args: Args) -> Result<()> {
         }
 
         for display in &output_paths {
-            if exclude_redirect_target.as_ref() == Some(display) {
-                continue;
-            }
             let name = String::from_utf8_lossy(display);
             let qname = format_ls_path(&name, use_nul, quote_fully);
             if args.eol {
@@ -2430,7 +2397,11 @@ fn write_ls_files_debug(out: &mut dyn Write, entry: &IndexEntry) -> io::Result<(
 
 /// Collapse paths for `ls-files --directory`: group by top-level segment, then
 /// collapse untracked files under the same immediate subdirectory to `top/sub/`.
-fn collapse_to_directories(paths: &[Vec<u8>]) -> Vec<Vec<u8>> {
+fn collapse_to_directories(
+    paths: &[Vec<u8>],
+    indexed: &BTreeSet<Vec<u8>>,
+    collapse_whole_untracked_tops: bool,
+) -> Vec<Vec<u8>> {
     use std::collections::BTreeMap;
 
     #[derive(Default)]
@@ -2490,15 +2461,26 @@ fn collapse_to_directories(paths: &[Vec<u8>]) -> Vec<Vec<u8>> {
             out.push(top);
             continue;
         }
-        for f in &b.direct {
-            let mut line = top.clone();
-            line.push(b'/');
-            line.extend_from_slice(f);
-            out.push(line);
+        let mut top_prefix = top.clone();
+        top_prefix.push(b'/');
+        let has_tracked_under_top = indexed.iter().any(|t| t.starts_with(&top_prefix));
+        if !b.direct.is_empty()
+            && !has_tracked_under_top
+            && (collapse_whole_untracked_tops || b.subs.is_empty())
+        {
+            out.push(top_prefix.clone());
+            if collapse_whole_untracked_tops {
+                continue;
+            }
+        } else {
+            for f in &b.direct {
+                let mut line = top_prefix.clone();
+                line.extend_from_slice(f);
+                out.push(line);
+            }
         }
         for (sub, info) in b.subs {
-            let mut prefix = top.clone();
-            prefix.push(b'/');
+            let mut prefix = top_prefix.clone();
             prefix.extend_from_slice(&sub);
             prefix.push(b'/');
             if info.empty_dir || !info.files.is_empty() {
@@ -2508,6 +2490,70 @@ fn collapse_to_directories(paths: &[Vec<u8>]) -> Vec<Vec<u8>> {
     }
     out.sort();
     out
+}
+
+/// Collapse paths for `ls-files --directory`, preserving file-level pathspec matches.
+///
+/// Git's untracked directory treatment collapses directory pathspec matches (for example
+/// `untracked/?*` can match the directory `untracked/deep/`) while still showing an individual
+/// file when the pathspec cannot be satisfied by any ancestor directory (for example
+/// `untracked/deep/path` or `untracked/*.c`).  The worktree walk has already recursed far enough
+/// to find those files; this helper keeps such file-level matches out of the generic directory
+/// collapse and then merges them back into the sorted output.
+fn collapse_to_directories_for_pathspecs(
+    paths: &[Vec<u8>],
+    indexed: &BTreeSet<Vec<u8>>,
+    pathspecs: &[String],
+    attr_rules: &[grit_lib::crlf::AttrRule],
+) -> Vec<Vec<u8>> {
+    if pathspecs.is_empty() {
+        return collapse_to_directories(paths, indexed, true);
+    }
+
+    let (preserved, collapsible): (Vec<Vec<u8>>, Vec<Vec<u8>>) = paths
+        .iter()
+        .cloned()
+        .partition(|p| file_pathspec_requires_individual_output(p, pathspecs, attr_rules));
+    let mut out = collapse_to_directories(&collapsible, indexed, false);
+    out.extend(preserved);
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn file_pathspec_requires_individual_output(
+    path: &[u8],
+    pathspecs: &[String],
+    attr_rules: &[grit_lib::crlf::AttrRule],
+) -> bool {
+    if path.ends_with(b"/") || !path.contains(&b'/') {
+        return false;
+    }
+
+    let path_str = String::from_utf8_lossy(path);
+    pathspecs
+        .iter()
+        .filter(|spec| !grit_lib::pathspec::pathspec_is_exclude(spec))
+        .any(|spec| {
+            let single = std::slice::from_ref(spec);
+            grit_lib::pathspec::matches_pathspec_set_for_object_ls_tree(
+                single, &path_str, 0o100644, attr_rules,
+            ) && !ancestor_directory_matches_pathspec(&path_str, single, attr_rules)
+        })
+}
+
+fn ancestor_directory_matches_pathspec(
+    path: &str,
+    spec: &[String],
+    attr_rules: &[grit_lib::crlf::AttrRule],
+) -> bool {
+    path.match_indices('/').any(|(idx, _)| {
+        let ancestor = &path[..idx];
+        !ancestor.is_empty()
+            && grit_lib::pathspec::matches_pathspec_set_for_object_ls_tree(
+                spec, ancestor, 0o040000, attr_rules,
+            )
+    })
 }
 
 /// Whether an untracked working-tree file `name` would be "killed" by a checkout (Git
