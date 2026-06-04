@@ -2218,3 +2218,9 @@ Updated: 2026-06-01
 - Focus harness: `./scripts/run-tests.sh t5304-prune.sh --verbose` improved to 20/32 after malformed `gc.pruneExpire` diagnostics and no-prune/never repack handling.
 - Related verification: `./scripts/run-tests.sh t5304-prune-packed.sh t5312-prune-corruption.sh --verbose` passes 20/20 and 11/11.
 - Quality gate: `cargo check -p grit-cli` completed with pre-existing unrelated warnings.
+
+## 2026-06-04 — t5304-prune pack-garbage progress
+
+- Focus harness: `./scripts/run-tests.sh t5304-prune.sh --verbose` improved to 21/32 after `count-objects -v` pack-garbage diagnostics were aligned with Git.
+- Related verification: `./scripts/run-tests.sh t5304-prune-packed.sh t5312-prune-corruption.sh --verbose` passes 20/20 and 11/11.
+- Quality gate: `cargo check -p grit-cli` completed with pre-existing unrelated warnings.

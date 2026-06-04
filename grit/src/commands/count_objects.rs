@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
-use grit_lib::pack::{collect_local_pack_info, read_alternates_recursive};
+use grit_lib::pack::{collect_local_pack_info, read_alternates_recursive, read_pack_index};
 use grit_lib::repo::Repository;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -101,14 +101,21 @@ fn scan_pack_garbage(objects_dir: &Path) -> Result<(usize, u64)> {
         Err(err) => return Err(err.into()),
     };
 
-    let mut pack_by_stem: BTreeMap<String, (bool, bool)> = BTreeMap::new();
+    #[derive(Default)]
+    struct PackStemFiles {
+        pack: Option<std::path::PathBuf>,
+        idx: Option<std::path::PathBuf>,
+        keep: Option<std::path::PathBuf>,
+        invalid_idx: bool,
+    }
+
+    let mut pack_by_stem: BTreeMap<String, PackStemFiles> = BTreeMap::new();
     let mut garbage_count = 0usize;
     let mut garbage_size = 0u64;
 
     for entry in rd {
         let entry = entry?;
         let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
         let meta = fs::metadata(&path)?;
         let ext = path
             .extension()
@@ -122,15 +129,25 @@ fn scan_pack_garbage(objects_dir: &Path) -> Result<(usize, u64)> {
 
         match ext {
             "pack" => {
-                let e = pack_by_stem.entry(stem).or_insert((false, false));
-                e.0 = true;
+                pack_by_stem.entry(stem).or_default().pack = Some(path.clone());
             }
             "idx" => {
-                let e = pack_by_stem.entry(stem).or_insert((false, false));
-                e.1 = true;
+                let files = pack_by_stem.entry(stem).or_default();
+                if let Err(err) = read_pack_index(&path) {
+                    let msg = err
+                        .to_string()
+                        .replace(&path.display().to_string(), &display_git_path(&path));
+                    eprintln!("{msg}");
+                    files.invalid_idx = true;
+                }
+                files.idx = Some(path.clone());
             }
-            "keep" | "bitmap" | "rev" | "mtimes" | "promisor" | "midx" => {}
+            "keep" => {
+                pack_by_stem.entry(stem).or_default().keep = Some(path.clone());
+            }
+            "bitmap" | "rev" | "mtimes" | "promisor" | "midx" => {}
             _ => {
+                eprintln!("warning: garbage found: {}", display_git_path(&path));
                 garbage_count += 1;
                 garbage_size += meta.len();
             }
@@ -140,14 +157,55 @@ fn scan_pack_garbage(objects_dir: &Path) -> Result<(usize, u64)> {
             garbage_count += 1;
             garbage_size += meta.len();
         }
-        let _ = name;
     }
 
-    for (_stem, (has_pack, has_idx)) in pack_by_stem {
-        if has_pack ^ has_idx {
-            garbage_count += 1;
+    for (_stem, files) in pack_by_stem {
+        match (&files.pack, &files.idx, &files.keep) {
+            (Some(pack), None, Some(keep)) => {
+                eprintln!("warning: no corresponding .idx: {}", display_git_path(keep));
+                eprintln!("warning: no corresponding .idx: {}", display_git_path(pack));
+                garbage_count += 1;
+            }
+            (Some(pack), None, None) => {
+                eprintln!("warning: no corresponding .idx: {}", display_git_path(pack));
+                garbage_count += 1;
+            }
+            (None, Some(idx), Some(keep)) => {
+                if !files.invalid_idx {
+                    eprintln!(
+                        "warning: no corresponding .idx or .pack: {}",
+                        display_git_path(keep)
+                    );
+                    eprintln!("warning: no corresponding .pack: {}", display_git_path(idx));
+                    garbage_count += 1;
+                }
+            }
+            (None, Some(idx), None) => {
+                if !files.invalid_idx {
+                    eprintln!("warning: no corresponding .pack: {}", display_git_path(idx));
+                    garbage_count += 1;
+                }
+            }
+            (None, None, Some(keep)) => {
+                eprintln!(
+                    "warning: no corresponding .idx or .pack: {}",
+                    display_git_path(keep)
+                );
+            }
+            _ => {}
         }
     }
 
     Ok((garbage_count, garbage_size))
+}
+
+fn display_git_path(path: &Path) -> String {
+    let parts: Vec<String> = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect();
+    if let Some(pos) = parts.iter().position(|part| part == ".git") {
+        return parts[pos..].join("/");
+    }
+    path.display().to_string()
 }
