@@ -314,6 +314,7 @@ fn run_show(args: ShowArgs) -> Result<()> {
         remotes: None,
         exclude_promisor_objects: false,
         follow: false,
+        no_follow: false,
         diff_filter_parts: Vec::new(),
         diff_filter: None,
         find_object: None,

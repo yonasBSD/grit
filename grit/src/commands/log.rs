@@ -303,8 +303,12 @@ pub struct Args {
     pub remotes: Option<String>,
 
     /// Follow file renames (single file only).
-    #[arg(long = "follow")]
+    #[arg(long = "follow", overrides_with = "no_follow")]
     pub follow: bool,
+
+    /// Disable rename following (overrides `--follow` and `log.follow`).
+    #[arg(long = "no-follow", overrides_with = "follow")]
+    pub no_follow: bool,
 
     /// Filter by change type (A=added, M=modified, D=deleted, R=renamed, C=copied).
     /// Git ORs repeated `--diff-filter` options by concatenating their letters; collected raw
@@ -4556,18 +4560,47 @@ pub fn run(mut args: Args) -> Result<()> {
         args.find_copies_harder = args.find_copies_parts.len() >= 2;
     }
 
-    // `--follow` implicitly enables copy detection with find-copies-harder (git revision.c sets
-    // DIFF_DETECT_COPY | DIFF_FIND_COPIES_HARDER), so a file that first appears as a copy of a
-    // still-existing file is rendered `C100 old new` and its history is followed back.
+    let repo = Repository::discover(None).context("not a git repository")?;
+    validate_notes_display_ref_config(&repo);
+
+    // `log.follow` enables `--follow` automatically, but unlike the explicit flag
+    // it is silently ignored when there is not exactly one pathspec or when a
+    // pathspec carries magic unsupported by `--follow`.
+    if !args.follow && !args.no_follow {
+        if let Ok(cfg) = ConfigSet::load(Some(&repo.git_dir), true) {
+            if cfg
+                .get_bool("log.follow")
+                .and_then(|r| r.ok())
+                .unwrap_or(false)
+            {
+                let raw = log_follow_candidate_pathspecs(&repo, &args);
+                let has_bad_magic = raw
+                    .iter()
+                    .any(|s| follow_unsupported_pathspec_magic(s).is_some());
+                if raw.len() == 1 && !has_bad_magic {
+                    args.follow = true;
+                }
+            }
+        }
+    }
+    if args.follow {
+        // `--follow` only accepts plain pathspecs (optionally with the `top` or
+        // `literal` magic). Reject other long-form magic with Git's message.
+        for spec in collect_log_raw_pathspecs(&args) {
+            if let Some(bad) = follow_unsupported_pathspec_magic(&spec) {
+                anyhow::bail!("fatal: pathspec magic not supported by --follow: {bad}");
+            }
+        }
+    }
+    // `--follow` implicitly enables copy detection with find-copies-harder (git
+    // revision.c sets DIFF_DETECT_COPY | DIFF_FIND_COPIES_HARDER), so a file that
+    // first appears as a copy of a still-existing file is followed back.
     if args.follow && !args.no_renames {
         if args.find_copies.is_none() {
             args.find_copies = Some("50".to_owned());
         }
         args.find_copies_harder = true;
     }
-
-    let repo = Repository::discover(None).context("not a git repository")?;
-    validate_notes_display_ref_config(&repo);
     // Resolve `core.abbrev` into an explicit abbreviation length when `--abbrev`
     // was not given on the command line, so all the `parse_abbrev` call sites
     // (which only see `args.abbrev`) honor the config.
@@ -5423,6 +5456,74 @@ pub fn run(mut args: Args) -> Result<()> {
 /// an unqualified `.git` context.
 /// Validate `:(...)` long magic words, matching git's pathspec.c `get_prefix`/magic parser.
 /// Returns the `fatal: Invalid pathspec magic '<word>' in '<spec>'` error for an unknown word.
+/// All raw pathspec strings (with magic intact) supplied to a `git log`
+/// invocation: the clap-collected pathspecs plus anything after `--`.
+fn collect_log_raw_pathspecs(args: &Args) -> Vec<String> {
+    let mut specs: Vec<String> = args.pathspecs.clone();
+    if let Some(pos) = args.raw_argv_tail.iter().position(|a| a == "--") {
+        specs.extend(args.raw_argv_tail[pos + 1..].iter().cloned());
+    }
+    // A pathspec given without a leading `--` lands in the `revisions`
+    // positional. Any token carrying long-form magic (`:(...)`) is a pathspec,
+    // so include those too (used only for `--follow` magic validation).
+    for tok in &args.revisions {
+        if tok.starts_with(":(") {
+            specs.push(tok.clone());
+        }
+    }
+    specs
+}
+
+/// Best-effort list of pathspec arguments for deciding whether `log.follow`
+/// applies (it only kicks in for exactly one pathspec). After `--`, every token
+/// is a pathspec; otherwise tokens that do not resolve as revisions are treated
+/// as pathspecs.
+fn log_follow_candidate_pathspecs(repo: &Repository, args: &Args) -> Vec<String> {
+    if let Some(pos) = args.raw_argv_tail.iter().position(|a| a == "--") {
+        return args.raw_argv_tail[pos + 1..].to_vec();
+    }
+    let mut specs: Vec<String> = args.pathspecs.clone();
+    for tok in &args.revisions {
+        if tok == "--" || tok.starts_with('-') {
+            continue;
+        }
+        if tok.starts_with(":(") {
+            specs.push(tok.clone());
+            continue;
+        }
+        // A trailing argument that does not name a commit is a pathspec.
+        if resolve_revision_as_commit(repo, tok).is_err() {
+            specs.push(tok.clone());
+        }
+    }
+    specs
+}
+
+/// If a pathspec carries long-form magic not supported by `--follow`, return the
+/// comma-separated list of offending magic words (matching Git's order), else
+/// `None`. Only `top` and `literal` are accepted by `--follow`.
+fn follow_unsupported_pathspec_magic(spec: &str) -> Option<String> {
+    let rest = spec.strip_prefix(":(")?;
+    let close = rest.find(')')?;
+    let magic_part = &rest[..close];
+    let mut bad: Vec<String> = Vec::new();
+    for raw in magic_part.split(',') {
+        let token = raw.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let word = token.split(':').next().unwrap_or(token);
+        if !matches!(word, "top" | "literal") {
+            bad.push(format!("'{word}'"));
+        }
+    }
+    if bad.is_empty() {
+        None
+    } else {
+        Some(bad.join(", "))
+    }
+}
+
 fn validate_pathspec_magic_words(pathspecs: &[String]) -> Result<()> {
     for spec in pathspecs {
         let Some(rest) = spec.strip_prefix(":(") else {
@@ -12569,7 +12670,12 @@ fn follow_filter(
                             retarget = Some(old_path.to_string());
                         }
                     }
-                    if entry.old_path.as_deref() == Some(tracked_path.as_str()) {
+                    // A *rename* away from the tracked path is a change to it (the
+                    // file disappears under this name). A *copy* from the tracked
+                    // path leaves the source unchanged, so it does not count.
+                    if entry.status == DiffStatus::Renamed
+                        && entry.old_path.as_deref() == Some(tracked_path.as_str())
+                    {
                         touches = true;
                     }
                 }
