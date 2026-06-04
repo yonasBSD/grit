@@ -74,6 +74,8 @@
     and refreshed `t5506-remote-groups.sh` (9/9) by fixing remote update fetch argv wiring.
   - Opportunistic pack-objects hook quick win: completed `t5544-pack-objects-hook.sh` (7/7)
     by honoring protected/global uploadpack filter config in protocol v2.
+  - Opportunistic fetch-negotiator quick win: completed `t5554-noop-fetch-negotiator.sh` (1/1)
+    by suppressing synthetic `have` trace lines under the noop negotiator.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

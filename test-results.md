@@ -1,4 +1,10 @@
 
+## 2026-06-04 — t5554-noop-fetch-negotiator
+
+- Focus harness: `./scripts/run-tests.sh t5554-noop-fetch-negotiator.sh --verbose` passes 1/1 after suppressing synthetic `have` trace lines under the noop negotiator.
+- Regression harness: `./scripts/run-tests.sh t5552-skipping-fetch-negotiator.sh t5554-noop-fetch-negotiator.sh --verbose` keeps `t5554` passing; `t5552` remains at its pre-existing 3/6 baseline.
+
+
 ## 2026-06-04 — t5544-pack-objects-hook
 
 - Focus harness: `./scripts/run-tests.sh t5544-pack-objects-hook.sh --verbose` passes 7/7 after protocol-v2 upload-pack global/protected filter config handling.

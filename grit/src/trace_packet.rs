@@ -91,11 +91,18 @@ pub fn trace_fetch_tip_availability(
         return;
     }
     let odb = Odb::new(objects_dir);
+    let noop_negotiator = objects_dir
+        .parent()
+        .and_then(|git_dir| grit_lib::config::ConfigSet::load(Some(git_dir), true).ok())
+        .and_then(|cfg| cfg.get("fetch.negotiationalgorithm"))
+        .is_some_and(|value| value.eq_ignore_ascii_case("noop"));
     for tip in tips {
         let hex = tip.to_hex();
         let label = negotiation_packet_label();
         if odb.exists(tip) {
-            trace_packet_line(format!("{label}> have {hex}").as_bytes());
+            if !noop_negotiator {
+                trace_packet_line(format!("{label}> have {hex}").as_bytes());
+            }
         } else {
             trace_packet_line(format!("{label}> fetch {hex}").as_bytes());
         }
