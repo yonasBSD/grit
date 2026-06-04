@@ -17,6 +17,7 @@ use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 /// Arguments for `grit prune`.
@@ -74,6 +75,7 @@ pub fn run(args: Args) -> Result<()> {
     // 1. Collect all reachable object IDs.
     let mut reachable = collect_reachable(&repo, &odb, &objects_dir, &args.heads)
         .context("failed to collect reachable objects")?;
+    collect_recent_objects_hook_oids(&repo, &mut reachable)?;
 
     // 2. Enumerate all loose objects and treat recent loose objects as reachability roots.
     let loose = scan_loose_objects(&objects_dir)?;
@@ -85,6 +87,7 @@ pub fn run(args: Args) -> Result<()> {
 
     // 3. Prune unreachable loose objects that are old enough.
     let mut pruned = 0usize;
+    let mut pruned_oids = Vec::new();
     for (oid, path) in &loose {
         if reachable.contains(oid) {
             continue;
@@ -112,6 +115,7 @@ pub fn run(args: Args) -> Result<()> {
         }
 
         if !args.dry_run {
+            pruned_oids.push(*oid);
             match fs::remove_file(path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -128,10 +132,70 @@ pub fn run(args: Args) -> Result<()> {
         pruned += 1;
     }
 
+    if !args.dry_run {
+        prune_shallow_file(&repo.git_dir, &pruned_oids)?;
+    }
+
     if args.verbose && !args.dry_run {
         eprintln!("prune: removed {} unreachable loose object(s)", pruned);
     }
 
+    Ok(())
+}
+
+fn collect_recent_objects_hook_oids(
+    repo: &Repository,
+    reachable: &mut HashSet<ObjectId>,
+) -> Result<()> {
+    let cfg = ConfigSet::load(Some(&repo.git_dir), true)?;
+    let Some(hook) = cfg.get("gc.recentobjectshook") else {
+        return Ok(());
+    };
+    let hook = hook.trim();
+    if hook.is_empty() {
+        return Ok(());
+    }
+    let mut cmd = Command::new(hook);
+    if let Some(work_tree) = &repo.work_tree {
+        cmd.current_dir(work_tree);
+    }
+    let output = cmd
+        .output()
+        .with_context(|| format!("running gc.recentObjectsHook {hook}"))?;
+    if !output.status.success() {
+        return Ok(());
+    }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let oid_text = line.trim();
+        if let Ok(oid) = ObjectId::from_hex(oid_text) {
+            reachable.insert(oid);
+        }
+    }
+    Ok(())
+}
+
+fn prune_shallow_file(git_dir: &Path, pruned_oids: &[ObjectId]) -> Result<()> {
+    if pruned_oids.is_empty() {
+        return Ok(());
+    }
+    let shallow_path = git_dir.join("shallow");
+    let Ok(content) = fs::read_to_string(&shallow_path) else {
+        return Ok(());
+    };
+    let pruned: HashSet<ObjectId> = pruned_oids.iter().copied().collect();
+    let kept: Vec<&str> = content
+        .lines()
+        .filter(|line| {
+            ObjectId::from_hex(line.trim())
+                .map(|oid| !pruned.contains(&oid))
+                .unwrap_or(true)
+        })
+        .collect();
+    if kept.is_empty() {
+        let _ = fs::remove_file(shallow_path);
+    } else {
+        fs::write(shallow_path, format!("{}\n", kept.join("\n")))?;
+    }
     Ok(())
 }
 
