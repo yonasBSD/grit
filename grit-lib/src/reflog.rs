@@ -372,21 +372,22 @@ pub fn list_reflog_refs(git_dir: &Path) -> Result<Vec<String>> {
         logs_dir: &Path,
         out: &mut Vec<String>,
         seen: &mut HashSet<String>,
+        skip_per_worktree_refs: bool,
     ) -> Result<()> {
         if logs_dir.join("HEAD").is_file() && seen.insert("HEAD".to_string()) {
             out.push("HEAD".to_string());
         }
         let refs_logs = logs_dir.join("refs");
         if refs_logs.is_dir() {
-            collect_reflog_refs(&refs_logs, "refs", out, seen)?;
+            collect_reflog_refs(&refs_logs, "refs", out, seen, skip_per_worktree_refs)?;
         }
         Ok(())
     }
 
-    collect_from_logs_root(&git_dir.join("logs"), &mut refs, &mut seen)?;
+    collect_from_logs_root(&git_dir.join("logs"), &mut refs, &mut seen, false)?;
     if let Some(common) = refs::common_dir(git_dir) {
         if common != git_dir {
-            collect_from_logs_root(&common.join("logs"), &mut refs, &mut seen)?;
+            collect_from_logs_root(&common.join("logs"), &mut refs, &mut seen, true)?;
         }
     }
 
@@ -398,6 +399,7 @@ fn collect_reflog_refs(
     prefix: &str,
     out: &mut Vec<String>,
     seen: &mut HashSet<String>,
+    skip_per_worktree_refs: bool,
 ) -> Result<()> {
     let read_dir = match fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -409,9 +411,12 @@ fn collect_reflog_refs(
         let entry = entry.map_err(Error::Io)?;
         let name = entry.file_name().to_string_lossy().to_string();
         let full_name = format!("{prefix}/{name}");
+        if skip_per_worktree_refs && crate::worktree_ref::is_per_worktree_ref(&full_name) {
+            continue;
+        }
         let ft = entry.file_type().map_err(Error::Io)?;
         if ft.is_dir() {
-            collect_reflog_refs(&entry.path(), &full_name, out, seen)?;
+            collect_reflog_refs(&entry.path(), &full_name, out, seen, skip_per_worktree_refs)?;
         } else if ft.is_file() && seen.insert(full_name.clone()) {
             out.push(full_name);
         }
@@ -434,8 +439,8 @@ pub struct ReflogExpireParams {
 #[derive(Debug, Clone)]
 pub struct GcReflogPattern {
     pattern: String,
-    expire_total: i64,
-    expire_unreachable: i64,
+    expire_total: Option<i64>,
+    expire_unreachable: Option<i64>,
 }
 
 fn collect_gc_reflog_patterns(config: &ConfigSet, now: i64) -> Vec<GcReflogPattern> {
@@ -447,12 +452,18 @@ fn collect_gc_reflog_patterns(config: &ConfigSet, now: i64) -> Vec<GcReflogPatte
         };
         // Per-ref: `gc.<wildmatch-pattern>.reflogExpire` (pattern may contain dots).
         // Global `gc.reflogExpire` has no pattern segment — see [`global_gc_reflog_expiry`].
-        let Some((pat, suffix)) = rest.rsplit_once('.') else {
+        let lower = rest.to_ascii_lowercase();
+        let (pat, is_total) = if lower.ends_with(".reflogexpireunreachable") {
+            (
+                &rest[..rest.len() - ".reflogexpireunreachable".len()],
+                false,
+            )
+        } else if lower.ends_with(".reflogexpire") {
+            (&rest[..rest.len() - ".reflogexpire".len()], true)
+        } else {
             continue;
         };
-        if !suffix.eq_ignore_ascii_case("reflogexpire")
-            && !suffix.eq_ignore_ascii_case("reflogexpireunreachable")
-        {
+        if pat.is_empty() {
             continue;
         }
         let Some(val) = e.value.as_deref() else {
@@ -465,13 +476,13 @@ fn collect_gc_reflog_patterns(config: &ConfigSet, now: i64) -> Vec<GcReflogPatte
             .entry(pat.to_string())
             .or_insert(GcReflogPattern {
                 pattern: pat.to_string(),
-                expire_total: i64::MAX,
-                expire_unreachable: i64::MAX,
+                expire_total: None,
+                expire_unreachable: None,
             });
-        if suffix.eq_ignore_ascii_case("reflogexpire") {
-            ent.expire_total = ts;
+        if is_total {
+            ent.expire_total = Some(ts);
         } else {
-            ent.expire_unreachable = ts;
+            ent.expire_unreachable = Some(ts);
         }
     }
     by_pattern.into_values().collect()
@@ -492,6 +503,9 @@ fn parse_gc_reflog_expiry(raw: &str, now: i64) -> Result<i64> {
     let s = raw.trim();
     if s.eq_ignore_ascii_case("never") || s.eq_ignore_ascii_case("false") {
         return Ok(0);
+    }
+    if s.eq_ignore_ascii_case("now") || s.eq_ignore_ascii_case("all") {
+        return Ok(i64::MAX);
     }
     if let Ok(days) = s.parse::<u64>() {
         if days == 0 {
@@ -525,13 +539,24 @@ fn resolve_expire_for_ref(
         return (expire_total, expire_unreachable);
     }
     for ent in patterns {
-        if wildmatch(ent.pattern.as_bytes(), refname.as_bytes(), WM_PATHNAME) {
-            // Partial per-pattern config only sets one key; the other stays `i64::MAX` as sentinel.
-            if explicit_total.is_none() && ent.expire_total != i64::MAX {
-                expire_total = ent.expire_total;
+        let wildcard_prefix_matches = ent
+            .pattern
+            .split_once('*')
+            .is_some_and(|(prefix, _)| refname.starts_with(prefix));
+        if wildmatch(ent.pattern.as_bytes(), refname.as_bytes(), WM_PATHNAME)
+            || wildmatch(ent.pattern.as_bytes(), refname.as_bytes(), 0)
+            || wildcard_prefix_matches
+        {
+            // Partial per-pattern config only sets one key; the other keeps the global/default.
+            if explicit_total.is_none() {
+                if let Some(total) = ent.expire_total {
+                    expire_total = total;
+                }
             }
-            if explicit_unreachable.is_none() && ent.expire_unreachable != i64::MAX {
-                expire_unreachable = ent.expire_unreachable;
+            if explicit_unreachable.is_none() {
+                if let Some(unreachable) = ent.expire_unreachable {
+                    expire_unreachable = unreachable;
+                }
             }
             return (expire_total, expire_unreachable);
         }

@@ -425,7 +425,7 @@ fn run_show(args: ShowArgs) -> Result<()> {
 
 fn run_list(args: ListArgs) -> Result<()> {
     if !args.rest.is_empty() {
-        bail!("error: list does not accept arguments: '{}'", args.rest[0]);
+        bail!("list does not accept arguments: '{}'", args.rest[0]);
     }
     let repo = Repository::discover(None).context("not a git repository")?;
     let mut refs =
@@ -443,19 +443,33 @@ fn run_drop(args: DropArgs) -> Result<()> {
         bail!("usage: references specified along with --all");
     }
     let refs: Vec<String> = if args.all {
-        grit_lib::reflog::list_reflog_refs(&repo.git_dir).map_err(|e| anyhow::anyhow!("{e}"))?
+        list_reflog_refs_for_all_scope(&repo, args.single_worktree)?
     } else if args.refs.is_empty() {
         bail!("no refs specified to drop");
     } else {
         let mut out = Vec::new();
+        let mut had_err = false;
         for r in &args.refs {
-            out.push(dwim_reflog_ref(&repo, r)?);
+            match dwim_reflog_ref(&repo, r) {
+                Ok(resolved) => out.push(resolved),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    had_err = true;
+                }
+            }
+        }
+        if had_err {
+            out.push(String::new());
         }
         out
     };
 
     let mut had_err = false;
     for refname in refs {
+        if refname.is_empty() {
+            had_err = true;
+            continue;
+        }
         let (gd, rn) = reflog_location_for_ref(&repo, &refname);
         if !reflog_exists(&gd, &rn) {
             eprintln!("error: reflog could not be found: '{refname}'");
@@ -477,17 +491,17 @@ fn run_drop(args: DropArgs) -> Result<()> {
 /// Parse `--expire` / `--expire-unreachable` values (Git `parse_expiry_date` subset).
 ///
 /// Git maps `all` and `now` to `TIME_MAX` so every reflog entry (always in the past) is pruned.
-/// `never` follows `now` for expiry cutoffs (e.g. t3202). Plain `0` is still wall-clock "now" for
-/// day-count / relative semantics.
+/// `never` and `false` keep entries forever. Plain `0` is still wall-clock "now" for day-count /
+/// relative semantics.
 fn parse_reflog_expire_cli(raw: &str, now: i64) -> Result<i64> {
     let s = raw.trim();
     if s.eq_ignore_ascii_case("all") {
         return Ok(i64::MAX);
     }
-    if s.eq_ignore_ascii_case("false") {
+    if s.eq_ignore_ascii_case("false") || s.eq_ignore_ascii_case("never") {
         return Ok(0);
     }
-    if s.eq_ignore_ascii_case("never") || s.eq_ignore_ascii_case("now") {
+    if s.eq_ignore_ascii_case("now") {
         return Ok(i64::MAX);
     }
     if s == "0" {
@@ -512,15 +526,63 @@ fn parse_reflog_expire_cli(raw: &str, now: i64) -> Result<i64> {
 }
 
 fn dwim_reflog_ref(repo: &Repository, spec: &str) -> Result<String> {
-    if spec.contains("@{") {
-        bail!("invalid reference specification: '{spec}'");
-    }
     let resolved = resolve_refname(repo, spec)?;
     let (gd, rn) = reflog_location_for_ref(repo, &resolved);
     if !reflog_exists(&gd, &rn) {
         bail!("reflog could not be found: '{spec}'");
     }
     Ok(resolved)
+}
+
+fn list_reflog_refs_for_all_scope(repo: &Repository, single_worktree: bool) -> Result<Vec<String>> {
+    let mut refs =
+        grit_lib::reflog::list_reflog_refs(&repo.git_dir).map_err(|e| anyhow::anyhow!("{e}"))?;
+    if single_worktree {
+        return Ok(refs);
+    }
+
+    let common = common_git_dir(&repo.git_dir);
+    let worktrees_dir = common.join("worktrees");
+    let Ok(entries) = fs::read_dir(&worktrees_dir) else {
+        return Ok(refs);
+    };
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let id = entry.file_name().to_string_lossy().to_string();
+        collect_worktree_reflog_refs(
+            &entry.path().join("logs"),
+            &format!("worktrees/{id}"),
+            &mut refs,
+        )?;
+    }
+    refs.sort();
+    refs.dedup();
+    Ok(refs)
+}
+
+fn collect_worktree_reflog_refs(
+    logs_dir: &std::path::Path,
+    prefix: &str,
+    out: &mut Vec<String>,
+) -> Result<()> {
+    let Ok(entries) = fs::read_dir(logs_dir) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let full = format!("{prefix}/{name}");
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            collect_worktree_reflog_refs(&entry.path(), &full, out)?;
+        } else if ft.is_file() {
+            out.push(full);
+        }
+    }
+    Ok(())
 }
 
 fn run_expire(args: ExpireArgs) -> Result<()> {
@@ -546,17 +608,21 @@ fn run_expire(args: ExpireArgs) -> Result<()> {
         }
     }
 
-    let explicit_total = match &args.expire {
+    let mut explicit_total = match &args.expire {
         None => None,
         Some(s) => Some(parse_reflog_expire_cli(s, now)?),
     };
-    let explicit_unreachable = match &args.expire_unreachable {
+    let mut explicit_unreachable = match &args.expire_unreachable {
         None => None,
         Some(s) => Some(parse_reflog_expire_cli(s, now)?),
     };
+    if args.stale_fix && explicit_total.is_none() && explicit_unreachable.is_none() {
+        explicit_total = Some(0);
+        explicit_unreachable = Some(0);
+    }
 
     let mut refs_to_expire: Vec<String> = if args.all {
-        grit_lib::reflog::list_reflog_refs(&repo.git_dir).map_err(|e| anyhow::anyhow!("{e}"))?
+        list_reflog_refs_for_all_scope(&repo, args.single_worktree)?
     } else if !args.refs.is_empty() {
         let mut v = Vec::new();
         for r in &args.refs {
@@ -838,7 +904,8 @@ fn resolve_delete_selectors_to_indices(
             ReflogDeleteSelector::ApproxDate(inner) => {
                 // Match `git reflog.c:reflog_delete`: `approxidate` + `count_reflog_ent` then
                 // `should_expire_reflog_ent` with `recno` (prune the last entry older than cutoff).
-                let cutoff = approxidate_careful(inner, None) as i64;
+                let cutoff = parse_reflog_delete_date(inner)
+                    .unwrap_or_else(|| approxidate_careful(inner, None) as i64);
                 let mut recno: i64 = 0;
                 for e in &entries {
                     let ts = parse_ts_from_identity(&e.identity).unwrap_or(i64::MAX);
@@ -869,6 +936,23 @@ fn resolve_delete_selectors_to_indices(
         }
     }
     Ok(out)
+}
+
+fn parse_reflog_delete_date(raw: &str) -> Option<i64> {
+    if let Ok((ts, _)) = parse_date_basic(raw) {
+        return Some(ts as i64);
+    }
+    let mut parts = raw.split('.');
+    let day = parts.next()?;
+    let month = parts.next()?;
+    let year = parts.next()?;
+    let time = parts.next()?;
+    let tz = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let normalized = format!("{year}-{month}-{day} {time} {tz}");
+    parse_date_basic(&normalized).ok().map(|(ts, _)| ts as i64)
 }
 
 /// Extract Unix timestamp from identity string.
