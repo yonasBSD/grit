@@ -7007,6 +7007,17 @@ fn do_continue() -> Result<()> {
                     );
                 }
             }
+        } else if !worktree_matches_head(&repo, git_dir)? {
+            bail!("error: you have staged changes in your working tree");
+        } else {
+            return replay_remaining(
+                &repo,
+                &rb_dir,
+                autostash_continue,
+                backend_continue,
+                had_autostash_continue,
+                force_rewrite_continue,
+            );
         }
     }
 
