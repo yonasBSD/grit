@@ -1349,6 +1349,8 @@ pub fn run(mut args: Args) -> Result<()> {
     if !args.config.is_empty() {
         apply_clone_config(&dest.git_dir, &args.config).context("applying -c config")?;
     }
+    copy_configured_remote_fetch_refspecs(&source.git_dir, &dest.git_dir, &remote_name)
+        .context("copying refs from clone remote fetch refspecs")?;
 
     apply_submodule_reference_config_for_recursive_clone(&dest.git_dir, &args)?;
 
@@ -4755,6 +4757,94 @@ fn copy_refs_from_upload_pack_lists(
         }
     }
     Ok(())
+}
+
+fn copy_configured_remote_fetch_refspecs(
+    src_git_dir: &Path,
+    dst_git_dir: &Path,
+    remote_name: &str,
+) -> Result<()> {
+    let config = ConfigSet::load(Some(dst_git_dir), true)?;
+    let key = format!("remote.{remote_name}.fetch");
+    for raw in config.get_all(&key) {
+        copy_fetch_refspec(src_git_dir, dst_git_dir, raw.trim())?;
+    }
+    let command_config = ConfigSet::load(None, true)?;
+    for raw in command_config.get_all(&key) {
+        copy_fetch_refspec(src_git_dir, dst_git_dir, raw.trim())?;
+    }
+    for raw in command_line_config_values(&key) {
+        copy_fetch_refspec(src_git_dir, dst_git_dir, raw.trim())?;
+    }
+    Ok(())
+}
+
+fn command_line_config_values(key: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    if let Ok(count_str) = std::env::var("GIT_CONFIG_COUNT") {
+        if let Ok(count) = count_str.parse::<usize>() {
+            for i in 0..count {
+                let key_var = format!("GIT_CONFIG_KEY_{i}");
+                let val_var = format!("GIT_CONFIG_VALUE_{i}");
+                if let (Ok(k), Ok(v)) = (std::env::var(&key_var), std::env::var(&val_var)) {
+                    if k.eq_ignore_ascii_case(key) {
+                        values.push(v);
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(params) = std::env::var("GIT_CONFIG_PARAMETERS") {
+        for token in params.split_whitespace() {
+            let token = token.trim_matches('\'').trim_matches('"');
+            if let Some((k, v)) = token.split_once('=') {
+                if k.eq_ignore_ascii_case(key) {
+                    values.push(v.to_string());
+                }
+            }
+        }
+    }
+    values
+}
+
+fn copy_fetch_refspec(src_git_dir: &Path, dst_git_dir: &Path, raw: &str) -> Result<()> {
+    let spec = raw.strip_prefix('+').unwrap_or(raw);
+    let Some((src_pat, dst_pat)) = spec.split_once(':') else {
+        return Ok(());
+    };
+    if src_pat.is_empty() || dst_pat.is_empty() {
+        return Ok(());
+    }
+    if let Some((src_prefix, src_suffix)) = split_single_glob(src_pat) {
+        let Some((dst_prefix, dst_suffix)) = split_single_glob(dst_pat) else {
+            return Ok(());
+        };
+        for (refname, oid) in refs::list_refs(src_git_dir, "refs/")? {
+            if let Some(matched) = match_refspec_glob(&refname, src_prefix, src_suffix) {
+                let dst = format!("{dst_prefix}{matched}{dst_suffix}");
+                clone_write_direct_ref(dst_git_dir, &dst, &oid.to_hex())?;
+            }
+        }
+        return Ok(());
+    }
+    if let Ok(oid) = refs::resolve_ref(src_git_dir, src_pat) {
+        clone_write_direct_ref(dst_git_dir, dst_pat, &oid.to_hex())?;
+    }
+    Ok(())
+}
+
+fn split_single_glob(pattern: &str) -> Option<(&str, &str)> {
+    let idx = pattern.find('*')?;
+    if pattern[idx + 1..].contains('*') {
+        return None;
+    }
+    Some((&pattern[..idx], &pattern[idx + 1..]))
+}
+
+fn match_refspec_glob<'a>(refname: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
+    refname
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_suffix(suffix))
 }
 
 /// Copy refs from source into remote-tracking refs in the destination.

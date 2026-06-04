@@ -94,6 +94,8 @@
     by honoring shared alternates in local push/fetch object transfer.
   - Opportunistic shallow bitmap quick win: completed `t5311-pack-bitmaps-shallow.sh` (6/6) by
     skipping default submodule recursion for bare fetches.
+  - Opportunistic clone-config quick win: completed `t5611-clone-config.sh` (13/13) by
+    applying configured remote fetch refspecs during clone.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

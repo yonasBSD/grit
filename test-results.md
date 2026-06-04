@@ -1,4 +1,10 @@
 
+## 2026-06-04 — t5611-clone-config
+
+- Focus harness: `./scripts/run-tests.sh t5611-clone-config.sh --verbose` passes 13/13 after clone applies configured remote fetch refspecs from `clone -c` and `git -c`.
+- Regression harness: `./scripts/run-tests.sh t5611-clone-config.sh t5606-clone-options.sh t5501-fetch-push-alternates.sh --verbose` passes all covered rows.
+
+
 ## 2026-06-04 — t5311-pack-bitmaps-shallow
 
 - Focus harness: `./scripts/run-tests.sh t5311-pack-bitmaps-shallow.sh --verbose` passes 6/6 after bare fetch no longer runs default submodule recursion.
