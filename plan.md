@@ -180,6 +180,8 @@
     validation, and `test-tool delta -p`.
   - Completed `t5313-pack-bounds-checks.sh` (9/9) after adding pack/index object-count
     validation and small-pack deletion-style OFS_DELTA generation.
+  - Completed `t5304-prune-packed.sh` (20/20) after wrapping cd-using synthetic test
+    bodies in subshells so `test_when_finished`/cwd state no longer leaks between cases.
   - Completed `t5351-unpack-large-objects.sh` (7/7) after honoring large-object allocation
     limits, preserving existing packs during unpack, and emitting batch fsync counters.
   - Pack/index correctness subgroup complete: `t5300-pack-object`, `t5300-unpack-objects`,

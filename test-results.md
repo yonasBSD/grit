@@ -2201,3 +2201,8 @@ Updated: 2026-06-01
 - Focus harness: `./scripts/run-tests.sh t5331-pack-objects-stdin.sh --verbose` passes 16/16 after completing stdin-pack empty output, follow reachability, promisor exclusion, and no-backfill clone coverage.
 - Related verification: `./scripts/run-tests.sh t5300-pack-object.sh t5317-pack-objects-filter-objects.sh t5330-no-lazy-fetch-with-commit-graph.sh t5616-partial-clone.sh --verbose` passes 63/63, 33/33, 4/4, and 47/47 respectively.
 - Quality gates: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`, and `cargo test -p grit-lib --lib` completed; pre-existing warnings remain in unrelated files.
+
+## 2026-06-04 — t5304-prune-packed
+
+- Focus harness: `./scripts/run-tests.sh t5304-prune-packed.sh --verbose` passes 20/20 after wrapping cd-using test bodies so cwd state does not leak between cases.
+- No Rust code changed for this fixture repair.
