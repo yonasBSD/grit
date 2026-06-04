@@ -1439,10 +1439,7 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
         let mut parser = Parser::new();
 
         for (idx, line) in self.raw_lines.iter().enumerate() {
-            if parser.try_parse_section(line)
-                && parser.section.to_lowercase() == sec_lower
-                && parser.subsection.as_deref() == subsection
-            {
+            if parser.try_parse_section(line) && section_matches(&parser, &sec_lower, subsection) {
                 return idx;
             }
         }
@@ -1472,10 +1469,7 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
         let mut parser = Parser::new();
 
         for (idx, line) in self.raw_lines.iter().enumerate() {
-            if parser.try_parse_section(line)
-                && parser.section.to_lowercase() == sec_lower
-                && parser.subsection.as_deref() == subsection
-            {
+            if parser.try_parse_section(line) && section_matches(&parser, &sec_lower, subsection) {
                 return idx;
             }
         }
