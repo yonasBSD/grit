@@ -1,0 +1,115 @@
+ok 1 - mv -f refreshes updated index entry
+ok 2 - prepare reference tree
+ok 3 - moving the file out of subdirectory
+ok 4 - commiting the change
+ok 5 - checking the commit
+ok 6 - moving the file back into subdirectory
+ok 7 - commiting the change
+ok 8 - checking the commit
+ok 9 - mv --dry-run does not move file
+ok 10 - checking -k on non-existing file
+ok 11 - checking -k on untracked file
+ok 12 - checking -k on multiple untracked files
+ok 13 - checking -f on untracked file with existing target
+ok 14 - moving to absent target with trailing slash
+ok 15 - clean up
+ok 16 - moving to existing untracked target with trailing slash
+ok 17 - moving to existing tracked target with trailing slash
+ok 18 - clean up
+ok 19 - adding another file
+ok 20 - moving whole subdirectory
+ok 21 - commiting the change
+ok 22 - checking the commit
+ok 23 - succeed when source is a prefix of destination
+ok 24 - moving whole subdirectory into subdirectory
+ok 25 - commiting the change
+ok 26 - checking the commit
+ok 27 - do not move directory over existing directory
+ok 28 - rename directory to non-existing directory
+ok 29 - move into "."
+ok 30 - Michael Cassar's test case
+ok 31 - Sergey Vlasov's test case
+ok 32 - absolute pathname
+ok 33 - absolute pathname outside should fail
+ok 34 - git mv to move multiple sources into a directory
+ok 35 - git mv should not change sha1 of moved cache entry
+ok 36 - git mv error on conflicted file
+ok 37 - git mv should overwrite symlink to a file
+ok 38 - git mv should overwrite file with a symlink
+ok 39 - check moved symlink
+ok 40 - setup submodule
+ok 41 - git mv cannot move a submodule in a file
+ok 42 - git mv moves a submodule with a .git directory and no .gitmodules
+ok 43 - git mv moves a submodule with a .git directory and .gitmodules
+ok 44 - git mv moves a submodule with gitfile
+ok 45 - mv does not complain when no .gitmodules file is found
+ok 46 - mv will error out on a modified .gitmodules file unless staged
+ok 47 - mv issues a warning when section is not found in .gitmodules
+ok 48 - mv --dry-run does not touch the submodule or .gitmodules
+not ok 49 - checking out a commit before submodule moved needs manual updates
+#	
+#		git mv sub sub2 &&
+#		git commit -m "moved sub to sub2" &&
+#		git checkout -q HEAD^ 2>actual &&
+#		test_grep "^warning: unable to rmdir 'sub2':" actual &&
+#		git status -s sub2 >actual &&
+#		echo "?? sub2/" >expected &&
+#		test_cmp expected actual &&
+#		test_path_is_missing sub/.git &&
+#		test_path_is_file sub2/.git &&
+#		git submodule update &&
+#		test_path_is_file sub/.git &&
+#		rm -rf sub2 &&
+#		git diff-index --exit-code HEAD &&
+#		git update-index --refresh &&
+#		git diff-files --quiet -- sub .gitmodules &&
+#		git status -s sub2 >actual &&
+#		test_must_be_empty actual
+#	
+ok 50 - mv -k does not accidentally destroy submodules
+not ok 51 - moving a submodule in nested directories
+#	
+#		(
+#			cd deep &&
+#			git mv directory ../ &&
+#			# git status would fail if the update of linking git dir to
+#			# work dir of the submodule failed.
+#			git status &&
+#			git config -f ../.gitmodules submodule.deep/directory/hierarchy/sub.path >../actual &&
+#			echo "directory/hierarchy/sub" >../expect
+#		) &&
+#		test_cmp expect actual
+#	
+not ok 52 - moving nested submodules
+#	
+#		test_config_global protocol.file.allow always &&
+#		git commit -am "cleanup commit" &&
+#		mkdir sub_nested_nested &&
+#		(
+#			cd sub_nested_nested &&
+#			>nested_level2 &&
+#			git init &&
+#			git add . &&
+#			git commit -m "nested level 2"
+#		) &&
+#		mkdir sub_nested &&
+#		(
+#			cd sub_nested &&
+#			>nested_level1 &&
+#			git init &&
+#			git add . &&
+#			git commit -m "nested level 1" &&
+#			git submodule add ../sub_nested_nested &&
+#			git commit -m "add nested level 2"
+#		) &&
+#		git submodule add ./sub_nested nested_move &&
+#		git commit -m "add nested_move" &&
+#		git submodule update --init --recursive &&
+#		git mv nested_move sub_nested_moved &&
+#		git status
+#	
+ok 53 - moving file and its parent directory at the same time fails
+ok 54 - moving nested directory and its parent directory at the same time fails
+# failed 3 among 54 test(s)
+1..54
+# Tests: 54  Pass: 51  Fail: 3  Skip: 0

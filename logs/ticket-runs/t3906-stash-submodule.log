@@ -1,0 +1,44 @@
+ok 1 - git_stash: added submodule creates empty directory
+not ok 2 - git_stash: added submodule leaves existing empty directory alone # TODO known breakage
+not ok 3 - git_stash: replace tracked file with submodule creates empty directory # TODO known breakage
+not ok 4 - git_stash: replace directory with submodule # TODO known breakage
+not ok 5 - git_stash: removed submodule leaves submodule directory and its contents in place # TODO known breakage
+not ok 6 - git_stash: removed submodule leaves submodule containing a .git directory alone # TODO known breakage
+ok 7 - git_stash: replace submodule with a directory must fail
+ok 8 - git_stash: replace submodule containing a .git directory with a directory must fail
+not ok 9 - git_stash: replace submodule with a file must fail
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_file origin/replace_sub1_with_file &&
+#				$command replace_sub1_with_file test_must_fail &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 10 - git_stash: replace submodule containing a .git directory with a file must fail
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_file origin/replace_sub1_with_file &&
+#				replace_gitfile_with_git_dir sub1 &&
+#				$command replace_sub1_with_file test_must_fail &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_git_directory_is_unchanged sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 11 - git_stash: modified submodule does not update submodule work tree # TODO known breakage
+not ok 12 - git_stash: modified submodule does not update submodule work tree to invalid commit # TODO known breakage
+not ok 13 - git_stash: modified submodule does not update submodule work tree from invalid commit # TODO known breakage
+ok 14 - git_stash: added submodule doesn't remove untracked unignored file with same name
+ok 15 - stash push with submodule.recurse=true preserves dirty submodule worktree
+ok 16 - stash push and pop with submodule.recurse=true preserves dirty submodule worktree
+# still have 8 known breakage(s)
+# failed 2 among remaining 8 test(s)
+1..16
+# Tests: 16  Pass: 6  Fail: 2  Skip: 0

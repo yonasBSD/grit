@@ -1,0 +1,64 @@
+ok 1 - setup
+ok 2 - will not overwrite untracked file
+ok 3 - will overwrite tracked file
+ok 4 - will not overwrite new file
+ok 5 - will not overwrite staged changes
+ok 6 - will not overwrite removed file
+ok 7 - will not overwrite re-added file
+ok 8 - will not overwrite removed file with staged changes
+ok 9 - will not overwrite unstaged changes in renamed file
+ok 10 - will not overwrite untracked subtree
+not ok 11 - will not overwrite untracked file in leading path
+#	
+#		git reset --hard c0 &&
+#		rm -rf sub &&
+#		cp important sub &&
+#		cp important sub2 &&
+#		test_must_fail git merge sub 2>out &&
+#		test_cmp out expect &&
+#		test_path_is_missing .git/MERGE_HEAD &&
+#		test_cmp important sub &&
+#		test_cmp important sub2 &&
+#		rm -f sub sub2
+#	
+not ok 12 - will not overwrite untracked symlink in leading path
+#	
+#		git reset --hard c0 &&
+#		rm -rf sub &&
+#		mkdir sub2 &&
+#		ln -s sub2 sub &&
+#		test_must_fail git merge sub &&
+#		test_path_is_missing .git/MERGE_HEAD
+#	
+ok 13 - will not be confused by symlink in leading path
+not ok 14 - will not overwrite untracked file on unborn branch
+#	
+#		git reset --hard c0 &&
+#		git rm -fr . &&
+#		git checkout --orphan new &&
+#		cp important c0.c &&
+#		test_must_fail git merge c0 2>out &&
+#		test_cmp out expect
+#	
+not ok 15 - will not overwrite untracked file on unborn branch .git/MERGE_HEAD sanity etc.
+#	
+#		test_when_finished "rm c0.c" &&
+#		test_path_is_missing .git/MERGE_HEAD &&
+#		test_cmp important c0.c
+#	
+not ok 16 - failed merge leaves unborn branch in the womb
+#	
+#		test_must_fail git rev-parse --verify HEAD
+#	
+ok 17 - set up unborn branch and content
+not ok 18 - will not clobber WT/index when merging into unborn
+#	
+#		git merge main &&
+#		grep foo tracked-file &&
+#		git show :tracked-file >expect &&
+#		grep foo expect &&
+#		grep bar untracked-file
+#	
+# failed 6 among 18 test(s)
+1..18
+# Tests: 18  Pass: 12  Fail: 6  Skip: 0

@@ -1,0 +1,32 @@
+ok 1 - setup no merge base
+ok 2 - check no merge base
+ok 3 - setup unique merge base
+ok 4 - check unique merge base
+ok 5 - setup multiple merge bases
+ok 6 - check multiple merge bases
+not ok 7 - rebase --merge describes parent of commit being picked
+#	
+#		git init rebase &&
+#		(
+#			cd rebase &&
+#			test_commit base file &&
+#			test_commit main file &&
+#			git checkout -b side HEAD^ &&
+#			test_commit side file &&
+#			test_must_fail git -c merge.conflictstyle=diff3 rebase --merge main &&
+#			grep "||||||| parent of" file
+#		)
+#	
+not ok 8 - rebase --apply describes fake ancestor base
+#	
+#		(
+#			cd rebase &&
+#			git rebase --abort &&
+#			test_must_fail git -c merge.conflictstyle=diff3 rebase --apply main &&
+#			grep "||||||| constructed fake ancestor" file
+#		)
+#	
+ok 9 - check zdiff3 markers
+# failed 2 among 9 test(s)
+1..9
+# Tests: 9  Pass: 7  Fail: 2  Skip: 0

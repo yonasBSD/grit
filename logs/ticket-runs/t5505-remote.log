@@ -1,0 +1,929 @@
+ok 1 - setup
+ok 2 - add remote whose URL agrees with url.<...>.insteadOf
+ok 3 - remote information for the origin
+ok 4 - add another remote
+ok 5 - setup bare clone for server
+ok 6 - filters for promisor remotes are listed by git remote -v
+ok 7 - filters should not be listed for non promisor remotes (remote -v)
+not ok 8 - filters are listed by git remote -v only
+#	
+#		test_when_finished "rm -rf pc" &&
+#		git clone --filter=blob:none "file://$(pwd)/srv.bare" pc &&
+#		git -C pc remote >out &&
+#		! grep "\[blob:none\]" out &&
+#	
+#		git -C pc remote show >out &&
+#		! grep "\[blob:none\]" out
+#	
+ok 9 - check remote-tracking
+ok 10 - remote forces tracking branches
+ok 11 - remove remote
+ok 12 - remove remote
+ok 13 - remove remote protects local branches
+ok 14 - remove errors out early when deleting non-existent branch
+ok 15 - remove remote with a branch without configured merge
+ok 16 - rename errors out early when deleting non-existent branch
+ok 17 - rename errors out early when new name is invalid
+ok 18 - add existing foreign_vcs remote
+ok 19 - add existing foreign_vcs remote
+ok 20 - add invalid foreign_vcs remote
+ok 21 - without subcommand
+ok 22 - without subcommand accepts -v
+ok 23 - without subcommand does not take arguments
+not ok 24 - show
+#	
+#		(
+#			cd test &&
+#			git config --add remote.origin.fetch refs/heads/main:refs/heads/upstream &&
+#			git fetch &&
+#			git checkout -b ahead origin/main &&
+#			echo 1 >>file &&
+#			test_tick &&
+#			git commit -m update file &&
+#			git checkout main &&
+#			git branch --track octopus origin/main &&
+#			git branch --track rebase origin/main &&
+#			git branch -d -r origin/main &&
+#			git config --add remote.two.url ../two &&
+#			git config --add remote.two.pushurl ../three &&
+#			git config branch.rebase.rebase true &&
+#			git config branch.octopus.merge "topic-a topic-b topic-c" &&
+#			(
+#				cd ../one &&
+#				echo 1 >file &&
+#				test_tick &&
+#				git commit -m update file
+#			) &&
+#			git config --add remote.origin.push : &&
+#			git config --add remote.origin.push refs/heads/main:refs/heads/upstream &&
+#			git config --add remote.origin.push +refs/tags/lastbackup &&
+#			git config --add remote.two.push +refs/heads/ahead:refs/heads/main &&
+#			git config --add remote.two.push refs/heads/main:refs/heads/another &&
+#			git remote show origin two >output &&
+#			git branch -d rebase octopus &&
+#			test_cmp expect output
+#		)
+#	
+not ok 25 - show with negative refspecs
+#	
+#		test_when_finished "git -C test config --unset-all --fixed-value remote.origin.fetch ^refs/heads/main" &&
+#		git -C test config --add remote.origin.fetch ^refs/heads/main &&
+#		git -C test remote show origin >output &&
+#		test_cmp expect output
+#	
+not ok 26 - show stale with negative refspecs # TODO known breakage
+not ok 27 - show -n
+#	
+#		mv one one.unreachable &&
+#		(
+#			cd test &&
+#			git remote show -n origin >output &&
+#			mv ../one.unreachable ../one &&
+#			test_cmp expect output
+#		)
+#	
+ok 28 - prune
+ok 29 - set-head --delete
+not ok 30 - set-head --auto
+#	
+#		(
+#			cd test &&
+#			git remote set-head --auto origin &&
+#			echo refs/remotes/origin/main >expect &&
+#			git symbolic-ref refs/remotes/origin/HEAD >output &&
+#			test_cmp expect output
+#		)
+#	
+not ok 31 - set-head --auto failure
+#	
+#		test_when_finished "rm -f test/.git/refs/remotes/origin/HEAD.lock" &&
+#		(
+#			cd test &&
+#			touch .git/refs/remotes/origin/HEAD.lock &&
+#			test_must_fail git remote set-head --auto origin 2>err &&
+#			tail -n1 err >output &&
+#			echo "error: Could not set up refs/remotes/origin/HEAD" >expect &&
+#			test_cmp expect output
+#		)
+#	
+not ok 32 - set-head --auto detects creation
+#	
+#		(
+#			cd test &&
+#			git update-ref --no-deref -d refs/remotes/origin/HEAD &&
+#			git remote set-head --auto origin >output &&
+#			echo "${SQ}origin/HEAD${SQ} is now created and points to ${SQ}main${SQ}" >expect &&
+#			test_cmp expect output
+#		)
+#	
+not ok 33 - set-head --auto to update a non symbolic ref
+#	
+#		(
+#			cd test &&
+#			git update-ref --no-deref -d refs/remotes/origin/HEAD &&
+#			git update-ref refs/remotes/origin/HEAD HEAD &&
+#			HEAD=$(git log --pretty="%H") &&
+#			git remote set-head --auto origin >output &&
+#			echo "${SQ}origin/HEAD${SQ} was detached at ${SQ}${HEAD}${SQ} and now points to ${SQ}main${SQ}" >expect &&
+#			test_cmp expect output
+#		)
+#	
+not ok 34 - set-head --auto detects no change
+#	
+#		(
+#			cd test &&
+#			git remote set-head --auto origin >output &&
+#			echo "${SQ}origin/HEAD${SQ} is unchanged and points to ${SQ}main${SQ}" >expect &&
+#			test_cmp expect output
+#		)
+#	
+not ok 35 - set-head --auto detects change
+#	
+#		(
+#			cd test &&
+#			git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/ahead &&
+#			git remote set-head --auto origin >output &&
+#			echo "${SQ}origin/HEAD${SQ} has changed from ${SQ}ahead${SQ} and now points to ${SQ}main${SQ}" >expect &&
+#			test_cmp expect output
+#		)
+#	
+not ok 36 - set-head --auto detects strange ref
+#	
+#		(
+#			cd test &&
+#			git symbolic-ref refs/remotes/origin/HEAD refs/heads/main &&
+#			git remote set-head --auto origin >output &&
+#			echo "${SQ}origin/HEAD${SQ} used to point to ${SQ}refs/heads/main${SQ} (which is not a remote branch), but now points to ${SQ}main${SQ}" >expect &&
+#			test_cmp expect output
+#		)
+#	
+not ok 37 - set-head --auto has no problem w/multiple HEADs
+#	
+#		(
+#			cd test &&
+#			git fetch two "refs/heads/*:refs/remotes/two/*" &&
+#			git remote set-head --auto two >output 2>&1 &&
+#			echo "${SQ}two/HEAD${SQ} is now created and points to ${SQ}main${SQ}" >expect &&
+#			test_cmp expect output
+#		)
+#	
+not ok 38 - set-head changes followRemoteHEAD always to warn
+#	
+#		(
+#			cd test &&
+#			git config set remote.origin.followRemoteHEAD "always" &&
+#			git remote set-head --auto origin &&
+#			git config get remote.origin.followRemoteHEAD >actual &&
+#			echo "warn" >expect &&
+#			test_cmp expect actual
+#		)
+#	
+not ok 39 - set-head explicit
+#	
+#		(
+#			cd test &&
+#			git remote set-head origin side2 &&
+#			git symbolic-ref refs/remotes/origin/HEAD >output &&
+#			git remote set-head origin main &&
+#			test_cmp expect output
+#		)
+#	
+not ok 40 - set-head --auto reports change
+#	
+#		(
+#			cd test &&
+#			git remote set-head origin side2 &&
+#			git remote set-head --auto origin >output 2>&1 &&
+#			echo "${SQ}origin/HEAD${SQ} has changed from ${SQ}side2${SQ} and now points to ${SQ}main${SQ}" >expect &&
+#			test_cmp expect output
+#		)
+#	
+ok 41 - prune --dry-run
+not ok 42 - add --mirror && prune
+#	
+#		mkdir mirror &&
+#		(
+#			cd mirror &&
+#			git init --bare &&
+#			git remote add --mirror -f origin ../one
+#		) &&
+#		(
+#			cd one &&
+#			git branch -m side2 side
+#		) &&
+#		(
+#			cd mirror &&
+#			git rev-parse --verify refs/heads/side2 &&
+#			test_must_fail git rev-parse --verify refs/heads/side &&
+#			git fetch origin &&
+#			git remote prune origin &&
+#			test_must_fail git rev-parse --verify refs/heads/side2 &&
+#			git rev-parse --verify refs/heads/side
+#		)
+#	
+not ok 43 - add --mirror setting HEAD
+#	
+#		mkdir headmirror &&
+#		(
+#			cd headmirror &&
+#			git init --bare -b notmain &&
+#			git remote add --mirror -f origin ../one &&
+#			test "$(git symbolic-ref HEAD)" = "refs/heads/main"
+#		)
+#	
+ok 44 - non-mirror fetch does not interfere with mirror
+ok 45 - add --mirror=fetch
+ok 46 - fetch mirrors act as mirrors during fetch
+not ok 47 - fetch mirrors can prune
+#	
+#		(
+#			cd mirror-fetch/child &&
+#			git remote prune parent &&
+#			test_must_fail git rev-parse --verify refs/heads/main
+#		)
+#	
+ok 48 - fetch mirrors do not act as mirrors during push
+ok 49 - add fetch mirror with specific branches
+not ok 50 - fetch mirror respects specific branches
+#	
+#		(
+#			cd mirror-fetch/track &&
+#			git fetch parent &&
+#			git rev-parse --verify refs/heads/new &&
+#			test_must_fail git rev-parse --verify refs/heads/renamed
+#		)
+#	
+ok 51 - add --mirror=push
+ok 52 - push mirrors act as mirrors during push
+ok 53 - push mirrors do not act as mirrors during fetch
+not ok 54 - push mirrors do not allow you to specify refs
+#	
+#		git init mirror-push/track &&
+#		(
+#			cd mirror-push/track &&
+#			test_must_fail git remote add --mirror=push -t new public ../public
+#		)
+#	
+not ok 55 - add alt && prune
+#	
+#		mkdir alttst &&
+#		(
+#			cd alttst &&
+#			git init &&
+#			git remote add -f origin ../one &&
+#			git config remote.alt.url ../one &&
+#			git config remote.alt.fetch "+refs/heads/*:refs/remotes/origin/*"
+#		) &&
+#		(
+#			cd one &&
+#			git branch -m side side2
+#		) &&
+#		(
+#			cd alttst &&
+#			git rev-parse --verify refs/remotes/origin/side &&
+#			test_must_fail git rev-parse --verify refs/remotes/origin/side2 &&
+#			git fetch alt &&
+#			git remote prune alt &&
+#			test_must_fail git rev-parse --verify refs/remotes/origin/side &&
+#			git rev-parse --verify refs/remotes/origin/side2
+#		)
+#	
+not ok 56 - add with reachable tags (default)
+#	
+#		(
+#			cd one &&
+#			>foobar &&
+#			git add foobar &&
+#			git commit -m "Foobar" &&
+#			git tag -a -m "Foobar tag" foobar-tag &&
+#			git reset --hard HEAD~1 &&
+#			git tag -a -m "Some tag" some-tag
+#		) &&
+#		mkdir add-tags &&
+#		(
+#			cd add-tags &&
+#			git init &&
+#			git remote add -f origin ../one &&
+#			git tag -l some-tag >../test/output &&
+#			git tag -l foobar-tag >>../test/output &&
+#			test_must_fail git config remote.origin.tagopt
+#		) &&
+#		test_cmp test/expect test/output
+#	
+ok 57 - add --tags
+not ok 58 - add --no-tags
+#	
+#		rm -rf add-tags &&
+#		(
+#			mkdir add-no-tags &&
+#			cd add-no-tags &&
+#			git init &&
+#			git remote add -f --no-tags origin ../one &&
+#			grep tagOpt .git/config &&
+#			git tag -l some-tag >../test/output &&
+#			git tag -l foobar-tag >../test/output &&
+#			git config remote.origin.tagopt >>../test/output
+#		) &&
+#		(
+#			cd one &&
+#			git tag -d some-tag foobar-tag
+#		) &&
+#		test_cmp test/expect test/output
+#	
+ok 59 - reject --no-no-tags
+not ok 60 - update
+#	
+#		(
+#			cd one &&
+#			git remote add drosophila ../two &&
+#			git remote add apis ../mirror &&
+#			git remote update &&
+#			git branch -r >output &&
+#			test_cmp expect output
+#		)
+#	
+not ok 61 - update with arguments
+#	
+#		(
+#			cd one &&
+#			for b in $(git branch -r | grep -v HEAD)
+#			do
+#			git branch -r -d $b || exit 1
+#			done &&
+#			git remote add manduca ../mirror &&
+#			git remote add megaloprepus ../mirror &&
+#			git config remotes.phobaeticus "drosophila megaloprepus" &&
+#			git config remotes.titanus manduca &&
+#			git remote update phobaeticus titanus &&
+#			git branch -r >output &&
+#			test_cmp expect output
+#		)
+#	
+ok 62 - update --prune
+not ok 63 - update default
+#	
+#		(
+#			cd one &&
+#			for b in $(git branch -r | grep -v HEAD)
+#			do
+#			git branch -r -d $b || exit 1
+#			done &&
+#			git config remote.drosophila.skipDefaultUpdate true &&
+#			git remote update default &&
+#			git branch -r >output &&
+#			test_cmp expect output
+#		)
+#	
+ok 64 - update default (overridden, with funny whitespace)
+ok 65 - update (with remotes.default defined)
+ok 66 - "remote show" does not show symbolic refs
+ok 67 - reject adding remote with an invalid name
+not ok 68 - rename a remote
+#	
+#		test_config_global remote.pushDefault origin &&
+#		git clone one four &&
+#		(
+#			cd four &&
+#			git config branch.main.pushRemote origin &&
+#			GIT_TRACE2_EVENT=$(pwd)/trace \
+#				git remote rename --progress origin upstream &&
+#			test_region progress "Renaming remote references" trace &&
+#			grep "pushRemote" .git/config &&
+#			test -z "$(git for-each-ref refs/remotes/origin)" &&
+#			test "$(git symbolic-ref refs/remotes/upstream/HEAD)" = "refs/remotes/upstream/main" &&
+#			test "$(git rev-parse upstream/main)" = "$(git rev-parse main)" &&
+#			test "$(git config remote.upstream.fetch)" = "+refs/heads/*:refs/remotes/upstream/*" &&
+#			test "$(git config branch.main.remote)" = "upstream" &&
+#			test "$(git config branch.main.pushRemote)" = "upstream" &&
+#			test "$(git config --global remote.pushDefault)" = "origin"
+#		)
+#	
+not ok 69 - rename a remote renames repo remote.pushDefault
+#	
+#		git clone one four.1 &&
+#		(
+#			cd four.1 &&
+#			git config remote.pushDefault origin &&
+#			git remote rename origin upstream &&
+#			grep pushDefault .git/config &&
+#			test "$(git config --local remote.pushDefault)" = "upstream"
+#		)
+#	
+ok 70 - rename a remote renames repo remote.pushDefault but ignores global
+ok 71 - rename a remote renames repo remote.pushDefault but keeps global
+ok 72 - rename handles remote without fetch refspec
+not ok 73 - rename does not update a non-default fetch refspec
+#	
+#		git clone one four.one &&
+#		(
+#			cd four.one &&
+#			git config remote.origin.fetch +refs/heads/*:refs/heads/origin/* &&
+#			git remote rename origin upstream &&
+#			test "$(git config remote.upstream.fetch)" = "+refs/heads/*:refs/heads/origin/*" &&
+#			git rev-parse -q origin/main
+#		)
+#	
+ok 74 - rename a remote with name part of fetch spec
+ok 75 - rename a remote with name prefix of other remote
+not ok 76 - rename succeeds with existing remote.<target>.prune
+#	
+#		git clone one four.four &&
+#		test_when_finished git config --global --unset remote.upstream.prune &&
+#		git config --global remote.upstream.prune true &&
+#		git -C four.four remote rename origin upstream
+#	
+ok 77 - remove a remote
+not ok 78 - remove a remote removes repo remote.pushDefault
+#	
+#		git clone one four.five.1 &&
+#		(
+#			cd four.five.1 &&
+#			git config remote.pushDefault origin &&
+#			git remote remove origin &&
+#			test_must_fail git config --local remote.pushDefault
+#		)
+#	
+not ok 79 - remove a remote removes repo remote.pushDefault but ignores global
+#	
+#		test_config_global remote.pushDefault other &&
+#		git clone one four.five.2 &&
+#		(
+#			cd four.five.2 &&
+#			git config remote.pushDefault origin &&
+#			git remote remove origin &&
+#			test "$(git config --global remote.pushDefault)" = "other" &&
+#			test_must_fail git config --local remote.pushDefault
+#		)
+#	
+not ok 80 - remove a remote removes repo remote.pushDefault but keeps global
+#	
+#		test_config_global remote.pushDefault origin &&
+#		git clone one four.five.3 &&
+#		(
+#			cd four.five.3 &&
+#			git config remote.pushDefault origin &&
+#			git remote remove origin &&
+#			test "$(git config --global remote.pushDefault)" = "origin" &&
+#			test_must_fail git config --local remote.pushDefault
+#		)
+#	
+not ok 81 - migrate a remote from named file in $GIT_DIR/remotes
+#	
+#		git clone one five &&
+#		origin_url=$(pwd)/one &&
+#		(
+#			cd five &&
+#			git remote remove origin &&
+#			mkdir -p .git/remotes &&
+#			cat ../remotes_origin >.git/remotes/origin &&
+#			git remote rename origin origin &&
+#			test_path_is_missing .git/remotes/origin &&
+#			test "$(git config remote.origin.url)" = "$origin_url" &&
+#			cat >push_expected <<-\EOF &&
+#			refs/heads/main:refs/heads/upstream
+#			refs/heads/next:refs/heads/upstream2
+#			EOF
+#			cat >fetch_expected <<-\EOF &&
+#			refs/heads/main:refs/heads/origin
+#			refs/heads/next:refs/heads/origin2
+#			EOF
+#			git config --get-all remote.origin.push >push_actual &&
+#			git config --get-all remote.origin.fetch >fetch_actual &&
+#			test_cmp push_expected push_actual &&
+#			test_cmp fetch_expected fetch_actual
+#		)
+#	
+not ok 82 - migrate a remote from named file in $GIT_DIR/branches
+#	
+#		git clone --template= one six &&
+#		origin_url=$(pwd)/one &&
+#		(
+#			cd six &&
+#			git remote rm origin &&
+#			mkdir .git/branches &&
+#			echo "$origin_url#main" >.git/branches/origin &&
+#			git remote rename origin origin &&
+#			test_path_is_missing .git/branches/origin &&
+#			test "$(git config remote.origin.url)" = "$origin_url" &&
+#			test "$(git config remote.origin.fetch)" = "refs/heads/main:refs/heads/origin" &&
+#			test "$(git config remote.origin.push)" = "HEAD:refs/heads/main"
+#		)
+#	
+not ok 83 - migrate a remote from named file in $GIT_DIR/branches (2)
+#	
+#		git clone --template= one seven &&
+#		(
+#			cd seven &&
+#			git remote rm origin &&
+#			mkdir .git/branches &&
+#			echo "quux#foom" > .git/branches/origin &&
+#			git remote rename origin origin &&
+#			test_path_is_missing .git/branches/origin &&
+#			test "$(git config remote.origin.url)" = "quux" &&
+#			test "$(git config remote.origin.fetch)" = "refs/heads/foom:refs/heads/origin" &&
+#			test "$(git config remote.origin.push)" = "HEAD:refs/heads/foom"
+#		)
+#	
+not ok 84 - remote prune to cause a dangling symref
+#	
+#		git clone one eight &&
+#		(
+#			cd one &&
+#			git checkout side2 &&
+#			git branch -D main
+#		) &&
+#		(
+#			cd eight &&
+#			git remote prune origin
+#		) >err 2>&1 &&
+#		test_grep "has become dangling" err &&
+#	
+#		: And the dangling symref will not cause other annoying errors &&
+#		(
+#			cd eight &&
+#			git branch -a
+#		) 2>err &&
+#		! grep "points nowhere" err &&
+#		(
+#			cd eight &&
+#			test_must_fail git branch nomore origin
+#		) 2>err &&
+#		test_grep "dangling symref" err
+#	
+ok 85 - show empty remote
+ok 86 - remote set-branches requires a remote
+not ok 87 - remote set-branches
+#	
+#		echo "+refs/heads/*:refs/remotes/scratch/*" >expect.initial &&
+#		sort <<-\EOF >expect.add &&
+#		+refs/heads/*:refs/remotes/scratch/*
+#		+refs/heads/other:refs/remotes/scratch/other
+#		EOF
+#		sort <<-\EOF >expect.replace &&
+#		+refs/heads/maint:refs/remotes/scratch/maint
+#		+refs/heads/main:refs/remotes/scratch/main
+#		+refs/heads/next:refs/remotes/scratch/next
+#		EOF
+#		sort <<-\EOF >expect.add-two &&
+#		+refs/heads/maint:refs/remotes/scratch/maint
+#		+refs/heads/main:refs/remotes/scratch/main
+#		+refs/heads/next:refs/remotes/scratch/next
+#		+refs/heads/seen:refs/remotes/scratch/seen
+#		+refs/heads/t/topic:refs/remotes/scratch/t/topic
+#		EOF
+#		sort <<-\EOF >expect.setup-ffonly &&
+#		refs/heads/main:refs/remotes/scratch/main
+#		+refs/heads/next:refs/remotes/scratch/next
+#		EOF
+#		sort <<-\EOF >expect.respect-ffonly &&
+#		refs/heads/main:refs/remotes/scratch/main
+#		+refs/heads/next:refs/remotes/scratch/next
+#		+refs/heads/seen:refs/remotes/scratch/seen
+#		EOF
+#	
+#		git clone .git/ setbranches &&
+#		(
+#			cd setbranches &&
+#			git remote rename origin scratch &&
+#			git config --get-all remote.scratch.fetch >config-result &&
+#			sort <config-result >../actual.initial &&
+#	
+#			git remote set-branches scratch --add other &&
+#			git config --get-all remote.scratch.fetch >config-result &&
+#			sort <config-result >../actual.add &&
+#	
+#			git remote set-branches scratch maint main next &&
+#			git config --get-all remote.scratch.fetch >config-result &&
+#			sort <config-result >../actual.replace &&
+#	
+#			git remote set-branches --add scratch seen t/topic &&
+#			git config --get-all remote.scratch.fetch >config-result &&
+#			sort <config-result >../actual.add-two &&
+#	
+#			git config --unset-all remote.scratch.fetch &&
+#			git config remote.scratch.fetch \
+#				refs/heads/main:refs/remotes/scratch/main &&
+#			git config --add remote.scratch.fetch \
+#				+refs/heads/next:refs/remotes/scratch/next &&
+#			git config --get-all remote.scratch.fetch >config-result &&
+#			sort <config-result >../actual.setup-ffonly &&
+#	
+#			git remote set-branches --add scratch seen &&
+#			git config --get-all remote.scratch.fetch >config-result &&
+#			sort <config-result >../actual.respect-ffonly
+#		) &&
+#		test_cmp expect.initial actual.initial &&
+#		test_cmp expect.add actual.add &&
+#		test_cmp expect.replace actual.replace &&
+#		test_cmp expect.add-two actual.add-two &&
+#		test_cmp expect.setup-ffonly actual.setup-ffonly &&
+#		test_cmp expect.respect-ffonly actual.respect-ffonly
+#	
+ok 88 - remote set-branches with --mirror
+ok 89 - new remote
+ok 90 - get-url on new remote
+not ok 91 - remote set-url with locked config
+#	
+#		test_when_finished "rm -f .git/config.lock" &&
+#		git config --get-all remote.someremote.url >expect &&
+#		>.git/config.lock &&
+#		test_must_fail git remote set-url someremote baz &&
+#		git config --get-all remote.someremote.url >actual &&
+#		cmp expect actual
+#	
+ok 92 - remote set-url bar
+ok 93 - remote set-url baz bar
+ok 94 - remote set-url zot bar
+ok 95 - remote set-url --push zot baz
+ok 96 - remote set-url --push zot
+ok 97 - get-url with different urls
+ok 98 - remote set-url --push qux zot
+ok 99 - remote set-url --push foo qu+x
+ok 100 - remote set-url --push --add aaa
+ok 101 - get-url on multi push remote
+ok 102 - remote set-url --push bar aaa
+not ok 103 - remote set-url --push --delete bar
+#	
+#		git remote set-url --push --delete someremote bar &&
+#		echo foo >expect &&
+#		echo "YYY" >>expect &&
+#		echo baz >>expect &&
+#		git config --get-all remote.someremote.pushurl >actual &&
+#		echo "YYY" >>actual &&
+#		git config --get-all remote.someremote.url >>actual &&
+#		cmp expect actual
+#	
+not ok 104 - remote set-url --push --delete foo
+#	
+#		git remote set-url --push --delete someremote foo &&
+#		echo "YYY" >expect &&
+#		echo baz >>expect &&
+#		test_must_fail git config --get-all remote.someremote.pushurl >actual &&
+#		echo "YYY" >>actual &&
+#		git config --get-all remote.someremote.url >>actual &&
+#		cmp expect actual
+#	
+not ok 105 - remote set-url --add bbb
+#	
+#		git remote set-url --add someremote bbb &&
+#		echo "YYY" >expect &&
+#		echo baz >>expect &&
+#		echo bbb >>expect &&
+#		test_must_fail git config --get-all remote.someremote.pushurl >actual &&
+#		echo "YYY" >>actual &&
+#		git config --get-all remote.someremote.url >>actual &&
+#		cmp expect actual
+#	
+ok 106 - get-url on multi fetch remote
+not ok 107 - remote set-url --delete .*
+#	
+#		test_must_fail git remote set-url --delete someremote .\* &&
+#		echo "YYY" >expect &&
+#		echo baz >>expect &&
+#		echo bbb >>expect &&
+#		test_must_fail git config --get-all remote.someremote.pushurl >actual &&
+#		echo "YYY" >>actual &&
+#		git config --get-all remote.someremote.url >>actual &&
+#		cmp expect actual
+#	
+not ok 108 - remote set-url --delete bbb
+#	
+#		git remote set-url --delete someremote bbb &&
+#		echo "YYY" >expect &&
+#		echo baz >>expect &&
+#		test_must_fail git config --get-all remote.someremote.pushurl >actual &&
+#		echo "YYY" >>actual &&
+#		git config --get-all remote.someremote.url >>actual &&
+#		cmp expect actual
+#	
+not ok 109 - remote set-url --delete baz
+#	
+#		test_must_fail git remote set-url --delete someremote baz &&
+#		echo "YYY" >expect &&
+#		echo baz >>expect &&
+#		test_must_fail git config --get-all remote.someremote.pushurl >actual &&
+#		echo "YYY" >>actual &&
+#		git config --get-all remote.someremote.url >>actual &&
+#		cmp expect actual
+#	
+not ok 110 - remote set-url --add ccc
+#	
+#		git remote set-url --add someremote ccc &&
+#		echo "YYY" >expect &&
+#		echo baz >>expect &&
+#		echo ccc >>expect &&
+#		test_must_fail git config --get-all remote.someremote.pushurl >actual &&
+#		echo "YYY" >>actual &&
+#		git config --get-all remote.someremote.url >>actual &&
+#		cmp expect actual
+#	
+not ok 111 - remote set-url --delete baz
+#	
+#		git remote set-url --delete someremote baz &&
+#		echo "YYY" >expect &&
+#		echo ccc >>expect &&
+#		test_must_fail git config --get-all remote.someremote.pushurl >actual &&
+#		echo "YYY" >>actual &&
+#		git config --get-all remote.someremote.url >>actual &&
+#		cmp expect actual
+#	
+ok 112 - extra args: setup
+not ok 113 - extra args: add nick url
+#	
+#			test_must_fail git remote add nick url bogus_extra_arg 2>actual &&
+#			test_grep '^usage:' actual
+#		
+not ok 114 - extra args: rename origin newname
+#	
+#			test_must_fail git remote rename origin newname bogus_extra_arg 2>actual &&
+#			test_grep '^usage:' actual
+#		
+not ok 115 - extra args: remove origin
+#	
+#			test_must_fail git remote remove origin bogus_extra_arg 2>actual &&
+#			test_grep '^usage:' actual
+#		
+not ok 116 - extra args: set-head origin main
+#	
+#			test_must_fail git remote set-head origin main bogus_extra_arg 2>actual &&
+#			test_grep '^usage:' actual
+#		
+not ok 117 - extra args: get-url origin newurl
+#	
+#			test_must_fail git remote get-url origin newurl bogus_extra_arg 2>actual &&
+#			test_grep '^usage:' actual
+#		
+not ok 118 - extra args: set-url origin newurl oldurl
+#	
+#			test_must_fail git remote set-url origin newurl oldurl bogus_extra_arg 2>actual &&
+#			test_grep '^usage:' actual
+#		
+ok 119 - add remote matching the "insteadOf" URL
+not ok 120 - unqualified <dst> refspec DWIM and advice
+#	
+#		test_when_finished "(cd test && git tag -d some-tag)" &&
+#		(
+#			cd test &&
+#			git tag -a -m "Some tag" some-tag main &&
+#			for type in commit tag tree blob
+#			do
+#				if test "$type" = "blob"
+#				then
+#					oid=$(git rev-parse some-tag:file)
+#				else
+#					oid=$(git rev-parse some-tag^{$type})
+#				fi &&
+#				test_must_fail git push origin $oid:dst 2>err &&
+#				test_grep "error: The destination you" err &&
+#				test_grep "hint: Did you mean" err &&
+#				test_must_fail git -c advice.pushUnqualifiedRefName=false \
+#					push origin $oid:dst 2>err &&
+#				test_grep "error: The destination you" err &&
+#				test_grep ! "hint: Did you mean" err ||
+#				exit 1
+#			done
+#		)
+#	
+not ok 121 - refs/remotes/* <src> refspec and unqualified <dst> DWIM and advice
+#	
+#		(
+#			cd two &&
+#			git tag -a -m "Some tag" my-tag main &&
+#			git update-ref refs/trees/my-head-tree HEAD^{tree} &&
+#			git update-ref refs/blobs/my-file-blob HEAD:file
+#		) &&
+#		(
+#			cd test &&
+#			git config --add remote.two.fetch "+refs/tags/*:refs/remotes/tags-from-two/*" &&
+#			git config --add remote.two.fetch "+refs/trees/*:refs/remotes/trees-from-two/*" &&
+#			git config --add remote.two.fetch "+refs/blobs/*:refs/remotes/blobs-from-two/*" &&
+#			git fetch --no-tags two &&
+#	
+#			test_must_fail git push origin refs/remotes/two/another:dst 2>err &&
+#			test_grep "error: The destination you" err &&
+#	
+#			test_must_fail git push origin refs/remotes/tags-from-two/my-tag:dst-tag 2>err &&
+#			test_grep "error: The destination you" err &&
+#	
+#			test_must_fail git push origin refs/remotes/trees-from-two/my-head-tree:dst-tree 2>err &&
+#			test_grep "error: The destination you" err &&
+#	
+#			test_must_fail git push origin refs/remotes/blobs-from-two/my-file-blob:dst-blob 2>err &&
+#			test_grep "error: The destination you" err
+#		)
+#	
+not ok 122 - empty config clears remote.*.url list
+#	
+#		test_when_finished "git config --remove-section remote.multi" &&
+#		git config --add remote.multi.url wrong-one &&
+#		git config --add remote.multi.url wrong-two &&
+#		git -c remote.multi.url= \
+#		    -c remote.multi.url=right-one \
+#		    -c remote.multi.url=right-two \
+#		    remote show -n multi >actual.raw &&
+#		grep URL actual.raw >actual &&
+#		cat >expect <<-\EOF &&
+#		  Fetch URL: right-one
+#		  Push  URL: right-one
+#		  Push  URL: right-two
+#		EOF
+#		test_cmp expect actual
+#	
+not ok 123 - empty config clears remote.*.pushurl list
+#	
+#		test_when_finished "git config --remove-section remote.multi" &&
+#		git config --add remote.multi.url right &&
+#		git config --add remote.multi.url will-be-ignored &&
+#		git config --add remote.multi.pushurl wrong-push-one &&
+#		git config --add remote.multi.pushurl wrong-push-two &&
+#		git -c remote.multi.pushurl= \
+#		    -c remote.multi.pushurl=right-push-one \
+#		    -c remote.multi.pushurl=right-push-two \
+#		    remote show -n multi >actual.raw &&
+#		grep URL actual.raw >actual &&
+#		cat >expect <<-\EOF &&
+#		  Fetch URL: right
+#		  Push  URL: right-push-one
+#		  Push  URL: right-push-two
+#		EOF
+#		test_cmp expect actual
+#	
+ok 124 - forbid adding subset of existing remote
+ok 125 - forbid adding superset of existing remote
+not ok 126 - rename handles unborn HEAD
+#	
+#		test_when_finished "git remote remove unborn-renamed" &&
+#		git remote add unborn url &&
+#		git symbolic-ref refs/remotes/unborn/HEAD refs/remotes/unborn/nonexistent &&
+#		git remote rename unborn unborn-renamed &&
+#		git symbolic-ref refs/remotes/unborn-renamed/HEAD >actual &&
+#		echo refs/remotes/unborn-renamed/nonexistent >expected &&
+#		test_cmp expected actual
+#	
+not ok 127 - rename can nest a remote into itself
+#	
+#		test_commit parent-commit &&
+#		COMMIT_ID=$(git rev-parse HEAD) &&
+#		test_when_finished "git remote remove parent || true" &&
+#		git remote add parent url &&
+#		git update-ref refs/remotes/parent/branch $COMMIT_ID &&
+#		test_when_finished "git remote remove parent/child" &&
+#		git remote rename parent parent/child &&
+#		git for-each-ref refs/remotes/ >actual &&
+#		printf "$COMMIT_ID commit\trefs/remotes/parent/child/branch\n" >expected &&
+#		test_cmp expected actual
+#	
+not ok 128 - rename can nest a remote into itself with a conflicting branch name
+#	
+#		test_commit parent-conflict &&
+#		COMMIT_ID=$(git rev-parse HEAD) &&
+#		test_when_finished "git remote remove parent || true" &&
+#		git remote add parent url &&
+#		git update-ref refs/remotes/parent/child $COMMIT_ID &&
+#		test_when_finished "git remote remove parent/child" &&
+#		test_must_fail git remote rename parent parent/child 2>err &&
+#		test_grep "renaming remote references failed" err &&
+#		test_grep "The remote you are trying to rename has conflicting references" err &&
+#		git for-each-ref refs/remotes/ >actual &&
+#		printf "$COMMIT_ID commit\trefs/remotes/parent/child\n" >expected &&
+#		test_cmp expected actual
+#	
+not ok 129 - rename can unnest a remote
+#	
+#		test_commit parent-child-commit &&
+#		COMMIT_ID=$(git rev-parse HEAD) &&
+#		test_when_finished "git remote remove parent/child || true" &&
+#		git remote add parent/child url &&
+#		git update-ref refs/remotes/parent/child/branch $COMMIT_ID &&
+#		git remote rename parent/child parent &&
+#		git for-each-ref refs/remotes/ >actual &&
+#		printf "$COMMIT_ID commit\trefs/remotes/parent/branch\n" >expected &&
+#		test_cmp expected actual
+#	
+not ok 130 - rename moves around the reflog
+#	
+#		test_commit reflog-old &&
+#		COMMIT_ID=$(git rev-parse HEAD) &&
+#		test_config core.logAllRefUpdates true &&
+#		test_when_finished "git remote remove reflog-old || true" &&
+#		git remote add reflog-old url &&
+#		git update-ref refs/remotes/reflog-old/branch $COMMIT_ID &&
+#		test-tool ref-store main for-each-reflog >actual &&
+#		test_grep refs/remotes/reflog-old/branch actual &&
+#		test-tool ref-store main for-each-reflog-ent refs/remotes/reflog-old/branch >reflog-entries-old &&
+#		test_line_count = 1 reflog-entries-old &&
+#		git remote rename reflog-old reflog-new &&
+#		test-tool ref-store main for-each-reflog >actual &&
+#		test_grep ! refs/remotes/reflog-old actual &&
+#		test_grep refs/remotes/reflog-new/branch actual &&
+#		test-tool ref-store main for-each-reflog-ent refs/remotes/reflog-new/branch >reflog-entries-new &&
+#		cat >expect <<-EOF &&
+#		$(cat reflog-entries-old)
+#		$COMMIT_ID $COMMIT_ID $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> 1112912173 -0700	remote: renamed refs/remotes/reflog-old/branch to refs/remotes/reflog-new/branch
+#		EOF
+#		test_cmp expect reflog-entries-new
+#	
+# still have 1 known breakage(s)
+# failed 62 among remaining 129 test(s)
+1..130
+# Tests: 130  Pass: 67  Fail: 62  Skip: 0

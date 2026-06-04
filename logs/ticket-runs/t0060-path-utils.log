@@ -1,0 +1,317 @@
+ok 1 - basename
+ok 2 - dirname
+ok 3 - normalize path:  => 
+ok 4 - normalize path: . => 
+ok 5 - normalize path: ./ => 
+ok 6 - normalize path: ./. => 
+ok 7 - normalize path: ./.. => ++failed++
+ok 8 - normalize path: ../. => ++failed++
+ok 9 - normalize path: ./../.// => ++failed++
+ok 10 - normalize path: dir/.. => 
+ok 11 - normalize path: dir/sub/../.. => 
+ok 12 - normalize path: dir/sub/../../.. => ++failed++
+ok 13 - normalize path: dir => dir
+ok 14 - normalize path: dir// => dir/
+ok 15 - normalize path: ./dir => dir
+ok 16 - normalize path: dir/. => dir/
+ok 17 - normalize path: dir///./ => dir/
+ok 18 - normalize path: dir//sub/.. => dir/
+ok 19 - normalize path: dir/sub/../ => dir/
+ok 20 - normalize path: dir/sub/../. => dir/
+ok 21 - normalize path: dir/s1/../s2/ => dir/s2/
+ok 22 - normalize path: d1/s1///s2/..//../s3/ => d1/s3/
+ok 23 - normalize path: d1/s1//../s2/../../d2 => d2
+ok 24 - normalize path: d1/.../d2 => d1/.../d2
+ok 25 - normalize path: d1/..././../d2 => d1/d2
+ok 26 - normalize path: / => /
+ok 27 - normalize path: // => /
+ok 28 - normalize path: /// => /
+ok 29 - normalize path: /. => /
+ok 30 - normalize path: /./ => /
+ok 31 - normalize path: /./.. => ++failed++
+ok 32 - normalize path: /../. => ++failed++
+ok 33 - normalize path: /./../.// => ++failed++
+ok 34 - normalize path: /dir/.. => /
+ok 35 - normalize path: /dir/sub/../.. => /
+ok 36 - normalize path: /dir/sub/../../.. => ++failed++
+ok 37 - normalize path: /dir => /dir
+ok 38 - normalize path: /dir// => /dir/
+ok 39 - normalize path: /./dir => /dir
+ok 40 - normalize path: /dir/. => /dir/
+ok 41 - normalize path: /dir///./ => /dir/
+ok 42 - normalize path: /dir//sub/.. => /dir/
+ok 43 - normalize path: /dir/sub/../ => /dir/
+ok 44 - normalize path: //dir/sub/../. => /dir/
+ok 45 - normalize path: /dir/s1/../s2/ => /dir/s2/
+ok 46 - normalize path: /d1/s1///s2/..//../s3/ => /d1/s3/
+ok 47 - normalize path: /d1/s1//../s2/../../d2 => /d2
+ok 48 - normalize path: /d1/.../d2 => /d1/.../d2
+ok 49 - normalize path: /d1/..././../d2 => /d1/d2
+ok 50 - longest ancestor: / / => -1
+ok 51 - longest ancestor: /foo / => 0
+ok 52 - longest ancestor: /foo /fo => -1
+ok 53 - longest ancestor: /foo /foo => -1
+ok 54 - longest ancestor: /foo /bar => -1
+ok 55 - longest ancestor: /foo /foo/bar => -1
+ok 56 - longest ancestor: /foo /foo:/bar => -1
+ok 57 - longest ancestor: /foo /:/foo:/bar => 0
+ok 58 - longest ancestor: /foo /foo:/:/bar => 0
+ok 59 - longest ancestor: /foo /:/bar:/foo => 0
+ok 60 - longest ancestor: /foo/bar / => 0
+ok 61 - longest ancestor: /foo/bar /fo => -1
+ok 62 - longest ancestor: /foo/bar /foo => 4
+ok 63 - longest ancestor: /foo/bar /foo/ba => -1
+ok 64 - longest ancestor: /foo/bar /:/fo => 0
+ok 65 - longest ancestor: /foo/bar /foo:/foo/ba => 4
+ok 66 - longest ancestor: /foo/bar /bar => -1
+ok 67 - longest ancestor: /foo/bar /fo => -1
+ok 68 - longest ancestor: /foo/bar /foo:/bar => 4
+ok 69 - longest ancestor: /foo/bar /:/foo:/bar => 4
+ok 70 - longest ancestor: /foo/bar /foo:/:/bar => 4
+ok 71 - longest ancestor: /foo/bar /:/bar:/fo => 0
+ok 72 - longest ancestor: /foo/bar /:/bar => 0
+ok 73 - longest ancestor: /foo/bar /foo => 4
+ok 74 - longest ancestor: /foo/bar /foo:/bar => 4
+ok 75 - longest ancestor: /foo/bar /bar => -1
+ok 76 # skip longest ancestor: C:/Users/me C:/ => 2 (missing MINGW)
+ok 77 # skip longest ancestor: D:/Users/me C:/ => -1 (missing MINGW)
+ok 78 # skip longest ancestor: //server/share/my-directory //server/share/ => 14 (missing MINGW)
+ok 79 - strip_path_suffix
+ok 80 - absolute path rejects the empty string
+ok 81 # skip <drive-letter>:\\abc is an absolute path (missing MINGW)
+ok 82 - real path rejects the empty string
+ok 83 - real path works on absolute paths 1
+ok 84 - real path works on absolute paths 2
+ok 85 - real path removes extra leading slashes
+ok 86 - real path removes other extra slashes
+ok 87 - real path works on symlinks
+ok 88 - prefix_path works with absolute paths to work tree symlinks
+ok 89 - prefix_path works with only absolute path to work tree
+ok 90 - prefix_path rejects absolute path to dir with same beginning as work tree
+ok 91 - prefix_path works with absolute path to a symlink to work tree having  same beginning as work tree
+ok 92 - relative path: /foo/a/b/c/ /foo/a/b/ => c/
+ok 93 - relative path: /foo/a/b/c/ /foo/a/b => c/
+ok 94 - relative path: /foo/a//b//c/ ///foo/a/b// => c/
+ok 95 - relative path: /foo/a/b /foo/a/b => ./
+ok 96 - relative path: /foo/a/b/ /foo/a/b => ./
+ok 97 - relative path: /foo/a /foo/a/b => ../
+ok 98 - relative path: / /foo/a/b/ => ../../../
+ok 99 - relative path: /foo/a/c /foo/a/b/ => ../c
+ok 100 - relative path: /foo/a/c /foo/a/b => ../c
+ok 101 - relative path: /foo/x/y /foo/a/b/ => ../../x/y
+ok 102 - relative path: /foo/a/b <empty> => /foo/a/b
+ok 103 - relative path: /foo/a/b <null> => /foo/a/b
+ok 104 - relative path: foo/a/b/c/ foo/a/b/ => c/
+ok 105 - relative path: foo/a/b/c/ foo/a/b => c/
+ok 106 - relative path: foo/a/b//c foo/a//b => c
+ok 107 - relative path: foo/a/b/ foo/a/b/ => ./
+ok 108 - relative path: foo/a/b/ foo/a/b => ./
+ok 109 - relative path: foo/a foo/a/b => ../
+ok 110 - relative path: foo/x/y foo/a/b => ../../x/y
+ok 111 - relative path: foo/a/c foo/a/b => ../c
+ok 112 - relative path: foo/a/b /foo/x/y => foo/a/b
+ok 113 - relative path: /foo/a/b foo/x/y => /foo/a/b
+ok 114 # skip relative path: d:/a/b D:/a/c => ../b (missing MINGW)
+ok 115 # skip relative path: C:/a/b D:/a/c => C:/a/b (missing MINGW)
+ok 116 - relative path: foo/a/b <empty> => foo/a/b
+ok 117 - relative path: foo/a/b <null> => foo/a/b
+ok 118 - relative path: <empty> /foo/a/b => ./
+ok 119 - relative path: <empty> <empty> => ./
+ok 120 - relative path: <empty> <null> => ./
+ok 121 - relative path: <null> <empty> => ./
+ok 122 - relative path: <null> <null> => ./
+ok 123 - relative path: <null> /foo/a/b => ./
+ok 124 - git-path A=B info/grafts => .git/info/grafts
+ok 125 - git-path GIT_GRAFT_FILE=foo info/grafts => foo
+ok 126 - git-path GIT_GRAFT_FILE=foo info/////grafts => foo
+ok 127 - git-path GIT_INDEX_FILE=foo index => foo
+ok 128 - git-path GIT_INDEX_FILE=foo index/foo => .git/index/foo
+ok 129 - git-path GIT_INDEX_FILE=foo index2 => .git/index2
+ok 130 - setup fake objects directory foo
+ok 131 - git-path GIT_OBJECT_DIRECTORY=foo objects => foo
+ok 132 - git-path GIT_OBJECT_DIRECTORY=foo objects/foo => foo/foo
+ok 133 - git-path GIT_OBJECT_DIRECTORY=foo objects2 => .git/objects2
+ok 134 - setup common repository
+ok 135 - git-path GIT_COMMON_DIR=bar index => .git/index
+ok 136 - git-path GIT_COMMON_DIR=bar index.lock => .git/index.lock
+ok 137 - git-path GIT_COMMON_DIR=bar HEAD => .git/HEAD
+ok 138 - git-path GIT_COMMON_DIR=bar logs/HEAD => .git/logs/HEAD
+ok 139 - git-path GIT_COMMON_DIR=bar logs/HEAD.lock => .git/logs/HEAD.lock
+ok 140 - git-path GIT_COMMON_DIR=bar logs/refs/bisect/foo => .git/logs/refs/bisect/foo
+not ok 141 - git-path GIT_COMMON_DIR=bar logs/refs => bar/logs/refs
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path logs/refs >actual &&
+#			echo bar/logs/refs >expect &&
+#			test_cmp expect actual
+#		
+not ok 142 - git-path GIT_COMMON_DIR=bar logs/refs/ => bar/logs/refs/
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path logs/refs/ >actual &&
+#			echo bar/logs/refs/ >expect &&
+#			test_cmp expect actual
+#		
+not ok 143 - git-path GIT_COMMON_DIR=bar logs/refs/bisec/foo => bar/logs/refs/bisec/foo
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path logs/refs/bisec/foo >actual &&
+#			echo bar/logs/refs/bisec/foo >expect &&
+#			test_cmp expect actual
+#		
+not ok 144 - git-path GIT_COMMON_DIR=bar logs/refs/bisec => bar/logs/refs/bisec
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path logs/refs/bisec >actual &&
+#			echo bar/logs/refs/bisec >expect &&
+#			test_cmp expect actual
+#		
+not ok 145 - git-path GIT_COMMON_DIR=bar logs/refs/bisectfoo => bar/logs/refs/bisectfoo
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path logs/refs/bisectfoo >actual &&
+#			echo bar/logs/refs/bisectfoo >expect &&
+#			test_cmp expect actual
+#		
+not ok 146 - git-path GIT_COMMON_DIR=bar objects => bar/objects
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path objects >actual &&
+#			echo bar/objects >expect &&
+#			test_cmp expect actual
+#		
+not ok 147 - git-path GIT_COMMON_DIR=bar objects/bar => bar/objects/bar
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path objects/bar >actual &&
+#			echo bar/objects/bar >expect &&
+#			test_cmp expect actual
+#		
+not ok 148 - git-path GIT_COMMON_DIR=bar info/exclude => bar/info/exclude
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path info/exclude >actual &&
+#			echo bar/info/exclude >expect &&
+#			test_cmp expect actual
+#		
+not ok 149 - git-path GIT_COMMON_DIR=bar info/grafts => bar/info/grafts
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path info/grafts >actual &&
+#			echo bar/info/grafts >expect &&
+#			test_cmp expect actual
+#		
+ok 150 - git-path GIT_COMMON_DIR=bar info/sparse-checkout => .git/info/sparse-checkout
+ok 151 - git-path GIT_COMMON_DIR=bar info//sparse-checkout => .git/info//sparse-checkout
+not ok 152 - git-path GIT_COMMON_DIR=bar remotes/bar => bar/remotes/bar
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path remotes/bar >actual &&
+#			echo bar/remotes/bar >expect &&
+#			test_cmp expect actual
+#		
+not ok 153 - git-path GIT_COMMON_DIR=bar branches/bar => bar/branches/bar
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path branches/bar >actual &&
+#			echo bar/branches/bar >expect &&
+#			test_cmp expect actual
+#		
+not ok 154 - git-path GIT_COMMON_DIR=bar logs/refs/heads/main => bar/logs/refs/heads/main
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path logs/refs/heads/main >actual &&
+#			echo bar/logs/refs/heads/main >expect &&
+#			test_cmp expect actual
+#		
+not ok 155 - git-path GIT_COMMON_DIR=bar refs/heads/main => bar/refs/heads/main
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path refs/heads/main >actual &&
+#			echo bar/refs/heads/main >expect &&
+#			test_cmp expect actual
+#		
+ok 156 - git-path GIT_COMMON_DIR=bar refs/bisect/foo => .git/refs/bisect/foo
+not ok 157 - git-path GIT_COMMON_DIR=bar hooks/me => bar/hooks/me
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path hooks/me >actual &&
+#			echo bar/hooks/me >expect &&
+#			test_cmp expect actual
+#		
+not ok 158 - git-path GIT_COMMON_DIR=bar config => bar/config
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path config >actual &&
+#			echo bar/config >expect &&
+#			test_cmp expect actual
+#		
+not ok 159 - git-path GIT_COMMON_DIR=bar packed-refs => bar/packed-refs
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path packed-refs >actual &&
+#			echo bar/packed-refs >expect &&
+#			test_cmp expect actual
+#		
+not ok 160 - git-path GIT_COMMON_DIR=bar shallow => bar/shallow
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path shallow >actual &&
+#			echo bar/shallow >expect &&
+#			test_cmp expect actual
+#		
+not ok 161 - git-path GIT_COMMON_DIR=bar common => bar/common
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path common >actual &&
+#			echo bar/common >expect &&
+#			test_cmp expect actual
+#		
+not ok 162 - git-path GIT_COMMON_DIR=bar common/file => bar/common/file
+#	
+#			GIT_COMMON_DIR=bar git rev-parse --git-path common/file >actual &&
+#			echo bar/common/file >expect &&
+#			test_cmp expect actual
+#		
+ok 163 - test_submodule_relative_url: ../ ../foo ../submodule => ../../submodule
+ok 164 - test_submodule_relative_url: ../ ../foo/bar ../submodule => ../../foo/submodule
+ok 165 - test_submodule_relative_url: ../ ../foo/submodule ../submodule => ../../foo/submodule
+ok 166 - test_submodule_relative_url: ../ ./foo ../submodule => ../submodule
+ok 167 - test_submodule_relative_url: ../ ./foo/bar ../submodule => ../foo/submodule
+ok 168 - test_submodule_relative_url: ../../../ ../foo/bar ../sub/a/b/c => ../../../../foo/sub/a/b/c
+ok 169 - test_submodule_relative_url: ../ /Users/schacon/grit/tests/trash.t0060-path-utils/addtest ../repo => /Users/schacon/grit/tests/trash.t0060-path-utils/repo
+ok 170 - test_submodule_relative_url: ../ foo/bar ../submodule => ../foo/submodule
+ok 171 - test_submodule_relative_url: ../ foo ../submodule => ../submodule
+ok 172 - test_submodule_relative_url: (null) ../foo/bar ../sub/a/b/c => ../foo/sub/a/b/c
+ok 173 - test_submodule_relative_url: (null) ../foo/bar ../sub/a/b/c/ => ../foo/sub/a/b/c
+ok 174 - test_submodule_relative_url: (null) ../foo/bar/ ../sub/a/b/c => ../foo/sub/a/b/c
+ok 175 - test_submodule_relative_url: (null) ../foo/bar ../submodule => ../foo/submodule
+ok 176 - test_submodule_relative_url: (null) ../foo/submodule ../submodule => ../foo/submodule
+ok 177 - test_submodule_relative_url: (null) ../foo ../submodule => ../submodule
+ok 178 - test_submodule_relative_url: (null) ./foo/bar ../submodule => foo/submodule
+ok 179 - test_submodule_relative_url: (null) ./foo ../submodule => submodule
+ok 180 - test_submodule_relative_url: (null) //somewhere else/repo ../subrepo => //somewhere else/subrepo
+ok 181 - test_submodule_relative_url: (null) //somewhere else/repo ../../subrepo => //subrepo
+ok 182 - test_submodule_relative_url: (null) //somewhere else/repo ../../../subrepo => /subrepo
+ok 183 - test_submodule_relative_url: (null) //somewhere else/repo ../../../../subrepo => subrepo
+ok 184 - test_submodule_relative_url: (null) /Users/schacon/grit/tests/trash.t0060-path-utils/subsuper_update_r ../subsubsuper_update_r => /Users/schacon/grit/tests/trash.t0060-path-utils/subsubsuper_update_r
+ok 185 - test_submodule_relative_url: (null) /Users/schacon/grit/tests/trash.t0060-path-utils/super_update_r2 ../subsuper_update_r => /Users/schacon/grit/tests/trash.t0060-path-utils/subsuper_update_r
+ok 186 - test_submodule_relative_url: (null) /Users/schacon/grit/tests/trash.t0060-path-utils/. ../. => /Users/schacon/grit/tests/trash.t0060-path-utils/.
+ok 187 - test_submodule_relative_url: (null) /Users/schacon/grit/tests/trash.t0060-path-utils ./. => /Users/schacon/grit/tests/trash.t0060-path-utils/.
+ok 188 - test_submodule_relative_url: (null) /Users/schacon/grit/tests/trash.t0060-path-utils/addtest ../repo => /Users/schacon/grit/tests/trash.t0060-path-utils/repo
+ok 189 - test_submodule_relative_url: (null) /Users/schacon/grit/tests/trash.t0060-path-utils ./å äö => /Users/schacon/grit/tests/trash.t0060-path-utils/å äö
+ok 190 - test_submodule_relative_url: (null) /Users/schacon/grit/tests/trash.t0060-path-utils/. ../submodule => /Users/schacon/grit/tests/trash.t0060-path-utils/submodule
+ok 191 - test_submodule_relative_url: (null) /Users/schacon/grit/tests/trash.t0060-path-utils/submodule ../submodule => /Users/schacon/grit/tests/trash.t0060-path-utils/submodule
+ok 192 - test_submodule_relative_url: (null) /Users/schacon/grit/tests/trash.t0060-path-utils/home2/../remote ../bundle1 => /Users/schacon/grit/tests/trash.t0060-path-utils/home2/../bundle1
+ok 193 - test_submodule_relative_url: (null) /Users/schacon/grit/tests/trash.t0060-path-utils/submodule_update_repo ./. => /Users/schacon/grit/tests/trash.t0060-path-utils/submodule_update_repo/.
+ok 194 - test_submodule_relative_url: (null) file:///tmp/repo ../subrepo => file:///tmp/subrepo
+ok 195 - test_submodule_relative_url: (null) foo/bar ../submodule => foo/submodule
+ok 196 - test_submodule_relative_url: (null) foo ../submodule => submodule
+ok 197 - test_submodule_relative_url: (null) helper:://hostname/repo ../subrepo => helper:://hostname/subrepo
+ok 198 - test_submodule_relative_url: (null) helper:://hostname/repo ../../subrepo => helper:://subrepo
+ok 199 - test_submodule_relative_url: (null) helper:://hostname/repo ../../../subrepo => helper::/subrepo
+ok 200 - test_submodule_relative_url: (null) helper:://hostname/repo ../../../../subrepo => helper::subrepo
+ok 201 - test_submodule_relative_url: (null) helper:://hostname/repo ../../../../../subrepo => helper:subrepo
+ok 202 - test_submodule_relative_url: (null) helper:://hostname/repo ../../../../../../subrepo => .:subrepo
+ok 203 - test_submodule_relative_url: (null) ssh://hostname/repo ../subrepo => ssh://hostname/subrepo
+ok 204 - test_submodule_relative_url: (null) ssh://hostname/repo ../../subrepo => ssh://subrepo
+ok 205 - test_submodule_relative_url: (null) ssh://hostname/repo ../../../subrepo => ssh:/subrepo
+ok 206 - test_submodule_relative_url: (null) ssh://hostname/repo ../../../../subrepo => ssh:subrepo
+ok 207 - test_submodule_relative_url: (null) ssh://hostname/repo ../../../../../subrepo => .:subrepo
+ok 208 - test_submodule_relative_url: (null) ssh://hostname:22/repo ../subrepo => ssh://hostname:22/subrepo
+ok 209 - test_submodule_relative_url: (null) user@host:path/to/repo ../subrepo => user@host:path/to/subrepo
+ok 210 - test_submodule_relative_url: (null) user@host:repo ../subrepo => user@host:subrepo
+ok 211 - test_submodule_relative_url: (null) user@host:repo ../../subrepo => .:subrepo
+ok 212 - match .gitmodules
+ok 213 - match .gitattributes
+ok 214 - match .gitignore
+ok 215 - match .mailmap
+ok 216 # skip is_valid_path() on Windows (missing MINGW)
+ok 217 # skip setup runtime prefix (missing RUNTIME_PREFIX of !VALGRIND,RUNTIME_PREFIX,CAN_EXEC_IN_PWD)
+ok 218 # skip RUNTIME_PREFIX works (missing RUNTIME_PREFIX of !VALGRIND,RUNTIME_PREFIX,CAN_EXEC_IN_PWD)
+ok 219 # skip %(prefix)/ works (missing RUNTIME_PREFIX of !VALGRIND,RUNTIME_PREFIX,CAN_EXEC_IN_PWD)
+# failed 19 among 219 test(s)
+1..219
+# Tests: 219  Pass: 200  Fail: 19  Skip: 10

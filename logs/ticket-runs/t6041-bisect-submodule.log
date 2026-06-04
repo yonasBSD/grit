@@ -1,0 +1,65 @@
+ok 1 - git_bisect: added submodule creates empty directory
+ok 2 - git_bisect: added submodule leaves existing empty directory alone
+ok 3 - git_bisect: replace tracked file with submodule creates empty directory
+ok 4 - git_bisect: replace directory with submodule
+ok 5 - git_bisect: removed submodule leaves submodule directory and its contents in place
+ok 6 - git_bisect: removed submodule leaves submodule containing a .git directory alone
+not ok 7 - git_bisect: replace submodule with a directory must fail
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_directory origin/replace_sub1_with_directory &&
+#				$command replace_sub1_with_directory test_must_fail &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 8 - git_bisect: replace submodule containing a .git directory with a directory must fail
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_directory origin/replace_sub1_with_directory &&
+#				replace_gitfile_with_git_dir sub1 &&
+#				$command replace_sub1_with_directory test_must_fail &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_git_directory_is_unchanged sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 9 - git_bisect: replace submodule with a file must fail
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_file origin/replace_sub1_with_file &&
+#				$command replace_sub1_with_file test_must_fail &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 10 - git_bisect: replace submodule containing a .git directory with a file must fail
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_file origin/replace_sub1_with_file &&
+#				replace_gitfile_with_git_dir sub1 &&
+#				$command replace_sub1_with_file test_must_fail &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_git_directory_is_unchanged sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+ok 11 - git_bisect: modified submodule does not update submodule work tree
+ok 12 - git_bisect: modified submodule does not update submodule work tree to invalid commit
+ok 13 - git_bisect: modified submodule does not update submodule work tree from invalid commit
+ok 14 - git_bisect: added submodule doesn't remove untracked unignored file with same name
+# failed 4 among 14 test(s)
+1..14
+# Tests: 14  Pass: 10  Fail: 4  Skip: 0

@@ -1,0 +1,20 @@
+ok 1 - setup two diverged branches
+not ok 2 - merge diverged branches succeeds without conflicts
+#	
+#		cd ancestor-test &&
+#		git checkout left &&
+#		git merge right -m "merge right" &&
+#		test_path_is_file left-file &&
+#		test_path_is_file right-file &&
+#		test_path_is_file base
+#	
+not ok 3 - merge-base of diverged branches is base
+#	
+#		cd ancestor-test &&
+#		git merge-base left-tip right-tip >actual &&
+#		git rev-parse base >expect &&
+#		test_cmp expect actual
+#	
+# failed 2 among 3 test(s)
+1..3
+# Tests: 3  Pass: 1  Fail: 2  Skip: 0

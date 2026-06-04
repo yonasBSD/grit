@@ -35,14 +35,14 @@ cargo build --release -p grit-cli
 
 ## Testing pipeline (harness)
 
-Upstream-style tests live in `tests/` and are driven by **`scripts/run-tests.sh`**. Per-file status and last-run counts live in **`data/test-files.csv`** (tab-separated). Dashboards **`docs/index.html`** (homepage progress section), **`docs/progress/index.html`**, **`docs/testfiles.html`**, and **`docs/test-progress.svg`** (README progress badge) are generated from that CSV.
+Upstream-style tests live in `tests/` and are driven by **`scripts/run-tests.sh`**. Per-file status and last-run counts live in per-test TOML files at **`data/tests/<group>/<stem>.toml`** (e.g. `data/tests/t0/t0000-basic.toml`). Dashboards **`docs/index.html`** (homepage progress section), **`docs/progress/index.html`**, **`docs/testfiles.html`**, and **`docs/test-progress.svg`** (README progress badge) are generated from that tree — only when you pass `--dashboard` to `run-tests.sh` or run `scripts/generate-dashboard-from-test-files.py` directly.
 
 **Flow:**
 
 1. **`scripts/run-tests.sh`** — Runs the requested files (single `.sh`, group prefix like `t1`, or all rows with `in_scope=yes`). Rows with **`in_scope=skip`** are never run.
 2. **`scripts/generate-dashboard-from-test-files.py`** — Regenerates **`docs/index.html`** progress metrics, **`docs/progress/index.html`**, **`docs/testfiles.html`**, and **`docs/test-progress.svg`**.
 
-To skip a file manually, set **`in_scope`** to **`skip`** on its row in `data/test-files.csv`. Skipped files are omitted from runs and from aggregate counts on the main dashboard.
+To skip a file manually, set **`in_scope = "skip"`** in that test's TOML (`data/tests/<group>/<stem>.toml`). Skipped files are omitted from runs and from aggregate counts on the main dashboard.
 
 Full detail: **TESTING.md**.
 
@@ -70,7 +70,7 @@ Read **TESTING.md** for the full strategy. The short version:
 3. Fix the Rust code in `grit-lib/src/` by default; use `grit/src/` only for CLI parsing, process setup, user-facing output, or thin command wiring.
 4. Rebuild (`cargo build --release -p grit-cli`)
 5. Re-run until fully passing
-6. Refresh results: `./scripts/run-tests.sh <file>.sh` (updates `data/test-files.csv` and dashboards)
+6. Refresh results: `./scripts/run-tests.sh <file>.sh` (updates that test's `data/tests/` TOML; add `--dashboard` to regenerate docs)
 7. Commit with a message like `fix: make t1234-foo fully pass`
 
 ### Priority Order
@@ -91,22 +91,22 @@ cargo test -p grit-lib --lib       # unit tests must pass
 
 ## Looping Rules
 
-There may be several agents working in this directory to coordinate implementation. The prioritized execution plan is in `plan.md` and should be a prioritized list of functionality that should work, grouped by command (such as `git commit`). Each command will have a detailed list of subfunctionality to implement and pass testing.
+There may be several agents working in this directory to coordinate implementation. Work is tracked in **TicGit** (`ti`): run `ti agent` for the full usage guide. Every harness test file that is not yet fully passing has an open ticket tagged `test` plus its family tag (`t0`–`t9`); each ticket lists the failing subtests and how to reproduce.
 
-As you run, find something in the list that starts with a blank checkbox `[ ]` and claim it by marking it as `[~]`. When it appears to pass the associated tests, mark it as done with `[x]`. For each task you take, keep a log of your work in `logs/` as a timestamped log file (such as `2026-03-31_05:30-git-add-simple.md`).
+Find work with `ti list --tag test` (add `--tag t3 --tag-mode all` to scope to a family) or `ti next`. Claim a ticket before starting (`ti checkout <id>` then `ti claim`), comment progress and findings as you go (`ti comment`), and `ti close <id>` only when the file fully passes. For each task you take, keep a log of your work in `logs/` as a timestamped log file (such as `2026-03-31_05:30-git-add-simple.md`).
 
 ## Loop Contract
 
 On each iteration:
 
-1. Read the `plan.md` and this file.
-2. Pick exactly one highest-value remaining item.
-3. Search the codebase before assuming it is missing.
+1. Read this file, then pick a ticket: `ti next --markdown` or `ti list --tag test --markdown`.
+2. Claim exactly one highest-value ticket (`ti checkout <id>`, `ti claim`).
+3. Search the codebase before assuming functionality is missing.
 4. Read the tests in `git/t/` and determine which are related.
 5. Read the documentation for the command in `git/Documentation`.
-6. Implement the functionality you are focusing on for that subcommand.
-7. Update `plan.md` to reflect reality. Treat `plan.md` as the planning source of truth and keep checkbox state there current.
-8. After meaningful test runs, refresh **`test-results.md`** with a concise summary of `cargo test --workspace` and `./tests/harness/run.sh` (or note what was skipped).
+6. Implement the functionality the ticket's failing subtests cover.
+7. Keep the ticket current: `ti comment` for findings/progress, `ti state blocked` with a reason if stuck, `ti close` when the file fully passes. Treat the ticket system as the planning source of truth.
+8. After meaningful test runs, comment the resulting pass counts on the ticket (e.g. `ti comment "t3404: 92/132 after reword fix"`).
 9. Update this file only if you discover durable run/build/test knowledge.
 10. Update the log for this task as you go.
 11. Commit if the increment is coherent and validated.
@@ -133,7 +133,7 @@ grit/
 ├── grit-lib/src/          # Core library (repo, index, diff, merge, etc.)
 ├── tests/                 # Ported upstream test files + test-lib.sh
 ├── git/t/                 # Upstream Git test suite (reference only)
-├── data/                  # test-files.csv (updated by run-tests.sh)
+├── data/tests/            # per-test status TOMLs (updated by run-tests.sh)
 ├── docs/                  # Dashboard HTML files
 ├── scripts/               # Test runner and dashboard generators
 └── TESTING.md             # Full testing strategy

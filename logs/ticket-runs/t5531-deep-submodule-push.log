@@ -1,0 +1,233 @@
+ok 1 - setup
+ok 2 - push works with recorded gitlink
+ok 3 - push if submodule has no remote
+ok 4 - push fails if submodule commit not on remote
+ok 5 - push succeeds after commit was pushed to remote
+ok 6 - push succeeds if submodule commit not on remote but using on-demand on command line
+ok 7 - push succeeds if submodule commit not on remote but using on-demand from config
+ok 8 - push succeeds if submodule commit not on remote but using auto-on-demand via submodule.recurse config
+not ok 9 - push recurse-submodules on command line overrides config
+#	
+#		(
+#			cd work/gar/bage &&
+#			>recurse-check-on-command-line-overriding-config &&
+#			git add recurse-check-on-command-line-overriding-config &&
+#			git commit -m "Recurse on command-line overriding config junk"
+#		) &&
+#		(
+#			cd work &&
+#			git add gar/bage &&
+#			git commit -m "Recurse on command-line overriding config for gar/bage" &&
+#	
+#			# Ensure that we can override on-demand in the config
+#			# to just check submodules
+#			test_must_fail git -c push.recurseSubmodules=on-demand push --recurse-submodules=check ../pub.git main &&
+#			# Check that the supermodule commit did not get there
+#			git fetch ../pub.git &&
+#			git diff --quiet FETCH_HEAD main^ &&
+#			# Check that the submodule commit did not get there
+#			(cd gar/bage && git diff --quiet origin/main main^) &&
+#	
+#			# Ensure that we can override check in the config to
+#			# disable submodule recursion entirely
+#			(cd gar/bage && git diff --quiet origin/main main^) &&
+#			git -c push.recurseSubmodules=on-demand push --recurse-submodules=no ../pub.git main &&
+#			git fetch ../pub.git &&
+#			git diff --quiet FETCH_HEAD main &&
+#			(cd gar/bage && git diff --quiet origin/main main^) &&
+#	
+#			# Ensure that we can override check in the config to
+#			# disable submodule recursion entirely (alternative form)
+#			git -c push.recurseSubmodules=on-demand push --no-recurse-submodules ../pub.git main &&
+#			git fetch ../pub.git &&
+#			git diff --quiet FETCH_HEAD main &&
+#			(cd gar/bage && git diff --quiet origin/main main^) &&
+#	
+#			# Ensure that we can override check in the config to
+#			# push the submodule too
+#			git -c push.recurseSubmodules=check push --recurse-submodules=on-demand ../pub.git main &&
+#			git fetch ../pub.git &&
+#			git diff --quiet FETCH_HEAD main &&
+#			(cd gar/bage && git diff --quiet origin/main main)
+#		)
+#	
+not ok 10 - push recurse-submodules last one wins on command line
+#	
+#		(
+#			cd work/gar/bage &&
+#			>recurse-check-on-command-line-overriding-earlier-command-line &&
+#			git add recurse-check-on-command-line-overriding-earlier-command-line &&
+#			git commit -m "Recurse on command-line overriding earlier command-line junk"
+#		) &&
+#		(
+#			cd work &&
+#			git add gar/bage &&
+#			git commit -m "Recurse on command-line overriding earlier command-line for gar/bage" &&
+#	
+#			# should result in "check"
+#			test_must_fail git push --recurse-submodules=on-demand --recurse-submodules=check ../pub.git main &&
+#			# Check that the supermodule commit did not get there
+#			git fetch ../pub.git &&
+#			git diff --quiet FETCH_HEAD main^ &&
+#			# Check that the submodule commit did not get there
+#			(cd gar/bage && git diff --quiet origin/main main^) &&
+#	
+#			# should result in "no"
+#			git push --recurse-submodules=on-demand --recurse-submodules=no ../pub.git main &&
+#			# Check that the supermodule commit did get there
+#			git fetch ../pub.git &&
+#			git diff --quiet FETCH_HEAD main &&
+#			# Check that the submodule commit did not get there
+#			(cd gar/bage && git diff --quiet origin/main main^) &&
+#	
+#			# should result in "no"
+#			git push --recurse-submodules=on-demand --no-recurse-submodules ../pub.git main &&
+#			# Check that the submodule commit did not get there
+#			(cd gar/bage && git diff --quiet origin/main main^) &&
+#	
+#			# But the options in the other order should push the submodule
+#			git push --recurse-submodules=check --recurse-submodules=on-demand ../pub.git main &&
+#			# Check that the submodule commit did get there
+#			git fetch ../pub.git &&
+#			(cd gar/bage && git diff --quiet origin/main main)
+#		)
+#	
+ok 11 - push succeeds if submodule commit not on remote using on-demand from cmdline overriding config
+ok 12 - push succeeds if submodule commit disabling recursion from cmdline overriding config
+not ok 13 - push succeeds if submodule commit disabling recursion from cmdline (alternative form) overriding config
+#	
+#		(
+#			cd work/gar/bage &&
+#			>recurse-disable-on-command-line-alt-overriding-config &&
+#			git add recurse-disable-on-command-line-alt-overriding-config &&
+#			git commit -m "Recurse disable on command-line alternative overriding config junk"
+#		) &&
+#		(
+#			cd work &&
+#			git add gar/bage &&
+#			git commit -m "Recurse disable on command-line alternative overriding config for gar/bage" &&
+#			git -c push.recurseSubmodules=check push --no-recurse-submodules ../pub.git main &&
+#			# Check that the supermodule commit got there
+#			git fetch ../pub.git &&
+#			git diff --quiet FETCH_HEAD main &&
+#			# But that the submodule commit did not
+#			( cd gar/bage && git diff --quiet origin/main main^ ) &&
+#			# Now push it to avoid confusing future tests
+#			git push --recurse-submodules=on-demand ../pub.git main
+#		)
+#	
+ok 14 - submodule entry pointing at a tag is error
+ok 15 - push fails if recurse submodules option passed as yes
+ok 16 - push fails when commit on multiple branches if one branch has no remote
+ok 17 - push succeeds if submodule has no remote and is on the first superproject commit
+ok 18 - push unpushed submodules when not needed
+ok 19 - push unpushed submodules when not needed 2
+ok 20 - push unpushed submodules recursively
+ok 21 - push unpushable submodule recursively fails
+ok 22 - push --dry-run does not recursively update submodules
+ok 23 - push --dry-run does not recursively update submodules
+ok 24 - push only unpushed submodules recursively
+not ok 25 - push with push.recurseSubmodules=only on superproject
+#	
+#		test_when_finished rm -rf upstream downstream &&
+#		setup_subsub &&
+#		new_downstream_commits &&
+#		git -C downstream config push.recurseSubmodules only &&
+#		git -C downstream push origin downstream-branch &&
+#	
+#		test_must_fail git -C upstream rev-parse refs/heads/downstream-branch &&
+#		git -C upstream/sub rev-parse refs/heads/downstream-branch &&
+#		test_must_fail git -C upstream/sub/deepsub rev-parse refs/heads/downstream-branch
+#	
+not ok 26 - push with push.recurseSubmodules=only on superproject and top-level submodule
+#	
+#		test_when_finished rm -rf upstream downstream &&
+#		setup_subsub &&
+#		new_downstream_commits &&
+#		git -C downstream config push.recurseSubmodules only &&
+#		git -C downstream/sub config push.recurseSubmodules only &&
+#		git -C downstream push origin downstream-branch 2> err &&
+#	
+#		test_must_fail git -C upstream rev-parse refs/heads/downstream-branch &&
+#		git -C upstream/sub rev-parse refs/heads/downstream-branch &&
+#		git -C upstream/sub/deepsub rev-parse refs/heads/downstream-branch &&
+#		grep "recursing into submodule with push.recurseSubmodules=only; using on-demand instead" err
+#	
+not ok 27 - push propagating the remotes name to a submodule
+#	
+#		git -C work remote add origin ../pub.git &&
+#		git -C work remote add pub ../pub.git &&
+#	
+#		> work/gar/bage/junk10 &&
+#		git -C work/gar/bage add junk10 &&
+#		git -C work/gar/bage commit -m "Tenth junk" &&
+#		git -C work add gar/bage &&
+#		git -C work commit -m "Tenth junk added to gar/bage" &&
+#	
+#		# Fails when submodule does not have a matching remote
+#		test_must_fail git -C work push --recurse-submodules=on-demand pub main &&
+#		# Succeeds when submodules has matching remote and refspec
+#		git -C work push --recurse-submodules=on-demand origin main &&
+#	
+#		git -C submodule.git rev-parse main >actual_submodule &&
+#		git -C pub.git rev-parse main >actual_pub &&
+#		git -C work/gar/bage rev-parse main >expected_submodule &&
+#		git -C work rev-parse main >expected_pub &&
+#		test_cmp expected_submodule actual_submodule &&
+#		test_cmp expected_pub actual_pub
+#	
+not ok 28 - push propagating refspec to a submodule
+#	
+#		> work/gar/bage/junk11 &&
+#		git -C work/gar/bage add junk11 &&
+#		git -C work/gar/bage commit -m "Eleventh junk" &&
+#	
+#		git -C work checkout branch2 &&
+#		git -C work add gar/bage &&
+#		git -C work commit -m "updating gar/bage in branch2" &&
+#	
+#		# Fails when submodule does not have a matching branch
+#		test_must_fail git -C work push --recurse-submodules=on-demand origin branch2 &&
+#		# Fails when refspec includes an object id
+#		test_must_fail git -C work push --recurse-submodules=on-demand origin \
+#			"$(git -C work rev-parse branch2):refs/heads/branch2" &&
+#		# Fails when refspec includes HEAD and parent and submodule do not
+#		# have the same named branch checked out
+#		test_must_fail git -C work push --recurse-submodules=on-demand origin \
+#			HEAD:refs/heads/branch2 &&
+#	
+#		git -C work/gar/bage branch branch2 main &&
+#		git -C work push --recurse-submodules=on-demand origin branch2 &&
+#	
+#		git -C submodule.git rev-parse branch2 >actual_submodule &&
+#		git -C pub.git rev-parse branch2 >actual_pub &&
+#		git -C work/gar/bage rev-parse branch2 >expected_submodule &&
+#		git -C work rev-parse branch2 >expected_pub &&
+#		test_cmp expected_submodule actual_submodule &&
+#		test_cmp expected_pub actual_pub
+#	
+not ok 29 - push propagating HEAD refspec to a submodule
+#	
+#		git -C work/gar/bage checkout branch2 &&
+#		> work/gar/bage/junk12 &&
+#		git -C work/gar/bage add junk12 &&
+#		git -C work/gar/bage commit -m "Twelfth junk" &&
+#	
+#		git -C work checkout branch2 &&
+#		git -C work add gar/bage &&
+#		git -C work commit -m "updating gar/bage in branch2" &&
+#	
+#		# Passes since the superproject and submodules HEAD are both on branch2
+#		git -C work push --recurse-submodules=on-demand origin \
+#			HEAD:refs/heads/branch2 &&
+#	
+#		git -C submodule.git rev-parse branch2 >actual_submodule &&
+#		git -C pub.git rev-parse branch2 >actual_pub &&
+#		git -C work/gar/bage rev-parse branch2 >expected_submodule &&
+#		git -C work rev-parse branch2 >expected_pub &&
+#		test_cmp expected_submodule actual_submodule &&
+#		test_cmp expected_pub actual_pub
+#	
+# failed 8 among 29 test(s)
+1..29
+# Tests: 29  Pass: 21  Fail: 8  Skip: 0

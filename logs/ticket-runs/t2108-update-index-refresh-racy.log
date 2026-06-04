@@ -1,0 +1,9 @@
+ok 1 - setup
+ok 2 - --refresh has no racy timestamps to fix
+ok 3 - --refresh should fix racy timestamp
+ok 4 - --really-refresh should fix racy timestamp
+ok 5 - --refresh should fix racy timestamp if other file needs update
+ok 6 - --refresh should fix racy timestamp if racy file needs update
+# passed all 6 test(s)
+1..6
+# Tests: 6  Pass: 6  Fail: 0  Skip: 0

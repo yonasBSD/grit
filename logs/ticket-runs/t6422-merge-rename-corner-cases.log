@@ -1,0 +1,254 @@
+ok 1 - Does git preserve Gollum's precious artifact?
+not ok 2 - rename/modify/add-source conflict resolvable # TODO known breakage
+ok 3 - conflict caused if rename not detected
+not ok 4 - missed conflict if rename not detected # TODO known breakage
+not ok 5 - detect rename/add-source and preserve all data # TODO known breakage
+not ok 6 - detect rename/add-source and preserve all data, merge other way # TODO known breakage
+ok 7 - rename/directory conflict + clean content merge
+ok 8 - rename/directory conflict + content merge conflict
+not ok 9 - disappearing dir in rename/directory conflict handled
+#	
+#		test_setup_rename_directory_2 &&
+#		(
+#			cd rename-directory-2 &&
+#	
+#			git checkout left^0 &&
+#	
+#			git merge -s recursive right^0 &&
+#	
+#			git ls-files -s >out &&
+#			test_line_count = 1 out &&
+#			git ls-files -u >out &&
+#			test_line_count = 0 out &&
+#			git ls-files -o >out &&
+#			test_line_count = 1 out &&
+#	
+#			echo 0 >expect &&
+#			git cat-file -p base:sub/file >>expect &&
+#			echo 7 >>expect &&
+#			test_cmp expect sub &&
+#	
+#			test_path_is_file sub
+#		)
+#	
+ok 10 - handle rename-with-content-merge vs. add
+ok 11 - handle rename-with-content-merge vs. add, merge other way
+ok 12 - handle rename/rename (2to1) conflict correctly
+ok 13 - merge has correct working tree contents
+not ok 14 - detect conflict with rename/rename(1to2)/add-source merge # TODO known breakage
+not ok 15 - rename/rename/add-source still tracks new a file # TODO known breakage
+not ok 16 - rename/rename/add-dest merge still knows about conflicting file versions
+#	
+#		test_setup_rename_rename_1to2_add_dest &&
+#		(
+#			cd rename-rename-1to2-add-dest &&
+#	
+#			git checkout C^0 &&
+#			test_must_fail git merge -s recursive B^0 &&
+#	
+#			git ls-files -s >out &&
+#			test_line_count = 5 out &&
+#			git ls-files -u b >out &&
+#			test_line_count = 2 out &&
+#			git ls-files -u c >out &&
+#			test_line_count = 2 out &&
+#			git ls-files -o >out &&
+#			test_line_count = 1 out &&
+#	
+#			git rev-parse >expect               \
+#				A:a   C:b   B:b   C:c   B:c &&
+#			git rev-parse >actual                \
+#				:1:a  :2:b  :3:b  :2:c  :3:c &&
+#			test_cmp expect actual &&
+#	
+#			# Record some contents for re-doing merges
+#			git cat-file -p A:a >stuff &&
+#			git cat-file -p C:b >important_info &&
+#			git cat-file -p B:c >precious_data &&
+#			>empty &&
+#	
+#			# Test the merge in b
+#			test_must_fail git merge-file \
+#				-L "HEAD" \
+#				-L "" \
+#				-L "B^0" \
+#				important_info empty stuff &&
+#			test_cmp important_info b &&
+#	
+#			# Test the merge in c
+#			test_must_fail git merge-file \
+#				-L "HEAD" \
+#				-L "" \
+#				-L "B^0" \
+#				stuff empty precious_data &&
+#			test_cmp stuff c
+#		)
+#	
+ok 17 - rad-check: rename/add/delete conflict
+not ok 18 - rrdd-check: rename/rename(2to1)/delete/delete conflict
+#	
+#		test_setup_rrdd &&
+#		(
+#			cd rrdd &&
+#	
+#			git checkout A^0 &&
+#			test_must_fail git merge -s recursive B^0 >out 2>err &&
+#	
+#			# Instead of requiring the output to contain one combined line
+#			#   CONFLICT (rename/rename/delete/delete)
+#			# or perhaps two lines:
+#			#   CONFLICT (rename/rename): ...
+#			#   CONFLICT (rename/delete): info about pair 1
+#			#   CONFLICT (rename/delete): info about pair 2
+#			# and instead of requiring "rename/rename" instead of "add/add",
+#			# be flexible in the type of console output message(s) reported
+#			# for this particular case; we will be more stringent about the
+#			# contents of the index and working directory.
+#			test_grep "CONFLICT (\(.*\)/\1)" out &&
+#			test_grep "CONFLICT (rename.*delete)" out &&
+#			test_must_be_empty err &&
+#	
+#			git ls-files -s >file_count &&
+#			test_line_count = 2 file_count &&
+#			git ls-files -u >file_count &&
+#			test_line_count = 2 file_count &&
+#			git ls-files -o >file_count &&
+#			test_line_count = 3 file_count &&
+#	
+#			git rev-parse >actual \
+#				:2:baz :3:baz &&
+#			git rev-parse >expect \
+#				O:foo  O:bar  &&
+#	
+#			test_path_is_missing foo &&
+#			test_path_is_missing bar &&
+#			# baz should have two-way merged contents of the original
+#			# contents of foo and bar; check that content from both sides
+#			# is present.
+#			grep foo baz &&
+#			grep bar baz
+#		)
+#	
+not ok 19 - mod6-check: chains of rename/rename(1to2) and rename/rename(2to1)
+#	
+#		test_setup_mod6 &&
+#		(
+#			cd mod6 &&
+#	
+#			git checkout A^0 &&
+#	
+#			test_must_fail git merge -s recursive B^0 >out 2>err &&
+#	
+#			test_grep "CONFLICT (rename/rename)" out &&
+#			test_must_be_empty err &&
+#	
+#			git ls-files -s >file_count &&
+#			test_line_count = 9 file_count &&
+#			git ls-files -u >file_count &&
+#			test_line_count = 9 file_count &&
+#			git ls-files -o >file_count &&
+#			test_line_count = 3 file_count &&
+#	
+#			test_seq 10 20 >merged-one &&
+#			test_seq 51 60 >merged-five &&
+#			# Determine what the merge of three would give us.
+#			test_seq 31 39 >three-base &&
+#			test_seq 31 40 >three-side-A &&
+#			test_seq 31 39 >three-side-B &&
+#			echo forty >>three-side-B &&
+#			test_must_fail git merge-file \
+#				-L "HEAD:four" \
+#				-L "" \
+#				-L "B^0:two" \
+#				three-side-A three-base three-side-B &&
+#			sed -e "s/^\([<=>]\)/\1\1/" three-side-A >merged-three &&
+#	
+#			# Verify the index is as expected
+#			git rev-parse >actual         \
+#				:2:two       :3:two   \
+#				:2:four      :3:four  \
+#				:2:six       :3:six   &&
+#			git hash-object >expect           \
+#				merged-one   merged-three \
+#				merged-three merged-five  \
+#				merged-five  merged-one   &&
+#			test_cmp expect actual &&
+#	
+#			git cat-file -p :2:two >expect &&
+#			git cat-file -p :3:two >other &&
+#			>empty &&
+#			test_must_fail git merge-file    \
+#				-L "HEAD"  -L ""  -L "B^0" \
+#				expect     empty  other &&
+#			test_cmp expect two &&
+#	
+#			git cat-file -p :2:four >expect &&
+#			git cat-file -p :3:four >other &&
+#			test_must_fail git merge-file    \
+#				-L "HEAD"  -L ""  -L "B^0" \
+#				expect     empty  other &&
+#			test_cmp expect four &&
+#	
+#			git cat-file -p :2:six >expect &&
+#			git cat-file -p :3:six >other &&
+#			test_must_fail git merge-file    \
+#				-L "HEAD"  -L ""  -L "B^0" \
+#				expect     empty  other &&
+#			test_cmp expect six
+#		)
+#	
+ok 20 - check simple rename/rename conflict
+ok 21 - check simple rename/add conflict
+ok 22 - check simple add/rename conflict
+ok 23 - check simple add/add conflict
+ok 24 - check nested conflicts from rename/rename(2to1)
+not ok 25 - rename/rename(1to2) with a binary file
+#	
+#		test_setup_rename_rename_1_to_2_binary &&
+#		(
+#			cd rename_rename_1_to_2_binary &&
+#	
+#			git checkout A^0 &&
+#	
+#			test_must_fail git merge -s recursive B^0 &&
+#	
+#			# Make sure the index has the right number of entries
+#			git ls-files -s >actual &&
+#			test_line_count = 4 actual &&
+#	
+#			git rev-parse A:orig-A B:orig-B >expect &&
+#			git hash-object orig-A orig-B >actual &&
+#			test_cmp expect actual
+#		)
+#	
+not ok 26 - submodule/directory preliminary conflict
+#	
+#		test_setup_submodule_directory_preliminary_conflict &&
+#		(
+#			cd submodule_directory_preliminary_conflict &&
+#	
+#			git checkout A^0 &&
+#	
+#			test_expect_code 1 git merge B^0 &&
+#	
+#			# Make sure the index has the right number of entries
+#			git ls-files -s >actual &&
+#			test_line_count = 2 actual &&
+#	
+#			# The "folder" as directory should have been resolved away
+#			# as part of the merge.  The "folder" as submodule got
+#			# renamed to "folder~Temporary merge branch 2" in the
+#			# virtual merge base, resulting in a
+#			#    "folder~Temporary merge branch 2" -> "folder"
+#			# rename in the outermerge for the submodule, which then
+#			# becomes part of a rename/delete conflict (because "folder"
+#			# as a submodule was deleted in A2).
+#			submod=$(git rev-parse A:folder) &&
+#			printf "160000 $submod 1\tfolder\n160000 $submod 2\tfolder\n" >expect &&
+#			test_cmp expect actual
+#		)
+#	
+# still have 6 known breakage(s)
+# failed 6 among remaining 20 test(s)
+1..26
+# Tests: 26  Pass: 14  Fail: 6  Skip: 0

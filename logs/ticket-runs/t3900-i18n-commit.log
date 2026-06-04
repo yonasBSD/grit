@@ -1,0 +1,92 @@
+ok 1 - setup
+ok 2 - no encoding header for base case
+ok 3 - UTF-16 refused because of NULs
+ok 4 - UTF-8 invalid characters refused
+ok 5 - UTF-8 overlong sequences rejected
+ok 6 - UTF-8 non-characters refused
+ok 7 - UTF-8 non-characters refused
+ok 8 - ISO8859-1 setup
+ok 9 - eucJP setup
+ok 10 - ISO-2022-JP setup
+ok 11 - check encoding header for ISO8859-1
+ok 12 - check encoding header for eucJP
+ok 13 - check encoding header for ISO-2022-JP
+ok 14 - config to remove customization
+not ok 15 - ISO8859-1 should be shown in UTF-8 now
+#	
+#		compare_with ISO8859-1 "$TEST_DIRECTORY"/t3900/1-UTF-8.txt
+#	
+not ok 16 - eucJP should be shown in UTF-8 now
+#	
+#			compare_with eucJP "$TEST_DIRECTORY"/t3900/2-UTF-8.txt
+#		
+not ok 17 - ISO-2022-JP should be shown in UTF-8 now
+#	
+#			compare_with ISO-2022-JP "$TEST_DIRECTORY"/t3900/2-UTF-8.txt
+#		
+ok 18 - config to add customization
+not ok 19 - ISO8859-1 should be shown in itself now
+#	
+#			git config i18n.commitencoding ISO8859-1 &&
+#			compare_with ISO8859-1 "$TEST_DIRECTORY"/t3900/ISO8859-1.txt
+#		
+not ok 20 - eucJP should be shown in itself now
+#	
+#			git config i18n.commitencoding eucJP &&
+#			compare_with eucJP "$TEST_DIRECTORY"/t3900/eucJP.txt
+#		
+not ok 21 - ISO-2022-JP should be shown in itself now
+#	
+#			git config i18n.commitencoding ISO-2022-JP &&
+#			compare_with ISO-2022-JP "$TEST_DIRECTORY"/t3900/ISO-2022-JP.txt
+#		
+ok 22 - config to tweak customization
+not ok 23 - ISO8859-1 should be shown in UTF-8 now
+#	
+#		compare_with ISO8859-1 "$TEST_DIRECTORY"/t3900/1-UTF-8.txt
+#	
+not ok 24 - eucJP should be shown in UTF-8 now
+#	
+#			compare_with eucJP "$TEST_DIRECTORY"/t3900/2-UTF-8.txt
+#		
+not ok 25 - ISO-2022-JP should be shown in UTF-8 now
+#	
+#			compare_with ISO-2022-JP "$TEST_DIRECTORY"/t3900/2-UTF-8.txt
+#		
+not ok 26 - eucJP should be shown in eucJP now
+#	
+#				compare_with eucJP "$TEST_DIRECTORY"/t3900/eucJP.txt $ICONV
+#			
+not ok 27 - ISO-2022-JP should be shown in eucJP now
+#	
+#				compare_with ISO-2022-JP "$TEST_DIRECTORY"/t3900/eucJP.txt $ICONV
+#			
+not ok 28 - eucJP should be shown in ISO-2022-JP now
+#	
+#				compare_with eucJP "$TEST_DIRECTORY"/t3900/ISO-2022-JP.txt $ICONV
+#			
+not ok 29 - ISO-2022-JP should be shown in ISO-2022-JP now
+#	
+#				compare_with ISO-2022-JP "$TEST_DIRECTORY"/t3900/ISO-2022-JP.txt $ICONV
+#			
+not ok 30 - No conversion with ISO8859-1
+#	
+#			compare_with "--encoding=none ISO8859-1" "$TEST_DIRECTORY"/t3900/ISO8859-1.txt
+#		
+not ok 31 - No conversion with eucJP
+#	
+#			compare_with "--encoding=none eucJP" "$TEST_DIRECTORY"/t3900/eucJP.txt
+#		
+not ok 32 - No conversion with ISO-2022-JP
+#	
+#			compare_with "--encoding=none ISO-2022-JP" "$TEST_DIRECTORY"/t3900/ISO-2022-JP.txt
+#		
+ok 33 - commit --fixup with eucJP encoding
+ok 34 - commit --squash with ISO-2022-JP encoding
+ok 35 - commit --fixup into UTF-8 from ISO-8859-1
+ok 36 - commit --squash into ISO-8859-1 from UTF-8
+ok 37 - commit --squash into eucJP from ISO-2022-JP
+ok 38 - commit --fixup into ISO-2022-JP from UTF-8
+# failed 16 among 38 test(s)
+1..38
+# Tests: 38  Pass: 22  Fail: 16  Skip: 0

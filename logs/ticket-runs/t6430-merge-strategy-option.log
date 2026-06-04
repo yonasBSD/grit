@@ -1,0 +1,77 @@
+not ok 1 - setup: conflicting branches
+#	
+#		(
+#		git init repo &&
+#		cd repo &&
+#		git config user.name "Test" &&
+#		git config user.email "test@example.com" &&
+#		echo base >file.txt &&
+#		git add file.txt &&
+#		git commit -m "base" &&
+#		git branch feature &&
+#		echo "ours line" >file.txt &&
+#		git add file.txt &&
+#		git commit -m "ours change" &&
+#		git checkout feature &&
+#		echo "theirs line" >file.txt &&
+#		git add file.txt &&
+#		git commit -m "theirs change" &&
+#		git checkout master
+#		)
+#	
+not ok 2 - merge -X ours resolves conflict with our version
+#	
+#		(
+#		cd repo &&
+#		git merge -X ours feature -m "merge-ours" &&
+#		echo "ours line" >expect &&
+#		test_cmp expect file.txt
+#		)
+#	
+not ok 3 - reset and merge -X theirs resolves with their version
+#	
+#		(
+#		cd repo &&
+#		git reset --hard HEAD~1 &&
+#		git merge -X theirs feature -m "merge-theirs" &&
+#		echo "theirs line" >expect &&
+#		test_cmp expect file.txt
+#		)
+#	
+not ok 4 - setup: delete/modify conflict
+#	
+#		(
+#		cd repo &&
+#		git reset --hard HEAD~1 &&
+#		git branch -D feature &&
+#		git branch feature &&
+#		git rm file.txt &&
+#		git commit -m "delete file" &&
+#		git checkout feature &&
+#		echo "modified" >file.txt &&
+#		git add file.txt &&
+#		git commit -m "modify file" &&
+#		git checkout master
+#		)
+#	
+not ok 5 - -X ours keeps deletion in delete/modify conflict
+#	
+#		(
+#		cd repo &&
+#		git merge -X ours feature -m "del-mod-ours" &&
+#		! test -f file.txt
+#		)
+#	
+not ok 6 - reset and -X theirs keeps modification in delete/modify
+#	
+#		(
+#		cd repo &&
+#		git reset --hard HEAD~1 &&
+#		git merge -X theirs feature -m "del-mod-theirs" &&
+#		echo "modified" >expect &&
+#		test_cmp expect file.txt
+#		)
+#	
+# failed 6 among 6 test(s)
+1..6
+# Tests: 6  Pass: 0  Fail: 6  Skip: 0

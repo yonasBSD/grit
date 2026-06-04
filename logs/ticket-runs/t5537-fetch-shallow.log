@@ -1,0 +1,54 @@
+ok 1 - setup
+ok 2 - setup shallow clone
+ok 3 - clone from shallow clone
+ok 4 - fetch from shallow clone
+ok 5 - fetch --depth from shallow clone
+ok 6 - fetch --unshallow from shallow clone
+ok 7 - fetch --unshallow from a full clone
+ok 8 - fetch something upstream has but hidden by clients shallow boundaries
+ok 9 - fetch that requires changes in .git/shallow is filtered
+ok 10 - fetch --update-shallow
+ok 11 - fetch --update-shallow into a repo with submodules
+ok 12 - fetch --update-shallow a commit that is also a shallow point into a repo with submodules
+ok 13 - fetch --update-shallow (with fetch.writeCommitGraph)
+ok 14 - shallow fetch from a read-only repo
+ok 15 - .git/shallow is edited by repack
+not ok 16 - shallow fetches check connectivity before writing shallow file
+#	
+#		rm -rf "$REPO" client &&
+#	
+#		git init "$REPO" &&
+#		test_commit -C "$REPO" one &&
+#		test_commit -C "$REPO" two &&
+#		test_commit -C "$REPO" three &&
+#	
+#		git init client &&
+#	
+#		# Use protocol v2 to ensure that shallow information is sent exactly
+#		# once by the server, since we are planning to manipulate it.
+#		git -C "$REPO" config protocol.version 2 &&
+#		git -C client config protocol.version 2 &&
+#	
+#		git -C client fetch --depth=2 "$HTTPD_URL/one_time_script/repo" main:a_branch &&
+#	
+#		# Craft a situation in which the server sends back an unshallow request
+#		# with an empty packfile. This is done by refetching with a shorter
+#		# depth (to ensure that the packfile is empty), and overwriting the
+#		# shallow line in the response with the unshallow line we want.
+#		write_script "$HTTPD_ROOT_PATH/one-time-script" <<-EOF &&
+#		sed "$(printf "$(test_oid perl)" "$(git -C "$REPO" rev-parse HEAD)" "$(git -C "$REPO" rev-parse HEAD^)")" "\$1"
+#		EOF
+#		test_must_fail env GIT_TEST_SIDEBAND_ALL=0 git -C client \
+#			fetch --depth=1 "$HTTPD_URL/one_time_script/repo" \
+#			main:a_branch &&
+#	
+#		# Ensure that the one-time-script script was used.
+#		! test -e "$HTTPD_ROOT_PATH/one-time-script" &&
+#	
+#		# Ensure that the resulting repo is consistent, despite our failure to
+#		# fetch.
+#		git -C client fsck
+#	
+# failed 1 among 16 test(s)
+1..16
+# Tests: 16  Pass: 15  Fail: 1  Skip: 0

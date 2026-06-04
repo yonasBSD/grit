@@ -1,0 +1,32 @@
+ok 1 - setup
+ok 2 - refuse to overwrite: checked out in worktree
+ok 3 - refuse to overwrite: worktree in bisect
+ok 4 - refuse to overwrite: worktree in rebase (apply)
+ok 5 - refuse to overwrite: worktree in rebase (merge)
+ok 6 - refuse to overwrite: worktree in rebase with --update-refs
+ok 7 - refuse to fetch over ref: checked out
+ok 8 - refuse to fetch over ref: worktree in bisect
+ok 9 - refuse to fetch over ref: worktree in rebase
+ok 10 - refuse to overwrite when in error states
+not ok 11 - refuse to overwrite during rebase with --update-refs
+#	
+#		git commit --fixup HEAD~2 --allow-empty &&
+#		(
+#			set_cat_todo_editor &&
+#			test_must_fail git rebase -i --update-refs HEAD~3 >todo &&
+#			! grep "update-refs" todo
+#		) &&
+#		git branch -f allow-update HEAD~2 &&
+#		(
+#			set_cat_todo_editor &&
+#			test_must_fail git rebase -i --update-refs HEAD~3 >todo &&
+#			grep "update-ref refs/heads/allow-update" todo
+#		)
+#	
+not ok 12 - $EDITOR and friends are unchanged
+#	
+#		test_editor_unchanged
+#	
+# failed 2 among 12 test(s)
+1..12
+# Tests: 12  Pass: 10  Fail: 2  Skip: 0

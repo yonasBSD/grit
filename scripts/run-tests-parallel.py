@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Run harness tests in parallel by Git test family (``t0``–``t9``), then stitch CSVs.
+"""Run harness tests in parallel by Git test family (``t0``–``t9``).
 
-Invokes ``scripts/run-tests.sh`` once per selected family with ``--output-csv
-data/family/<digit>.csv`` and ``--no-catalog``. The parent runs the catalog once,
-then ``scripts/stitch-family-csvs.py``, then the dashboard generator.
+Invokes ``scripts/run-tests.sh`` once per selected family with ``--no-catalog``.
+Families write disjoint per-test status TOMLs under ``data/tests/``, so no
+merge step is needed. The parent runs the catalog once up front and, when
+``--dashboard`` is passed, the dashboard generator once at the end.
 """
 
 from __future__ import annotations
@@ -19,11 +20,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 RUN_TESTS = REPO / "scripts" / "run-tests.sh"
 CATALOG = REPO / "scripts" / "generate-test-files-catalog.py"
-STITCH = REPO / "scripts" / "stitch-family-csvs.py"
 GEN_DASH = REPO / "scripts" / "generate-dashboard-from-test-files.py"
 BIN = REPO / "target" / "release" / "grit"
 TESTS_DIR = REPO / "tests"
-DATA_FAMILY = REPO / "data" / "family"
 
 
 def family_digit_from_arg(raw: str) -> int | None:
@@ -85,14 +84,11 @@ def run_one_family(
     verbose: bool,
     from_stem: str,
 ) -> tuple[int, int]:
-    out_csv = DATA_FAMILY / f"{digit}.csv"
     cmd = [
         str(RUN_TESTS),
         "--no-catalog",
         "--family",
         str(digit),
-        "--output-csv",
-        str(out_csv),
         "--timeout",
         str(timeout),
     ]
@@ -120,6 +116,11 @@ def main() -> None:
     )
     parser.add_argument("--from", dest="from_stem", default="", metavar="NAME")
     parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Regenerate docs/ dashboards once after all families finish (off by default).",
+    )
+    parser.add_argument(
         "targets",
         nargs="*",
         help="Optional family targets (e.g. t1 t2). Default: all t0–t9.",
@@ -136,6 +137,8 @@ def main() -> None:
             cmd.append("--quiet")
         if args.verbose:
             cmd.append("--verbose")
+        if args.dashboard:
+            cmd.append("--dashboard")
         if args.from_stem:
             cmd.extend(["--from", args.from_stem])
         cmd.extend(args.targets)
@@ -144,7 +147,6 @@ def main() -> None:
     fams = families_from_positionals(args.targets)
 
     prelude()
-    DATA_FAMILY.mkdir(parents=True, exist_ok=True)
 
     failed: list[int] = []
     with ThreadPoolExecutor(max_workers=len(fams)) as pool:
@@ -168,10 +170,11 @@ def main() -> None:
     if failed:
         sys.exit(1)
 
-    subprocess.run([sys.executable, str(STITCH)], cwd=str(REPO), check=True)
-    subprocess.run([sys.executable, str(GEN_DASH)], cwd=str(REPO), check=True)
+    if args.dashboard:
+        subprocess.run([sys.executable, str(GEN_DASH)], cwd=str(REPO), check=True)
     if not args.quiet:
-        print(f"Updated {REPO / 'data' / 'test-files.csv'} and dashboards.")
+        suffix = " and dashboards" if args.dashboard else ""
+        print(f"Updated {REPO / 'data' / 'tests'}{suffix}.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,148 @@
+ok 1 - setup
+ok 2 - simple rebase --apply
+ok 3 - simple rebase -m
+ok 4 - simple rebase -i
+ok 5 - setup branches and remote tracking
+ok 6 - rebase --apply is no-op if upstream is an ancestor
+ok 7 - rebase -m is no-op if upstream is an ancestor
+ok 8 - rebase -i is no-op if upstream is an ancestor
+ok 9 - rebase --apply -f rewrites even if upstream is an ancestor
+ok 10 - rebase --fork-point -f rewrites even if upstream is an ancestor
+ok 11 - rebase -m -f rewrites even if upstream is an ancestor
+ok 12 - rebase -i -f rewrites even if upstream is an ancestor
+ok 13 - rebase --apply -f rewrites even if remote upstream is an ancestor
+ok 14 - rebase --fork-point -f rewrites even if remote upstream is an ancestor
+ok 15 - rebase -m -f rewrites even if remote upstream is an ancestor
+ok 16 - rebase -i -f rewrites even if remote upstream is an ancestor
+ok 17 - rebase --apply fast-forwards from ancestor of upstream
+ok 18 - rebase --fork-point fast-forwards from ancestor of upstream
+ok 19 - rebase -m fast-forwards from ancestor of upstream
+not ok 20 - rebase -i fast-forwards from ancestor of upstream
+#	
+#			reset_rebase &&
+#			git rebase -i e b &&
+#			test_cmp_rev e HEAD
+#		
+ok 21 - setup of linear history for range selection tests
+ok 22 - rebase --apply drops patches in upstream
+ok 23 - rebase -m drops patches in upstream
+not ok 24 - rebase -i drops patches in upstream
+#	
+#			reset_rebase &&
+#			git rebase -i h i &&
+#			test_cmp_rev h HEAD~2 &&
+#			test_linear_range 'd i' h..
+#		
+ok 25 - rebase --apply can drop last patch if in upstream
+ok 26 - rebase -m can drop last patch if in upstream
+not ok 27 - rebase -i can drop last patch if in upstream
+#	
+#			reset_rebase &&
+#			git rebase -i h gp &&
+#			test_cmp_rev h HEAD^ &&
+#			test_linear_range 'd' h..
+#		
+ok 28 - rebase --apply --onto drops patches in upstream
+ok 29 - rebase -m --onto drops patches in upstream
+not ok 30 - rebase -i --onto drops patches in upstream
+#	
+#			reset_rebase &&
+#			git rebase -i --onto f h i &&
+#			test_cmp_rev f HEAD~2 &&
+#			test_linear_range 'd i' f..
+#		
+ok 31 - rebase --apply --onto does not drop patches in onto
+ok 32 - rebase -m --onto does not drop patches in onto
+ok 33 - rebase -i --onto does not drop patches in onto
+ok 34 - setup of linear history for empty commit tests
+not ok 35 - rebase --apply keeps begin-empty commits # TODO known breakage
+not ok 36 - rebase -m keeps begin-empty commits
+#	
+#			reset_rebase &&
+#			git rebase -m j l &&
+#			test_cmp_rev c HEAD~4 &&
+#			test_linear_range 'j d k l' c..
+#		
+not ok 37 - rebase -i keeps begin-empty commits
+#	
+#			reset_rebase &&
+#			git rebase -i j l &&
+#			test_cmp_rev c HEAD~4 &&
+#			test_linear_range 'j d k l' c..
+#		
+not ok 38 - rebase -m --no-keep-empty drops begin-empty commits
+#	
+#			reset_rebase &&
+#			git rebase -m --no-keep-empty c l &&
+#			test_cmp_rev c HEAD~2 &&
+#			test_linear_range 'd l' c..
+#		
+not ok 39 - rebase -i --no-keep-empty drops begin-empty commits
+#	
+#			reset_rebase &&
+#			git rebase -i --no-keep-empty c l &&
+#			test_cmp_rev c HEAD~2 &&
+#			test_linear_range 'd l' c..
+#		
+not ok 40 - rebase -m --keep-empty keeps empty even if already in upstream
+#	
+#			reset_rebase &&
+#			git rebase -m --keep-empty j l &&
+#			test_cmp_rev j HEAD~3 &&
+#			test_linear_range 'd k l' j..
+#		
+ok 41 - rebase -i --keep-empty keeps empty even if already in upstream
+not ok 42 - rebase --rebase-merges --keep-empty keeps empty even if already in upstream
+#	
+#			reset_rebase &&
+#			git rebase --rebase-merges --keep-empty j l &&
+#			test_cmp_rev j HEAD~3 &&
+#			test_linear_range 'd k l' j..
+#		
+ok 43 - setup of linear history for test involving root
+ok 44 - rebase --apply --onto --root
+ok 45 - rebase -m --onto --root
+ok 46 - rebase -i --onto --root
+ok 47 - rebase --apply without --onto --root with disjoint history
+ok 48 - rebase -m without --onto --root with disjoint history
+ok 49 - rebase -i without --onto --root with disjoint history
+ok 50 - rebase --apply --onto --root drops patch in onto
+ok 51 - rebase -m --onto --root drops patch in onto
+ok 52 - rebase -i --onto --root drops patch in onto
+ok 53 - rebase --apply --onto --root with merge-base does not go to root
+ok 54 - rebase -m --onto --root with merge-base does not go to root
+ok 55 - rebase -i --onto --root with merge-base does not go to root
+ok 56 - rebase --apply without --onto --root with disjoint history drops patch in onto
+ok 57 - rebase -m without --onto --root with disjoint history drops patch in onto
+not ok 58 - rebase -i without --onto --root with disjoint history drops patch in onto
+#	
+#			reset_rebase &&
+#			git rebase -i m bp &&
+#			test_cmp_rev m HEAD~2 &&
+#			test_linear_range 'x y' m..
+#		
+not ok 59 - rebase  --root on linear history is a no-op
+#	
+#			reset_rebase &&
+#			git rebase  --root c &&
+#			test_cmp_rev c HEAD
+#		
+not ok 60 - rebase -m --root on linear history is a no-op
+#	
+#			reset_rebase &&
+#			git rebase -m --root c &&
+#			test_cmp_rev c HEAD
+#		
+not ok 61 - rebase -i --root on linear history is a no-op
+#	
+#			reset_rebase &&
+#			git rebase -i --root c &&
+#			test_cmp_rev c HEAD
+#		
+ok 62 - rebase  -f --root on linear history causes re-write
+ok 63 - rebase -m -f --root on linear history causes re-write
+ok 64 - rebase -i -f --root on linear history causes re-write
+# still have 1 known breakage(s)
+# failed 14 among remaining 63 test(s)
+1..64
+# Tests: 64  Pass: 49  Fail: 14  Skip: 0

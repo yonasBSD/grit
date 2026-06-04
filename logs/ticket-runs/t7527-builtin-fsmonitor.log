@@ -1,0 +1,2 @@
+1..0 # SKIP fsmonitor--daemon is not supported on this platform
+# Tests: 0  Pass: 0  Fail: 0  Skip: 0

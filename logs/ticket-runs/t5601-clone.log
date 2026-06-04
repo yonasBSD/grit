@@ -1,0 +1,481 @@
+ok 1 - setup
+ok 2 - clone with excess parameters (1)
+ok 3 - clone with excess parameters (2)
+ok 4 - output from clone
+ok 5 - output from clone with core.abbrev does not crash
+ok 6 - clone does not keep pack
+ok 7 - clone checks out files
+ok 8 - clone respects GIT_WORK_TREE
+ok 9 - clone from hooks
+ok 10 - clone creates intermediate directories
+ok 11 - clone creates intermediate directories for bare repo
+ok 12 - clone --mirror
+ok 13 - clone --mirror with detached HEAD
+ok 14 - clone --bare with detached HEAD
+ok 15 - clone --bare names the local repository <name>.git
+ok 16 - clone --mirror does not repeat tags
+ok 17 - clone with files ref format
+ok 18 - clone with garbage ref format
+ok 19 - clone to destination with trailing /
+ok 20 - clone to destination with extra trailing /
+ok 21 - clone to an existing empty directory
+ok 22 - clone to an existing non-empty directory
+ok 23 - clone to an existing path
+ok 24 - clone a void
+ok 25 - clone respects global branch.autosetuprebase
+ok 26 - respect url-encoding of file://
+ok 27 - do not query-string-decode + in URLs
+ok 28 - do not respect url-encoding of non-url path
+ok 29 - clone separate gitdir
+not ok 30 - clone separate gitdir: output
+#	
+#		echo "gitdir: $(pwd)/realgitdir" >expected &&
+#		test_cmp expected dst/.git
+#	
+ok 31 - clone from .git file
+ok 32 - fetch from .git gitfile
+ok 33 - fetch from gitfile parent
+ok 34 - clone separate gitdir where target already exists
+ok 35 - clone --reference from original
+ok 36 - clone with more than one --reference
+ok 37 - clone from original with relative alternate
+not ok 38 - clone checking out a tag
+#	
+#		git clone --branch=some-tag src dst.tag &&
+#		GIT_DIR=src/.git git rev-parse some-tag >expected &&
+#		GIT_DIR=dst.tag/.git git rev-parse HEAD >actual &&
+#		test_cmp expected actual &&
+#		GIT_DIR=dst.tag/.git git config remote.origin.fetch >fetch.actual &&
+#		echo "+refs/heads/*:refs/remotes/origin/*" >fetch.expected &&
+#		test_cmp fetch.expected fetch.actual
+#	
+not ok 39 - set up ssh wrapper
+#	
+#		cp "$GIT_BUILD_DIR/t/helper/test-fake-ssh$X" \
+#			"$TRASH_DIRECTORY/ssh$X" &&
+#		GIT_SSH="$TRASH_DIRECTORY/ssh$X" &&
+#		export GIT_SSH &&
+#		export TRASH_DIRECTORY &&
+#		>"$TRASH_DIRECTORY"/ssh-output
+#	
+not ok 40 - clone myhost:src uses ssh
+#	
+#		GIT_TEST_PROTOCOL_VERSION=0 git clone myhost:src ssh-clone &&
+#		expect_ssh myhost src
+#	
+not ok 41 - clone local path foo:bar
+#	
+#		cp -R src "foo:bar" &&
+#		git clone "foo:bar" foobar &&
+#		expect_ssh none
+#	
+not ok 42 - bracketed hostnames are still ssh
+#	
+#		GIT_TEST_PROTOCOL_VERSION=0 git clone "[myhost:123]:src" ssh-bracket-clone &&
+#		expect_ssh "-p 123" myhost src
+#	
+not ok 43 - OpenSSH variant passes -4
+#	
+#		GIT_TEST_PROTOCOL_VERSION=0 git clone -4 "[myhost:123]:src" ssh-ipv4-clone &&
+#		expect_ssh "-4 -p 123" myhost src
+#	
+not ok 44 - variant can be overridden
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/putty" &&
+#		git -c ssh.variant=putty clone -4 "[myhost:123]:src" ssh-putty-clone &&
+#		expect_ssh "-4 -P 123" myhost src
+#	
+not ok 45 - variant=auto picks based on basename
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/plink" &&
+#		git -c ssh.variant=auto clone -4 "[myhost:123]:src" ssh-auto-clone &&
+#		expect_ssh "-4 -P 123" myhost src
+#	
+not ok 46 - simple does not support -4/-6
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/simple" &&
+#		test_must_fail git clone -4 "myhost:src" ssh-4-clone-simple
+#	
+not ok 47 - simple does not support port
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/simple" &&
+#		test_must_fail git clone "[myhost:123]:src" ssh-bracket-clone-simple
+#	
+not ok 48 - uplink is treated as simple
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/uplink" &&
+#		test_must_fail git clone "[myhost:123]:src" ssh-bracket-clone-uplink &&
+#		git clone "myhost:src" ssh-clone-uplink &&
+#		expect_ssh myhost src
+#	
+not ok 49 - OpenSSH-like uplink is treated as ssh
+#	
+#		write_script "$TRASH_DIRECTORY/uplink" <<-EOF &&
+#		if test "\$1" = "-G"
+#		then
+#			exit 0
+#		fi &&
+#		exec "\$TRASH_DIRECTORY/ssh$X" "\$@"
+#		EOF
+#		test_when_finished "rm -f \"\$TRASH_DIRECTORY/uplink\"" &&
+#		GIT_SSH="$TRASH_DIRECTORY/uplink" &&
+#		test_when_finished "GIT_SSH=\"\$TRASH_DIRECTORY/ssh\$X\"" &&
+#		GIT_TEST_PROTOCOL_VERSION=0 git clone "[myhost:123]:src" ssh-bracket-clone-sshlike-uplink &&
+#		expect_ssh "-p 123" myhost src
+#	
+not ok 50 - plink is treated specially (as putty)
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/plink" &&
+#		git clone "[myhost:123]:src" ssh-bracket-clone-plink-0 &&
+#		expect_ssh "-P 123" myhost src
+#	
+not ok 51 - plink.exe is treated specially (as putty)
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/plink.exe" &&
+#		git clone "[myhost:123]:src" ssh-bracket-clone-plink-1 &&
+#		expect_ssh "-P 123" myhost src
+#	
+not ok 52 - tortoiseplink is like putty, with extra arguments
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/tortoiseplink" &&
+#		git clone "[myhost:123]:src" ssh-bracket-clone-plink-2 &&
+#		expect_ssh "-batch -P 123" myhost src
+#	
+not ok 53 - double quoted plink.exe in GIT_SSH_COMMAND
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/plink.exe" &&
+#		GIT_SSH_COMMAND="\"$TRASH_DIRECTORY/plink.exe\" -v" \
+#			git clone "[myhost:123]:src" ssh-bracket-clone-plink-3 &&
+#		expect_ssh "-v -P 123" myhost src
+#	
+not ok 54 - single quoted plink.exe in GIT_SSH_COMMAND
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/plink.exe" &&
+#		GIT_SSH_COMMAND="$SQ$TRASH_DIRECTORY/plink.exe$SQ -v" \
+#			git clone "[myhost:123]:src" ssh-bracket-clone-plink-4 &&
+#		expect_ssh "-v -P 123" myhost src
+#	
+not ok 55 - GIT_SSH_VARIANT overrides plink detection
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/plink" &&
+#		GIT_TEST_PROTOCOL_VERSION=0 GIT_SSH_VARIANT=ssh \
+#			git clone "[myhost:123]:src" ssh-bracket-clone-variant-1 &&
+#		expect_ssh "-p 123" myhost src
+#	
+not ok 56 - ssh.variant overrides plink detection
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/plink" &&
+#		GIT_TEST_PROTOCOL_VERSION=0 git -c ssh.variant=ssh \
+#			clone "[myhost:123]:src" ssh-bracket-clone-variant-2 &&
+#		expect_ssh "-p 123" myhost src
+#	
+not ok 57 - GIT_SSH_VARIANT overrides plink detection to plink
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/plink" &&
+#		GIT_SSH_VARIANT=plink \
+#		git clone "[myhost:123]:src" ssh-bracket-clone-variant-3 &&
+#		expect_ssh "-P 123" myhost src
+#	
+not ok 58 - GIT_SSH_VARIANT overrides plink to tortoiseplink
+#	
+#		copy_ssh_wrapper_as "$TRASH_DIRECTORY/plink" &&
+#		GIT_SSH_VARIANT=tortoiseplink \
+#		git clone "[myhost:123]:src" ssh-bracket-clone-variant-4 &&
+#		expect_ssh "-batch -P 123" myhost src
+#	
+ok 59 - clean failure on broken quoting
+not ok 60 - clone c:temp is ssl
+#	
+#		test_clone_url c:temp c temp
+#	
+ok 61 # skip clone c:temp is dos drive (missing MINGW)
+not ok 62 - clone host:rep
+#	
+#			test_clone_url host:$repo host $repo
+#		
+not ok 63 - clone host:rep/home/project
+#	
+#			test_clone_url host:$repo host $repo
+#		
+not ok 64 - clone host:123
+#	
+#			test_clone_url host:$repo host $repo
+#		
+not ok 65 - clone [::1]:rep
+#	
+#			test_clone_url [::1]:$repo ::1 "$repo"
+#		
+not ok 66 - clone [::1]:rep/home/project
+#	
+#			test_clone_url [::1]:$repo ::1 "$repo"
+#		
+not ok 67 - clone [::1]:123
+#	
+#			test_clone_url [::1]:$repo ::1 "$repo"
+#		
+not ok 68 - clone host:/~repo
+#	
+#		test_clone_url host:/~repo host "~repo"
+#	
+not ok 69 - clone [::1]:/~repo
+#	
+#		test_clone_url [::1]:/~repo ::1 "~repo"
+#	
+ok 70 - clone foo/bar:baz is not ssh
+ok 71 - clone [foo]bar/baz:qux is not ssh
+ok 72 - clone [foo/bar]:baz is not ssh
+not ok 73 - clone ssh://host.xz/home/user/repo
+#	
+#			test_clone_url "ssh://host.xz$tcol/home/user/repo" host.xz /home/user/repo
+#		
+not ok 74 - clone ssh://host.xz/~repo
+#	
+#			test_clone_url "ssh://host.xz$tcol/~repo" host.xz "~repo"
+#		
+not ok 75 - clone ssh://host.xz:/home/user/repo
+#	
+#			test_clone_url "ssh://host.xz$tcol/home/user/repo" host.xz /home/user/repo
+#		
+not ok 76 - clone ssh://host.xz:/~repo
+#	
+#			test_clone_url "ssh://host.xz$tcol/~repo" host.xz "~repo"
+#		
+not ok 77 - clone ssh://host.xz:22/home/user/repo
+#	
+#		test_clone_url "ssh://host.xz:22/home/user/repo" "-p 22 host.xz" "/home/user/repo"
+#	
+not ok 78 - clone ssh://host.xz:22/~repo
+#	
+#		test_clone_url "ssh://host.xz:22/~repo" "-p 22 host.xz" "~repo"
+#	
+not ok 79 - clone ssh://::1/home/user/repo
+#	
+#		  test_clone_url ssh://::1/home/user/repo ::1 /home/user/repo
+#		
+not ok 80 - clone ssh://[::1]/home/user/repo
+#	
+#		  test_clone_url ssh://[::1]/home/user/repo ::1 /home/user/repo
+#		
+not ok 81 - clone ssh://[::1]:/home/user/repo
+#	
+#		  test_clone_url ssh://[::1]:/home/user/repo ::1 /home/user/repo
+#		
+not ok 82 - clone ssh://user@::1/home/user/repo
+#	
+#		  test_clone_url ssh://user@::1/home/user/repo user@::1 /home/user/repo
+#		
+not ok 83 - clone ssh://user@[::1]/home/user/repo
+#	
+#		  test_clone_url ssh://user@[::1]/home/user/repo user@::1 /home/user/repo
+#		
+not ok 84 - clone ssh://user@[::1]:/home/user/repo
+#	
+#		  test_clone_url ssh://user@[::1]:/home/user/repo user@::1 /home/user/repo
+#		
+not ok 85 - clone ssh://[user@::1]/home/user/repo
+#	
+#		  test_clone_url ssh://[user@::1]/home/user/repo user@::1 /home/user/repo
+#		
+not ok 86 - clone ssh://[user@::1]:/home/user/repo
+#	
+#		  test_clone_url ssh://[user@::1]:/home/user/repo user@::1 /home/user/repo
+#		
+not ok 87 - clone ssh://::1/~repo
+#	
+#			test_clone_url ssh://::1/~repo ::1 '~repo'
+#		
+not ok 88 - clone ssh://[::1]/~repo
+#	
+#			test_clone_url ssh://[::1]/~repo ::1 '~repo'
+#		
+not ok 89 - clone ssh://user@::1/~repo
+#	
+#			test_clone_url ssh://user@::1/~repo user@::1 '~repo'
+#		
+not ok 90 - clone ssh://user@[::1]/~repo
+#	
+#			test_clone_url ssh://user@[::1]/~repo user@::1 '~repo'
+#		
+not ok 91 - clone ssh://[user@::1]/~repo
+#	
+#			test_clone_url ssh://[user@::1]/~repo user@::1 '~repo'
+#		
+not ok 92 - clone ssh://[::1]:22/home/user/repo
+#	
+#		  test_clone_url ssh://[::1]:22/home/user/repo '-p 22' ::1 /home/user/repo
+#		
+not ok 93 - clone ssh://user@[::1]:22/home/user/repo
+#	
+#		  test_clone_url ssh://user@[::1]:22/home/user/repo '-p 22' user@::1 /home/user/repo
+#		
+not ok 94 - clone ssh://[user@::1]:22/home/user/repo
+#	
+#		  test_clone_url ssh://[user@::1]:22/home/user/repo '-p 22' user@::1 /home/user/repo
+#		
+not ok 95 - clone ssh://[::1]:22/~repo
+#	
+#			  test_clone_url ssh://[::1]:22/~repo '-p 22' ::1 '~repo'
+#		
+not ok 96 - clone ssh://user@[::1]:22/~repo
+#	
+#			  test_clone_url ssh://user@[::1]:22/~repo '-p 22' user@::1 '~repo'
+#		
+not ok 97 - clone ssh://[user@::1]:22/~repo
+#	
+#			  test_clone_url ssh://[user@::1]:22/~repo '-p 22' user@::1 '~repo'
+#		
+ok 98 - clone from a repository with two identical branches
+ok 99 - shallow clone locally
+ok 100 - GIT_TRACE_PACKFILE produces a usable pack
+ok 101 - clone on case-insensitive fs
+ok 102 # skip colliding file detection (missing CASE_INSENSITIVE_FS of PERL_TEST_HELPERS,CASE_INSENSITIVE_FS)
+ok 103 # skip colliding symlink/directory keeps directory (missing CASE_INSENSITIVE_FS of CASE_INSENSITIVE_FS,SYMLINKS)
+ok 104 - clone with GIT_DEFAULT_HASH
+not ok 105 - partial clone
+#	
+#		partial_clone server "file://$(pwd)/server"
+#	
+ok 106 - partial clone with -o
+ok 107 - partial clone: warn if server does not support object filtering
+not ok 108 - batch missing blob request during checkout
+#	
+#		rm -rf server client &&
+#	
+#		test_create_repo server &&
+#		echo a >server/a &&
+#		echo b >server/b &&
+#		git -C server add a b &&
+#	
+#		git -C server commit -m x &&
+#		echo aa >server/a &&
+#		echo bb >server/b &&
+#		git -C server add a b &&
+#		git -C server commit -m x &&
+#	
+#		test_config -C server uploadpack.allowfilter 1 &&
+#		test_config -C server uploadpack.allowanysha1inwant 1 &&
+#	
+#		git clone --filter=blob:limit=0 "file://$(pwd)/server" client &&
+#	
+#		# Ensure that there is only one negotiation by checking that there is
+#		# only "done" line sent. ("done" marks the end of negotiation.)
+#		GIT_TRACE_PACKET="$(pwd)/trace" \
+#			GIT_TRACE2_EVENT="$(pwd)/trace2_event" \
+#			git -C client -c trace2.eventNesting=5 checkout HEAD^ &&
+#		grep \"key\":\"total_rounds\",\"value\":\"1\" trace2_event >trace_lines &&
+#		test_line_count = 1 trace_lines &&
+#		grep "fetch> done" trace >done_lines &&
+#		test_line_count = 1 done_lines
+#	
+ok 109 - batch missing blob request does not inadvertently try to fetch gitlinks
+ok 110 - clone with includeIf
+ok 111 - partial clone using HTTP
+ok 112 - reject cloning shallow repository using HTTP
+not ok 113 - auto-discover bundle URI from HTTP clone
+#	
+#		test_when_finished rm -rf trace.txt repo2 "$HTTPD_DOCUMENT_ROOT_PATH/repo2.git" &&
+#		git -C src bundle create "$HTTPD_DOCUMENT_ROOT_PATH/everything.bundle" --all &&
+#		git clone --bare --no-local src "$HTTPD_DOCUMENT_ROOT_PATH/repo2.git" &&
+#	
+#		git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo2.git" config \
+#			uploadpack.advertiseBundleURIs true &&
+#		git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo2.git" config \
+#			bundle.version 1 &&
+#		git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo2.git" config \
+#			bundle.mode all &&
+#		git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo2.git" config \
+#			bundle.everything.uri "$HTTPD_URL/everything.bundle" &&
+#	
+#		GIT_TRACE2_EVENT="$(pwd)/trace.txt" \
+#			git -c protocol.version=2 \
+#			    -c transfer.bundleURI=true clone \
+#			$HTTPD_URL/smart/repo2.git repo2 &&
+#		cat >pattern <<-EOF &&
+#		"event":"child_start".*"argv":\["git-remote-https","$HTTPD_URL/everything.bundle"\]
+#		EOF
+#		grep -f pattern trace.txt
+#	
+not ok 114 - auto-discover multiple bundles from HTTP clone
+#	
+#		test_when_finished rm -rf trace.txt repo3 "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" &&
+#	
+#		test_commit -C src new &&
+#		git -C src bundle create "$HTTPD_DOCUMENT_ROOT_PATH/new.bundle" HEAD~1..HEAD &&
+#		git clone --bare --no-local src "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" &&
+#	
+#		git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" config \
+#			uploadpack.advertiseBundleURIs true &&
+#		git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" config \
+#			bundle.version 1 &&
+#		git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" config \
+#			bundle.mode all &&
+#	
+#		git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" config \
+#			bundle.everything.uri "$HTTPD_URL/everything.bundle" &&
+#		git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" config \
+#			bundle.new.uri "$HTTPD_URL/new.bundle" &&
+#	
+#		GIT_TRACE2_EVENT="$(pwd)/trace.txt" \
+#			git -c protocol.version=2 \
+#			    -c transfer.bundleURI=true clone \
+#			$HTTPD_URL/smart/repo3.git repo3 &&
+#	
+#		# We should fetch _both_ bundles
+#		cat >pattern <<-EOF &&
+#		"event":"child_start".*"argv":\["git-remote-https","$HTTPD_URL/everything.bundle"\]
+#		EOF
+#		grep -f pattern trace.txt &&
+#		cat >pattern <<-EOF &&
+#		"event":"child_start".*"argv":\["git-remote-https","$HTTPD_URL/new.bundle"\]
+#		EOF
+#		grep -f pattern trace.txt
+#	
+not ok 115 - auto-discover multiple bundles from HTTP clone: creationToken heuristic
+#	
+#		test_when_finished rm -rf "$HTTPD_DOCUMENT_ROOT_PATH/repo4.git" &&
+#		test_when_finished rm -rf clone-heuristic trace*.txt &&
+#	
+#		test_commit -C src newest &&
+#		git -C src bundle create "$HTTPD_DOCUMENT_ROOT_PATH/newest.bundle" HEAD~1..HEAD &&
+#		git clone --bare --no-local src "$HTTPD_DOCUMENT_ROOT_PATH/repo4.git" &&
+#	
+#		cat >>"$HTTPD_DOCUMENT_ROOT_PATH/repo4.git/config" <<-EOF &&
+#		[uploadPack]
+#			advertiseBundleURIs = true
+#	
+#		[bundle]
+#			version = 1
+#			mode = all
+#			heuristic = creationToken
+#	
+#		[bundle "everything"]
+#			uri = $HTTPD_URL/everything.bundle
+#			creationtoken = 1
+#	
+#		[bundle "new"]
+#			uri = $HTTPD_URL/new.bundle
+#			creationtoken = 2
+#	
+#		[bundle "newest"]
+#			uri = $HTTPD_URL/newest.bundle
+#			creationtoken = 3
+#		EOF
+#	
+#		GIT_TRACE2_EVENT="$(pwd)/trace-clone.txt" \
+#			git -c protocol.version=2 \
+#			    -c transfer.bundleURI=true clone \
+#			"$HTTPD_URL/smart/repo4.git" clone-heuristic &&
+#	
+#		cat >expect <<-EOF &&
+#		$HTTPD_URL/newest.bundle
+#		$HTTPD_URL/new.bundle
+#		$HTTPD_URL/everything.bundle
+#		EOF
+#	
+#		# We should fetch all bundles in the expected order.
+#		test_remote_https_urls <trace-clone.txt >actual &&
+#		test_cmp expect actual
+#	
+# failed 61 among 115 test(s)
+1..115
+# Tests: 115  Pass: 54  Fail: 61  Skip: 3

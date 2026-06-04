@@ -1,0 +1,49 @@
+ok 1 - detect if nfd needed
+ok 2 - setup
+ok 3 - setup case mac
+ok 4 - git diff f.Adiar
+ok 5 - git diff-files f.Adiar
+ok 6 - git diff-index f.Adiar
+ok 7 - add file Adiarnfc
+ok 8 - git diff-tree f.Adiar
+ok 9 - stage file d.Adiarnfd/f.Adiarnfd
+ok 10 - add link Adiarnfc
+ok 11 - git log f.Adiar
+ok 12 - git lsfiles f.Adiar
+not ok 13 - git mv
+#	
+#		git mv f.$Adiarnfd f.$Odiarnfc &&
+#		git mv d.$Adiarnfd d.$Odiarnfc &&
+#		git mv l.$Adiarnfd l.$Odiarnfc &&
+#		git commit -m "mv Adiarnfd Odiarnfc"
+#	
+ok 14 - git checkout nfc
+ok 15 - git checkout file nfd
+not ok 16 - git checkout link nfd
+#	
+#		rm -f l.* &&
+#		git checkout l.$Odiarnfd
+#	
+ok 17 - setup case mac2
+ok 18 - commit file d2.Adiarnfd/f.Adiarnfd
+ok 19 - setup for long decomposed filename
+ok 20 - Add long decomposed filename
+ok 21 - setup for long precomposed filename
+ok 22 - Add long precomposed filename
+not ok 23 - handle existing decomposed filenames
+#	
+#		echo content >"verbatim.$Adiarnfd" &&
+#		git -c core.precomposeunicode=false add "verbatim.$Adiarnfd" &&
+#		git commit -m "existing decomposed file" &&
+#		git ls-files --exclude-standard -o "verbatim*" >untracked &&
+#		test_must_be_empty untracked
+#	
+ok 24 - unicode decomposed: git restore -p . 
+ok 25 - respect git config --global core.precomposeunicode
+ok 26 - ls-files false false nfd nfd
+ok 27 - ls-files false true nfd nfd
+ok 28 - ls-files true false nfd nfd
+ok 29 - ls-files true true nfd nfd
+# failed 3 among 29 test(s)
+1..29
+# Tests: 29  Pass: 26  Fail: 3  Skip: 0

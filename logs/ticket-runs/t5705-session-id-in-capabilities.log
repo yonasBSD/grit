@@ -1,0 +1,112 @@
+ok 1 - setup repos for session ID capability tests
+ok 2 - session IDs not advertised by default (fetch v0)
+not ok 3 - session IDs not advertised by default (push v0)
+#	
+#			test_when_finished "rm -rf local tr2-client-events tr2-server-events" &&
+#			test_when_finished "git -C local push --delete origin new-branch" &&
+#			cp -r "$LOCAL_PRISTINE" local &&
+#			git -C local pull --no-rebase origin &&
+#			GIT_TRACE2_EVENT="$(pwd)/tr2-client-events" \
+#			git -c protocol.version=$PROTO -C local push \
+#				--receive-pack "GIT_TRACE2_EVENT=\"$(pwd)/tr2-server-events\" git-receive-pack" \
+#				origin HEAD:new-branch &&
+#			test -z "$(grep \"key\":\"server-sid\" tr2-client-events)" &&
+#			test -z "$(grep \"key\":\"client-sid\" tr2-server-events)"
+#		
+ok 4 - session IDs not advertised by default (fetch v1)
+not ok 5 - session IDs not advertised by default (push v1)
+#	
+#			test_when_finished "rm -rf local tr2-client-events tr2-server-events" &&
+#			test_when_finished "git -C local push --delete origin new-branch" &&
+#			cp -r "$LOCAL_PRISTINE" local &&
+#			git -C local pull --no-rebase origin &&
+#			GIT_TRACE2_EVENT="$(pwd)/tr2-client-events" \
+#			git -c protocol.version=$PROTO -C local push \
+#				--receive-pack "GIT_TRACE2_EVENT=\"$(pwd)/tr2-server-events\" git-receive-pack" \
+#				origin HEAD:new-branch &&
+#			test -z "$(grep \"key\":\"server-sid\" tr2-client-events)" &&
+#			test -z "$(grep \"key\":\"client-sid\" tr2-server-events)"
+#		
+ok 6 - session IDs not advertised by default (fetch v2)
+not ok 7 - session IDs not advertised by default (push v2)
+#	
+#			test_when_finished "rm -rf local tr2-client-events tr2-server-events" &&
+#			test_when_finished "git -C local push --delete origin new-branch" &&
+#			cp -r "$LOCAL_PRISTINE" local &&
+#			git -C local pull --no-rebase origin &&
+#			GIT_TRACE2_EVENT="$(pwd)/tr2-client-events" \
+#			git -c protocol.version=$PROTO -C local push \
+#				--receive-pack "GIT_TRACE2_EVENT=\"$(pwd)/tr2-server-events\" git-receive-pack" \
+#				origin HEAD:new-branch &&
+#			test -z "$(grep \"key\":\"server-sid\" tr2-client-events)" &&
+#			test -z "$(grep \"key\":\"client-sid\" tr2-server-events)"
+#		
+ok 8 - enable SID advertisement
+ok 9 - session IDs advertised (fetch v0)
+not ok 10 - session IDs advertised (push v0)
+#	
+#			test_when_finished "rm -rf local tr2-client-events tr2-server-events" &&
+#			test_when_finished "git -C local push --delete origin new-branch" &&
+#			cp -r "$LOCAL_PRISTINE" local &&
+#			git -C local pull --no-rebase origin &&
+#			GIT_TRACE2_EVENT="$(pwd)/tr2-client-events" \
+#			git -c protocol.version=$PROTO -C local push \
+#				--receive-pack "GIT_TRACE2_EVENT=\"$(pwd)/tr2-server-events\" git-receive-pack" \
+#				origin HEAD:new-branch &&
+#			grep \"key\":\"server-sid\" tr2-client-events &&
+#			grep \"key\":\"client-sid\" tr2-server-events
+#		
+ok 11 - client & server log negotiated version (v0)
+ok 12 - session IDs advertised (fetch v1)
+not ok 13 - session IDs advertised (push v1)
+#	
+#			test_when_finished "rm -rf local tr2-client-events tr2-server-events" &&
+#			test_when_finished "git -C local push --delete origin new-branch" &&
+#			cp -r "$LOCAL_PRISTINE" local &&
+#			git -C local pull --no-rebase origin &&
+#			GIT_TRACE2_EVENT="$(pwd)/tr2-client-events" \
+#			git -c protocol.version=$PROTO -C local push \
+#				--receive-pack "GIT_TRACE2_EVENT=\"$(pwd)/tr2-server-events\" git-receive-pack" \
+#				origin HEAD:new-branch &&
+#			grep \"key\":\"server-sid\" tr2-client-events &&
+#			grep \"key\":\"client-sid\" tr2-server-events
+#		
+ok 14 - client & server log negotiated version (v1)
+not ok 15 - session IDs advertised (fetch v2)
+#	
+#			test_when_finished "rm -rf local tr2-client-events tr2-server-events" &&
+#			cp -r "$LOCAL_PRISTINE" local &&
+#			GIT_TRACE2_EVENT="$(pwd)/tr2-client-events" \
+#			git -c protocol.version=$PROTO -C local fetch \
+#				--upload-pack "GIT_TRACE2_EVENT=\"$(pwd)/tr2-server-events\" git-upload-pack" \
+#				origin &&
+#			grep \"key\":\"server-sid\" tr2-client-events &&
+#			grep \"key\":\"client-sid\" tr2-server-events
+#		
+not ok 16 - session IDs advertised (push v2)
+#	
+#			test_when_finished "rm -rf local tr2-client-events tr2-server-events" &&
+#			test_when_finished "git -C local push --delete origin new-branch" &&
+#			cp -r "$LOCAL_PRISTINE" local &&
+#			git -C local pull --no-rebase origin &&
+#			GIT_TRACE2_EVENT="$(pwd)/tr2-client-events" \
+#			git -c protocol.version=$PROTO -C local push \
+#				--receive-pack "GIT_TRACE2_EVENT=\"$(pwd)/tr2-server-events\" git-receive-pack" \
+#				origin HEAD:new-branch &&
+#			grep \"key\":\"server-sid\" tr2-client-events &&
+#			grep \"key\":\"client-sid\" tr2-server-events
+#		
+not ok 17 - client & server log negotiated version (v2)
+#	
+#			test_when_finished "rm -rf local tr2-client-events tr2-server-events" &&
+#			cp -r "$LOCAL_PRISTINE" local &&
+#			GIT_TRACE2_EVENT="$(pwd)/tr2-client-events" \
+#			git -c protocol.version=$PROTO -C local fetch \
+#				--upload-pack "GIT_TRACE2_EVENT=\"$(pwd)/tr2-server-events\" git-upload-pack" \
+#				origin &&
+#			grep \"key\":\"negotiated-version\",\"value\":\"$PROTO\" tr2-client-events &&
+#			grep \"key\":\"negotiated-version\",\"value\":\"$PROTO\" tr2-server-events
+#		
+# failed 8 among 17 test(s)
+1..17
+# Tests: 17  Pass: 9  Fail: 8  Skip: 0

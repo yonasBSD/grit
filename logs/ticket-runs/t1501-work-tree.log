@@ -1,0 +1,80 @@
+ok 1 - setup
+ok 2 - setup: helper for testing rev-parse
+ok 3 - setup: core.worktree = relative path
+ok 4 - outside
+ok 5 - inside work tree
+ok 6 - empty prefix is actually written out
+ok 7 - subdir of work tree
+ok 8 - setup: core.worktree = absolute path
+ok 9 - outside
+ok 10 - inside work tree
+ok 11 - subdir of work tree
+ok 12 - setup: GIT_WORK_TREE=relative (override core.worktree)
+ok 13 - outside
+ok 14 - inside work tree
+ok 15 - subdir of work tree
+ok 16 - setup: GIT_WORK_TREE=absolute, below git dir
+ok 17 - outside
+ok 18 - in repo.git
+ok 19 - inside work tree
+ok 20 - subdir of work tree
+ok 21 - find work tree from repo
+ok 22 - find work tree from work tree
+not ok 23 - _gently() groks relative GIT_DIR & GIT_WORK_TREE
+#	
+#		(
+#			cd repo.git/work/sub/dir &&
+#			GIT_DIR=../../.. &&
+#			GIT_WORK_TREE=../.. &&
+#			GIT_PAGER= &&
+#			export GIT_DIR GIT_WORK_TREE GIT_PAGER &&
+#	
+#			git diff --exit-code tracked &&
+#			echo changed >tracked &&
+#			test_must_fail git diff --exit-code tracked
+#		)
+#	
+not ok 24 - diff-index respects work tree under .git dir
+#	
+#		cat >diff-index-cached.expected <<-EOF &&
+#		:000000 100644 $ZERO_OID $EMPTY_BLOB A	sub/dir/tracked
+#		EOF
+#		cat >diff-index.expected <<-EOF &&
+#		:000000 100644 $ZERO_OID $ZERO_OID A	sub/dir/tracked
+#		EOF
+#	
+#		(
+#			GIT_DIR=repo.git &&
+#			GIT_WORK_TREE=repo.git/work &&
+#			export GIT_DIR GIT_WORK_TREE &&
+#			git diff-index $EMPTY_TREE >diff-index.actual &&
+#			git diff-index --cached $EMPTY_TREE >diff-index-cached.actual
+#		) &&
+#		test_cmp diff-index.expected diff-index.actual &&
+#		test_cmp diff-index-cached.expected diff-index-cached.actual
+#	
+ok 25 - diff-files respects work tree under .git dir
+ok 26 - git diff respects work tree under .git dir
+ok 27 - git grep
+ok 28 - git commit
+not ok 29 - absolute pathspec should fail gracefully
+#	
+#		(
+#			cd repo.git &&
+#			test_might_fail git config --unset core.worktree &&
+#			test_must_fail git log HEAD -- /home
+#		)
+#	
+ok 30 - make_relative_path handles double slashes in GIT_DIR
+ok 31 - relative $GIT_WORK_TREE and git subprocesses
+ok 32 - Multi-worktree setup
+ok 33 - GIT_DIR set (1)
+ok 34 - GIT_DIR set (2)
+ok 35 - Auto discovery
+ok 36 - $GIT_DIR/common overrides core.worktree
+ok 37 - $GIT_WORK_TREE overrides $GIT_DIR/common
+ok 38 - error out gracefully on invalid $GIT_WORK_TREE
+ok 39 - refs work with relative gitdir and work tree
+# failed 3 among 39 test(s)
+1..39
+# Tests: 39  Pass: 36  Fail: 3  Skip: 0

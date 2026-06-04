@@ -1,0 +1,44 @@
+ok 1 - setup repository with .gitignore
+ok 2 - create ignored and untracked files
+ok 3 - status does not show *.o files (ignored by pattern)
+ok 4 - status does not show *.a files (ignored by pattern)
+ok 5 - status does not show build/ directory (ignored)
+ok 6 - status does not show tmp/ directory (ignored)
+ok 7 - status does not show *.log files (ignored)
+ok 8 - status shows only non-ignored untracked files
+ok 9 - status --ignored shows *.o in ignored section
+ok 10 - status --ignored shows *.a in ignored section
+ok 11 - status --ignored shows build/ in ignored section
+ok 12 - status --ignored shows tmp/ in ignored section
+ok 13 - status --ignored shows *.log in ignored section
+ok 14 - status --ignored still shows untracked files
+ok 15 - setup: nested .gitignore
+ok 16 - status does not show *.tmp in src (nested gitignore)
+ok 17 - status --ignored shows *.tmp in src
+ok 18 - setup: gitignore with negation
+ok 19 - status shows important.log as untracked
+ok 20 - status still hides non-negated *.log files
+ok 21 - git add . does not stage ignored files
+ok 22 - reset index for next tests
+not ok 23 - ls-files --ignored shows ignored files
+#	
+#		(
+#		cd repo &&
+#		git ls-files --ignored >../actual &&
+#		grep "main.o" ../actual &&
+#		grep "util.o" ../actual &&
+#		grep "lib.a" ../actual
+#		)
+#	
+ok 24 - ls-files --others --exclude-standard shows untracked non-ignored files
+ok 25 - tracked file matching ignore pattern still shows in ls-files
+ok 26 - status shows modifications to force-added ignored file
+ok 27 - commit modification to force-added file
+ok 28 - setup: directory with only ignored content
+ok 29 - status does not show directory containing only ignored files
+ok 30 - setup: gitignore with comments and blank lines
+ok 31 - status still ignores *.o with comments in gitignore
+ok 32 - status still ignores build/ with comments in gitignore
+# failed 1 among 32 test(s)
+1..32
+# Tests: 32  Pass: 31  Fail: 1  Skip: 0

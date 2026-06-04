@@ -1,0 +1,25 @@
+ok 1 - 1a: setup--config worktree
+ok 2 - 1b: pre-add all
+ok 3 - 1c: pre-add dir all
+ok 4 - 1d: post-add tracked
+ok 5 - 1e: post-add untracked
+ok 6 - 2a: setup--set git-dir
+ok 7 - 2b: pre-add all
+ok 8 - 2c: pre-add dir all
+ok 9 - 2d: post-add tracked
+ok 10 - 2e: post-add untracked
+ok 11 - 3a: setup--add repo dir
+not ok 12 - 3b: ignored
+#	
+#		(
+#		cd test3 &&
+#		git --git-dir=repo/.git ls-files -io --directory --exclude-standard >actual-ignored-unsorted &&
+#		sort actual-ignored-unsorted >actual-ignored &&
+#		sort expect-ignored-unsorted >expect-ignored &&
+#		test_cmp expect-ignored actual-ignored
+#		)
+#	
+ok 13 - 3c: add repo
+# failed 1 among 13 test(s)
+1..13
+# Tests: 13  Pass: 12  Fail: 1  Skip: 0

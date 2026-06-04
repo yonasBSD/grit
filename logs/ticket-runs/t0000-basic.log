@@ -1,0 +1,111 @@
+ok 1 - verify that the running shell supports "local"
+ok 2 - .git/objects should be empty after git init in an empty repo
+ok 3 - .git/objects should have 3 subdirectories
+ok 4 - success is reported like this
+ok 5 - subtest: 3 passing tests
+ok 6 - subtest: 2/3 tests passing
+ok 7 - subtest: --immediate
+ok 8 - subtest: a failing TODO test
+ok 9 - subtest: a passing TODO test
+ok 10 - subtest: 2 TODO tests, one passin
+ok 11 - subtest: mixed results: pass, failure and a TODO test
+ok 12 - subtest: mixed results: a mixture of all possible results
+ok 13 - subtest: --verbose option
+ok 14 - subtest: --verbose-only option
+ok 15 - subtest: skip one with GIT_SKIP_TESTS
+ok 16 - subtest: skip several with GIT_SKIP_TESTS
+ok 17 - subtest: sh pattern skipping with GIT_SKIP_TESTS
+ok 18 - subtest: skip entire test suite with GIT_SKIP_TESTS
+ok 19 - subtest: GIT_SKIP_TESTS does not skip unmatched suite
+ok 20 - subtest: --run basic
+ok 21 - subtest: --run with a range
+ok 22 - subtest: --run with two ranges
+ok 23 - subtest: --run with a left open range
+ok 24 - subtest: --run with a right open range
+ok 25 - subtest: --run with basic negation
+ok 26 - subtest: --run with two negations
+ok 27 - subtest: --run a range and negation
+ok 28 - subtest: --run range negation
+ok 29 - subtest: --run include, exclude and include
+ok 30 - subtest: --run include, exclude and include, comma separated
+ok 31 - subtest: --run exclude and include
+ok 32 - subtest: --run empty selectors
+ok 33 - subtest: --run substring selector
+ok 34 - subtest: --run keyword selection
+ok 35 - subtest: --run invalid range end
+ok 36 - subtest: --invert-exit-code without --immediate
+ok 37 - subtest: --invert-exit-code with --immediate: all passed
+ok 38 - subtest: --invert-exit-code without --immediate: partial pass
+ok 39 - subtest: --invert-exit-code with --immediate: partial pass
+ok 40 - subtest: --invert-exit-code --immediate: got a failure
+ok 41 - subtest: tests respect prerequisites
+ok 42 - subtest: tests respect lazy prerequisites
+ok 43 - subtest: nested lazy prerequisites
+ok 44 - subtest: lazy prereqs do not turn off tracing
+ok 45 - subtest: tests clean up after themselves
+ok 46 - subtest: tests clean up even on failures
+ok 47 - subtest: test_atexit is run
+ok 48 - test_oid provides sane info by default
+ok 49 - test_oid can look up data for SHA-1
+ok 50 - test_oid can look up data for SHA-256
+ok 51 - test_oid can look up data for a specified algorithm
+error: test_bool_env requires bool values both for $envvar and for the default fallback
+error: test_bool_env requires bool values both for $envvar and for the default fallback
+ok 52 - test_bool_env
+ok 53 - git update-index without --add should fail adding
+ok 54 - git update-index with --add should succeed
+ok 55 - writing tree out with git write-tree
+ok 56 - validate object ID of a known tree
+ok 57 - git update-index without --remove should fail removing
+ok 58 - git update-index with --remove should be able to remove
+ok 59 - git write-tree should be able to write an empty tree
+ok 60 - validate object ID of a known tree
+ok 61 - adding various types of objects with git update-index --add
+ok 62 - showing stage with git ls-files --stage
+ok 63 - validate git ls-files output for a known tree
+ok 64 - writing tree out with git write-tree
+ok 65 - validate object ID for a known tree
+ok 66 - showing tree with git ls-tree
+ok 67 - git ls-tree output for a known tree
+ok 68 - showing tree with git ls-tree -r
+ok 69 - git ls-tree -r output for a known tree
+ok 70 - showing tree with git ls-tree -r -t
+ok 71 - git ls-tree -r output for a known tree
+ok 72 - writing partial tree out with git write-tree --prefix
+ok 73 - validate object ID for a known tree
+ok 74 - writing partial tree out with git write-tree --prefix
+ok 75 - validate object ID for a known tree
+ok 76 - put invalid objects into the index
+ok 77 - writing this tree without --missing-ok
+ok 78 - writing this tree with --missing-ok
+ok 79 - git read-tree followed by write-tree should be idempotent
+not ok 80 - validate git diff-files output for a know cache/work tree state
+#	
+#		cat >expected <<EOF &&
+#	:100644 100644 $(test_oid path0f) $ZERO_OID M	path0
+#	:120000 120000 $(test_oid path0s) $ZERO_OID M	path0sym
+#	:100644 100644 $(test_oid path2f) $ZERO_OID M	path2/file2
+#	:120000 120000 $(test_oid path2s) $ZERO_OID M	path2/file2sym
+#	:100644 100644 $(test_oid path3f) $ZERO_OID M	path3/file3
+#	:120000 120000 $(test_oid path3s) $ZERO_OID M	path3/file3sym
+#	:100644 100644 $(test_oid subp3f) $ZERO_OID M	path3/subp3/file3
+#	:120000 120000 $(test_oid subp3s) $ZERO_OID M	path3/subp3/file3sym
+#	EOF
+#		git diff-files >current &&
+#		test_cmp expected current
+#	
+ok 81 - git update-index --refresh should succeed
+ok 82 - no diff after checkout and git update-index --refresh
+ok 83 - git commit-tree records the correct tree in a commit
+ok 84 - git commit-tree records the correct parent in a commit
+ok 85 - git commit-tree omits duplicated parent in a commit
+ok 86 - update-index D/F conflict
+ok 87 - very long name in the index handled sanely
+ok 88 - more update-index D/F conflicts
+ok 89 - test_must_fail on a failing git command
+ok 90 - test_must_fail on a failing git command with env
+ok 91 - test_must_fail rejects a non-git command
+ok 92 - test_must_fail rejects a non-git command with env
+# failed 1 among 92 test(s)
+1..92
+# Tests: 92  Pass: 91  Fail: 1  Skip: 0

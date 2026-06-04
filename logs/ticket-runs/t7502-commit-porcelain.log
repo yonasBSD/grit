@@ -1,0 +1,676 @@
+ok 1 - output summary format
+ok 2 - output summary format: root-commit
+ok 3 - output summary format for commit with an empty diff
+ok 4 - output summary format for merges
+ok 5 - the basics
+ok 6 - partial
+ok 7 - partial modification in a subdirectory
+ok 8 - partial removal
+ok 9 - sign off
+not ok 10 - commit --trailer with "="
+#	
+#		trailer_commit_base &&
+#		cat >expected <<-\EOF &&
+#		hello
+#	
+#		Signed-off-by: C O Mitter <committer@example.com>
+#		Signed-off-by: C1 E1
+#		Helped-by: C2 E2
+#		Reported-by: C3 E3
+#		Mentored-by: C4 E4
+#		EOF
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d" commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 11 - commit --trailer with -c and "replace" as ifexists
+#	
+#		trailer_commit_base &&
+#		cat >expected <<-\EOF &&
+#		hello
+#	
+#		Signed-off-by: C O Mitter <committer@example.com>
+#		Signed-off-by: C1 E1
+#		Reported-by: C3 E3
+#		Mentored-by: C4 E4
+#		Helped-by: C3 E3
+#		EOF
+#		git -c trailer.ifexists="replace" \
+#			commit --trailer "Mentored-by: C4 E4" \
+#			 --trailer "Helped-by: C3 E3" \
+#			--amend &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d"  commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 12 - commit --trailer with -c and "add" as ifexists
+#	
+#		trailer_commit_base &&
+#		cat >expected <<-\EOF &&
+#		hello
+#	
+#		Signed-off-by: C O Mitter <committer@example.com>
+#		Signed-off-by: C1 E1
+#		Helped-by: C2 E2
+#		Reported-by: C3 E3
+#		Mentored-by: C4 E4
+#		Reported-by: C3 E3
+#		Mentored-by: C4 E4
+#		EOF
+#		git -c trailer.ifexists="add" \
+#			commit --trailer "Reported-by: C3 E3" \
+#			--trailer "Mentored-by: C4 E4" \
+#			--amend &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d"  commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 13 - commit --trailer with -c and "donothing" as ifexists
+#	
+#		trailer_commit_base &&
+#		cat >expected <<-\EOF &&
+#		hello
+#	
+#		Signed-off-by: C O Mitter <committer@example.com>
+#		Signed-off-by: C1 E1
+#		Helped-by: C2 E2
+#		Reported-by: C3 E3
+#		Mentored-by: C4 E4
+#		Reviewed-by: C6 E6
+#		EOF
+#		git -c trailer.ifexists="donothing" \
+#			commit --trailer "Mentored-by: C5 E5" \
+#			--trailer "Reviewed-by: C6 E6" \
+#			--amend &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d"  commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 14 - commit --trailer with -c and "addIfDifferent" as ifexists
+#	
+#		trailer_commit_base &&
+#		cat >expected <<-\EOF &&
+#		hello
+#	
+#		Signed-off-by: C O Mitter <committer@example.com>
+#		Signed-off-by: C1 E1
+#		Helped-by: C2 E2
+#		Reported-by: C3 E3
+#		Mentored-by: C4 E4
+#		Mentored-by: C5 E5
+#		EOF
+#		git -c trailer.ifexists="addIfDifferent" \
+#			commit --trailer "Reported-by: C3 E3" \
+#			--trailer "Mentored-by: C5 E5" \
+#			--amend &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d"  commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 15 - commit --trailer with -c and "addIfDifferentNeighbor" as ifexists
+#	
+#		trailer_commit_base &&
+#		cat >expected <<-\EOF &&
+#		hello
+#	
+#		Signed-off-by: C O Mitter <committer@example.com>
+#		Signed-off-by: C1 E1
+#		Helped-by: C2 E2
+#		Reported-by: C3 E3
+#		Mentored-by: C4 E4
+#		Reported-by: C3 E3
+#		EOF
+#		git -c trailer.ifexists="addIfDifferentNeighbor" \
+#			commit --trailer "Mentored-by: C4 E4" \
+#			--trailer "Reported-by: C3 E3" \
+#			--amend &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d"  commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 16 - commit --trailer with -c and "end" as where
+#	
+#		trailer_commit_base &&
+#		cat >expected <<-\EOF &&
+#		hello
+#	
+#		Signed-off-by: C O Mitter <committer@example.com>
+#		Signed-off-by: C1 E1
+#		Helped-by: C2 E2
+#		Reported-by: C3 E3
+#		Mentored-by: C4 E4
+#		Reported-by: C3 E3
+#		Mentored-by: C4 E4
+#		EOF
+#		git -c trailer.where="end" \
+#			commit --trailer "Reported-by: C3 E3" \
+#			--trailer "Mentored-by: C4 E4" \
+#			--amend &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d" commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 17 - commit --trailer with -c and "start" as where
+#	
+#		trailer_commit_base &&
+#		cat >expected <<-\EOF &&
+#		hello
+#	
+#		Signed-off-by: C1 E1
+#		Signed-off-by: C O Mitter <committer@example.com>
+#		Signed-off-by: C1 E1
+#		Helped-by: C2 E2
+#		Reported-by: C3 E3
+#		Mentored-by: C4 E4
+#		EOF
+#		git -c trailer.where="start" \
+#			commit --trailer "Signed-off-by: C O Mitter <committer@example.com>" \
+#			--trailer "Signed-off-by: C1 E1" \
+#			--amend &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d" commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 18 - commit --trailer with -c and "after" as where
+#	
+#		trailer_commit_base &&
+#		cat >expected <<-\EOF &&
+#		hello
+#	
+#		Signed-off-by: C O Mitter <committer@example.com>
+#		Signed-off-by: C1 E1
+#		Helped-by: C2 E2
+#		Reported-by: C3 E3
+#		Mentored-by: C4 E4
+#		Mentored-by: C5 E5
+#		EOF
+#		git -c trailer.where="after" \
+#			commit --trailer "Mentored-by: C4 E4" \
+#			--trailer "Mentored-by: C5 E5" \
+#			--amend &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d" commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 19 - commit --trailer with -c and "before" as where
+#	
+#		trailer_commit_base &&
+#		cat >expected <<-\EOF &&
+#		hello
+#	
+#		Signed-off-by: C O Mitter <committer@example.com>
+#		Signed-off-by: C1 E1
+#		Helped-by: C2 E2
+#		Reported-by: C3 E3
+#		Mentored-by: C2 E2
+#		Mentored-by: C3 E3
+#		Mentored-by: C4 E4
+#		EOF
+#		git -c trailer.where="before" \
+#			commit --trailer "Mentored-by: C3 E3" \
+#			--trailer "Mentored-by: C2 E2" \
+#			--amend &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d" commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 20 - commit --trailer with -c and "donothing" as ifmissing
+#	
+#		trailer_commit_base &&
+#		cat >expected <<-\EOF &&
+#		hello
+#	
+#		Signed-off-by: C O Mitter <committer@example.com>
+#		Signed-off-by: C1 E1
+#		Helped-by: C2 E2
+#		Reported-by: C3 E3
+#		Mentored-by: C4 E4
+#		Helped-by: C5 E5
+#		EOF
+#		git -c trailer.ifmissing="donothing" \
+#			commit --trailer "Helped-by: C5 E5" \
+#			--trailer "Based-by: C6 E6" \
+#			--amend &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d" commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 21 - commit --trailer with -c and "add" as ifmissing
+#	
+#		trailer_commit_base &&
+#		cat >expected <<-\EOF &&
+#		hello
+#	
+#		Signed-off-by: C O Mitter <committer@example.com>
+#		Signed-off-by: C1 E1
+#		Helped-by: C2 E2
+#		Reported-by: C3 E3
+#		Mentored-by: C4 E4
+#		Helped-by: C5 E5
+#		Based-by: C6 E6
+#		EOF
+#		git -c trailer.ifmissing="add" \
+#			commit --trailer "Helped-by: C5 E5" \
+#			--trailer "Based-by: C6 E6" \
+#			--amend &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d" commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 22 - commit --trailer with -c ack.key 
+#	
+#		echo "fun" >>file1 &&
+#		git add file1 &&
+#		cat >expected <<-\EOF &&
+#			hello
+#	
+#			Acked-by: Peff
+#		EOF
+#		git -c trailer.ack.key="Acked-by" \
+#			commit --trailer "ack = Peff" -m "hello" &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d" commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 23 - commit --trailer with -c and ":=#" as separators
+#	
+#		echo "fun" >>file1 &&
+#		git add file1 &&
+#		cat >expected <<-\EOF &&
+#			I hate bug
+#	
+#			Bug #42
+#		EOF
+#		git -c trailer.separators=":=#" \
+#			-c trailer.bug.key="Bug #" \
+#			commit --trailer "bug = 42" -m "I hate bug" &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d" commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 24 - commit --trailer with -c and command
+#	
+#		trailer_commit_base &&
+#		cat >expected <<-\EOF &&
+#		hello
+#	
+#		Signed-off-by: C O Mitter <committer@example.com>
+#		Signed-off-by: C1 E1
+#		Helped-by: C2 E2
+#		Mentored-by: C4 E4
+#		Reported-by: A U Thor <author@example.com>
+#		EOF
+#		git -c trailer.report.key="Reported-by: " \
+#			-c trailer.report.ifexists="replace" \
+#			-c trailer.report.command="NAME=\"\$ARG\"; test -n \"\$NAME\" && \
+#			git log --author=\"\$NAME\" -1 --format=\"format:%aN <%aE>\" || true" \
+#			commit --trailer "report = author" --amend &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d" commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 25 - commit --trailer not confused by --- separator
+#	
+#		cat >msg <<-\EOF &&
+#		subject
+#	
+#		body with dashes
+#		---
+#		in it
+#		EOF
+#		git commit --allow-empty --trailer="my-trailer: value" -F msg &&
+#		{
+#			cat msg &&
+#			echo &&
+#			echo "my-trailer: value"
+#		} >expected &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d" commit.msg >actual &&
+#		test_cmp expected actual
+#	
+not ok 26 - commit --trailer with --verbose
+#	
+#		cat >msg <<-\EOF &&
+#		subject
+#	
+#		body
+#		EOF
+#		GIT_EDITOR=: git commit --edit -F msg --allow-empty \
+#			--trailer="my-trailer: value" --verbose &&
+#		{
+#			cat msg &&
+#			echo &&
+#			echo "my-trailer: value"
+#		} >expected &&
+#		git cat-file commit HEAD >commit.msg &&
+#		sed -e "1,/^\$/d" commit.msg >actual &&
+#		test_cmp expected actual
+#	
+ok 27 - multiple -m
+ok 28 - verbose
+ok 29 - verbose respects diff config
+ok 30 - prepare file with comment line and trailing newlines
+not ok 31 - cleanup commit messages (verbatim option,-t)
+#	
+#	
+#		echo >>negative &&
+#		git commit --cleanup=verbatim --no-status -t expect -a &&
+#		git cat-file -p HEAD >raw &&
+#		sed -e "1,/^\$/d" raw >actual &&
+#		test_cmp expect actual
+#	
+#	
+ok 32 - cleanup commit messages (verbatim option,-F)
+ok 33 - cleanup commit messages (verbatim option,-m)
+not ok 34 - cleanup commit messages (whitespace option,-F)
+#	
+#	
+#		echo >>negative &&
+#		test_write_lines "" "# text" "" >text &&
+#		echo "# text" >expect &&
+#		git commit --cleanup=whitespace -F text -a &&
+#		git cat-file -p HEAD >raw &&
+#		sed -e "1,/^\$/d" raw >actual &&
+#		test_cmp expect actual
+#	
+#	
+not ok 35 - cleanup commit messages (scissors option,-F,-e)
+#	
+#	
+#		echo >>negative &&
+#		cat >text <<-\EOF &&
+#	
+#		# to be kept
+#	
+#		  # ------------------------ >8 ------------------------
+#		# to be kept, too
+#		# ------------------------ >8 ------------------------
+#		to be removed
+#		# ------------------------ >8 ------------------------
+#		to be removed, too
+#		EOF
+#	
+#		cat >expect <<-\EOF &&
+#		# to be kept
+#	
+#		  # ------------------------ >8 ------------------------
+#		# to be kept, too
+#		EOF
+#		git commit --cleanup=scissors -e -F text -a &&
+#		git cat-file -p HEAD >raw &&
+#		sed -e "1,/^\$/d" raw >actual &&
+#		test_cmp expect actual
+#	
+not ok 36 - cleanup commit messages (scissors option,-F,-e, scissors on first line)
+#	
+#	
+#		echo >>negative &&
+#		cat >text <<-\EOF &&
+#		# ------------------------ >8 ------------------------
+#		to be removed
+#		EOF
+#		git commit --cleanup=scissors -e -F text -a --allow-empty-message &&
+#		git cat-file -p HEAD >raw &&
+#		sed -e "1,/^\$/d" raw >actual &&
+#		test_must_be_empty actual
+#	
+not ok 37 - cleanup commit messages (strip option,-F)
+#	
+#	
+#		echo >>negative &&
+#		test_write_lines "" "# text" "sample" "" >text &&
+#		echo sample >expect &&
+#		git commit --cleanup=strip -F text -a &&
+#		git cat-file -p HEAD >raw &&
+#		sed -e "1,/^\$/d" raw >actual &&
+#		test_cmp expect actual
+#	
+#	
+ok 38 - cleanup commit messages (strip option,-F,-e)
+not ok 39 - cleanup commit messages (strip option,-F,-e): output
+#	
+#		test_cmp expect actual
+#	
+ok 40 - cleanup commit message (fail on invalid cleanup mode option)
+ok 41 - cleanup commit message (fail on invalid cleanup mode configuration)
+not ok 42 - cleanup commit message (no config and no option uses default)
+#	
+#		echo content >>file &&
+#		git add file &&
+#		(
+#		  test_set_editor "$TEST_DIRECTORY"/t7500/add-content-and-comment &&
+#		  git commit --no-status
+#		) &&
+#		commit_msg_is "commit message"
+#	
+not ok 43 - cleanup commit message (option overrides default)
+#	
+#		echo content >>file &&
+#		git add file &&
+#		(
+#		  test_set_editor "$TEST_DIRECTORY"/t7500/add-content-and-comment &&
+#		  git commit --cleanup=whitespace --no-status
+#		) &&
+#		commit_msg_is "commit message # comment"
+#	
+not ok 44 - cleanup commit message (config overrides default)
+#	
+#		echo content >>file &&
+#		git add file &&
+#		(
+#		  test_set_editor "$TEST_DIRECTORY"/t7500/add-content-and-comment &&
+#		  git -c commit.cleanup=whitespace commit --no-status
+#		) &&
+#		commit_msg_is "commit message # comment"
+#	
+not ok 45 - cleanup commit message (option overrides config)
+#	
+#		echo content >>file &&
+#		git add file &&
+#		(
+#		  test_set_editor "$TEST_DIRECTORY"/t7500/add-content-and-comment &&
+#		  git -c commit.cleanup=whitespace commit --cleanup=default
+#		) &&
+#		commit_msg_is "commit message"
+#	
+ok 46 - cleanup commit message (default, -m)
+ok 47 - cleanup commit message (whitespace option, -m)
+ok 48 - cleanup commit message (whitespace config, -m)
+not ok 49 - message shows author when it is not equal to committer
+#	
+#		echo >>negative &&
+#		git commit -e -m "sample" -a &&
+#		test_grep \
+#		  "^# Author: *A U Thor <author@example.com>\$" \
+#		  .git/COMMIT_EDITMSG
+#	
+not ok 50 - message shows date when it is explicitly set
+#	
+#		git commit --allow-empty -e -m foo --date="2010-01-02T03:04:05" &&
+#		test_grep \
+#		  "^# Date: *Sat Jan 2 03:04:05 2010 +0000" \
+#		  .git/COMMIT_EDITMSG
+#	
+not ok 51 - message does not have multiple scissors lines
+#	
+#		git commit --cleanup=scissors -v --allow-empty -e -m foo &&
+#		test $(grep -c -e "--- >8 ---" .git/COMMIT_EDITMSG) -eq 1
+#	
+ok 52 # skip message shows committer when it is automatic (missing AUTOIDENT)
+not ok 53 - do not fire editor when committer is bogus
+#	
+#		>.git/result &&
+#	
+#		echo >>negative &&
+#		(
+#			sane_unset GIT_COMMITTER_EMAIL &&
+#			sane_unset GIT_COMMITTER_NAME &&
+#			GIT_EDITOR="\"$(pwd)/.git/FAKE_EDITOR\"" &&
+#			export GIT_EDITOR &&
+#			test_must_fail git commit -e -m sample -a
+#		) &&
+#		test_must_be_empty .git/result
+#	
+ok 54 - do not fire editor if -m <msg> was given
+ok 55 - do not fire editor if -m "" was given
+ok 56 - do not fire editor in the presence of conflicts
+ok 57 # skip a SIGTERM should break locks (missing EXECKEEPSPID)
+ok 58 - Hand committing of a redundant merge removes dups
+ok 59 - A single-liner subject with a token plus colon is not a footer
+not ok 60 - commit -s places sob on third line after two empty lines
+#	
+#		git commit -s --allow-empty --allow-empty-message &&
+#		cat <<-EOF >expect &&
+#	
+#	
+#		Signed-off-by: $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL>
+#	
+#		EOF
+#		sed -e "/^#/d" -e "s/^:.*//" .git/COMMIT_EDITMSG >actual &&
+#		test_cmp expect actual
+#	
+not ok 61 - commit
+#	
+#			try_commit "" &&
+#			test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+not ok 62 - commit --status
+#	
+#			try_commit --status &&
+#			test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+ok 63 - commit --no-status
+not ok 64 - commit with commit.status = yes
+#	
+#			test_config commit.status yes &&
+#			try_commit "" &&
+#			test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+ok 65 - commit with commit.status = no
+not ok 66 - commit --status with commit.status = yes
+#	
+#			test_config commit.status yes &&
+#			try_commit --status &&
+#			test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+ok 67 - commit --no-status with commit.status = yes
+not ok 68 - commit --status with commit.status = no
+#	
+#			test_config commit.status no &&
+#			try_commit --status &&
+#			test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+ok 69 - commit --no-status with commit.status = no
+not ok 70 - commit
+#	
+#			try_commit "" &&
+#			test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+not ok 71 - commit --status
+#	
+#			try_commit --status &&
+#			test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+not ok 72 - commit --no-status
+#	
+#			try_commit --no-status &&
+#			test_grep ! "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+not ok 73 - commit with commit.status = yes
+#	
+#			test_config commit.status yes &&
+#			try_commit "" &&
+#			test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+not ok 74 - commit with commit.status = no
+#	
+#			test_config commit.status no &&
+#			try_commit "" &&
+#			test_grep ! "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+not ok 75 - commit --status with commit.status = yes
+#	
+#			test_config commit.status yes &&
+#			try_commit --status &&
+#			test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+not ok 76 - commit --no-status with commit.status = yes
+#	
+#			test_config commit.status yes &&
+#			try_commit --no-status &&
+#			test_grep ! "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+not ok 77 - commit --status with commit.status = no
+#	
+#			test_config commit.status no &&
+#			try_commit --status &&
+#			test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+not ok 78 - commit --no-status with commit.status = no
+#	
+#			test_config commit.status no &&
+#			try_commit --no-status &&
+#			test_grep ! "^# Changes to be committed:" .git/COMMIT_EDITMSG
+#		
+not ok 79 - commit --status with custom comment character
+#	
+#		test_config core.commentchar ";" &&
+#		try_commit --status &&
+#		test_grep "^; Changes to be committed:" .git/COMMIT_EDITMSG
+#	
+not ok 80 - switch core.commentchar
+#	
+#		test_commit "#foo" foo &&
+#		cat >config-include <<-\EOF &&
+#		[core]
+#		    commentString=:
+#		    commentString=%
+#		    commentChar=auto
+#		EOF
+#		test_when_finished "rm config-include" &&
+#		test_config include.path "$(pwd)/config-include" &&
+#		test_config core.commentChar ! &&
+#		GIT_EDITOR=.git/FAKE_EDITOR git commit --amend 2>err &&
+#		sed -n "s/^hint: *\$//p; s/^hint: //p; s/^warning: //p" err >actual &&
+#		cat >expect <<-EOF &&
+#		Support for ${SQ}core.commentChar=auto${SQ} is deprecated and will be removed in Git 3.0
+#	
+#		To use the default comment string (#) please run
+#	
+#		    git config unset core.commentChar
+#		    git config unset --file ~/config-include --all core.commentString
+#		    git config unset --file ~/config-include core.commentChar
+#	
+#		To set a custom comment string please run
+#	
+#		    git config set --file ~/config-include core.commentChar <comment string>
+#	
+#		where ${SQ}<comment string>${SQ} is the string you wish to use.
+#		EOF
+#		test_cmp expect actual &&
+#		test_grep "^; Changes to be committed:" .git/COMMIT_EDITMSG
+#	
+not ok 81 - switch core.commentchar but out of options
+#	
+#		cat >text <<\EOF &&
+#	# 1
+#	; 2
+#	@ 3
+#	! 4
+#	$ 5
+#	% 6
+#	^ 7
+#	& 8
+#	| 9
+#	: 10
+#	EOF
+#		git commit --amend -F text &&
+#		(
+#			test_set_editor .git/FAKE_EDITOR &&
+#			test_must_fail git -c core.commentChar=auto commit --amend
+#		)
+#	
+ok 82 # skip core.commentChar=auto is rejected (missing WITH_BREAKING_CHANGES)
+# failed 49 among 82 test(s)
+1..82
+# Tests: 82  Pass: 33  Fail: 49  Skip: 3

@@ -1,0 +1,528 @@
+ok 1 - git read-tree -u -m --recurse-submodules: added submodule is checked out
+ok 2 - git read-tree -u -m --recurse-submodules: added submodule is checked out in empty dir
+ok 3 - git read-tree -u -m --recurse-submodules: replace tracked file with submodule checks out submodule
+ok 4 - git read-tree -u -m --recurse-submodules: replace directory with submodule
+ok 5 - git read-tree -u -m --recurse-submodules: nested submodules are checked out
+not ok 6 - git read-tree -u -m --recurse-submodules: removed submodule removes submodules working tree
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t remove_sub1 origin/remove_sub1 &&
+#				$command remove_sub1 &&
+#				test_superproject_content origin/remove_sub1 &&
+#				! test -e sub1 &&
+#				test_must_fail git config -f .git/modules/sub1/config core.worktree
+#			)
+#		
+not ok 7 - git read-tree -u -m --recurse-submodules: removed submodule absorbs submodules .git directory
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t remove_sub1 origin/remove_sub1 &&
+#				replace_gitfile_with_git_dir sub1 &&
+#				rm -rf .git/modules &&
+#				$command remove_sub1 &&
+#				test_superproject_content origin/remove_sub1 &&
+#				! test -e sub1 &&
+#				test_git_directory_exists sub1
+#			)
+#		
+ok 8 - git read-tree -u -m --recurse-submodules: replace submodule with a file
+ok 9 - git read-tree -u -m --recurse-submodules: replace submodule with a file must fail with untracked files
+not ok 10 - git read-tree -u -m --recurse-submodules: worktrees of nested submodules are removed
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_nested_sub &&
+#			(
+#				cd submodule_update &&
+#				git branch -t no_submodule origin/no_submodule &&
+#				$command no_submodule &&
+#				test_superproject_content origin/no_submodule &&
+#				test_path_is_missing sub1 &&
+#				test_must_fail git config -f .git/modules/sub1/config core.worktree &&
+#				test_must_fail git config -f .git/modules/sub1/modules/sub2/config core.worktree
+#			)
+#		
+ok 11 - git read-tree -u -m --recurse-submodules: modified submodule updates submodule work tree
+ok 12 - git read-tree -u -m --recurse-submodules: updating to a missing submodule commit fails
+ok 13 - git read-tree -u -m --recurse-submodules: submodule branch is not changed, detach HEAD instead
+ok 14 - git read-tree -u -m --recurse-submodules: added submodule doesn't remove untracked file with same name
+not ok 15 - git read-tree -u -m --recurse-submodules: added submodule removes an untracked ignored file
+#	
+#			test_when_finished "rm -rf submodule_update/.git/info" &&
+#			prolog &&
+#			reset_work_tree_to_interested no_submodule &&
+#			(
+#				cd submodule_update &&
+#				git branch -t add_sub1 origin/add_sub1 &&
+#				: >sub1 &&
+#				mkdir .git/info &&
+#				echo sub1 >.git/info/exclude &&
+#				$command add_sub1 &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 16 - git read-tree -u -m --recurse-submodules: replace submodule with a directory
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_directory origin/replace_sub1_with_directory &&
+#				$command replace_sub1_with_directory &&
+#				test_superproject_content origin/replace_sub1_with_directory &&
+#				test_submodule_content sub1 origin/replace_sub1_with_directory
+#			)
+#		
+not ok 17 - git read-tree -u -m --recurse-submodules: replace submodule containing a .git directory with a directory must absorb the git dir
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_directory origin/replace_sub1_with_directory &&
+#				replace_gitfile_with_git_dir sub1 &&
+#				rm -rf .git/modules &&
+#				$command replace_sub1_with_directory &&
+#				test_superproject_content origin/replace_sub1_with_directory &&
+#				test_git_directory_exists sub1
+#			)
+#		
+ok 18 - git read-tree -u -m --recurse-submodules: replace submodule with a file works ignores ignored files in submodule
+ok 19 - git -c submodule.recurse=true read-tree -u -m: modified submodule updates submodule work tree
+ok 20 - git read-tree -u -m --recurse-submodules: modified submodule updates submodule recursively
+not ok 21 - git read-tree -u --reset --recurse-submodules: added submodule is checked out
+#	
+#			prolog &&
+#			reset_work_tree_to_interested no_submodule &&
+#			(
+#				cd submodule_update &&
+#				git branch -t add_sub1 origin/add_sub1 &&
+#				$command add_sub1 &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 22 - git read-tree -u --reset --recurse-submodules: added submodule is checked out in empty dir
+#	
+#			prolog &&
+#			reset_work_tree_to_interested no_submodule &&
+#			(
+#				cd submodule_update &&
+#				mkdir sub1 &&
+#				git branch -t add_sub1 origin/add_sub1 &&
+#				$command add_sub1 &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 23 - git read-tree -u --reset --recurse-submodules: replace tracked file with submodule checks out submodule
+#	
+#			prolog &&
+#			reset_work_tree_to_interested replace_sub1_with_file &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_file_with_sub1 origin/replace_file_with_sub1 &&
+#				$command replace_file_with_sub1 &&
+#				test_superproject_content origin/replace_file_with_sub1 &&
+#				test_submodule_content sub1 origin/replace_file_with_sub1
+#			)
+#		
+not ok 24 - git read-tree -u --reset --recurse-submodules: replace directory with submodule
+#	
+#			prolog &&
+#			reset_work_tree_to_interested replace_sub1_with_directory &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_directory_with_sub1 origin/replace_directory_with_sub1 &&
+#				$command replace_directory_with_sub1 &&
+#				test_superproject_content origin/replace_directory_with_sub1 &&
+#				test_submodule_content sub1 origin/replace_directory_with_sub1
+#			)
+#		
+not ok 25 - git read-tree -u --reset --recurse-submodules: nested submodules are checked out
+#	
+#			prolog &&
+#			reset_work_tree_to_interested no_submodule &&
+#			(
+#				cd submodule_update &&
+#				git branch -t modify_sub1_recursively origin/modify_sub1_recursively &&
+#				$command modify_sub1_recursively &&
+#				test_superproject_content origin/modify_sub1_recursively &&
+#				test_submodule_content sub1 origin/modify_sub1_recursively &&
+#				test_submodule_content -C sub1 sub2 origin/modify_sub1_recursively
+#			)
+#		
+not ok 26 - git read-tree -u --reset --recurse-submodules: removed submodule removes submodules working tree
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t remove_sub1 origin/remove_sub1 &&
+#				$command remove_sub1 &&
+#				test_superproject_content origin/remove_sub1 &&
+#				! test -e sub1 &&
+#				test_must_fail git config -f .git/modules/sub1/config core.worktree
+#			)
+#		
+not ok 27 - git read-tree -u --reset --recurse-submodules: removed submodule absorbs submodules .git directory
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t remove_sub1 origin/remove_sub1 &&
+#				replace_gitfile_with_git_dir sub1 &&
+#				rm -rf .git/modules &&
+#				$command remove_sub1 &&
+#				test_superproject_content origin/remove_sub1 &&
+#				! test -e sub1 &&
+#				test_git_directory_exists sub1
+#			)
+#		
+not ok 28 - git read-tree -u --reset --recurse-submodules: replace submodule with a file
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_file origin/replace_sub1_with_file &&
+#				$command replace_sub1_with_file &&
+#				test_superproject_content origin/replace_sub1_with_file &&
+#				test -f sub1
+#			)
+#		
+ok 29 - git read-tree -u --reset --recurse-submodules: replace submodule with a file must fail with untracked files
+not ok 30 - git read-tree -u --reset --recurse-submodules: worktrees of nested submodules are removed
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_nested_sub &&
+#			(
+#				cd submodule_update &&
+#				git branch -t no_submodule origin/no_submodule &&
+#				$command no_submodule &&
+#				test_superproject_content origin/no_submodule &&
+#				test_path_is_missing sub1 &&
+#				test_must_fail git config -f .git/modules/sub1/config core.worktree &&
+#				test_must_fail git config -f .git/modules/sub1/modules/sub2/config core.worktree
+#			)
+#		
+not ok 31 - git read-tree -u --reset --recurse-submodules: modified submodule updates submodule work tree
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t modify_sub1 origin/modify_sub1 &&
+#				$command modify_sub1 &&
+#				test_superproject_content origin/modify_sub1 &&
+#				test_submodule_content sub1 origin/modify_sub1
+#			)
+#		
+ok 32 - git read-tree -u --reset --recurse-submodules: updating to a missing submodule commit fails
+not ok 33 - git read-tree -u --reset --recurse-submodules: submodule branch is not changed, detach HEAD instead
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git -C sub1 checkout -b keep_branch &&
+#				git -C sub1 rev-parse HEAD >expect &&
+#				git branch -t modify_sub1 origin/modify_sub1 &&
+#				$command modify_sub1 &&
+#				test_superproject_content origin/modify_sub1 &&
+#				test_submodule_content sub1 origin/modify_sub1 &&
+#				git -C sub1 rev-parse keep_branch >actual &&
+#				test_cmp expect actual &&
+#				test_must_fail git -C sub1 symbolic-ref HEAD
+#			)
+#		
+not ok 34 - git read-tree -u --reset --recurse-submodules: added submodule does remove untracked unignored file with same name when forced
+#	
+#			prolog &&
+#			reset_work_tree_to_interested no_submodule &&
+#			(
+#				cd submodule_update &&
+#				git branch -t add_sub1 origin/add_sub1 &&
+#				>sub1 &&
+#				$command add_sub1 &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 35 - git read-tree -u --reset --recurse-submodules: replace submodule with a directory
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_directory origin/replace_sub1_with_directory &&
+#				$command replace_sub1_with_directory &&
+#				test_superproject_content origin/replace_sub1_with_directory
+#			)
+#		
+not ok 36 - git read-tree -u --reset --recurse-submodules: replace submodule containing a .git directory with a directory must fail
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_directory origin/replace_sub1_with_directory &&
+#				replace_gitfile_with_git_dir sub1 &&
+#				rm -rf .git/modules/sub1 &&
+#				$command replace_sub1_with_directory &&
+#				test_superproject_content origin/replace_sub1_with_directory &&
+#				test_git_directory_exists sub1
+#			)
+#		
+not ok 37 - git read-tree -u --reset --recurse-submodules: replace submodule with a file ignoring ignored files
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_file origin/replace_sub1_with_file &&
+#				: >sub1/expect &&
+#				$command replace_sub1_with_file &&
+#				test_superproject_content origin/replace_sub1_with_file
+#			)
+#		
+not ok 38 - git read-tree -u --reset --recurse-submodules: modified submodule does update submodule work tree from invalid commit
+#	
+#			prolog &&
+#			reset_work_tree_to_interested invalid_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t valid_sub1 origin/valid_sub1 &&
+#				$command valid_sub1 &&
+#				test_superproject_content origin/valid_sub1 &&
+#				test_submodule_content sub1 origin/valid_sub1
+#			)
+#		
+not ok 39 - git read-tree -u --reset --recurse-submodules: updating submodules fixes .git links
+#	
+#			prolog &&
+#			reset_work_tree_to_interested add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t modify_sub1 origin/modify_sub1 &&
+#				echo "gitdir: bogus/path" >sub1/.git &&
+#				$command modify_sub1 &&
+#				test_superproject_content origin/modify_sub1 &&
+#				test_submodule_content sub1 origin/modify_sub1
+#			)
+#		
+ok 40 - git read-tree -u --reset --recurse-submodules: changed submodule worktree is reset
+ok 41 - git_test_func: added submodule creates empty directory
+ok 42 - git_test_func: added submodule leaves existing empty directory alone
+ok 43 - git_test_func: replace tracked file with submodule creates empty directory
+ok 44 - git_test_func: replace directory with submodule
+ok 45 - git_test_func: removed submodule leaves submodule directory and its contents in place
+ok 46 - git_test_func: removed submodule leaves submodule containing a .git directory alone
+ok 47 - git_test_func: replace submodule with a directory must fail
+ok 48 - git_test_func: replace submodule containing a .git directory with a directory must fail
+not ok 49 - git_test_func: replace submodule with a file must fail
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_file origin/replace_sub1_with_file &&
+#				$command replace_sub1_with_file test_must_fail &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 50 - git_test_func: replace submodule containing a .git directory with a file must fail
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_file origin/replace_sub1_with_file &&
+#				replace_gitfile_with_git_dir sub1 &&
+#				$command replace_sub1_with_file test_must_fail &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_git_directory_is_unchanged sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+ok 51 - git_test_func: modified submodule does not update submodule work tree
+ok 52 - git_test_func: modified submodule does not update submodule work tree to invalid commit
+ok 53 - git_test_func: modified submodule does not update submodule work tree from invalid commit
+ok 54 - git_test_func: added submodule doesn't remove untracked unignored file with same name
+not ok 55 - git_test_func: added submodule creates empty directory
+#	
+#			prolog &&
+#			reset_work_tree_to no_submodule &&
+#			(
+#				cd submodule_update &&
+#				git branch -t add_sub1 origin/add_sub1 &&
+#				$command add_sub1 &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 56 - git_test_func: added submodule leaves existing empty directory alone
+#	
+#			prolog &&
+#			reset_work_tree_to no_submodule &&
+#			(
+#				cd submodule_update &&
+#				mkdir sub1 &&
+#				git branch -t add_sub1 origin/add_sub1 &&
+#				$command add_sub1 &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 57 - git_test_func: replace tracked file with submodule creates empty directory
+#	
+#			prolog &&
+#			reset_work_tree_to replace_sub1_with_file &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_file_with_sub1 origin/replace_file_with_sub1 &&
+#				$command replace_file_with_sub1 &&
+#				test_superproject_content origin/replace_file_with_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/replace_file_with_sub1
+#			)
+#		
+not ok 58 - git_test_func: replace directory with submodule
+#	
+#			prolog &&
+#			reset_work_tree_to replace_sub1_with_directory &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_directory_with_sub1 origin/replace_directory_with_sub1 &&
+#				$command replace_directory_with_sub1 &&
+#				test_superproject_content origin/replace_directory_with_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/replace_directory_with_sub1
+#			)
+#		
+not ok 59 - git_test_func: removed submodule leaves submodule directory and its contents in place
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t remove_sub1 origin/remove_sub1 &&
+#				$command remove_sub1 &&
+#				test_superproject_content origin/remove_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 60 - git_test_func: removed submodule leaves submodule containing a .git directory alone
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t remove_sub1 origin/remove_sub1 &&
+#				replace_gitfile_with_git_dir sub1 &&
+#				$command remove_sub1 &&
+#				test_superproject_content origin/remove_sub1 &&
+#				test_git_directory_is_unchanged sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+ok 61 - git_test_func: replace submodule with a directory must fail
+ok 62 - git_test_func: replace submodule containing a .git directory with a directory must fail
+not ok 63 - git_test_func: replace submodule with a file must fail
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_file origin/replace_sub1_with_file &&
+#				$command replace_sub1_with_file test_must_fail &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 64 - git_test_func: replace submodule containing a .git directory with a file must fail
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_sub1_with_file origin/replace_sub1_with_file &&
+#				replace_gitfile_with_git_dir sub1 &&
+#				$command replace_sub1_with_file test_must_fail &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_git_directory_is_unchanged sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 65 - git_test_func: modified submodule does not update submodule work tree
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t modify_sub1 origin/modify_sub1 &&
+#				$command modify_sub1 &&
+#				test_superproject_content origin/modify_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1 &&
+#				git submodule update &&
+#				test_submodule_content sub1 origin/modify_sub1
+#			)
+#		
+not ok 66 - git_test_func: modified submodule does not update submodule work tree to invalid commit
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t invalid_sub1 origin/invalid_sub1 &&
+#				$command invalid_sub1 &&
+#				test_superproject_content origin/invalid_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1 &&
+#				test_must_fail git submodule update &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 67 - git_test_func: modified submodule does not update submodule work tree from invalid commit
+#	
+#			prolog &&
+#			reset_work_tree_to invalid_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t valid_sub1 origin/valid_sub1 &&
+#				$command valid_sub1 &&
+#				test_superproject_content origin/valid_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/valid_sub1
+#			)
+#		
+not ok 68 - git_test_func: added submodule does remove untracked unignored file with same name when forced
+#	
+#			prolog &&
+#			reset_work_tree_to no_submodule &&
+#			(
+#				cd submodule_update &&
+#				git branch -t add_sub1 origin/add_sub1 &&
+#				>sub1 &&
+#				$command add_sub1 &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_dir_is_empty sub1
+#			)
+#		
+# failed 37 among 68 test(s)
+1..68
+# Tests: 68  Pass: 31  Fail: 37  Skip: 0

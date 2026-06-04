@@ -1,0 +1,17 @@
+ok 1 - setup
+not ok 2 - add -e
+#	
+#	
+#		cp second-part file &&
+#		git add -e &&
+#		test_cmp second-part file &&
+#		test_cmp expected-patch orig-patch &&
+#		git diff --cached >actual &&
+#		grep -v index actual >out &&
+#		test_cmp expected out
+#	
+#	
+ok 3 - add -e notices editor failure
+# failed 1 among 3 test(s)
+1..3
+# Tests: 3  Pass: 2  Fail: 1  Skip: 0

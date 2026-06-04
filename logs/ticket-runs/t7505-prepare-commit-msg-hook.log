@@ -1,0 +1,55 @@
+ok 1 - set up commits for rebasing
+ok 2 - with no hook
+ok 3 - setup fake editor for interactive editing
+ok 4 - setup prepare-commit-msg hook
+ok 5 - with hook (-m)
+ok 6 - with hook (-m editor)
+ok 7 - with hook (-t)
+ok 8 - with hook (-F)
+ok 9 - with hook (-F editor)
+ok 10 - with hook (-C)
+ok 11 - with hook (editor)
+ok 12 - with hook (--amend)
+ok 13 - with hook (-c)
+ok 14 - with hook (merge)
+ok 15 - with hook and editor (merge)
+not ok 16 - with hook (rebase -i)
+#	
+#			test_when_finished "\
+#				git rebase --abort
+#				git checkout -f main
+#				git branch -D tmp" &&
+#			git checkout -b tmp rebase-me &&
+#			GIT_SEQUENCE_EDITOR="cp rebase-todo" &&
+#			GIT_EDITOR="\"$FAKE_EDITOR\"" &&
+#			(
+#				export GIT_SEQUENCE_EDITOR GIT_EDITOR &&
+#				test_must_fail git rebase -i $mode b &&
+#				echo x >a &&
+#				git add a &&
+#				test_must_fail git rebase --continue &&
+#				echo x >b &&
+#				git add b &&
+#				git commit &&
+#				git rebase --continue &&
+#				echo y >a &&
+#				git add a &&
+#				git commit &&
+#				git rebase --continue &&
+#				echo y >b &&
+#				git add b &&
+#				git rebase --continue
+#			) &&
+#			git log --pretty=%s -g -n18 HEAD@{1} >actual &&
+#			test_cmp "$TEST_DIRECTORY/t7505/expected-rebase${mode:--i}" actual
+#		
+ok 17 - with hook (cherry-pick)
+ok 18 - with hook and editor (cherry-pick)
+ok 19 - setup: commit-msg hook that always fails
+ok 20 - with failing hook
+ok 21 - with failing hook (--no-verify)
+ok 22 - with failing hook (merge)
+ok 23 - with failing hook (cherry-pick)
+# failed 1 among 23 test(s)
+1..23
+# Tests: 23  Pass: 22  Fail: 1  Skip: 0

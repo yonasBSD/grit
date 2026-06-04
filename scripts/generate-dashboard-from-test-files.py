@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Generate dashboard docs from data/test-files.csv."""
+"""Generate dashboard docs from the per-test status TOMLs in data/tests/."""
 
 from __future__ import annotations
 
-import csv
 import html
 import subprocess
+import sys
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_status import load_all  # noqa: E402
+
 REPO = Path(__file__).resolve().parent.parent
-DATA = REPO / "data" / "test-files.csv"
 OUT_INDEX = REPO / "docs" / "progress" / "index.html"
 OUT_FILES = REPO / "docs" / "testfiles.html"
 OUT_SVG = REPO / "docs" / "test-progress.svg"
@@ -145,13 +147,22 @@ RELATIVE_TIME_JS = """
 
 
 def load_rows() -> list[dict[str, str]]:
-    if not DATA.exists():
-        return []
+    """Status rows with all values as strings (legacy CSV-shaped rows)."""
     rows: list[dict[str, str]] = []
-    with DATA.open(newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-        for row in reader:
-            rows.append(dict(row))
+    for r in load_all().values():
+        rows.append(
+            {
+                "file": r["file"],
+                "group": r["group"],
+                "in_scope": r["in_scope"],
+                "tests_total": str(r["tests_total"]),
+                "passed_last": str(r["passed_last"]),
+                "failing": str(r["failing"]),
+                "fully_passing": "true" if r["fully_passing"] else "false",
+                "status": r["status"],
+                "expect_failure": str(r["expect_failure"]),
+            }
+        )
     return rows
 
 
@@ -245,7 +256,7 @@ def generate_progress_svg(rows: list[dict[str, str]]) -> str:
   <text x="40" y="64" fill="#8b949e" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13">{xml_escape(sub)}</text>
   <rect x="40" y="80" width="{bar_w}" height="18" rx="9" fill="#21262d" stroke="#30363d"/>
   <rect x="40" y="80" width="{fg_w}" height="18" rx="9" fill="{fill}"/>
-  <text x="40" y="118" fill="#6e7681" font-family="ui-monospace,monospace" font-size="11">{xml_escape("Generated from data/test-files.csv")}</text>
+  <text x="40" y="118" fill="#6e7681" font-family="ui-monospace,monospace" font-size="11">{xml_escape("Generated from data/tests/")}</text>
 </svg>
 """
 

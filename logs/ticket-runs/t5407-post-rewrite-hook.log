@@ -1,0 +1,130 @@
+ok 1 - setup
+ok 2 - git commit --amend
+ok 3 - git commit --amend --no-post-rewrite
+ok 4 - git rebase --apply
+ok 5 - git rebase --apply --skip
+ok 6 - git rebase --apply --skip the last one
+ok 7 - git rebase -m
+ok 8 - git rebase -m --skip
+ok 9 - git rebase with implicit use of merge backend
+ok 10 - git rebase --skip with implicit use of merge backend
+not ok 11 - git rebase with failed pick
+#	
+#		clear_hook_input &&
+#		cat >todo <<-\EOF &&
+#		exec >bar
+#		merge -C merge-E E
+#		exec >G
+#		pick G
+#		exec >H 2>I
+#		pick H
+#		fixup I
+#		EOF
+#	
+#		(
+#			set_replace_editor todo &&
+#			test_must_fail git rebase -i D D 2>err
+#		) &&
+#		grep "would be overwritten" err &&
+#		rm bar &&
+#	
+#		test_must_fail git rebase --continue 2>err &&
+#		grep "would be overwritten" err &&
+#		rm G &&
+#	
+#		test_must_fail git rebase --continue 2>err &&
+#		grep "would be overwritten" err &&
+#		rm H &&
+#	
+#		test_must_fail git rebase --continue 2>err &&
+#		grep "would be overwritten" err &&
+#		rm I &&
+#	
+#		git rebase --continue &&
+#		echo rebase >expected.args &&
+#		cat >expected.data <<-EOF &&
+#		$(git rev-parse merge-E) $(git rev-parse HEAD~2)
+#		$(git rev-parse G) $(git rev-parse HEAD~1)
+#		$(git rev-parse H) $(git rev-parse HEAD)
+#		$(git rev-parse I) $(git rev-parse HEAD)
+#		EOF
+#		verify_hook_input
+#	
+ok 12 - git rebase -i (unchanged)
+not ok 13 - git rebase -i (skip)
+#	
+#		git reset --hard D &&
+#		clear_hook_input &&
+#		test_fail_interactive_rebase "2" --onto A B &&
+#		echo D > foo &&
+#		git add foo &&
+#		git rebase --continue &&
+#		echo rebase >expected.args &&
+#		cat >expected.data <<-EOF &&
+#		$(git rev-parse D) $(git rev-parse HEAD)
+#		EOF
+#		verify_hook_input
+#	
+not ok 14 - git rebase -i (squash)
+#	
+#		git reset --hard D &&
+#		clear_hook_input &&
+#		test_fail_interactive_rebase "1 squash 2" --onto A B &&
+#		echo C > foo &&
+#		git add foo &&
+#		git rebase --continue &&
+#		echo rebase >expected.args &&
+#		cat >expected.data <<-EOF &&
+#		$(git rev-parse C) $(git rev-parse HEAD)
+#		$(git rev-parse D) $(git rev-parse HEAD)
+#		EOF
+#		verify_hook_input
+#	
+not ok 15 - git rebase -i (fixup without conflict)
+#	
+#		git reset --hard D &&
+#		clear_hook_input &&
+#		FAKE_LINES="1 fixup 2" git rebase -i B &&
+#		echo rebase >expected.args &&
+#		cat >expected.data <<-EOF &&
+#		$(git rev-parse C) $(git rev-parse HEAD)
+#		$(git rev-parse D) $(git rev-parse HEAD)
+#		EOF
+#		verify_hook_input
+#	
+not ok 16 - git rebase -i (double edit)
+#	
+#		git reset --hard D &&
+#		clear_hook_input &&
+#		FAKE_LINES="edit 1 edit 2" git rebase -i B &&
+#		git rebase --continue &&
+#		echo something > foo &&
+#		git add foo &&
+#		git rebase --continue &&
+#		echo rebase >expected.args &&
+#		cat >expected.data <<-EOF &&
+#		$(git rev-parse C) $(git rev-parse HEAD^)
+#		$(git rev-parse D) $(git rev-parse HEAD)
+#		EOF
+#		verify_hook_input
+#	
+not ok 17 - git rebase -i (exec)
+#	
+#		git reset --hard D &&
+#		clear_hook_input &&
+#		FAKE_LINES="edit 1 exec_false 2" git rebase -i B &&
+#		echo something >bar &&
+#		git add bar &&
+#		# Fails because of exec false
+#		test_must_fail git rebase --continue &&
+#		git rebase --continue &&
+#		echo rebase >expected.args &&
+#		cat >expected.data <<-EOF &&
+#		$(git rev-parse C) $(git rev-parse HEAD^)
+#		$(git rev-parse D) $(git rev-parse HEAD)
+#		EOF
+#		verify_hook_input
+#	
+# failed 6 among 17 test(s)
+1..17
+# Tests: 17  Pass: 11  Fail: 6  Skip: 0

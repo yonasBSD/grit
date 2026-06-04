@@ -1,0 +1,127 @@
+ok 1 - setup
+not ok 2 - --where=end appends new trailer after existing (default)
+#	
+#		cat >expected <<-\EOF &&
+#		subject
+#	
+#		body
+#	
+#		Signed-off-by: A
+#		Reviewed-by: B
+#		EOF
+#		git interpret-trailers --where=end --trailer "Reviewed-by: B" \
+#			<message_with_trailers >actual &&
+#		test_cmp expected actual
+#	
+not ok 3 - --where=start prepends new trailer before existing
+#	
+#		cat >expected <<-\EOF &&
+#		subject
+#	
+#		body
+#	
+#		Reviewed-by: B
+#		Signed-off-by: A
+#		EOF
+#		git interpret-trailers --where=start --trailer "Reviewed-by: B" \
+#			<message_with_trailers >actual &&
+#		test_cmp expected actual
+#	
+not ok 4 - --where=after appends (same as end)
+#	
+#		cat >expected <<-\EOF &&
+#		subject
+#	
+#		body
+#	
+#		Signed-off-by: A
+#		Reviewed-by: B
+#		EOF
+#		git interpret-trailers --where=after --trailer "Reviewed-by: B" \
+#			<message_with_trailers >actual &&
+#		test_cmp expected actual
+#	
+not ok 5 - --where=before prepends (same as start)
+#	
+#		cat >expected <<-\EOF &&
+#		subject
+#	
+#		body
+#	
+#		Reviewed-by: B
+#		Signed-off-by: A
+#		EOF
+#		git interpret-trailers --where=before --trailer "Reviewed-by: B" \
+#			<message_with_trailers >actual &&
+#		test_cmp expected actual
+#	
+not ok 6 - --if-exists=replace replaces matching trailer
+#	
+#		cat >expected <<-\EOF &&
+#		subject
+#	
+#		body
+#	
+#		Signed-off-by: B
+#		EOF
+#		git interpret-trailers --if-exists=replace --trailer "Signed-off-by: B" \
+#			<message_with_trailers >actual &&
+#		test_cmp expected actual
+#	
+not ok 7 - --if-exists=donothing skips if key exists
+#	
+#		cat >expected <<-\EOF &&
+#		subject
+#	
+#		body
+#	
+#		Signed-off-by: A
+#		EOF
+#		git interpret-trailers --if-exists=donothing --trailer "Signed-off-by: B" \
+#			<message_with_trailers >actual &&
+#		test_cmp expected actual
+#	
+not ok 8 - --if-exists=add always adds even if key exists
+#	
+#		cat >expected <<-\EOF &&
+#		subject
+#	
+#		body
+#	
+#		Signed-off-by: A
+#		Signed-off-by: B
+#		EOF
+#		git interpret-trailers --if-exists=add --trailer "Signed-off-by: B" \
+#			<message_with_trailers >actual &&
+#		test_cmp expected actual
+#	
+not ok 9 - --if-missing=add adds trailer when key is missing (default)
+#	
+#		cat >expected <<-\EOF &&
+#		subject
+#	
+#		body
+#	
+#		Signed-off-by: A
+#		Reviewed-by: B
+#		EOF
+#		git interpret-trailers --if-missing=add --trailer "Reviewed-by: B" \
+#			<message_with_trailers >actual &&
+#		test_cmp expected actual
+#	
+not ok 10 - --if-missing=donothing skips trailer when key is missing
+#	
+#		cat >expected <<-\EOF &&
+#		subject
+#	
+#		body
+#	
+#		Signed-off-by: A
+#		EOF
+#		git interpret-trailers --if-missing=donothing --trailer "Reviewed-by: B" \
+#			<message_with_trailers >actual &&
+#		test_cmp expected actual
+#	
+# failed 9 among 10 test(s)
+1..10
+# Tests: 10  Pass: 1  Fail: 9  Skip: 0

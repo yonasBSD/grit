@@ -1,0 +1,181 @@
+ok 1 - setup
+ok 2 - git fetch --all
+ok 3 - git fetch --all --no-write-fetch-head
+not ok 4 - git fetch --all should continue if a remote has errors
+#	
+#		(git clone one test2 &&
+#		 cd test2 &&
+#		 git remote add bad ../non-existing &&
+#		 git remote add one ../one &&
+#		 git remote add two ../two &&
+#		 git remote add three ../three &&
+#		 test_must_fail git fetch --all &&
+#		 git branch -r > output &&
+#		 test_cmp ../test/expect output)
+#	
+not ok 5 - git fetch --all does not allow non-option arguments
+#	
+#		(cd test &&
+#		 test_must_fail git fetch --all origin &&
+#		 test_must_fail git fetch --all origin main)
+#	
+not ok 6 - git fetch --multiple (but only one remote)
+#	
+#		(git clone one test3 &&
+#		 cd test3 &&
+#		 git remote add three ../three &&
+#		 git fetch --multiple three &&
+#		 git branch -r > output &&
+#		 test_cmp ../expect output)
+#	
+not ok 7 - git fetch --multiple (two remotes)
+#	
+#		(git clone one test4 &&
+#		 cd test4 &&
+#		 git remote rm origin &&
+#		 git remote add one ../one &&
+#		 git remote add two ../two &&
+#		 GIT_TRACE=1 git fetch --multiple one two 2>trace &&
+#		 git branch -r > output &&
+#		 test_cmp ../expect output &&
+#		 grep "built-in: git maintenance" trace >gc &&
+#		 test_line_count = 1 gc
+#		)
+#	
+ok 8 - git fetch --multiple (bad remote names)
+not ok 9 - git fetch --all (skipFetchAll)
+#	
+#		(cd test4 &&
+#		 for b in $(git branch -r | grep -v HEAD)
+#		 do
+#			git branch -r -d $b || exit 1
+#		 done &&
+#		 git remote add three ../three &&
+#		 git config remote.three.skipFetchAll true &&
+#		 git fetch --all &&
+#		 git branch -r > output &&
+#		 test_cmp ../expect output)
+#	
+not ok 10 - git fetch --multiple (ignoring skipFetchAll)
+#	
+#		(cd test4 &&
+#		 for b in $(git branch -r | grep -v HEAD)
+#		 do
+#			git branch -r -d $b || exit 1
+#		 done &&
+#		 git fetch --multiple one two three &&
+#		 git branch -r > output &&
+#		 test_cmp ../expect output)
+#	
+ok 11 - git fetch --all --no-tags
+ok 12 - git fetch --all --tags
+not ok 13 - parallel
+#	
+#		git remote add one ./bogus1 &&
+#		git remote add two ./bogus2 &&
+#	
+#		test_must_fail env GIT_TRACE="$PWD/trace" \
+#			git fetch --jobs=2 --multiple one two 2>err &&
+#		grep "preparing to run up to 2 tasks" trace &&
+#		test_grep "could not fetch .one.*128" err &&
+#		test_grep "could not fetch .two.*128" err
+#	
+not ok 14 - git fetch --multiple --jobs=0 picks a default
+#	
+#		(cd test &&
+#		 git fetch --multiple --jobs=0)
+#	
+ok 15 - git fetch --all (works with fetch.all = true)
+ok 16 - git fetch --all (works with fetch.all = false)
+not ok 17 - git fetch (fetch all remotes with fetch.all = true)
+#	
+#		setup_test_clone test9 &&
+#		(
+#			cd test9 &&
+#			git config fetch.all true &&
+#			git fetch &&
+#			git branch -r >actual &&
+#			create_fetch_all_expect &&
+#			test_cmp expect actual
+#		)
+#	
+ok 18 - git fetch one (explicit remote overrides fetch.all)
+ok 19 - git config fetch.all false (fetch only default remote)
+not ok 20 - git fetch --no-all (fetch only default remote with fetch.all = true)
+#	
+#			test_dir="test_no_all_fetch_all_$fetch_all" &&
+#			setup_test_clone "$test_dir" &&
+#			(
+#				cd "$test_dir" &&
+#				git config fetch.all $fetch_all &&
+#				git remote set-url origin ../two &&
+#				git fetch --no-all &&
+#				create_fetch_two_as_origin_expect &&
+#				git branch -r >actual &&
+#				test_cmp expect actual
+#			)
+#		
+not ok 21 - git fetch --no-all (fetch only default remote with fetch.all = false)
+#	
+#			test_dir="test_no_all_fetch_all_$fetch_all" &&
+#			setup_test_clone "$test_dir" &&
+#			(
+#				cd "$test_dir" &&
+#				git config fetch.all $fetch_all &&
+#				git remote set-url origin ../two &&
+#				git fetch --no-all &&
+#				create_fetch_two_as_origin_expect &&
+#				git branch -r >actual &&
+#				test_cmp expect actual
+#			)
+#		
+not ok 22 - git fetch --no-all (fetch only default remote without fetch.all)
+#	
+#		setup_test_clone test12 &&
+#		(
+#			cd test12 &&
+#			git config --unset-all fetch.all || true &&
+#			git remote set-url origin ../two &&
+#			git fetch --no-all &&
+#			create_fetch_two_as_origin_expect &&
+#			git branch -r >actual &&
+#			test_cmp expect actual
+#		)
+#	
+not ok 23 - git fetch --all --no-all (fetch only default remote)
+#	
+#		setup_test_clone test13 &&
+#		(
+#			cd test13 &&
+#			git remote set-url origin ../two &&
+#			git fetch --all --no-all &&
+#			create_fetch_two_as_origin_expect &&
+#			git branch -r >actual &&
+#			test_cmp expect actual
+#		)
+#	
+not ok 24 - git fetch --no-all one (fetch only explicit remote)
+#	
+#		setup_test_clone test14 &&
+#		(
+#			cd test14 &&
+#			git fetch --no-all one &&
+#			create_fetch_one_expect &&
+#			git branch -r >actual &&
+#			test_cmp expect actual
+#		)
+#	
+not ok 25 - git fetch --no-all --all (fetch all remotes)
+#	
+#		setup_test_clone test15 &&
+#		(
+#			cd test15 &&
+#			git fetch --no-all --all &&
+#			create_fetch_all_expect &&
+#			git branch -r >actual &&
+#			test_cmp expect actual
+#		)
+#	
+# failed 15 among 25 test(s)
+1..25
+# Tests: 25  Pass: 10  Fail: 15  Skip: 0

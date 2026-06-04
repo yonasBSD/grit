@@ -1,0 +1,400 @@
+ok 1 - setup
+ok 2 - clone and setup child repos
+ok 3 - fetch test
+ok 4 - fetch test for-merge
+ok 5 - fetch test remote HEAD
+ok 6 - fetch test remote HEAD in bare repository
+ok 7 - fetch test remote HEAD change
+ok 8 - fetch test followRemoteHEAD never
+ok 9 - fetch test followRemoteHEAD warn no change
+ok 10 - fetch test followRemoteHEAD warn create
+ok 11 - fetch test followRemoteHEAD warn detached
+ok 12 - fetch test followRemoteHEAD warn quiet
+ok 13 - fetch test followRemoteHEAD warn-if-not-branch branch is same
+ok 14 - fetch test followRemoteHEAD warn-if-not-branch branch is different
+ok 15 - fetch test followRemoteHEAD always
+ok 16 - followRemoteHEAD does not kick in with refspecs
+ok 17 - followRemoteHEAD create does not overwrite dangling symref
+ok 18 - fetch --prune on its own works as expected
+ok 19 - fetch --prune with a branch name keeps branches
+ok 20 - fetch --prune with a namespace keeps other namespaces
+ok 21 - fetch --prune handles overlapping refspecs
+ok 22 - fetch --prune --tags prunes branches but not tags
+ok 23 - fetch --prune --tags with branch does not prune other things
+ok 24 - fetch --prune --tags with refspec prunes based on refspec
+ok 25 - fetch --tags gets tags even without a configured remote
+ok 26 - fetch --prune fails to delete branches
+ok 27 - fetch --atomic works with a single branch
+ok 28 - fetch --atomic works with multiple branches
+ok 29 - fetch --atomic works with mixed branches and tags
+ok 30 - fetch --atomic prunes references
+ok 31 - fetch --atomic aborts with non-fast-forward update
+ok 32 - fetch --atomic executes a single reference transaction only
+ok 33 - fetch --atomic aborts all reference updates if hook aborts
+ok 34 - fetch --atomic --append appends to FETCH_HEAD
+not ok 35 - fetch --atomic fails transaction if reference locked
+#	
+#		test_when_finished "rm -rf upstream repo" &&
+#	
+#		git init upstream &&
+#		git -C upstream commit --allow-empty -m 1 &&
+#		git -C upstream switch -c foobar &&
+#		git clone --mirror upstream repo &&
+#		git -C upstream commit --allow-empty -m 2 &&
+#		touch repo/refs/heads/foobar.lock &&
+#	
+#		test_must_fail git -C repo fetch --atomic origin
+#	
+ok 36 - --refmap="" ignores configured refspec
+ok 37 - --refmap="" and --prune
+ok 38 - fetch tags when there is no tags
+ok 39 - fetch following tags
+ok 40 - fetch uses remote ref names to describe new refs
+ok 41 - fetch must not resolve short tag name
+ok 42 - fetch can now resolve short remote name
+ok 43 - create bundle 1
+not ok 44 - header of bundle looks right
+#	
+#		cat >expect <<-EOF &&
+#		# v3 git bundle
+#		@object-format=$(test_oid algo)
+#		-OID updated by origin
+#		OID refs/heads/main
+#	
+#		EOF
+#		sed -e "s/$OID_REGEX/OID/g" -e "5q" bundle1 >actual &&
+#		test_cmp expect actual
+#	
+ok 45 - create bundle 2
+ok 46 - unbundle 1
+ok 47 - bundle 1 has only 3 files 
+not ok 48 - unbundle 2
+#	
+#		(
+#			cd bundle &&
+#			git fetch ../bundle2 main:main &&
+#			test "tip" = "$(git log -1 --pretty=oneline main | cut -d" " -f2)"
+#		)
+#	
+ok 49 - bundle does not prerequisite objects
+ok 50 - bundle should be able to create a full history
+ok 51 - fetch with a non-applying branch.<name>.merge
+ok 52 - fetch from GIT URL with a non-applying branch.<name>.merge [1]
+ok 53 - fetch from GIT URL with a non-applying branch.<name>.merge [2]
+ok 54 - fetch from GIT URL with a non-applying branch.<name>.merge [3]
+ok 55 - quoting of a strangely named repo
+not ok 56 - bundle should record HEAD correctly
+#	
+#	
+#		git bundle create bundle5 HEAD main &&
+#		git bundle list-heads bundle5 >actual &&
+#		for h in HEAD refs/heads/main
+#		do
+#			echo "$(git rev-parse --verify $h) $h" || return 1
+#		done >expect &&
+#		test_cmp expect actual
+#	
+#	
+ok 57 - mark initial state of origin/main
+ok 58 - explicit fetch should update tracking
+not ok 59 - explicit pull should update tracking
+#	
+#	
+#		git branch -f side &&
+#		(
+#			cd three &&
+#			git update-ref refs/remotes/origin/main base-origin-main &&
+#			o=$(git rev-parse --verify refs/remotes/origin/main) &&
+#			git pull origin main &&
+#			n=$(git rev-parse --verify refs/remotes/origin/main) &&
+#			test "$o" != "$n" &&
+#			test_must_fail git rev-parse --verify refs/remotes/origin/side
+#		)
+#	
+ok 60 - explicit --refmap is allowed only with command-line refspec
+ok 61 - explicit --refmap option overrides remote.*.fetch
+ok 62 - explicitly empty --refmap option disables remote.*.fetch
+ok 63 - configured fetch updates tracking
+ok 64 - non-matching refspecs do not confuse tracking update
+ok 65 - pushing nonexistent branch by mistake should not segv
+ok 66 - auto tag following fetches minimum
+ok 67 - refuse to fetch into the current branch
+ok 68 - fetch into the current branch with --update-head-ok
+ok 69 - fetch --dry-run does not touch FETCH_HEAD, but still prints what would be written
+ok 70 - --no-write-fetch-head does not touch FETCH_HEAD, and does not print what would be written
+ok 71 - --write-fetch-head gets defeated by --dry-run
+ok 72 - should be able to fetch with duplicate refspecs
+ok 73 - LHS of refspec follows ref disambiguation rules
+ok 74 - fetch.writeCommitGraph
+ok 75 - fetch.writeCommitGraph with submodules
+ok 76 - fetch from multiple configured URLs in single remote
+ok 77 - setup cmdline_setup variable for subsequent test
+ok 78 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:kept tag:kept
+ok 79 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:kept tag:kept
+ok 80 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 81 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 82 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 83 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 84 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune origin refs/tags/*:refs/tags/*; branch:kept tag:pruned
+ok 85 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune origin refs/tags/*:refs/tags/*; branch:kept tag:pruned
+ok 86 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune origin refs/tags/*:refs/tags/* +refs/heads/*:refs/remotes/origin/*; branch:pruned tag:pruned
+ok 87 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune origin refs/tags/*:refs/tags/* +refs/heads/*:refs/remotes/origin/*; branch:pruned tag:pruned
+ok 88 - name prune fetch.prune=false remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:kept tag:kept
+ok 89 - link prune fetch.prune=false remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:kept tag:kept
+ok 90 - name prune fetch.prune=false remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 91 - link prune fetch.prune=false remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 92 - name prune fetch.prune=false remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 93 - link prune fetch.prune=false remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 94 - name prune fetch.prune=true remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:pruned tag:kept
+ok 95 - link prune fetch.prune=true remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:pruned tag:kept
+ok 96 - name prune fetch.prune=true remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 97 - link prune fetch.prune=true remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 98 - name prune fetch.prune=true remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 99 - link prune fetch.prune=true remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 100 - name prune fetch.prune=unset remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:kept tag:kept
+ok 101 - link prune fetch.prune=unset remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:kept tag:kept
+ok 102 - name prune fetch.prune=unset remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 103 - link prune fetch.prune=unset remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 104 - name prune fetch.prune=unset remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 105 - link prune fetch.prune=unset remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 106 - name prune fetch.prune=false remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:kept tag:kept
+ok 107 - link prune fetch.prune=false remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:kept tag:kept
+ok 108 - name prune fetch.prune=false remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 109 - link prune fetch.prune=false remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 110 - name prune fetch.prune=false remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 111 - link prune fetch.prune=false remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 112 - name prune fetch.prune=false remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --prune origin refs/tags/*:refs/tags/*; branch:kept tag:pruned
+ok 113 - link prune fetch.prune=false remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --prune origin refs/tags/*:refs/tags/*; branch:kept tag:pruned
+ok 114 - name prune fetch.prune=false remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --prune origin refs/tags/*:refs/tags/* +refs/heads/*:refs/remotes/origin/*; branch:pruned tag:pruned
+ok 115 - link prune fetch.prune=false remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --prune origin refs/tags/*:refs/tags/* +refs/heads/*:refs/remotes/origin/*; branch:pruned tag:pruned
+ok 116 - name prune fetch.prune=true remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:kept tag:kept
+ok 117 - link prune fetch.prune=true remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:kept tag:kept
+ok 118 - name prune fetch.prune=true remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 119 - link prune fetch.prune=true remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 120 - name prune fetch.prune=true remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 121 - link prune fetch.prune=true remote.origin.prune=false fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 122 - name prune fetch.prune=unset remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:pruned tag:kept
+ok 123 - link prune fetch.prune=unset remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:pruned tag:kept
+ok 124 - name prune fetch.prune=unset remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 125 - link prune fetch.prune=unset remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 126 - name prune fetch.prune=unset remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 127 - link prune fetch.prune=unset remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 128 - name prune fetch.prune=false remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:pruned tag:kept
+ok 129 - link prune fetch.prune=false remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:pruned tag:kept
+ok 130 - name prune fetch.prune=false remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 131 - link prune fetch.prune=false remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 132 - name prune fetch.prune=false remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 133 - link prune fetch.prune=false remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 134 - name prune fetch.prune=true remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:pruned tag:kept
+ok 135 - link prune fetch.prune=true remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset; branch:pruned tag:kept
+ok 136 - name prune fetch.prune=true remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 137 - link prune fetch.prune=true remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --prune; branch:pruned tag:kept
+ok 138 - name prune fetch.prune=true remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 139 - link prune fetch.prune=true remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --no-prune; branch:kept tag:kept
+ok 140 - name prune fetch.prune=true remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --prune origin refs/tags/*:refs/tags/*; branch:kept tag:pruned
+ok 141 - link prune fetch.prune=true remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --prune origin refs/tags/*:refs/tags/*; branch:kept tag:pruned
+ok 142 - name prune fetch.prune=true remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --prune origin refs/tags/*:refs/tags/* +refs/heads/*:refs/remotes/origin/*; branch:pruned tag:pruned
+ok 143 - link prune fetch.prune=true remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=unset --prune origin refs/tags/*:refs/tags/* +refs/heads/*:refs/remotes/origin/*; branch:pruned tag:pruned
+ok 144 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune-tags; branch:kept tag:kept
+ok 145 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune-tags; branch:kept tag:kept
+ok 146 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=true remote.origin.pruneTags=unset; branch:kept tag:kept
+ok 147 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=true remote.origin.pruneTags=unset; branch:kept tag:kept
+ok 148 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=true; branch:kept tag:kept
+ok 149 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=true; branch:kept tag:kept
+ok 150 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune --prune-tags; branch:pruned tag:pruned
+ok 151 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune --prune-tags; branch:pruned tag:pruned
+ok 152 - name prune fetch.prune=true remote.origin.prune=unset fetch.pruneTags=true remote.origin.pruneTags=unset; branch:pruned tag:pruned
+ok 153 - link prune fetch.prune=true remote.origin.prune=unset fetch.pruneTags=true remote.origin.pruneTags=unset; branch:pruned tag:pruned
+ok 154 - name prune fetch.prune=unset remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=true; branch:pruned tag:pruned
+ok 155 - link prune fetch.prune=unset remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=true; branch:pruned tag:pruned
+ok 156 - name prune fetch.prune=true remote.origin.prune=unset fetch.pruneTags=true remote.origin.pruneTags=unset; branch:pruned tag:pruned
+ok 157 - link prune fetch.prune=true remote.origin.prune=unset fetch.pruneTags=true remote.origin.pruneTags=unset; branch:pruned tag:pruned
+ok 158 - name prune fetch.prune=false remote.origin.prune=true fetch.pruneTags=false remote.origin.pruneTags=true; branch:pruned tag:pruned
+ok 159 - link prune fetch.prune=false remote.origin.prune=true fetch.pruneTags=false remote.origin.pruneTags=true; branch:pruned tag:pruned
+ok 160 - name prune fetch.prune=true remote.origin.prune=false fetch.pruneTags=true remote.origin.pruneTags=false; branch:kept tag:kept
+ok 161 - link prune fetch.prune=true remote.origin.prune=false fetch.pruneTags=true remote.origin.pruneTags=false; branch:kept tag:kept
+ok 162 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune --prune-tags origin +refs/heads/*:refs/remotes/origin/*; branch:pruned tag:kept
+ok 163 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune --prune-tags origin +refs/heads/*:refs/remotes/origin/*; branch:pruned tag:kept
+ok 164 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=true remote.origin.pruneTags=unset --prune origin +refs/heads/*:refs/remotes/origin/*; branch:pruned tag:kept
+ok 165 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=true remote.origin.pruneTags=unset --prune origin +refs/heads/*:refs/remotes/origin/*; branch:pruned tag:kept
+ok 166 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=true --prune origin +refs/heads/*:refs/remotes/origin/*; branch:pruned tag:kept
+ok 167 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=true --prune origin +refs/heads/*:refs/remotes/origin/*; branch:pruned tag:kept
+ok 168 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset origin --prune-tags; branch:kept tag:kept
+ok 169 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset origin --prune-tags; branch:kept tag:kept
+ok 170 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset origin --prune --prune-tags; branch:pruned tag:pruned
+ok 171 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset origin --prune --prune-tags; branch:kept tag:pruned
+ok 172 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune --prune-tags origin; branch:pruned tag:pruned
+ok 173 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset --prune --prune-tags origin; branch:kept tag:pruned
+ok 174 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=true remote.origin.pruneTags=unset --prune origin; branch:pruned tag:pruned
+ok 175 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=true remote.origin.pruneTags=unset --prune origin; branch:kept tag:pruned
+ok 176 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=true --prune origin; branch:pruned tag:pruned
+ok 177 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=true --prune origin; branch:kept tag:pruned
+ok 178 - name prune fetch.prune=true remote.origin.prune=unset fetch.pruneTags=true remote.origin.pruneTags=unset origin; branch:pruned tag:pruned
+ok 179 - link prune fetch.prune=true remote.origin.prune=unset fetch.pruneTags=true remote.origin.pruneTags=unset origin; branch:kept tag:pruned
+ok 180 - name prune fetch.prune=unset remote.origin.prune=true fetch.pruneTags=true remote.origin.pruneTags=unset origin; branch:pruned tag:pruned
+ok 181 - link prune fetch.prune=unset remote.origin.prune=true fetch.pruneTags=true remote.origin.pruneTags=unset origin; branch:kept tag:pruned
+ok 182 - name prune fetch.prune=unset remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=true origin; branch:pruned tag:pruned
+ok 183 - link prune fetch.prune=unset remote.origin.prune=true fetch.pruneTags=unset remote.origin.pruneTags=true origin; branch:kept tag:pruned
+ok 184 - remove remote.origin.fetch "one"
+ok 185 - name prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset origin --prune --prune-tags; branch:kept tag:pruned
+ok 186 - link prune fetch.prune=unset remote.origin.prune=unset fetch.pruneTags=unset remote.origin.pruneTags=unset origin --prune --prune-tags; branch:kept tag:pruned
+not ok 187 - all boundary commits are excluded
+#	
+#		test_commit base &&
+#		test_commit oneside &&
+#		git checkout HEAD^ &&
+#		test_commit otherside &&
+#		git checkout main &&
+#		test_tick &&
+#		git merge otherside &&
+#		ad=$(git log --no-walk --format=%ad HEAD) &&
+#	
+#		# If the a different name hash function is used here, then no delta
+#		# pair is found and the bundle does not expand to three objects
+#		# when fixing the thin object.
+#		GIT_TEST_NAME_HASH_VERSION=1 \
+#			git bundle create twoside-boundary.bdl main --since="$ad" &&
+#		test_bundle_object_count --thin twoside-boundary.bdl 3
+#	
+ok 188 - fetch --prune prints the remotes url
+ok 189 - branchname D/F conflict resolved by --prune
+ok 190 - branchname D/F conflict rejected with targeted error message
+ok 191 - fetching a one-level ref works
+not ok 192 - fetching with auto-gc does not lock up
+#	
+#		write_script askyesno <<-\EOF &&
+#		echo "$*" &&
+#		false
+#		EOF
+#		git clone "file://$PWD" auto-gc &&
+#		test_commit test2 &&
+#		(
+#			cd auto-gc &&
+#			git config fetch.unpackLimit 1 &&
+#			git config gc.autoPackLimit 1 &&
+#			git config gc.autoDetach false &&
+#			git config maintenance.strategy gc &&
+#			GIT_ASK_YESNO="$TRASH_DIRECTORY/askyesno" git fetch --verbose >fetch.out 2>&1 &&
+#			test_grep "Auto packing the repository" fetch.out &&
+#			! grep "Should I try again" fetch.out
+#		)
+#	
+ok 193 - fetch.hideRefs affects connectivity check
+ok 194 - transfer.hideRefs affects connectivity check
+ok 195 - prepare source branch
+ok 196 - fetch trumps transfer limit
+ok 197 - fetch trumps transfer limit
+ok 198 - --negotiation-tip limits "have" lines sent
+ok 199 - --negotiation-tip understands globs
+ok 200 - --negotiation-tip understands abbreviated SHA-1
+ok 201 - --negotiation-tip rejects missing OIDs
+ok 202 - clone does not get confused by a D/F conflict
+ok 203 # skip existing references in a case insensitive filesystem (missing CASE_INSENSITIVE_FS of CASE_INSENSITIVE_FS,REFFILES)
+not ok 204 - existing reference lock in repo
+#	
+#		test_when_finished rm -rf base repo &&
+#		(
+#			git init --ref-format=reftable base &&
+#			cd base &&
+#			echo >file update &&
+#			git add . &&
+#			git commit -m "updated" &&
+#			git branch -M main &&
+#	
+#			git update-ref refs/heads/foo @ &&
+#			git update-ref refs/heads/branch @ &&
+#			cd .. &&
+#	
+#			git init --ref-format=files --bare repo &&
+#			cd repo &&
+#			git remote add origin ../base &&
+#			touch refs/heads/foo.lock &&
+#			test_must_fail git fetch -f origin "refs/heads/*:refs/heads/*" 2>err &&
+#			test_grep -e "error: cannot lock ref ${SQ}refs/heads/foo${SQ}: Unable to create" -e "refs/heads/foo.lock${SQ}: File exists." err &&
+#			git rev-parse refs/heads/main >expect &&
+#			git rev-parse refs/heads/branch >actual &&
+#			test_cmp expect actual
+#		)
+#	
+ok 205 # skip F/D conflict on case insensitive filesystem (missing CASE_INSENSITIVE_FS of CASE_INSENSITIVE_FS,REFFILES)
+ok 206 # skip D/F conflict on case insensitive filesystem (missing CASE_INSENSITIVE_FS of CASE_INSENSITIVE_FS,REFFILES)
+ok 207 - D/F conflict on case sensitive filesystem with lock
+ok 208 - fetch --tags fetches existing tags
+ok 209 - fetch --tags fetches non-conflicting tags
+ok 210 - backfill tags when providing a refspec
+not ok 211 - FETCH_HEAD is updated even if ref updates fail
+#	
+#		test_when_finished rm -rf base repo &&
+#	
+#		git init base &&
+#		(
+#			cd base &&
+#			test_commit "updated" &&
+#	
+#			git update-ref refs/heads/foo @ &&
+#			git update-ref refs/heads/branch @
+#		) &&
+#	
+#		git init --bare repo &&
+#		(
+#			cd repo &&
+#			rm -f FETCH_HEAD &&
+#			git remote add origin ../base &&
+#			>refs/heads/foo.lock &&
+#			test_must_fail git fetch -f origin "refs/heads/*:refs/heads/*" 2>err &&
+#			test_grep -e "error: cannot lock ref ${SQ}refs/heads/foo${SQ}: Unable to create" -e "refs/heads/foo.lock${SQ}: File exists." err &&
+#			test_grep "branch ${SQ}branch${SQ} of ../base" FETCH_HEAD &&
+#			test_grep "branch ${SQ}foo${SQ} of ../base" FETCH_HEAD
+#		)
+#	
+ok 212 - upstream tracking info is added with --set-upstream
+not ok 213 - upstream tracking info is added even with conflicts
+#	
+#		test_when_finished rm -rf base repo &&
+#	
+#		git init --initial-branch=main base &&
+#		test_commit -C base "updated" &&
+#	
+#		git init --bare --initial-branch=main repo &&
+#		(
+#			cd repo &&
+#			git remote add origin ../base &&
+#			test_must_fail git config get branch.main.remote &&
+#	
+#			mkdir -p refs/remotes/origin &&
+#			>refs/remotes/origin/main.lock &&
+#			test_must_fail git fetch origin --set-upstream main &&
+#			git config get branch.main.remote >actual &&
+#			echo "origin" >expect &&
+#			test_cmp expect actual
+#		)
+#	
+not ok 214 - HEAD is updated even with conflicts
+#	
+#		test_when_finished rm -rf base repo &&
+#	
+#		git init base &&
+#		(
+#			cd base &&
+#			test_commit "updated" &&
+#	
+#			git update-ref refs/heads/foo @ &&
+#			git update-ref refs/heads/branch @
+#		) &&
+#	
+#		git init --bare repo &&
+#		(
+#			cd repo &&
+#			git remote add origin ../base &&
+#	
+#			test_path_is_missing refs/remotes/origin/HEAD &&
+#			mkdir -p refs/remotes/origin &&
+#			>refs/remotes/origin/branch.lock &&
+#			test_must_fail git fetch origin &&
+#			test -f refs/remotes/origin/HEAD
+#		)
+#	
+ok 215 - --negotiation-tip limits "have" lines sent with HTTP protocol v2
+# failed 11 among 215 test(s)
+1..215
+# Tests: 215  Pass: 204  Fail: 11  Skip: 3

@@ -1,0 +1,187 @@
+ok 1 - setup
+ok 2 - git pull -q --no-rebase
+ok 3 - git pull -q --rebase
+ok 4 - git pull --no-rebase
+ok 5 - git pull --rebase
+not ok 6 - git pull -v --no-rebase
+#	
+#		mkdir clonedv &&
+#		(cd clonedv && git init &&
+#		git pull -v --no-rebase "../parent" >out 2>err &&
+#		test -s err &&
+#		test_must_be_empty out)
+#	
+not ok 7 - git pull -v --rebase
+#	
+#		mkdir clonedvrb &&
+#		(cd clonedvrb && git init &&
+#		git pull -v --rebase "../parent" >out 2>err &&
+#		test -s err &&
+#		test_must_be_empty out)
+#	
+not ok 8 - git pull -v -q --no-rebase
+#	
+#		mkdir clonedvq &&
+#		(cd clonedvq && git init &&
+#		git pull -v -q --no-rebase "../parent" >out 2>err &&
+#		test_must_be_empty out &&
+#		test_must_be_empty err)
+#	
+not ok 9 - git pull -q -v --no-rebase
+#	
+#		mkdir clonedqv &&
+#		(cd clonedqv && git init &&
+#		git pull -q -v --no-rebase "../parent" >out 2>err &&
+#		test_must_be_empty out &&
+#		test -s err)
+#	
+ok 10 - git pull --cleanup errors early on invalid argument
+ok 11 - git pull --no-write-fetch-head fails
+not ok 12 - git pull --force
+#	
+#		mkdir clonedoldstyle &&
+#		(cd clonedoldstyle && git init &&
+#		cat >>.git/config <<-\EOF &&
+#		[remote "one"]
+#			url = ../parent
+#			fetch = refs/heads/main:refs/heads/mirror
+#		[remote "two"]
+#			url = ../parent
+#			fetch = refs/heads/main:refs/heads/origin
+#		[branch "main"]
+#			remote = two
+#			merge = refs/heads/main
+#		EOF
+#		git pull two &&
+#		test_commit A &&
+#		git branch -f origin &&
+#		git pull --no-rebase --all --force
+#		)
+#	
+not ok 13 - git pull --all
+#	
+#		mkdir clonedmulti &&
+#		(cd clonedmulti && git init &&
+#		cat >>.git/config <<-\EOF &&
+#		[remote "one"]
+#			url = ../parent
+#			fetch = refs/heads/*:refs/remotes/one/*
+#		[remote "two"]
+#			url = ../parent
+#			fetch = refs/heads/*:refs/remotes/two/*
+#		[branch "main"]
+#			remote = one
+#			merge = refs/heads/main
+#		EOF
+#		git pull --all
+#		)
+#	
+not ok 14 - git pull --dry-run
+#	
+#		test_when_finished "rm -rf clonedry" &&
+#		git init clonedry &&
+#		(
+#			cd clonedry &&
+#			git pull --dry-run ../parent &&
+#			test_path_is_missing .git/FETCH_HEAD &&
+#			test_ref_missing refs/heads/main &&
+#			test_path_is_missing .git/index &&
+#			test_path_is_missing file
+#		)
+#	
+not ok 15 - git pull --all --dry-run
+#	
+#		test_when_finished "rm -rf cloneddry" &&
+#		git init clonedry &&
+#		(
+#			cd clonedry &&
+#			git remote add origin ../parent &&
+#			git pull --all --dry-run &&
+#			test_path_is_missing .git/FETCH_HEAD &&
+#			test_ref_missing refs/remotes/origin/main &&
+#			test_path_is_missing .git/index &&
+#			test_path_is_missing file
+#		)
+#	
+not ok 16 - git pull --allow-unrelated-histories
+#	
+#		test_when_finished "rm -fr src dst" &&
+#		git init src &&
+#		(
+#			cd src &&
+#			test_commit one &&
+#			test_commit two
+#		) &&
+#		git clone src dst &&
+#		(
+#			cd src &&
+#			git checkout --orphan side HEAD^ &&
+#			test_commit three
+#		) &&
+#		(
+#			cd dst &&
+#			test_must_fail git pull ../src side &&
+#			git pull --no-rebase --allow-unrelated-histories ../src side
+#		)
+#	
+not ok 17 - git pull does not add a sign-off line
+#	
+#		test_when_finished "rm -fr src dst actual" &&
+#		git init src &&
+#		test_commit -C src one &&
+#		git clone src dst &&
+#		test_commit -C src two &&
+#		git -C dst pull --no-ff &&
+#		git -C dst show -s --pretty="format:%(trailers)" HEAD >actual &&
+#		test_must_be_empty actual
+#	
+not ok 18 - git pull --no-signoff does not add sign-off line
+#	
+#		test_when_finished "rm -fr src dst actual" &&
+#		git init src &&
+#		test_commit -C src one &&
+#		git clone src dst &&
+#		test_commit -C src two &&
+#		git -C dst pull --no-signoff --no-ff &&
+#		git -C dst show -s --pretty="format:%(trailers)" HEAD >actual &&
+#		test_must_be_empty actual
+#	
+not ok 19 - git pull --signoff add a sign-off line
+#	
+#		test_when_finished "rm -fr src dst expected actual" &&
+#		echo "Signed-off-by: $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL>" >expected &&
+#		git init src &&
+#		test_commit -C src one &&
+#		git clone src dst &&
+#		test_commit -C src two &&
+#		git -C dst pull --signoff --no-ff &&
+#		git -C dst show -s --pretty="format:%(trailers)" HEAD >actual &&
+#		test_cmp expected actual
+#	
+not ok 20 - git pull --no-signoff flag cancels --signoff flag
+#	
+#		test_when_finished "rm -fr src dst actual" &&
+#		git init src &&
+#		test_commit -C src one &&
+#		git clone src dst &&
+#		test_commit -C src two &&
+#		git -C dst pull --signoff --no-signoff --no-ff &&
+#		git -C dst show -s --pretty="format:%(trailers)" HEAD >actual &&
+#		test_must_be_empty actual
+#	
+not ok 21 - git pull --no-verify flag passed to merge
+#	
+#		test_when_finished "rm -fr src dst actual" &&
+#		git init src &&
+#		test_commit -C src one &&
+#		git clone src dst &&
+#		test_hook -C dst commit-msg <<-\EOF &&
+#		false
+#		EOF
+#		test_commit -C src two &&
+#		git -C dst pull --no-ff --no-verify
+#	
+ok 22 - git pull --no-verify --verify passed to merge
+# failed 14 among 22 test(s)
+1..22
+# Tests: 22  Pass: 8  Fail: 14  Skip: 0

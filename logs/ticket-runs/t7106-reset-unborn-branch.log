@@ -1,0 +1,10 @@
+ok 1 - setup
+ok 2 - reset
+ok 3 - reset HEAD
+ok 4 - reset $file
+ok 5 - reset -p
+ok 6 - reset --soft is a no-op
+ok 7 - reset --hard
+# passed all 7 test(s)
+1..7
+# Tests: 7  Pass: 7  Fail: 0  Skip: 0

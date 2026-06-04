@@ -1,0 +1,187 @@
+ok 1 - core.bigFileThreshold must be non-negative
+ok 2 - setup
+ok 3 - enter "large" codepath, with small core.bigFileThreshold
+not ok 4 - add with -c core.compression=0
+#	
+#			test_when_finished "rm -f .git/objects/pack/pack-*.* .git/index" &&
+#			git $config add large1 &&
+#			sz=$(test_file_size .git/objects/pack/pack-*.pack) &&
+#			case "$expect" in
+#			small) test "$sz" -le 100000 ;;
+#			large) test "$sz" -ge 100000 ;;
+#			esac
+#		
+not ok 5 - add with -c core.compression=9
+#	
+#			test_when_finished "rm -f .git/objects/pack/pack-*.* .git/index" &&
+#			git $config add large1 &&
+#			sz=$(test_file_size .git/objects/pack/pack-*.pack) &&
+#			case "$expect" in
+#			small) test "$sz" -le 100000 ;;
+#			large) test "$sz" -ge 100000 ;;
+#			esac
+#		
+not ok 6 - add with -c core.compression=0 -c pack.compression=0
+#	
+#			test_when_finished "rm -f .git/objects/pack/pack-*.* .git/index" &&
+#			git $config add large1 &&
+#			sz=$(test_file_size .git/objects/pack/pack-*.pack) &&
+#			case "$expect" in
+#			small) test "$sz" -le 100000 ;;
+#			large) test "$sz" -ge 100000 ;;
+#			esac
+#		
+not ok 7 - add with -c core.compression=9 -c pack.compression=0
+#	
+#			test_when_finished "rm -f .git/objects/pack/pack-*.* .git/index" &&
+#			git $config add large1 &&
+#			sz=$(test_file_size .git/objects/pack/pack-*.pack) &&
+#			case "$expect" in
+#			small) test "$sz" -le 100000 ;;
+#			large) test "$sz" -ge 100000 ;;
+#			esac
+#		
+not ok 8 - add with -c core.compression=0 -c pack.compression=9
+#	
+#			test_when_finished "rm -f .git/objects/pack/pack-*.* .git/index" &&
+#			git $config add large1 &&
+#			sz=$(test_file_size .git/objects/pack/pack-*.pack) &&
+#			case "$expect" in
+#			small) test "$sz" -le 100000 ;;
+#			large) test "$sz" -ge 100000 ;;
+#			esac
+#		
+not ok 9 - add with -c core.compression=9 -c pack.compression=9
+#	
+#			test_when_finished "rm -f .git/objects/pack/pack-*.* .git/index" &&
+#			git $config add large1 &&
+#			sz=$(test_file_size .git/objects/pack/pack-*.pack) &&
+#			case "$expect" in
+#			small) test "$sz" -le 100000 ;;
+#			large) test "$sz" -ge 100000 ;;
+#			esac
+#		
+not ok 10 - add with -c pack.compression=0
+#	
+#			test_when_finished "rm -f .git/objects/pack/pack-*.* .git/index" &&
+#			git $config add large1 &&
+#			sz=$(test_file_size .git/objects/pack/pack-*.pack) &&
+#			case "$expect" in
+#			small) test "$sz" -le 100000 ;;
+#			large) test "$sz" -ge 100000 ;;
+#			esac
+#		
+not ok 11 - add with -c pack.compression=9
+#	
+#			test_when_finished "rm -f .git/objects/pack/pack-*.* .git/index" &&
+#			git $config add large1 &&
+#			sz=$(test_file_size .git/objects/pack/pack-*.pack) &&
+#			case "$expect" in
+#			small) test "$sz" -le 100000 ;;
+#			large) test "$sz" -ge 100000 ;;
+#			esac
+#		
+not ok 12 - add a large file or two
+#	
+#		git add large1 huge large2 &&
+#		# make sure we got a single packfile and no loose objects
+#		count=0 idx= &&
+#		for p in .git/objects/pack/pack-*.pack
+#		do
+#			count=$(( $count + 1 )) &&
+#			test_path_is_file "$p" &&
+#			idx=${p%.pack}.idx &&
+#			test_path_is_file "$idx" || return 1
+#		done &&
+#		test $count = 1 &&
+#		cnt=$(git show-index <"$idx" | wc -l) &&
+#		test $cnt = 2 &&
+#		for l in .git/objects/$OIDPATH_REGEX
+#		do
+#			test_path_is_missing "$l" || return 1
+#		done &&
+#	
+#		# attempt to add another copy of the same
+#		git add large3 &&
+#		bad= count=0 &&
+#		for p in .git/objects/pack/pack-*.pack
+#		do
+#			count=$(( $count + 1 )) &&
+#			test_path_is_file "$p" &&
+#			idx=${p%.pack}.idx &&
+#			test_path_is_file "$idx" || return 1
+#		done &&
+#		test $count = 1
+#	
+ok 13 - checkout a large file
+not ok 14 - packsize limit
+#	
+#		test_create_repo mid &&
+#		(
+#			cd mid &&
+#			git config core.bigfilethreshold 64k &&
+#			git config pack.packsizelimit 256k &&
+#	
+#			# mid1 and mid2 will fit within 256k limit but
+#			# appending mid3 will bust the limit and will
+#			# result in a separate packfile.
+#			test-tool genrandom "a" 66k >mid1 &&
+#			test-tool genrandom "b" 80k >mid2 &&
+#			test-tool genrandom "c" 128k >mid3 &&
+#			git add mid1 mid2 mid3 &&
+#	
+#			count=0 &&
+#			for pi in .git/objects/pack/pack-*.idx
+#			do
+#				test_path_is_file "$pi" && count=$(( $count + 1 )) || return 1
+#			done &&
+#			test $count = 2 &&
+#	
+#			(
+#				git hash-object --stdin <mid1 &&
+#				git hash-object --stdin <mid2 &&
+#				git hash-object --stdin <mid3
+#			) |
+#			sort >expect &&
+#	
+#			for pi in .git/objects/pack/pack-*.idx
+#			do
+#				git show-index <"$pi" || return 1
+#			done |
+#			sed -e "s/^[0-9]* \([0-9a-f]*\) .*/\1/" |
+#			sort >actual &&
+#	
+#			test_cmp expect actual
+#		)
+#	
+ok 15 - diff --raw
+ok 16 - diff --stat
+not ok 17 - diff
+#	
+#		git diff HEAD^ HEAD >actual &&
+#		grep "Binary files.*differ" actual
+#	
+not ok 18 - diff --cached
+#	
+#		git diff --cached HEAD^ >actual &&
+#		grep "Binary files.*differ" actual
+#	
+ok 19 - hash-object
+ok 20 - cat-file a large file
+ok 21 - cat-file a large file from a tag
+ok 22 - git-show a large file
+not ok 23 - index-pack
+#	
+#		git clone file://"$(pwd)"/.git foo &&
+#		GIT_DIR=non-existent git index-pack --object-format=$(test_oid algo) \
+#			--strict --verify foo/.git/objects/pack/*.pack
+#	
+ok 24 - repack
+ok 25 - pack-objects with large loose object
+ok 26 - tar archiving
+ok 27 - zip archiving, store only
+ok 28 - zip archiving, deflate
+ok 29 - fsck large blobs
+# failed 13 among 29 test(s)
+1..29
+# Tests: 29  Pass: 16  Fail: 13  Skip: 0

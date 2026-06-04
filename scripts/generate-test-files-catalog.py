@@ -1,55 +1,26 @@
 #!/usr/bin/env python3
-"""Build or merge data/test-files.csv from tests/t*.sh.
+"""Build or merge data/tests/<group>/<stem>.toml status files from tests/t*.sh.
 
 Scans tests/ for harness files, assigns ``group`` from the first decimal digit
 after ``t`` (Git upstream families; see ``git/t/README`` “Naming Tests”):
-``t0``–``t9``. Counts test markers per file and merges with any existing CSV so
-run results are preserved for files that still exist.
+``t0``–``t9``. Counts test markers per file and merges with any existing status
+TOMLs so run results are preserved for files that still exist; TOMLs for
+removed test files are pruned.
 """
 
 from __future__ import annotations
 
-import csv
-import os
 import re
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_status import TESTS_DATA, group_from_stem, load_all, prune, save  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 TESTS_DIR = REPO / "tests"
-DATA_DIR = REPO / "data"
-OUT = DATA_DIR / "test-files.csv"
-
-HEADER = [
-    "file",
-    "group",
-    "in_scope",
-    "tests_total",
-    "passed_last",
-    "failing",
-    "fully_passing",
-    "status",
-    "expect_failure",
-]
 
 FILE_RE = re.compile(r"^t\d+.+\.sh$")
-
-
-def group_from_stem(stem: str) -> str:
-    """Harness group from a test file stem (no ``.sh``).
-
-    Uses the first digit of the numeric prefix after ``t``, matching upstream
-    Git test family numbering (``tNNNN-…`` → family ``N``'s first digit).
-    """
-    if not stem.startswith("t"):
-        return "t?"
-    rest = stem[1:]
-    i = 0
-    while i < len(rest) and rest[i].isdigit():
-        i += 1
-    digits = rest[:i]
-    if len(digits) >= 1:
-        return f"t{digits[0]}"
-    return "t?"
 
 
 def count_expects_and_group(sh_path: Path) -> tuple[str, int, int]:
@@ -67,86 +38,58 @@ def count_expects_and_group(sh_path: Path) -> tuple[str, int, int]:
     return group, markers, ef
 
 
-def load_existing() -> dict[str, dict[str, str]]:
-    if not OUT.exists():
-        return {}
-    rows: dict[str, dict[str, str]] = {}
-    with OUT.open(newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-        for row in reader:
-            key = row.get("file", "").strip()
-            if key:
-                rows[key] = row
-    return rows
-
-
 def main() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    existing = load_existing()
+    existing = load_all()
     discovered: list[str] = []
     for p in sorted(TESTS_DIR.glob("t*.sh")):
         if FILE_RE.match(p.name):
             discovered.append(p.stem)
 
-    merged: dict[str, dict[str, str]] = {}
-
     for base in discovered:
         sh = TESTS_DIR / f"{base}.sh"
         group, marker_count, expect_failure = count_expects_and_group(sh)
-        prev = existing.get(base, {})
-        if prev and prev.get("file"):
-            in_scope = prev.get("in_scope", "yes")
+        prev = existing.get(base)
+        if prev is not None:
+            in_scope = prev["in_scope"]
             # Run metrics come from apply-test-run-results.py after harness runs.
             # Keep tests_total from the last harness merge when present; do not
             # replace it with the static marker count (regex can under-count, and
             # resetting tests_total while preserving passed_last corrupts the row).
-            passed_last = prev.get("passed_last", "0")
-            failing = prev.get("failing", "0")
-            fully_passing = prev.get("fully_passing", "false")
-            status = prev.get("status", "")
-            prev_tt = prev.get("tests_total", "").strip()
-            try:
-                pl = int(passed_last)
-                fl = int(failing)
-                run_sum = pl + fl
-            except ValueError:
-                run_sum = -1
-            if prev_tt.isdigit():
-                tests_total = int(prev_tt)
-            else:
-                tests_total = marker_count
+            passed_last = prev["passed_last"]
+            failing = prev["failing"]
+            fully_passing = prev["fully_passing"]
+            status = prev["status"]
+            tests_total = prev["tests_total"] if prev["tests_total"] > 0 else marker_count
             # Repair rows where an older catalog run reset tests_total to the marker
             # count but left pass/fail from the harness (totals must agree).
-            if run_sum >= 0 and tests_total != run_sum and run_sum > 0:
+            run_sum = passed_last + failing
+            if tests_total != run_sum and run_sum > 0:
                 tests_total = run_sum
         else:
             in_scope = "yes"
-            passed_last = "0"
-            failing = "0"
-            fully_passing = "false"
+            passed_last = 0
+            failing = 0
+            fully_passing = False
             status = ""
             tests_total = marker_count
 
-        merged[base] = {
-            "file": base,
-            "group": group,
-            "in_scope": in_scope,
-            "tests_total": str(tests_total),
-            "passed_last": passed_last,
-            "failing": failing,
-            "fully_passing": fully_passing,
-            "status": status,
-            "expect_failure": str(expect_failure),
-        }
+        save(
+            base,
+            group,
+            {
+                "in_scope": in_scope,
+                "tests_total": tests_total,
+                "passed_last": passed_last,
+                "failing": failing,
+                "fully_passing": fully_passing,
+                "status": status,
+                "expect_failure": expect_failure,
+            },
+        )
 
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    with OUT.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=HEADER, delimiter="\t", lineterminator="\n")
-        w.writeheader()
-        for base in sorted(merged.keys()):
-            w.writerow(merged[base])
-
-    print(f"Wrote {OUT} ({len(merged)} files)")
+    removed = prune(set(discovered))
+    note = f", pruned {len(removed)} stale" if removed else ""
+    print(f"Wrote {len(discovered)} status TOMLs under {TESTS_DATA}{note}")
 
 
 if __name__ == "__main__":

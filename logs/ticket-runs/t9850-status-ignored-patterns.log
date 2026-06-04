@@ -1,0 +1,54 @@
+ok 1 - setup: create repository with files
+ok 2 - status --porcelain on clean repo shows nothing (except branch)
+ok 3 - status --short on clean repo shows nothing (except branch)
+ok 4 - status shows untracked file
+ok 5 - status shows multiple untracked files
+ok 6 - status shows untracked directory
+ok 7 - cleanup untracked
+ok 8 - status shows staged new file as A
+ok 9 - status shows multiple staged additions
+ok 10 - commit staged files
+ok 11 - status shows modified unstaged file
+ok 12 - status shows multiple modified files
+ok 13 - status modified matches git
+ok 14 - restore files
+ok 15 - status shows staged modification as M
+ok 16 - status staged mod matches git
+ok 17 - commit staged mod
+ok 18 - status shows unstaged deletion
+ok 19 - status shows staged deletion as D
+ok 20 - status staged deletion matches git
+ok 21 - commit deletion
+ok 22 - status with mixed states: staged + unstaged + untracked
+ok 23 - status mixed matches git (file entries)
+ok 24 - cleanup mixed state
+ok 25 - status shows nested modified file
+ok 26 - status shows nested new file
+ok 27 - cleanup nested
+not ok 28 - status --porcelain shows branch header
+#	
+#		(
+#		cd repo &&
+#		"$GUST_BIN" status --porcelain >../actual &&
+#		grep "^## master" ../actual
+#		)
+#	
+not ok 29 - status on new branch shows correct branch
+#	
+#		(
+#		cd repo &&
+#		"$REAL_GIT" checkout -b test-branch &&
+#		"$GUST_BIN" status --porcelain >../actual &&
+#		grep "^## test-branch" ../actual
+#		)
+#	
+ok 30 - switch back to master
+ok 31 - status after file mode change
+ok 32 - cleanup mode change
+ok 33 - status --short matches --porcelain for file entries
+ok 34 - status --short shows M for modified
+ok 35 - cleanup
+ok 36 - final: clean status after all tests
+# failed 2 among 36 test(s)
+1..36
+# Tests: 36  Pass: 34  Fail: 2  Skip: 0

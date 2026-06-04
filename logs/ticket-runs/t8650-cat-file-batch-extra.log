@@ -1,0 +1,40 @@
+ok 1 - setup: repository with various objects
+ok 2 - cat-file --batch outputs blob content
+ok 3 - cat-file --batch header has oid type size
+not ok 4 - cat-file --batch content matches cat-file -p
+#	
+#		(
+#		cd repo &&
+#		blob=$(git rev-parse HEAD:file.txt) &&
+#		git cat-file -p "$blob" >expected &&
+#		echo "$blob" | git cat-file --batch >batch_out &&
+#		tail -n +2 batch_out | head -n -1 >actual &&
+#		test_cmp expected actual
+#		)
+#	
+ok 5 - cat-file --batch with tree object
+ok 6 - cat-file --batch with commit object
+ok 7 - cat-file --batch with tag object
+ok 8 - cat-file --batch with multiple OIDs
+ok 9 - cat-file --batch processes all objects in order
+ok 10 - cat-file --batch with many blob objects
+ok 11 - cat-file --batch with empty input produces no output
+ok 12 - cat-file --batch with missing object reports error
+ok 13 - cat-file --batch with invalid hex reports error
+ok 14 - cat-file --batch-check outputs type and size
+ok 15 - cat-file --batch-check does not output content
+ok 16 - cat-file --batch-check with multiple objects
+ok 17 - cat-file --batch-check with missing object
+ok 18 - cat-file --batch-check with empty input
+ok 19 - cat-file --batch-check with %(objecttype) format
+ok 20 - cat-file --batch-check with %(objectname) format
+ok 21 - cat-file --batch-check with %(objectsize) format
+ok 22 - cat-file --batch-check with combined format
+ok 23 - cat-file --batch size matches -s output
+ok 24 - cat-file --batch-check size matches -s output
+ok 25 - cat-file --batch-check sees blob, tree, commit, tag types
+ok 26 - cat-file --batch output is deterministic
+ok 27 - cat-file --batch-check output is deterministic
+# failed 1 among 27 test(s)
+1..27
+# Tests: 27  Pass: 26  Fail: 1  Skip: 0

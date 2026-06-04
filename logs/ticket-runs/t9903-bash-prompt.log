@@ -1,0 +1,86 @@
+ok 1 - setup for prompt tests
+ok 2 - prompt - branch name
+ok 3 - prompt - branch name - symlink symref
+ok 4 - prompt - unborn branch
+ok 5 - prompt - with newline in path
+ok 6 - prompt - detached head
+ok 7 - prompt - describe detached head - contains
+ok 8 - prompt - describe detached head - branch
+ok 9 - prompt - describe detached head - describe
+ok 10 - prompt - describe detached head - default
+ok 11 - prompt - inside .git directory
+ok 12 - prompt - deep inside .git directory
+ok 13 - prompt - inside bare repository
+not ok 14 - prompt - interactive rebase
+#	
+#		printf " (b1|REBASE 2/3)" >expected &&
+#		write_script fake_editor.sh <<-\EOF &&
+#			echo "exec echo" >"$1"
+#			echo "edit $(git log -1 --format="%h")" >>"$1"
+#			echo "exec echo" >>"$1"
+#		EOF
+#		test_when_finished "rm -f fake_editor.sh" &&
+#		test_set_editor "$TRASH_DIRECTORY/fake_editor.sh" &&
+#		git checkout b1 &&
+#		test_when_finished "git checkout main" &&
+#		git rebase -i HEAD^ &&
+#		test_when_finished "git rebase --abort" &&
+#		__git_ps1 >"$actual" &&
+#		test_cmp expected "$actual"
+#	
+ok 15 - prompt - rebase merge
+ok 16 - prompt - rebase am
+ok 17 - prompt - merge
+ok 18 - prompt - cherry-pick
+ok 19 - prompt - revert
+ok 20 - prompt - bisect
+ok 21 - prompt - dirty status indicator - clean
+ok 22 - prompt - dirty status indicator - dirty worktree
+ok 23 - prompt - dirty status indicator - dirty index
+ok 24 - prompt - dirty status indicator - dirty index and worktree
+ok 25 - prompt - dirty status indicator - orphan branch - clean
+ok 26 - prompt - dirty status indicator - orphan branch - dirty index
+ok 27 - prompt - dirty status indicator - orphan branch - dirty index and worktree
+ok 28 - prompt - dirty status indicator - shell variable unset with config disabled
+ok 29 - prompt - dirty status indicator - shell variable unset with config enabled
+ok 30 - prompt - dirty status indicator - shell variable set with config disabled
+ok 31 - prompt - dirty status indicator - shell variable set with config enabled
+ok 32 - prompt - dirty status indicator - not shown inside .git directory
+ok 33 - prompt - stash status indicator - no stash
+ok 34 - prompt - stash status indicator - stash
+ok 35 - prompt - stash status indicator - not shown inside .git directory
+ok 36 - prompt - untracked files status indicator - no untracked files
+ok 37 - prompt - untracked files status indicator - untracked files
+ok 38 - prompt - untracked files status indicator - empty untracked dir
+ok 39 - prompt - untracked files status indicator - non-empty untracked dir
+ok 40 - prompt - untracked files status indicator - untracked files outside cwd
+ok 41 - prompt - untracked files status indicator - shell variable unset with config disabled
+ok 42 - prompt - untracked files status indicator - shell variable unset with config enabled
+ok 43 - prompt - untracked files status indicator - shell variable set with config disabled
+ok 44 - prompt - untracked files status indicator - shell variable set with config enabled
+ok 45 - prompt - untracked files status indicator - not shown inside .git directory
+ok 46 - prompt - format string starting with dash
+ok 47 - prompt - pc mode
+ok 48 - prompt - bash color pc mode - branch name
+ok 49 - prompt - bash color pc mode - detached head
+ok 50 - prompt - bash color pc mode - dirty status indicator - dirty worktree
+ok 51 - prompt - bash color pc mode - dirty status indicator - dirty index
+ok 52 - prompt - bash color pc mode - dirty status indicator - dirty index and worktree
+ok 53 - prompt - bash color pc mode - dirty status indicator - before root commit
+ok 54 - prompt - bash color pc mode - inside .git directory
+ok 55 - prompt - bash color pc mode - stash status indicator
+ok 56 - prompt - bash color pc mode - untracked files status indicator
+ok 57 - prompt - zsh color pc mode
+ok 58 - prompt - hide if pwd ignored - env var unset, config disabled
+ok 59 - prompt - hide if pwd ignored - env var unset, config disabled, pc mode
+ok 60 - prompt - hide if pwd ignored - env var unset, config unset
+ok 61 - prompt - hide if pwd ignored - env var unset, config unset, pc mode
+ok 62 - prompt - hide if pwd ignored - env var set, config disabled
+ok 63 - prompt - hide if pwd ignored - env var set, config disabled, pc mode
+ok 64 - prompt - hide if pwd ignored - env var set, config unset
+ok 65 - prompt - hide if pwd ignored - env var set, config unset, pc mode
+ok 66 - prompt - hide if pwd ignored - inside gitdir
+ok 67 - prompt - conflict indicator
+# failed 1 among 67 test(s)
+1..67
+# Tests: 67  Pass: 66  Fail: 1  Skip: 0

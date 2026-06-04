@@ -1,0 +1,48 @@
+ok 1 - setup
+ok 2 - status no-options
+ok 3 - status --no-renames
+ok 4 - status.renames inherits from diff.renames false
+ok 5 - status.renames inherits from diff.renames true
+not ok 6 - status.renames overrides diff.renames false
+#	
+#		git -c diff.renames=true -c status.renames=false status >actual &&
+#		test_grep "deleted:" actual &&
+#		test_grep "new file:" actual
+#	
+not ok 7 - status.renames overrides from diff.renames true
+#	
+#		git -c diff.renames=false -c status.renames=true status >actual &&
+#		test_grep "renamed:" actual
+#	
+not ok 8 - status status.renames=false
+#	
+#		git -c status.renames=false status >actual &&
+#		test_grep "deleted:" actual &&
+#		test_grep "new file:" actual
+#	
+ok 9 - status status.renames=true
+ok 10 - commit honors status.renames=false
+not ok 11 - commit honors status.renames=true
+#	
+#		git -c status.renames=true commit --dry-run >actual &&
+#		test_grep "renamed:" actual
+#	
+ok 12 - status config overridden
+ok 13 - status score=100%
+ok 14 - status score=01%
+not ok 15 - copies not overridden by find-renames
+#	
+#		cp renamed copy &&
+#		git add copy &&
+#	
+#		git -c status.renames=copies status -M=01% >actual &&
+#		test_grep "copied:" actual &&
+#		test_grep "renamed:" actual &&
+#	
+#		git -c status.renames=copies status --find-renames=01% >actual &&
+#		test_grep "copied:" actual &&
+#		test_grep "renamed:" actual
+#	
+# failed 5 among 15 test(s)
+1..15
+# Tests: 15  Pass: 10  Fail: 5  Skip: 0

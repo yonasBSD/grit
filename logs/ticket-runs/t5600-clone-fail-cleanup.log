@@ -1,0 +1,56 @@
+ok 1 - clone of non-existent source should fail
+ok 2 - failed clone should not leave a directory
+ok 3 - create a repo to clone
+ok 4 - create objects in repo for later corruption
+ok 5 - clone of non-existent (relative to $PWD) source should fail
+ok 6 - clone should work now that source exists
+ok 7 - successful clone must leave the directory
+not ok 8 - failed clone --separate-git-dir should not leave any directories
+#	
+#		corrupt_repo &&
+#		test_must_fail git clone --separate-git-dir gitdir foo worktree &&
+#		test_path_is_missing gitdir &&
+#		test_path_is_missing worktree
+#	
+not ok 9 - failed clone into empty leaves directory (vanilla)
+#	
+#		mkdir -p empty &&
+#		corrupt_repo &&
+#		test_must_fail git clone foo empty &&
+#		test_dir_is_empty empty
+#	
+not ok 10 - failed clone into empty leaves directory (bare)
+#	
+#		mkdir -p empty &&
+#		corrupt_repo &&
+#		test_must_fail git clone --bare foo empty &&
+#		test_dir_is_empty empty
+#	
+not ok 11 - failed clone into empty leaves directory (separate)
+#	
+#		mkdir -p empty-git empty-wt &&
+#		corrupt_repo &&
+#		test_must_fail git clone --separate-git-dir empty-git foo empty-wt &&
+#		test_dir_is_empty empty-git &&
+#		test_dir_is_empty empty-wt
+#	
+not ok 12 - failed clone into empty leaves directory (separate, git)
+#	
+#		mkdir -p empty-git &&
+#		corrupt_repo &&
+#		test_must_fail git clone --separate-git-dir empty-git foo no-wt &&
+#		test_dir_is_empty empty-git &&
+#		test_path_is_missing no-wt
+#	
+not ok 13 - failed clone into empty leaves directory (separate, wt)
+#	
+#		mkdir -p empty-wt &&
+#		corrupt_repo &&
+#		test_must_fail git clone --separate-git-dir no-git foo empty-wt &&
+#		test_path_is_missing no-git &&
+#		test_dir_is_empty empty-wt
+#	
+ok 14 - transport failure cleans up directory
+# failed 6 among 14 test(s)
+1..14
+# Tests: 14  Pass: 8  Fail: 6  Skip: 0

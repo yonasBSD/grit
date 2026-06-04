@@ -1,0 +1,24 @@
+ok 1 - setup
+ok 2 - checking out paths out of a tree does not clobber unrelated paths
+ok 3 - do not touch unmerged entries matching $path but not in $tree
+not ok 4 - do not touch files that are already up-to-date
+#	
+#		git reset --hard &&
+#		echo one >file1 &&
+#		echo two >file2 &&
+#		git add file1 file2 &&
+#		git commit -m base &&
+#		echo modified >file1 &&
+#		test-tool chmtime =1000000000 file2 &&
+#		git update-index -q --refresh &&
+#		git checkout HEAD -- file1 file2 &&
+#		echo one >expect &&
+#		test_cmp expect file1 &&
+#		echo "1000000000" >expect &&
+#		test-tool chmtime --get file2 >actual &&
+#		test_cmp expect actual
+#	
+ok 5 - checkout HEAD adds deleted intent-to-add file back to index
+# failed 1 among 5 test(s)
+1..5
+# Tests: 5  Pass: 4  Fail: 1  Skip: 0

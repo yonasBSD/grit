@@ -1,0 +1,52 @@
+ok 1 - setup repository with files for rename tests
+ok 2 - git mv renames file in index
+ok 3 - status shows rename after git mv (porcelain)
+ok 4 - status shows rename after git mv (short)
+ok 5 - renamed file has same content
+ok 6 - commit rename and verify log
+ok 7 - git mv file into subdirectory
+ok 8 - status detects cross-directory rename
+ok 9 - commit cross-directory rename
+ok 10 - git mv file out of subdirectory
+ok 11 - status shows rename for directory extraction
+ok 12 - commit directory extraction
+ok 13 - manual rename: copy content, rm old, add new
+ok 14 - status detects manual rename as R
+ok 15 - commit manual rename
+not ok 16 - git mv then modify the renamed file
+#	
+#		(
+#		cd repo &&
+#		git mv doc/readme.md doc/README.md &&
+#		echo "extra line" >>doc/README.md &&
+#		git add doc/README.md
+#		)
+#	
+not ok 17 - status detects rename with modification
+#	
+#		(
+#		cd repo &&
+#		git status --porcelain >../actual &&
+#		grep "^R" ../actual
+#		)
+#	
+not ok 18 - commit rename with modification
+#	
+#		(
+#		cd repo &&
+#		git commit -m "rename and modify readme"
+#		)
+#	
+ok 19 - setup: create files for batch rename
+ok 20 - batch git mv three files
+ok 21 - status shows three renames with R prefix
+ok 22 - commit batch rename
+ok 23 - status is clean after committing renames
+ok 24 - rename back to original name
+ok 25 - commit rename-back
+ok 26 - working tree rename without staging
+ok 27 - working tree rename shows as deleted + untracked
+ok 28 - cleanup: restore working tree rename
+# failed 3 among 28 test(s)
+1..28
+# Tests: 28  Pass: 25  Fail: 3  Skip: 0

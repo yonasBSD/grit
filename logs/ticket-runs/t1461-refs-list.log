@@ -1,0 +1,489 @@
+ok 1 - setup
+ok 2 - basic atom: refs/heads/main refname
+ok 3 - basic atom: refs/heads/main refname:
+ok 4 - basic atom: refs/heads/main refname:short
+ok 5 - basic atom: refs/heads/main refname:lstrip=1
+ok 6 - basic atom: refs/heads/main refname:lstrip=2
+ok 7 - basic atom: refs/heads/main refname:lstrip=-1
+ok 8 - basic atom: refs/heads/main refname:lstrip=-2
+ok 9 - basic atom: refs/heads/main refname:rstrip=1
+ok 10 - basic atom: refs/heads/main refname:rstrip=2
+ok 11 - basic atom: refs/heads/main refname:rstrip=-1
+ok 12 - basic atom: refs/heads/main refname:rstrip=-2
+ok 13 - basic atom: refs/heads/main refname:strip=1
+ok 14 - basic atom: refs/heads/main refname:strip=2
+ok 15 - basic atom: refs/heads/main refname:strip=-1
+ok 16 - basic atom: refs/heads/main refname:strip=-2
+ok 17 - basic atom: refs/heads/main upstream
+ok 18 - basic atom: refs/heads/main upstream:short
+ok 19 - basic atom: refs/heads/main upstream:lstrip=2
+ok 20 - basic atom: refs/heads/main upstream:lstrip=-2
+ok 21 - basic atom: refs/heads/main upstream:rstrip=2
+ok 22 - basic atom: refs/heads/main upstream:rstrip=-2
+ok 23 - basic atom: refs/heads/main upstream:strip=2
+ok 24 - basic atom: refs/heads/main upstream:strip=-2
+ok 25 - basic atom: refs/heads/main push
+ok 26 - basic atom: refs/heads/main push:short
+ok 27 - basic atom: refs/heads/main push:lstrip=1
+ok 28 - basic atom: refs/heads/main push:lstrip=-1
+ok 29 - basic atom: refs/heads/main push:rstrip=1
+ok 30 - basic atom: refs/heads/main push:rstrip=-1
+ok 31 - basic atom: refs/heads/main push:strip=1
+ok 32 - basic atom: refs/heads/main push:strip=-1
+ok 33 - basic atom: refs/heads/main objecttype
+ok 34 - basic atom: refs/heads/main objectsize
+ok 35 - basic atom: refs/heads/main objectsize:disk
+ok 36 - basic atom: refs/heads/main deltabase
+ok 37 - basic atom: refs/heads/main objectname
+ok 38 - basic atom: refs/heads/main objectname:short
+ok 39 - basic atom: refs/heads/main objectname:short=1
+ok 40 - basic atom: refs/heads/main objectname:short=10
+ok 41 - basic atom: refs/heads/main tree
+ok 42 - basic atom: refs/heads/main tree:short
+ok 43 - basic atom: refs/heads/main tree:short=1
+ok 44 - basic atom: refs/heads/main tree:short=10
+ok 45 - basic atom: refs/heads/main parent
+ok 46 - basic atom: refs/heads/main parent:short
+ok 47 - basic atom: refs/heads/main parent:short=1
+ok 48 - basic atom: refs/heads/main parent:short=10
+ok 49 - basic atom: refs/heads/main numparent
+ok 50 - basic atom: refs/heads/main object
+ok 51 - basic atom: refs/heads/main type
+ok 52 - basic atom: refs/heads/main raw
+ok 53 - basic atom: refs/heads/main *objectname
+ok 54 - basic atom: refs/heads/main *objecttype
+ok 55 - basic atom: refs/heads/main author
+ok 56 - basic atom: refs/heads/main authorname
+ok 57 - basic atom: refs/heads/main authorname:mailmap
+ok 58 - basic atom: refs/heads/main authoremail
+ok 59 - basic atom: refs/heads/main authoremail:trim
+ok 60 - basic atom: refs/heads/main authoremail:localpart
+ok 61 - basic atom: refs/heads/main authoremail:trim,localpart
+ok 62 - basic atom: refs/heads/main authoremail:mailmap
+ok 63 - basic atom: refs/heads/main authoremail:mailmap,trim
+ok 64 - basic atom: refs/heads/main authoremail:trim,mailmap
+ok 65 - basic atom: refs/heads/main authoremail:mailmap,localpart
+ok 66 - basic atom: refs/heads/main authoremail:localpart,mailmap
+ok 67 - basic atom: refs/heads/main authoremail:mailmap,trim,localpart,mailmap,trim
+ok 68 - basic atom: refs/heads/main authordate
+ok 69 - basic atom: refs/heads/main committer
+ok 70 - basic atom: refs/heads/main committername
+ok 71 - basic atom: refs/heads/main committername:mailmap
+ok 72 - basic atom: refs/heads/main committeremail
+ok 73 - basic atom: refs/heads/main committeremail:trim
+ok 74 - basic atom: refs/heads/main committeremail:localpart
+ok 75 - basic atom: refs/heads/main committeremail:localpart,trim
+ok 76 - basic atom: refs/heads/main committeremail:mailmap
+ok 77 - basic atom: refs/heads/main committeremail:mailmap,trim
+ok 78 - basic atom: refs/heads/main committeremail:trim,mailmap
+ok 79 - basic atom: refs/heads/main committeremail:mailmap,localpart
+ok 80 - basic atom: refs/heads/main committeremail:localpart,mailmap
+ok 81 - basic atom: refs/heads/main committeremail:trim,mailmap,trim,trim,localpart
+ok 82 - basic atom: refs/heads/main committerdate
+ok 83 - basic atom: refs/heads/main tag
+ok 84 - basic atom: refs/heads/main tagger
+ok 85 - basic atom: refs/heads/main taggername
+ok 86 - basic atom: refs/heads/main taggeremail
+ok 87 - basic atom: refs/heads/main taggeremail:trim
+ok 88 - basic atom: refs/heads/main taggeremail:localpart
+ok 89 - basic atom: refs/heads/main taggerdate
+ok 90 - basic atom: refs/heads/main creator
+ok 91 - basic atom: refs/heads/main creatordate
+ok 92 - basic atom: refs/heads/main subject
+ok 93 - basic atom: refs/heads/main subject:sanitize
+ok 94 - basic atom: refs/heads/main contents:subject
+ok 95 - basic atom: refs/heads/main body
+ok 96 - basic atom: refs/heads/main contents:body
+ok 97 - basic atom: refs/heads/main contents:signature
+ok 98 - basic atom: refs/heads/main contents
+ok 99 - basic atom: refs/heads/main contents:size
+ok 100 - basic atom: refs/heads/main HEAD
+ok 101 - basic atom: refs/tags/testtag refname
+ok 102 - basic atom: refs/tags/testtag refname:short
+ok 103 - basic atom: refs/tags/testtag upstream
+ok 104 - basic atom: refs/tags/testtag push
+ok 105 - basic atom: refs/tags/testtag objecttype
+ok 106 - basic atom: refs/tags/testtag objectsize
+ok 107 - basic atom: refs/tags/testtag objectsize:disk
+ok 108 - basic atom: refs/tags/testtag *objectsize:disk
+ok 109 - basic atom: refs/tags/testtag deltabase
+ok 110 - basic atom: refs/tags/testtag *deltabase
+ok 111 - basic atom: refs/tags/testtag objectname
+ok 112 - basic atom: refs/tags/testtag objectname:short
+ok 113 - basic atom: refs/heads/main objectname:short=1
+ok 114 - basic atom: refs/heads/main objectname:short=10
+ok 115 - basic atom: refs/tags/testtag tree
+ok 116 - basic atom: refs/tags/testtag tree:short
+ok 117 - basic atom: refs/tags/testtag tree:short=1
+ok 118 - basic atom: refs/tags/testtag tree:short=10
+ok 119 - basic atom: refs/tags/testtag parent
+ok 120 - basic atom: refs/tags/testtag parent:short
+ok 121 - basic atom: refs/tags/testtag parent:short=1
+ok 122 - basic atom: refs/tags/testtag parent:short=10
+ok 123 - basic atom: refs/tags/testtag numparent
+ok 124 - basic atom: refs/tags/testtag object
+ok 125 - basic atom: refs/tags/testtag type
+ok 126 - basic atom: refs/tags/testtag *objectname
+ok 127 - basic atom: refs/tags/testtag *objecttype
+ok 128 - basic atom: refs/tags/testtag author
+ok 129 - basic atom: refs/tags/testtag authorname
+ok 130 - basic atom: refs/tags/testtag authorname:mailmap
+ok 131 - basic atom: refs/tags/testtag authoremail
+ok 132 - basic atom: refs/tags/testtag authoremail:trim
+ok 133 - basic atom: refs/tags/testtag authoremail:localpart
+ok 134 - basic atom: refs/tags/testtag authoremail:trim,localpart
+ok 135 - basic atom: refs/tags/testtag authoremail:mailmap
+ok 136 - basic atom: refs/tags/testtag authoremail:mailmap,trim
+ok 137 - basic atom: refs/tags/testtag authoremail:trim,mailmap
+ok 138 - basic atom: refs/tags/testtag authoremail:mailmap,localpart
+ok 139 - basic atom: refs/tags/testtag authoremail:localpart,mailmap
+ok 140 - basic atom: refs/tags/testtag authoremail:mailmap,trim,localpart,mailmap,trim
+ok 141 - basic atom: refs/tags/testtag authordate
+ok 142 - basic atom: refs/tags/testtag committer
+ok 143 - basic atom: refs/tags/testtag committername
+ok 144 - basic atom: refs/tags/testtag committername:mailmap
+ok 145 - basic atom: refs/tags/testtag committeremail
+ok 146 - basic atom: refs/tags/testtag committeremail:trim
+ok 147 - basic atom: refs/tags/testtag committeremail:localpart
+ok 148 - basic atom: refs/tags/testtag committeremail:localpart,trim
+ok 149 - basic atom: refs/tags/testtag committeremail:mailmap
+ok 150 - basic atom: refs/tags/testtag committeremail:mailmap,trim
+ok 151 - basic atom: refs/tags/testtag committeremail:trim,mailmap
+ok 152 - basic atom: refs/tags/testtag committeremail:mailmap,localpart
+ok 153 - basic atom: refs/tags/testtag committeremail:localpart,mailmap
+ok 154 - basic atom: refs/tags/testtag committeremail:trim,mailmap,trim,trim,localpart
+ok 155 - basic atom: refs/tags/testtag committerdate
+ok 156 - basic atom: refs/tags/testtag tag
+ok 157 - basic atom: refs/tags/testtag tagger
+ok 158 - basic atom: refs/tags/testtag taggername
+ok 159 - basic atom: refs/tags/testtag taggername:mailmap
+ok 160 - basic atom: refs/tags/testtag taggeremail
+ok 161 - basic atom: refs/tags/testtag taggeremail:trim
+ok 162 - basic atom: refs/tags/testtag taggeremail:localpart
+ok 163 - basic atom: refs/tags/testtag taggeremail:trim,localpart
+ok 164 - basic atom: refs/tags/testtag taggeremail:mailmap
+ok 165 - basic atom: refs/tags/testtag taggeremail:mailmap,trim
+ok 166 - basic atom: refs/tags/testtag taggeremail:trim,mailmap
+ok 167 - basic atom: refs/tags/testtag taggeremail:mailmap,localpart
+ok 168 - basic atom: refs/tags/testtag taggeremail:localpart,mailmap
+ok 169 - basic atom: refs/tags/testtag taggeremail:trim,mailmap,trim,localpart,localpart
+ok 170 - basic atom: refs/tags/testtag taggerdate
+ok 171 - basic atom: refs/tags/testtag creator
+ok 172 - basic atom: refs/tags/testtag creatordate
+ok 173 - basic atom: refs/tags/testtag subject
+ok 174 - basic atom: refs/tags/testtag subject:sanitize
+ok 175 - basic atom: refs/tags/testtag contents:subject
+ok 176 - basic atom: refs/tags/testtag body
+ok 177 - basic atom: refs/tags/testtag contents:body
+ok 178 - basic atom: refs/tags/testtag contents:signature
+ok 179 - basic atom: refs/tags/testtag contents
+ok 180 - basic atom: refs/tags/testtag contents:size
+ok 181 - basic atom: refs/tags/testtag HEAD
+ok 182 - basic atom: refs/tags/testtag *raw
+ok 183 - Check invalid atoms names are errors
+ok 184 - Check format specifiers are ignored in naming date atoms
+ok 185 - Check valid format specifiers for date fields
+ok 186 - Check invalid format specifiers are errors
+ok 187 - arguments to %(objectname:short=) must be positive integers
+ok 188 - err basic atom: refs/heads/main authoremail:foo
+ok 189 - err basic atom: refs/heads/main authoremail:mailmap,trim,bar
+ok 190 - err basic atom: refs/heads/main authoremail:trim,
+ok 191 - err basic atom: refs/heads/main authoremail:mailmaptrim
+ok 192 - err basic atom: refs/heads/main committeremail: 
+ok 193 - err basic atom: refs/heads/main committeremail: trim,foo
+ok 194 - err basic atom: refs/heads/main committeremail:mailmap,localpart 
+ok 195 - err basic atom: refs/heads/main committeremail:trim_localpart
+ok 196 - err basic atom: refs/heads/main committeremail:localpart,,,trim
+ok 197 - err basic atom: refs/tags/testtag taggeremail:mailmap,trim, foo 
+ok 198 - err basic atom: refs/tags/testtag taggeremail:trim,localpart,
+ok 199 - err basic atom: refs/tags/testtag taggeremail:mailmap;localpart trim
+ok 200 - err basic atom: refs/tags/testtag taggeremail:localpart trim
+ok 201 - err basic atom: refs/tags/testtag taggeremail:mailmap,mailmap,trim,qux,localpart,trim
+ok 202 - Check unformatted date fields output
+ok 203 - Check format "default" formatted date fields output
+not ok 204 - Check format "default-local" date fields output
+#	
+#		test_date default-local "Mon Jul 3 23:18:43 2006" "Mon Jul 3 23:18:44 2006" "Mon Jul 3 23:18:45 2006"
+#	
+ok 205 - Check format "relative" date fields output
+ok 206 - Check format "relative-local" date fields output
+ok 207 - Check format "short" date fields output
+not ok 208 - Check format "short-local" date fields output
+#	
+#		test_date short-local 2006-07-03 2006-07-03 2006-07-03
+#	
+not ok 209 - Check format "local" date fields output
+#	
+#		test_date local \
+#			"Mon Jul 3 23:18:43 2006" \
+#			"Mon Jul 3 23:18:44 2006" \
+#			"Mon Jul 3 23:18:45 2006"
+#	
+ok 210 - Check format "iso8601" date fields output
+not ok 211 - Check format "iso8601-local" date fields output
+#	
+#		test_date iso8601-local "2006-07-03 23:18:43 +0000" "2006-07-03 23:18:44 +0000" "2006-07-03 23:18:45 +0000"
+#	
+ok 212 - Check format "rfc2822" date fields output
+not ok 213 - Check format "rfc2822-local" date fields output
+#	
+#		test_date rfc2822-local "Mon, 3 Jul 2006 23:18:43 +0000" "Mon, 3 Jul 2006 23:18:44 +0000" "Mon, 3 Jul 2006 23:18:45 +0000"
+#	
+ok 214 - Check format "raw" date fields output
+not ok 215 - Check format "raw-local" date fields output
+#	
+#		test_date raw-local "1151968723 +0000" "1151968724 +0000" "1151968725 +0000"
+#	
+ok 216 - Check format of strftime date fields
+not ok 217 - Check format of strftime-local date fields
+#	
+#		echo "my date is 2006-07-03" >expected &&
+#		${git_for_each_ref} \
+#		  --format="%(authordate:format-local:my date is %Y-%m-%d)" \
+#		  refs/heads >actual &&
+#		test_cmp expected actual
+#	
+ok 218 - exercise strftime with odd fields
+ok 219 - Verify ascending sort
+ok 220 - Verify descending sort
+ok 221 - Give help even with invalid sort atoms
+ok 222 - exercise patterns with prefixes
+ok 223 - exercise glob patterns with prefixes
+ok 224 - exercise patterns with prefix exclusions
+ok 225 - exercise patterns with pattern exclusions
+ok 226 - Quoting style: shell
+ok 227 - Quoting style: perl
+ok 228 - Quoting style: python
+ok 229 - Quoting style: tcl
+ok 230 - more than one quoting style: --perl --shell
+ok 231 - more than one quoting style: -s --python
+ok 232 - more than one quoting style: --python --tcl
+ok 233 - more than one quoting style: --tcl --perl
+ok 234 - setup for upstream:track[short]
+ok 235 - basic atom: refs/heads/main upstream:track
+ok 236 - basic atom: refs/heads/main upstream:trackshort
+ok 237 - basic atom: refs/heads/main upstream:track,nobracket
+ok 238 - basic atom: refs/heads/main upstream:nobracket,track
+ok 239 - setup for push:track[short]
+ok 240 - basic atom: refs/heads/main push:track
+ok 241 - basic atom: refs/heads/main push:trackshort
+ok 242 - Check that :track[short] cannot be used with other atoms
+ok 243 - Check that :track[short] works when upstream is invalid
+ok 244 - Check for invalid refname format
+ok 245 - set up color tests
+ok 246 # skip %(color) shows color with a tty (missing TTY)
+ok 247 - %(color) does not show color without tty
+ok 248 - --color can override tty check
+ok 249 - color.ui=always does not override tty check
+ok 250 - setup for describe atom tests
+ok 251 - describe atom vs git describe
+ok 252 - describe:tags vs describe --tags
+ok 253 - describe:abbrev=... vs describe --abbrev=...
+ok 254 - describe:match=... vs describe --match ...
+ok 255 - describe:exclude:... vs describe --exclude ...
+ok 256 - deref with describe atom
+ok 257 - err on bad describe atom arg
+ok 258 - Check ambiguous head and tag refs (strict)
+ok 259 - Check ambiguous head and tag refs (loose)
+ok 260 - Check ambiguous head and tag refs II (loose)
+ok 261 - create tag without tagger
+ok 262 - basic atom: refs/tags/taggerless type
+ok 263 - basic atom: refs/tags/taggerless tag
+ok 264 - basic atom: refs/tags/taggerless tagger
+ok 265 - basic atom: refs/tags/taggerless taggername
+ok 266 - basic atom: refs/tags/taggerless taggeremail
+ok 267 - basic atom: refs/tags/taggerless taggeremail:trim
+ok 268 - basic atom: refs/tags/taggerless taggeremail:localpart
+ok 269 - basic atom: refs/tags/taggerless taggerdate
+ok 270 - basic atom: refs/tags/taggerless committer
+ok 271 - basic atom: refs/tags/taggerless committername
+ok 272 - basic atom: refs/tags/taggerless committeremail
+ok 273 - basic atom: refs/tags/taggerless committeremail:trim
+ok 274 - basic atom: refs/tags/taggerless committeremail:localpart
+ok 275 - basic atom: refs/tags/taggerless committerdate
+ok 276 - basic atom: refs/tags/taggerless subject
+ok 277 - an unusual tag with an incomplete line
+ok 278 - create tag with subject and body content
+ok 279 - basic atom: refs/tags/subject-body subject
+ok 280 - basic atom: refs/tags/subject-body subject:sanitize
+ok 281 - basic atom: refs/tags/subject-body body
+ok 282 - basic atom: refs/tags/subject-body contents
+ok 283 - basic atom: refs/tags/subject-body contents:size
+ok 284 - create tag with multiline subject
+ok 285 - basic atom: refs/tags/multiline subject
+ok 286 - basic atom: refs/tags/multiline subject:sanitize
+ok 287 - basic atom: refs/tags/multiline contents:subject
+ok 288 - basic atom: refs/tags/multiline body
+ok 289 - basic atom: refs/tags/multiline contents:body
+ok 290 - basic atom: refs/tags/multiline contents:signature
+ok 291 - basic atom: refs/tags/multiline contents
+ok 292 - basic atom: refs/tags/multiline contents:size
+gpg: keybox '/Users/schacon/grit/tests/trash.t1461-refs-list/gpghome/pubring.kbx' created
+gpg: can't open '/Users/schacon/grit/tests/lib-gpg/keyring.gpg': No such file or directory
+gpg: Total number processed: 0
+ok 293 # skip create signed tags (missing GPG)
+ok 294 # skip basic atom: refs/tags/signed-empty subject (missing GPG)
+ok 295 # skip basic atom: refs/tags/signed-empty subject:sanitize (missing GPG)
+ok 296 # skip basic atom: refs/tags/signed-empty contents:subject (missing GPG)
+ok 297 # skip basic atom: refs/tags/signed-empty body (missing GPG)
+ok 298 # skip basic atom: refs/tags/signed-empty contents:body (missing GPG)
+ok 299 # skip basic atom: refs/tags/signed-empty contents:signature (missing GPG)
+ok 300 # skip basic atom: refs/tags/signed-empty contents (missing GPG)
+ok 301 # skip basic atom: refs/tags/signed-empty contents:size (missing GPG)
+ok 302 # skip basic atom: refs/tags/signed-empty raw (missing GPG)
+ok 303 # skip basic atom: refs/tags/signed-short subject (missing GPG)
+ok 304 # skip basic atom: refs/tags/signed-short subject:sanitize (missing GPG)
+ok 305 # skip basic atom: refs/tags/signed-short contents:subject (missing GPG)
+ok 306 # skip basic atom: refs/tags/signed-short body (missing GPG)
+ok 307 # skip basic atom: refs/tags/signed-short contents:body (missing GPG)
+ok 308 # skip basic atom: refs/tags/signed-short contents:signature (missing GPG)
+ok 309 # skip basic atom: refs/tags/signed-short contents (missing GPG)
+ok 310 # skip basic atom: refs/tags/signed-short contents:size (missing GPG)
+ok 311 # skip basic atom: refs/tags/signed-short raw (missing GPG)
+ok 312 # skip basic atom: refs/tags/signed-long subject (missing GPG)
+ok 313 # skip basic atom: refs/tags/signed-long subject:sanitize (missing GPG)
+ok 314 # skip basic atom: refs/tags/signed-long contents:subject (missing GPG)
+ok 315 # skip basic atom: refs/tags/signed-long body (missing GPG)
+ok 316 # skip basic atom: refs/tags/signed-long contents:body (missing GPG)
+ok 317 # skip basic atom: refs/tags/signed-long contents:signature (missing GPG)
+ok 318 # skip basic atom: refs/tags/signed-long contents (missing GPG)
+ok 319 # skip basic atom: refs/tags/signed-long contents:size (missing GPG)
+ok 320 # skip basic atom: refs/tags/signed-long raw (missing GPG)
+ok 321 - set up refs pointing to tree and blob
+ok 322 # skip basic atom: refs/mytrees/first subject (missing GPG)
+ok 323 # skip basic atom: refs/mytrees/first contents:subject (missing GPG)
+ok 324 # skip basic atom: refs/mytrees/first body (missing GPG)
+ok 325 # skip basic atom: refs/mytrees/first contents:body (missing GPG)
+ok 326 # skip basic atom: refs/mytrees/first contents:signature (missing GPG)
+ok 327 # skip basic atom: refs/mytrees/first contents (missing GPG)
+ok 328 # skip basic atom: refs/mytrees/first contents:size (missing GPG)
+ok 329 - basic atom: refs/mytrees/first raw
+ok 330 # skip basic atom: refs/myblobs/first subject (missing GPG)
+ok 331 # skip basic atom: refs/myblobs/first contents:subject (missing GPG)
+ok 332 # skip basic atom: refs/myblobs/first body (missing GPG)
+ok 333 # skip basic atom: refs/myblobs/first contents:body (missing GPG)
+ok 334 # skip basic atom: refs/myblobs/first contents:signature (missing GPG)
+ok 335 # skip basic atom: refs/myblobs/first contents (missing GPG)
+ok 336 # skip basic atom: refs/myblobs/first contents:size (missing GPG)
+ok 337 - basic atom: refs/myblobs/first raw
+ok 338 - set up refs pointing to binary blob
+ok 339 - Verify sorts with raw
+ok 340 - Verify sorts with raw:size
+ok 341 - validate raw atom with %(if:equals)
+ok 342 - validate raw atom with %(if:notequals)
+ok 343 - empty raw refs with %(if)
+ok 344 - %(raw) with --python must fail
+ok 345 - %(raw) with --tcl must fail
+ok 346 - %(raw) with --perl
+ok 347 - %(raw) with --shell must fail
+ok 348 - %(raw) with --shell and --sort=raw must fail
+ok 349 - %(raw:size) with --shell
+ok 350 - git refs list --format compare with cat-file --batch
+ok 351 - verify sorts with contents:size
+ok 352 - set up multiple-sort tags
+ok 353 - Verify sort with multiple keys
+ok 354 - equivalent sorts fall back on refname
+ok 355 - --no-sort cancels the previous sort keys
+ok 356 - --no-sort without subsequent --sort prints expected refs
+ok 357 - set up custom date sorting
+ok 358 - sort by date defaults to full timestamp
+ok 359 - sort by custom date format
+ok 360 - do not dereference NULL upon %(HEAD) on unborn branch
+ok 361 - set up trailers for next test
+ok 362 - %(trailers:unfold) unfolds trailers
+ok 363 - %(trailers:only) shows only "key: value" trailers
+ok 364 - %(trailers:only=no,only=true) shows only "key: value" trailers
+ok 365 - %(trailers:only=yes) shows only "key: value" trailers
+ok 366 - %(trailers:only=no) shows all trailers
+ok 367 - %(trailers:only) and %(trailers:unfold) work together
+ok 368 - %(trailers:unfold) and %(trailers:only) work together
+ok 369 - %(trailers:key=foo) shows that trailer
+ok 370 - %(trailers:key=foo) is case insensitive
+ok 371 - %(trailers:key=foo:) trailing colon also works
+ok 372 - %(trailers:key=foo) multiple keys
+ok 373 - %(trailers:key=nonexistent) becomes empty
+ok 374 - %(trailers:key=foo) handles multiple lines even if folded
+ok 375 - %(trailers:key=foo,unfold) properly unfolds
+ok 376 - %(trailers:key=foo,only=no) also includes nontrailer lines
+ok 377 - %(trailers:key=foo,valueonly) shows only value
+ok 378 - %(trailers:separator) changes separator
+ok 379 - %(trailers:key_value_separator) changes key-value separator
+ok 380 - %(trailers:separator,key_value_separator) changes both separators
+ok 381 - multiple %(trailers) use their own options
+ok 382 - %(trailers) rejects unknown trailers arguments
+ok 383 - %(trailers:key) without value is error
+not ok 384 - if arguments, %(contents:trailers) shows error if colon is missing
+#	
+#		cat >expect <<-EOF &&
+#		fatal: unrecognized %(contents) argument: trailersonly
+#		EOF
+#		test_must_fail ${git_for_each_ref} --format="%(contents:trailersonly)" 2>actual &&
+#		test_cmp expect actual
+#	
+ok 385 - basic atom: head contents:trailers
+ok 386 - basic atom: rest must fail
+not ok 387 - HEAD atom does not take arguments
+#	
+#		test_must_fail ${git_for_each_ref} --format="%(HEAD:foo)" 2>err &&
+#		echo "fatal: %(HEAD) does not take arguments" >expect &&
+#		test_cmp expect err
+#	
+not ok 388 - subject atom rejects unknown arguments
+#	
+#		test_must_fail ${git_for_each_ref} --format="%(subject:foo)" 2>err &&
+#		echo "fatal: unrecognized %(subject) argument: foo" >expect &&
+#		test_cmp expect err
+#	
+not ok 389 - refname atom rejects unknown arguments
+#	
+#		test_must_fail ${git_for_each_ref} --format="%(refname:foo)" 2>err &&
+#		echo "fatal: unrecognized %(refname) argument: foo" >expect &&
+#		test_cmp expect err
+#	
+ok 390 - trailer parsing not fooled by --- line
+ok 391 - Add symbolic ref for the following tests
+ok 392 - Verify usage of %(symref) atom
+ok 393 - Verify usage of %(symref:short) atom
+ok 394 - Verify usage of %(symref:lstrip) atom
+ok 395 - Verify usage of %(symref:rstrip) atom
+ok 396 - :remotename and :remoteref
+ok 397 - %(push) with an invalid push-simple config
+ok 398 - git refs list --ignore-case ignores case
+ok 399 - git refs list --omit-empty works
+ok 400 - git refs list --ignore-case works on multiple sort keys
+ok 401 - git refs list reports broken tags
+ok 402 - set up tag with signature and no blank lines
+ok 403 # skip basic atom: refs/tags/fake-sig-no-blanks contents:subject (missing GPG)
+ok 404 # skip basic atom: refs/tags/fake-sig-no-blanks contents:body (missing GPG)
+ok 405 # skip basic atom: refs/tags/fake-sig-no-blanks contents:signature (missing GPG)
+ok 406 - set up tag with CRLF signature
+ok 407 # skip basic atom: refs/tags/fake-sig-crlf contents:subject (missing GPG)
+ok 408 # skip basic atom: refs/tags/fake-sig-crlf contents:body (missing GPG)
+ok 409 # skip basic atom: refs/tags/fake-sig-crlf contents:signature (missing GPG)
+ok 410 - set up tag with signature and trailers
+ok 411 # skip basic atom: refs/tags/fake-sig-trailer trailers:separator= (missing GPG)
+ok 412 - git refs list --stdin: empty
+ok 413 - git refs list --stdin: fails if extra args
+ok 414 - git refs list --stdin: matches
+ok 415 - git refs list with non-existing refs
+ok 416 - git refs list with nested tags
+ok 417 - is-base atom with non-commits
+ok 418 # skip setup for signature atom using gpg (missing GPG)
+Signing data on standard input
+principal with number 1
+Good "git" signature for principal with number 1 with ED25519 key SHA256:2jpbM0lCmNCk3naFvGgp/WJ89dcoEG5frf0rENHShqM
+ok 419 - setup for signature atom using ssh
+gpg: can't open '/Users/schacon/grit/tests/lib-gpg/keyring.gpg': No such file or directory
+gpg: Total number processed: 0
+ok 420 # skip bare signature atom (missing GPG2)
+ok 421 # skip show good signature with custom format (missing GPG)
+ok 422 - show good signature with custom format with ssh
+ok 423 # skip signature atom with grade option and bad signature (missing GPG)
+ok 424 # skip show untrusted signature with custom format (missing GPG)
+ok 425 # skip show untrusted signature with undefined trust level (missing GPG)
+ok 426 # skip show untrusted signature with ultimate trust level (missing GPG)
+ok 427 # skip show unknown signature with custom format (missing GPG)
+ok 428 # skip show lack of signature with custom format (missing GPG)
+# failed 11 among 428 test(s)
+1..428
+# Tests: 428  Pass: 417  Fail: 11  Skip: 59

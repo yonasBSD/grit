@@ -1,0 +1,88 @@
+ok 1 - setup of non-linear-history
+not ok 2 - rebase --apply after merge from upstream
+#	
+#			reset_rebase &&
+#			git rebase --apply e w &&
+#			test_cmp_rev e HEAD~2 &&
+#			test_linear_range 'n o' e..
+#		
+not ok 3 - rebase -m after merge from upstream
+#	
+#			reset_rebase &&
+#			git rebase -m e w &&
+#			test_cmp_rev e HEAD~2 &&
+#			test_linear_range 'n o' e..
+#		
+not ok 4 - rebase -i after merge from upstream
+#	
+#			reset_rebase &&
+#			git rebase -i e w &&
+#			test_cmp_rev e HEAD~2 &&
+#			test_linear_range 'n o' e..
+#		
+not ok 5 - rebase --apply of non-linear history is linearized in place
+#	
+#			reset_rebase &&
+#			git rebase --apply d w &&
+#			test_cmp_rev d HEAD~3 &&
+#			test_linear_range 'n o e' d..
+#		
+not ok 6 - rebase -m of non-linear history is linearized in place
+#	
+#			reset_rebase &&
+#			git rebase -m d w &&
+#			test_cmp_rev d HEAD~3 &&
+#			test_linear_range 'n o e' d..
+#		
+not ok 7 - rebase -i of non-linear history is linearized in place
+#	
+#			reset_rebase &&
+#			git rebase -i d w &&
+#			test_cmp_rev d HEAD~3 &&
+#			test_linear_range 'n o e' d..
+#		
+not ok 8 - rebase --apply of non-linear history is linearized upstream
+#	
+#			reset_rebase &&
+#			git rebase --apply c w &&
+#			test_cmp_rev c HEAD~4 &&
+#			test_linear_range 'd n o e' c..
+#		
+not ok 9 - rebase -m of non-linear history is linearized upstream
+#	
+#			reset_rebase &&
+#			git rebase -m c w &&
+#			test_cmp_rev c HEAD~4 &&
+#			test_linear_range 'd n o e' c..
+#		
+not ok 10 - rebase -i of non-linear history is linearized upstream
+#	
+#			reset_rebase &&
+#			git rebase -i c w &&
+#			test_cmp_rev c HEAD~4 &&
+#			test_linear_range 'd n o e' c..
+#		
+not ok 11 - rebase --apply of non-linear history with merges after upstream merge is linearized
+#	
+#			reset_rebase &&
+#			git rebase --apply c v &&
+#			test_cmp_rev c HEAD~4 &&
+#			test_linear_range 'd n o e' c..
+#		
+not ok 12 - rebase -m of non-linear history with merges after upstream merge is linearized
+#	
+#			reset_rebase &&
+#			git rebase -m c v &&
+#			test_cmp_rev c HEAD~4 &&
+#			test_linear_range 'd n o e' c..
+#		
+not ok 13 - rebase -i of non-linear history with merges after upstream merge is linearized
+#	
+#			reset_rebase &&
+#			git rebase -i c v &&
+#			test_cmp_rev c HEAD~4 &&
+#			test_linear_range 'd n o e' c..
+#		
+# failed 12 among 13 test(s)
+1..13
+# Tests: 13  Pass: 1  Fail: 12  Skip: 0

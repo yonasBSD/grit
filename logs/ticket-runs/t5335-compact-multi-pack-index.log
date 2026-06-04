@@ -1,0 +1,227 @@
+not ok 1 - MIDX compaction with lex-ordered pack names
+#	
+#		(
+#		git init midx-compact-lex-order &&
+#		(
+#			cd midx-compact-lex-order &&
+#	
+#			git config maintenance.auto false &&
+#	
+#			write_packs A B C D E &&
+#			test_line_count = 5 $midx_chain &&
+#	
+#			git multi-pack-index compact --incremental --bitmap \
+#				"$(nth_line 2 "$midx_chain")" \
+#				"$(nth_line 4 "$midx_chain")" &&
+#			test_line_count = 3 $midx_chain &&
+#	
+#			test_midx_layer_packs "$(nth_line 1 "$midx_chain")" A &&
+#			test_midx_layer_packs "$(nth_line 2 "$midx_chain")" B C D &&
+#			test_midx_layer_packs "$(nth_line 3 "$midx_chain")" E &&
+#	
+#			test_midx_layer_object_uniqueness
+#		)
+#		)
+#	
+not ok 2 - MIDX compaction with non-lex-ordered pack names
+#	
+#		(
+#		git init midx-compact-non-lex-order &&
+#		(
+#			cd midx-compact-non-lex-order &&
+#	
+#			git config maintenance.auto false &&
+#	
+#			write_packs D C A B E &&
+#			test_line_count = 5 $midx_chain &&
+#	
+#			git multi-pack-index compact --incremental --bitmap \
+#				"$(nth_line 2 "$midx_chain")" \
+#				"$(nth_line 4 "$midx_chain")" &&
+#			test_line_count = 3 $midx_chain &&
+#	
+#			test_midx_layer_packs "$(nth_line 1 "$midx_chain")" D &&
+#			test_midx_layer_packs "$(nth_line 2 "$midx_chain")" C A B &&
+#			test_midx_layer_packs "$(nth_line 3 "$midx_chain")" E &&
+#	
+#			test_midx_layer_object_uniqueness
+#		)
+#		)
+#	
+ok 3 - setup for bogus MIDX compaction scenarios
+not ok 4 - MIDX compaction with missing endpoints
+#	
+#		(
+#			cd midx-compact-bogus &&
+#	
+#			test_must_fail git multi-pack-index compact --incremental \
+#				"<missing>" "<missing>" 2>err &&
+#			test_grep "could not find MIDX: <missing>" err &&
+#	
+#			test_must_fail git multi-pack-index compact --incremental \
+#				"<missing>" "$(nth_line 2 "$midx_chain")" 2>err &&
+#			test_grep "could not find MIDX: <missing>" err &&
+#	
+#			test_must_fail git multi-pack-index compact --incremental \
+#				"$(nth_line 2 "$midx_chain")" "<missing>" 2>err &&
+#			test_grep "could not find MIDX: <missing>" err
+#		)
+#	
+not ok 5 - MIDX compaction with reversed endpoints
+#	
+#		(
+#			cd midx-compact-bogus &&
+#	
+#			from="$(nth_line 3 "$midx_chain")" &&
+#			to="$(nth_line 1 "$midx_chain")" &&
+#	
+#			test_must_fail git multi-pack-index compact --incremental \
+#				"$from" "$to" 2>err &&
+#	
+#			test_grep "MIDX $from must be an ancestor of $to" err
+#		)
+#	
+not ok 6 - MIDX compaction with identical endpoints
+#	
+#		(
+#			cd midx-compact-bogus &&
+#	
+#			from="$(nth_line 3 "$midx_chain")" &&
+#			to="$(nth_line 3 "$midx_chain")" &&
+#	
+#			test_must_fail git multi-pack-index compact --incremental \
+#				"$from" "$to" 2>err &&
+#	
+#			test_grep "MIDX compaction endpoints must be unique" err
+#		)
+#	
+not ok 7 - MIDX compaction with midx.version=1
+#	
+#		(
+#			cd midx-compact-bogus &&
+#	
+#			test_must_fail git -c midx.version=1 multi-pack-index compact \
+#				"$(nth_line 1 "$midx_chain")" \
+#				"$(nth_line 2 "$midx_chain")" 2>err &&
+#	
+#			test_grep "fatal: cannot perform MIDX compaction with v1 format" err
+#		)
+#	
+not ok 8 - MIDX compaction preserves pack object selection
+#	
+#		(
+#		git init midx-compact-preserve-selection &&
+#		(
+#			cd midx-compact-preserve-selection &&
+#	
+#			git config maintenance.auto false &&
+#	
+#			test_commit A &&
+#			test_commit B &&
+#	
+#			# Create two packs, one containing just the objects from
+#			# A, and another containing all objects from the
+#			# repository.
+#			p1="$(echo A | git pack-objects --revs --delta-base-offset \
+#				$packdir/pack-1)" &&
+#			p0="$(echo B | git pack-objects --revs --delta-base-offset \
+#				$packdir/pack-0)" &&
+#	
+#			echo "pack-1-$p1.idx" | git multi-pack-index write \
+#				--incremental --bitmap --stdin-packs &&
+#			echo "pack-0-$p0.idx" | git multi-pack-index write \
+#				--incremental --bitmap --stdin-packs &&
+#	
+#			write_packs C &&
+#	
+#			git multi-pack-index compact --incremental --bitmap \
+#				"$(nth_line 1 "$midx_chain")" \
+#				"$(nth_line 2 "$midx_chain")" &&
+#	
+#	
+#			test-tool read-midx --show-objects $objdir \
+#				"$(nth_line 1 "$midx_chain")" >AB.info &&
+#			test-tool read-midx --show-objects $objdir \
+#				"$(nth_line 2 "$midx_chain")" >C.info &&
+#	
+#			midx_objs_by_pack <AB.info >AB.actual &&
+#			midx_objs_by_pack <C.info >C.actual &&
+#	
+#			{
+#				tag_objs_from_pack 1 A &&
+#				tag_objs_from_pack 0 A..B
+#			} | sort >AB.expect &&
+#			tag_objs_from_pack C B..C >C.expect &&
+#	
+#			test_cmp AB.expect AB.actual &&
+#			test_cmp C.expect C.actual
+#		)
+#		)
+#	
+not ok 9 - MIDX compaction with bitmaps
+#	
+#		(
+#		git init midx-compact-with-bitmaps &&
+#		(
+#			cd midx-compact-with-bitmaps &&
+#	
+#			git config maintenance.auto false &&
+#	
+#			write_packs foo bar baz quux woot &&
+#	
+#			test-tool read-midx --bitmap $objdir >bitmap.expect &&
+#			git multi-pack-index compact --incremental --bitmap \
+#				"$(nth_line 2 "$midx_chain")" \
+#				"$(nth_line 4 "$midx_chain")" &&
+#			test-tool read-midx --bitmap $objdir >bitmap.actual &&
+#	
+#			test_cmp bitmap.expect bitmap.actual &&
+#	
+#			true
+#		)
+#		)
+#	
+not ok 10 - MIDX compaction with bitmaps (non-trivial)
+#	
+#		(
+#		git init midx-compact-with-bitmaps-non-trivial &&
+#		(
+#			cd midx-compact-with-bitmaps-non-trivial &&
+#	
+#			git config maintenance.auto false &&
+#	
+#			git branch -m main &&
+#	
+#			#               D(4)
+#			#              /
+#			# A(1) --- B(2) --- C(3) --- G(7)
+#			#              \
+#			#               E(5) --- F(6)
+#			write_packs A B C &&
+#			git checkout -b side &&
+#			write_packs D &&
+#			git checkout -b other B &&
+#			write_packs E F &&
+#			git checkout main &&
+#			write_packs G &&
+#	
+#			# Compact layers 2-4, leaving us with:
+#			#
+#			#  [A, [B, C, D], E, F, G]
+#			git multi-pack-index compact --incremental --bitmap \
+#				"$(nth_line 2 "$midx_chain")" \
+#				"$(nth_line 4 "$midx_chain")" &&
+#	
+#			# Then compact the top two layers, condensing the above
+#			# such that the new 4th layer contains F and G.
+#			#
+#			#  [A, [B, C, D], E, [F, G]]
+#			git multi-pack-index compact --incremental --bitmap \
+#				"$(nth_line 4 "$midx_chain")" \
+#				"$(nth_line 5 "$midx_chain")"
+#		)
+#		)
+#	
+# failed 9 among 10 test(s)
+1..10
+# Tests: 10  Pass: 1  Fail: 9  Skip: 0

@@ -1,0 +1,13 @@
+ok 1 - add a file path0 and commit.
+ok 2 - Change path0.
+ok 3 - copy path0 to path1.
+ok 4 - find the copy path0 -> path1 harder
+not ok 5 - validate the output.
+#	
+#		compare_diff_patch current expected
+#	
+ok 6 - log --follow -B does not BUG
+ok 7 - log --follow -B does not die or use uninitialized memory
+# failed 1 among 7 test(s)
+1..7
+# Tests: 7  Pass: 6  Fail: 1  Skip: 0

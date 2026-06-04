@@ -1,0 +1,195 @@
+ok 1 - setup repository
+ok 2 - added submodule
+ok 3 - added submodule, set diff.submodule
+ok 4 - --submodule=short overrides diff.submodule
+ok 5 - diff.submodule does not affect plumbing
+ok 6 - modified submodule(forward)
+ok 7 - modified submodule(forward)
+ok 8 - modified submodule(forward) --submodule
+ok 9 - modified submodule(forward) --submodule=short
+ok 10 - modified submodule(backward)
+ok 11 - modified submodule(backward and forward)
+ok 12 - typechanged submodule(submodule->blob), --cached
+ok 13 - typechanged submodule(submodule->blob)
+ok 14 - typechanged submodule(submodule->blob)
+ok 15 - setup
+ok 16 - nonexistent commit
+ok 17 - typechanged submodule(blob->submodule)
+warning: adding embedded git repository: sm1
+hint: You've added another git repository inside your current repository.
+hint: Clones of the outer repository will not contain the contents of
+hint: the embedded repository and will not know how to obtain it.
+hint: If you meant to add a submodule, use:
+hint:
+hint: 	git submodule add <url> sm1
+hint:
+hint: If you added this path by mistake, you can remove it from the
+hint: index with:
+hint:
+hint: 	git rm --cached sm1
+hint:
+hint: See "git help submodule" for more information.
+hint: Disable this message with "git config set advice.addEmbeddedRepo false"
+ok 18 - submodule is up to date
+ok 19 - submodule contains untracked content
+ok 20 - submodule contains untracked content (untracked ignored)
+ok 21 - submodule contains untracked content (dirty ignored)
+ok 22 - submodule contains untracked content (all ignored)
+ok 23 - submodule contains untracked and modified content
+ok 24 - submodule contains untracked and modified content (untracked ignored)
+ok 25 - submodule contains untracked and modified content (dirty ignored)
+ok 26 - submodule contains untracked and modified content (all ignored)
+ok 27 - submodule contains modified content
+ok 28 - submodule is modified
+ok 29 - modified submodule contains untracked content
+ok 30 - modified submodule contains untracked content (untracked ignored)
+ok 31 - modified submodule contains untracked content (dirty ignored)
+ok 32 - modified submodule contains untracked content (all ignored)
+ok 33 - modified submodule contains untracked and modified content
+ok 34 - modified submodule contains untracked and modified content (untracked ignored)
+ok 35 - modified submodule contains untracked and modified content (dirty ignored)
+ok 36 - modified submodule contains untracked and modified content (all ignored)
+ok 37 - modified submodule contains modified content
+ok 38 - deleted submodule
+ok 39 - create second submodule
+ok 40 - multiple submodules
+ok 41 - path filter
+ok 42 - given commit
+ok 43 - setup .git file for sm2
+not ok 44 - diff --submodule=diff with .git file
+#	
+#		git diff --submodule=diff HEAD^ >actual &&
+#		cat >expected <<-EOF &&
+#		diff --git a/.gitmodules b/.gitmodules
+#		new file mode 100644
+#		index 1234567..89abcde
+#		--- /dev/null
+#		+++ b/.gitmodules
+#		@@ -0,0 +1,3 @@
+#		+[submodule "sm2"]
+#		+path = sm2
+#		+url = bogus_url
+#		Submodule sm1 $head7...0000000 (submodule deleted)
+#		Submodule sm2 0000000...$head9 (new submodule)
+#		diff --git a/sm2/foo8 b/sm2/foo8
+#		new file mode 100644
+#		index 0000000..db9916b
+#		--- /dev/null
+#		+++ b/sm2/foo8
+#		@@ -0,0 +1 @@
+#		+foo8
+#		diff --git a/sm2/foo9 b/sm2/foo9
+#		new file mode 100644
+#		index 0000000..9c3b4f6
+#		--- /dev/null
+#		+++ b/sm2/foo9
+#		@@ -0,0 +1 @@
+#		+foo9
+#		EOF
+#		diff_cmp expected actual
+#	
+ok 45 - deleted submodule with .git file
+ok 46 - typechanged(submodule->blob) submodule with .git file
+ok 47 - setup nested submodule
+ok 48 - move nested submodule HEAD
+ok 49 - diff --submodule=diff with moved nested submodule HEAD
+not ok 50 - diff --submodule=diff recurses into nested submodules
+#	
+#		cat >expected <<-EOF &&
+#		Submodule sm1 $head7...0000000 (submodule deleted)
+#		Submodule sm2 contains modified content
+#		Submodule sm2 $head9..$head10:
+#		diff --git a/sm2/.gitmodules b/sm2/.gitmodules
+#		new file mode 100644
+#		index 0000000..3a816b8
+#		--- /dev/null
+#		+++ b/sm2/.gitmodules
+#		@@ -0,0 +1,3 @@
+#		+[submodule "nested"]
+#		+	path = nested
+#		+	url = ../sm2
+#		Submodule nested 0000000...$head11 (new submodule)
+#		diff --git a/sm2/nested/file b/sm2/nested/file
+#		new file mode 100644
+#		index 0000000..ca281f5
+#		--- /dev/null
+#		+++ b/sm2/nested/file
+#		@@ -0,0 +1 @@
+#		+nested content
+#		diff --git a/sm2/nested/foo8 b/sm2/nested/foo8
+#		new file mode 100644
+#		index 0000000..db9916b
+#		--- /dev/null
+#		+++ b/sm2/nested/foo8
+#		@@ -0,0 +1 @@
+#		+foo8
+#		diff --git a/sm2/nested/foo9 b/sm2/nested/foo9
+#		new file mode 100644
+#		index 0000000..9c3b4f6
+#		--- /dev/null
+#		+++ b/sm2/nested/foo9
+#		@@ -0,0 +1 @@
+#		+foo9
+#		EOF
+#		git diff --submodule=diff >actual 2>err &&
+#		test_must_be_empty err &&
+#		diff_cmp expected actual
+#	
+not ok 51 - diff --submodule=diff recurses into deleted nested submodules
+#	
+#		cat >expected <<-EOF &&
+#		Submodule sm1 $head7...0000000 (submodule deleted)
+#		Submodule sm2 $head12...0000000 (submodule deleted)
+#		diff --git a/sm2/.gitmodules b/sm2/.gitmodules
+#		deleted file mode 100644
+#		index 3a816b8..0000000
+#		--- a/sm2/.gitmodules
+#		+++ /dev/null
+#		@@ -1,3 +0,0 @@
+#		-[submodule "nested"]
+#		-	path = nested
+#		-	url = ../sm2
+#		diff --git a/sm2/foo8 b/sm2/foo8
+#		deleted file mode 100644
+#		index db9916b..0000000
+#		--- a/sm2/foo8
+#		+++ /dev/null
+#		@@ -1 +0,0 @@
+#		-foo8
+#		diff --git a/sm2/foo9 b/sm2/foo9
+#		deleted file mode 100644
+#		index 9c3b4f6..0000000
+#		--- a/sm2/foo9
+#		+++ /dev/null
+#		@@ -1 +0,0 @@
+#		-foo9
+#		Submodule nested $head11...0000000 (submodule deleted)
+#		diff --git a/sm2/nested/file b/sm2/nested/file
+#		deleted file mode 100644
+#		index ca281f5..0000000
+#		--- a/sm2/nested/file
+#		+++ /dev/null
+#		@@ -1 +0,0 @@
+#		-nested content
+#		diff --git a/sm2/nested/foo8 b/sm2/nested/foo8
+#		deleted file mode 100644
+#		index db9916b..0000000
+#		--- a/sm2/nested/foo8
+#		+++ /dev/null
+#		@@ -1 +0,0 @@
+#		-foo8
+#		diff --git a/sm2/nested/foo9 b/sm2/nested/foo9
+#		deleted file mode 100644
+#		index 9c3b4f6..0000000
+#		--- a/sm2/nested/foo9
+#		+++ /dev/null
+#		@@ -1 +0,0 @@
+#		-foo9
+#		EOF
+#		git diff --submodule=diff >actual 2>err &&
+#		test_must_be_empty err &&
+#		diff_cmp expected actual
+#	
+# failed 3 among 51 test(s)
+1..51
+# Tests: 51  Pass: 48  Fail: 3  Skip: 0

@@ -1,0 +1,311 @@
+ok 1 - setup repository
+ok 2 - config controls ref-in-want advertisement
+not ok 3 - invalid want-ref line
+#	
+#		write_fetch_command >pkt <<-EOF &&
+#		want-ref refs/heads/non-existent
+#		EOF
+#	
+#		test-tool pkt-line pack <pkt >in &&
+#		test_must_fail test-tool serve-v2 --stateless-rpc 2>out <in &&
+#		grep "unknown ref" out
+#	
+not ok 4 - basic want-ref
+#	
+#		oid=$(git rev-parse f) &&
+#		cat >expected_refs <<-EOF &&
+#		$oid refs/heads/main
+#		EOF
+#		git rev-parse f >expected_commits &&
+#	
+#		write_fetch_command >pkt <<-EOF &&
+#		want-ref refs/heads/main
+#		have $(git rev-parse a)
+#		EOF
+#		test-tool pkt-line pack <pkt >in &&
+#	
+#		test-tool serve-v2 --stateless-rpc >out <in &&
+#		check_output
+#	
+not ok 5 - multiple want-ref lines
+#	
+#		oid_c=$(git rev-parse c) &&
+#		oid_d=$(git rev-parse d) &&
+#		cat >expected_refs <<-EOF &&
+#		$oid_c refs/heads/o/foo
+#		$oid_d refs/heads/o/bar
+#		EOF
+#		git rev-parse c d >expected_commits &&
+#	
+#		write_fetch_command >pkt <<-EOF &&
+#		want-ref refs/heads/o/foo
+#		want-ref refs/heads/o/bar
+#		have $(git rev-parse b)
+#		EOF
+#		test-tool pkt-line pack <pkt >in &&
+#	
+#		test-tool serve-v2 --stateless-rpc >out <in &&
+#		check_output
+#	
+not ok 6 - mix want and want-ref
+#	
+#		oid=$(git rev-parse f) &&
+#		cat >expected_refs <<-EOF &&
+#		$oid refs/heads/main
+#		EOF
+#		git rev-parse e f >expected_commits &&
+#	
+#		write_fetch_command >pkt <<-EOF &&
+#		want-ref refs/heads/main
+#		want $(git rev-parse e)
+#		have $(git rev-parse a)
+#		EOF
+#		test-tool pkt-line pack <pkt >in &&
+#	
+#		test-tool serve-v2 --stateless-rpc >out <in &&
+#		check_output
+#	
+not ok 7 - want-ref with ref we already have commit for
+#	
+#		oid=$(git rev-parse c) &&
+#		cat >expected_refs <<-EOF &&
+#		$oid refs/heads/o/foo
+#		EOF
+#		>expected_commits &&
+#	
+#		write_fetch_command >pkt <<-EOF &&
+#		want-ref refs/heads/o/foo
+#		have $(git rev-parse c)
+#		EOF
+#		test-tool pkt-line pack <pkt >in &&
+#	
+#		test-tool serve-v2 --stateless-rpc >out <in &&
+#		check_output
+#	
+ok 8 - setup repos for fetching with ref-in-want tests
+not ok 9 - fetching with exact OID
+#	
+#		test_when_finished "rm -f log trace2" &&
+#	
+#		rm -rf local &&
+#		cp -r "$LOCAL_PRISTINE" local &&
+#		oid=$(git -C "$REPO" rev-parse d) &&
+#		GIT_TRACE_PACKET="$(pwd)/log" GIT_TRACE2_EVENT="$(pwd)/trace2" \
+#			git -C local fetch origin \
+#			"$oid":refs/heads/actual &&
+#	
+#		grep \"key\":\"total_rounds\",\"value\":\"2\" trace2 &&
+#		git -C "$REPO" rev-parse "d" >expected &&
+#		git -C local rev-parse refs/heads/actual >actual &&
+#		test_cmp expected actual &&
+#		grep "want $oid" log
+#	
+not ok 10 - fetching multiple refs
+#	
+#		test_when_finished "rm -f log" &&
+#	
+#		rm -rf local &&
+#		cp -r "$LOCAL_PRISTINE" local &&
+#		GIT_TRACE_PACKET="$(pwd)/log" git -C local fetch origin main baz &&
+#	
+#		git -C "$REPO" rev-parse "main" "baz" >expected &&
+#		git -C local rev-parse refs/remotes/origin/main refs/remotes/origin/baz >actual &&
+#		test_cmp expected actual &&
+#		grep "want-ref refs/heads/main" log &&
+#		grep "want-ref refs/heads/baz" log
+#	
+not ok 11 - fetching ref and exact OID
+#	
+#		test_when_finished "rm -f log" &&
+#	
+#		rm -rf local &&
+#		cp -r "$LOCAL_PRISTINE" local &&
+#		oid=$(git -C "$REPO" rev-parse b) &&
+#		GIT_TRACE_PACKET="$(pwd)/log" git -C local fetch origin \
+#			main "$oid":refs/heads/actual &&
+#	
+#		git -C "$REPO" rev-parse "main" "b" >expected &&
+#		git -C local rev-parse refs/remotes/origin/main refs/heads/actual >actual &&
+#		test_cmp expected actual &&
+#		grep "want $oid" log &&
+#		grep "want-ref refs/heads/main" log
+#	
+ok 12 - fetching with wildcard that does not match any refs
+not ok 13 - fetching with wildcard that matches multiple refs
+#	
+#		test_when_finished "rm -f log" &&
+#	
+#		rm -rf local &&
+#		cp -r "$LOCAL_PRISTINE" local &&
+#		GIT_TRACE_PACKET="$(pwd)/log" git -C local fetch origin refs/heads/o*:refs/heads/o* &&
+#	
+#		git -C "$REPO" rev-parse "o/foo" "o/bar" >expected &&
+#		git -C local rev-parse "o/foo" "o/bar" >actual &&
+#		test_cmp expected actual &&
+#		grep "want-ref refs/heads/o/foo" log &&
+#		grep "want-ref refs/heads/o/bar" log
+#	
+ok 14 - setup namespaced repo
+not ok 15 - with namespace: want-ref is considered relative to namespace
+#	
+#		wanted_ref=refs/heads/ns-yes &&
+#	
+#		oid=$(git -C "$REPO" rev-parse "refs/namespaces/ns/$wanted_ref") &&
+#		cat >expected_refs <<-EOF &&
+#		$oid $wanted_ref
+#		EOF
+#		cat >expected_commits <<-EOF &&
+#		$oid
+#		$(git -C "$REPO" rev-parse a)
+#		EOF
+#	
+#		write_fetch_command >pkt <<-EOF &&
+#		want-ref $wanted_ref
+#		EOF
+#		test-tool pkt-line pack <pkt >in &&
+#	
+#		GIT_NAMESPACE=ns test-tool -C "$REPO" serve-v2 --stateless-rpc >out <in &&
+#		check_output
+#	
+not ok 16 - with namespace: want-ref outside namespace is unknown
+#	
+#		wanted_ref=refs/heads/ns-no &&
+#	
+#		write_fetch_command >pkt <<-EOF &&
+#		want-ref $wanted_ref
+#		EOF
+#		test-tool pkt-line pack <pkt >in &&
+#	
+#		test_must_fail env GIT_NAMESPACE=ns \
+#			test-tool -C "$REPO" serve-v2 --stateless-rpc >out <in &&
+#		grep "unknown ref" out
+#	
+not ok 17 - without namespace: want-ref outside namespace succeeds
+#	
+#		wanted_ref=refs/heads/ns-no &&
+#	
+#		oid=$(git -C "$REPO" rev-parse $wanted_ref) &&
+#		cat >expected_refs <<-EOF &&
+#		$oid $wanted_ref
+#		EOF
+#		cat >expected_commits <<-EOF &&
+#		$oid
+#		$(git -C "$REPO" rev-parse a)
+#		EOF
+#	
+#		write_fetch_command >pkt <<-EOF &&
+#		want-ref $wanted_ref
+#		EOF
+#		test-tool pkt-line pack <pkt >in &&
+#	
+#		test-tool -C "$REPO" serve-v2 --stateless-rpc >out <in &&
+#		check_output
+#	
+not ok 18 - with namespace: hideRefs is matched, relative to namespace
+#	
+#		wanted_ref=refs/heads/hidden &&
+#		git -C "$REPO" config transfer.hideRefs $wanted_ref &&
+#	
+#		write_fetch_command >pkt <<-EOF &&
+#		want-ref $wanted_ref
+#		EOF
+#		test-tool pkt-line pack <pkt >in &&
+#	
+#		test_must_fail env GIT_NAMESPACE=ns \
+#			test-tool -C "$REPO" serve-v2 --stateless-rpc >out <in &&
+#		grep "unknown ref" out
+#	
+not ok 19 - with namespace: want-ref succeeds if hideRefs is removed
+#	
+#		wanted_ref=refs/heads/hidden &&
+#		git -C "$REPO" config --unset transfer.hideRefs $wanted_ref &&
+#	
+#		oid=$(git -C "$REPO" rev-parse "refs/namespaces/ns/$wanted_ref") &&
+#		cat >expected_refs <<-EOF &&
+#		$oid $wanted_ref
+#		EOF
+#		cat >expected_commits <<-EOF &&
+#		$oid
+#		$(git -C "$REPO" rev-parse a)
+#		EOF
+#	
+#		write_fetch_command >pkt <<-EOF &&
+#		want-ref $wanted_ref
+#		EOF
+#		test-tool pkt-line pack <pkt >in &&
+#	
+#		GIT_NAMESPACE=ns test-tool -C "$REPO" serve-v2 --stateless-rpc >out <in &&
+#		check_output
+#	
+not ok 20 - without namespace: relative hideRefs does not match
+#	
+#		wanted_ref=refs/namespaces/ns/refs/heads/hidden &&
+#		git -C "$REPO" config transfer.hideRefs refs/heads/hidden &&
+#	
+#		oid=$(git -C "$REPO" rev-parse $wanted_ref) &&
+#		cat >expected_refs <<-EOF &&
+#		$oid $wanted_ref
+#		EOF
+#		cat >expected_commits <<-EOF &&
+#		$oid
+#		$(git -C "$REPO" rev-parse a)
+#		EOF
+#	
+#		write_fetch_command >pkt <<-EOF &&
+#		want-ref $wanted_ref
+#		EOF
+#		test-tool pkt-line pack <pkt >in &&
+#	
+#		test-tool -C "$REPO" serve-v2 --stateless-rpc >out <in &&
+#		check_output
+#	
+ok 21 - setup repos for change-while-negotiating test
+not ok 22 - server is initially ahead - no ref in want
+#	
+#		git -C "$REPO" config uploadpack.allowRefInWant false &&
+#		rm -rf local &&
+#		cp -r "$LOCAL_PRISTINE" local &&
+#		inconsistency main $(test_oid numeric) &&
+#		test_must_fail git -C local fetch 2>err &&
+#		test_grep "fatal: remote error: upload-pack: not our ref" err
+#	
+not ok 23 - server is initially ahead - ref in want
+#	
+#		git -C "$REPO" config uploadpack.allowRefInWant true &&
+#		rm -rf local &&
+#		cp -r "$LOCAL_PRISTINE" local &&
+#		inconsistency main $(test_oid numeric) &&
+#		git -C local fetch &&
+#	
+#		git -C "$REPO" rev-parse --verify main >expected &&
+#		git -C local rev-parse --verify refs/remotes/origin/main >actual &&
+#		test_cmp expected actual
+#	
+ok 24 - server is initially behind - no ref in want
+not ok 25 - server is initially behind - ref in want
+#	
+#		git -C "$REPO" config uploadpack.allowRefInWant true &&
+#		rm -rf local &&
+#		cp -r "$LOCAL_PRISTINE" local &&
+#		inconsistency main "main^" &&
+#		git -C local fetch &&
+#	
+#		git -C "$REPO" rev-parse --verify "main" >expected &&
+#		git -C local rev-parse --verify refs/remotes/origin/main >actual &&
+#		test_cmp expected actual
+#	
+not ok 26 - server loses a ref - ref in want
+#	
+#		git -C "$REPO" config uploadpack.allowRefInWant true &&
+#		rm -rf local &&
+#		cp -r "$LOCAL_PRISTINE" local &&
+#		write_script "$HTTPD_ROOT_PATH/one-time-script" <<-\EOF &&
+#		sed "s/main/rain/" "$1"
+#		EOF
+#		test_must_fail git -C local fetch 2>err &&
+#	
+#		test_grep "fatal: remote error: unknown ref refs/heads/rain" err
+#	
+# failed 19 among 26 test(s)
+1..26
+# Tests: 26  Pass: 7  Fail: 19  Skip: 0

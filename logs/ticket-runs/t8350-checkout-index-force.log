@@ -1,0 +1,43 @@
+ok 1 - setup repository
+not ok 2 - checkout-index without --force refuses existing dirty file
+#	
+#		(
+#		cd repo &&
+#		echo dirty >a.txt &&
+#		test_must_fail grit checkout-index a.txt 2>err &&
+#		test "$(cat a.txt)" = "dirty" &&
+#		grep -i "already exists" err &&
+#		echo alpha >a.txt
+#		)
+#	
+ok 3 - checkout-index --force overwrites existing file
+ok 4 - checkout-index -f is alias for --force
+ok 5 - checkout-index --force with multiple files
+ok 6 - checkout-index --force with --all
+ok 7 - checkout-index --force restores deleted file
+ok 8 - checkout-index --force on subdirectory file
+ok 9 - checkout-index --force on deep subdirectory file
+ok 10 - checkout-index --no-create does not create missing file
+ok 11 - checkout-index -n is alias for --no-create
+ok 12 - checkout-index --no-create with existing file does nothing
+ok 13 - checkout-index --no-create with existing file keeps it unchanged
+ok 14 - checkout-index --no-create with --force and missing file does not create
+ok 15 - checkout-index --no-create --all skips missing files
+ok 16 - checkout-index --prefix exports to directory
+ok 17 - checkout-index --prefix with single file
+ok 18 - checkout-index --prefix with subdirectory file and --mkdir
+ok 19 - checkout-index --temp writes to temp files
+ok 20 - checkout-index --temp --all writes multiple temp files
+ok 21 - checkout-index --stdin reads paths from stdin
+ok 22 - checkout-index --stdin -z reads NUL-terminated paths
+ok 23 - checkout-index --stdin with --force
+ok 24 - checkout-index --quiet suppresses output
+ok 25 - checkout-index for file not in index fails
+ok 26 - checkout-index --all restores all tracked files
+ok 27 - checkout-index restores correct content after staging
+ok 28 - checkout-index with --mkdir creates leading directories
+ok 29 - checkout-index --force does not affect untracked files
+ok 30 - checkout-index --prefix with --force overwrites in prefix dir
+# failed 1 among 30 test(s)
+1..30
+# Tests: 30  Pass: 29  Fail: 1  Skip: 0

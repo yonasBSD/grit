@@ -1,0 +1,19 @@
+ok 1 - setup basic merges
+ok 2 - remerge-diff on a clean merge
+ok 3 - remerge-diff on a clean merge with a filter
+ok 4 - remerge-diff with both a resolved conflict and an unrelated change
+ok 5 - pickaxe still includes additional headers for relevant changes
+ok 6 - can filter out additional headers with pickaxe
+ok 7 - remerge-diff also works for git-diff-tree
+ok 8 - setup non-content conflicts
+ok 9 - remerge-diff with non-content conflicts
+ok 10 - remerge-diff w/ diff-filter=U: all conflict headers, no diff content
+ok 11 - submodule formatting ignores additional headers
+ok 12 - remerge-diff w/ diff-filter=R: relevant file + conflict header
+ok 13 - remerge-diff w/ pathspec: limits to relevant file including conflict header
+ok 14 - setup non-content conflicts
+ok 15 - remerge-diff turns off history simplification
+ok 16 - remerge-diff with --reverse
+# passed all 16 test(s)
+1..16
+# Tests: 16  Pass: 16  Fail: 0  Skip: 0

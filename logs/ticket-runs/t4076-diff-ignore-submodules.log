@@ -1,0 +1,63 @@
+not ok 1 - setup repo with submodule
+#	
+#		(
+#		$REAL_GIT init sub &&
+#		cd sub &&
+#		$REAL_GIT config user.name "Test" &&
+#		$REAL_GIT config user.email "test@test.com" &&
+#		echo "sub content" >sub-file.txt &&
+#		$REAL_GIT add sub-file.txt &&
+#		$REAL_GIT commit -m "sub initial" &&
+#		SUB_COMMIT=$($REAL_GIT rev-parse HEAD) &&
+#		cd .. &&
+#		$REAL_GIT init super &&
+#		cd super &&
+#		$REAL_GIT config user.name "Test" &&
+#		$REAL_GIT config user.email "test@test.com" &&
+#		echo "super content" >file.txt &&
+#		$REAL_GIT add file.txt &&
+#		$REAL_GIT commit -m "initial" &&
+#		$REAL_GIT config protocol.file.allow always &&
+#		$REAL_GIT -c protocol.file.allow=always submodule add ../sub sub &&
+#		$REAL_GIT commit -m "add submodule" &&
+#		echo "modified" >file.txt &&
+#		$REAL_GIT add file.txt &&
+#		cd sub &&
+#		echo "sub modified" >sub-file.txt &&
+#		$REAL_GIT add sub-file.txt &&
+#		$REAL_GIT commit -m "sub modify" &&
+#		cd .. &&
+#		$REAL_GIT add sub &&
+#		$REAL_GIT commit -m "update sub and file"
+#		)
+#	
+not ok 2 - diff without --ignore-submodules shows submodule
+#	
+#		(
+#		cd super &&
+#		grit diff --name-only HEAD~1 HEAD >out &&
+#		grep "file.txt" out &&
+#		grep "sub" out
+#		)
+#	
+not ok 3 - diff --ignore-submodules hides submodule changes
+#	
+#		(
+#		cd super &&
+#		grit diff --ignore-submodules --name-only HEAD~1 HEAD >out &&
+#		grep "file.txt" out &&
+#		! grep "^sub$" out
+#		)
+#	
+not ok 4 - diff --ignore-submodules --name-status hides submodule
+#	
+#		(
+#		cd super &&
+#		grit diff --ignore-submodules --name-status HEAD~1 HEAD >out &&
+#		grep "file.txt" out &&
+#		! grep "sub" out
+#		)
+#	
+# failed 4 among 4 test(s)
+1..4
+# Tests: 4  Pass: 0  Fail: 4  Skip: 0

@@ -1,0 +1,127 @@
+not ok 1 - Objects downloaded for single relevant rename
+#	
+#		(
+#		test_setup_repo &&
+#		git clone --sparse --filter=blob:none "file://$(pwd)/server" objects-single &&
+#		(
+#			cd objects-single &&
+#	
+#			git rev-list --objects --all --missing=print |
+#				grep "^?" | sort >missing-objects-before &&
+#	
+#			git checkout -q origin/A &&
+#	
+#			GIT_TRACE2_PERF="$(pwd)/trace.output" git \
+#				-c merge.directoryRenames=true merge --no-stat \
+#				--no-progress origin/B-single &&
+#	
+#			# Check the number of objects we reported we would fetch
+#			cat >expect <<-EOF &&
+#			fetch_count:2
+#			fetch_count:1
+#			EOF
+#			grep fetch_count trace.output | cut -d "|" -f 9 | tr -d " ." >actual &&
+#			test_cmp expect actual &&
+#	
+#			# Check the number of fetch commands exec-ed by filtering trace to
+#			# child_start events by the top-level program (2nd field == d0)
+#			grep " d0 .* child_start .*fetch.negotiationAlgorithm" trace.output >fetches &&
+#			test_line_count = 2 fetches &&
+#	
+#			git rev-list --objects --all --missing=print |
+#				grep "^?" | sort >missing-objects-after &&
+#			comm -2 -3 missing-objects-before missing-objects-after >old &&
+#			comm -1 -3 missing-objects-before missing-objects-after >new &&
+#			# No new missing objects
+#			test_must_be_empty new &&
+#			# Fetched 2 + 1 = 3 objects
+#			test_line_count = 3 old
+#		)
+#		)
+#	
+not ok 2 - Objects downloaded when a directory rename triggered
+#	
+#		(
+#		test_setup_repo &&
+#		git clone --sparse --filter=blob:none "file://$(pwd)/server" objects-dir &&
+#		(
+#			cd objects-dir &&
+#	
+#			git rev-list --objects --all --missing=print |
+#				grep "^?" | sort >missing-objects-before &&
+#	
+#			git checkout -q origin/A &&
+#	
+#			GIT_TRACE2_PERF="$(pwd)/trace.output" git \
+#				-c merge.directoryRenames=true merge --no-stat \
+#				--no-progress origin/B-dir &&
+#	
+#			# Check the number of objects we reported we would fetch
+#			cat >expect <<-EOF &&
+#			fetch_count:6
+#			EOF
+#			grep fetch_count trace.output | cut -d "|" -f 9 | tr -d " ." >actual &&
+#			test_cmp expect actual &&
+#	
+#			# Check the number of fetch commands exec-ed by filtering trace to
+#			# child_start events by the top-level program (2nd field == d0)
+#			grep " d0 .* child_start .*fetch.negotiationAlgorithm" trace.output >fetches &&
+#			test_line_count = 1 fetches &&
+#	
+#			git rev-list --objects --all --missing=print |
+#				grep "^?" | sort >missing-objects-after &&
+#			comm -2 -3 missing-objects-before missing-objects-after >old &&
+#			comm -1 -3 missing-objects-before missing-objects-after >new &&
+#			# No new missing objects
+#			test_must_be_empty new &&
+#			# Fetched 6 objects
+#			test_line_count = 6 old
+#		)
+#		)
+#	
+not ok 3 - Objects downloaded with lots of renames and modifications
+#	
+#		(
+#		test_setup_repo &&
+#		git clone --sparse --filter=blob:none "file://$(pwd)/server" objects-many &&
+#		(
+#			cd objects-many &&
+#	
+#			git rev-list --objects --all --missing=print |
+#				grep "^?" | sort >missing-objects-before &&
+#	
+#			git checkout -q origin/A &&
+#	
+#			GIT_TRACE2_PERF="$(pwd)/trace.output" git \
+#				-c merge.directoryRenames=true merge --no-stat \
+#				--no-progress origin/B-many &&
+#	
+#			# Check the number of objects we reported we would fetch
+#			cat >expect <<-EOF &&
+#			fetch_count:12
+#			fetch_count:5
+#			fetch_count:3
+#			fetch_count:2
+#			EOF
+#			grep fetch_count trace.output | cut -d "|" -f 9 | tr -d " ." >actual &&
+#			test_cmp expect actual &&
+#	
+#			# Check the number of fetch commands exec-ed by filtering trace to
+#			# child_start events by the top-level program (2nd field == d0)
+#			grep " d0 .* child_start .*fetch.negotiationAlgorithm" trace.output >fetches &&
+#			test_line_count = 4 fetches &&
+#	
+#			git rev-list --objects --all --missing=print |
+#				grep "^?" | sort >missing-objects-after &&
+#			comm -2 -3 missing-objects-before missing-objects-after >old &&
+#			comm -1 -3 missing-objects-before missing-objects-after >new &&
+#			# No new missing objects
+#			test_must_be_empty new &&
+#			# Fetched 12 + 5 + 3 + 2 = 22 objects
+#			test_line_count = 22 old
+#		)
+#		)
+#	
+# failed 3 among 3 test(s)
+1..3
+# Tests: 3  Pass: 0  Fail: 3  Skip: 0

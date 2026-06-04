@@ -1,0 +1,318 @@
+ok 1 - initial status
+ok 2 - fail initial amend
+ok 3 - setup: initial commit
+ok 4 - -m and -F do not mix
+ok 5 - -m and -C do not mix
+ok 6 - paths and -a do not mix
+not ok 7 - can use paths with --interactive
+#	
+#		echo bong-o-bong >file &&
+#		# 2: update, 1:st path, that is all, 7: quit
+#		test_write_lines 2 1 "" 7 |
+#		git commit -m foo --interactive file &&
+#		git reset --hard HEAD^
+#	
+not ok 8 - removed files and relative paths
+#	
+#		test_when_finished "rm -rf foo" &&
+#		git init foo &&
+#		>foo/foo.txt &&
+#		git -C foo add foo.txt &&
+#		git -C foo commit -m first &&
+#		git -C foo rm foo.txt &&
+#	
+#		mkdir -p foo/bar &&
+#		git -C foo/bar commit -m second ../foo.txt
+#	
+ok 9 - using invalid commit with -C
+ok 10 - nothing to commit
+ok 11 - --dry-run fails with nothing to commit
+ok 12 - --short fails with nothing to commit
+ok 13 - --porcelain fails with nothing to commit
+ok 14 - --long fails with nothing to commit
+not ok 15 - fail to commit untracked file (even with --include/--only)
+#	
+#		echo content >baz &&
+#		error="error: pathspec .baz. did not match any file(s) known to git" &&
+#	
+#		test_must_fail git commit -m "baz" baz 2>err &&
+#		test_grep -e "$error" err &&
+#	
+#		test_must_fail git commit --only -m "baz" baz 2>err &&
+#		test_grep -e "$error" err &&
+#	
+#		test_must_fail git commit --include -m "baz" baz 2>err &&
+#		test_grep -e "$error" err
+#	
+ok 16 - setup: non-initial commit
+ok 17 - --dry-run with stuff to commit returns ok
+ok 18 - --short with stuff to commit returns ok
+ok 19 - --porcelain with stuff to commit returns ok
+ok 20 - --long with stuff to commit returns ok
+ok 21 - exclude additional staged changes when given pathspec
+ok 22 - exclude additional staged changes when given pathspec
+ok 23 - exclude additional staged changes when given pathspec
+not ok 24 - -i/--include includes staged changes
+#	
+#		echo content >>file &&
+#		echo content >>baz &&
+#		git add file &&
+#	
+#		# baz is in the index, therefore, it will be committed
+#		git commit --include -m "file and baz" baz  &&
+#	
+#		git diff --name-only HEAD >remaining &&
+#		test_must_be_empty remaining &&
+#	
+#		test_write_lines baz file >expect &&
+#		git diff --name-only HEAD^ HEAD >actual &&
+#		test_cmp expect actual
+#	
+not ok 25 - --include and --only do not mix
+#	
+#		test_when_finished "git reset --hard" &&
+#		echo content >>file &&
+#		echo content >>baz &&
+#		test_must_fail git commit --include --only -m "file baz" file baz 2>actual &&
+#		test_grep -e "fatal: options .-i/--include. and .-o/--only. cannot be used together" actual
+#	
+ok 26 - commit message from non-existing file
+not ok 27 - empty commit message
+#	
+#		# Empty except stray tabs and spaces on a few lines.
+#		sed -e "s/@//g" >msg <<-\EOF &&
+#			@		@
+#			@@
+#			@  @
+#			@Signed-off-by: hula@
+#		EOF
+#		test_must_fail git commit -F msg -a
+#	
+ok 28 - template "emptyness" check does not kick in with -F
+ok 29 - template "emptyness" check
+ok 30 - setup: commit message from file
+ok 31 - amend commit
+not ok 32 - amend --only ignores staged contents
+#	
+#		cp file file.expect &&
+#		echo changed >file &&
+#		git add file &&
+#		git commit --no-edit --amend --only &&
+#		git cat-file blob HEAD:file >file.actual &&
+#		test_cmp file.expect file.actual &&
+#		git diff --exit-code
+#	
+not ok 33 - allow-empty --only ignores staged contents
+#	
+#		echo changed-again >file &&
+#		git add file &&
+#		git commit --allow-empty --only -m "empty" &&
+#		git cat-file blob HEAD:file >file.actual &&
+#		test_cmp file.expect file.actual &&
+#		git diff --exit-code
+#	
+ok 34 - set up editor
+ok 35 - amend without launching editor
+not ok 36 - --amend --edit
+#	
+#		echo amended >expect &&
+#		git commit --allow-empty -m "unamended" &&
+#		echo bongo again >file &&
+#		git add file &&
+#		EDITOR=./editor git commit --edit --amend &&
+#		git diff-tree -s --format=%s HEAD >msg &&
+#		test_cmp expect msg
+#	
+not ok 37 - --amend --edit of empty message
+#	
+#		cat >replace <<-\EOF &&
+#		#!/bin/sh
+#		echo "amended" >"$1"
+#		EOF
+#		chmod 755 replace &&
+#		git commit --allow-empty --allow-empty-message -m "" &&
+#		echo more bongo >file &&
+#		git add file &&
+#		EDITOR=./replace git commit --edit --amend &&
+#		git diff-tree -s --format=%s HEAD >msg &&
+#		./replace expect &&
+#		test_cmp expect msg
+#	
+ok 38 - --amend to set message to empty
+ok 39 - --amend to set empty message needs --allow-empty-message
+not ok 40 - -m --edit
+#	
+#		echo amended >expect &&
+#		git commit --allow-empty -m buffer &&
+#		echo bongo bongo >file &&
+#		git add file &&
+#		EDITOR=./editor git commit -m unamended --edit &&
+#		git diff-tree -s  --format=%s HEAD >msg &&
+#		test_cmp expect msg
+#	
+ok 41 - -m and -F do not mix
+not ok 42 - using message from other commit
+#	
+#		git commit -C HEAD^ .
+#	
+not ok 43 - editing message from other commit
+#	
+#		cat >editor <<-\EOF &&
+#		#!/bin/sh
+#		sed -e "s/amend/older/g"  <"$1" >"$1-"
+#		mv "$1-" "$1"
+#		EOF
+#		chmod 755 editor &&
+#		echo hula hula >file &&
+#		EDITOR=./editor git commit -c HEAD^ -a
+#	
+ok 44 - message from stdin
+not ok 45 - overriding author from command line
+#	
+#		echo gak >file &&
+#		git commit -m author \
+#			--author "Rubber Duck <rduck@convoy.org>" -a >output 2>&1 &&
+#		grep Rubber.Duck output
+#	
+not ok 46 - interactive add
+#	
+#		echo 7 | test_must_fail git commit --interactive >out &&
+#		grep "What now" out
+#	
+ok 47 - commit --interactive doesn't change index if editor aborts
+ok 48 - editor not invoked if -F is given
+ok 49 - partial commit that involves removal (1)
+ok 50 - partial commit that involves removal (2)
+ok 51 - partial commit that involves removal (3)
+not ok 52 - amend commit to fix author
+#	
+#	
+#		oldtick=$GIT_AUTHOR_DATE &&
+#		test_tick &&
+#		git reset --hard &&
+#		git cat-file -p HEAD >commit &&
+#		sed -e "s/author.*/author $author $oldtick/" \
+#			-e "s/^\(committer.*> \).*$/\1$GIT_COMMITTER_DATE/" \
+#			commit >expected &&
+#		git commit --amend --author="$author" &&
+#		git cat-file -p HEAD >current &&
+#		test_cmp expected current
+#	
+#	
+not ok 53 - amend commit to fix date
+#	
+#	
+#		test_tick &&
+#		newtick=$GIT_AUTHOR_DATE &&
+#		git reset --hard &&
+#		git cat-file -p HEAD >commit &&
+#		sed -e "s/author.*/author $author $newtick/" \
+#			-e "s/^\(committer.*> \).*$/\1$GIT_COMMITTER_DATE/" \
+#			commit >expected &&
+#		git commit --amend --date="$newtick" &&
+#		git cat-file -p HEAD >current &&
+#		test_cmp expected current
+#	
+#	
+ok 54 - amend commit to add signoff
+ok 55 - amend does not add signoff if it already exists
+not ok 56 - commit mentions forced date in output
+#	
+#		git commit --amend --date=2010-01-02T03:04:05 >output &&
+#		grep "Date: *Sat Jan 2 03:04:05 2010" output
+#	
+not ok 57 - commit complains about completely bogus dates
+#	
+#		test_must_fail git commit --amend --date=seventeen
+#	
+not ok 58 - commit --date allows approxidate
+#	
+#		git commit --amend \
+#			--date="midnight the 12th of october, anno domini 1979" &&
+#		echo "Fri Oct 12 00:00:00 1979 +0000" >expect &&
+#		git log -1 --format=%ad >actual &&
+#		test_cmp expect actual
+#	
+ok 59 - sign off (1)
+ok 60 - sign off (2)
+not ok 61 - signoff gap
+#	
+#	
+#		echo 3 >positive &&
+#		git add positive &&
+#		alt="Alt-RFC-822-Header: Value" &&
+#		git commit -s -m "welcome
+#	
+#	$alt" &&
+#		git cat-file commit HEAD >commit &&
+#		sed -e "1,/^\$/d" commit >actual &&
+#		(
+#			echo welcome &&
+#			echo &&
+#			echo $alt &&
+#			git var GIT_COMMITTER_IDENT >ident &&
+#			sed -e "s/>.*/>/" -e "s/^/Signed-off-by: /" ident
+#		) >expected &&
+#		test_cmp expected actual
+#	
+ok 62 - signoff gap 2
+ok 63 - signoff respects trailer config
+ok 64 - signoff not confused by ---
+ok 65 - multiple -m
+not ok 66 - amend commit to fix author
+#	
+#	
+#		oldtick=$GIT_AUTHOR_DATE &&
+#		test_tick &&
+#		git reset --hard &&
+#		git cat-file -p HEAD >commit &&
+#		sed -e "s/author.*/author $author $oldtick/" \
+#			-e "s/^\(committer.*> \).*$/\1$GIT_COMMITTER_DATE/" \
+#			commit >expected &&
+#		git commit --amend --author="$author" &&
+#		git cat-file -p HEAD >current &&
+#		test_cmp expected current
+#	
+#	
+ok 67 - git commit <file> with dirty index
+ok 68 - same tree (single parent)
+ok 69 - same tree (single parent) --allow-empty
+ok 70 - same tree (merge and amend merge)
+ok 71 - amend using the message from another commit
+not ok 72 - amend using the message from a commit named with tag
+#	
+#	
+#		git reset --hard &&
+#		test_tick &&
+#		git commit --allow-empty -m "old commit" &&
+#		old=$(git rev-parse --verify HEAD) &&
+#		git tag -a -m "tag on old" tagged-old HEAD &&
+#		test_tick &&
+#		git commit --allow-empty -m "new commit" &&
+#		new=$(git rev-parse --verify HEAD) &&
+#		test_tick &&
+#		git commit --allow-empty --amend -C tagged-old &&
+#		git show --pretty="format:%ad %s" "$old" >expected &&
+#		git show --pretty="format:%ad %s" HEAD >actual &&
+#		test_cmp expected actual
+#	
+#	
+not ok 73 - amend can copy notes
+#	
+#	
+#		git config notes.rewrite.amend true &&
+#		git config notes.rewriteRef "refs/notes/*" &&
+#		test_commit foo &&
+#		git notes add -m"a note" &&
+#		test_tick &&
+#		git commit --amend -m"new foo" &&
+#		test "$(git notes show)" = "a note"
+#	
+#	
+ok 74 - commit a file whose name is a dash
+ok 75 - --only works on to-be-born branch
+ok 76 - --dry-run with conflicts fixed from a merge
+ok 77 - --dry-run --short
+# failed 24 among 77 test(s)
+1..77
+# Tests: 77  Pass: 53  Fail: 24  Skip: 0

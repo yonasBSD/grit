@@ -1,0 +1,31 @@
+ok 1 - setup
+ok 2 - before initial commit, nothing added, only untracked
+ok 3 - before initial commit, things added
+ok 4 - before initial commit, things added (-z)
+ok 5 - make first commit, confirm HEAD oid and branch
+ok 6 - after first commit, create unstaged changes
+ok 7 - after first commit, stash existing changes
+ok 8 - after first commit but omit untracked files and branch
+ok 9 - after first commit, stage existing changes
+ok 10 - rename causes 2 path lines
+ok 11 - rename causes 2 path lines (-z)
+ok 12 - make second commit, confirm clean and new HEAD oid
+ok 13 - confirm ignored files are not printed
+ok 14 - ignored files are printed with --ignored
+ok 15 - create and commit permanent ignore file
+ok 16 - verify --intent-to-add output
+ok 17 - verify AA (add-add) conflict
+ok 18 - verify UU (edit-edit) conflict
+ok 19 - verify upstream fields in branch header
+ok 20 - verify --[no-]ahead-behind with V2 format
+ok 21 - create and add submodule, submodule appears clean (A. S...)
+ok 22 - untracked changes in added submodule (AM S..U)
+ok 23 - staged changes in added submodule (AM S.M.)
+ok 24 - staged and unstaged changes in added (AM S.M.)
+ok 25 - staged and untracked changes in added submodule (AM S.MU)
+ok 26 - commit within the submodule appears as new commit in super (AM SC..)
+ok 27 - stage submodule in super and commit
+ok 28 - make unstaged changes in existing submodule (.M S.M.)
+# passed all 28 test(s)
+1..28
+# Tests: 28  Pass: 28  Fail: 0  Skip: 0

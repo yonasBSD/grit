@@ -1,0 +1,51 @@
+ok 1 - setup repository
+not ok 2 - status --porcelain on clean repo shows branch header
+#	
+#		(
+#		cd repo &&
+#		grit status --porcelain >../out &&
+#		grep "^## master" ../out
+#		)
+#	
+ok 3 - status -s on clean repo has no file entries
+ok 4 - status --short on clean repo has no file entries
+ok 5 - status --porcelain shows untracked file with ??
+ok 6 - status -s shows untracked file with ??
+ok 7 - status --porcelain shows multiple untracked files
+ok 8 - status --porcelain with untracked directory
+ok 9 - status --porcelain shows staged new file with A
+ok 10 - status --porcelain shows staged modification with M
+ok 11 - status --porcelain shows staged deletion with D
+ok 12 - status --porcelain shows unstaged modification
+ok 13 - status -s shows unstaged modification same format
+ok 14 - status --porcelain shows both staged and unstaged for same file
+ok 15 - status --porcelain with staged add and unstaged untracked
+not ok 16 - status --porcelain shows branch in header
+#	
+#		(
+#		cd repo &&
+#		grit status --porcelain >../out &&
+#		grep "^## master" ../out
+#		)
+#	
+ok 17 - status --porcelain -b shows branch header
+ok 18 - status -s -b shows branch header
+ok 19 - status --porcelain -u no hides untracked
+ok 20 - status --porcelain -u normal shows untracked
+not ok 21 - status --porcelain in fresh empty repo has branch header
+#	
+#		(
+#		grit init empty-repo &&
+#		cd empty-repo &&
+#		grit status --porcelain >../empty_out &&
+#		grep "^## " ../empty_out
+#		)
+#	
+ok 22 - status --porcelain shows files in subdirectories
+ok 23 - status --porcelain with nested untracked dir
+ok 24 - status --porcelain with add, modify, delete, untracked
+ok 25 - status --porcelain output is stable across consecutive runs
+ok 26 - status --porcelain has correct entry count
+# failed 3 among 26 test(s)
+1..26
+# Tests: 26  Pass: 23  Fail: 3  Skip: 0

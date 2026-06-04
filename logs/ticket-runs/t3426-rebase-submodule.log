@@ -1,0 +1,264 @@
+not ok 1 - git_rebase: added submodule creates empty directory
+#	
+#			prolog &&
+#			reset_work_tree_to no_submodule &&
+#			(
+#				cd submodule_update &&
+#				git branch -t add_sub1 origin/add_sub1 &&
+#				$command add_sub1 &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 2 - git_rebase: added submodule leaves existing empty directory alone
+#	
+#			prolog &&
+#			reset_work_tree_to no_submodule &&
+#			(
+#				cd submodule_update &&
+#				mkdir sub1 &&
+#				git branch -t add_sub1 origin/add_sub1 &&
+#				$command add_sub1 &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 3 - git_rebase: replace tracked file with submodule creates empty directory
+#	
+#			prolog &&
+#			reset_work_tree_to replace_sub1_with_file &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_file_with_sub1 origin/replace_file_with_sub1 &&
+#				$command replace_file_with_sub1 &&
+#				test_superproject_content origin/replace_file_with_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/replace_file_with_sub1
+#			)
+#		
+not ok 4 - git_rebase: replace directory with submodule
+#	
+#			prolog &&
+#			reset_work_tree_to replace_sub1_with_directory &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_directory_with_sub1 origin/replace_directory_with_sub1 &&
+#				$command replace_directory_with_sub1 &&
+#				test_superproject_content origin/replace_directory_with_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/replace_directory_with_sub1
+#			)
+#		
+not ok 5 - git_rebase: removed submodule leaves submodule directory and its contents in place
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t remove_sub1 origin/remove_sub1 &&
+#				$command remove_sub1 &&
+#				test_superproject_content origin/remove_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 6 - git_rebase: removed submodule leaves submodule containing a .git directory alone
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t remove_sub1 origin/remove_sub1 &&
+#				replace_gitfile_with_git_dir sub1 &&
+#				$command remove_sub1 &&
+#				test_superproject_content origin/remove_sub1 &&
+#				test_git_directory_is_unchanged sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+ok 7 - git_rebase: replace submodule with a directory must fail
+ok 8 - git_rebase: replace submodule containing a .git directory with a directory must fail
+ok 9 - git_rebase: replace submodule with a file must fail
+ok 10 - git_rebase: replace submodule containing a .git directory with a file must fail
+not ok 11 - git_rebase: modified submodule does not update submodule work tree
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t modify_sub1 origin/modify_sub1 &&
+#				$command modify_sub1 &&
+#				test_superproject_content origin/modify_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1 &&
+#				git submodule update &&
+#				test_submodule_content sub1 origin/modify_sub1
+#			)
+#		
+not ok 12 - git_rebase: modified submodule does not update submodule work tree to invalid commit
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t invalid_sub1 origin/invalid_sub1 &&
+#				$command invalid_sub1 &&
+#				test_superproject_content origin/invalid_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1 &&
+#				test_must_fail git submodule update &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 13 - git_rebase: modified submodule does not update submodule work tree from invalid commit
+#	
+#			prolog &&
+#			reset_work_tree_to invalid_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t valid_sub1 origin/valid_sub1 &&
+#				$command valid_sub1 &&
+#				test_superproject_content origin/valid_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/valid_sub1
+#			)
+#		
+ok 14 - git_rebase: added submodule doesn't remove untracked unignored file with same name
+not ok 15 - git_rebase_interactive: added submodule creates empty directory
+#	
+#			prolog &&
+#			reset_work_tree_to no_submodule &&
+#			(
+#				cd submodule_update &&
+#				git branch -t add_sub1 origin/add_sub1 &&
+#				$command add_sub1 &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 16 - git_rebase_interactive: added submodule leaves existing empty directory alone
+#	
+#			prolog &&
+#			reset_work_tree_to no_submodule &&
+#			(
+#				cd submodule_update &&
+#				mkdir sub1 &&
+#				git branch -t add_sub1 origin/add_sub1 &&
+#				$command add_sub1 &&
+#				test_superproject_content origin/add_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 17 - git_rebase_interactive: replace tracked file with submodule creates empty directory
+#	
+#			prolog &&
+#			reset_work_tree_to replace_sub1_with_file &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_file_with_sub1 origin/replace_file_with_sub1 &&
+#				$command replace_file_with_sub1 &&
+#				test_superproject_content origin/replace_file_with_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/replace_file_with_sub1
+#			)
+#		
+not ok 18 - git_rebase_interactive: replace directory with submodule
+#	
+#			prolog &&
+#			reset_work_tree_to replace_sub1_with_directory &&
+#			(
+#				cd submodule_update &&
+#				git branch -t replace_directory_with_sub1 origin/replace_directory_with_sub1 &&
+#				$command replace_directory_with_sub1 &&
+#				test_superproject_content origin/replace_directory_with_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/replace_directory_with_sub1
+#			)
+#		
+not ok 19 - git_rebase_interactive: removed submodule leaves submodule directory and its contents in place
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t remove_sub1 origin/remove_sub1 &&
+#				$command remove_sub1 &&
+#				test_superproject_content origin/remove_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 20 - git_rebase_interactive: removed submodule leaves submodule containing a .git directory alone
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t remove_sub1 origin/remove_sub1 &&
+#				replace_gitfile_with_git_dir sub1 &&
+#				$command remove_sub1 &&
+#				test_superproject_content origin/remove_sub1 &&
+#				test_git_directory_is_unchanged sub1 &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+ok 21 - git_rebase_interactive: replace submodule with a directory must fail
+ok 22 - git_rebase_interactive: replace submodule containing a .git directory with a directory must fail
+ok 23 - git_rebase_interactive: replace submodule with a file must fail
+ok 24 - git_rebase_interactive: replace submodule containing a .git directory with a file must fail
+not ok 25 - git_rebase_interactive: modified submodule does not update submodule work tree
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t modify_sub1 origin/modify_sub1 &&
+#				$command modify_sub1 &&
+#				test_superproject_content origin/modify_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1 &&
+#				git submodule update &&
+#				test_submodule_content sub1 origin/modify_sub1
+#			)
+#		
+not ok 26 - git_rebase_interactive: modified submodule does not update submodule work tree to invalid commit
+#	
+#			prolog &&
+#			reset_work_tree_to add_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t invalid_sub1 origin/invalid_sub1 &&
+#				$command invalid_sub1 &&
+#				test_superproject_content origin/invalid_sub1 &&
+#				test_submodule_content sub1 origin/add_sub1 &&
+#				test_must_fail git submodule update &&
+#				test_submodule_content sub1 origin/add_sub1
+#			)
+#		
+not ok 27 - git_rebase_interactive: modified submodule does not update submodule work tree from invalid commit
+#	
+#			prolog &&
+#			reset_work_tree_to invalid_sub1 &&
+#			(
+#				cd submodule_update &&
+#				git branch -t valid_sub1 origin/valid_sub1 &&
+#				$command valid_sub1 &&
+#				test_superproject_content origin/valid_sub1 &&
+#				test_dir_is_empty sub1 &&
+#				git submodule update --init --recursive &&
+#				test_submodule_content sub1 origin/valid_sub1
+#			)
+#		
+ok 28 - git_rebase_interactive: added submodule doesn't remove untracked unignored file with same name
+ok 29 - rebase interactive ignores modified submodules
+# failed 18 among 29 test(s)
+1..29
+# Tests: 29  Pass: 11  Fail: 18  Skip: 0

@@ -1,0 +1,36 @@
+ok 1 - setup: init repo with initial commit
+ok 2 - create a new branch
+ok 3 - create branch does not switch to it
+ok 4 - create multiple branches
+ok 5 - branch --list shows all branches
+ok 6 - create branch at specific commit
+ok 7 - branch lists current branch with asterisk
+ok 8 - branch -v shows commit hash and subject
+ok 9 - branch -v shows abbreviated hash
+ok 10 - checkout branch changes HEAD
+ok 11 - checkout back to original branch
+ok 12 - checkout -b creates and switches
+ok 13 - delete a merged branch
+ok 14 - delete branch not on it
+ok 15 - cannot delete current branch
+ok 16 - force-delete unmerged branch with -D
+ok 17 - rename a branch with -m
+ok 18 - rename current branch with two-arg form
+ok 19 - cleanup: return to master
+ok 20 - create branch from resolved parent commit
+ok 21 - create branch from tag
+ok 22 - branch -a lists all branches
+ok 23 - branch --contains HEAD shows current branches
+ok 24 - branch --contains HEAD does not show detached branches
+ok 25 - branch --contains with older commit shows more
+not ok 26 - cannot create branch with invalid name
+#	
+#		(
+#		cd branch-repo &&
+#		test_expect_code 1 git branch ".." 2>/dev/null
+#		)
+#	
+ok 27 - cannot create duplicate branch
+# failed 1 among 27 test(s)
+1..27
+# Tests: 27  Pass: 26  Fail: 1  Skip: 0

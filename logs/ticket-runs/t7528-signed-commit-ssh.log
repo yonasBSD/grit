@@ -1,0 +1,39 @@
+Signing data on standard input
+principal with number 1
+Good "git" signature for principal with number 1 with ED25519 key SHA256:cTS1oqZNBPGgRt68pfaFb/DpuCp9xGk3petsdh2XBjw
+ok 1 - create signed commits
+ok 2 - sign commits using literal public keys with ssh-agent
+Signing data on standard input
+Signature verification failed: incorrect signature
+Could not verify signature.
+ok 3 - create signed commits with keys having defined lifetimes
+ok 4 - verify and show signatures
+ok 5 - verify-commit exits failure on untrusted signature
+ok 6 - verify-commit exits failure on expired signature key
+ok 7 - verify-commit exits failure on not yet valid signature key
+ok 8 - verify-commit succeeds with commit date and key validity matching
+ok 9 - verify-commit exits failure with commit date outside of key validity
+ok 10 - verify-commit exits success with matching minTrustLevel
+ok 11 - verify-commit exits success with low minTrustLevel
+ok 12 - verify-commit exits failure with high minTrustLevel
+ok 13 - verify signatures with --raw
+ok 14 - proper header is used for hash algorithm
+ok 15 - show signed commit with signature
+ok 16 - detect fudged signature
+ok 17 - detect fudged signature with NUL
+ok 18 - amending already signed commit
+ok 19 - show good signature with custom format
+ok 20 - show bad signature with custom format
+ok 21 - show untrusted signature with custom format
+ok 22 - show untrusted signature with undefined trust level
+ok 23 - show untrusted signature with ultimate trust level
+ok 24 - show lack of signature with custom format
+ok 25 - log.showsignature behaves like --show-signature
+ok 26 - check config gpg.format values
+not ok 27 - detect fudged commit with double signature (TODO) # TODO known breakage
+not ok 28 - show double signature with custom format (TODO) # TODO known breakage
+not ok 29 - verify-commit verifies multiply signed commits (TODO) # TODO known breakage
+# still have 3 known breakage(s)
+# passed all remaining 26 test(s)
+1..29
+# Tests: 29  Pass: 26  Fail: 0  Skip: 0

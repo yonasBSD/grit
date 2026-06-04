@@ -1,0 +1,53 @@
+ok 1 - setup: repo with branches and tags
+ok 2 - show-ref lists all refs
+ok 3 - show-ref output matches git (sorted)
+ok 4 - show-ref each line has SHA and refname
+ok 5 - show-ref refs/heads/ lists only branches
+ok 6 - show-ref refs/tags/ lists only tags
+ok 7 - show-ref with full ref name matches exactly
+ok 8 - show-ref with non-matching pattern returns non-zero
+ok 9 - show-ref --tags shows only tags
+ok 10 - show-ref --branches shows only branches
+ok 11 - show-ref --tags does not include branches
+ok 12 - show-ref --branches does not include tags
+ok 13 - show-ref --verify with exact ref succeeds
+ok 14 - show-ref --verify with non-existent ref fails
+ok 15 - show-ref --verify requires full refname
+ok 16 - show-ref --verify with tag ref
+ok 17 - show-ref --exists for existing ref succeeds
+ok 18 - show-ref --exists for missing ref fails
+not ok 19 - show-ref --hash shows only SHAs
+#	
+#		(
+#		cd repo &&
+#		grit show-ref --hash refs/heads/master >actual &&
+#		sha=$(tr -d "\n" <actual) &&
+#		len=$(printf "%s" "$sha" | wc -c) &&
+#		test "$len" = 40
+#		)
+#	
+ok 20 - show-ref -s shows only SHAs (same as --hash)
+not ok 21 - show-ref --tags --hash lists only SHAs for tags
+#	
+#		(
+#		cd repo &&
+#		grit show-ref --tags --hash >actual &&
+#		lines=$(wc -l <actual) &&
+#		test "$lines" -gt 0 &&
+#		while IFS= read -r line; do
+#			len=$(printf "%s" "$line" | wc -c) &&
+#			test "$len" = 40
+#		done <actual
+#		)
+#	
+ok 22 - show-ref --head includes HEAD
+ok 23 - show-ref --head HEAD line matches rev-parse HEAD
+ok 24 - show-ref --dereference shows peeled annotated tags
+ok 25 - show-ref -d peeled value matches tag target
+ok 26 - show-ref --dereference on lightweight tag shows one line
+ok 27 - show-ref --abbrev shortens SHAs
+ok 28 - show-ref --quiet --verify succeeds silently for existing ref
+ok 29 - show-ref --quiet --verify fails silently for missing ref
+# failed 2 among 29 test(s)
+1..29
+# Tests: 29  Pass: 27  Fail: 2  Skip: 0

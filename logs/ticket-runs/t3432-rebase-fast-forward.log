@@ -1,0 +1,715 @@
+ok 1 - setup
+ok 2 - git rebase --apply  with no changes is noop with same HEAD
+ok 3 - git rebase --apply --no-ff  with no changes is work with same HEAD
+ok 4 - git rebase --merge  with no changes is noop with same HEAD
+ok 5 - git rebase --merge --no-ff  with no changes is work with same HEAD
+ok 6 - git rebase --merge  (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 7 - git rebase --merge --no-ff  (rebase.abbreviateCommands = true) with no changes is work with same HEAD
+ok 8 - git rebase --apply main with no changes is noop with same HEAD
+ok 9 - git rebase --apply --no-ff main with no changes is work with same HEAD
+ok 10 - git rebase --merge main with no changes is noop with same HEAD
+ok 11 - git rebase --merge --no-ff main with no changes is work with same HEAD
+ok 12 - git rebase --merge main (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 13 - git rebase --merge --no-ff main (rebase.abbreviateCommands = true) with no changes is work with same HEAD
+ok 14 - git rebase --apply --onto B B with no changes is noop with same HEAD
+ok 15 - git rebase --apply --no-ff --onto B B with no changes is work with diff HEAD
+ok 16 - git rebase --merge --onto B B with no changes is noop with same HEAD
+ok 17 - git rebase --merge --no-ff --onto B B with no changes is work with diff HEAD
+ok 18 - git rebase --merge --onto B B (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 19 - git rebase --merge --no-ff --onto B B (rebase.abbreviateCommands = true) with no changes is work with diff HEAD
+ok 20 - git rebase --apply --onto B... B with no changes is noop with same HEAD
+ok 21 - git rebase --apply --no-ff --onto B... B with no changes is work with diff HEAD
+ok 22 - git rebase --merge --onto B... B with no changes is noop with same HEAD
+ok 23 - git rebase --merge --no-ff --onto B... B with no changes is work with diff HEAD
+ok 24 - git rebase --merge --onto B... B (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 25 - git rebase --merge --no-ff --onto B... B (rebase.abbreviateCommands = true) with no changes is work with diff HEAD
+ok 26 - git rebase --apply --onto main... main with no changes is noop with same HEAD
+ok 27 - git rebase --apply --no-ff --onto main... main with no changes is work with same HEAD
+ok 28 - git rebase --merge --onto main... main with no changes is noop with same HEAD
+ok 29 - git rebase --merge --no-ff --onto main... main with no changes is work with same HEAD
+ok 30 - git rebase --merge --onto main... main (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 31 - git rebase --merge --no-ff --onto main... main (rebase.abbreviateCommands = true) with no changes is work with same HEAD
+ok 32 - git rebase --apply --keep-base main with no changes is noop with same HEAD
+ok 33 - git rebase --apply --no-ff --keep-base main with no changes is work with same HEAD
+ok 34 - git rebase --merge --keep-base main with no changes is noop with same HEAD
+ok 35 - git rebase --merge --no-ff --keep-base main with no changes is work with same HEAD
+ok 36 - git rebase --merge --keep-base main (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 37 - git rebase --merge --no-ff --keep-base main (rebase.abbreviateCommands = true) with no changes is work with same HEAD
+ok 38 - git rebase --apply --keep-base with no changes is noop with same HEAD
+ok 39 - git rebase --apply --no-ff --keep-base with no changes is work with same HEAD
+ok 40 - git rebase --merge --keep-base with no changes is noop with same HEAD
+ok 41 - git rebase --merge --no-ff --keep-base with no changes is work with same HEAD
+ok 42 - git rebase --merge --keep-base (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 43 - git rebase --merge --no-ff --keep-base (rebase.abbreviateCommands = true) with no changes is work with same HEAD
+ok 44 - git rebase --apply --no-fork-point with no changes is noop with same HEAD
+ok 45 - git rebase --apply --no-ff --no-fork-point with no changes is work with same HEAD
+ok 46 - git rebase --merge --no-fork-point with no changes is noop with same HEAD
+ok 47 - git rebase --merge --no-ff --no-fork-point with no changes is work with same HEAD
+ok 48 - git rebase --merge --no-fork-point (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 49 - git rebase --merge --no-ff --no-fork-point (rebase.abbreviateCommands = true) with no changes is work with same HEAD
+ok 50 - git rebase --apply --keep-base --no-fork-point with no changes is noop with same HEAD
+ok 51 - git rebase --apply --no-ff --keep-base --no-fork-point with no changes is work with same HEAD
+ok 52 - git rebase --merge --keep-base --no-fork-point with no changes is noop with same HEAD
+ok 53 - git rebase --merge --no-ff --keep-base --no-fork-point with no changes is work with same HEAD
+ok 54 - git rebase --merge --keep-base --no-fork-point (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 55 - git rebase --merge --no-ff --keep-base --no-fork-point (rebase.abbreviateCommands = true) with no changes is work with same HEAD
+ok 56 - git rebase --apply --fork-point main with no changes is noop with same HEAD
+ok 57 - git rebase --apply --no-ff --fork-point main with no changes is work with same HEAD
+ok 58 - git rebase --merge --fork-point main with no changes is noop with same HEAD
+ok 59 - git rebase --merge --no-ff --fork-point main with no changes is work with same HEAD
+ok 60 - git rebase --merge --fork-point main (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 61 - git rebase --merge --no-ff --fork-point main (rebase.abbreviateCommands = true) with no changes is work with same HEAD
+ok 62 - git rebase --apply --fork-point --onto B B with no changes is noop with same HEAD
+ok 63 - git rebase --apply --no-ff --fork-point --onto B B with no changes is work with diff HEAD
+ok 64 - git rebase --merge --fork-point --onto B B with no changes is noop with same HEAD
+ok 65 - git rebase --merge --no-ff --fork-point --onto B B with no changes is work with diff HEAD
+ok 66 - git rebase --merge --fork-point --onto B B (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 67 - git rebase --merge --no-ff --fork-point --onto B B (rebase.abbreviateCommands = true) with no changes is work with diff HEAD
+ok 68 - git rebase --apply --fork-point --onto B... B with no changes is noop with same HEAD
+ok 69 - git rebase --apply --no-ff --fork-point --onto B... B with no changes is work with diff HEAD
+ok 70 - git rebase --merge --fork-point --onto B... B with no changes is noop with same HEAD
+ok 71 - git rebase --merge --no-ff --fork-point --onto B... B with no changes is work with diff HEAD
+ok 72 - git rebase --merge --fork-point --onto B... B (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 73 - git rebase --merge --no-ff --fork-point --onto B... B (rebase.abbreviateCommands = true) with no changes is work with diff HEAD
+ok 74 - git rebase --apply --fork-point --onto main... main with no changes is noop with same HEAD
+ok 75 - git rebase --apply --no-ff --fork-point --onto main... main with no changes is work with same HEAD
+ok 76 - git rebase --merge --fork-point --onto main... main with no changes is noop with same HEAD
+ok 77 - git rebase --merge --no-ff --fork-point --onto main... main with no changes is work with same HEAD
+ok 78 - git rebase --merge --fork-point --onto main... main (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 79 - git rebase --merge --no-ff --fork-point --onto main... main (rebase.abbreviateCommands = true) with no changes is work with same HEAD
+ok 80 - git rebase --apply --keep-base --keep-base main with no changes is noop with same HEAD
+ok 81 - git rebase --apply --no-ff --keep-base --keep-base main with no changes is work with same HEAD
+ok 82 - git rebase --merge --keep-base --keep-base main with no changes is noop with same HEAD
+ok 83 - git rebase --merge --no-ff --keep-base --keep-base main with no changes is work with same HEAD
+ok 84 - git rebase --merge --keep-base --keep-base main (rebase.abbreviateCommands = true) with no changes is noop with same HEAD
+ok 85 - git rebase --merge --no-ff --keep-base --keep-base main (rebase.abbreviateCommands = true) with no changes is work with same HEAD
+ok 86 - add work same to side
+ok 87 - git rebase --apply  with our changes is noop with same HEAD
+ok 88 - git rebase --apply --no-ff  with our changes is work with same HEAD
+ok 89 - git rebase --merge  with our changes is noop with same HEAD
+ok 90 - git rebase --merge --no-ff  with our changes is work with same HEAD
+ok 91 - git rebase --merge  (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 92 - git rebase --merge --no-ff  (rebase.abbreviateCommands = true) with our changes is work with same HEAD
+ok 93 - git rebase --apply main with our changes is noop with same HEAD
+ok 94 - git rebase --apply --no-ff main with our changes is work with same HEAD
+ok 95 - git rebase --merge main with our changes is noop with same HEAD
+ok 96 - git rebase --merge --no-ff main with our changes is work with same HEAD
+ok 97 - git rebase --merge main (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 98 - git rebase --merge --no-ff main (rebase.abbreviateCommands = true) with our changes is work with same HEAD
+ok 99 - git rebase --apply --onto B B with our changes is noop with same HEAD
+ok 100 - git rebase --apply --no-ff --onto B B with our changes is work with diff HEAD
+ok 101 - git rebase --merge --onto B B with our changes is noop with same HEAD
+ok 102 - git rebase --merge --no-ff --onto B B with our changes is work with diff HEAD
+ok 103 - git rebase --merge --onto B B (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 104 - git rebase --merge --no-ff --onto B B (rebase.abbreviateCommands = true) with our changes is work with diff HEAD
+ok 105 - git rebase --apply --onto B... B with our changes is noop with same HEAD
+ok 106 - git rebase --apply --no-ff --onto B... B with our changes is work with diff HEAD
+ok 107 - git rebase --merge --onto B... B with our changes is noop with same HEAD
+ok 108 - git rebase --merge --no-ff --onto B... B with our changes is work with diff HEAD
+ok 109 - git rebase --merge --onto B... B (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 110 - git rebase --merge --no-ff --onto B... B (rebase.abbreviateCommands = true) with our changes is work with diff HEAD
+ok 111 - git rebase --apply --onto main... main with our changes is noop with same HEAD
+ok 112 - git rebase --apply --no-ff --onto main... main with our changes is work with same HEAD
+ok 113 - git rebase --merge --onto main... main with our changes is noop with same HEAD
+ok 114 - git rebase --merge --no-ff --onto main... main with our changes is work with same HEAD
+ok 115 - git rebase --merge --onto main... main (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 116 - git rebase --merge --no-ff --onto main... main (rebase.abbreviateCommands = true) with our changes is work with same HEAD
+ok 117 - git rebase --apply --keep-base main with our changes is noop with same HEAD
+ok 118 - git rebase --apply --no-ff --keep-base main with our changes is work with same HEAD
+ok 119 - git rebase --merge --keep-base main with our changes is noop with same HEAD
+ok 120 - git rebase --merge --no-ff --keep-base main with our changes is work with same HEAD
+ok 121 - git rebase --merge --keep-base main (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 122 - git rebase --merge --no-ff --keep-base main (rebase.abbreviateCommands = true) with our changes is work with same HEAD
+ok 123 - git rebase --apply --keep-base with our changes is noop with same HEAD
+ok 124 - git rebase --apply --no-ff --keep-base with our changes is work with same HEAD
+ok 125 - git rebase --merge --keep-base with our changes is noop with same HEAD
+ok 126 - git rebase --merge --no-ff --keep-base with our changes is work with same HEAD
+ok 127 - git rebase --merge --keep-base (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 128 - git rebase --merge --no-ff --keep-base (rebase.abbreviateCommands = true) with our changes is work with same HEAD
+ok 129 - git rebase --apply --no-fork-point with our changes is noop with same HEAD
+ok 130 - git rebase --apply --no-ff --no-fork-point with our changes is work with same HEAD
+ok 131 - git rebase --merge --no-fork-point with our changes is noop with same HEAD
+ok 132 - git rebase --merge --no-ff --no-fork-point with our changes is work with same HEAD
+ok 133 - git rebase --merge --no-fork-point (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 134 - git rebase --merge --no-ff --no-fork-point (rebase.abbreviateCommands = true) with our changes is work with same HEAD
+ok 135 - git rebase --apply --keep-base --no-fork-point with our changes is noop with same HEAD
+ok 136 - git rebase --apply --no-ff --keep-base --no-fork-point with our changes is work with same HEAD
+ok 137 - git rebase --merge --keep-base --no-fork-point with our changes is noop with same HEAD
+ok 138 - git rebase --merge --no-ff --keep-base --no-fork-point with our changes is work with same HEAD
+ok 139 - git rebase --merge --keep-base --no-fork-point (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 140 - git rebase --merge --no-ff --keep-base --no-fork-point (rebase.abbreviateCommands = true) with our changes is work with same HEAD
+ok 141 - git rebase --apply --fork-point main with our changes is noop with same HEAD
+ok 142 - git rebase --apply --no-ff --fork-point main with our changes is work with same HEAD
+ok 143 - git rebase --merge --fork-point main with our changes is noop with same HEAD
+ok 144 - git rebase --merge --no-ff --fork-point main with our changes is work with same HEAD
+ok 145 - git rebase --merge --fork-point main (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 146 - git rebase --merge --no-ff --fork-point main (rebase.abbreviateCommands = true) with our changes is work with same HEAD
+ok 147 - git rebase --apply --fork-point --onto B B with our changes is noop with same HEAD
+ok 148 - git rebase --apply --no-ff --fork-point --onto B B with our changes is work with diff HEAD
+ok 149 - git rebase --merge --fork-point --onto B B with our changes is noop with same HEAD
+ok 150 - git rebase --merge --no-ff --fork-point --onto B B with our changes is work with diff HEAD
+ok 151 - git rebase --merge --fork-point --onto B B (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 152 - git rebase --merge --no-ff --fork-point --onto B B (rebase.abbreviateCommands = true) with our changes is work with diff HEAD
+ok 153 - git rebase --apply --fork-point --onto B... B with our changes is noop with same HEAD
+ok 154 - git rebase --apply --no-ff --fork-point --onto B... B with our changes is work with diff HEAD
+ok 155 - git rebase --merge --fork-point --onto B... B with our changes is noop with same HEAD
+ok 156 - git rebase --merge --no-ff --fork-point --onto B... B with our changes is work with diff HEAD
+ok 157 - git rebase --merge --fork-point --onto B... B (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 158 - git rebase --merge --no-ff --fork-point --onto B... B (rebase.abbreviateCommands = true) with our changes is work with diff HEAD
+ok 159 - git rebase --apply --fork-point --onto main... main with our changes is noop with same HEAD
+ok 160 - git rebase --apply --no-ff --fork-point --onto main... main with our changes is work with same HEAD
+ok 161 - git rebase --merge --fork-point --onto main... main with our changes is noop with same HEAD
+ok 162 - git rebase --merge --no-ff --fork-point --onto main... main with our changes is work with same HEAD
+ok 163 - git rebase --merge --fork-point --onto main... main (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 164 - git rebase --merge --no-ff --fork-point --onto main... main (rebase.abbreviateCommands = true) with our changes is work with same HEAD
+ok 165 - git rebase --apply --fork-point --keep-base main with our changes is noop with same HEAD
+ok 166 - git rebase --apply --no-ff --fork-point --keep-base main with our changes is work with same HEAD
+ok 167 - git rebase --merge --fork-point --keep-base main with our changes is noop with same HEAD
+ok 168 - git rebase --merge --no-ff --fork-point --keep-base main with our changes is work with same HEAD
+ok 169 - git rebase --merge --fork-point --keep-base main (rebase.abbreviateCommands = true) with our changes is noop with same HEAD
+ok 170 - git rebase --merge --no-ff --fork-point --keep-base main (rebase.abbreviateCommands = true) with our changes is work with same HEAD
+ok 171 - add work same to upstream
+ok 172 - git rebase --apply --onto B B with our and their changes is noop with same HEAD
+ok 173 - git rebase --apply --no-ff --onto B B with our and their changes is work with diff HEAD
+ok 174 - git rebase --merge --onto B B with our and their changes is noop with same HEAD
+ok 175 - git rebase --merge --no-ff --onto B B with our and their changes is work with diff HEAD
+ok 176 - git rebase --merge --onto B B (rebase.abbreviateCommands = true) with our and their changes is noop with same HEAD
+ok 177 - git rebase --merge --no-ff --onto B B (rebase.abbreviateCommands = true) with our and their changes is work with diff HEAD
+ok 178 - git rebase --apply --onto B... B with our and their changes is noop with same HEAD
+ok 179 - git rebase --apply --no-ff --onto B... B with our and their changes is work with diff HEAD
+ok 180 - git rebase --merge --onto B... B with our and their changes is noop with same HEAD
+ok 181 - git rebase --merge --no-ff --onto B... B with our and their changes is work with diff HEAD
+ok 182 - git rebase --merge --onto B... B (rebase.abbreviateCommands = true) with our and their changes is noop with same HEAD
+ok 183 - git rebase --merge --no-ff --onto B... B (rebase.abbreviateCommands = true) with our and their changes is work with diff HEAD
+ok 184 - git rebase --apply --onto main... main with our and their changes is noop with same HEAD
+ok 185 - git rebase --apply --no-ff --onto main... main with our and their changes is work with diff HEAD
+ok 186 - git rebase --merge --onto main... main with our and their changes is noop with same HEAD
+ok 187 - git rebase --merge --no-ff --onto main... main with our and their changes is work with diff HEAD
+ok 188 - git rebase --merge --onto main... main (rebase.abbreviateCommands = true) with our and their changes is noop with same HEAD
+ok 189 - git rebase --merge --no-ff --onto main... main (rebase.abbreviateCommands = true) with our and their changes is work with diff HEAD
+ok 190 - git rebase --apply --keep-base main with our and their changes is noop with same HEAD
+ok 191 - git rebase --apply --no-ff --keep-base main with our and their changes is work with diff HEAD
+ok 192 - git rebase --merge --keep-base main with our and their changes is noop with same HEAD
+ok 193 - git rebase --merge --no-ff --keep-base main with our and their changes is work with diff HEAD
+ok 194 - git rebase --merge --keep-base main (rebase.abbreviateCommands = true) with our and their changes is noop with same HEAD
+ok 195 - git rebase --merge --no-ff --keep-base main (rebase.abbreviateCommands = true) with our and their changes is work with diff HEAD
+not ok 196 - git rebase --apply --keep-base with our and their changes is noop with same HEAD
+#	
+#			if test 0 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --apply --keep-base >stdout &&
+#			git reflog HEAD >actual &&
+#			if test noop = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test noop = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test same = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test same = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 197 - git rebase --apply --no-ff --keep-base with our and their changes is work with diff HEAD
+#	
+#			if test 0 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --apply --no-ff --keep-base >stdout &&
+#			git reflog HEAD >actual &&
+#			if test work = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test work = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test diff = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test diff = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 198 - git rebase --merge --keep-base with our and their changes is noop with same HEAD
+#	
+#			if test 0 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --merge --keep-base >stdout &&
+#			git reflog HEAD >actual &&
+#			if test noop = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test noop = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test same = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test same = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 199 - git rebase --merge --no-ff --keep-base with our and their changes is work with diff HEAD
+#	
+#			if test 0 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --merge --no-ff --keep-base >stdout &&
+#			git reflog HEAD >actual &&
+#			if test work = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test work = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test diff = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test diff = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 200 - git rebase --merge --keep-base (rebase.abbreviateCommands = true) with our and their changes is noop with same HEAD
+#	
+#			if test 1 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --merge --keep-base >stdout &&
+#			git reflog HEAD >actual &&
+#			if test noop = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test noop = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test same = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test same = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 201 - git rebase --merge --no-ff --keep-base (rebase.abbreviateCommands = true) with our and their changes is work with diff HEAD
+#	
+#			if test 1 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --merge --no-ff --keep-base >stdout &&
+#			git reflog HEAD >actual &&
+#			if test work = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test work = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test diff = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test diff = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 202 - git rebase --apply --fork-point --onto B B with our and their changes is work with same HEAD # TODO known breakage
+ok 203 - git rebase --apply --no-ff --fork-point --onto B B with our and their changes is work with diff HEAD
+not ok 204 - git rebase --merge --fork-point --onto B B with our and their changes is work with same HEAD # TODO known breakage
+ok 205 - git rebase --merge --no-ff --fork-point --onto B B with our and their changes is work with diff HEAD
+not ok 206 - git rebase --merge --fork-point --onto B B (rebase.abbreviateCommands = true) with our and their changes is work with same HEAD # TODO known breakage
+ok 207 - git rebase --merge --no-ff --fork-point --onto B B (rebase.abbreviateCommands = true) with our and their changes is work with diff HEAD
+not ok 208 - git rebase --apply --fork-point --onto B... B with our and their changes is work with same HEAD # TODO known breakage
+ok 209 - git rebase --apply --no-ff --fork-point --onto B... B with our and their changes is work with diff HEAD
+not ok 210 - git rebase --merge --fork-point --onto B... B with our and their changes is work with same HEAD # TODO known breakage
+ok 211 - git rebase --merge --no-ff --fork-point --onto B... B with our and their changes is work with diff HEAD
+not ok 212 - git rebase --merge --fork-point --onto B... B (rebase.abbreviateCommands = true) with our and their changes is work with same HEAD # TODO known breakage
+ok 213 - git rebase --merge --no-ff --fork-point --onto B... B (rebase.abbreviateCommands = true) with our and their changes is work with diff HEAD
+not ok 214 - git rebase --apply --fork-point --onto main... main with our and their changes is noop with same HEAD
+#	
+#			if test 0 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --apply --fork-point --onto main... main >stdout &&
+#			git reflog HEAD >actual &&
+#			if test noop = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test noop = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test same = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test same = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 215 - git rebase --apply --no-ff --fork-point --onto main... main with our and their changes is work with diff HEAD
+#	
+#			if test 0 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --apply --no-ff --fork-point --onto main... main >stdout &&
+#			git reflog HEAD >actual &&
+#			if test work = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test work = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test diff = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test diff = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 216 - git rebase --merge --fork-point --onto main... main with our and their changes is noop with same HEAD
+#	
+#			if test 0 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --merge --fork-point --onto main... main >stdout &&
+#			git reflog HEAD >actual &&
+#			if test noop = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test noop = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test same = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test same = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 217 - git rebase --merge --no-ff --fork-point --onto main... main with our and their changes is work with diff HEAD
+#	
+#			if test 0 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --merge --no-ff --fork-point --onto main... main >stdout &&
+#			git reflog HEAD >actual &&
+#			if test work = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test work = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test diff = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test diff = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 218 - git rebase --merge --fork-point --onto main... main (rebase.abbreviateCommands = true) with our and their changes is noop with same HEAD
+#	
+#			if test 1 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --merge --fork-point --onto main... main >stdout &&
+#			git reflog HEAD >actual &&
+#			if test noop = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test noop = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test same = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test same = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 219 - git rebase --merge --no-ff --fork-point --onto main... main (rebase.abbreviateCommands = true) with our and their changes is work with diff HEAD
+#	
+#			if test 1 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --merge --no-ff --fork-point --onto main... main >stdout &&
+#			git reflog HEAD >actual &&
+#			if test work = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test work = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test diff = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test diff = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 220 - git rebase --apply --fork-point --keep-base main with our and their changes is noop with same HEAD
+#	
+#			if test 0 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --apply --fork-point --keep-base main >stdout &&
+#			git reflog HEAD >actual &&
+#			if test noop = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test noop = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test same = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test same = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 221 - git rebase --apply --no-ff --fork-point --keep-base main with our and their changes is work with diff HEAD
+#	
+#			if test 0 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --apply --no-ff --fork-point --keep-base main >stdout &&
+#			git reflog HEAD >actual &&
+#			if test work = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test work = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test diff = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test diff = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 222 - git rebase --merge --fork-point --keep-base main with our and their changes is noop with same HEAD
+#	
+#			if test 0 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --merge --fork-point --keep-base main >stdout &&
+#			git reflog HEAD >actual &&
+#			if test noop = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test noop = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test same = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test same = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 223 - git rebase --merge --no-ff --fork-point --keep-base main with our and their changes is work with diff HEAD
+#	
+#			if test 0 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --merge --no-ff --fork-point --keep-base main >stdout &&
+#			git reflog HEAD >actual &&
+#			if test work = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test work = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test diff = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test diff = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 224 - git rebase --merge --fork-point --keep-base main (rebase.abbreviateCommands = true) with our and their changes is noop with same HEAD
+#	
+#			if test 1 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --merge --fork-point --keep-base main >stdout &&
+#			git reflog HEAD >actual &&
+#			if test noop = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test noop = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test same = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test same = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+not ok 225 - git rebase --merge --no-ff --fork-point --keep-base main (rebase.abbreviateCommands = true) with our and their changes is work with diff HEAD
+#	
+#			if test 1 -eq 1
+#			then
+#				test_config rebase.abbreviateCommands true
+#			fi &&
+#			oldhead=$(git rev-parse HEAD) &&
+#			test_when_finished 'git reset --hard $oldhead' &&
+#			git reflog HEAD >expect &&
+#			git rebase --merge --no-ff --fork-point --keep-base main >stdout &&
+#			git reflog HEAD >actual &&
+#			if test work = work
+#			then
+#				old=$(wc -l <expect) &&
+#				test_line_count '-gt' $old actual
+#			elif test work = noop
+#			then
+#				test_cmp expect actual
+#			fi &&
+#			newhead=$(git rev-parse HEAD) &&
+#			if test diff = same
+#			then
+#				test_cmp_rev $oldhead $newhead
+#			elif test diff = diff
+#			then
+#				test_cmp_rev ! $oldhead $newhead
+#			fi
+#		
+# still have 6 known breakage(s)
+# failed 18 among remaining 219 test(s)
+1..225
+# Tests: 225  Pass: 201  Fail: 18  Skip: 0

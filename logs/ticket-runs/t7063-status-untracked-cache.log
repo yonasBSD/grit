@@ -1,0 +1,596 @@
+ok 1 - core.untrackedCache is unset
+ok 2 - setup
+ok 3 - untracked cache is empty
+ok 4 - status first time (empty cache)
+not ok 5 - untracked cache after first status
+#	
+#		test-tool dump-untracked-cache >../actual &&
+#		test_cmp ../dump.expect ../actual
+#	
+not ok 6 - status second time (fully populated cache)
+#	
+#		: >../trace.output &&
+#		GIT_TRACE2_PERF="$TRASH_DIRECTORY/trace.output" \
+#		git status --porcelain >../actual &&
+#		iuc status --porcelain >../status.iuc &&
+#		test_cmp ../status.expect ../status.iuc &&
+#		test_cmp ../status.expect ../actual &&
+#		get_relevant_traces ../trace.output ../trace.relevant &&
+#		cat >../trace.expect <<EOF &&
+#	 ....path:
+#	 ....node-creation:0
+#	 ....gitignore-invalidation:0
+#	 ....directory-invalidation:0
+#	 ....opendir:0
+#	EOF
+#		test_cmp ../trace.expect ../trace.relevant
+#	
+not ok 7 - untracked cache after second status
+#	
+#		test-tool dump-untracked-cache >../actual &&
+#		test_cmp ../dump.expect ../actual
+#	
+ok 8 - untracked cache is bypassed with -uall
+not ok 9 - untracked cache remains after bypass
+#	
+#		test-tool dump-untracked-cache >../actual &&
+#		test_cmp ../dump.expect ../actual
+#	
+ok 10 - if -uall is configured, untracked cache gets populated by default
+not ok 11 - if -uall was configured, untracked cache is populated
+#	
+#		test-tool dump-untracked-cache >../actual &&
+#		test_cmp ../dump_uall.expect ../actual
+#	
+not ok 12 - if -uall is configured, untracked cache is used by default
+#	
+#		test_config status.showuntrackedfiles all &&
+#		: >../trace.output &&
+#		GIT_TRACE2_PERF="$TRASH_DIRECTORY/trace.output" \
+#		git status --porcelain >../actual &&
+#		iuc status --porcelain >../status.iuc &&
+#		test_cmp ../status_uall.expect ../status.iuc &&
+#		test_cmp ../status_uall.expect ../actual &&
+#		get_relevant_traces ../trace.output ../trace.relevant &&
+#		cat >../trace.expect <<EOF &&
+#	 ....path:
+#	 ....node-creation:0
+#	 ....gitignore-invalidation:0
+#	 ....directory-invalidation:0
+#	 ....opendir:0
+#	EOF
+#		test_cmp ../trace.expect ../trace.relevant
+#	
+not ok 13 - if -uall is configured, untracked cache is bypassed with -unormal
+#	
+#		test_config status.showuntrackedfiles all &&
+#		: >../trace.output &&
+#		GIT_TRACE2_PERF="$TRASH_DIRECTORY/trace.output" \
+#		git status -unormal --porcelain >../actual &&
+#		iuc status -unormal --porcelain >../status.iuc &&
+#		test_cmp ../status.expect ../status.iuc &&
+#		test_cmp ../status.expect ../actual &&
+#		get_relevant_traces ../trace.output ../trace.relevant &&
+#		cat >../trace.expect <<EOF &&
+#	 ....path:
+#	EOF
+#		test_cmp ../trace.expect ../trace.relevant
+#	
+ok 14 - repopulate untracked cache for -unormal
+not ok 15 - modify in root directory, one dir invalidation
+#	
+#		: >four &&
+#		test-tool chmtime =-240 four &&
+#		: >../trace.output &&
+#		GIT_TRACE2_PERF="$TRASH_DIRECTORY/trace.output" \
+#		git status --porcelain >../actual &&
+#		iuc status --porcelain >../status.iuc &&
+#		cat >../status.expect <<EOF &&
+#	A  done/one
+#	A  one
+#	A  two
+#	?? dthree/
+#	?? dtwo/
+#	?? four
+#	?? three
+#	EOF
+#		test_cmp ../status.expect ../status.iuc &&
+#		test_cmp ../status.expect ../actual &&
+#		get_relevant_traces ../trace.output ../trace.relevant &&
+#		cat >../trace.expect <<EOF &&
+#	 ....path:
+#	 ....node-creation:0
+#	 ....gitignore-invalidation:0
+#	 ....directory-invalidation:1
+#	 ....opendir:1
+#	EOF
+#		test_cmp ../trace.expect ../trace.relevant
+#	
+#	
+not ok 16 - verify untracked cache dump
+#	
+#		test-tool dump-untracked-cache >../actual &&
+#		cat >../expect <<EOF &&
+#	info/exclude $EMPTY_BLOB
+#	core.excludesfile $ZERO_OID
+#	exclude_per_dir .gitignore
+#	flags 00000006
+#	/ $ZERO_OID recurse valid
+#	dthree/
+#	dtwo/
+#	four
+#	three
+#	/done/ $ZERO_OID recurse valid
+#	/dthree/ $ZERO_OID recurse check_only valid
+#	three
+#	/dtwo/ $ZERO_OID recurse check_only valid
+#	two
+#	EOF
+#		test_cmp ../expect ../actual
+#	
+not ok 17 - new .gitignore invalidates recursively
+#	
+#		echo four >.gitignore &&
+#		: >../trace.output &&
+#		GIT_TRACE2_PERF="$TRASH_DIRECTORY/trace.output" \
+#		git status --porcelain >../actual &&
+#		iuc status --porcelain >../status.iuc &&
+#		cat >../status.expect <<EOF &&
+#	A  done/one
+#	A  one
+#	A  two
+#	?? .gitignore
+#	?? dthree/
+#	?? dtwo/
+#	?? three
+#	EOF
+#		test_cmp ../status.expect ../status.iuc &&
+#		test_cmp ../status.expect ../actual &&
+#		get_relevant_traces ../trace.output ../trace.relevant &&
+#		cat >../trace.expect <<EOF &&
+#	 ....path:
+#	 ....node-creation:0
+#	 ....gitignore-invalidation:1
+#	 ....directory-invalidation:1
+#	 ....opendir:4
+#	EOF
+#		test_cmp ../trace.expect ../trace.relevant
+#	
+#	
+not ok 18 - verify untracked cache dump
+#	
+#		test-tool dump-untracked-cache >../actual &&
+#		cat >../expect <<EOF &&
+#	info/exclude $EMPTY_BLOB
+#	core.excludesfile $ZERO_OID
+#	exclude_per_dir .gitignore
+#	flags 00000006
+#	/ $(test_oid root) recurse valid
+#	.gitignore
+#	dthree/
+#	dtwo/
+#	three
+#	/done/ $ZERO_OID recurse valid
+#	/dthree/ $ZERO_OID recurse check_only valid
+#	three
+#	/dtwo/ $ZERO_OID recurse check_only valid
+#	two
+#	EOF
+#		test_cmp ../expect ../actual
+#	
+not ok 19 - new info/exclude invalidates everything
+#	
+#		echo three >>.git/info/exclude &&
+#		: >../trace.output &&
+#		GIT_TRACE2_PERF="$TRASH_DIRECTORY/trace.output" \
+#		git status --porcelain >../actual &&
+#		iuc status --porcelain >../status.iuc &&
+#		cat >../status.expect <<EOF &&
+#	A  done/one
+#	A  one
+#	A  two
+#	?? .gitignore
+#	?? dtwo/
+#	EOF
+#		test_cmp ../status.expect ../status.iuc &&
+#		test_cmp ../status.expect ../actual &&
+#		get_relevant_traces ../trace.output ../trace.relevant &&
+#		cat >../trace.expect <<EOF &&
+#	 ....path:
+#	 ....node-creation:0
+#	 ....gitignore-invalidation:1
+#	 ....directory-invalidation:0
+#	 ....opendir:4
+#	EOF
+#		test_cmp ../trace.expect ../trace.relevant
+#	
+not ok 20 - verify untracked cache dump
+#	
+#		test-tool dump-untracked-cache >../actual &&
+#		cat >../expect <<EOF &&
+#	info/exclude $(test_oid exclude)
+#	core.excludesfile $ZERO_OID
+#	exclude_per_dir .gitignore
+#	flags 00000006
+#	/ $(test_oid root) recurse valid
+#	.gitignore
+#	dtwo/
+#	/done/ $ZERO_OID recurse valid
+#	/dthree/ $ZERO_OID recurse check_only valid
+#	/dtwo/ $ZERO_OID recurse check_only valid
+#	two
+#	EOF
+#		test_cmp ../expect ../actual
+#	
+not ok 21 - move two from tracked to untracked
+#	
+#		git rm --cached two &&
+#		test-tool dump-untracked-cache >../actual &&
+#		cat >../expect <<EOF &&
+#	info/exclude $(test_oid exclude)
+#	core.excludesfile $ZERO_OID
+#	exclude_per_dir .gitignore
+#	flags 00000006
+#	/ $(test_oid root) recurse
+#	/done/ $ZERO_OID recurse valid
+#	/dthree/ $ZERO_OID recurse check_only valid
+#	/dtwo/ $ZERO_OID recurse check_only valid
+#	two
+#	EOF
+#		test_cmp ../expect ../actual
+#	
+not ok 22 - status after the move
+#	
+#		: >../trace.output &&
+#		GIT_TRACE2_PERF="$TRASH_DIRECTORY/trace.output" \
+#		git status --porcelain >../actual &&
+#		iuc status --porcelain >../status.iuc &&
+#		cat >../status.expect <<EOF &&
+#	A  done/one
+#	A  one
+#	?? .gitignore
+#	?? dtwo/
+#	?? two
+#	EOF
+#		test_cmp ../status.expect ../status.iuc &&
+#		test_cmp ../status.expect ../actual &&
+#		get_relevant_traces ../trace.output ../trace.relevant &&
+#		cat >../trace.expect <<EOF &&
+#	 ....path:
+#	 ....node-creation:0
+#	 ....gitignore-invalidation:0
+#	 ....directory-invalidation:0
+#	 ....opendir:1
+#	EOF
+#		test_cmp ../trace.expect ../trace.relevant
+#	
+not ok 23 - verify untracked cache dump
+#	
+#		test-tool dump-untracked-cache >../actual &&
+#		cat >../expect <<EOF &&
+#	info/exclude $(test_oid exclude)
+#	core.excludesfile $ZERO_OID
+#	exclude_per_dir .gitignore
+#	flags 00000006
+#	/ $(test_oid root) recurse valid
+#	.gitignore
+#	dtwo/
+#	two
+#	/done/ $ZERO_OID recurse valid
+#	/dthree/ $ZERO_OID recurse check_only valid
+#	/dtwo/ $ZERO_OID recurse check_only valid
+#	two
+#	EOF
+#		test_cmp ../expect ../actual
+#	
+not ok 24 - move two from untracked to tracked
+#	
+#		git add two &&
+#		test-tool dump-untracked-cache >../actual &&
+#		cat >../expect <<EOF &&
+#	info/exclude $(test_oid exclude)
+#	core.excludesfile $ZERO_OID
+#	exclude_per_dir .gitignore
+#	flags 00000006
+#	/ $(test_oid root) recurse
+#	/done/ $ZERO_OID recurse valid
+#	/dthree/ $ZERO_OID recurse check_only valid
+#	/dtwo/ $ZERO_OID recurse check_only valid
+#	two
+#	EOF
+#		test_cmp ../expect ../actual
+#	
+not ok 25 - status after the move
+#	
+#		: >../trace.output &&
+#		GIT_TRACE2_PERF="$TRASH_DIRECTORY/trace.output" \
+#		git status --porcelain >../actual &&
+#		iuc status --porcelain >../status.iuc &&
+#		cat >../status.expect <<EOF &&
+#	A  done/one
+#	A  one
+#	A  two
+#	?? .gitignore
+#	?? dtwo/
+#	EOF
+#		test_cmp ../status.expect ../status.iuc &&
+#		test_cmp ../status.expect ../actual &&
+#		get_relevant_traces ../trace.output ../trace.relevant &&
+#		cat >../trace.expect <<EOF &&
+#	 ....path:
+#	 ....node-creation:0
+#	 ....gitignore-invalidation:0
+#	 ....directory-invalidation:0
+#	 ....opendir:1
+#	EOF
+#		test_cmp ../trace.expect ../trace.relevant
+#	
+not ok 26 - verify untracked cache dump
+#	
+#		test-tool dump-untracked-cache >../actual &&
+#		cat >../expect <<EOF &&
+#	info/exclude $(test_oid exclude)
+#	core.excludesfile $ZERO_OID
+#	exclude_per_dir .gitignore
+#	flags 00000006
+#	/ $(test_oid root) recurse valid
+#	.gitignore
+#	dtwo/
+#	/done/ $ZERO_OID recurse valid
+#	/dthree/ $ZERO_OID recurse check_only valid
+#	/dtwo/ $ZERO_OID recurse check_only valid
+#	two
+#	EOF
+#		test_cmp ../expect ../actual
+#	
+ok 27 - set up for sparse checkout testing
+not ok 28 - status after commit
+#	
+#		: >../trace.output &&
+#		GIT_TRACE2_PERF="$TRASH_DIRECTORY/trace.output" \
+#		git status --porcelain >../actual &&
+#		iuc status --porcelain >../status.iuc &&
+#		cat >../status.expect <<EOF &&
+#	?? .gitignore
+#	?? dtwo/
+#	EOF
+#		test_cmp ../status.expect ../status.iuc &&
+#		test_cmp ../status.expect ../actual &&
+#		get_relevant_traces ../trace.output ../trace.relevant &&
+#		cat >../trace.expect <<EOF &&
+#	 ....path:
+#	 ....node-creation:0
+#	 ....gitignore-invalidation:0
+#	 ....directory-invalidation:0
+#	 ....opendir:2
+#	EOF
+#		test_cmp ../trace.expect ../trace.relevant
+#	
+not ok 29 - untracked cache correct after commit
+#	
+#		test-tool dump-untracked-cache >../actual &&
+#		cat >../expect <<EOF &&
+#	info/exclude $(test_oid exclude)
+#	core.excludesfile $ZERO_OID
+#	exclude_per_dir .gitignore
+#	flags 00000006
+#	/ $(test_oid root) recurse valid
+#	.gitignore
+#	dtwo/
+#	/done/ $ZERO_OID recurse valid
+#	/dthree/ $ZERO_OID recurse check_only valid
+#	/dtwo/ $ZERO_OID recurse check_only valid
+#	two
+#	EOF
+#		test_cmp ../expect ../actual
+#	
+ok 30 - set up sparse checkout
+ok 31 - create/modify files, some of which are gitignored
+not ok 32 - test sparse status with untracked cache
+#	
+#		: >../trace.output &&
+#		GIT_TRACE2_PERF="$TRASH_DIRECTORY/trace.output" \
+#		git status --porcelain >../status.actual &&
+#		iuc status --porcelain >../status.iuc &&
+#		cat >../status.expect <<EOF &&
+#	 M done/two
+#	?? .gitignore
+#	?? done/five
+#	?? dtwo/
+#	EOF
+#		test_cmp ../status.expect ../status.iuc &&
+#		test_cmp ../status.expect ../status.actual &&
+#		get_relevant_traces ../trace.output ../trace.relevant &&
+#		cat >../trace.expect <<EOF &&
+#	 ....path:
+#	 ....node-creation:0
+#	 ....gitignore-invalidation:1
+#	 ....directory-invalidation:2
+#	 ....opendir:2
+#	EOF
+#		test_cmp ../trace.expect ../trace.relevant
+#	
+not ok 33 - untracked cache correct after status
+#	
+#		test-tool dump-untracked-cache >../actual &&
+#		cat >../expect <<EOF &&
+#	info/exclude $(test_oid exclude)
+#	core.excludesfile $ZERO_OID
+#	exclude_per_dir .gitignore
+#	flags 00000006
+#	/ $(test_oid root) recurse valid
+#	.gitignore
+#	dtwo/
+#	/done/ $(test_oid done) recurse valid
+#	five
+#	/dthree/ $ZERO_OID recurse check_only valid
+#	/dtwo/ $ZERO_OID recurse check_only valid
+#	two
+#	EOF
+#		test_cmp ../expect ../actual
+#	
+not ok 34 - test sparse status again with untracked cache
+#	
+#		: >../trace.output &&
+#		GIT_TRACE2_PERF="$TRASH_DIRECTORY/trace.output" \
+#		git status --porcelain >../status.actual &&
+#		iuc status --porcelain >../status.iuc &&
+#		cat >../status.expect <<EOF &&
+#	 M done/two
+#	?? .gitignore
+#	?? done/five
+#	?? dtwo/
+#	EOF
+#		test_cmp ../status.expect ../status.iuc &&
+#		test_cmp ../status.expect ../status.actual &&
+#		get_relevant_traces ../trace.output ../trace.relevant &&
+#		cat >../trace.expect <<EOF &&
+#	 ....path:
+#	 ....node-creation:0
+#	 ....gitignore-invalidation:0
+#	 ....directory-invalidation:0
+#	 ....opendir:0
+#	EOF
+#		test_cmp ../trace.expect ../trace.relevant
+#	
+ok 35 - set up for test of subdir and sparse checkouts
+not ok 36 - test sparse status with untracked cache and subdir
+#	
+#		: >../trace.output &&
+#		GIT_TRACE2_PERF="$TRASH_DIRECTORY/trace.output" \
+#		git status --porcelain >../status.actual &&
+#		iuc status --porcelain >../status.iuc &&
+#		cat >../status.expect <<EOF &&
+#	 M done/two
+#	?? .gitignore
+#	?? done/five
+#	?? done/sub/
+#	?? dtwo/
+#	EOF
+#		test_cmp ../status.expect ../status.iuc &&
+#		test_cmp ../status.expect ../status.actual &&
+#		get_relevant_traces ../trace.output ../trace.relevant &&
+#		cat >../trace.expect <<EOF &&
+#	 ....path:
+#	 ....node-creation:2
+#	 ....gitignore-invalidation:0
+#	 ....directory-invalidation:1
+#	 ....opendir:3
+#	EOF
+#		test_cmp ../trace.expect ../trace.relevant
+#	
+not ok 37 - verify untracked cache dump (sparse/subdirs)
+#	
+#		test-tool dump-untracked-cache >../actual &&
+#		cat >../expect-from-test-dump <<EOF &&
+#	info/exclude $(test_oid exclude)
+#	core.excludesfile $ZERO_OID
+#	exclude_per_dir .gitignore
+#	flags 00000006
+#	/ $(test_oid root) recurse valid
+#	.gitignore
+#	dtwo/
+#	/done/ $(test_oid done) recurse valid
+#	five
+#	sub/
+#	/done/sub/ $ZERO_OID recurse check_only valid
+#	sub/
+#	/done/sub/sub/ $ZERO_OID recurse check_only valid
+#	file
+#	/dthree/ $ZERO_OID recurse check_only valid
+#	/dtwo/ $ZERO_OID recurse check_only valid
+#	two
+#	EOF
+#		test_cmp ../expect-from-test-dump ../actual
+#	
+not ok 38 - test sparse status again with untracked cache and subdir
+#	
+#		: >../trace.output &&
+#		GIT_TRACE2_PERF="$TRASH_DIRECTORY/trace.output" \
+#		git status --porcelain >../status.actual &&
+#		iuc status --porcelain >../status.iuc &&
+#		test_cmp ../status.expect ../status.iuc &&
+#		test_cmp ../status.expect ../status.actual &&
+#		get_relevant_traces ../trace.output ../trace.relevant &&
+#		cat >../trace.expect <<EOF &&
+#	 ....path:
+#	 ....node-creation:0
+#	 ....gitignore-invalidation:0
+#	 ....directory-invalidation:0
+#	 ....opendir:0
+#	EOF
+#		test_cmp ../trace.expect ../trace.relevant
+#	
+ok 39 - move entry in subdir from untracked to cached
+ok 40 - move entry in subdir from cached to untracked
+ok 41 - --no-untracked-cache removes the cache
+ok 42 - git status does not change anything
+not ok 43 - setting core.untrackedCache to true and using git status creates the cache
+#	
+#		git config core.untrackedCache true &&
+#		test-tool dump-untracked-cache >../actual &&
+#		test_cmp ../expect-no-uc ../actual &&
+#		git status &&
+#		test-tool dump-untracked-cache >../actual &&
+#		test_cmp ../expect-from-test-dump ../actual
+#	
+ok 44 - using --no-untracked-cache does not fail when core.untrackedCache is true
+not ok 45 - setting core.untrackedCache to false and using git status removes the cache
+#	
+#		git config core.untrackedCache false &&
+#		test-tool dump-untracked-cache >../actual &&
+#		test_cmp ../expect-empty ../actual &&
+#		git status &&
+#		test-tool dump-untracked-cache >../actual &&
+#		test_cmp ../expect-no-uc ../actual
+#	
+ok 46 - using --untracked-cache does not fail when core.untrackedCache is false
+not ok 47 - setting core.untrackedCache to keep
+#	
+#		git config core.untrackedCache keep &&
+#		git update-index --untracked-cache &&
+#		test-tool dump-untracked-cache >../actual &&
+#		test_cmp ../expect-empty ../actual &&
+#		git status &&
+#		test-tool dump-untracked-cache >../actual &&
+#		test_cmp ../expect-from-test-dump ../actual &&
+#		git update-index --no-untracked-cache &&
+#		test-tool dump-untracked-cache >../actual &&
+#		test_cmp ../expect-no-uc ../actual &&
+#		git update-index --force-untracked-cache &&
+#		test-tool dump-untracked-cache >../actual &&
+#		test_cmp ../expect-empty ../actual &&
+#		git status &&
+#		test-tool dump-untracked-cache >../actual &&
+#		test_cmp ../expect-from-test-dump ../actual
+#	
+ok 48 - test ident field is working
+ok 49 - untracked cache survives a checkout
+ok 50 - untracked cache survives a commit
+ok 51 - teardown worktree
+ok 52 - setup worktree for symlink test
+ok 53 - "status" after symlink replacement should be clean with UC=true
+ok 54 - "status" after symlink replacement should be clean with UC=false
+ok 55 - setup worktree for non-symlink test
+not ok 56 - "status" after file replacement should be clean with UC=true
+#	
+#		git checkout HEAD~ &&
+#		status_is_clean &&
+#		status_is_clean &&
+#		git checkout main &&
+#		avoid_racy &&
+#		status_is_clean &&
+#		test-tool dump-untracked-cache >../actual &&
+#		grep -F "recurse valid" ../actual >../actual.grep &&
+#		cat >../expect.grep <<EOF &&
+#	/ $ZERO_OID recurse valid
+#	/two/ $ZERO_OID recurse valid
+#	EOF
+#		status_is_clean &&
+#		test_cmp ../expect.grep ../actual.grep
+#	
+ok 57 - "status" after file replacement should be clean with UC=false
+ok 58 - empty repo (no index) and core.untrackedCache
+# failed 31 among 58 test(s)
+1..58
+# Tests: 58  Pass: 27  Fail: 31  Skip: 0

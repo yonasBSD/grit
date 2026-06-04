@@ -1,0 +1,216 @@
+ok 1 - bisect usage
+ok 2 - set up basic repo with 1 file (hello) and 4 commits
+ok 3 - bisect starts with only one bad
+ok 4 - bisect does not start with only one good
+ok 5 - bisect start with one bad and good
+ok 6 - bisect fails if given any junk instead of revs
+ok 7 - bisect start without -- takes unknown arg as pathspec
+ok 8 - bisect reset: back in a branch checked out also elsewhere
+ok 9 - bisect reset: back in the main branch
+ok 10 - bisect reset: back in another branch
+ok 11 - bisect reset when not bisecting
+ok 12 - bisect reset cleans up even when not bisecting
+ok 13 - bisect reset removes packed refs
+ok 14 - bisect reset removes bisect state after --no-checkout
+ok 15 - bisect start: back in good branch
+ok 16 - bisect start: no ".git/BISECT_START" created if junk rev
+ok 17 - bisect start: existing ".git/BISECT_START" not modified if junk rev
+ok 18 - bisect start: no ".git/BISECT_START" if mistaken rev
+ok 19 - bisect start: no ".git/BISECT_START" if checkout error
+ok 20 - bisect skip: successful result
+ok 21 - bisect skip: cannot tell between 3 commits
+ok 22 - bisect skip: cannot tell between 2 commits
+ok 23 - bisect skip: with commit both bad and skipped
+ok 24 - git bisect run: args, stdout and stderr with no arguments
+ok 25 - git bisect run: args, stdout and stderr: "--" argument
+ok 26 - git bisect run: args, stdout and stderr: "--log foo --no-log bar" arguments
+ok 27 - git bisect run: args, stdout and stderr: "--bisect-start" argument
+ok 28 - git bisect run: negative exit code
+ok 29 - git bisect run: unable to verify on good
+ok 30 - "git bisect run" simple case
+ok 31 - "git bisect run" simple case
+ok 32 - "git bisect run" with more complex "git bisect start"
+ok 33 - bisect run accepts exit code 126 as bad
+ok 34 - bisect run fails with non-executable test script
+ok 35 - bisect run accepts exit code 127 as bad
+ok 36 - bisect run fails with missing test script
+ok 37 - bisect skip: add line and then a new test
+ok 38 - bisect skip and bisect replay
+not ok 39 - bisect run & skip: cannot tell between 2
+#	
+#		add_line_into_file "6: Yet a line." hello &&
+#		HASH6=$(git rev-parse --verify HEAD) &&
+#		write_script test_script.sh <<-\EOF &&
+#		sed -ne \$p hello | grep Ciao >/dev/null && exit 125
+#		! grep line hello >/dev/null
+#		EOF
+#		git bisect start $HASH6 $HASH1 &&
+#		test_expect_code 2 git bisect run ./test_script.sh >my_bisect_log.txt &&
+#		grep "first bad commit could be any of" my_bisect_log.txt &&
+#		! grep $HASH3 my_bisect_log.txt &&
+#		! grep $HASH6 my_bisect_log.txt &&
+#		grep $HASH4 my_bisect_log.txt &&
+#		grep $HASH5 my_bisect_log.txt
+#	
+ok 40 - bisect run & skip: find first bad
+ok 41 - bisect skip only one range
+ok 42 - bisect skip many ranges
+ok 43 - bisect starting with a detached HEAD
+ok 44 - bisect errors out if bad and good are mistaken
+ok 45 - bisect does not create a "bisect" branch
+ok 46 - side branch creation
+ok 47 - good merge base when good and bad are siblings
+ok 48 - skipped merge base when good and bad are siblings
+ok 49 - bad merge base when good and bad are siblings
+ok 50 - many merge bases creation
+ok 51 - "git bisect run --first-parent" simple case
+ok 52 - good merge bases when good and bad are siblings
+ok 53 - optimized merge base checks
+ok 54 - "parallel" side branch creation
+ok 55 - restricting bisection on one dir
+not ok 56 - restricting bisection on one dir and a file
+#	
+#		git bisect reset &&
+#		git bisect start HEAD $HASH1 -- dir1 hello &&
+#		para4=$(git rev-parse --verify HEAD) &&
+#		test "$para4" = "$PARA_HASH4" &&
+#		git bisect bad &&
+#		hash3=$(git rev-parse --verify HEAD) &&
+#		test "$hash3" = "$HASH3" &&
+#		git bisect good &&
+#		hash4=$(git rev-parse --verify HEAD) &&
+#		test "$hash4" = "$HASH4" &&
+#		git bisect good &&
+#		para1=$(git rev-parse --verify HEAD) &&
+#		test "$para1" = "$PARA_HASH1" &&
+#		git bisect good > my_bisect_log.txt &&
+#		grep "$PARA_HASH4 is the first bad commit" my_bisect_log.txt
+#	
+not ok 57 - skipping away from skipped commit
+#	
+#		git bisect start $PARA_HASH7 $HASH1 &&
+#		para4=$(git rev-parse --verify HEAD) &&
+#		test "$para4" = "$PARA_HASH4" &&
+#	        git bisect skip &&
+#		hash7=$(git rev-parse --verify HEAD) &&
+#		test "$hash7" = "$HASH7" &&
+#	        git bisect skip &&
+#		para3=$(git rev-parse --verify HEAD) &&
+#		test "$para3" = "$PARA_HASH3"
+#	
+ok 58 - erroring out when using bad path arguments
+ok 59 - test bisection on bare repo - --no-checkout specified
+ok 60 - test bisection on bare repo - --no-checkout defaulted
+ok 61 - broken branch creation
+ok 62 - bisect fails if tree is broken on start commit
+ok 63 - bisect fails if tree is broken on trial commit
+ok 64 - bisect: --no-checkout - start commit bad
+not ok 65 - bisect: --no-checkout - trial commit bad
+#	
+#		git bisect reset &&
+#		git bisect start broken BROKEN_HASH4 --no-checkout &&
+#		check_same BROKEN_HASH6 BISECT_HEAD &&
+#		git bisect reset
+#	
+not ok 66 - bisect: --no-checkout - target before breakage
+#	
+#		git bisect reset &&
+#		git bisect start broken BROKEN_HASH4 --no-checkout &&
+#		check_same BROKEN_HASH6 BISECT_HEAD &&
+#		git bisect bad BISECT_HEAD &&
+#		check_same BROKEN_HASH5 BISECT_HEAD &&
+#		git bisect bad BISECT_HEAD &&
+#		check_same BROKEN_HASH5 bisect/bad &&
+#		git bisect reset
+#	
+not ok 67 - bisect: --no-checkout - target in breakage
+#	
+#		git bisect reset &&
+#		git bisect start broken BROKEN_HASH4 --no-checkout &&
+#		check_same BROKEN_HASH6 BISECT_HEAD &&
+#		git bisect bad BISECT_HEAD &&
+#		check_same BROKEN_HASH5 BISECT_HEAD &&
+#		test_must_fail git bisect good BISECT_HEAD &&
+#		check_same BROKEN_HASH6 bisect/bad &&
+#		git bisect reset
+#	
+not ok 68 - bisect: --no-checkout - target after breakage
+#	
+#		git bisect reset &&
+#		git bisect start broken BROKEN_HASH4 --no-checkout &&
+#		check_same BROKEN_HASH6 BISECT_HEAD &&
+#		git bisect good BISECT_HEAD &&
+#		check_same BROKEN_HASH8 BISECT_HEAD &&
+#		test_must_fail git bisect good BISECT_HEAD &&
+#		check_same BROKEN_HASH9 bisect/bad &&
+#		git bisect reset
+#	
+not ok 69 - bisect: demonstrate identification of damage boundary
+#	
+#		git bisect reset &&
+#		git checkout broken &&
+#		git bisect start broken main --no-checkout &&
+#		test_must_fail git bisect run "$SHELL_PATH" -c '
+#			GOOD=$(git for-each-ref "--format=%(objectname)" refs/bisect/good-*) &&
+#			git rev-list --objects BISECT_HEAD --not $GOOD >tmp.$$ &&
+#			git pack-objects --stdout >/dev/null < tmp.$$
+#			rc=$?
+#			rm -f tmp.$$
+#			test $rc = 0' &&
+#		check_same BROKEN_HASH6 bisect/bad &&
+#		git bisect reset
+#	
+ok 70 - bisect log: successful result
+not ok 71 - bisect log: only skip commits left
+#	
+#		git bisect reset &&
+#		git bisect start $HASH4 $HASH2 &&
+#		test_must_fail git bisect skip &&
+#		git bisect log >bisect-skip-log.txt &&
+#		test_cmp expected.bisect-skip-log bisect-skip-log.txt &&
+#		git bisect reset
+#	
+not ok 72 - "git bisect bad HEAD" behaves as "git bisect bad"
+#	
+#		git checkout parallel &&
+#		git bisect start HEAD $HASH1 &&
+#		git bisect good HEAD &&
+#		git bisect bad HEAD &&
+#		test "$HASH6" = $(git rev-parse --verify HEAD) &&
+#		git bisect reset
+#	
+ok 73 - bisect starts with only one new
+ok 74 - bisect does not start with only one old
+ok 75 - bisect start with one new and old
+ok 76 - bisect replay with old and new
+ok 77 - bisect replay with CRLF log
+ok 78 - bisect cannot mix old/new and good/bad
+ok 79 - bisect terms needs 0 or 1 argument
+ok 80 - bisect terms shows good/bad after start
+ok 81 - bisect start with one term1 and term2
+ok 82 - bogus command does not start bisect
+ok 83 - bisect replay with term1 and term2
+ok 84 - bisect start term1 term2
+ok 85 - bisect cannot mix terms
+ok 86 - bisect terms rejects invalid terms
+ok 87 - bisect start --term-* does store terms
+ok 88 - bisect start takes options and revs in any order
+not ok 89 - bisect skip works with --term*
+#	
+#		git bisect reset &&
+#		git bisect start --term-new=fixed --term-old=unfixed HEAD $HASH1 &&
+#		hash_skipped_from=$(git rev-parse --verify HEAD) &&
+#		git bisect skip &&
+#		hash_skipped_to=$(git rev-parse --verify HEAD) &&
+#		test "$hash_skipped_from" != "$hash_skipped_to"
+#	
+ok 90 - git bisect reset cleans bisection state properly
+ok 91 - bisect handles annotated tags
+ok 92 - bisect run fails with exit code equals or greater than 128
+ok 93 - bisect visualize with a filename with dash and space
+ok 94 - bisect state output with multiple good commits
+ok 95 - bisect state output with bad commit
+ok 96 - verify correct error message
+# failed 11 among 96 test(s)
+1..96
+# Tests: 96  Pass: 85  Fail: 11  Skip: 0

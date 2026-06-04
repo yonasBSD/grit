@@ -1,0 +1,106 @@
+ok 1 - setup
+ok 2 - send-pack does not crash with -h
+ok 3 - pack the source repository
+ok 4 - pack the destination repository
+ok 5 - refuse pushing rewound head without --force
+not ok 6 - push can be used to delete a ref
+#	
+#		( cd victim && git branch extra main ) &&
+#		git send-pack ./victim :extra main &&
+#		( cd victim &&
+#		  test_must_fail git rev-parse --verify extra )
+#	
+ok 7 - refuse deleting push with denyDeletes
+ok 8 - cannot override denyDeletes with git -c send-pack
+not ok 9 - override denyDeletes with git -c receive-pack
+#	
+#		(
+#			cd victim &&
+#			test_might_fail git branch -D extra &&
+#			git config receive.denyDeletes true &&
+#			git branch extra main
+#		) &&
+#		git send-pack \
+#			--receive-pack="git -c receive.denyDeletes=false receive-pack" \
+#			./victim :extra main
+#	
+ok 10 - denyNonFastforwards trumps --force
+ok 11 - send-pack --all sends all branches
+ok 12 - push --all excludes remote-tracking hierarchy
+ok 13 - receive-pack runs auto-gc in remote repo
+not ok 14 - pushing explicit refspecs respects forcing
+#	
+#		rewound_push_setup &&
+#		parent_orig=$(cd parent && git rev-parse --verify main) &&
+#		(
+#			cd child &&
+#			test_must_fail git send-pack ../parent \
+#				refs/heads/main:refs/heads/main
+#		) &&
+#		parent_head=$(cd parent && git rev-parse --verify main) &&
+#		test "$parent_orig" = "$parent_head" &&
+#		(
+#			cd child &&
+#			git send-pack ../parent \
+#				+refs/heads/main:refs/heads/main
+#		) &&
+#		parent_head=$(cd parent && git rev-parse --verify main) &&
+#		child_head=$(cd child && git rev-parse --verify main) &&
+#		test "$parent_head" = "$child_head"
+#	
+not ok 15 - pushing wildcard refspecs respects forcing
+#	
+#		rewound_push_setup &&
+#		parent_orig=$(cd parent && git rev-parse --verify main) &&
+#		(
+#			cd child &&
+#			test_must_fail git send-pack ../parent \
+#				"refs/heads/*:refs/heads/*"
+#		) &&
+#		parent_head=$(cd parent && git rev-parse --verify main) &&
+#		test "$parent_orig" = "$parent_head" &&
+#		(
+#			cd child &&
+#			git send-pack ../parent \
+#				"+refs/heads/*:refs/heads/*"
+#		) &&
+#		parent_head=$(cd parent && git rev-parse --verify main) &&
+#		child_head=$(cd child && git rev-parse --verify main) &&
+#		test "$parent_head" = "$child_head"
+#	
+ok 16 - deny pushing to delete current branch
+not ok 17 - receive-pack de-dupes .have lines
+#	
+#		git init shared &&
+#		git -C shared commit --allow-empty -m both &&
+#		git clone -s shared fork &&
+#		(
+#			cd shared &&
+#			git checkout -b only-shared &&
+#			git commit --allow-empty -m only-shared &&
+#			git update-ref refs/heads/foo HEAD
+#		) &&
+#	
+#		# Notable things in this expectation:
+#		#  - local refs are not de-duped
+#		#  - .have does not duplicate locals
+#		#  - .have does not duplicate itself
+#		local=$(git -C fork rev-parse HEAD) &&
+#		shared=$(git -C shared rev-parse only-shared) &&
+#		cat >expect <<-EOF &&
+#		$local refs/heads/main
+#		$local refs/remotes/origin/HEAD
+#		$local refs/remotes/origin/main
+#		$shared .have
+#		EOF
+#	
+#		GIT_TRACE_PACKET=$(pwd)/trace GIT_TEST_PROTOCOL_VERSION=0 \
+#		git push \
+#			--receive-pack="unset GIT_TRACE_PACKET; git-receive-pack" \
+#			fork HEAD:foo &&
+#		extract_ref_advertisement <trace >refs &&
+#		test_cmp expect refs
+#	
+# failed 5 among 17 test(s)
+1..17
+# Tests: 17  Pass: 12  Fail: 5  Skip: 0

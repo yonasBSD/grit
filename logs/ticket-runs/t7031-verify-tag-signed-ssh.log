@@ -1,0 +1,23 @@
+Signing data on standard input
+principal with number 1
+Good "git" signature for principal with number 1 with ED25519 key SHA256:1es3QJQbiLeTK9m4X5UOpj/bSRPqjGWc0xoLvoXSS4k
+ok 1 - create signed tags ssh
+Signing data on standard input
+Signature verification failed: incorrect signature
+Could not verify signature.
+ok 2 - create signed tags with keys having defined lifetimes
+ok 3 - verify and show ssh signatures
+ok 4 - verify-tag exits failure on expired signature key
+ok 5 - verify-tag exits failure on not yet valid signature key
+ok 6 - verify-tag succeeds with tag date and key validity matching
+ok 7 - verify-tag fails with tag date outside of key validity
+ok 8 - detect fudged ssh signature
+ok 9 - verify ssh signatures with --raw
+ok 10 - verify signatures with --raw ssh
+ok 11 - verify multiple tags ssh
+ok 12 - verifying tag with --format - ssh
+ok 13 - verifying a forged tag with --format should fail silently - ssh
+ok 14 - rev-list --format=%G
+# passed all 14 test(s)
+1..14
+# Tests: 14  Pass: 14  Fail: 0  Skip: 0

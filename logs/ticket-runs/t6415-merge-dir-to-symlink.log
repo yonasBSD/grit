@@ -1,0 +1,85 @@
+ok 1 - create a commit where dir a/b changed to symlink
+not ok 2 - checkout does not clobber untracked symlink
+#	
+#		git checkout HEAD^0 &&
+#		git reset --hard main &&
+#		git rm --cached a/b &&
+#		git commit -m "untracked symlink remains" &&
+#		test_must_fail git checkout start^0 &&
+#		git clean -fd    # Do not leave the untracked symlink in the way
+#	
+ok 3 - a/b-2/c/d is kept when clobbering symlink b
+ok 4 - checkout should not have deleted a/b-2/c/d
+ok 5 - setup for merge test
+ok 6 - Handle D/F conflict, do not lose a/b-2/c/d in merge (resolve)
+ok 7 - a/b was resolved as symlink
+not ok 8 - Handle D/F conflict, do not lose a/b-2/c/d in merge (recursive)
+#	
+#		git reset --hard &&
+#		git checkout baseline^0 &&
+#		git merge -s recursive main &&
+#		test_path_is_file a/b-2/c/d
+#	
+not ok 9 - a/b was resolved as symlink
+#	
+#		test -h a/b
+#	
+ok 10 - Handle F/D conflict, do not lose a/b-2/c/d in merge (resolve)
+ok 11 - a/b was resolved as symlink
+not ok 12 - Handle F/D conflict, do not lose a/b-2/c/d in merge (recursive)
+#	
+#		git reset --hard &&
+#		git checkout main^0 &&
+#		git merge -s recursive baseline^0 &&
+#		test_path_is_file a/b-2/c/d
+#	
+not ok 13 - a/b was resolved as symlink
+#	
+#		test -h a/b
+#	
+not ok 14 - do not lose untracked in merge (resolve)
+#	
+#		git reset --hard &&
+#		git checkout baseline^0 &&
+#		>a/b/c/e &&
+#		test_must_fail git merge -s resolve main &&
+#		test_path_is_file a/b/c/e &&
+#		test_path_is_file a/b-2/c/d
+#	
+ok 15 - do not lose untracked in merge (recursive)
+not ok 16 - do not lose modifications in merge (resolve)
+#	
+#		git reset --hard &&
+#		git checkout baseline^0 &&
+#		echo more content >>a/b/c/d &&
+#		test_must_fail git merge -s resolve main
+#	
+ok 17 - do not lose modifications in merge (recursive)
+ok 18 - setup a merge where dir a/b-2 changed to symlink
+ok 19 - merge should not have D/F conflicts (resolve)
+ok 20 - a/b-2 was resolved as symlink
+not ok 21 - merge should not have D/F conflicts (recursive)
+#	
+#		git reset --hard &&
+#		git checkout baseline^0 &&
+#		git merge -s recursive test2 &&
+#		test_path_is_file a/b/c/d
+#	
+not ok 22 - a/b-2 was resolved as symlink
+#	
+#		test -h a/b-2
+#	
+not ok 23 - merge should not have F/D conflicts (recursive)
+#	
+#		git reset --hard &&
+#		git checkout -b foo test2 &&
+#		git merge -s recursive baseline^0 &&
+#		test_path_is_file a/b/c/d
+#	
+not ok 24 - a/b-2 was resolved as symlink
+#	
+#		test -h a/b-2
+#	
+# failed 11 among 24 test(s)
+1..24
+# Tests: 24  Pass: 13  Fail: 11  Skip: 0

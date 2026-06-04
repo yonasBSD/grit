@@ -1,0 +1,147 @@
+ok 1 - setup
+ok 2 - clone and setup child repos
+ok 3 - fetch one
+ok 4 - fetch with negative refspec on commandline
+ok 5 - fetch with negative sha1 refspec fails
+not ok 6 - fetch with negative pattern refspec
+#	
+#		echo >file updated by origin once more &&
+#		git commit -a -m "updated by origin once more" &&
+#		(
+#			cd three &&
+#			alternate_in_one=$(cd ../one && git rev-parse refs/heads/alternate) &&
+#			echo $alternate_in_one >expect &&
+#			git fetch ../one/.git refs/heads/*:refs/remotes/one/* ^refs/heads/m* &&
+#			cut -f -1 .git/FETCH_HEAD >actual &&
+#			test_cmp expect actual
+#		)
+#	
+not ok 7 - fetch with negative pattern refspec does not expand prefix
+#	
+#		echo >file updated by origin another time &&
+#		git commit -a -m "updated by origin another time" &&
+#		(
+#			cd three &&
+#			alternate_in_one=$(cd ../one && git rev-parse refs/heads/alternate) &&
+#			main_in_one=$(cd ../one && git rev-parse refs/heads/main) &&
+#			echo $alternate_in_one >expect &&
+#			echo $main_in_one >>expect &&
+#			git fetch ../one/.git refs/heads/*:refs/remotes/one/* ^main &&
+#			cut -f -1 .git/FETCH_HEAD >actual &&
+#			test_cmp expect actual
+#		)
+#	
+ok 8 - fetch with negative refspec avoids duplicate conflict
+ok 9 - push --prune with negative refspec
+ok 10 - push --prune with negative refspec apply to the destination
+not ok 11 - fetch --prune with negative refspec
+#	
+#		(
+#			cd two &&
+#			git branch fetch/a &&
+#			git branch fetch/b &&
+#			git branch fetch/c
+#		) &&
+#		(
+#			cd three &&
+#			git fetch ../two/.git refs/heads/fetch/*:refs/heads/copied/*
+#		) &&
+#		(
+#			cd two &&
+#			git branch -d fetch/a &&
+#			git branch -d fetch/b
+#		) &&
+#		(
+#			cd three &&
+#			test_write_lines b c >expect &&
+#			git fetch -v ../two/.git --prune refs/heads/fetch/*:refs/heads/copied/* ^refs/heads/fetch/b &&
+#			git for-each-ref --format="%(refname:lstrip=3)" refs/heads/copied/ >actual &&
+#			test_cmp expect actual
+#		)
+#	
+not ok 12 - push with matching : and negative refspec
+#	
+#		# Manually handle cleanup, since test_config is not
+#		# prepared to take arbitrary options like --add
+#		test_when_finished "test_unconfig -C two remote.one.push" &&
+#	
+#		# For convenience, we use "master" to refer to the name of
+#		# the branch created by default in the following.
+#		#
+#		# Repositories two and one have branches other than "master"
+#		# but they have no overlap---"master" is the only one that
+#		# is shared between them.  And the master branch at two is
+#		# behind the master branch at one by one commit.
+#		git -C two config --add remote.one.push : &&
+#	
+#		# A matching push tries to update master, fails due to non-ff
+#		test_must_fail git -C two push one &&
+#	
+#		# "master" may actually not be "master"---find it out.
+#		current=$(git symbolic-ref HEAD) &&
+#	
+#		# If master is in negative refspec, then the command will not attempt
+#		# to push and succeed.
+#		git -C two config --add remote.one.push "^$current" &&
+#	
+#		# With "master" excluded, this push is a no-op.  Nothing gets
+#		# pushed and it succeeds.
+#		git -C two push -v one
+#	
+not ok 13 - push with matching +: and negative refspec
+#	
+#		test_when_finished "test_unconfig -C two remote.one.push" &&
+#	
+#		# The same set-up as above, whose side-effect was a no-op.
+#		git -C two config --add remote.one.push +: &&
+#	
+#		# The push refuses to update the "master" branch that is checked
+#		# out in the "one" repository, even when it is forced with +:
+#		test_must_fail git -C two push one &&
+#	
+#		# "master" may actually not be "master"---find it out.
+#		current=$(git symbolic-ref HEAD) &&
+#	
+#		# If master is in negative refspec, then the command will not attempt
+#		# to push and succeed
+#		git -C two config --add remote.one.push "^$current" &&
+#	
+#		# With "master" excluded, this push is a no-op.  Nothing gets
+#		# pushed and it succeeds.
+#		git -C two push -v one
+#	
+not ok 14 - --prefetch correctly modifies refspecs
+#	
+#		git -C one config --unset-all remote.origin.fetch &&
+#		git -C one config --add remote.origin.fetch ^refs/heads/bogus/ignore &&
+#		git -C one config --add remote.origin.fetch "refs/tags/*:refs/tags/*" &&
+#		git -C one config --add remote.origin.fetch "refs/heads/bogus/*:bogus/*" &&
+#	
+#		git tag -a -m never never-fetch-tag HEAD &&
+#	
+#		git branch bogus/fetched HEAD~1 &&
+#		git branch bogus/ignore HEAD &&
+#	
+#		git -C one fetch --prefetch --no-tags &&
+#		test_must_fail git -C one rev-parse never-fetch-tag &&
+#		git -C one rev-parse refs/prefetch/bogus/fetched &&
+#		test_must_fail git -C one rev-parse refs/prefetch/bogus/ignore &&
+#	
+#		# correctly handle when refspec set becomes empty
+#		# after removing the refs/tags/* refspec.
+#		git -C one config --unset-all remote.origin.fetch &&
+#		git -C one config --add remote.origin.fetch "refs/tags/*:refs/tags/*" &&
+#	
+#		git -C one fetch --prefetch --no-tags &&
+#		test_must_fail git -C one rev-parse never-fetch-tag &&
+#	
+#		# The refspec for refs that are not fully qualified
+#		# are filtered multiple times.
+#		git -C one rev-parse refs/prefetch/bogus/fetched &&
+#		test_must_fail git -C one rev-parse refs/prefetch/bogus/ignore
+#	
+ok 15 - --prefetch succeeds when refspec becomes empty
+ok 16 - --prefetch succeeds with empty command line refspec
+# failed 6 among 16 test(s)
+1..16
+# Tests: 16  Pass: 10  Fail: 6  Skip: 0

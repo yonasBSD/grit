@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Report unpassed, unskipped tests remaining, broken down by test family.
 
-Reads the single source of truth, data/test-files.csv (a TSV), counts only
-in_scope=yes rows, and for each family (t0-t9) computes how many tests still
-need to pass (tests_total - passed_last) and what share of the overall
-remaining work that family represents.
+Reads the single source of truth, the per-test status TOMLs under data/tests/,
+counts only in_scope=yes rows, and for each family (t0-t9) computes how many
+tests still need to pass (tests_total - passed_last) and what share of the
+overall remaining work that family represents.
 
 Usage:
     python3 scripts/remaining-by-family.py
@@ -15,12 +15,11 @@ they are removed from the total and from the percentage calculation.
 """
 
 import argparse
-import csv
 import os
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CSV_PATH = os.path.join(ROOT, "data", "test-files.csv")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from test_status import load_all  # noqa: E402
 
 
 def main() -> int:
@@ -37,19 +36,14 @@ def main() -> int:
     grand_total = grand_passed = 0
     grand_files = grand_fully = 0
 
-    with open(CSV_PATH, newline="") as fh:
-        reader = csv.DictReader(fh, delimiter="\t")
-        for row in reader:
+    for row in load_all().values():
             if row.get("in_scope") != "yes":
                 continue
             if row["group"] in excluded:
                 continue
-            try:
-                total = int(row["tests_total"])
-                passed = int(row["passed_last"])
-            except (KeyError, ValueError):
-                continue
-            fully = row.get("fully_passing") == "true"
+            total = row["tests_total"]
+            passed = row["passed_last"]
+            fully = row["fully_passing"]
             g = row["group"]
             agg = families.setdefault(g, [0, 0, 0, 0])
             agg[0] += total

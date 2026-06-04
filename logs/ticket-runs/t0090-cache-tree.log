@@ -1,0 +1,11 @@
+ok 1 - initial commit has cache-tree
+ok 2 - read-tree HEAD establishes cache-tree
+ok 3 - git-add invalidates cache-tree
+ok 4 - git-add in subdir invalidates cache-tree
+ok 5 - git-add in subdir does not invalidate sibling cache-tree
+ok 6 - update-index invalidates cache-tree
+ok 7 - write-tree establishes cache-tree
+ok 8 - test-tool scrap-cache-tree works
+ok 9 - second commit has cache-tree
+ok 10 - commit --interactive gives cache-tree on partial commit
+ok 11 - commit -p with shrinking cache-tree

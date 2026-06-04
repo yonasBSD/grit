@@ -1,0 +1,160 @@
+ok 1 - preparing first repository
+ok 2 - preparing second repository
+ok 3 - cloning with reference (-l -s)
+ok 4 - existence of info/alternates
+ok 5 - pulling from reference
+ok 6 - that reference gets used
+ok 7 - cloning with reference (no -l -s)
+not ok 8 - fetched no objects
+#	
+#		test -s "$U.D" &&
+#		! grep " want" "$U.D"
+#	
+ok 9 - existence of info/alternates
+ok 10 - pulling from reference
+ok 11 - that reference gets used
+ok 12 - updating origin
+ok 13 - pulling changes from origin
+ok 14 - that alternate to origin gets used
+ok 15 - pulling changes from origin
+not ok 16 - check objects expected to exist locally
+#	
+#		test_objcount D 5
+#	
+ok 17 - preparing alternate repository #1
+ok 18 - cloning alternate repo #2 and adding changes to repo #1
+not ok 19 - cloning alternate repo #1, using #2 as reference
+#	
+#		git clone --reference G F H
+#	
+ok 20 - cloning with reference being subset of source (-l -s)
+ok 21 - cloning with multiple references drops duplicates
+ok 22 - clone with reference from a tagged repository
+ok 23 - prepare branched repository
+not ok 24 - fetch with incomplete alternates
+#	
+#		git init K &&
+#		echo "$base_dir/A/.git/objects" >K/.git/objects/info/alternates &&
+#		(
+#			cd K &&
+#			git remote add J "file://$base_dir/J" &&
+#			GIT_TRACE_PACKET=$U.K git fetch J
+#		) &&
+#		main_object=$(git -C A rev-parse --verify refs/heads/main) &&
+#		test -s "$U.K" &&
+#		! grep " want $main_object" "$U.K" &&
+#		tag_object=$(git -C A rev-parse --verify refs/tags/foo) &&
+#		! grep " want $tag_object" "$U.K"
+#	
+ok 25 - clone using repo with gitfile as a reference
+ok 26 - clone using repo pointed at by gitfile as reference
+not ok 27 - clone and dissociate from reference
+#	
+#		git init P &&
+#		(
+#			cd P && test_commit one
+#		) &&
+#		git clone P Q &&
+#		(
+#			cd Q && test_commit two
+#		) &&
+#		git clone --no-local --reference=P Q R &&
+#		git clone --no-local --reference=P --dissociate Q S &&
+#		# removing the reference P would corrupt R but not S
+#		rm -fr P &&
+#		test_must_fail git -C R fsck &&
+#		git -C S fsck
+#	
+ok 28 - clone, dissociate from partial reference and repack
+ok 29 - clone, dissociate from alternates
+ok 30 - setup repo with garbage in objects/*
+not ok 31 - clone a repo with garbage in objects/*
+#	
+#		for option in --local --no-hardlinks --shared --dissociate
+#		do
+#			git clone $option S S$option || return 1 &&
+#			git -C S$option fsck || return 1
+#		done &&
+#		find S-* -name "*some*" | sort >actual &&
+#		cat >expected <<-EOF &&
+#		S--dissociate/.git/objects/.some-hidden-dir
+#		S--dissociate/.git/objects/.some-hidden-dir/.some-dot-file
+#		S--dissociate/.git/objects/.some-hidden-dir/some-file
+#		S--dissociate/.git/objects/.some-hidden-file
+#		S--dissociate/.git/objects/some-dir
+#		S--dissociate/.git/objects/some-dir/.some-dot-file
+#		S--dissociate/.git/objects/some-dir/some-file
+#		S--dissociate/.git/objects/some-file
+#		S--local/.git/objects/.some-hidden-dir
+#		S--local/.git/objects/.some-hidden-dir/.some-dot-file
+#		S--local/.git/objects/.some-hidden-dir/some-file
+#		S--local/.git/objects/.some-hidden-file
+#		S--local/.git/objects/some-dir
+#		S--local/.git/objects/some-dir/.some-dot-file
+#		S--local/.git/objects/some-dir/some-file
+#		S--local/.git/objects/some-file
+#		S--no-hardlinks/.git/objects/.some-hidden-dir
+#		S--no-hardlinks/.git/objects/.some-hidden-dir/.some-dot-file
+#		S--no-hardlinks/.git/objects/.some-hidden-dir/some-file
+#		S--no-hardlinks/.git/objects/.some-hidden-file
+#		S--no-hardlinks/.git/objects/some-dir
+#		S--no-hardlinks/.git/objects/some-dir/.some-dot-file
+#		S--no-hardlinks/.git/objects/some-dir/some-file
+#		S--no-hardlinks/.git/objects/some-file
+#		EOF
+#		test_cmp expected actual
+#	
+ok 32 - setup repo with manually symlinked or unknown files at objects/
+not ok 33 - clone repo with symlinked or unknown files at objects/
+#	
+#		# None of these options work when cloning locally, since T has
+#		# symlinks in its `$GIT_DIR/objects` directory
+#		for option in --local --no-hardlinks --dissociate
+#		do
+#			test_must_fail git clone $option T T$option 2>err || return 1 &&
+#			test_grep "symlink.*exists" err || return 1
+#		done &&
+#	
+#		# But `--shared` clones should still work, even when specifying
+#		# a local path *and* that repository has symlinks present in its
+#		# `$GIT_DIR/objects` directory.
+#		git clone --shared T T--shared &&
+#		git -C T--shared fsck &&
+#		git -C T--shared rev-list --all --objects >T--shared.objects &&
+#		test_cmp T.objects T--shared.objects &&
+#		(
+#			cd T--shared/.git/objects &&
+#			find . -type f | sort >../../../T--shared.objects-files.raw &&
+#			find . -type l | sort >../../../T--shared.objects-symlinks.raw
+#		) &&
+#	
+#		for raw in $(ls T*.raw)
+#		do
+#			sed -e "s!/../!/Y/!; s![0-9a-f]\{38,\}!Z!" -e "/commit-graph/d" \
+#			    -e "/multi-pack-index/d" -e "/rev/d" <$raw >$raw.de-sha-1 &&
+#			sort $raw.de-sha-1 >$raw.de-sha || return 1
+#		done &&
+#	
+#		echo ./info/alternates >expected-files &&
+#		test_cmp expected-files T--shared.objects-files.raw &&
+#		test_must_be_empty T--shared.objects-symlinks.raw
+#	
+not ok 34 - clone repo with symlinked objects directory
+#	
+#		test_when_finished "rm -fr sensitive malicious" &&
+#	
+#		mkdir -p sensitive &&
+#		echo "secret" >sensitive/file &&
+#	
+#		git init malicious &&
+#		rm -fr malicious/.git/objects &&
+#		ln -s "$(pwd)/sensitive" ./malicious/.git/objects &&
+#	
+#		test_must_fail git clone --local malicious clone 2>err &&
+#	
+#		test_path_is_missing clone &&
+#		grep "is a symlink, refusing to clone with --local" err
+#	
+# failed 8 among 34 test(s)
+1..34
+# Tests: 34  Pass: 26  Fail: 8  Skip: 0

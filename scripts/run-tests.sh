@@ -1,33 +1,35 @@
 #!/usr/bin/env bash
-# Run grit harness tests and update data/test-files.csv + dashboards.
+# Run grit harness tests and update the per-test status TOMLs in data/tests/.
 #
 # Usage:
 #   ./scripts/run-tests.sh                     # all in-scope test files
 #   ./scripts/run-tests.sh t1                  # all tests/t1*.sh (glob prefix; t1xxx family)
 #   ./scripts/run-tests.sh t3200-branch.sh     # single file
 #   ./scripts/run-tests.sh t0500 t4064 t4051   # multiple prefixes, .sh paths, or mixes (order preserved, deduped)
-#   ./scripts/run-tests.sh --parallel          # all families t0–t9 in parallel (writes data/family/<d>.csv, then stitches)
+#   ./scripts/run-tests.sh --parallel          # all families t0–t9 in parallel (disjoint TOMLs; no merge step)
 #
 # Options:
 #   --timeout N    per-file timeout (default: 120)
 #   --quiet        minimal output
 #   --verbose, -v  print each test file as it starts ([i/N] name …) before the per-file result line
 #   --from NAME    resume: skip tests before NAME (stem or .sh; first match in run order)
-#   --parallel     run one process per Git test family (t0–t9); merge into data/test-files.csv at the end
-#   --family N     only tests whose CSV group is tN (N is 0–9 or t0–t9)
-#   --output-csv PATH   merge harness results into this CSV instead of data/test-files.csv (full catalog copy updated)
+#   --parallel     run one process per Git test family (t0–t9); families write disjoint TOMLs
+#   --family N     only tests whose group is tN (N is 0–9 or t0–t9)
+#   --data-dir PATH  write status TOMLs under this directory instead of data/tests
+#                    (isolated run: canonical data and dashboards untouched)
+#   --dashboard    regenerate docs/ dashboards after the run (off by default)
 #   --no-catalog   skip generate-test-files-catalog.py (parent already refreshed the catalog)
 #
-# Skipped files (in_scope=skip in data/test-files.csv) are never run.
-# After each test file finishes, its row in data/test-files.csv is updated;
-# when the run completes, docs/index.html + dashboard docs are regenerated once.
+# Skipped files (in_scope = "skip" in data/tests/<group>/<stem>.toml) are never run.
+# After each test file finishes, its status TOML is updated. Dashboards are only
+# regenerated when --dashboard is passed.
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 TESTS_DIR="$REPO/tests"
 DATA_DIR="$REPO/data"
-CSV="$DATA_DIR/test-files.csv"
+DATA_TESTS="$DATA_DIR/tests"
 CATALOG="$REPO/scripts/generate-test-files-catalog.py"
 APPLY="$REPO/scripts/apply-test-run-results.py"
 GEN_DASH="$REPO/scripts/generate-dashboard-from-test-files.py"
@@ -40,7 +42,8 @@ FROM=""
 POS=()
 PARALLEL=false
 FAMILY=""
-OUTPUT_CSV=""
+DATA_DIR_OVERRIDE=""
+DASHBOARD=false
 NO_CATALOG=false
 
 while [[ $# -gt 0 ]]; do
@@ -69,13 +72,17 @@ while [[ $# -gt 0 ]]; do
     FAMILY="$2"
     shift 2
     ;;
-  --output-csv)
+  --data-dir)
     if [[ $# -lt 2 ]]; then
-      echo "ERROR: --output-csv requires a path"
+      echo "ERROR: --data-dir requires a path"
       exit 1
     fi
-    OUTPUT_CSV="$2"
+    DATA_DIR_OVERRIDE="$2"
     shift 2
+    ;;
+  --dashboard)
+    DASHBOARD=true
+    shift
     ;;
   --no-catalog)
     NO_CATALOG=true
@@ -114,6 +121,7 @@ if [[ "$PARALLEL" == true ]]; then
   PY_ARGS=(--timeout "$TIMEOUT")
   [[ "$QUIET" == true ]] && PY_ARGS+=(--quiet)
   [[ "$VERBOSE" == true ]] && PY_ARGS+=(--verbose)
+  [[ "$DASHBOARD" == true ]] && PY_ARGS+=(--dashboard)
   [[ -n "$FROM" ]] && PY_ARGS+=(--from "$FROM")
   exec python3 "$REPO/scripts/run-tests-parallel.py" "${PY_ARGS[@]}" -- "${POS[@]}"
 fi
@@ -128,10 +136,10 @@ if [[ -n "$FAMILY" ]]; then
   esac
 fi
 
-if [[ -n "$OUTPUT_CSV" && "$OUTPUT_CSV" != /* ]]; then
-  OUTPUT_CSV="$REPO/$OUTPUT_CSV"
+if [[ -n "$DATA_DIR_OVERRIDE" && "$DATA_DIR_OVERRIDE" != /* ]]; then
+  DATA_DIR_OVERRIDE="$REPO/$DATA_DIR_OVERRIDE"
 fi
-APPLY_CSV="${OUTPUT_CSV:-$CSV}"
+APPLY_DATA="${DATA_DIR_OVERRIDE:-$DATA_TESTS}"
 
 # GNU coreutils `timeout` is not installed by default on macOS; `gtimeout` may be.
 # Built after parsing `--timeout` so the wrapper uses the final TIMEOUT value.
@@ -158,14 +166,9 @@ if [[ "$NO_CATALOG" != true ]]; then
   python3 "$CATALOG"
 fi
 
-if [[ ! -f "$CSV" ]]; then
-  echo "ERROR: $CSV was not created"
+if [[ ! -d "$DATA_TESTS" ]]; then
+  echo "ERROR: $DATA_TESTS was not created"
   exit 1
-fi
-
-if [[ -n "$OUTPUT_CSV" && "$OUTPUT_CSV" != "$CSV" ]]; then
-  mkdir -p "$(dirname "$OUTPUT_CSV")"
-  cp "$CSV" "$OUTPUT_CSV"
 fi
 
 if [[ -n "$FAMILY" ]]; then
@@ -176,29 +179,39 @@ fi
 
 # Build list of files to run: skip in_scope=skip. Use a read loop instead of
 # Bash 4 `mapfile` so the runner works with macOS' default Bash 3.
+# Scope is always read from the canonical data/tests tree; --data-dir only
+# redirects where results are written.
 FILES=()
 while IFS= read -r file; do
   FILES+=("$file")
 done < <(
-  python3 - "$CSV" "$TESTS_DIR" "$FROM" "${POS[@]}" <<'PY'
-import csv, os, sys, glob
+  python3 - "$DATA_TESTS" "$TESTS_DIR" "$FROM" "${POS[@]}" <<'PY'
+import os, sys, glob, tomllib
 
-csv_path, tests_dir, from_stem = sys.argv[1], sys.argv[2], sys.argv[3]
+data_dir, tests_dir, from_stem = sys.argv[1], sys.argv[2], sys.argv[3]
 targets = sys.argv[4:]
 if from_stem.endswith(".sh"):
     from_stem = from_stem[:-3]
 
-rows = []
-with open(csv_path, newline="") as f:
-    r = csv.DictReader(f, delimiter="\t")
-    for row in r:
-        rows.append(row)
+# stem -> {"in_scope": ..., "group": <parent dir name>}
+rows = {}
+for path in sorted(glob.glob(os.path.join(data_dir, "*", "*.toml"))):
+    stem = os.path.splitext(os.path.basename(path))[0]
+    try:
+        with open(path, "rb") as f:
+            fields = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        continue
+    rows[stem] = {
+        "in_scope": str(fields.get("in_scope", "yes")),
+        "group": os.path.basename(os.path.dirname(path)),
+    }
 
 def want_file(base: str) -> bool:
-    for row in rows:
-        if row.get("file") == base:
-            return row.get("in_scope", "yes").strip().lower() != "skip"
-    return True
+    row = rows.get(base)
+    if row is None:
+        return True
+    return row["in_scope"].strip().lower() != "skip"
 
 
 def normalize_target(raw: str) -> str:
@@ -250,11 +263,8 @@ if targets:
                 seen.add(fn)
                 candidates.append(fn)
 else:
-    for row in rows:
-        if row.get("in_scope", "yes").strip().lower() == "skip":
-            continue
-        base = row.get("file", "")
-        if not base:
+    for base in sorted(rows):
+        if rows[base]["in_scope"].strip().lower() == "skip":
             continue
         fn = base + ".sh"
         p = os.path.join(tests_dir, fn)
@@ -290,15 +300,10 @@ def canon_family(s):
 
 want = canon_family(ff)
 if want:
-    file_to_group = {}
-    for row in rows:
-        fn = row.get("file", "").strip()
-        if fn:
-            file_to_group[fn] = row.get("group", "").strip()
     candidates = [
         c
         for c in candidates
-        if file_to_group.get(c[:-3] if c.endswith(".sh") else c, "") == want
+        if rows.get(c[:-3] if c.endswith(".sh") else c, {}).get("group", "") == want
     ]
 
 for c in candidates:
@@ -308,7 +313,7 @@ PY
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
   echo "No test files to run (all skipped or no match)."
-  if [[ -z "$OUTPUT_CSV" || "$OUTPUT_CSV" == "$CSV" ]]; then
+  if [[ "$DASHBOARD" == true && -z "$DATA_DIR_OVERRIDE" ]]; then
     python3 "$GEN_DASH"
   fi
   exit 0
@@ -397,7 +402,7 @@ for i in "${!FILES[@]}"; do
   fi
   line=$(run_one "$f")
   printf '%s\n' "$line" >"$LINE_TMP"
-  python3 "$APPLY" "$LINE_TMP" --skip-dashboard --csv "$APPLY_CSV"
+  python3 "$APPLY" "$LINE_TMP" --data-dir "$APPLY_DATA"
   if [[ "$QUIET" != true ]]; then
     base="${f%.sh}"
     pass=$(echo "$line" | cut -f3)
@@ -414,14 +419,16 @@ for i in "${!FILES[@]}"; do
   fi
 done
 
-if [[ -z "$OUTPUT_CSV" || "$OUTPUT_CSV" == "$CSV" ]]; then
+if [[ "$DASHBOARD" == true && -z "$DATA_DIR_OVERRIDE" ]]; then
   python3 "$GEN_DASH"
 fi
 
 if [[ "$QUIET" != true ]]; then
-  if [[ -n "$OUTPUT_CSV" && "$OUTPUT_CSV" != "$CSV" ]]; then
-    echo "Updated $APPLY_CSV (merge into main CSV with scripts/stitch-family-csvs.py if needed)."
+  if [[ -n "$DATA_DIR_OVERRIDE" ]]; then
+    echo "Updated status TOMLs under $APPLY_DATA (isolated; canonical data/tests untouched)."
+  elif [[ "$DASHBOARD" == true ]]; then
+    echo "Updated $DATA_TESTS and dashboards."
   else
-    echo "Updated $CSV and dashboards."
+    echo "Updated $DATA_TESTS (dashboards not regenerated; pass --dashboard or run scripts/generate-dashboard-from-test-files.py)."
   fi
 fi

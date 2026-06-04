@@ -4,7 +4,7 @@
 
 Grit uses the upstream Git test suite as ground truth. Harness files live under `tests/` (ported from `git/t/`) and run through `scripts/run-tests.sh` with the grit binary copied into `tests/grit` and exposed as `git` via the harness.
 
-The **single source of truth** for per-file harness status is **`data/test-files.csv`**. There are no intermediate TSVs (no `file-results.tsv`, no per-command aggregates). After each run, **`docs/index.html`** (homepage progress card), **`docs/progress/index.html`** (summary + progress by group), **`docs/testfiles.html`** (per-file table, filterable by group), and **`docs/test-progress.svg`** (overall pass-rate badge for the README) are regenerated from that CSV.
+The **single source of truth** for per-file harness status is the per-test TOML tree **`data/tests/<group>/<stem>.toml`** (e.g. `data/tests/t0/t0000-basic.toml`). There are no intermediate TSVs and no aggregate CSV. Dashboards — **`docs/index.html`** (homepage progress card), **`docs/progress/index.html`** (summary + progress by group), **`docs/testfiles.html`** (per-file table, filterable by group), and **`docs/test-progress.svg`** (overall pass-rate badge for the README) — are generated from that tree, but **only when requested**: pass `--dashboard` to `run-tests.sh` or run `python3 scripts/generate-dashboard-from-test-files.py` directly.
 
 ## Running tests
 
@@ -19,57 +19,74 @@ cargo build --release -p grit-cli
 # Prefix run: `tests/<arg>*.sh` (e.g. `t1` matches all `t1*.sh` harness files)
 ./scripts/run-tests.sh t1
 
-# Full suite (every row in test-files.csv with in_scope=yes)
+# Full suite (every status TOML with in_scope = "yes")
 ./scripts/run-tests.sh
 
 # Options (can appear before or after the target)
 ./scripts/run-tests.sh --timeout 180 t0000-basic.sh
 ./scripts/run-tests.sh t0000-basic.sh --quiet
+
+# Regenerate docs/ dashboards after the run (off by default)
+./scripts/run-tests.sh t0000-basic.sh --dashboard
+
+# Isolated run: write results under another directory, leave data/tests/ and docs/ untouched
+./scripts/run-tests.sh --data-dir /tmp/iso t0000-basic.sh
 ```
 
 ### Manually skipped files
 
-Edit **`data/test-files.csv`**: set **`in_scope`** to **`skip`** on the row for that file. Skipped files are **never** executed (single-file, group, or full run). Their tests are **excluded** from the summary counts on **`docs/progress/index.html`**. They still appear on **`docs/testfiles.html`** with a skipped badge so you can see what was opted out.
+Edit that test's TOML (**`data/tests/<group>/<stem>.toml`**): set **`in_scope = "skip"`**. Skipped files are **never** executed (single-file, group, or full run). Their tests are **excluded** from the summary counts on **`docs/progress/index.html`**. They still appear on **`docs/testfiles.html`** with a skipped badge so you can see what was opted out.
 
-Re-run **`python3 scripts/generate-test-files-catalog.py`** if you add or rename `.sh` files and want the CSV updated without running tests (otherwise the next `run-tests.sh` also refreshes the catalog).
+Re-run **`python3 scripts/generate-test-files-catalog.py`** if you add or rename `.sh` files and want the status tree updated without running tests (otherwise the next `run-tests.sh` also refreshes the catalog; TOMLs for deleted test files are pruned).
 
 ## Scripts reference
 
 | Script                                          | Role                                                                                                             |
 | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `scripts/generate-test-files-catalog.py`        | Scan `tests/t*.sh`, merge **`data/test-files.csv`** (preserves `in_scope` and prior run columns where possible). |
-| `scripts/run-tests.sh`                          | Select files to run, execute harness, invoke apply + dashboard.                                                  |
-| `scripts/apply-test-run-results.py`             | Merge one batch of run lines into **`data/test-files.csv`**, then call the dashboard generator.                  |
-| `scripts/generate-dashboard-from-test-files.py` | Read CSV only; write **`docs/index.html`**, **`docs/progress/index.html`**, **`docs/testfiles.html`**, and **`docs/test-progress.svg`**. |
+| `scripts/test_status.py`                        | Shared helper: load/save **`data/tests/<group>/<stem>.toml`** files (atomic writes, TOML serialization, pruning). |
+| `scripts/generate-test-files-catalog.py`        | Scan `tests/t*.sh`, merge the **`data/tests/`** tree (preserves `in_scope` and prior run results; prunes stale TOMLs). |
+| `scripts/run-tests.sh`                          | Select files to run, execute harness, invoke apply (+ dashboard with `--dashboard`).                             |
+| `scripts/apply-test-run-results.py`             | Merge one batch of run lines into the matching **`data/tests/`** TOMLs.                                          |
+| `scripts/generate-dashboard-from-test-files.py` | Read `data/tests/` only; write **`docs/index.html`**, **`docs/progress/index.html`**, **`docs/testfiles.html`**, and **`docs/test-progress.svg`**. |
 
 ## Data pipeline (step by step)
 
-1. **`scripts/generate-test-files-catalog.py`** — Scans `tests/t*.sh`, counts `test_expect_success` / `test_expect_failure` per file, assigns `group` (`t0`–`t9` from the first digit of the `tNNNN…` prefix, matching **`git/t/README`** test families), and writes or merges **`data/test-files.csv`**. Invoked automatically at the start of **`run-tests.sh`**.
+1. **`scripts/generate-test-files-catalog.py`** — Scans `tests/t*.sh`, counts `test_expect_success` / `test_expect_failure` per file, assigns `group` (`t0`–`t9` from the first digit of the `tNNNN…` prefix, matching **`git/t/README`** test families), and writes or merges the **`data/tests/<group>/<stem>.toml`** files. Invoked automatically at the start of **`run-tests.sh`**.
 
 2. **`scripts/run-tests.sh`** — Copies `target/release/grit` to `tests/grit`, builds the file list (honoring **`in_scope`**), runs each selected script under `timeout`, parses the `# Tests:` summary line, writes a small batch TSV for **`scripts/apply-test-run-results.py`**.
 
-3. **`scripts/apply-test-run-results.py`** — Updates matching rows in **`data/test-files.csv`** (`passed_last`, `failing`, `fully_passing`, `status`, etc.), then runs **`scripts/generate-dashboard-from-test-files.py`**.
+3. **`scripts/apply-test-run-results.py`** — Updates the matching **`data/tests/`** TOMLs (`passed_last`, `failing`, `fully_passing`, `status`, etc.). Writes are atomic (temp file + rename), so parallel family runs never collide: each test file owns its own TOML.
 
-4. **`data/test-files.csv`** columns:
+4. **`data/tests/<group>/<stem>.toml`** keys (`file` and `group` are derived from the path, not stored):
 
-| Column           | Meaning                                                                    |
+| Key              | Meaning                                                                    |
 | ---------------- | -------------------------------------------------------------------------- |
-| `file`           | Base name (no `.sh`)                                                       |
-| `group`          | `t0`–`t9` (first digit of `tNNNN…`; see `git/t/README` and catalog script) |
-| `in_scope`       | `yes` or `skip` (manual)                                                   |
+| `in_scope`       | `"yes"` or `"skip"` (manual)                                               |
 | `tests_total`    | Count of test markers in the file                                          |
 | `passed_last`    | Pass count from the last run                                               |
 | `failing`        | Fail count from the last run                                               |
 | `fully_passing`  | `true` if `tests_total > 0` and `failing == 0`                             |
-| `status`         | `ok`, `timeout`, or `error` from the harness                               |
+| `status`         | `"ok"`, `"timeout"`, or `"error"` from the harness                         |
 | `expect_failure` | Count of `test_expect_failure` lines                                       |
+
+Example (`data/tests/t0/t0000-basic.toml`):
+
+```toml
+in_scope = "yes"
+tests_total = 92
+passed_last = 91
+failing = 1
+fully_passing = false
+status = "ok"
+expect_failure = 8
+```
 
 ## Work strategy: one file at a time
 
 1. Pick a test file that is not fully passing.
 2. Run it: `./scripts/run-tests.sh t1234-foo.sh`
 3. Fix Rust in `grit/` / `grit-lib/`.
-4. Re-run until green; `test-files.csv` updates automatically.
+4. Re-run until green; the test's status TOML updates automatically.
 
 ### Priority order
 
@@ -114,7 +131,7 @@ test_expect_success 'desc' '
 ```
 `scripts/_wrap_cd_subshell.py <files…>` does this mechanically (idempotent; only wraps bodies that
 contain a `cd`). After wrapping, **re-run only the files you changed** and diff pass counts against
-the previous CSV values — wrapping a body that a *currently-passing* test relied on for leaked cwd
+the previous recorded values — wrapping a body that a *currently-passing* test relied on for leaked cwd
 can cost a test, so confirm no file regressed before committing.
 
 **Spotting candidates:** low pass ratio **and** nearly every `test_expect_success` body starts with a
@@ -126,15 +143,15 @@ grep -cE "^[[:space:]]+cd [^&]*&&" tests/tXXXX-*.sh   # bare-cd blocks; ≈equal
 
 ## Dashboards
 
-Regenerated automatically after every `run-tests.sh` run. To refresh HTML only (no test run):
+Not regenerated by default. Pass `--dashboard` to `run-tests.sh`, or refresh HTML only (no test run) with:
 
 ```bash
 python3 scripts/generate-dashboard-from-test-files.py
 ```
 
-## Other runners (not the CSV pipeline)
+## Other runners (not the data/tests pipeline)
 
-These do **not** update `data/test-files.csv` by default:
+These do **not** update `data/tests/` by default:
 
 - **`scripts/run-upstream-tests.sh`** / **`scripts/aggregate-upstream.sh`** — run upstream `git/t/` against grit in isolation (see **AGENTS.md**).
-- **`tests/harness/run-all-count.sh`** — separate harness; not wired to `test-files.csv`.
+- **`tests/harness/run-all-count.sh`** — separate harness; not wired to `data/tests/`.

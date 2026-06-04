@@ -1,0 +1,22 @@
+ok 1 - setup
+not ok 2 - rebase changes with the apply backend
+#	
+#		test_when_finished "git rebase --abort || true" &&
+#		git checkout -b apply-backend side2 &&
+#		git rebase side1
+#	
+not ok 3 - rebase changes with the merge backend
+#	
+#		test_when_finished "git rebase --abort || true" &&
+#		git checkout -b merge-backend side2 &&
+#		git rebase -m side1
+#	
+not ok 4 - rebase changes with the merge backend with a delay
+#	
+#		test_when_finished "git rebase --abort || true" &&
+#		git checkout -b merge-delay-backend side2 &&
+#		git rebase -m --exec "sleep 1" side1
+#	
+# failed 3 among 4 test(s)
+1..4
+# Tests: 4  Pass: 1  Fail: 3  Skip: 0

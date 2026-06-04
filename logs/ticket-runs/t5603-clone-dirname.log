@@ -1,0 +1,160 @@
+ok 1 - setup ssh wrapper
+ok 2 - clone of host:foo goes to foo (non-bare)
+ok 3 - clone of host:foo goes to foo.git (bare)
+ok 4 - clone of host:foo.git goes to foo (non-bare)
+ok 5 - clone of host:foo.git goes to foo.git (bare)
+not ok 6 - clone of host:foo/.git goes to foo (non-bare)
+#	
+#			rm -rf foo &&
+#			git clone  host:foo/.git &&
+#			test_path_is_dir foo
+#		
+not ok 7 - clone of host:foo/.git goes to foo.git (bare)
+#	
+#			rm -rf foo.git &&
+#			git clone --bare host:foo/.git &&
+#			test_path_is_dir foo.git
+#		
+ok 8 - clone of ssh://host/foo goes to foo (non-bare)
+ok 9 - clone of ssh://host/foo goes to foo.git (bare)
+ok 10 - clone of ssh://host/foo.git goes to foo (non-bare)
+ok 11 - clone of ssh://host/foo.git goes to foo.git (bare)
+not ok 12 - clone of ssh://host/foo/.git goes to foo (non-bare)
+#	
+#			rm -rf foo &&
+#			git clone  ssh://host/foo/.git &&
+#			test_path_is_dir foo
+#		
+not ok 13 - clone of ssh://host/foo/.git goes to foo.git (bare)
+#	
+#			rm -rf foo.git &&
+#			git clone --bare ssh://host/foo/.git &&
+#			test_path_is_dir foo.git
+#		
+ok 14 - clone of ssh://host/foo/ goes to foo (non-bare)
+ok 15 - clone of ssh://host/foo/// goes to foo (non-bare)
+not ok 16 - clone of ssh://host/foo/.git/ goes to foo (non-bare)
+#	
+#			rm -rf foo &&
+#			git clone  ssh://host/foo/.git/ &&
+#			test_path_is_dir foo
+#		
+ok 17 - clone of ssh://host/foo.git/ goes to foo (non-bare)
+ok 18 - clone of ssh://host/foo.git/// goes to foo (non-bare)
+not ok 19 - clone of ssh://host/foo///.git/ goes to foo (non-bare)
+#	
+#			rm -rf foo &&
+#			git clone  ssh://host/foo///.git/ &&
+#			test_path_is_dir foo
+#		
+not ok 20 - clone of ssh://host/foo/.git/// goes to foo (non-bare)
+#	
+#			rm -rf foo &&
+#			git clone  ssh://host/foo/.git/// &&
+#			test_path_is_dir foo
+#		
+ok 21 - clone of host:foo/ goes to foo (non-bare)
+ok 22 - clone of host:foo/// goes to foo (non-bare)
+ok 23 - clone of host:foo.git/ goes to foo (non-bare)
+not ok 24 - clone of host:foo/.git/ goes to foo (non-bare)
+#	
+#			rm -rf foo &&
+#			git clone  host:foo/.git/ &&
+#			test_path_is_dir foo
+#		
+ok 25 - clone of host:foo.git/// goes to foo (non-bare)
+not ok 26 - clone of host:foo///.git/ goes to foo (non-bare)
+#	
+#			rm -rf foo &&
+#			git clone  host:foo///.git/ &&
+#			test_path_is_dir foo
+#		
+not ok 27 - clone of host:foo/.git/// goes to foo (non-bare)
+#	
+#			rm -rf foo &&
+#			git clone  host:foo/.git/// &&
+#			test_path_is_dir foo
+#		
+not ok 28 - clone of ssh://host/ goes to host (non-bare)
+#	
+#			rm -rf host &&
+#			git clone  ssh://host/ &&
+#			test_path_is_dir host
+#		
+not ok 29 - clone of ssh://host:1234/ goes to host (non-bare)
+#	
+#			rm -rf host &&
+#			git clone  ssh://host:1234/ &&
+#			test_path_is_dir host
+#		
+not ok 30 - clone of ssh://user@host/ goes to host (non-bare)
+#	
+#			rm -rf host &&
+#			git clone  ssh://user@host/ &&
+#			test_path_is_dir host
+#		
+not ok 31 - clone of host:/ goes to host (non-bare)
+#	
+#			rm -rf host &&
+#			git clone  host:/ &&
+#			test_path_is_dir host
+#		
+not ok 32 - clone of ssh://user:password@host/ goes to host (non-bare)
+#	
+#			rm -rf host &&
+#			git clone  ssh://user:password@host/ &&
+#			test_path_is_dir host
+#		
+not ok 33 - clone of ssh://user:password@host:1234/ goes to host (non-bare)
+#	
+#			rm -rf host &&
+#			git clone  ssh://user:password@host:1234/ &&
+#			test_path_is_dir host
+#		
+not ok 34 - clone of ssh://user:passw@rd@host:1234/ goes to host (non-bare)
+#	
+#			rm -rf host &&
+#			git clone  ssh://user:passw@rd@host:1234/ &&
+#			test_path_is_dir host
+#		
+not ok 35 - clone of user@host:/ goes to host (non-bare)
+#	
+#			rm -rf host &&
+#			git clone  user@host:/ &&
+#			test_path_is_dir host
+#		
+not ok 36 - clone of user:password@host:/ goes to host (non-bare)
+#	
+#			rm -rf host &&
+#			git clone  user:password@host:/ &&
+#			test_path_is_dir host
+#		
+not ok 37 - clone of user:passw@rd@host:/ goes to host (non-bare)
+#	
+#			rm -rf host &&
+#			git clone  user:passw@rd@host:/ &&
+#			test_path_is_dir host
+#		
+ok 38 - clone of ssh://host/foo@bar goes to foo@bar (non-bare)
+ok 39 - clone of ssh://host/foo@bar.git goes to foo@bar (non-bare)
+ok 40 - clone of ssh://user:password@host/foo@bar goes to foo@bar (non-bare)
+ok 41 - clone of ssh://user:passw@rd@host/foo@bar.git goes to foo@bar (non-bare)
+ok 42 - clone of host:/foo@bar goes to foo@bar (non-bare)
+ok 43 - clone of host:/foo@bar.git goes to foo@bar (non-bare)
+ok 44 - clone of user:password@host:/foo@bar goes to foo@bar (non-bare)
+ok 45 - clone of user:passw@rd@host:/foo@bar.git goes to foo@bar (non-bare)
+not ok 46 - clone of ssh://user:password@host/test:1234 goes to 1234 (non-bare)
+#	
+#			rm -rf 1234 &&
+#			git clone  ssh://user:password@host/test:1234 &&
+#			test_path_is_dir 1234
+#		
+not ok 47 - clone of ssh://user:password@host/test:1234.git goes to 1234 (non-bare)
+#	
+#			rm -rf 1234 &&
+#			git clone  ssh://user:password@host/test:1234.git &&
+#			test_path_is_dir 1234
+#		
+# failed 22 among 47 test(s)
+1..47
+# Tests: 47  Pass: 25  Fail: 22  Skip: 0

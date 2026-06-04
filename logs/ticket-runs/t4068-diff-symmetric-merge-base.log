@@ -1,0 +1,43 @@
+ok 1 - setup
+ok 2 - diff with one merge base
+ok 3 - diff with two merge bases
+ok 4 - diff with no merge bases
+ok 5 - diff with too many symmetric differences
+ok 6 - diff with symmetric difference and extraneous arg
+ok 7 - diff with two ranges
+not ok 8 - diff with ranges and extra arg
+#	
+#		test_must_fail git diff main br1..main commit-D 2>err &&
+#		test_grep "usage" err
+#	
+ok 9 - diff --merge-base with no commits
+ok 10 - diff --merge-base with three commits
+ok 11 - diff-index --merge-base with one commit
+ok 12 - diff-index --merge-base with annotated tag
+ok 13 - diff-index --merge-base with one commit and unstaged changes
+ok 14 - diff-index --merge-base with one commit and staged and unstaged changes
+ok 15 - diff-index --merge-base --cached with one commit and staged and unstaged changes
+ok 16 - diff-index --merge-base with non-commit
+ok 17 - diff-index --merge-base with no merge bases and one commit
+ok 18 - diff-index --merge-base with multiple merge bases and one commit
+ok 19 - diff --merge-base with one commit
+ok 20 - diff --merge-base with annotated tag
+ok 21 - diff --merge-base with one commit and unstaged changes
+ok 22 - diff --merge-base with one commit and staged and unstaged changes
+ok 23 - diff --merge-base --cached with one commit and staged and unstaged changes
+ok 24 - diff --merge-base with non-commit
+ok 25 - diff --merge-base with no merge bases and one commit
+ok 26 - diff --merge-base with multiple merge bases and one commit
+ok 27 - diff-tree --merge-base with two commits
+ok 28 - diff-tree --merge-base commit and non-commit
+ok 29 - diff-tree --merge-base with no merge bases and two commits
+ok 30 - diff-tree --merge-base with multiple merge bases and two commits
+ok 31 - diff --merge-base with two commits
+ok 32 - diff --merge-base commit and non-commit
+ok 33 - diff --merge-base with no merge bases and two commits
+ok 34 - diff --merge-base with multiple merge bases and two commits
+ok 35 - diff-tree --merge-base with one commit
+ok 36 - diff --merge-base with range
+# failed 1 among 36 test(s)
+1..36
+# Tests: 36  Pass: 35  Fail: 1  Skip: 0

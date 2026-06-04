@@ -1,0 +1,113 @@
+ok 1 - preferred pack is reused for single-pack reuse
+ok 2 - multi-pack reuse is disabled by default
+ok 3 - feature.experimental implies multi-pack reuse
+ok 4 - multi-pack reuse can be disabled with feature.experimental
+ok 5 - enable multi-pack reuse
+ok 6 - reuse all objects from subset of bitmapped packs
+ok 7 - reuse all objects from all packs
+not ok 8 - reuse objects from first pack with middle gap
+#	
+#		for i in D E F
+#		do
+#			test_commit "$i" || return 1
+#		done &&
+#	
+#		# Set "pack.window" to zero to ensure that we do not create any
+#		# deltas, which could alter the amount of pack reuse we perform
+#		# (if, for e.g., we are not sending one or more bases).
+#		# Use a distinct variable name: `D` is also the tag for commit D; overwriting it breaks
+#		# `git rev-parse D` in the heredoc below.
+#		INC_PACK="$(git -c pack.window=0 pack-objects --all --unpacked $packdir/pack)" &&
+#	
+#		d_pos="$(pack_position $(git rev-parse refs/tags/D) <$packdir/pack-$INC_PACK.idx)" &&
+#		e_pos="$(pack_position $(git rev-parse refs/tags/E) <$packdir/pack-$INC_PACK.idx)" &&
+#		f_pos="$(pack_position $(git rev-parse refs/tags/F) <$packdir/pack-$INC_PACK.idx)" &&
+#	
+#		# commits F, E, and D, should appear in that order at the
+#		# beginning of the pack
+#		test $f_pos -lt $e_pos &&
+#		test $e_pos -lt $d_pos &&
+#	
+#		# Ensure that the pack we are constructing sorts ahead of any
+#		# other packs in lexical/bitmap order by choosing it as the
+#		# preferred pack.
+#		git multi-pack-index write --bitmap --preferred-pack="pack-$INC_PACK.idx" &&
+#	
+#		{ git rev-parse refs/tags/E && printf "^" && git rev-parse refs/tags/D && printf "\n"; } >t5332.in &&
+#		test_pack_objects_reused 3 1 <t5332.in
+#	
+ok 9 - reuse objects from middle pack with middle gap
+not ok 10 - omit delta with uninteresting base (same pack)
+#	
+#		git repack -adk &&
+#	
+#		test_seq 32 >f &&
+#		git add f &&
+#		test_tick &&
+#		git commit -m "delta" &&
+#		delta="$(git rev-parse HEAD)" &&
+#	
+#		test_seq 64 >f &&
+#		test_tick &&
+#		git commit -a -m "base" &&
+#		base="$(git rev-parse HEAD)" &&
+#	
+#		test_commit other &&
+#	
+#		git repack -d &&
+#	
+#		have_delta "$(git rev-parse $delta:f)" "$(git rev-parse $base:f)" &&
+#	
+#		git multi-pack-index write --bitmap &&
+#	
+#		# We can only reuse the 3 objects corresponding to "other" from
+#		# the latest pack.
+#		#
+#		# This is because even though we want "delta", we do not want
+#		# "base", meaning that we have to inflate the delta/base-pair
+#		# corresponding to the blob in commit "delta", which bypasses
+#		# the pack-reuse mechanism.
+#		#
+#		# The remaining objects from the other pack are similarly not
+#		# reused because their objects are on the uninteresting side of
+#		# the query.
+#		{ git rev-parse refs/tags/other && printf "^" && printf %s "$base" && printf "\n"; } >t5332.in &&
+#		test_pack_objects_reused 3 1 <t5332.in &&
+#		t5332_export_vars base delta
+#	
+not ok 11 - omit delta from uninteresting base (cross pack)
+#	
+#		{ printf "%s" "$base" && printf "^" && printf "%s" "$delta" && printf "\n"; } >t5332.in &&
+#	
+#		P="$(git pack-objects --revs $packdir/pack <t5332.in)" &&
+#	
+#		git multi-pack-index write --bitmap --preferred-pack="pack-$P.idx" &&
+#	
+#		packs_nr="$(find $packdir -type f -name "pack-*.pack" | wc -l)" &&
+#		objects_nr="$(git rev-list --count --all --objects)" &&
+#	
+#		test_pack_objects_reused_all $(($objects_nr - 1)) $packs_nr
+#	
+not ok 12 - non-omitted delta in MIDX preferred pack
+#	
+#		test_config pack.allowPackReuse single &&
+#	
+#		{ printf "%s" "$base" && printf "^" && git rev-parse "$delta^" && printf "\n"; } >p1.objects &&
+#		{ git rev-parse refs/tags/F && printf "\n"; } >p2.objects &&
+#	
+#		p1="$(git pack-objects --revs $packdir/pack <p1.objects)" &&
+#		p2="$(git pack-objects --revs $packdir/pack <p2.objects)" &&
+#	
+#		printf "pack-%s.idx\npack-%s.idx\n" "$p1" "$p2" >t5332.in &&
+#		git multi-pack-index write --bitmap --stdin-packs \
+#			--preferred-pack=pack-$p1.pack <t5332.in &&
+#	
+#		git show-index <$packdir/pack-$p1.idx >expect &&
+#	
+#		test_pack_objects_reused_all $(wc -l <expect) 1
+#	
+ok 13 - duplicate objects
+ok 14 - duplicate objects with verbatim reuse
+# failed 4 among 14 test(s)
+1..14
+# Tests: 14  Pass: 10  Fail: 4  Skip: 0

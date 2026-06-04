@@ -1,0 +1,1505 @@
+ok 1 - name-hash value stability
+ok 2 - setup test repository
+ok 3 - setup repo with moderate-sized history
+ok 4 - setup writing bitmaps during repack
+not ok 5 - full repack creates bitmaps
+#	
+#			GIT_TRACE2_EVENT="$(pwd)/trace" \
+#				git repack -ad &&
+#			ls .git/objects/pack/ | grep bitmap >output &&
+#			test_line_count = 1 output &&
+#			grep "\"key\":\"num_selected_commits\",\"value\":\"106\"" trace &&
+#			grep "\"key\":\"num_maximal_commits\",\"value\":\"107\"" trace
+#		
+ok 6 - rev-list --test-bitmap verifies bitmaps
+ok 7 - counting commits via bitmap (full bitmap, second)
+ok 8 - counting partial commits via bitmap (full bitmap, second)
+ok 9 - counting commits with limit (full bitmap, second)
+ok 10 - counting non-linear history (full bitmap, second)
+ok 11 - counting commits with limiting (full bitmap, second)
+ok 12 - counting objects via bitmap (full bitmap, second)
+ok 13 - enumerate commits (full bitmap, second)
+not ok 14 - enumerate --objects (full bitmap, second)
+#	
+#			git rev-list --objects --use-bitmap-index $branch >actual &&
+#			git rev-list --objects $branch >expect &&
+#			test_bitmap_traversal expect actual
+#		
+ok 15 - bitmap --objects handles non-commit objects (full bitmap, second)
+ok 16 - counting commits via bitmap (full bitmap, other)
+ok 17 - counting partial commits via bitmap (full bitmap, other)
+ok 18 - counting commits with limit (full bitmap, other)
+ok 19 - counting non-linear history (full bitmap, other)
+ok 20 - counting commits with limiting (full bitmap, other)
+ok 21 - counting objects via bitmap (full bitmap, other)
+ok 22 - enumerate commits (full bitmap, other)
+not ok 23 - enumerate --objects (full bitmap, other)
+#	
+#			git rev-list --objects --use-bitmap-index $branch >actual &&
+#			git rev-list --objects $branch >expect &&
+#			test_bitmap_traversal expect actual
+#		
+ok 24 - bitmap --objects handles non-commit objects (full bitmap, other)
+ok 25 - clone from bitmapped repository
+ok 26 - partial clone from bitmapped repository
+ok 27 - setup further non-bitmapped commits
+ok 28 - counting commits via bitmap (partial bitmap, second)
+ok 29 - counting partial commits via bitmap (partial bitmap, second)
+ok 30 - counting commits with limit (partial bitmap, second)
+ok 31 - counting non-linear history (partial bitmap, second)
+ok 32 - counting commits with limiting (partial bitmap, second)
+ok 33 - counting objects via bitmap (partial bitmap, second)
+ok 34 - enumerate commits (partial bitmap, second)
+not ok 35 - enumerate --objects (partial bitmap, second)
+#	
+#			git rev-list --objects --use-bitmap-index $branch >actual &&
+#			git rev-list --objects $branch >expect &&
+#			test_bitmap_traversal expect actual
+#		
+ok 36 - bitmap --objects handles non-commit objects (partial bitmap, second)
+ok 37 - counting commits via bitmap (partial bitmap, other)
+ok 38 - counting partial commits via bitmap (partial bitmap, other)
+ok 39 - counting commits with limit (partial bitmap, other)
+ok 40 - counting non-linear history (partial bitmap, other)
+ok 41 - counting commits with limiting (partial bitmap, other)
+ok 42 - counting objects via bitmap (partial bitmap, other)
+ok 43 - enumerate commits (partial bitmap, other)
+not ok 44 - enumerate --objects (partial bitmap, other)
+#	
+#			git rev-list --objects --use-bitmap-index $branch >actual &&
+#			git rev-list --objects $branch >expect &&
+#			test_bitmap_traversal expect actual
+#		
+ok 45 - bitmap --objects handles non-commit objects (partial bitmap, other)
+ok 46 - fetch (partial bitmap)
+not ok 47 - enumerating progress counts pack-reused objects
+#	
+#			count=$(git rev-list --objects --all --count) &&
+#			git repack -adb &&
+#	
+#			# check first with only reused objects; confirm that our
+#			# progress showed the right number, and also that we did
+#			# pack-reuse as expected.  Check only the final "done"
+#			# line of the meter (there may be an arbitrary number of
+#			# intermediate lines ending with CR).
+#			GIT_PROGRESS_DELAY=0 \
+#				git pack-objects --all --stdout --progress \
+#				</dev/null >/dev/null 2>stderr &&
+#			grep "Enumerating objects: $count, done" stderr &&
+#			grep "pack-reused $count" stderr &&
+#	
+#			# now the same but with one non-reused object
+#			git commit --allow-empty -m "an extra commit object" &&
+#			GIT_PROGRESS_DELAY=0 \
+#				git pack-objects --all --stdout --progress \
+#				</dev/null >/dev/null 2>stderr &&
+#			grep "Enumerating objects: $((count+1)), done" stderr &&
+#			grep "pack-reused $count" stderr
+#		
+not ok 48 - pack-objects respects --local (non-local loose)
+#	
+#			git init --bare alt.git &&
+#			echo $(pwd)/alt.git/objects >.git/objects/info/alternates &&
+#			echo content1 >file1 &&
+#			# non-local loose object which is not present in bitmapped pack
+#			altblob=$(GIT_DIR=alt.git git hash-object -w file1) &&
+#			# non-local loose object which is also present in bitmapped pack
+#			git cat-file blob $blob | GIT_DIR=alt.git git hash-object -w --stdin &&
+#			git add file1 &&
+#			test_tick &&
+#			git commit -m commit_file1 &&
+#			echo HEAD | git pack-objects --local --stdout --revs >1.pack &&
+#			git index-pack 1.pack &&
+#			list_packed_objects 1.idx >1.objects &&
+#			printf "%s\n" "$altblob" "$blob" >nonlocal-loose &&
+#			! has_any nonlocal-loose 1.objects
+#		
+not ok 49 - pack-objects respects --honor-pack-keep (local non-bitmapped pack)
+#	
+#			echo content2 >file2 &&
+#			blob2=$(git hash-object -w file2) &&
+#			git add file2 &&
+#			test_tick &&
+#			git commit -m commit_file2 &&
+#			printf "%s\n" "$blob2" "$bitmaptip" >keepobjects &&
+#			pack2=$(git pack-objects pack2 <keepobjects) &&
+#			mv pack2-$pack2.* .git/objects/pack/ &&
+#			>.git/objects/pack/pack2-$pack2.keep &&
+#			rm $(objpath $blob2) &&
+#			echo HEAD | git pack-objects --honor-pack-keep --stdout --revs >2a.pack &&
+#			git index-pack 2a.pack &&
+#			list_packed_objects 2a.idx >2a.objects &&
+#			! has_any keepobjects 2a.objects
+#		
+not ok 50 - pack-objects respects --local (non-local pack)
+#	
+#			mv .git/objects/pack/pack2-$pack2.* alt.git/objects/pack/ &&
+#			echo HEAD | git pack-objects --local --stdout --revs >2b.pack &&
+#			git index-pack 2b.pack &&
+#			list_packed_objects 2b.idx >2b.objects &&
+#			! has_any keepobjects 2b.objects
+#		
+not ok 51 - pack-objects respects --honor-pack-keep (local bitmapped pack)
+#	
+#			ls .git/objects/pack/ | grep bitmap >output &&
+#			test_line_count = 1 output &&
+#			packbitmap=$(basename $(cat output) .bitmap) &&
+#			list_packed_objects .git/objects/pack/$packbitmap.idx >packbitmap.objects &&
+#			test_when_finished "rm -f .git/objects/pack/$packbitmap.keep" &&
+#			>.git/objects/pack/$packbitmap.keep &&
+#			echo HEAD | git pack-objects --honor-pack-keep --stdout --revs >3a.pack &&
+#			git index-pack 3a.pack &&
+#			list_packed_objects 3a.idx >3a.objects &&
+#			! has_any packbitmap.objects 3a.objects
+#		
+not ok 52 - pack-objects respects --local (non-local bitmapped pack)
+#	
+#			mv .git/objects/pack/$packbitmap.* alt.git/objects/pack/ &&
+#			rm -f .git/objects/pack/multi-pack-index &&
+#			test_when_finished "mv alt.git/objects/pack/$packbitmap.* .git/objects/pack/" &&
+#			echo HEAD | git pack-objects --local --stdout --revs >3b.pack &&
+#			git index-pack 3b.pack &&
+#			list_packed_objects 3b.idx >3b.objects &&
+#			! has_any packbitmap.objects 3b.objects
+#		
+not ok 53 - pack-objects to file can use bitmap
+#	
+#			# make sure we still have 1 bitmap index from previous tests
+#			ls .git/objects/pack/ | grep bitmap >output &&
+#			test_line_count = 1 output &&
+#			# verify equivalent packs are generated with/without using bitmap index
+#			# Be careful to not use the path-walk option in either case.
+#			packasha1=$(git pack-objects --no-use-bitmap-index --no-path-walk --all packa </dev/null) &&
+#			packbsha1=$(git pack-objects --use-bitmap-index --no-path-walk --all packb </dev/null) &&
+#			list_packed_objects packa-$packasha1.idx >packa.objects &&
+#			list_packed_objects packb-$packbsha1.idx >packb.objects &&
+#			test_cmp packa.objects packb.objects
+#		
+ok 54 - full repack, reusing previous bitmaps
+ok 55 - fetch (full bitmap)
+ok 56 - create objects for missing-HAVE tests
+not ok 57 - pack-objects respects --incremental
+#	
+#			cat >revs2 <<-EOF &&
+#			HEAD
+#			$commit
+#			EOF
+#			git pack-objects --incremental --stdout --revs <revs2 >4.pack &&
+#			git index-pack 4.pack &&
+#			list_packed_objects 4.idx >4.objects &&
+#			test_line_count = 4 4.objects &&
+#			git rev-list --objects $commit >revlist &&
+#			cut -d" " -f1 revlist |sort >objects &&
+#			test_cmp 4.objects objects
+#		
+not ok 58 - pack with missing blob
+#	
+#			rm $(objpath $blob) &&
+#			git pack-objects --stdout --revs <revs >/dev/null
+#		
+not ok 59 - pack with missing tree
+#	
+#			rm $(objpath $tree) &&
+#			git pack-objects --stdout --revs <revs >/dev/null
+#		
+not ok 60 - pack with missing parent
+#	
+#			rm $(objpath $parent) &&
+#			git pack-objects --stdout --revs <revs >/dev/null
+#		
+ok 61 # skip we can read jgit bitmaps (missing JGIT of JGIT,SHA1)
+ok 62 # skip jgit can read our bitmaps (missing JGIT of JGIT,SHA1)
+ok 63 - splitting packs does not generate bogus bitmaps
+ok 64 - set up reusable pack
+not ok 65 - pack reuse respects --honor-pack-keep
+#	
+#			test_when_finished "rm -f .git/objects/pack/*.keep" &&
+#			for i in .git/objects/pack/*.pack
+#			do
+#				>${i%.pack}.keep || return 1
+#			done &&
+#			reusable_pack --honor-pack-keep >empty.pack &&
+#			git index-pack empty.pack &&
+#			git show-index <empty.idx >actual &&
+#			test_must_be_empty actual
+#		
+not ok 66 - pack reuse respects --local
+#	
+#			mv .git/objects/pack/* alt.git/objects/pack/ &&
+#			test_when_finished "mv alt.git/objects/pack/* .git/objects/pack/" &&
+#			reusable_pack --local >empty.pack &&
+#			git index-pack empty.pack &&
+#			git show-index <empty.idx >actual &&
+#			test_must_be_empty actual
+#		
+not ok 67 - pack reuse respects --incremental
+#	
+#			reusable_pack --incremental >empty.pack &&
+#			git index-pack empty.pack &&
+#			git show-index <empty.idx >actual &&
+#			test_must_be_empty actual
+#		
+not ok 68 - truncated bitmap fails gracefully (ewah)
+#	
+#			test_config pack.writebitmaphashcache false &&
+#			test_config pack.writebitmaplookuptable false &&
+#			git repack -ad &&
+#			git rev-list --use-bitmap-index --count --all >expect &&
+#			bitmap=$(ls .git/objects/pack/*.bitmap) &&
+#			test_when_finished "rm -f $bitmap" &&
+#			test_copy_bytes 256 <$bitmap >$bitmap.tmp &&
+#			mv -f $bitmap.tmp $bitmap &&
+#			git rev-list --use-bitmap-index --count --all >actual 2>stderr &&
+#			test_cmp expect actual &&
+#			test_grep corrupt.ewah.bitmap stderr
+#		
+not ok 69 - truncated bitmap fails gracefully (cache)
+#	
+#			git config pack.writeBitmapLookupTable false &&
+#			git repack -ad &&
+#			git rev-list --use-bitmap-index --count --all >expect &&
+#			bitmap=$(ls .git/objects/pack/*.bitmap) &&
+#			test_when_finished "rm -f $bitmap" &&
+#			test_copy_bytes 512 <$bitmap >$bitmap.tmp &&
+#			mv -f $bitmap.tmp $bitmap &&
+#			git rev-list --use-bitmap-index --count --all >actual 2>stderr &&
+#			test_cmp expect actual &&
+#			test_grep corrupted.bitmap.index stderr
+#		
+not ok 70 - set up thin delta-reuse parent
+#	
+#			# This first commit contains the buried base object.
+#			test-tool genrandom delta 16384 >file &&
+#			git add file &&
+#			git commit -m "delta base" &&
+#			base=$(git rev-parse --verify HEAD:file) &&
+#	
+#			# These intermediate commits bury the base back in history.
+#			# This becomes the "old" state.
+#			for i in 1 2 3 4 5
+#			do
+#				echo $i >file &&
+#				git commit -am "intermediate $i" || return 1
+#			done &&
+#			git branch delta-reuse-old &&
+#	
+#			# And now our new history has a delta against the buried base. Note
+#			# that this must be smaller than the original file, since pack-objects
+#			# prefers to create deltas from smaller objects to larger.
+#			test-tool genrandom delta 16300 >file &&
+#			git commit -am "delta result" &&
+#			delta=$(git rev-parse --verify HEAD:file) &&
+#			git branch delta-reuse-new &&
+#	
+#			# Repack with bitmaps and double check that we have the expected delta
+#			# relationship.
+#			git repack -adb &&
+#			have_delta $delta $base
+#		
+ok 71 - fetch without bitmaps ignores delta against old base
+not ok 72 - fetch with bitmaps can reuse old base
+#	
+#			test_config pack.usebitmaps true &&
+#			test_when_finished "rm -rf client.git" &&
+#			git init --bare client.git &&
+#			(
+#				cd client.git &&
+#	
+#				# This test relies on reusing a delta, but if the
+#				# path-walk machinery is engaged, the base object
+#				# is considered too small to use during the
+#				# dynamic computation, so is not used.
+#				GIT_TEST_PACK_PATH_WALK=0 &&
+#				export GIT_TEST_PACK_PATH_WALK &&
+#	
+#				git config transfer.unpackLimit 1 &&
+#				git fetch .. delta-reuse-old:delta-reuse-old &&
+#				git fetch .. delta-reuse-new:delta-reuse-new &&
+#				have_delta $delta $base
+#			)
+#		
+not ok 73 - pack.preferBitmapTips
+#	
+#			git init repo &&
+#			test_when_finished "rm -fr repo" &&
+#			(
+#				cd repo &&
+#				git config pack.writeBitmapLookupTable false &&
+#	
+#				# create enough commits that not all are receive bitmap
+#				# coverage even if they are all at the tip of some reference.
+#				test_commit_bulk --message="%s" 103 &&
+#	
+#				git rev-list HEAD >commits.raw &&
+#				sort <commits.raw >commits &&
+#	
+#				git log --format="create refs/tags/%s %H" HEAD >refs &&
+#				git update-ref --stdin <refs &&
+#	
+#				git repack -adb &&
+#				test-tool bitmap list-commits | sort >bitmaps &&
+#	
+#				# remember which commits did not receive bitmaps
+#				comm -13 bitmaps commits >before &&
+#				test_file_not_empty before &&
+#	
+#				# mark the commits which did not receive bitmaps as preferred,
+#				# and generate the bitmap again
+#				sed "s|\(.*\)|create refs/tags/include/\1 \1|" before |
+#					git update-ref --stdin &&
+#				git -c pack.preferBitmapTips=refs/tags/include repack -adb &&
+#	
+#				# finally, check that the commit(s) without bitmap coverage
+#				# are not the same ones as before
+#				test-tool bitmap list-commits | sort >bitmaps &&
+#				comm -13 bitmaps commits >after &&
+#	
+#				! test_cmp before after
+#			)
+#		
+not ok 74 - pack.preferBitmapTips
+#	
+#			git init repo &&
+#			test_when_finished "rm -rf repo" &&
+#			(
+#				cd repo &&
+#				git config pack.writeBitmapLookupTable false &&
+#				test_commit_bulk --message="%s" 103 &&
+#	
+#				cat >>.git/config <<-\EOF &&
+#				[pack]
+#					preferBitmapTips
+#				EOF
+#				cat >expect <<-\EOF &&
+#				error: missing value for 'pack.preferbitmaptips'
+#				EOF
+#	
+#				# Disable name hash version adjustment due to stderr comparison.
+#				GIT_TEST_NAME_HASH_VERSION=1 \
+#					git repack -adb 2>actual &&
+#				test_cmp expect actual
+#			)
+#		
+not ok 75 - pack.preferBitmapTips interprets patterns as hierarchy
+#	
+#			git init repo &&
+#			test_when_finished "rm -fr repo" &&
+#			(
+#				cd repo &&
+#	
+#				# Create enough commits that not all will receive bitmap
+#				# coverage even if they are all at the tip of some reference.
+#				test_commit_bulk --message="%s" 103 &&
+#				git log --format="create refs/tags/%s/tag %H" HEAD >refs &&
+#				git update-ref --stdin <refs &&
+#	
+#				# Create the bitmap.
+#				git repack -adb &&
+#				test-tool bitmap list-commits | sort >commits-with-bitmap &&
+#	
+#				# Verify that we have at least one commit that did not
+#				# receive a bitmap.
+#				git rev-list HEAD >commits.raw &&
+#				sort <commits.raw >commits &&
+#				comm -13 commits-with-bitmap commits >commits-wo-bitmap &&
+#				test_file_not_empty commits-wo-bitmap &&
+#				commit_id=$(head commits-wo-bitmap) &&
+#				ref_without_bitmap=$(git for-each-ref --points-at="$commit_id" --format="%(refname)") &&
+#	
+#				# When passing the full refname we do not expect a
+#				# bitmap to be generated, as it should be interpreted
+#				# as if a slash was appended to the pattern.
+#				git -c pack.preferBitmapTips="$ref_without_bitmap" repack -adb &&
+#				test-tool bitmap list-commits >after &&
+#				test_grep ! "$commit_id" after &&
+#	
+#				# But if we pass the parent directory of the ref we
+#				# should see a bitmap.
+#				ref_namespace=$(dirname "$ref_without_bitmap") &&
+#				git -c pack.preferBitmapTips="$ref_namespace" repack -adb &&
+#				test-tool bitmap list-commits >after &&
+#				test_grep "$commit_id" after
+#			)
+#		
+not ok 76 - complains about multiple pack bitmaps
+#	
+#			rm -fr repo &&
+#			git init repo &&
+#			test_when_finished "rm -fr repo" &&
+#			(
+#				cd repo &&
+#				git config pack.writeBitmapLookupTable false &&
+#	
+#				test_commit base &&
+#	
+#				git repack -adb &&
+#				bitmap="$(ls .git/objects/pack/pack-*.bitmap)" &&
+#				mv "$bitmap" "$bitmap.bak" &&
+#	
+#				test_commit other &&
+#				git repack -ab &&
+#	
+#				mv "$bitmap.bak" "$bitmap" &&
+#	
+#				find .git/objects/pack -type f -name "*.pack" >packs &&
+#				find .git/objects/pack -type f -name "*.bitmap" >bitmaps &&
+#				test_line_count = 2 packs &&
+#				test_line_count = 2 bitmaps &&
+#	
+#				GIT_TRACE2_EVENT=$(pwd)/trace2.txt git rev-list --use-bitmap-index HEAD &&
+#				grep "opened bitmap" trace2.txt &&
+#				grep "ignoring extra bitmap" trace2.txt
+#			)
+#		
+not ok 77 - load corrupt bitmap
+#	
+#			rm -fr repo &&
+#			git init repo &&
+#			test_when_finished "rm -fr repo" &&
+#			(
+#				cd repo &&
+#				git config pack.writeBitmapLookupTable false &&
+#	
+#				test_commit base &&
+#	
+#				git repack -adb &&
+#				bitmap="$(ls .git/objects/pack/pack-*.bitmap)" &&
+#				chmod +w $bitmap &&
+#	
+#				test-tool bitmap list-commits-with-offset >offsets &&
+#				xor_off=$(head -n1 offsets | awk "{print \$3}") &&
+#				printf 161 |
+#					dd of=$bitmap count=1 bs=1 conv=notrunc seek=$xor_off &&
+#	
+#				git rev-list --objects --no-object-names HEAD >expect.raw &&
+#				git rev-list --objects --use-bitmap-index --no-object-names HEAD \
+#					>actual.raw &&
+#	
+#				sort expect.raw >expect &&
+#				sort actual.raw >actual &&
+#	
+#			    test_cmp expect actual
+#			)
+#		
+ok 78 - setup test repository
+ok 79 - setup repo with moderate-sized history
+ok 80 - setup writing bitmaps during repack
+not ok 81 - full repack creates bitmaps
+#	
+#			GIT_TRACE2_EVENT="$(pwd)/trace" \
+#				git repack -ad &&
+#			ls .git/objects/pack/ | grep bitmap >output &&
+#			test_line_count = 1 output &&
+#			grep "\"key\":\"num_selected_commits\",\"value\":\"106\"" trace &&
+#			grep "\"key\":\"num_maximal_commits\",\"value\":\"107\"" trace
+#		
+ok 82 - rev-list --test-bitmap verifies bitmaps
+ok 83 - counting commits via bitmap (full bitmap, second)
+ok 84 - counting partial commits via bitmap (full bitmap, second)
+ok 85 - counting commits with limit (full bitmap, second)
+ok 86 - counting non-linear history (full bitmap, second)
+ok 87 - counting commits with limiting (full bitmap, second)
+ok 88 - counting objects via bitmap (full bitmap, second)
+ok 89 - enumerate commits (full bitmap, second)
+not ok 90 - enumerate --objects (full bitmap, second)
+#	
+#			git rev-list --objects --use-bitmap-index $branch >actual &&
+#			git rev-list --objects $branch >expect &&
+#			test_bitmap_traversal expect actual
+#		
+ok 91 - bitmap --objects handles non-commit objects (full bitmap, second)
+ok 92 - counting commits via bitmap (full bitmap, other)
+ok 93 - counting partial commits via bitmap (full bitmap, other)
+ok 94 - counting commits with limit (full bitmap, other)
+ok 95 - counting non-linear history (full bitmap, other)
+ok 96 - counting commits with limiting (full bitmap, other)
+ok 97 - counting objects via bitmap (full bitmap, other)
+ok 98 - enumerate commits (full bitmap, other)
+not ok 99 - enumerate --objects (full bitmap, other)
+#	
+#			git rev-list --objects --use-bitmap-index $branch >actual &&
+#			git rev-list --objects $branch >expect &&
+#			test_bitmap_traversal expect actual
+#		
+ok 100 - bitmap --objects handles non-commit objects (full bitmap, other)
+ok 101 - clone from bitmapped repository
+ok 102 - partial clone from bitmapped repository
+ok 103 - setup further non-bitmapped commits
+ok 104 - counting commits via bitmap (partial bitmap, second)
+ok 105 - counting partial commits via bitmap (partial bitmap, second)
+ok 106 - counting commits with limit (partial bitmap, second)
+ok 107 - counting non-linear history (partial bitmap, second)
+ok 108 - counting commits with limiting (partial bitmap, second)
+ok 109 - counting objects via bitmap (partial bitmap, second)
+ok 110 - enumerate commits (partial bitmap, second)
+not ok 111 - enumerate --objects (partial bitmap, second)
+#	
+#			git rev-list --objects --use-bitmap-index $branch >actual &&
+#			git rev-list --objects $branch >expect &&
+#			test_bitmap_traversal expect actual
+#		
+ok 112 - bitmap --objects handles non-commit objects (partial bitmap, second)
+ok 113 - counting commits via bitmap (partial bitmap, other)
+ok 114 - counting partial commits via bitmap (partial bitmap, other)
+ok 115 - counting commits with limit (partial bitmap, other)
+ok 116 - counting non-linear history (partial bitmap, other)
+ok 117 - counting commits with limiting (partial bitmap, other)
+ok 118 - counting objects via bitmap (partial bitmap, other)
+ok 119 - enumerate commits (partial bitmap, other)
+not ok 120 - enumerate --objects (partial bitmap, other)
+#	
+#			git rev-list --objects --use-bitmap-index $branch >actual &&
+#			git rev-list --objects $branch >expect &&
+#			test_bitmap_traversal expect actual
+#		
+ok 121 - bitmap --objects handles non-commit objects (partial bitmap, other)
+ok 122 - fetch (partial bitmap)
+not ok 123 - enumerating progress counts pack-reused objects
+#	
+#			count=$(git rev-list --objects --all --count) &&
+#			git repack -adb &&
+#	
+#			# check first with only reused objects; confirm that our
+#			# progress showed the right number, and also that we did
+#			# pack-reuse as expected.  Check only the final "done"
+#			# line of the meter (there may be an arbitrary number of
+#			# intermediate lines ending with CR).
+#			GIT_PROGRESS_DELAY=0 \
+#				git pack-objects --all --stdout --progress \
+#				</dev/null >/dev/null 2>stderr &&
+#			grep "Enumerating objects: $count, done" stderr &&
+#			grep "pack-reused $count" stderr &&
+#	
+#			# now the same but with one non-reused object
+#			git commit --allow-empty -m "an extra commit object" &&
+#			GIT_PROGRESS_DELAY=0 \
+#				git pack-objects --all --stdout --progress \
+#				</dev/null >/dev/null 2>stderr &&
+#			grep "Enumerating objects: $((count+1)), done" stderr &&
+#			grep "pack-reused $count" stderr
+#		
+not ok 124 - pack-objects respects --local (non-local loose)
+#	
+#			git init --bare alt.git &&
+#			echo $(pwd)/alt.git/objects >.git/objects/info/alternates &&
+#			echo content1 >file1 &&
+#			# non-local loose object which is not present in bitmapped pack
+#			altblob=$(GIT_DIR=alt.git git hash-object -w file1) &&
+#			# non-local loose object which is also present in bitmapped pack
+#			git cat-file blob $blob | GIT_DIR=alt.git git hash-object -w --stdin &&
+#			git add file1 &&
+#			test_tick &&
+#			git commit -m commit_file1 &&
+#			echo HEAD | git pack-objects --local --stdout --revs >1.pack &&
+#			git index-pack 1.pack &&
+#			list_packed_objects 1.idx >1.objects &&
+#			printf "%s\n" "$altblob" "$blob" >nonlocal-loose &&
+#			! has_any nonlocal-loose 1.objects
+#		
+not ok 125 - pack-objects respects --honor-pack-keep (local non-bitmapped pack)
+#	
+#			echo content2 >file2 &&
+#			blob2=$(git hash-object -w file2) &&
+#			git add file2 &&
+#			test_tick &&
+#			git commit -m commit_file2 &&
+#			printf "%s\n" "$blob2" "$bitmaptip" >keepobjects &&
+#			pack2=$(git pack-objects pack2 <keepobjects) &&
+#			mv pack2-$pack2.* .git/objects/pack/ &&
+#			>.git/objects/pack/pack2-$pack2.keep &&
+#			rm $(objpath $blob2) &&
+#			echo HEAD | git pack-objects --honor-pack-keep --stdout --revs >2a.pack &&
+#			git index-pack 2a.pack &&
+#			list_packed_objects 2a.idx >2a.objects &&
+#			! has_any keepobjects 2a.objects
+#		
+not ok 126 - pack-objects respects --local (non-local pack)
+#	
+#			mv .git/objects/pack/pack2-$pack2.* alt.git/objects/pack/ &&
+#			echo HEAD | git pack-objects --local --stdout --revs >2b.pack &&
+#			git index-pack 2b.pack &&
+#			list_packed_objects 2b.idx >2b.objects &&
+#			! has_any keepobjects 2b.objects
+#		
+not ok 127 - pack-objects respects --honor-pack-keep (local bitmapped pack)
+#	
+#			ls .git/objects/pack/ | grep bitmap >output &&
+#			test_line_count = 1 output &&
+#			packbitmap=$(basename $(cat output) .bitmap) &&
+#			list_packed_objects .git/objects/pack/$packbitmap.idx >packbitmap.objects &&
+#			test_when_finished "rm -f .git/objects/pack/$packbitmap.keep" &&
+#			>.git/objects/pack/$packbitmap.keep &&
+#			echo HEAD | git pack-objects --honor-pack-keep --stdout --revs >3a.pack &&
+#			git index-pack 3a.pack &&
+#			list_packed_objects 3a.idx >3a.objects &&
+#			! has_any packbitmap.objects 3a.objects
+#		
+not ok 128 - pack-objects respects --local (non-local bitmapped pack)
+#	
+#			mv .git/objects/pack/$packbitmap.* alt.git/objects/pack/ &&
+#			rm -f .git/objects/pack/multi-pack-index &&
+#			test_when_finished "mv alt.git/objects/pack/$packbitmap.* .git/objects/pack/" &&
+#			echo HEAD | git pack-objects --local --stdout --revs >3b.pack &&
+#			git index-pack 3b.pack &&
+#			list_packed_objects 3b.idx >3b.objects &&
+#			! has_any packbitmap.objects 3b.objects
+#		
+not ok 129 - pack-objects to file can use bitmap
+#	
+#			# make sure we still have 1 bitmap index from previous tests
+#			ls .git/objects/pack/ | grep bitmap >output &&
+#			test_line_count = 1 output &&
+#			# verify equivalent packs are generated with/without using bitmap index
+#			# Be careful to not use the path-walk option in either case.
+#			packasha1=$(git pack-objects --no-use-bitmap-index --no-path-walk --all packa </dev/null) &&
+#			packbsha1=$(git pack-objects --use-bitmap-index --no-path-walk --all packb </dev/null) &&
+#			list_packed_objects packa-$packasha1.idx >packa.objects &&
+#			list_packed_objects packb-$packbsha1.idx >packb.objects &&
+#			test_cmp packa.objects packb.objects
+#		
+ok 130 - full repack, reusing previous bitmaps
+ok 131 - fetch (full bitmap)
+ok 132 - create objects for missing-HAVE tests
+not ok 133 - pack-objects respects --incremental
+#	
+#			cat >revs2 <<-EOF &&
+#			HEAD
+#			$commit
+#			EOF
+#			git pack-objects --incremental --stdout --revs <revs2 >4.pack &&
+#			git index-pack 4.pack &&
+#			list_packed_objects 4.idx >4.objects &&
+#			test_line_count = 4 4.objects &&
+#			git rev-list --objects $commit >revlist &&
+#			cut -d" " -f1 revlist |sort >objects &&
+#			test_cmp 4.objects objects
+#		
+not ok 134 - pack with missing blob
+#	
+#			rm $(objpath $blob) &&
+#			git pack-objects --stdout --revs <revs >/dev/null
+#		
+not ok 135 - pack with missing tree
+#	
+#			rm $(objpath $tree) &&
+#			git pack-objects --stdout --revs <revs >/dev/null
+#		
+not ok 136 - pack with missing parent
+#	
+#			rm $(objpath $parent) &&
+#			git pack-objects --stdout --revs <revs >/dev/null
+#		
+ok 137 # skip we can read jgit bitmaps (missing JGIT of JGIT,SHA1)
+ok 138 # skip jgit can read our bitmaps (missing JGIT of JGIT,SHA1)
+ok 139 - splitting packs does not generate bogus bitmaps
+ok 140 - set up reusable pack
+not ok 141 - pack reuse respects --honor-pack-keep
+#	
+#			test_when_finished "rm -f .git/objects/pack/*.keep" &&
+#			for i in .git/objects/pack/*.pack
+#			do
+#				>${i%.pack}.keep || return 1
+#			done &&
+#			reusable_pack --honor-pack-keep >empty.pack &&
+#			git index-pack empty.pack &&
+#			git show-index <empty.idx >actual &&
+#			test_must_be_empty actual
+#		
+not ok 142 - pack reuse respects --local
+#	
+#			mv .git/objects/pack/* alt.git/objects/pack/ &&
+#			test_when_finished "mv alt.git/objects/pack/* .git/objects/pack/" &&
+#			reusable_pack --local >empty.pack &&
+#			git index-pack empty.pack &&
+#			git show-index <empty.idx >actual &&
+#			test_must_be_empty actual
+#		
+not ok 143 - pack reuse respects --incremental
+#	
+#			reusable_pack --incremental >empty.pack &&
+#			git index-pack empty.pack &&
+#			git show-index <empty.idx >actual &&
+#			test_must_be_empty actual
+#		
+not ok 144 - truncated bitmap fails gracefully (ewah)
+#	
+#			test_config pack.writebitmaphashcache false &&
+#			test_config pack.writebitmaplookuptable false &&
+#			git repack -ad &&
+#			git rev-list --use-bitmap-index --count --all >expect &&
+#			bitmap=$(ls .git/objects/pack/*.bitmap) &&
+#			test_when_finished "rm -f $bitmap" &&
+#			test_copy_bytes 256 <$bitmap >$bitmap.tmp &&
+#			mv -f $bitmap.tmp $bitmap &&
+#			git rev-list --use-bitmap-index --count --all >actual 2>stderr &&
+#			test_cmp expect actual &&
+#			test_grep corrupt.ewah.bitmap stderr
+#		
+not ok 145 - truncated bitmap fails gracefully (cache)
+#	
+#			git config pack.writeBitmapLookupTable false &&
+#			git repack -ad &&
+#			git rev-list --use-bitmap-index --count --all >expect &&
+#			bitmap=$(ls .git/objects/pack/*.bitmap) &&
+#			test_when_finished "rm -f $bitmap" &&
+#			test_copy_bytes 512 <$bitmap >$bitmap.tmp &&
+#			mv -f $bitmap.tmp $bitmap &&
+#			git rev-list --use-bitmap-index --count --all >actual 2>stderr &&
+#			test_cmp expect actual &&
+#			test_grep corrupted.bitmap.index stderr
+#		
+not ok 146 - set up thin delta-reuse parent
+#	
+#			# This first commit contains the buried base object.
+#			test-tool genrandom delta 16384 >file &&
+#			git add file &&
+#			git commit -m "delta base" &&
+#			base=$(git rev-parse --verify HEAD:file) &&
+#	
+#			# These intermediate commits bury the base back in history.
+#			# This becomes the "old" state.
+#			for i in 1 2 3 4 5
+#			do
+#				echo $i >file &&
+#				git commit -am "intermediate $i" || return 1
+#			done &&
+#			git branch delta-reuse-old &&
+#	
+#			# And now our new history has a delta against the buried base. Note
+#			# that this must be smaller than the original file, since pack-objects
+#			# prefers to create deltas from smaller objects to larger.
+#			test-tool genrandom delta 16300 >file &&
+#			git commit -am "delta result" &&
+#			delta=$(git rev-parse --verify HEAD:file) &&
+#			git branch delta-reuse-new &&
+#	
+#			# Repack with bitmaps and double check that we have the expected delta
+#			# relationship.
+#			git repack -adb &&
+#			have_delta $delta $base
+#		
+ok 147 - fetch without bitmaps ignores delta against old base
+not ok 148 - fetch with bitmaps can reuse old base
+#	
+#			test_config pack.usebitmaps true &&
+#			test_when_finished "rm -rf client.git" &&
+#			git init --bare client.git &&
+#			(
+#				cd client.git &&
+#	
+#				# This test relies on reusing a delta, but if the
+#				# path-walk machinery is engaged, the base object
+#				# is considered too small to use during the
+#				# dynamic computation, so is not used.
+#				GIT_TEST_PACK_PATH_WALK=0 &&
+#				export GIT_TEST_PACK_PATH_WALK &&
+#	
+#				git config transfer.unpackLimit 1 &&
+#				git fetch .. delta-reuse-old:delta-reuse-old &&
+#				git fetch .. delta-reuse-new:delta-reuse-new &&
+#				have_delta $delta $base
+#			)
+#		
+not ok 149 - pack.preferBitmapTips
+#	
+#			git init repo &&
+#			test_when_finished "rm -fr repo" &&
+#			(
+#				cd repo &&
+#				git config pack.writeBitmapLookupTable false &&
+#	
+#				# create enough commits that not all are receive bitmap
+#				# coverage even if they are all at the tip of some reference.
+#				test_commit_bulk --message="%s" 103 &&
+#	
+#				git rev-list HEAD >commits.raw &&
+#				sort <commits.raw >commits &&
+#	
+#				git log --format="create refs/tags/%s %H" HEAD >refs &&
+#				git update-ref --stdin <refs &&
+#	
+#				git repack -adb &&
+#				test-tool bitmap list-commits | sort >bitmaps &&
+#	
+#				# remember which commits did not receive bitmaps
+#				comm -13 bitmaps commits >before &&
+#				test_file_not_empty before &&
+#	
+#				# mark the commits which did not receive bitmaps as preferred,
+#				# and generate the bitmap again
+#				sed "s|\(.*\)|create refs/tags/include/\1 \1|" before |
+#					git update-ref --stdin &&
+#				git -c pack.preferBitmapTips=refs/tags/include repack -adb &&
+#	
+#				# finally, check that the commit(s) without bitmap coverage
+#				# are not the same ones as before
+#				test-tool bitmap list-commits | sort >bitmaps &&
+#				comm -13 bitmaps commits >after &&
+#	
+#				! test_cmp before after
+#			)
+#		
+not ok 150 - pack.preferBitmapTips
+#	
+#			git init repo &&
+#			test_when_finished "rm -rf repo" &&
+#			(
+#				cd repo &&
+#				git config pack.writeBitmapLookupTable false &&
+#				test_commit_bulk --message="%s" 103 &&
+#	
+#				cat >>.git/config <<-\EOF &&
+#				[pack]
+#					preferBitmapTips
+#				EOF
+#				cat >expect <<-\EOF &&
+#				error: missing value for 'pack.preferbitmaptips'
+#				EOF
+#	
+#				# Disable name hash version adjustment due to stderr comparison.
+#				GIT_TEST_NAME_HASH_VERSION=1 \
+#					git repack -adb 2>actual &&
+#				test_cmp expect actual
+#			)
+#		
+not ok 151 - pack.preferBitmapTips interprets patterns as hierarchy
+#	
+#			git init repo &&
+#			test_when_finished "rm -fr repo" &&
+#			(
+#				cd repo &&
+#	
+#				# Create enough commits that not all will receive bitmap
+#				# coverage even if they are all at the tip of some reference.
+#				test_commit_bulk --message="%s" 103 &&
+#				git log --format="create refs/tags/%s/tag %H" HEAD >refs &&
+#				git update-ref --stdin <refs &&
+#	
+#				# Create the bitmap.
+#				git repack -adb &&
+#				test-tool bitmap list-commits | sort >commits-with-bitmap &&
+#	
+#				# Verify that we have at least one commit that did not
+#				# receive a bitmap.
+#				git rev-list HEAD >commits.raw &&
+#				sort <commits.raw >commits &&
+#				comm -13 commits-with-bitmap commits >commits-wo-bitmap &&
+#				test_file_not_empty commits-wo-bitmap &&
+#				commit_id=$(head commits-wo-bitmap) &&
+#				ref_without_bitmap=$(git for-each-ref --points-at="$commit_id" --format="%(refname)") &&
+#	
+#				# When passing the full refname we do not expect a
+#				# bitmap to be generated, as it should be interpreted
+#				# as if a slash was appended to the pattern.
+#				git -c pack.preferBitmapTips="$ref_without_bitmap" repack -adb &&
+#				test-tool bitmap list-commits >after &&
+#				test_grep ! "$commit_id" after &&
+#	
+#				# But if we pass the parent directory of the ref we
+#				# should see a bitmap.
+#				ref_namespace=$(dirname "$ref_without_bitmap") &&
+#				git -c pack.preferBitmapTips="$ref_namespace" repack -adb &&
+#				test-tool bitmap list-commits >after &&
+#				test_grep "$commit_id" after
+#			)
+#		
+not ok 152 - complains about multiple pack bitmaps
+#	
+#			rm -fr repo &&
+#			git init repo &&
+#			test_when_finished "rm -fr repo" &&
+#			(
+#				cd repo &&
+#				git config pack.writeBitmapLookupTable false &&
+#	
+#				test_commit base &&
+#	
+#				git repack -adb &&
+#				bitmap="$(ls .git/objects/pack/pack-*.bitmap)" &&
+#				mv "$bitmap" "$bitmap.bak" &&
+#	
+#				test_commit other &&
+#				git repack -ab &&
+#	
+#				mv "$bitmap.bak" "$bitmap" &&
+#	
+#				find .git/objects/pack -type f -name "*.pack" >packs &&
+#				find .git/objects/pack -type f -name "*.bitmap" >bitmaps &&
+#				test_line_count = 2 packs &&
+#				test_line_count = 2 bitmaps &&
+#	
+#				GIT_TRACE2_EVENT=$(pwd)/trace2.txt git rev-list --use-bitmap-index HEAD &&
+#				grep "opened bitmap" trace2.txt &&
+#				grep "ignoring extra bitmap" trace2.txt
+#			)
+#		
+not ok 153 - load corrupt bitmap
+#	
+#			rm -fr repo &&
+#			git init repo &&
+#			test_when_finished "rm -fr repo" &&
+#			(
+#				cd repo &&
+#				git config pack.writeBitmapLookupTable false &&
+#	
+#				test_commit base &&
+#	
+#				git repack -adb &&
+#				bitmap="$(ls .git/objects/pack/pack-*.bitmap)" &&
+#				chmod +w $bitmap &&
+#	
+#				test-tool bitmap list-commits-with-offset >offsets &&
+#				xor_off=$(head -n1 offsets | awk "{print \$3}") &&
+#				printf 161 |
+#					dd of=$bitmap count=1 bs=1 conv=notrunc seek=$xor_off &&
+#	
+#				git rev-list --objects --no-object-names HEAD >expect.raw &&
+#				git rev-list --objects --use-bitmap-index --no-object-names HEAD \
+#					>actual.raw &&
+#	
+#				sort expect.raw >expect &&
+#				sort actual.raw >actual &&
+#	
+#			    test_cmp expect actual
+#			)
+#		
+not ok 154 - incremental repack fails when bitmaps are requested
+#	
+#		test_commit more-1 &&
+#		test_must_fail git repack -d 2>err &&
+#		test_grep "Incremental repacks are incompatible with bitmap" err
+#	
+ok 155 - incremental repack can disable bitmaps
+not ok 156 - boundary-based traversal is used when requested
+#	
+#		git repack -a -d --write-bitmap-index &&
+#	
+#		for argv in \
+#			"git -c pack.useBitmapBoundaryTraversal=true" \
+#			"git -c feature.experimental=true" \
+#			"GIT_TEST_PACK_USE_BITMAP_BOUNDARY_TRAVERSAL=1 git"
+#		do
+#			eval "GIT_TRACE2_EVENT=1 $argv rev-list --objects \
+#				--use-bitmap-index second..other 2>perf" &&
+#			grep "\"region_enter\".*\"label\":\"haves/boundary\"" perf ||
+#				return 1
+#		done &&
+#	
+#		for argv in \
+#			"git -c pack.useBitmapBoundaryTraversal=false" \
+#			"git -c feature.experimental=true -c pack.useBitmapBoundaryTraversal=false" \
+#			"GIT_TEST_PACK_USE_BITMAP_BOUNDARY_TRAVERSAL=0 git -c pack.useBitmapBoundaryTraversal=true" \
+#			"GIT_TEST_PACK_USE_BITMAP_BOUNDARY_TRAVERSAL=0 git -c feature.experimental=true"
+#		do
+#			eval "GIT_TRACE2_EVENT=1 $argv rev-list --objects \
+#				--use-bitmap-index second..other 2>perf" &&
+#			grep "\"region_enter\".*\"label\":\"haves/classic\"" perf ||
+#				return 1
+#		done
+#	
+ok 157 - left-right not confused by bitmap index
+ok 158 - left-right count not confused by bitmap-index
+ok 159 - setup test repository
+ok 160 - setup repo with moderate-sized history
+ok 161 - setup writing bitmaps during repack
+not ok 162 - full repack creates bitmaps
+#	
+#			GIT_TRACE2_EVENT="$(pwd)/trace" \
+#				git repack -ad &&
+#			ls .git/objects/pack/ | grep bitmap >output &&
+#			test_line_count = 1 output &&
+#			grep "\"key\":\"num_selected_commits\",\"value\":\"106\"" trace &&
+#			grep "\"key\":\"num_maximal_commits\",\"value\":\"107\"" trace
+#		
+ok 163 - rev-list --test-bitmap verifies bitmaps
+ok 164 - counting commits via bitmap (full bitmap, second)
+ok 165 - counting partial commits via bitmap (full bitmap, second)
+ok 166 - counting commits with limit (full bitmap, second)
+ok 167 - counting non-linear history (full bitmap, second)
+ok 168 - counting commits with limiting (full bitmap, second)
+ok 169 - counting objects via bitmap (full bitmap, second)
+ok 170 - enumerate commits (full bitmap, second)
+not ok 171 - enumerate --objects (full bitmap, second)
+#	
+#			git rev-list --objects --use-bitmap-index $branch >actual &&
+#			git rev-list --objects $branch >expect &&
+#			test_bitmap_traversal expect actual
+#		
+ok 172 - bitmap --objects handles non-commit objects (full bitmap, second)
+ok 173 - counting commits via bitmap (full bitmap, other)
+ok 174 - counting partial commits via bitmap (full bitmap, other)
+ok 175 - counting commits with limit (full bitmap, other)
+ok 176 - counting non-linear history (full bitmap, other)
+ok 177 - counting commits with limiting (full bitmap, other)
+ok 178 - counting objects via bitmap (full bitmap, other)
+ok 179 - enumerate commits (full bitmap, other)
+not ok 180 - enumerate --objects (full bitmap, other)
+#	
+#			git rev-list --objects --use-bitmap-index $branch >actual &&
+#			git rev-list --objects $branch >expect &&
+#			test_bitmap_traversal expect actual
+#		
+ok 181 - bitmap --objects handles non-commit objects (full bitmap, other)
+ok 182 - clone from bitmapped repository
+ok 183 - partial clone from bitmapped repository
+ok 184 - setup further non-bitmapped commits
+ok 185 - counting commits via bitmap (partial bitmap, second)
+ok 186 - counting partial commits via bitmap (partial bitmap, second)
+ok 187 - counting commits with limit (partial bitmap, second)
+ok 188 - counting non-linear history (partial bitmap, second)
+ok 189 - counting commits with limiting (partial bitmap, second)
+ok 190 - counting objects via bitmap (partial bitmap, second)
+ok 191 - enumerate commits (partial bitmap, second)
+not ok 192 - enumerate --objects (partial bitmap, second)
+#	
+#			git rev-list --objects --use-bitmap-index $branch >actual &&
+#			git rev-list --objects $branch >expect &&
+#			test_bitmap_traversal expect actual
+#		
+ok 193 - bitmap --objects handles non-commit objects (partial bitmap, second)
+ok 194 - counting commits via bitmap (partial bitmap, other)
+ok 195 - counting partial commits via bitmap (partial bitmap, other)
+ok 196 - counting commits with limit (partial bitmap, other)
+ok 197 - counting non-linear history (partial bitmap, other)
+ok 198 - counting commits with limiting (partial bitmap, other)
+ok 199 - counting objects via bitmap (partial bitmap, other)
+ok 200 - enumerate commits (partial bitmap, other)
+not ok 201 - enumerate --objects (partial bitmap, other)
+#	
+#			git rev-list --objects --use-bitmap-index $branch >actual &&
+#			git rev-list --objects $branch >expect &&
+#			test_bitmap_traversal expect actual
+#		
+ok 202 - bitmap --objects handles non-commit objects (partial bitmap, other)
+ok 203 - fetch (partial bitmap)
+not ok 204 - enumerating progress counts pack-reused objects
+#	
+#			count=$(git rev-list --objects --all --count) &&
+#			git repack -adb &&
+#	
+#			# check first with only reused objects; confirm that our
+#			# progress showed the right number, and also that we did
+#			# pack-reuse as expected.  Check only the final "done"
+#			# line of the meter (there may be an arbitrary number of
+#			# intermediate lines ending with CR).
+#			GIT_PROGRESS_DELAY=0 \
+#				git pack-objects --all --stdout --progress \
+#				</dev/null >/dev/null 2>stderr &&
+#			grep "Enumerating objects: $count, done" stderr &&
+#			grep "pack-reused $count" stderr &&
+#	
+#			# now the same but with one non-reused object
+#			git commit --allow-empty -m "an extra commit object" &&
+#			GIT_PROGRESS_DELAY=0 \
+#				git pack-objects --all --stdout --progress \
+#				</dev/null >/dev/null 2>stderr &&
+#			grep "Enumerating objects: $((count+1)), done" stderr &&
+#			grep "pack-reused $count" stderr
+#		
+not ok 205 - pack-objects respects --local (non-local loose)
+#	
+#			git init --bare alt.git &&
+#			echo $(pwd)/alt.git/objects >.git/objects/info/alternates &&
+#			echo content1 >file1 &&
+#			# non-local loose object which is not present in bitmapped pack
+#			altblob=$(GIT_DIR=alt.git git hash-object -w file1) &&
+#			# non-local loose object which is also present in bitmapped pack
+#			git cat-file blob $blob | GIT_DIR=alt.git git hash-object -w --stdin &&
+#			git add file1 &&
+#			test_tick &&
+#			git commit -m commit_file1 &&
+#			echo HEAD | git pack-objects --local --stdout --revs >1.pack &&
+#			git index-pack 1.pack &&
+#			list_packed_objects 1.idx >1.objects &&
+#			printf "%s\n" "$altblob" "$blob" >nonlocal-loose &&
+#			! has_any nonlocal-loose 1.objects
+#		
+not ok 206 - pack-objects respects --honor-pack-keep (local non-bitmapped pack)
+#	
+#			echo content2 >file2 &&
+#			blob2=$(git hash-object -w file2) &&
+#			git add file2 &&
+#			test_tick &&
+#			git commit -m commit_file2 &&
+#			printf "%s\n" "$blob2" "$bitmaptip" >keepobjects &&
+#			pack2=$(git pack-objects pack2 <keepobjects) &&
+#			mv pack2-$pack2.* .git/objects/pack/ &&
+#			>.git/objects/pack/pack2-$pack2.keep &&
+#			rm $(objpath $blob2) &&
+#			echo HEAD | git pack-objects --honor-pack-keep --stdout --revs >2a.pack &&
+#			git index-pack 2a.pack &&
+#			list_packed_objects 2a.idx >2a.objects &&
+#			! has_any keepobjects 2a.objects
+#		
+not ok 207 - pack-objects respects --local (non-local pack)
+#	
+#			mv .git/objects/pack/pack2-$pack2.* alt.git/objects/pack/ &&
+#			echo HEAD | git pack-objects --local --stdout --revs >2b.pack &&
+#			git index-pack 2b.pack &&
+#			list_packed_objects 2b.idx >2b.objects &&
+#			! has_any keepobjects 2b.objects
+#		
+not ok 208 - pack-objects respects --honor-pack-keep (local bitmapped pack)
+#	
+#			ls .git/objects/pack/ | grep bitmap >output &&
+#			test_line_count = 1 output &&
+#			packbitmap=$(basename $(cat output) .bitmap) &&
+#			list_packed_objects .git/objects/pack/$packbitmap.idx >packbitmap.objects &&
+#			test_when_finished "rm -f .git/objects/pack/$packbitmap.keep" &&
+#			>.git/objects/pack/$packbitmap.keep &&
+#			echo HEAD | git pack-objects --honor-pack-keep --stdout --revs >3a.pack &&
+#			git index-pack 3a.pack &&
+#			list_packed_objects 3a.idx >3a.objects &&
+#			! has_any packbitmap.objects 3a.objects
+#		
+not ok 209 - pack-objects respects --local (non-local bitmapped pack)
+#	
+#			mv .git/objects/pack/$packbitmap.* alt.git/objects/pack/ &&
+#			rm -f .git/objects/pack/multi-pack-index &&
+#			test_when_finished "mv alt.git/objects/pack/$packbitmap.* .git/objects/pack/" &&
+#			echo HEAD | git pack-objects --local --stdout --revs >3b.pack &&
+#			git index-pack 3b.pack &&
+#			list_packed_objects 3b.idx >3b.objects &&
+#			! has_any packbitmap.objects 3b.objects
+#		
+not ok 210 - pack-objects to file can use bitmap
+#	
+#			# make sure we still have 1 bitmap index from previous tests
+#			ls .git/objects/pack/ | grep bitmap >output &&
+#			test_line_count = 1 output &&
+#			# verify equivalent packs are generated with/without using bitmap index
+#			# Be careful to not use the path-walk option in either case.
+#			packasha1=$(git pack-objects --no-use-bitmap-index --no-path-walk --all packa </dev/null) &&
+#			packbsha1=$(git pack-objects --use-bitmap-index --no-path-walk --all packb </dev/null) &&
+#			list_packed_objects packa-$packasha1.idx >packa.objects &&
+#			list_packed_objects packb-$packbsha1.idx >packb.objects &&
+#			test_cmp packa.objects packb.objects
+#		
+ok 211 - full repack, reusing previous bitmaps
+ok 212 - fetch (full bitmap)
+ok 213 - create objects for missing-HAVE tests
+not ok 214 - pack-objects respects --incremental
+#	
+#			cat >revs2 <<-EOF &&
+#			HEAD
+#			$commit
+#			EOF
+#			git pack-objects --incremental --stdout --revs <revs2 >4.pack &&
+#			git index-pack 4.pack &&
+#			list_packed_objects 4.idx >4.objects &&
+#			test_line_count = 4 4.objects &&
+#			git rev-list --objects $commit >revlist &&
+#			cut -d" " -f1 revlist |sort >objects &&
+#			test_cmp 4.objects objects
+#		
+not ok 215 - pack with missing blob
+#	
+#			rm $(objpath $blob) &&
+#			git pack-objects --stdout --revs <revs >/dev/null
+#		
+not ok 216 - pack with missing tree
+#	
+#			rm $(objpath $tree) &&
+#			git pack-objects --stdout --revs <revs >/dev/null
+#		
+not ok 217 - pack with missing parent
+#	
+#			rm $(objpath $parent) &&
+#			git pack-objects --stdout --revs <revs >/dev/null
+#		
+ok 218 # skip we can read jgit bitmaps (missing JGIT of JGIT,SHA1)
+ok 219 # skip jgit can read our bitmaps (missing JGIT of JGIT,SHA1)
+ok 220 - splitting packs does not generate bogus bitmaps
+ok 221 - set up reusable pack
+not ok 222 - pack reuse respects --honor-pack-keep
+#	
+#			test_when_finished "rm -f .git/objects/pack/*.keep" &&
+#			for i in .git/objects/pack/*.pack
+#			do
+#				>${i%.pack}.keep || return 1
+#			done &&
+#			reusable_pack --honor-pack-keep >empty.pack &&
+#			git index-pack empty.pack &&
+#			git show-index <empty.idx >actual &&
+#			test_must_be_empty actual
+#		
+not ok 223 - pack reuse respects --local
+#	
+#			mv .git/objects/pack/* alt.git/objects/pack/ &&
+#			test_when_finished "mv alt.git/objects/pack/* .git/objects/pack/" &&
+#			reusable_pack --local >empty.pack &&
+#			git index-pack empty.pack &&
+#			git show-index <empty.idx >actual &&
+#			test_must_be_empty actual
+#		
+not ok 224 - pack reuse respects --incremental
+#	
+#			reusable_pack --incremental >empty.pack &&
+#			git index-pack empty.pack &&
+#			git show-index <empty.idx >actual &&
+#			test_must_be_empty actual
+#		
+not ok 225 - truncated bitmap fails gracefully (ewah)
+#	
+#			test_config pack.writebitmaphashcache false &&
+#			test_config pack.writebitmaplookuptable false &&
+#			git repack -ad &&
+#			git rev-list --use-bitmap-index --count --all >expect &&
+#			bitmap=$(ls .git/objects/pack/*.bitmap) &&
+#			test_when_finished "rm -f $bitmap" &&
+#			test_copy_bytes 256 <$bitmap >$bitmap.tmp &&
+#			mv -f $bitmap.tmp $bitmap &&
+#			git rev-list --use-bitmap-index --count --all >actual 2>stderr &&
+#			test_cmp expect actual &&
+#			test_grep corrupt.ewah.bitmap stderr
+#		
+not ok 226 - truncated bitmap fails gracefully (cache)
+#	
+#			git config pack.writeBitmapLookupTable true &&
+#			git repack -ad &&
+#			git rev-list --use-bitmap-index --count --all >expect &&
+#			bitmap=$(ls .git/objects/pack/*.bitmap) &&
+#			test_when_finished "rm -f $bitmap" &&
+#			test_copy_bytes 512 <$bitmap >$bitmap.tmp &&
+#			mv -f $bitmap.tmp $bitmap &&
+#			git rev-list --use-bitmap-index --count --all >actual 2>stderr &&
+#			test_cmp expect actual &&
+#			test_grep corrupted.bitmap.index stderr
+#		
+not ok 227 - set up thin delta-reuse parent
+#	
+#			# This first commit contains the buried base object.
+#			test-tool genrandom delta 16384 >file &&
+#			git add file &&
+#			git commit -m "delta base" &&
+#			base=$(git rev-parse --verify HEAD:file) &&
+#	
+#			# These intermediate commits bury the base back in history.
+#			# This becomes the "old" state.
+#			for i in 1 2 3 4 5
+#			do
+#				echo $i >file &&
+#				git commit -am "intermediate $i" || return 1
+#			done &&
+#			git branch delta-reuse-old &&
+#	
+#			# And now our new history has a delta against the buried base. Note
+#			# that this must be smaller than the original file, since pack-objects
+#			# prefers to create deltas from smaller objects to larger.
+#			test-tool genrandom delta 16300 >file &&
+#			git commit -am "delta result" &&
+#			delta=$(git rev-parse --verify HEAD:file) &&
+#			git branch delta-reuse-new &&
+#	
+#			# Repack with bitmaps and double check that we have the expected delta
+#			# relationship.
+#			git repack -adb &&
+#			have_delta $delta $base
+#		
+ok 228 - fetch without bitmaps ignores delta against old base
+not ok 229 - fetch with bitmaps can reuse old base
+#	
+#			test_config pack.usebitmaps true &&
+#			test_when_finished "rm -rf client.git" &&
+#			git init --bare client.git &&
+#			(
+#				cd client.git &&
+#	
+#				# This test relies on reusing a delta, but if the
+#				# path-walk machinery is engaged, the base object
+#				# is considered too small to use during the
+#				# dynamic computation, so is not used.
+#				GIT_TEST_PACK_PATH_WALK=0 &&
+#				export GIT_TEST_PACK_PATH_WALK &&
+#	
+#				git config transfer.unpackLimit 1 &&
+#				git fetch .. delta-reuse-old:delta-reuse-old &&
+#				git fetch .. delta-reuse-new:delta-reuse-new &&
+#				have_delta $delta $base
+#			)
+#		
+not ok 230 - pack.preferBitmapTips
+#	
+#			git init repo &&
+#			test_when_finished "rm -fr repo" &&
+#			(
+#				cd repo &&
+#				git config pack.writeBitmapLookupTable true &&
+#	
+#				# create enough commits that not all are receive bitmap
+#				# coverage even if they are all at the tip of some reference.
+#				test_commit_bulk --message="%s" 103 &&
+#	
+#				git rev-list HEAD >commits.raw &&
+#				sort <commits.raw >commits &&
+#	
+#				git log --format="create refs/tags/%s %H" HEAD >refs &&
+#				git update-ref --stdin <refs &&
+#	
+#				git repack -adb &&
+#				test-tool bitmap list-commits | sort >bitmaps &&
+#	
+#				# remember which commits did not receive bitmaps
+#				comm -13 bitmaps commits >before &&
+#				test_file_not_empty before &&
+#	
+#				# mark the commits which did not receive bitmaps as preferred,
+#				# and generate the bitmap again
+#				sed "s|\(.*\)|create refs/tags/include/\1 \1|" before |
+#					git update-ref --stdin &&
+#				git -c pack.preferBitmapTips=refs/tags/include repack -adb &&
+#	
+#				# finally, check that the commit(s) without bitmap coverage
+#				# are not the same ones as before
+#				test-tool bitmap list-commits | sort >bitmaps &&
+#				comm -13 bitmaps commits >after &&
+#	
+#				! test_cmp before after
+#			)
+#		
+not ok 231 - pack.preferBitmapTips
+#	
+#			git init repo &&
+#			test_when_finished "rm -rf repo" &&
+#			(
+#				cd repo &&
+#				git config pack.writeBitmapLookupTable true &&
+#				test_commit_bulk --message="%s" 103 &&
+#	
+#				cat >>.git/config <<-\EOF &&
+#				[pack]
+#					preferBitmapTips
+#				EOF
+#				cat >expect <<-\EOF &&
+#				error: missing value for 'pack.preferbitmaptips'
+#				EOF
+#	
+#				# Disable name hash version adjustment due to stderr comparison.
+#				GIT_TEST_NAME_HASH_VERSION=1 \
+#					git repack -adb 2>actual &&
+#				test_cmp expect actual
+#			)
+#		
+not ok 232 - pack.preferBitmapTips interprets patterns as hierarchy
+#	
+#			git init repo &&
+#			test_when_finished "rm -fr repo" &&
+#			(
+#				cd repo &&
+#	
+#				# Create enough commits that not all will receive bitmap
+#				# coverage even if they are all at the tip of some reference.
+#				test_commit_bulk --message="%s" 103 &&
+#				git log --format="create refs/tags/%s/tag %H" HEAD >refs &&
+#				git update-ref --stdin <refs &&
+#	
+#				# Create the bitmap.
+#				git repack -adb &&
+#				test-tool bitmap list-commits | sort >commits-with-bitmap &&
+#	
+#				# Verify that we have at least one commit that did not
+#				# receive a bitmap.
+#				git rev-list HEAD >commits.raw &&
+#				sort <commits.raw >commits &&
+#				comm -13 commits-with-bitmap commits >commits-wo-bitmap &&
+#				test_file_not_empty commits-wo-bitmap &&
+#				commit_id=$(head commits-wo-bitmap) &&
+#				ref_without_bitmap=$(git for-each-ref --points-at="$commit_id" --format="%(refname)") &&
+#	
+#				# When passing the full refname we do not expect a
+#				# bitmap to be generated, as it should be interpreted
+#				# as if a slash was appended to the pattern.
+#				git -c pack.preferBitmapTips="$ref_without_bitmap" repack -adb &&
+#				test-tool bitmap list-commits >after &&
+#				test_grep ! "$commit_id" after &&
+#	
+#				# But if we pass the parent directory of the ref we
+#				# should see a bitmap.
+#				ref_namespace=$(dirname "$ref_without_bitmap") &&
+#				git -c pack.preferBitmapTips="$ref_namespace" repack -adb &&
+#				test-tool bitmap list-commits >after &&
+#				test_grep "$commit_id" after
+#			)
+#		
+not ok 233 - complains about multiple pack bitmaps
+#	
+#			rm -fr repo &&
+#			git init repo &&
+#			test_when_finished "rm -fr repo" &&
+#			(
+#				cd repo &&
+#				git config pack.writeBitmapLookupTable true &&
+#	
+#				test_commit base &&
+#	
+#				git repack -adb &&
+#				bitmap="$(ls .git/objects/pack/pack-*.bitmap)" &&
+#				mv "$bitmap" "$bitmap.bak" &&
+#	
+#				test_commit other &&
+#				git repack -ab &&
+#	
+#				mv "$bitmap.bak" "$bitmap" &&
+#	
+#				find .git/objects/pack -type f -name "*.pack" >packs &&
+#				find .git/objects/pack -type f -name "*.bitmap" >bitmaps &&
+#				test_line_count = 2 packs &&
+#				test_line_count = 2 bitmaps &&
+#	
+#				GIT_TRACE2_EVENT=$(pwd)/trace2.txt git rev-list --use-bitmap-index HEAD &&
+#				grep "opened bitmap" trace2.txt &&
+#				grep "ignoring extra bitmap" trace2.txt
+#			)
+#		
+not ok 234 - load corrupt bitmap
+#	
+#			rm -fr repo &&
+#			git init repo &&
+#			test_when_finished "rm -fr repo" &&
+#			(
+#				cd repo &&
+#				git config pack.writeBitmapLookupTable true &&
+#	
+#				test_commit base &&
+#	
+#				git repack -adb &&
+#				bitmap="$(ls .git/objects/pack/pack-*.bitmap)" &&
+#				chmod +w $bitmap &&
+#	
+#				test-tool bitmap list-commits-with-offset >offsets &&
+#				xor_off=$(head -n1 offsets | awk "{print \$3}") &&
+#				printf 161 |
+#					dd of=$bitmap count=1 bs=1 conv=notrunc seek=$xor_off &&
+#	
+#				git rev-list --objects --no-object-names HEAD >expect.raw &&
+#				git rev-list --objects --use-bitmap-index --no-object-names HEAD \
+#					>actual.raw &&
+#	
+#				sort expect.raw >expect &&
+#				sort actual.raw >actual &&
+#	
+#			    test_cmp expect actual
+#			)
+#		
+not ok 235 - verify writing bitmap lookup table when enabled
+#	
+#		GIT_TRACE2_EVENT="$(pwd)/trace2" \
+#			git repack -ad &&
+#		grep "\"label\":\"writing_lookup_table\"" trace2
+#	
+not ok 236 - truncated bitmap fails gracefully (lookup table)
+#	
+#		test_config pack.writebitmaphashcache false &&
+#		git repack -adb &&
+#		git rev-list --use-bitmap-index --count --all >expect &&
+#		bitmap=$(ls .git/objects/pack/*.bitmap) &&
+#		test_when_finished "rm -f $bitmap" &&
+#		test_copy_bytes 512 <$bitmap >$bitmap.tmp &&
+#		mv -f $bitmap.tmp $bitmap &&
+#		git rev-list --use-bitmap-index --count --all >actual 2>stderr &&
+#		test_cmp expect actual &&
+#		test_grep corrupted.bitmap.index stderr
+#	
+# failed 88 among 236 test(s)
+1..236
+# Tests: 236  Pass: 148  Fail: 88  Skip: 6

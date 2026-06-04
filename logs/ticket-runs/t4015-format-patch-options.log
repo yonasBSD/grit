@@ -1,0 +1,93 @@
+ok 1 - setup
+not ok 2 - format-patch --base=<commit> adds base-commit info
+#	
+#		(
+#		cd repo &&
+#		git format-patch --base=HEAD~2 --stdout -- -1 >patch &&
+#		grep "^base-commit:" patch
+#		)
+#	
+ok 3 - format-patch --base with multi-patch puts base-commit on last patch only
+not ok 4 - format-patch -s adds Signed-off-by
+#	
+#		(
+#		cd repo &&
+#		git format-patch -s --stdout -- -1 >patch &&
+#		grep "^Signed-off-by:" patch
+#		)
+#	
+not ok 5 - format-patch --signoff adds Signed-off-by
+#	
+#		(
+#		cd repo &&
+#		git format-patch --signoff --stdout -- -1 >patch &&
+#		grep "^Signed-off-by:" patch
+#		)
+#	
+not ok 6 - format-patch --in-reply-to adds In-Reply-To and References
+#	
+#		(
+#		cd repo &&
+#		git format-patch --in-reply-to="<abc123@example.com>" --stdout -- -1 >patch &&
+#		grep "^In-Reply-To: <abc123@example.com>" patch &&
+#		grep "^References: <abc123@example.com>" patch
+#		)
+#	
+not ok 7 - format-patch --cc adds Cc header
+#	
+#		(
+#		cd repo &&
+#		git format-patch --cc="alice@example.com" --stdout -- -1 >patch &&
+#		grep "^Cc: alice@example.com" patch
+#		)
+#	
+not ok 8 - format-patch --to adds To header
+#	
+#		(
+#		cd repo &&
+#		git format-patch --to="bob@example.com" --stdout -- -1 >patch &&
+#		grep "^To: bob@example.com" patch
+#		)
+#	
+not ok 9 - format-patch --cc and --to can be combined
+#	
+#		(
+#		cd repo &&
+#		git format-patch --cc="alice@example.com" --to="bob@example.com" \
+#			--stdout -- -1 >patch &&
+#		grep "^Cc: alice@example.com" patch &&
+#		grep "^To: bob@example.com" patch
+#		)
+#	
+not ok 10 - format-patch --attach produces MIME attachment
+#	
+#		(
+#		cd repo &&
+#		git format-patch --attach --stdout -- -1 >patch &&
+#		grep "^MIME-Version: 1.0" patch &&
+#		grep "Content-Type: multipart/mixed" patch &&
+#		grep "Content-Disposition: attachment" patch
+#		)
+#	
+not ok 11 - format-patch --inline produces MIME inline
+#	
+#		(
+#		cd repo &&
+#		git format-patch --inline --stdout -- -1 >patch &&
+#		grep "^MIME-Version: 1.0" patch &&
+#		grep "Content-Type: multipart/mixed" patch &&
+#		grep "Content-Disposition: inline" patch
+#		)
+#	
+not ok 12 - format-patch -k keeps subject without [PATCH] prefix
+#	
+#		(
+#		cd repo &&
+#		git format-patch -k --stdout -- -1 >patch &&
+#		grep "^Subject: Third commit" patch &&
+#		! grep "\\[PATCH\\]" patch
+#		)
+#	
+# failed 10 among 12 test(s)
+1..12
+# Tests: 12  Pass: 2  Fail: 10  Skip: 0

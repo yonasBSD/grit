@@ -1,0 +1,117 @@
+ok 1 - setup: repo with branches and tags
+not ok 2 - log --oneline shows decorations by default
+#	
+#		(
+#		cd repo &&
+#		git log --oneline -n 1 >out &&
+#		grep "HEAD" out
+#		)
+#	
+not ok 3 - decorations include branch name
+#	
+#		(
+#		cd repo &&
+#		git log --oneline -n 1 >out &&
+#		grep "master" out
+#		)
+#	
+not ok 4 - decorations include lightweight tag
+#	
+#		(
+#		cd repo &&
+#		git log --oneline -n 1 >out &&
+#		grep "lightweight-tag" out
+#		)
+#	
+not ok 5 - decorations include annotated tag (not yet shown)
+#	
+#		(
+#		cd repo &&
+#		git log --oneline -n 1 >out &&
+#		grep "annotated-tag" out
+#		)
+#	
+not ok 6 - decorations include feature branch
+#	
+#		(
+#		cd repo &&
+#		git log --oneline -n 1 >out &&
+#		grep "feature" out
+#		)
+#	
+not ok 7 - decoration uses parentheses
+#	
+#		(
+#		cd repo &&
+#		git log --oneline -n 1 >out &&
+#		grep "(" out &&
+#		grep ")" out
+#		)
+#	
+not ok 8 - --decorate=short shows short ref names
+#	
+#		(
+#		cd repo &&
+#		git log --decorate=short --oneline -n 1 >out &&
+#		grep "master" out &&
+#		! grep "refs/heads/master" out
+#		)
+#	
+ok 9 - --decorate=short shows short tag names
+ok 10 - --decorate=full shows full ref paths (not yet distinct from short)
+ok 11 - --no-decorate suppresses decorations
+ok 12 - --no-decorate still shows commit hash and subject
+not ok 13 - --decorate after --no-decorate enables decorations (last-wins)
+#	
+#		(
+#		cd repo &&
+#		git log --no-decorate --decorate --oneline -n 1 >out &&
+#		grep "master" out
+#		)
+#	
+ok 14 - --no-decorate after --decorate disables decorations
+ok 15 - no decoration on undecorated commits
+not ok 16 - decoration only on commit that has refs
+#	
+#		(
+#		cd repo &&
+#		git log --oneline >out &&
+#		# Only first line (HEAD) should be decorated
+#		head -1 out | grep "(" &&
+#		tail -1 out >lastline &&
+#		! grep "(" lastline
+#		)
+#	
+ok 17 - setup: tag on older commit
+not ok 18 - older commit shows its tag in decoration
+#	
+#		(
+#		cd repo &&
+#		git log --oneline >out &&
+#		grep "old-tag" out
+#		)
+#	
+not ok 19 - old-tag appears on correct commit line
+#	
+#		(
+#		cd repo &&
+#		git log --oneline >out &&
+#		grep "old-tag" out | grep "first"
+#		)
+#	
+ok 20 - setup: multiple branches on HEAD
+not ok 21 - multiple branches shown in decoration
+#	
+#		(
+#		cd repo &&
+#		git log --oneline -n 1 >out &&
+#		grep "master" out &&
+#		grep "feature" out &&
+#		grep "another-branch" out
+#		)
+#	
+ok 22 - --decorate works with --format
+ok 23 - --no-decorate works with --format
+# failed 12 among 23 test(s)
+1..23
+# Tests: 23  Pass: 11  Fail: 12  Skip: 0

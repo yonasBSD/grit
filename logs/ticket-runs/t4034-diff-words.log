@@ -1,0 +1,80 @@
+ok 1 - setup
+ok 2 - set up pre and post with runs of whitespace
+ok 3 - word diff with runs of whitespace
+ok 4 - --word-diff=porcelain
+ok 5 - --word-diff=plain
+ok 6 - --word-diff=plain --color
+ok 7 - word diff without context
+ok 8 - word diff with a regular expression
+ok 9 - word diff with zero length matches
+ok 10 - set up a diff driver
+ok 11 - option overrides .gitattributes
+ok 12 - use regex supplied by driver
+ok 13 - set up diff.wordRegex option
+ok 14 - command-line overrides config
+ok 15 - command-line overrides config: --word-diff-regex
+ok 16 - .gitattributes override config
+ok 17 - setup: remove diff driver regex
+ok 18 - use configured regex
+ok 19 - test parsing words for newline
+ok 20 - test when words are only removed at the end
+ok 21 - --word-diff=none
+ok 22 - unset default driver
+ok 23 - diff driver 'ada'
+ok 24 - diff driver 'ada' in Islandic
+not ok 25 - diff driver 'bibtex'
+#	
+#			cp "$TEST_DIRECTORY/t4034/bibtex/pre" \
+#				"$TEST_DIRECTORY/t4034/bibtex/post" \
+#				"$TEST_DIRECTORY/t4034/bibtex/expect" . &&
+#			echo "* diff=bibtex" >.gitattributes &&
+#			word_diff --color-words
+#		
+not ok 26 - diff driver 'bibtex' in Islandic
+#	
+#			test_env LANG=is_IS.UTF-8 LANGUAGE=is LC_ALL="$is_IS_locale" \
+#			word_diff --color-words
+#		
+ok 27 - diff driver 'bash'
+ok 28 - diff driver 'bash' in Islandic
+ok 29 - diff driver 'cpp'
+ok 30 - diff driver 'cpp' in Islandic
+ok 31 - diff driver 'csharp'
+ok 32 - diff driver 'csharp' in Islandic
+ok 33 - diff driver 'css'
+ok 34 - diff driver 'css' in Islandic
+ok 35 - diff driver 'dts'
+ok 36 - diff driver 'dts' in Islandic
+ok 37 - diff driver 'fortran'
+ok 38 - diff driver 'fortran' in Islandic
+ok 39 - diff driver 'html'
+ok 40 - diff driver 'html' in Islandic
+ok 41 - diff driver 'java'
+ok 42 - diff driver 'java' in Islandic
+ok 43 - diff driver 'kotlin'
+ok 44 - diff driver 'kotlin' in Islandic
+ok 45 - diff driver 'matlab'
+ok 46 - diff driver 'matlab' in Islandic
+ok 47 - diff driver 'objc'
+ok 48 - diff driver 'objc' in Islandic
+ok 49 - diff driver 'pascal'
+ok 50 - diff driver 'pascal' in Islandic
+ok 51 - diff driver 'perl'
+ok 52 - diff driver 'perl' in Islandic
+ok 53 - diff driver 'php'
+ok 54 - diff driver 'php' in Islandic
+ok 55 - diff driver 'python'
+ok 56 - diff driver 'python' in Islandic
+ok 57 - diff driver 'ruby'
+ok 58 - diff driver 'ruby' in Islandic
+ok 59 - diff driver 'scheme'
+ok 60 - diff driver 'scheme' in Islandic
+ok 61 - diff driver 'tex'
+ok 62 - diff driver 'tex' in Islandic
+ok 63 - word-diff with diff.sbe
+ok 64 - word-diff with no newline at EOF
+ok 65 - setup history with two files
+ok 66 - wordRegex for the first file does not apply to the second
+# failed 2 among 66 test(s)
+1..66
+# Tests: 66  Pass: 64  Fail: 2  Skip: 0

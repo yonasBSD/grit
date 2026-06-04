@@ -1,0 +1,108 @@
+ok 1 - stash save --include-untracked some dirty working directory
+ok 2 - stash save --include-untracked cleaned the untracked files
+ok 3 - stash save --include-untracked stashed the untracked files
+ok 4 - stash save --patch --include-untracked fails
+ok 5 - stash save --patch --all fails
+ok 6 - clean up untracked/untracked file to prepare for next tests
+ok 7 - stash pop after save --include-untracked leaves files untracked again
+ok 8 - clean up untracked/ directory to prepare for next tests
+ok 9 - stash save -u dirty index
+ok 10 - stash save --include-untracked dirty index got stashed
+ok 11 - stash save --include-untracked -q is quiet
+ok 12 - stash save --include-untracked removed files
+ok 13 - stash save --include-untracked removed files got stashed
+ok 14 - stash save --include-untracked respects .gitignore
+ok 15 - stash save -u can stash with only untracked files different
+ok 16 - stash save --all does not respect .gitignore
+ok 17 - stash save --all is stash poppable
+ok 18 - stash push --include-untracked with pathspec
+ok 19 - stash push with $IFS character
+ok 20 - stash previously ignored file
+ok 21 - stash -u -- <untracked> doesnt print error
+ok 22 - stash -u -- <untracked> leaves rest of working tree in place
+ok 23 - stash -u -- <tracked> <untracked> clears changes in both
+ok 24 - stash --all -- <ignored> stashes ignored file
+ok 25 - stash --all -- <tracked> <ignored> clears changes in both
+ok 26 - stash -u -- <ignored> leaves ignored file alone
+ok 27 - stash -u -- <non-existent> shows no changes when there are none
+ok 28 - stash -u with globs
+not ok 29 - stash show --include-untracked shows untracked files
+#	
+#		git reset --hard &&
+#		git clean -xf &&
+#		>untracked &&
+#		>tracked &&
+#		git add tracked &&
+#		empty_blob_oid=$(git rev-parse --short :tracked) &&
+#		git stash -u &&
+#	
+#		cat >expect <<-EOF &&
+#		 tracked   | 0
+#		 untracked | 0
+#		 2 files changed, 0 insertions(+), 0 deletions(-)
+#		EOF
+#		git stash show --include-untracked >actual &&
+#		test_cmp expect actual &&
+#		git stash show -u >actual &&
+#		test_cmp expect actual &&
+#		git stash show --no-include-untracked --include-untracked >actual &&
+#		test_cmp expect actual &&
+#		git stash show --only-untracked --include-untracked >actual &&
+#		test_cmp expect actual &&
+#		git -c stash.showIncludeUntracked=true stash show >actual &&
+#		test_cmp expect actual &&
+#	
+#		cat >expect <<-EOF &&
+#		diff --git a/tracked b/tracked
+#		new file mode 100644
+#		index 0000000..$empty_blob_oid
+#		diff --git a/untracked b/untracked
+#		new file mode 100644
+#		index 0000000..$empty_blob_oid
+#		EOF
+#		git stash show -p --include-untracked >actual &&
+#		test_cmp expect actual &&
+#		git stash show --include-untracked -p >actual &&
+#		test_cmp expect actual &&
+#		git -c stash.showIncludeUntracked=true stash show -p >actual &&
+#		test_cmp expect actual
+#	
+ok 30 - stash show --only-untracked only shows untracked files
+not ok 31 - stash show --no-include-untracked cancels --{include,only}-untracked
+#	
+#		git reset --hard &&
+#		git clean -xf &&
+#		>untracked &&
+#		>tracked &&
+#		git add tracked &&
+#		git stash -u &&
+#	
+#		cat >expect <<-EOF &&
+#		 tracked | 0
+#		 1 file changed, 0 insertions(+), 0 deletions(-)
+#		EOF
+#		git stash show --only-untracked --no-include-untracked >actual &&
+#		test_cmp expect actual &&
+#		git stash show --include-untracked --no-include-untracked >actual &&
+#		test_cmp expect actual
+#	
+ok 32 - stash show --include-untracked errors on duplicate files
+not ok 33 - stash show --{include,only}-untracked on stashes without untracked entries
+#	
+#		git reset --hard &&
+#		git clean -xf &&
+#		>tracked &&
+#		git add tracked &&
+#		git stash &&
+#	
+#		git stash show >expect &&
+#		git stash show --include-untracked >actual &&
+#		test_cmp expect actual &&
+#	
+#		git stash show --only-untracked >actual &&
+#		test_must_be_empty actual
+#	
+ok 34 - stash -u ignores sub-repository
+# failed 3 among 34 test(s)
+1..34
+# Tests: 34  Pass: 31  Fail: 3  Skip: 0

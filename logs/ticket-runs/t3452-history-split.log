@@ -1,0 +1,463 @@
+ok 1 - refuses to work with merge commits
+ok 2 - errors on missing commit argument
+ok 3 - errors on unknown revision
+ok 4 - --dry-run does not modify any refs
+not ok 5 - can split up tip commit
+#	
+#		test_when_finished "rm -rf repo" &&
+#		git init repo &&
+#		(
+#			cd repo &&
+#			test_commit initial &&
+#			touch bar foo &&
+#			git add . &&
+#			git commit -m split-me &&
+#	
+#			git symbolic-ref HEAD >expect &&
+#			set_fake_editor "first" "second" &&
+#			git history split HEAD <<-EOF &&
+#			y
+#			n
+#			EOF
+#			git symbolic-ref HEAD >actual &&
+#			test_cmp expect actual &&
+#	
+#			expect_log <<-EOF &&
+#			second
+#			first
+#			initial
+#			EOF
+#	
+#			expect_tree_entries HEAD~ <<-EOF &&
+#			bar
+#			initial.t
+#			EOF
+#	
+#			expect_tree_entries HEAD <<-EOF &&
+#			bar
+#			foo
+#			initial.t
+#			EOF
+#	
+#			git reflog >reflog &&
+#			test_grep "split: updating HEAD" reflog
+#		)
+#	
+not ok 6 - can split up root commit
+#	
+#		test_when_finished "rm -rf repo" &&
+#		git init repo &&
+#		(
+#			cd repo &&
+#			touch bar foo &&
+#			git add . &&
+#			git commit -m root &&
+#			test_commit tip &&
+#	
+#			set_fake_editor "first" "second" &&
+#			git history split HEAD~ <<-EOF &&
+#			y
+#			n
+#			EOF
+#	
+#			expect_log <<-EOF &&
+#			tip
+#			second
+#			first
+#			EOF
+#	
+#			expect_tree_entries HEAD~2 <<-EOF &&
+#			bar
+#			EOF
+#	
+#			expect_tree_entries HEAD~ <<-EOF &&
+#			bar
+#			foo
+#			EOF
+#	
+#			expect_tree_entries HEAD <<-EOF
+#			bar
+#			foo
+#			tip.t
+#			EOF
+#		)
+#	
+not ok 7 - can split up in-between commit
+#	
+#		test_when_finished "rm -rf repo" &&
+#		git init repo &&
+#		(
+#			cd repo &&
+#			test_commit initial &&
+#			touch bar foo &&
+#			git add . &&
+#			git commit -m split-me &&
+#			test_commit tip &&
+#	
+#			set_fake_editor "first" "second" &&
+#			git history split HEAD~ <<-EOF &&
+#			y
+#			n
+#			EOF
+#	
+#			expect_log <<-EOF &&
+#			tip
+#			second
+#			first
+#			initial
+#			EOF
+#	
+#			expect_tree_entries HEAD~2 <<-EOF &&
+#			bar
+#			initial.t
+#			EOF
+#	
+#			expect_tree_entries HEAD~ <<-EOF &&
+#			bar
+#			foo
+#			initial.t
+#			EOF
+#	
+#			expect_tree_entries HEAD <<-EOF
+#			bar
+#			foo
+#			initial.t
+#			tip.t
+#			EOF
+#		)
+#	
+not ok 8 - can split HEAD only
+#	
+#		test_when_finished "rm -rf repo" &&
+#		git init repo &&
+#		(
+#			cd repo &&
+#			test_commit base &&
+#			touch a b &&
+#			git add . &&
+#			git commit -m split-me &&
+#			git branch unrelated &&
+#	
+#			set_fake_editor "ours-a" "ours-b" &&
+#			git history split --update-refs=head HEAD <<-EOF &&
+#			y
+#			n
+#			EOF
+#			expect_graph --branches <<-EOF
+#			* ours-b
+#			* ours-a
+#			| * split-me
+#			|/
+#			* base
+#			EOF
+#		)
+#	
+not ok 9 - can split detached HEAD
+#	
+#		test_when_finished "rm -rf repo" &&
+#		git init repo &&
+#		(
+#			cd repo &&
+#			test_commit initial &&
+#			touch bar foo &&
+#			git add . &&
+#			git commit -m split-me &&
+#			git checkout --detach HEAD &&
+#	
+#			set_fake_editor "first" "second" &&
+#			git history split --update-refs=head HEAD <<-EOF &&
+#			y
+#			n
+#			EOF
+#	
+#			# HEAD should be detached and updated.
+#			test_must_fail git symbolic-ref HEAD &&
+#	
+#			expect_log <<-EOF
+#			second
+#			first
+#			initial
+#			EOF
+#		)
+#	
+not ok 10 - can split commit in unrelated branch
+#	
+#		test_when_finished "rm -rf repo" &&
+#		git init repo &&
+#		(
+#			cd repo &&
+#			test_commit base &&
+#			git branch ours &&
+#			git switch --create theirs &&
+#			touch theirs-a theirs-b &&
+#			git add . &&
+#			git commit -m theirs &&
+#			git switch ours &&
+#			test_commit ours &&
+#	
+#			# With --update-refs=head it is not possible to split up a
+#			# commit that is unrelated to HEAD.
+#			test_must_fail git history split --update-refs=head theirs 2>err &&
+#			test_grep "rewritten commit must be an ancestor of HEAD" err &&
+#	
+#			set_fake_editor "theirs-rewritten-a" "theirs-rewritten-b" &&
+#			git history split theirs <<-EOF &&
+#			y
+#			n
+#			EOF
+#			expect_graph --branches <<-EOF &&
+#			* ours
+#			| * theirs-rewritten-b
+#			| * theirs-rewritten-a
+#			|/
+#			* base
+#			EOF
+#	
+#			expect_tree_entries theirs~ <<-EOF &&
+#			base.t
+#			theirs-a
+#			EOF
+#	
+#			expect_tree_entries theirs <<-EOF
+#			base.t
+#			theirs-a
+#			theirs-b
+#			EOF
+#		)
+#	
+not ok 11 - updates multiple descendant branches
+#	
+#		test_when_finished "rm -rf repo" &&
+#		git init repo --initial-branch=main &&
+#		(
+#			cd repo &&
+#			test_commit base &&
+#			touch file-a file-b &&
+#			git add . &&
+#			git commit -m split-me &&
+#			git branch branch &&
+#			test_commit on-main &&
+#			git switch branch &&
+#			test_commit on-branch &&
+#			git switch main &&
+#	
+#			set_fake_editor "split-a" "split-b" &&
+#			git history split HEAD~ <<-EOF &&
+#			y
+#			n
+#			EOF
+#	
+#			# Both branches should now descend from the split commits.
+#			expect_graph --branches <<-EOF
+#			* on-branch
+#			| * on-main
+#			|/
+#			* split-b
+#			* split-a
+#			* base
+#			EOF
+#		)
+#	
+ok 12 - can pick multiple hunks
+not ok 13 - can use only last hunk
+#	
+#		test_when_finished "rm -rf repo" &&
+#		git init repo &&
+#		(
+#			cd repo &&
+#			touch bar foo &&
+#			git add . &&
+#			git commit -m split-me &&
+#	
+#			set_fake_editor "first" "second" &&
+#			git history split HEAD <<-EOF &&
+#			n
+#			y
+#			EOF
+#	
+#			expect_log <<-EOF &&
+#			second
+#			first
+#			EOF
+#	
+#			expect_tree_entries HEAD~ <<-EOF &&
+#			foo
+#			EOF
+#	
+#			expect_tree_entries HEAD <<-EOF
+#			bar
+#			foo
+#			EOF
+#		)
+#	
+not ok 14 - can split commit with file deletions
+#	
+#		test_when_finished "rm -rf repo" &&
+#		git init repo &&
+#		(
+#			cd repo &&
+#			echo a >a &&
+#			echo b >b &&
+#			echo c >c &&
+#			git add . &&
+#			git commit -m base &&
+#			git rm a b &&
+#			git commit -m delete-both &&
+#	
+#			set_fake_editor "delete-a" "delete-b" &&
+#			git history split HEAD <<-EOF &&
+#			y
+#			n
+#			EOF
+#	
+#			expect_log <<-EOF &&
+#			delete-b
+#			delete-a
+#			base
+#			EOF
+#	
+#			expect_tree_entries HEAD~ <<-EOF &&
+#			b
+#			c
+#			EOF
+#	
+#			expect_tree_entries HEAD <<-EOF
+#			c
+#			EOF
+#		)
+#	
+ok 15 - preserves original authorship
+not ok 16 - aborts with empty commit message
+#	
+#		test_when_finished "rm -rf repo" &&
+#		git init repo &&
+#		(
+#			cd repo &&
+#			touch bar foo &&
+#			git add . &&
+#			git commit -m split-me &&
+#	
+#			set_fake_editor "" &&
+#			test_must_fail git history split HEAD <<-EOF 2>err &&
+#			y
+#			n
+#			EOF
+#			test_grep "Aborting commit due to empty commit message." err
+#		)
+#	
+not ok 17 - commit message editor sees split-out changes
+#	
+#		test_when_finished "rm -rf repo" &&
+#		git init repo &&
+#		(
+#			cd repo &&
+#			touch bar foo &&
+#			git add . &&
+#			git commit -m split-me &&
+#	
+#			write_script fake-editor.sh <<-\EOF &&
+#			cat "$1" >>MESSAGES &&
+#			echo "some commit message" >"$1"
+#			EOF
+#			test_set_editor "$(pwd)"/fake-editor.sh &&
+#	
+#			git history split HEAD <<-EOF &&
+#			y
+#			n
+#			EOF
+#	
+#			# Note that we expect to see the messages twice, once for each
+#			# of the commits. The committed files are different though.
+#			cat >expect <<-EOF &&
+#			split-me
+#	
+#			# Please enter the commit message for the split-out changes. Lines starting
+#			# with ${SQ}#${SQ} will be ignored, and an empty message aborts the commit.
+#			# Changes to be committed:
+#			#	new file:   bar
+#			#
+#			split-me
+#	
+#			# Please enter the commit message for the split-out changes. Lines starting
+#			# with ${SQ}#${SQ} will be ignored, and an empty message aborts the commit.
+#			# Changes to be committed:
+#			#	new file:   foo
+#			#
+#			EOF
+#			test_cmp expect MESSAGES &&
+#	
+#			expect_log <<-EOF
+#			some commit message
+#			some commit message
+#			EOF
+#		)
+#	
+ok 18 - can use pathspec to limit what gets split
+ok 19 - pathspec matching no files produces empty split error
+ok 20 - split with multiple pathspecs
+not ok 21 - split with file mode change
+#	
+#		test_when_finished "rm -rf repo" &&
+#		git init repo &&
+#		(
+#			cd repo &&
+#			echo content >script &&
+#			git add . &&
+#			git commit -m base &&
+#			test_chmod +x script &&
+#			echo change >script &&
+#			git commit -a -m "mode and content change" &&
+#	
+#			set_fake_editor "mode-change" "content-change" &&
+#			git history split HEAD <<-EOF &&
+#			y
+#			n
+#			EOF
+#	
+#			expect_log <<-EOF
+#			content-change
+#			mode-change
+#			base
+#			EOF
+#		)
+#	
+ok 22 - refuses to create empty split-out commit
+not ok 23 - hooks are not executed for rewritten commits
+#	
+#		test_when_finished "rm -rf repo" &&
+#		git init repo &&
+#		(
+#			cd repo &&
+#			touch bar foo &&
+#			git add . &&
+#			git commit -m split-me &&
+#			old_head=$(git rev-parse HEAD) &&
+#	
+#			ORIG_PATH="$(pwd)" &&
+#			export ORIG_PATH &&
+#			for hook in prepare-commit-msg pre-commit post-commit post-rewrite commit-msg
+#			do
+#				write_script .git/hooks/$hook <<-\EOF || exit 1
+#				touch "$ORIG_PATH"/hooks.log
+#				EOF
+#			done &&
+#	
+#			set_fake_editor "first" "second" &&
+#			git history split HEAD <<-EOF &&
+#			y
+#			n
+#			EOF
+#	
+#			expect_log <<-EOF &&
+#			second
+#			first
+#			EOF
+#	
+#			test_path_is_missing hooks.log
+#		)
+#	
+ok 24 - refuses to create empty original commit
+ok 25 - retains changes in the worktree and index
+# failed 13 among 25 test(s)
+1..25
+# Tests: 25  Pass: 12  Fail: 13  Skip: 0

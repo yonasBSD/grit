@@ -1,0 +1,85 @@
+ok 1 - Test of git add
+ok 2 - Test with no pathspecs
+ok 3 - Post-check that foo is in the index
+ok 4 - Test that "git add -- -q" works
+ok 5 - git add: core.fsyncmethod=batch
+ok 6 - git update-index: core.fsyncmethod=batch
+ok 7 - git add: Test that executable bit is not used if core.filemode=0
+ok 8 - git add: filemode=0 should not get confused by symlink
+ok 9 - git update-index --add: Test that executable bit is not used...
+ok 10 - git add: filemode=0 should not get confused by symlink
+ok 11 - git update-index --add: Test that executable bit is not used...
+ok 12 - .gitignore test setup
+ok 13 - .gitignore is honored
+ok 14 - error out when attempting to add ignored ones without -f
+ok 15 - error out when attempting to add ignored ones without -f
+ok 16 - error out when attempting to add ignored ones but add others
+ok 17 - add ignored ones with -f
+ok 18 - add ignored ones with -f
+ok 19 - add ignored ones with -f
+ok 20 - .gitignore with subdirectory
+ok 21 - check correct prefix detection
+ok 22 - git add with filemode=0, symlinks=0, and unmerged entries
+ok 23 - git add with filemode=0, symlinks=0 prefers stage 2 over stage 1
+not ok 24 - git add --refresh
+#	
+#		>foo && git add foo && git commit -a -m "commit all" &&
+#		test -z "$(git diff-index HEAD -- foo)" &&
+#		git read-tree HEAD &&
+#		case "$(git diff-index HEAD -- foo)" in
+#		:100644" "*"M	foo") echo pass;;
+#		*) echo fail; false;;
+#		esac &&
+#		git add --refresh -- foo &&
+#		test -z "$(git diff-index HEAD -- foo)"
+#	
+not ok 25 - git add --refresh with pathspec
+#	
+#		git reset --hard &&
+#		echo >foo && echo >bar && echo >baz &&
+#		git add foo bar baz && H=$(git rev-parse :foo) && git rm -f foo &&
+#		echo "100644 $H 3	foo" | git update-index --index-info &&
+#		test-tool chmtime -60 bar baz &&
+#		git add --refresh bar >actual &&
+#		test_must_be_empty actual &&
+#	
+#		git diff-files --name-only >actual &&
+#		test_grep ! bar actual &&
+#		test_grep baz actual
+#	
+ok 26 - git add --refresh correctly reports no match error
+ok 27 - git add should fail atomically upon an unreadable file
+ok 28 - git add --ignore-errors
+ok 29 - git add (add.ignore-errors)
+ok 30 - git add (add.ignore-errors = false)
+ok 31 - --no-ignore-errors overrides config
+ok 32 - git add 'fo\[ou\]bar' ignores foobar
+ok 33 - git add to resolve conflicts on otherwise ignored path
+ok 34 - "add non-existent" should fail
+ok 35 - git add -A on empty repo does not error out
+ok 36 - "git add ." in empty repo
+ok 37 - "git add" a embedded repository
+ok 38 - error on a repository with no commits
+ok 39 - git add --dry-run of existing changed file
+ok 40 - git add --dry-run of non-existing file
+ok 41 - git add --dry-run of an existing file output
+ok 42 - git add --dry-run --ignore-missing of non-existing file
+ok 43 - git add --dry-run --ignore-missing of non-existing file output
+ok 44 - git add --dry-run --interactive should fail
+ok 45 - git add empty string should fail
+ok 46 - git add --chmod=[+-]x stages correctly
+ok 47 - git add --chmod=+x with symlinks
+ok 48 - git add --chmod=[+-]x changes index with already added file
+ok 49 - git add --chmod=[+-]x does not change the working tree
+ok 50 - git add --chmod fails with non regular files (but updates the other paths)
+ok 51 - git add --chmod honors --dry-run
+ok 52 - git add --chmod --dry-run reports error for non regular files
+ok 53 - git add --chmod --dry-run reports error for unmatched pathspec
+ok 54 - no file status change if no pathspec is given
+ok 55 - no file status change if no pathspec is given in subdir
+ok 56 - all statuses changed in folder if . is given
+ok 57 - cannot add a submodule of a different algorithm
+ok 58 # skip path is case-insensitive (missing CASE_INSENSITIVE_FS)
+# failed 2 among 58 test(s)
+1..58
+# Tests: 58  Pass: 56  Fail: 2  Skip: 1

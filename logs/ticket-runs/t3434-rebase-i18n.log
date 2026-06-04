@@ -1,0 +1,76 @@
+ok 1 - setup
+not ok 2 - rebase --rebase-merges update encoding eucJP to UTF-8
+#	
+#		git switch -c merge-eucJP-UTF-8 first &&
+#		git config i18n.commitencoding eucJP &&
+#		git merge -F "$TEST_DIRECTORY/t3434/eucJP.txt" second &&
+#		git config i18n.commitencoding UTF-8 &&
+#		git rebase --rebase-merges main &&
+#		compare_msg eucJP.txt eucJP UTF-8
+#	
+not ok 3 - rebase --rebase-merges update encoding eucJP to ISO-2022-JP
+#	
+#		git switch -c merge-eucJP-ISO-2022-JP first &&
+#		git config i18n.commitencoding eucJP &&
+#		git merge -F "$TEST_DIRECTORY/t3434/eucJP.txt" second &&
+#		git config i18n.commitencoding ISO-2022-JP &&
+#		git rebase --rebase-merges main &&
+#		compare_msg eucJP.txt eucJP ISO-2022-JP
+#	
+not ok 4 - rebase --continue update from ISO-8859-1 to UTF-8
+#	
+#			(git rebase --abort || : abort current git-rebase failure) &&
+#			git switch -c conflict-$old-$new one &&
+#			echo for-conflict >two.t &&
+#			git add two.t &&
+#			git config i18n.commitencoding $old &&
+#			git commit -F "$TEST_DIRECTORY/t3434/$msgfile" &&
+#			git config i18n.commitencoding $new &&
+#			test_must_fail git rebase -m main &&
+#			test -f .git/rebase-merge/message &&
+#			git stripspace -s <.git/rebase-merge/message >two.t &&
+#			git add two.t &&
+#			git rebase --continue &&
+#			compare_msg $msgfile $old $new &&
+#			: git-commit assume invalid utf-8 is latin1 &&
+#			test_cmp expect two.t
+#		
+not ok 5 - rebase --continue update from eucJP to UTF-8
+#	
+#			(git rebase --abort || : abort current git-rebase failure) &&
+#			git switch -c conflict-$old-$new one &&
+#			echo for-conflict >two.t &&
+#			git add two.t &&
+#			git config i18n.commitencoding $old &&
+#			git commit -F "$TEST_DIRECTORY/t3434/$msgfile" &&
+#			git config i18n.commitencoding $new &&
+#			test_must_fail git rebase -m main &&
+#			test -f .git/rebase-merge/message &&
+#			git stripspace -s <.git/rebase-merge/message >two.t &&
+#			git add two.t &&
+#			git rebase --continue &&
+#			compare_msg $msgfile $old $new &&
+#			: git-commit assume invalid utf-8 is latin1 &&
+#			test_cmp expect two.t
+#		
+not ok 6 - rebase --continue update from eucJP to ISO-2022-JP
+#	
+#			(git rebase --abort || : abort current git-rebase failure) &&
+#			git switch -c conflict-$old-$new one &&
+#			echo for-conflict >two.t &&
+#			git add two.t &&
+#			git config i18n.commitencoding $old &&
+#			git commit -F "$TEST_DIRECTORY/t3434/$msgfile" &&
+#			git config i18n.commitencoding $new &&
+#			test_must_fail git rebase -m main &&
+#			test -f .git/rebase-merge/message &&
+#			git stripspace -s <.git/rebase-merge/message >two.t &&
+#			git add two.t &&
+#			git rebase --continue &&
+#			compare_msg $msgfile $old $new &&
+#			: git-commit assume invalid utf-8 is latin1 &&
+#			test_cmp expect two.t
+#		
+# failed 5 among 6 test(s)
+1..6
+# Tests: 6  Pass: 1  Fail: 5  Skip: 0

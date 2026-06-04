@@ -11,7 +11,7 @@ importantly — what it deliberately does **not**, so users know what to expect.
 
 v1 targets the **commonly used, non-interactive** local and network Git workflows,
 driven through `grit-lib` APIs and validated against the upstream Git test suite
-(`tests/`, tracked in `data/test-files.csv`).
+(`tests/`, tracked in the per-test status TOMLs under `data/tests/`).
 
 | Area | Status |
 |------|--------|
@@ -26,7 +26,7 @@ driven through `grit-lib` APIs and validated against the upstream Git test suite
 | **Submodules** (init/update/sync/deinit/status/foreach, non-interactive) | 🟡 `t7400` 111/124, `t7403` 18/18, `t7406` 43/70, others partial |
 | Transport: smart-HTTP + SSH fetch/push, Basic auth + credential helpers | ✅ `t5551`, `t5541`, `t5563`, `t5813`, `t5545`, `t5547` |
 
-(Counts are a snapshot; see `data/test-files.csv` / the dashboards for current numbers.)
+(Counts are a snapshot; see `data/tests/` / the dashboards for current numbers.)
 
 ## Explicitly OUT of scope for v1
 
@@ -79,5 +79,5 @@ These work for common cases but have documented gaps deferred past v1:
   artifacts, not grit defects.
 - GPG-backed subtests **skip** where `gpg-agent` cannot start in the sandbox; the SSH
   signing paths run for real and the GPG path is validated manually.
-- `data/test-files.csv` counts can lag the current binary — re-run a file to get its
+- `data/tests/` counts can lag the current binary — re-run a file to get its
   true count rather than trusting the dashboard snapshot.

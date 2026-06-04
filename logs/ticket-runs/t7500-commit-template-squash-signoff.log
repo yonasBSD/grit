@@ -1,0 +1,234 @@
+ok 1 - a basic commit in an empty tree should succeed
+ok 2 - nonexistent template file should return error
+ok 3 - nonexistent optional template file on command line
+ok 4 - nonexistent template file in config should return error
+ok 5 - nonexistent optional template file in config
+ok 6 - unedited template should not commit
+ok 7 - unedited template with comments should not commit
+ok 8 - a Signed-off-by line by itself should not commit
+ok 9 - adding comments to a template should not commit
+not ok 10 - adding real content to a template should commit
+#	
+#		(
+#			test_set_editor "$TEST_DIRECTORY"/t7500/add-content &&
+#			git commit --allow-empty --template "$TEMPLATE"
+#		) &&
+#		commit_msg_is "template linecommit message"
+#	
+not ok 11 - existent template marked optional should commit
+#	
+#		echo "existent template" >"$TEMPLATE" &&
+#		(
+#			test_set_editor "$TEST_DIRECTORY"/t7500/add-content &&
+#			git commit --allow-empty --template ":(optional)$TEMPLATE"
+#		) &&
+#		commit_msg_is "existent templatecommit message"
+#	
+not ok 12 - -t option should be short for --template
+#	
+#		echo "short template" > "$TEMPLATE" &&
+#		echo "new content" >> foo &&
+#		git add foo &&
+#		(
+#			test_set_editor "$TEST_DIRECTORY"/t7500/add-content &&
+#			git commit -t "$TEMPLATE"
+#		) &&
+#		commit_msg_is "short templatecommit message"
+#	
+not ok 13 - config-specified template should commit
+#	
+#		echo "new template" > "$TEMPLATE" &&
+#		test_config commit.template "$TEMPLATE" &&
+#		echo "more content" >> foo &&
+#		git add foo &&
+#		(
+#			test_set_editor "$TEST_DIRECTORY"/t7500/add-content &&
+#			git commit
+#		) &&
+#		commit_msg_is "new templatecommit message"
+#	
+ok 14 - explicit commit message should override template
+ok 15 - commit message from file should override template
+ok 16 - commit message from template with whitespace issue
+ok 17 - using alternate GIT_INDEX_FILE (1)
+ok 18 - using alternate GIT_INDEX_FILE (2)
+ok 19 - --signoff
+ok 20 - commit message from file (1)
+ok 21 - commit message from file (2)
+ok 22 - commit message from stdin
+ok 23 - commit -F overrides -t
+ok 24 - Commit without message is allowed with --allow-empty-message
+ok 25 - Commit without message is no-no without --allow-empty-message
+ok 26 - Commit a message with --allow-empty-message
+ok 27 - commit -C empty respects --allow-empty-message
+ok 28 - commit --fixup provides correct one-line commit message
+ok 29 - commit --fixup -m"something" -m"extra"
+not ok 30 - commit --fixup --edit
+#	
+#		commit_for_rebase_autosquash_setup &&
+#		EDITOR="printf \"something\nextra\" >>" git commit --fixup HEAD~1 --edit &&
+#		commit_msg_is "fixup! target message subject linesomething
+#	extra"
+#	
+not ok 31 - commit --fixup=amend: creates amend! commit
+#	
+#		commit_for_rebase_autosquash_setup &&
+#		cat >expected <<-EOF &&
+#		amend! $(git log -1 --format=%s HEAD~)
+#	
+#		$(get_commit_msg HEAD~)
+#	
+#		edited
+#		EOF
+#		(
+#			set_fake_editor &&
+#			FAKE_COMMIT_AMEND="edited" \
+#				git commit --fixup=amend:HEAD~
+#		) &&
+#		get_commit_msg HEAD >actual &&
+#		test_cmp expected actual
+#	
+not ok 32 - --fixup=amend: --only ignores staged changes
+#	
+#		commit_for_rebase_autosquash_setup &&
+#		cat >expected <<-EOF &&
+#		amend! $(git log -1 --format=%s HEAD~)
+#	
+#		$(get_commit_msg HEAD~)
+#	
+#		edited
+#		EOF
+#		(
+#			set_fake_editor &&
+#			FAKE_COMMIT_AMEND="edited" \
+#				git commit --fixup=amend:HEAD~ --only
+#		) &&
+#		get_commit_msg HEAD >actual &&
+#		test_cmp expected actual &&
+#		test_cmp_rev HEAD@{1}^{tree} HEAD^{tree} &&
+#		test_cmp_rev HEAD@{1} HEAD^ &&
+#		test_expect_code 1 git diff --cached --exit-code &&
+#		git cat-file blob :foo >actual &&
+#		test_cmp foo actual
+#	
+not ok 33 - --fixup=reword: ignores staged changes
+#	
+#		commit_for_rebase_autosquash_setup &&
+#		cat >expected <<-EOF &&
+#		amend! $(git log -1 --format=%s HEAD~)
+#	
+#		$(get_commit_msg HEAD~)
+#	
+#		edited
+#		EOF
+#		(
+#			set_fake_editor &&
+#			FAKE_COMMIT_AMEND="edited" \
+#				git commit --fixup=reword:HEAD~
+#		) &&
+#		get_commit_msg HEAD >actual &&
+#		test_cmp expected actual &&
+#		test_cmp_rev HEAD@{1}^{tree} HEAD^{tree} &&
+#		test_cmp_rev HEAD@{1} HEAD^ &&
+#		test_expect_code 1 git diff --cached --exit-code &&
+#		git cat-file blob :foo >actual &&
+#		test_cmp foo actual
+#	
+ok 34 - --fixup=reword: error out with -m option
+ok 35 - --fixup=amend: error out with -m option
+not ok 36 - consecutive amend! commits remove amend! line from commit msg body
+#	
+#		commit_for_rebase_autosquash_setup &&
+#		cat >expected <<-EOF &&
+#		amend! amend! $(git log -1 --format=%s HEAD~)
+#	
+#		$(get_commit_msg HEAD~)
+#	
+#		edited 1
+#	
+#		edited 2
+#		EOF
+#		echo "reword new commit message" >actual &&
+#		(
+#			set_fake_editor &&
+#			FAKE_COMMIT_AMEND="edited 1" \
+#				git commit --fixup=reword:HEAD~ &&
+#			FAKE_COMMIT_AMEND="edited 2" \
+#				git commit --fixup=reword:HEAD
+#		) &&
+#		get_commit_msg HEAD >actual &&
+#		test_cmp expected actual
+#	
+not ok 37 - deny to create amend! commit if its commit msg body is empty
+#	
+#		commit_for_rebase_autosquash_setup &&
+#		echo "Aborting commit due to empty commit message body." >expected &&
+#		(
+#			set_fake_editor &&
+#			test_must_fail env FAKE_COMMIT_MESSAGE="amend! target message subject line" \
+#				git commit --fixup=amend:HEAD~ 2>actual
+#		) &&
+#		test_cmp expected actual
+#	
+not ok 38 - amend! commit allows empty commit msg body with --allow-empty-message
+#	
+#		commit_for_rebase_autosquash_setup &&
+#		cat >expected <<-EOF &&
+#		amend! $(git log -1 --format=%s HEAD~)
+#		EOF
+#		(
+#			set_fake_editor &&
+#			FAKE_COMMIT_MESSAGE="amend! target message subject line" \
+#				git commit --fixup=amend:HEAD~ --allow-empty-message &&
+#			get_commit_msg HEAD >actual
+#		) &&
+#		test_cmp expected actual
+#	
+ok 39 - --fixup=reword: incompatible with --all
+ok 40 - --fixup=reword: incompatible with --include
+ok 41 - --fixup=reword: incompatible with --only
+ok 42 - --fixup=reword: incompatible with --interactive
+ok 43 - --fixup=reword: incompatible with --patch
+ok 44 - --fixup=reword: give error with pathsec
+ok 45 - --fixup=reword: -F give error message
+ok 46 - commit --squash works with -F
+ok 47 - commit --squash works with -m
+ok 48 - commit --squash works with -C
+not ok 49 - commit --squash works with -c
+#	
+#		commit_for_rebase_autosquash_setup &&
+#		test_set_editor "$TEST_DIRECTORY"/t7500/edit-content &&
+#		git commit --squash HEAD~1 -c HEAD &&
+#		commit_msg_is "squash! target message subject lineedited commit"
+#	
+ok 50 - commit --squash works with -C for same commit
+not ok 51 - commit --squash works with -c for same commit
+#	
+#		commit_for_rebase_autosquash_setup &&
+#		test_set_editor "$TEST_DIRECTORY"/t7500/edit-content &&
+#		git commit --squash HEAD -c HEAD &&
+#		commit_msg_is "squash! edited commit"
+#	
+not ok 52 - commit --squash works with editor
+#	
+#		commit_for_rebase_autosquash_setup &&
+#		test_set_editor "$TEST_DIRECTORY"/t7500/add-content &&
+#		git commit --squash HEAD~1 &&
+#		commit_msg_is "squash! target message subject linecommit message"
+#	
+ok 53 - invalid message options when using --fixup
+not ok 54 - new line found before status message in commit template
+#	
+#		git checkout -b commit-template-check &&
+#		git reset --hard HEAD &&
+#		touch commit-template-check &&
+#		git add commit-template-check &&
+#		GIT_EDITOR="cat >editor-input" git commit --untracked-files=no --allow-empty-message &&
+#		test_cmp expected-template editor-input
+#	
+ok 55 - setup empty commit with unstaged rename and copy
+ok 56 - check commit with unstaged rename and copy
+ok 57 - commit without staging files fails and displays hints
+# failed 15 among 57 test(s)
+1..57
+# Tests: 57  Pass: 42  Fail: 15  Skip: 0

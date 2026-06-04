@@ -1,0 +1,39 @@
+ok 1 - setup repository with mixed file modes
+ok 2 - checkout-index preserves 644 mode
+ok 3 - checkout-index preserves 755 mode (executable)
+ok 4 - checkout-index restores symlink
+ok 5 - checkout-index -a restores all top-level files
+ok 6 - after -a, executable bit is preserved
+ok 7 - after -a, symlink target is correct
+ok 8 - checkout-index --prefix writes to subdir
+ok 9 - checkout-index --prefix preserves executable mode
+ok 10 - checkout-index --prefix preserves symlinks
+ok 11 - checkout-index --prefix with nested dirs
+ok 12 - checkout-index --prefix specific file
+ok 13 - checkout-index --prefix with --mkdir creates dirs
+ok 14 - checkout-index --temp creates temp file
+ok 15 - checkout-index --temp output has tab-separated name
+ok 16 - checkout-index --temp with executable
+ok 17 - checkout-index --stdin reads paths from stdin
+ok 18 - checkout-index --stdin -z reads NUL-terminated paths
+not ok 19 - checkout-index without --force refuses existing dirty file
+#	
+#		(
+#		cd repo &&
+#		echo "dirty" >normal.txt &&
+#		test_must_fail grit checkout-index normal.txt 2>err &&
+#		test "$(cat normal.txt)" = "dirty" &&
+#		echo "normal file" >normal.txt
+#		)
+#	
+ok 20 - checkout-index -f overwrites existing file
+ok 21 - checkout-index --force overwrites existing file
+ok 22 - ls-files --stage shows correct modes
+ok 23 - ls-files --stage shows nested file
+ok 24 - checkout-index multiple named files
+ok 25 - checkout-index nonexistent file fails
+ok 26 - checkout-index -q suppresses errors on missing
+ok 27 - checkout-index --prefix with trailing slash required
+# failed 1 among 27 test(s)
+1..27
+# Tests: 27  Pass: 26  Fail: 1  Skip: 0

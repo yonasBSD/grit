@@ -1,0 +1,256 @@
+ok 1 - setup
+ok 2 - "add" an existing worktree
+ok 3 - "add" an existing empty worktree
+ok 4 - "add" using shorthand - fails when no previous branch
+ok 5 - "add" using - shorthand
+ok 6 - "add" refuses to checkout locked branch
+ok 7 - checking out paths not complaining about linked checkouts
+ok 8 - "add" worktree
+ok 9 - "add" worktree with lock
+ok 10 - "add" worktree with lock and reason
+ok 11 - "add" worktree with reason but no lock
+ok 12 - "add" worktree from a subdir
+ok 13 - "add" from a linked checkout
+ok 14 - "add" worktree creating new branch
+ok 15 - die the same branch is already checked out
+ok 16 - refuse to reset a branch in use elsewhere
+ok 17 - die the same branch is already checked out (symlink)
+ok 18 - not die the same branch is already checked out
+ok 19 - not die on re-checking out current branch
+ok 20 - "add" from a bare repo
+ok 21 - checkout from a bare repo without "add"
+ok 22 - "add" default branch of a bare repo
+ok 23 - "add" to bare repo with worktree config
+ok 24 - checkout with grafts
+ok 25 - "add" from relative HEAD
+ok 26 - "add -b" with <branch> omitted
+ok 27 - "add --detach" with <branch> omitted
+ok 28 - "add" with <branch> omitted
+ok 29 - "add" checks out existing branch of dwimd name
+ok 30 - "add <path>" dwim fails with checked out branch
+ok 31 - "add --force" with existing dwimd name doesnt die
+ok 32 - "add" no auto-vivify with --detach and <branch> omitted
+ok 33 - 'worktree add' with '-b poodle -B poodle bamboo main' has mutually exclusive options
+ok 34 - 'worktree add' with '-b poodle --detach bamboo main' has mutually exclusive options
+ok 35 - 'worktree add' with '-B poodle --detach bamboo main' has mutually exclusive options
+ok 36 - 'worktree add' with '--orphan --detach bamboo' has mutually exclusive options
+ok 37 - 'worktree add' with '--orphan --no-checkout bamboo' has mutually exclusive options
+ok 38 - 'worktree add' with '--orphan bamboo main' has mutually exclusive options
+ok 39 - 'worktree add' with '--orphan -b bamboo wtdir/ main' has mutually exclusive options
+ok 40 - "add -B" fails if the branch is checked out
+ok 41 - add -B
+ok 42 - add --quiet
+ok 43 - add --quiet -b
+ok 44 - "add --orphan"
+ok 45 - "add --orphan (no -b)"
+ok 46 - "add --orphan --quiet"
+ok 47 - "add --orphan" fails if the branch already exists
+ok 48 - "add --orphan" with empty repository
+ok 49 - "add" worktree with orphan branch and lock
+ok 50 - "add" worktree with orphan branch, lock, and reason
+ok 51 - 'worktree add' show orphan hint in bad/orphan HEAD w/ no opts
+ok 52 - 'worktree add' show orphan hint in bad/orphan HEAD w/ -b
+ok 53 - 'worktree add' show orphan hint in bad/orphan HEAD w/ -B
+ok 54 - 'worktree add' doesn't show orphan hint in bad/orphan HEAD w/ --quiet
+ok 55 - local clone from linked checkout
+ok 56 - local clone --shared from linked checkout
+ok 57 - "add" worktree with --no-checkout
+ok 58 - "add" worktree with --checkout
+not ok 59 - put a worktree under rebase
+#	
+#		git worktree add under-rebase &&
+#		(
+#			cd under-rebase &&
+#			set_fake_editor &&
+#			FAKE_LINES="edit 1" git rebase -i HEAD^ &&
+#			git worktree list >actual &&
+#			grep "under-rebase.*detached HEAD" actual
+#		)
+#	
+ok 60 - add a worktree, checking out a rebased branch
+ok 61 - checking out a rebased branch from another worktree
+ok 62 - not allow to delete a branch under rebase
+not ok 63 - rename a branch under rebase not allowed
+#	
+#		test_must_fail git branch -M under-rebase rebase-with-new-name
+#	
+not ok 64 - check out from current worktree branch ok
+#	
+#		(
+#			cd under-rebase &&
+#			git checkout under-rebase &&
+#			git checkout - &&
+#			git rebase --abort
+#		)
+#	
+ok 65 - checkout a branch under bisect
+ok 66 - rename a branch under bisect not allowed
+ok 67 - --track sets up tracking
+ok 68 - "add" <path> <remote/branch> w/ no HEAD
+ok 69 - --no-track avoids setting up tracking
+ok 70 - "add" <path> <non-existent-branch> fails
+ok 71 - "add" <path> <branch> dwims
+ok 72 - "add" <path> <branch> dwims with checkout.defaultRemote
+ok 73 - git worktree add does not match remote
+ok 74 - git worktree add --guess-remote sets up tracking
+ok 75 - git worktree add --guess-remote sets up tracking (quiet)
+ok 76 - git worktree --no-guess-remote (quiet)
+ok 77 - git worktree add with worktree.guessRemote sets up tracking
+ok 78 - git worktree --no-guess-remote option overrides config
+ok 79 - "add" DWIM infer --orphan w/ empty repo, DWIM (no --branch), no --quiet (expect output), 'cd repo && git', no --branch
+ok 80 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'cd repo && git', no --branch, >=1 local branches, valid HEAD
+ok 81 - "add" DWIM infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'cd repo && git', no --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 82 - "add" DWIM infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'cd repo && git', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 83 - "add" error need fetch w/ DWIM (no --branch), no --quiet (expect output), 'cd repo && git', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 84 - "add" DWIM infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'cd repo && git', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote, --force
+ok 85 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'cd repo && git', no --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 86 - "add" DWIM infer --orphan w/ empty repo, no --quiet (expect output), 'cd repo && git', --branch
+ok 87 - "add" DWIM doesnt infer --orphan w/ no --quiet (expect output), 'cd repo && git', --branch, >=1 local branches, valid HEAD
+ok 88 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'cd repo && git', --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 89 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'cd repo && git', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 90 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'cd repo && git', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 91 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'cd repo && git', --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 92 - "add" error, warn on bad HEAD, hint use orphan w/ DWIM (no --branch), no --quiet (expect output), 'cd repo && git', no --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 93 - "add" error, warn on bad HEAD, hint use orphan w/ no --quiet (expect output), 'cd repo && git', --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 94 - "add" error, warn on bad HEAD, hint use orphan w/ no --quiet (expect output), 'cd repo && git', --detach, >=1 local branches, invalid (or orphan) HEAD
+ok 95 - "add" DWIM infer --orphan w/ empty repo, DWIM (no --branch), no --quiet (expect output), 'cd wt && git', no --branch
+ok 96 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'cd wt && git', no --branch, >=1 local branches, valid HEAD
+ok 97 - "add" DWIM infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'cd wt && git', no --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 98 - "add" DWIM infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'cd wt && git', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 99 - "add" error need fetch w/ DWIM (no --branch), no --quiet (expect output), 'cd wt && git', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 100 - "add" DWIM infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'cd wt && git', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote, --force
+ok 101 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'cd wt && git', no --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 102 - "add" DWIM infer --orphan w/ empty repo, no --quiet (expect output), 'cd wt && git', --branch
+ok 103 - "add" DWIM doesnt infer --orphan w/ no --quiet (expect output), 'cd wt && git', --branch, >=1 local branches, valid HEAD
+ok 104 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'cd wt && git', --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 105 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'cd wt && git', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 106 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'cd wt && git', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 107 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'cd wt && git', --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 108 - "add" error, warn on bad HEAD, hint use orphan w/ DWIM (no --branch), no --quiet (expect output), 'cd wt && git', no --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 109 - "add" error, warn on bad HEAD, hint use orphan w/ no --quiet (expect output), 'cd wt && git', --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 110 - "add" error, warn on bad HEAD, hint use orphan w/ no --quiet (expect output), 'cd wt && git', --detach, >=1 local branches, invalid (or orphan) HEAD
+ok 111 - "add" DWIM infer --orphan w/ empty repo, DWIM (no --branch), no --quiet (expect output), 'git -C repo', no --branch
+ok 112 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'git -C repo', no --branch, >=1 local branches, valid HEAD
+ok 113 - "add" DWIM infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'git -C repo', no --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 114 - "add" DWIM infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'git -C repo', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 115 - "add" error need fetch w/ DWIM (no --branch), no --quiet (expect output), 'git -C repo', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 116 - "add" DWIM infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'git -C repo', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote, --force
+ok 117 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'git -C repo', no --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 118 - "add" DWIM infer --orphan w/ empty repo, no --quiet (expect output), 'git -C repo', --branch
+ok 119 - "add" DWIM doesnt infer --orphan w/ no --quiet (expect output), 'git -C repo', --branch, >=1 local branches, valid HEAD
+ok 120 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'git -C repo', --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 121 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'git -C repo', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 122 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'git -C repo', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 123 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'git -C repo', --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 124 - "add" error, warn on bad HEAD, hint use orphan w/ DWIM (no --branch), no --quiet (expect output), 'git -C repo', no --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 125 - "add" error, warn on bad HEAD, hint use orphan w/ no --quiet (expect output), 'git -C repo', --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 126 - "add" error, warn on bad HEAD, hint use orphan w/ no --quiet (expect output), 'git -C repo', --detach, >=1 local branches, invalid (or orphan) HEAD
+ok 127 - "add" DWIM infer --orphan w/ empty repo, DWIM (no --branch), no --quiet (expect output), 'git -C wt', no --branch
+ok 128 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'git -C wt', no --branch, >=1 local branches, valid HEAD
+ok 129 - "add" DWIM infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'git -C wt', no --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 130 - "add" DWIM infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'git -C wt', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 131 - "add" error need fetch w/ DWIM (no --branch), no --quiet (expect output), 'git -C wt', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 132 - "add" DWIM infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'git -C wt', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote, --force
+ok 133 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), no --quiet (expect output), 'git -C wt', no --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 134 - "add" DWIM infer --orphan w/ empty repo, no --quiet (expect output), 'git -C wt', --branch
+ok 135 - "add" DWIM doesnt infer --orphan w/ no --quiet (expect output), 'git -C wt', --branch, >=1 local branches, valid HEAD
+ok 136 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'git -C wt', --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 137 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'git -C wt', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 138 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'git -C wt', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 139 - "add" DWIM infer --orphan w/ no --quiet (expect output), 'git -C wt', --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 140 - "add" error, warn on bad HEAD, hint use orphan w/ DWIM (no --branch), no --quiet (expect output), 'git -C wt', no --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 141 - "add" error, warn on bad HEAD, hint use orphan w/ no --quiet (expect output), 'git -C wt', --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 142 - "add" error, warn on bad HEAD, hint use orphan w/ no --quiet (expect output), 'git -C wt', --detach, >=1 local branches, invalid (or orphan) HEAD
+ok 143 - "add" error inferred "--orphan" gives illegal opts combo w/ empty repo, DWIM (no --branch), no --quiet (expect output), no --branch, --no-checkout
+ok 144 - "add" error inferred "--orphan" gives illegal opts combo w/ empty repo, DWIM (no --branch), no --quiet (expect output), no --branch, --track
+ok 145 - "add" error inferred "--orphan" gives illegal opts combo w/ empty repo, no --quiet (expect output), --branch, --no-checkout
+ok 146 - "add" error inferred "--orphan" gives illegal opts combo w/ empty repo, no --quiet (expect output), --branch, --track
+ok 147 - "add" DWIM infer --orphan w/ empty repo, DWIM (no --branch), --quiet, 'cd repo && git', no --branch
+ok 148 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), --quiet, 'cd repo && git', no --branch, >=1 local branches, valid HEAD
+ok 149 - "add" DWIM infer --orphan w/ DWIM (no --branch), --quiet, 'cd repo && git', no --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 150 - "add" DWIM infer --orphan w/ DWIM (no --branch), --quiet, 'cd repo && git', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 151 - "add" error need fetch w/ DWIM (no --branch), --quiet, 'cd repo && git', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 152 - "add" DWIM infer --orphan w/ DWIM (no --branch), --quiet, 'cd repo && git', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote, --force
+ok 153 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), --quiet, 'cd repo && git', no --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 154 - "add" DWIM infer --orphan w/ empty repo, --quiet, 'cd repo && git', --branch
+ok 155 - "add" DWIM doesnt infer --orphan w/ --quiet, 'cd repo && git', --branch, >=1 local branches, valid HEAD
+ok 156 - "add" DWIM infer --orphan w/ --quiet, 'cd repo && git', --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 157 - "add" DWIM infer --orphan w/ --quiet, 'cd repo && git', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 158 - "add" DWIM infer --orphan w/ --quiet, 'cd repo && git', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 159 - "add" DWIM infer --orphan w/ --quiet, 'cd repo && git', --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 160 - "add" error, warn on bad HEAD, hint use orphan w/ DWIM (no --branch), --quiet, 'cd repo && git', no --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 161 - "add" error, warn on bad HEAD, hint use orphan w/ --quiet, 'cd repo && git', --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 162 - "add" error, warn on bad HEAD, hint use orphan w/ --quiet, 'cd repo && git', --detach, >=1 local branches, invalid (or orphan) HEAD
+ok 163 - "add" DWIM infer --orphan w/ empty repo, DWIM (no --branch), --quiet, 'cd wt && git', no --branch
+ok 164 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), --quiet, 'cd wt && git', no --branch, >=1 local branches, valid HEAD
+ok 165 - "add" DWIM infer --orphan w/ DWIM (no --branch), --quiet, 'cd wt && git', no --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 166 - "add" DWIM infer --orphan w/ DWIM (no --branch), --quiet, 'cd wt && git', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 167 - "add" error need fetch w/ DWIM (no --branch), --quiet, 'cd wt && git', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 168 - "add" DWIM infer --orphan w/ DWIM (no --branch), --quiet, 'cd wt && git', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote, --force
+ok 169 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), --quiet, 'cd wt && git', no --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 170 - "add" DWIM infer --orphan w/ empty repo, --quiet, 'cd wt && git', --branch
+ok 171 - "add" DWIM doesnt infer --orphan w/ --quiet, 'cd wt && git', --branch, >=1 local branches, valid HEAD
+ok 172 - "add" DWIM infer --orphan w/ --quiet, 'cd wt && git', --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 173 - "add" DWIM infer --orphan w/ --quiet, 'cd wt && git', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 174 - "add" DWIM infer --orphan w/ --quiet, 'cd wt && git', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 175 - "add" DWIM infer --orphan w/ --quiet, 'cd wt && git', --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 176 - "add" error, warn on bad HEAD, hint use orphan w/ DWIM (no --branch), --quiet, 'cd wt && git', no --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 177 - "add" error, warn on bad HEAD, hint use orphan w/ --quiet, 'cd wt && git', --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 178 - "add" error, warn on bad HEAD, hint use orphan w/ --quiet, 'cd wt && git', --detach, >=1 local branches, invalid (or orphan) HEAD
+ok 179 - "add" DWIM infer --orphan w/ empty repo, DWIM (no --branch), --quiet, 'git -C repo', no --branch
+ok 180 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), --quiet, 'git -C repo', no --branch, >=1 local branches, valid HEAD
+ok 181 - "add" DWIM infer --orphan w/ DWIM (no --branch), --quiet, 'git -C repo', no --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 182 - "add" DWIM infer --orphan w/ DWIM (no --branch), --quiet, 'git -C repo', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 183 - "add" error need fetch w/ DWIM (no --branch), --quiet, 'git -C repo', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 184 - "add" DWIM infer --orphan w/ DWIM (no --branch), --quiet, 'git -C repo', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote, --force
+ok 185 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), --quiet, 'git -C repo', no --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 186 - "add" DWIM infer --orphan w/ empty repo, --quiet, 'git -C repo', --branch
+ok 187 - "add" DWIM doesnt infer --orphan w/ --quiet, 'git -C repo', --branch, >=1 local branches, valid HEAD
+ok 188 - "add" DWIM infer --orphan w/ --quiet, 'git -C repo', --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 189 - "add" DWIM infer --orphan w/ --quiet, 'git -C repo', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 190 - "add" DWIM infer --orphan w/ --quiet, 'git -C repo', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 191 - "add" DWIM infer --orphan w/ --quiet, 'git -C repo', --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 192 - "add" error, warn on bad HEAD, hint use orphan w/ DWIM (no --branch), --quiet, 'git -C repo', no --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 193 - "add" error, warn on bad HEAD, hint use orphan w/ --quiet, 'git -C repo', --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 194 - "add" error, warn on bad HEAD, hint use orphan w/ --quiet, 'git -C repo', --detach, >=1 local branches, invalid (or orphan) HEAD
+ok 195 - "add" DWIM infer --orphan w/ empty repo, DWIM (no --branch), --quiet, 'git -C wt', no --branch
+ok 196 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), --quiet, 'git -C wt', no --branch, >=1 local branches, valid HEAD
+ok 197 - "add" DWIM infer --orphan w/ DWIM (no --branch), --quiet, 'git -C wt', no --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 198 - "add" DWIM infer --orphan w/ DWIM (no --branch), --quiet, 'git -C wt', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 199 - "add" error need fetch w/ DWIM (no --branch), --quiet, 'git -C wt', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 200 - "add" DWIM infer --orphan w/ DWIM (no --branch), --quiet, 'git -C wt', no --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote, --force
+ok 201 - "add" DWIM doesnt infer --orphan w/ DWIM (no --branch), --quiet, 'git -C wt', no --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 202 - "add" DWIM infer --orphan w/ empty repo, --quiet, 'git -C wt', --branch
+ok 203 - "add" DWIM doesnt infer --orphan w/ --quiet, 'git -C wt', --branch, >=1 local branches, valid HEAD
+ok 204 - "add" DWIM infer --orphan w/ --quiet, 'git -C wt', --branch, 0 local branches, 0 remotes, 0 fetched remote branches, --no-guess-remote
+ok 205 - "add" DWIM infer --orphan w/ --quiet, 'git -C wt', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --no-guess-remote
+ok 206 - "add" DWIM infer --orphan w/ --quiet, 'git -C wt', --branch, 0 local branches, >=1 remotes, 0 fetched remote branches, --guess-remote
+ok 207 - "add" DWIM infer --orphan w/ --quiet, 'git -C wt', --branch, 0 local branches, >=1 remotes, >=1 fetched remote branches, --guess-remote
+ok 208 - "add" error, warn on bad HEAD, hint use orphan w/ DWIM (no --branch), --quiet, 'git -C wt', no --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 209 - "add" error, warn on bad HEAD, hint use orphan w/ --quiet, 'git -C wt', --branch, >=1 local branches, invalid (or orphan) HEAD
+ok 210 - "add" error, warn on bad HEAD, hint use orphan w/ --quiet, 'git -C wt', --detach, >=1 local branches, invalid (or orphan) HEAD
+ok 211 - "add" error inferred "--orphan" gives illegal opts combo w/ empty repo, DWIM (no --branch), --quiet, no --branch, --no-checkout
+ok 212 - "add" error inferred "--orphan" gives illegal opts combo w/ empty repo, DWIM (no --branch), --quiet, no --branch, --track
+ok 213 - "add" error inferred "--orphan" gives illegal opts combo w/ empty repo, --quiet, --branch, --no-checkout
+ok 214 - "add" error inferred "--orphan" gives illegal opts combo w/ empty repo, --quiet, --branch, --track
+ok 215 - "add" invokes post-checkout hook (branch)
+ok 216 - "add" invokes post-checkout hook (detached)
+ok 217 - "add --no-checkout" suppresses post-checkout hook
+ok 218 - "add" in other worktree invokes post-checkout hook
+ok 219 - "add" in bare repo invokes post-checkout hook
+ok 220 - "add" an existing but missing worktree
+ok 221 - "add" an existing locked but missing worktree
+ok 222 - "add" not tripped up by magic worktree matching"
+ok 223 - sanitize generated worktree name
+ok 224 - "add" should not fail because of another bad worktree
+ok 225 - "add" with uninitialized submodule, with submodule.recurse unset
+ok 226 - "add" with uninitialized submodule, with submodule.recurse set
+ok 227 - "add" with initialized submodule, with submodule.recurse unset
+ok 228 - "add" with initialized submodule, with submodule.recurse set
+ok 229 - can create worktrees with relative paths
+ok 230 - can create worktrees with absolute paths
+ok 231 - move repo without breaking relative internal links
+ok 232 - relative worktree sets extension config
+# failed 3 among 232 test(s)
+1..232
+# Tests: 232  Pass: 229  Fail: 3  Skip: 0

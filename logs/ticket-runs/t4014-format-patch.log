@@ -1,0 +1,244 @@
+ok 1 - setup
+ok 2 - format-patch --ignore-if-in-upstream
+ok 3 - format-patch --ignore-if-in-upstream
+ok 4 - format-patch --ignore-if-in-upstream handles tags
+ok 5 - format-patch doesn't consider merge commits
+ok 6 - format-patch result applies
+ok 7 - format-patch --ignore-if-in-upstream result applies
+ok 8 - commit did not screw up the log message
+ok 9 - format-patch did not screw up the log message
+ok 10 - replay did not screw up the log message
+ok 11 - format-patch empty commit
+ok 12 - extra headers
+ok 13 - extra headers without newlines
+ok 14 - extra headers with multiple To:s
+ok 15 - additional command line cc (ascii)
+ok 16 - additional command line cc (rfc822)
+ok 17 - command line headers
+ok 18 - configuration headers and command line headers
+ok 19 - command line To: header (ascii)
+ok 20 - command line To: header (rfc822)
+ok 21 - command line To: header (rfc2047)
+ok 22 - configuration To: header (ascii)
+ok 23 - configuration To: header (rfc822)
+ok 24 - configuration To: header (rfc2047)
+ok 25 - format.from=false
+ok 26 - format.from=true
+ok 27 - format.from with address
+ok 28 - --no-from overrides format.from
+ok 29 - --from overrides format.from
+ok 30 - --no-to overrides config.to
+ok 31 - --no-to and --to replaces config.to
+ok 32 - --no-cc overrides config.cc
+ok 33 - --no-add-header overrides config.headers
+ok 34 - multiple files
+ok 35 - filename length limit
+ok 36 - filename length limit from config
+ok 37 - filename limit applies only to basename
+ok 38 - reroll count
+ok 39 - reroll count (-v)
+ok 40 - reroll count (-v) with a fractional number
+ok 41 - reroll (-v) count with a non number
+ok 42 - reroll (-v) count with a non-pathname character
+ok 43 - no threading
+ok 44 - thread
+ok 45 - --thread overrides format.thread=deep
+ok 46 - thread in-reply-to
+ok 47 - thread cover-letter
+ok 48 - thread cover-letter in-reply-to
+ok 49 - thread explicit shallow
+ok 50 - thread deep
+ok 51 - thread deep in-reply-to
+ok 52 - thread deep cover-letter
+ok 53 - thread deep cover-letter in-reply-to
+ok 54 - thread via config
+ok 55 - thread deep via config
+ok 56 - thread config + override
+ok 57 - thread config + --no-thread
+ok 58 - excessive subject
+ok 59 - failure to write cover-letter aborts gracefully
+ok 60 - cover-letter inherits diff options
+ok 61 - shortlog of cover-letter wraps overly-long onelines
+ok 62 - format-patch respects -U
+ok 63 - format-patch -p suppresses stat
+ok 64 - format-patch from a subdirectory (1)
+ok 65 - format-patch from a subdirectory (2)
+ok 66 - format-patch from a subdirectory (3)
+ok 67 - format-patch --in-reply-to
+ok 68 - format-patch --signoff
+ok 69 - format-patch --notes --signoff
+ok 70 - format-patch notes output control
+ok 71 - format-patch with multiple notes refs
+ok 72 - format-patch with multiple notes refs in config
+ok 73 - options no longer allowed for format-patch
+ok 74 - format-patch --numstat should produce a patch
+ok 75 - format-patch -- <path>
+ok 76 - format-patch --ignore-if-in-upstream HEAD
+ok 77 - get git version
+ok 78 - format-patch default signature
+ok 79 - format-patch --signature
+ok 80 - format-patch with format.signature config
+ok 81 - format-patch --signature overrides format.signature
+ok 82 - format-patch --no-signature ignores format.signature
+ok 83 - format-patch --signature --cover-letter
+ok 84 - format.signature="" suppresses signatures
+ok 85 - format-patch --no-signature suppresses signatures
+ok 86 - format-patch --signature="" suppresses signatures
+ok 87 - prepare mail-signature input
+ok 88 - --signature-file=file works
+ok 89 - format.signaturefile works
+ok 90 - --no-signature suppresses format.signaturefile 
+ok 91 - --signature-file overrides format.signaturefile
+ok 92 - --signature overrides format.signaturefile
+ok 93 # skip format-patch --stdout paginates (missing TTY)
+ok 94 # skip format-patch --stdout pagination can be disabled (missing TTY)
+ok 95 - format-patch handles multi-line subjects
+ok 96 - format-patch handles multi-line encoded subjects
+ok 97 - format-patch wraps extremely long subject (ascii)
+ok 98 - format-patch wraps extremely long subject (rfc2047)
+ok 99 - format-patch quotes dot in from-headers
+ok 100 - format-patch quotes double-quote in from-headers
+ok 101 - format-patch uses rfc2047-encoded from-headers when necessary
+ok 102 - rfc2047-encoded from-headers leave no rfc822 specials
+ok 103 - format-patch wraps moderately long from-header (ascii)
+ok 104 - format-patch wraps extremely long from-header (ascii)
+ok 105 - format-patch wraps extremely long from-header (rfc822)
+ok 106 - format-patch wraps extremely long from-header (rfc2047)
+ok 107 - format-patch wraps extremely long from-header (non-ASCII without Q-encoding)
+ok 108 - subject lines are unencoded with --no-encode-email-headers
+ok 109 - subject lines are unencoded with format.encodeEmailHeaders=false
+ok 110 - --encode-email-headers overrides format.encodeEmailHeaders
+ok 111 - subject lines do not have 822 atom-quoting
+ok 112 - subject prefixes have space prepended
+ok 113 - empty subject prefix does not have extra space
+ok 114 - --rfc and --no-rfc
+ok 115 - --rfc=WIP and --rfc=
+ok 116 - --rfc=-(WIP) appends
+ok 117 - --rfc does not overwrite prefix
+ok 118 - --rfc is argument order independent
+ok 119 - --subject-prefix="<non-empty>" and -k cannot be used together
+ok 120 - --subject-prefix="" and -k cannot be used together
+ok 121 - --rfc and -k cannot be used together
+ok 122 - --from=ident notices bogus ident
+ok 123 - --from=ident replaces author
+ok 124 - --from uses committer ident
+ok 125 - --from applies to cover letter
+ok 126 - --from omits redundant in-body header
+ok 127 - with --force-in-body-from, redundant in-body from is kept
+ok 128 - format.forceInBodyFrom, equivalent to --force-in-body-from
+ok 129 - format.forceInBodyFrom, equivalent to --force-in-body-from
+ok 130 - in-body headers trigger content encoding
+ok 131 - signoff: commit with no body
+ok 132 - signoff: commit with only subject
+ok 133 - signoff: commit with only subject that does not end with NL
+ok 134 - signoff: no existing signoffs
+ok 135 - signoff: no existing signoffs and no trailing NL
+ok 136 - signoff: some random signoff
+ok 137 - signoff: misc conforming footer elements
+ok 138 - signoff: some random signoff-alike
+ok 139 - signoff: not really a signoff
+ok 140 - signoff: not really a signoff (2)
+ok 141 - signoff: valid S-o-b paragraph in the middle
+ok 142 - signoff: the same signoff at the end
+ok 143 - signoff: the same signoff at the end, no trailing NL
+ok 144 - signoff: the same signoff NOT at the end
+ok 145 - signoff: tolerate garbage in conforming footer
+ok 146 - signoff: respect trailer config
+ok 147 - signoff: footer begins with non-signoff without @ sign
+ok 148 - format patch ignores color.ui
+ok 149 - format patch respects diff.relative
+ok 150 - cover letter with invalid --cover-from-description and config
+ok 151 - cover letter with format.coverFromDescription = default
+ok 152 - cover letter with --cover-from-description default
+ok 153 - cover letter with format.coverFromDescription = none
+ok 154 - cover letter with --cover-from-description none
+ok 155 - cover letter with format.coverFromDescription = message
+ok 156 - cover letter with --cover-from-description message
+ok 157 - cover letter with format.coverFromDescription = subject
+ok 158 - cover letter with --cover-from-description subject
+ok 159 - cover letter with --cover-from-description subject (UTF-8 subject line)
+ok 160 - cover letter with format.coverFromDescription = auto (short subject line)
+ok 161 - cover letter with --cover-from-description auto (short subject line)
+ok 162 - cover letter with format.coverFromDescription = auto (long subject line)
+ok 163 - cover letter with --cover-from-description auto (long subject line)
+ok 164 - cover letter with command-line --cover-from-description overrides config
+ok 165 - cover letter using branch description (1)
+ok 166 - cover letter using branch description (2)
+ok 167 - cover letter using branch description (3)
+ok 168 - cover letter using branch description (4)
+ok 169 - cover letter using branch description (5)
+ok 170 - cover letter using branch description (6)
+ok 171 - cover letter with --description-file
+ok 172 - cover letter with nothing
+ok 173 - cover letter auto
+ok 174 - cover letter auto user override
+ok 175 - format-patch --zero-commit
+ok 176 - From line has expected format
+ok 177 - format-patch -o with no leading directories
+ok 178 - format-patch -o with leading existing directories
+ok 179 - format-patch -o with leading non-existing directories
+ok 180 - format-patch format.outputDirectory option
+ok 181 - format-patch -o overrides format.outputDirectory
+ok 182 - format-patch forbids multiple outputs
+ok 183 - configured outdir does not conflict with output options
+ok 184 - format-patch --output
+ok 185 - format-patch --cover-letter --output
+ok 186 - format-patch --base
+ok 187 - format-patch --base errors out when base commit is in revision list
+not ok 188 - format-patch --base errors out when base commit is not ancestor of revision list
+#	
+#		# For history as below:
+#		#
+#		#    ---Q---P---Z---Y---*---X
+#		#	 \             /
+#		#	  ------------W
+#		#
+#		# If "format-patch Z..X" is given, P and Z can not be specified as the base commit
+#		git checkout -b topic1 main &&
+#		git rev-parse HEAD >commit-id-base &&
+#		test_commit P &&
+#		git rev-parse HEAD >commit-id-P &&
+#		test_commit Z &&
+#		git rev-parse HEAD >commit-id-Z &&
+#		test_commit Y &&
+#		git checkout -b topic2 main &&
+#		test_commit W &&
+#		git merge topic1 &&
+#		test_commit X &&
+#		test_must_fail git format-patch --base=$(cat commit-id-P) -3 &&
+#		test_must_fail git format-patch --base=$(cat commit-id-Z) -3 &&
+#		git format-patch --stdout --base=$(cat commit-id-base) -3 >patch &&
+#		grep "^base-commit:" patch >actual &&
+#		echo "base-commit: $(cat commit-id-base)" >expect &&
+#		test_cmp expect actual
+#	
+ok 189 - format-patch --base=auto
+ok 190 - format-patch errors out when history involves criss-cross
+ok 191 - format-patch format.useAutoBase whenAble history involves criss-cross
+ok 192 - format-patch format.useAutoBase option
+ok 193 - format-patch format.useAutoBase option with whenAble
+ok 194 - format-patch --base overrides format.useAutoBase
+ok 195 - format-patch --no-base overrides format.useAutoBase
+ok 196 - format-patch --no-base overrides format.useAutoBase whenAble
+ok 197 - format-patch --base with --attach
+ok 198 - format-patch --attach cover-letter only is non-multipart
+ok 199 - format-patch with format.attach
+ok 200 - format-patch with format.attach=disabled
+ok 201 - -c format.mboxrd format-patch
+ok 202 - interdiff: setup
+ok 203 - interdiff: cover-letter
+ok 204 - interdiff: reroll-count
+ok 205 - interdiff: reroll-count with a non-integer
+ok 206 - interdiff: reroll-count with a integer
+ok 207 - interdiff: solo-patch
+ok 208 - range-diff: solo-patch
+ok 209 - interdiff: multi-patch, implicit --cover-letter
+ok 210 - interdiff: explicit --no-cover-letter defeats implied --cover-letter
+ok 211 - format-patch does not respect diff.noprefix
+ok 212 - format-patch respects format.noprefix
+ok 213 - format.noprefix=false
+ok 214 - format-patch --default-prefix overrides format.noprefix
+ok 215 - errors on format.noprefix which is not boolean
+# failed 1 among 215 test(s)
+1..215
+# Tests: 215  Pass: 214  Fail: 1  Skip: 2

@@ -1,0 +1,104 @@
+not ok 1 - status untracked directory with --ignored
+#	
+#		echo "ignored" >.gitignore &&
+#		mkdir untracked &&
+#		: >untracked/ignored &&
+#		: >untracked/uncommitted &&
+#		git status --porcelain --ignored >actual &&
+#		test_cmp expected actual
+#	
+not ok 2 - same with gitignore starting with BOM
+#	
+#		printf "\357\273\277ignored\n" >.gitignore &&
+#		mkdir -p untracked &&
+#		: >untracked/ignored &&
+#		: >untracked/uncommitted &&
+#		git status --porcelain --ignored >actual &&
+#		test_cmp expected actual
+#	
+ok 3 - status untracked files --ignored with pathspec (no match)
+not ok 4 - status untracked files --ignored with pathspec (literal match)
+#	
+#		git status --porcelain --ignored -- untracked/ignored >actual &&
+#		echo "!! untracked/ignored" >expected &&
+#		test_cmp expected actual &&
+#		git status --porcelain --ignored -- untracked/uncommitted >actual &&
+#		echo "?? untracked/uncommitted" >expected &&
+#		test_cmp expected actual
+#	
+not ok 5 - status untracked files --ignored with pathspec (glob match)
+#	
+#		git status --porcelain --ignored -- untracked/i\* >actual &&
+#		echo "!! untracked/ignored" >expected &&
+#		test_cmp expected actual &&
+#		git status --porcelain --ignored -- untracked/u\* >actual &&
+#		echo "?? untracked/uncommitted" >expected &&
+#		test_cmp expected actual
+#	
+not ok 6 - status untracked directory with --ignored -u
+#	
+#		git status --porcelain --ignored -u >actual &&
+#		test_cmp expected actual
+#	
+not ok 7 - status of untracked directory with --ignored works with or without prefix
+#	
+#		git status --porcelain --ignored >tmp &&
+#		grep untracked/ tmp >actual &&
+#		rm tmp &&
+#		test_cmp expected actual &&
+#	
+#		git status --porcelain --ignored untracked/ >actual &&
+#		test_cmp expected actual
+#	
+not ok 8 - status prefixed untracked sub-directory with --ignored -u
+#	
+#		git status --porcelain --ignored -u untracked/ >actual &&
+#		test_cmp expected actual
+#	
+not ok 9 - status ignored directory with --ignore
+#	
+#		rm -rf untracked &&
+#		mkdir ignored &&
+#		: >ignored/uncommitted &&
+#		git status --porcelain --ignored >actual &&
+#		test_cmp expected actual
+#	
+not ok 10 - status ignored directory with --ignore -u
+#	
+#		git status --porcelain --ignored -u >actual &&
+#		test_cmp expected actual
+#	
+ok 11 - status empty untracked directory with --ignore
+ok 12 - status empty untracked directory with --ignore -u
+not ok 13 - status untracked directory with ignored files with --ignore
+#	
+#		: >untracked-ignored/ignored &&
+#		: >untracked-ignored/test/ignored &&
+#		git status --porcelain --ignored >actual &&
+#		test_cmp expected actual
+#	
+not ok 14 - status untracked directory with ignored files with --ignore -u
+#	
+#		git status --porcelain --ignored -u >actual &&
+#		test_cmp expected actual
+#	
+ok 15 - status ignored tracked directory with --ignore
+ok 16 - status ignored tracked directory with --ignore -u
+ok 17 - status ignored tracked directory and ignored file with --ignore
+ok 18 - status ignored tracked directory and ignored file with --ignore -u
+ok 19 - status ignored tracked directory and uncommitted file with --ignore
+ok 20 - status ignored tracked directory and uncommitted file with --ignore -u
+ok 21 - status ignored tracked directory with uncommitted file in untracked subdir with --ignore
+ok 22 - status ignored tracked directory with uncommitted file in untracked subdir with --ignore -u
+ok 23 - status ignored tracked directory with uncommitted file in tracked subdir with --ignore
+ok 24 - status ignored tracked directory with uncommitted file in tracked subdir with --ignore -u
+not ok 25 - status ignores submodule in excluded directory
+#	
+#		git init tracked/submodule &&
+#		test_commit -C tracked/submodule initial &&
+#		git status --porcelain --ignored -u tracked/submodule >actual &&
+#		test_cmp expected actual
+#	
+# failed 12 among 25 test(s)
+1..25
+# Tests: 25  Pass: 13  Fail: 12  Skip: 0

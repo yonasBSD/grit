@@ -1,0 +1,233 @@
+ok 1 - setup
+ok 2 - git diff-tree initial # magic is (not used)
+ok 3 - git diff-tree -r initial # magic is (not used)
+ok 4 - git diff-tree -r --abbrev initial # magic is (not used)
+ok 5 - git diff-tree -r --abbrev=4 initial # magic is (not used)
+ok 6 - git diff-tree --root initial # magic is (not used)
+ok 7 - git diff-tree --root --abbrev initial # magic is (not used)
+ok 8 - git diff-tree --root --abbrev initial # magic is noellipses
+ok 9 - git diff-tree --root -r initial # magic is (not used)
+ok 10 - git diff-tree --root -r --abbrev initial # magic is (not used)
+ok 11 - git diff-tree --root -r --abbrev initial # magic is noellipses
+ok 12 - git diff-tree --root -r --abbrev=4 initial # magic is (not used)
+ok 13 - git diff-tree --root -r --abbrev=4 initial # magic is noellipses
+ok 14 - git diff-tree -p initial # magic is (not used)
+ok 15 - git diff-tree --root -p initial # magic is (not used)
+ok 16 - git diff-tree --root -p --abbrev=10 initial # magic is (not used)
+ok 17 - git diff-tree --root -p --full-index initial # magic is (not used)
+ok 18 - git diff-tree --root -p --full-index --abbrev=10 initial # magic is (not used)
+ok 19 - git diff-tree --patch-with-stat initial # magic is (not used)
+ok 20 - git diff-tree --root --patch-with-stat initial # magic is (not used)
+ok 21 - git diff-tree --patch-with-raw initial # magic is (not used)
+ok 22 - git diff-tree --root --patch-with-raw initial # magic is (not used)
+ok 23 - git diff-tree --pretty initial # magic is (not used)
+ok 24 - git diff-tree --pretty --root initial # magic is (not used)
+ok 25 - git diff-tree --pretty -p initial # magic is (not used)
+ok 26 - git diff-tree --pretty --stat initial # magic is (not used)
+ok 27 - git diff-tree --pretty --summary initial # magic is (not used)
+ok 28 - git diff-tree --pretty --stat --summary initial # magic is (not used)
+ok 29 - git diff-tree --pretty --root -p initial # magic is (not used)
+ok 30 - git diff-tree --pretty --root --stat initial # magic is (not used)
+ok 31 - git diff-tree --pretty --root --summary initial # magic is (not used)
+ok 32 - git diff-tree --pretty --root --summary -r initial # magic is (not used)
+ok 33 - git diff-tree --pretty --root --stat --summary initial # magic is (not used)
+ok 34 - git diff-tree --pretty --patch-with-stat initial # magic is (not used)
+ok 35 - git diff-tree --pretty --root --patch-with-stat initial # magic is (not used)
+ok 36 - git diff-tree --pretty --patch-with-raw initial # magic is (not used)
+ok 37 - git diff-tree --pretty --root --patch-with-raw initial # magic is (not used)
+ok 38 - git diff-tree --pretty=oneline initial # magic is (not used)
+ok 39 - git diff-tree --pretty=oneline --root initial # magic is (not used)
+ok 40 - git diff-tree --pretty=oneline -p initial # magic is (not used)
+ok 41 - git diff-tree --pretty=oneline --root -p initial # magic is (not used)
+ok 42 - git diff-tree --pretty=oneline --patch-with-stat initial # magic is (not used)
+ok 43 - git diff-tree --pretty=oneline --root --patch-with-stat initial # magic is (not used)
+ok 44 - git diff-tree --pretty=oneline --patch-with-raw initial # magic is (not used)
+ok 45 - git diff-tree --pretty=oneline --root --patch-with-raw initial # magic is (not used)
+ok 46 - git diff-tree --pretty side # magic is (not used)
+ok 47 - git diff-tree --pretty -p side # magic is (not used)
+ok 48 - git diff-tree --pretty --patch-with-stat side # magic is (not used)
+ok 49 - git diff-tree initial mode # magic is (not used)
+ok 50 - git diff-tree --stat initial mode # magic is (not used)
+ok 51 - git diff-tree --summary initial mode # magic is (not used)
+ok 52 - git diff-tree main # magic is (not used)
+ok 53 - git diff-tree -m main # magic is (not used)
+ok 54 - git diff-tree -p main # magic is (not used)
+ok 55 - git diff-tree -p -m main # magic is (not used)
+ok 56 - git diff-tree -c main # magic is (not used)
+ok 57 - git diff-tree -c --abbrev main # magic is (not used)
+ok 58 - git diff-tree -c --abbrev main # magic is noellipses
+ok 59 - git diff-tree --cc main # magic is (not used)
+ok 60 - git diff-tree -c --stat main # magic is (not used)
+ok 61 - git diff-tree --cc --stat main # magic is (not used)
+ok 62 - git diff-tree -c --stat --summary main # magic is (not used)
+ok 63 - git diff-tree --cc --stat --summary main # magic is (not used)
+ok 64 - git diff-tree -c --stat --summary side # magic is (not used)
+ok 65 - git diff-tree --cc --stat --summary side # magic is (not used)
+ok 66 - git diff-tree --cc --shortstat main # magic is (not used)
+ok 67 - git diff-tree --cc --summary REVERSE # magic is (not used)
+ok 68 - git diff-tree --cc --patch-with-stat main # magic is (not used)
+ok 69 - git diff-tree --cc --patch-with-stat --summary main # magic is (not used)
+ok 70 - git diff-tree --cc --patch-with-stat --summary side # magic is (not used)
+ok 71 - git log main # magic is (not used)
+ok 72 - git log -p main # magic is (not used)
+ok 73 - git log --root main # magic is (not used)
+ok 74 - git log --root -p main # magic is (not used)
+ok 75 - git log --patch-with-stat main # magic is (not used)
+ok 76 - git log --root --patch-with-stat main # magic is (not used)
+ok 77 - git log --root --patch-with-stat --summary main # magic is (not used)
+ok 78 - git log --root -c --patch-with-stat --summary main # magic is (not used)
+ok 79 - git log --root --cc --patch-with-stat --summary main # magic is (not used)
+ok 80 - git log --no-diff-merges -p --first-parent main # magic is (not used)
+ok 81 - git log --diff-merges=off -p --first-parent main # magic is (not used)
+ok 82 - git log --first-parent --diff-merges=off -p main # magic is (not used)
+ok 83 - git log -p --first-parent main # magic is (not used)
+ok 84 - git log -p --diff-merges=first-parent main # magic is (not used)
+ok 85 - git log --diff-merges=first-parent main # magic is (not used)
+ok 86 - git log -m -p --first-parent main # magic is (not used)
+ok 87 - git log -m -p main # magic is (not used)
+ok 88 - git log --cc -m -p main # magic is (not used)
+ok 89 - git log -c -m -p main # magic is (not used)
+ok 90 - git log -m --raw main # magic is (not used)
+ok 91 - git log -m --stat main # magic is (not used)
+ok 92 - git log -SF main # magic is (not used)
+ok 93 - git log -S F main # magic is (not used)
+ok 94 - git log -SF -p main # magic is (not used)
+ok 95 - git log -SF main --max-count=0 # magic is (not used)
+ok 96 - git log -SF main --max-count=1 # magic is (not used)
+ok 97 - git log -SF main --max-count=2 # magic is (not used)
+ok 98 - git log -GF main # magic is (not used)
+ok 99 - git log -GF -p main # magic is (not used)
+ok 100 - git log -GF -p --pickaxe-all main # magic is (not used)
+ok 101 - git log -IA -IB -I1 -I2 -p main # magic is (not used)
+ok 102 - git log --decorate --all # magic is (not used)
+ok 103 - git log --decorate=full --all # magic is (not used)
+ok 104 - git log --decorate --clear-decorations --all # magic is (not used)
+ok 105 - git log --decorate=full --clear-decorations --all # magic is (not used)
+ok 106 - git rev-list --parents HEAD # magic is (not used)
+ok 107 - git rev-list --children HEAD # magic is (not used)
+ok 108 - git whatchanged main # magic is (not used)
+ok 109 - git whatchanged main # magic is noellipses
+ok 110 - git whatchanged -p main # magic is (not used)
+ok 111 - git whatchanged --root main # magic is (not used)
+ok 112 - git whatchanged --root main # magic is noellipses
+ok 113 - git whatchanged --root -p main # magic is (not used)
+ok 114 - git whatchanged --patch-with-stat main # magic is (not used)
+ok 115 - git whatchanged --root --patch-with-stat main # magic is (not used)
+ok 116 - git whatchanged --root --patch-with-stat --summary main # magic is (not used)
+ok 117 - git whatchanged --root -c --patch-with-stat --summary main # magic is (not used)
+ok 118 - git whatchanged --root --cc --patch-with-stat --summary main # magic is (not used)
+ok 119 - git whatchanged -SF main # magic is (not used)
+ok 120 - git whatchanged -SF main # magic is noellipses
+ok 121 - git whatchanged -SF -p main # magic is (not used)
+ok 122 - git log --patch-with-stat main -- dir/ # magic is (not used)
+ok 123 - git whatchanged --patch-with-stat main -- dir/ # magic is (not used)
+ok 124 - git log --patch-with-stat --summary main -- dir/ # magic is (not used)
+ok 125 - git whatchanged --patch-with-stat --summary main -- dir/ # magic is (not used)
+ok 126 - git show initial # magic is (not used)
+ok 127 - git show --root initial # magic is (not used)
+ok 128 - git show side # magic is (not used)
+ok 129 - git show main # magic is (not used)
+ok 130 - git show -c main # magic is (not used)
+ok 131 - git show -m main # magic is (not used)
+ok 132 - git show --first-parent main # magic is (not used)
+ok 133 - git show --stat side # magic is (not used)
+ok 134 - git show --stat --summary side # magic is (not used)
+ok 135 - git show --patch-with-stat side # magic is (not used)
+ok 136 - git show --patch-with-raw side # magic is (not used)
+ok 137 - git show --patch-with-raw side # magic is noellipses
+ok 138 - git show --patch-with-stat --summary side # magic is (not used)
+ok 139 - git format-patch --stdout initial..side # magic is (not used)
+ok 140 - git format-patch --stdout initial..main^ # magic is (not used)
+ok 141 - git format-patch --stdout initial..main # magic is (not used)
+ok 142 - git format-patch --stdout --no-numbered initial..main # magic is (not used)
+ok 143 - git format-patch --stdout --numbered initial..main # magic is (not used)
+ok 144 - git format-patch --attach --stdout initial..side # magic is (not used)
+ok 145 - git format-patch --attach --stdout --suffix=.diff initial..side # magic is (not used)
+ok 146 - git format-patch --attach --stdout initial..main^ # magic is (not used)
+ok 147 - git format-patch --attach --stdout initial..main # magic is (not used)
+ok 148 - git format-patch --inline --stdout initial..side # magic is (not used)
+ok 149 - git format-patch --inline --stdout initial..main^ # magic is (not used)
+ok 150 - git format-patch --inline --stdout --numbered-files initial..main # magic is (not used)
+ok 151 - git format-patch --inline --stdout initial..main # magic is (not used)
+ok 152 - git format-patch --inline --stdout --subject-prefix=TESTCASE initial..main # magic is (not used)
+ok 153 - git config format.subjectprefix DIFFERENT_PREFIX # magic is (not used)
+ok 154 - git format-patch --inline --stdout initial..main^^ # magic is (not used)
+ok 155 - git format-patch --stdout --cover-letter -n initial..main^ # magic is (not used)
+ok 156 - git diff --abbrev initial..side # magic is (not used)
+ok 157 - git diff -U initial..side # magic is (not used)
+ok 158 - git diff -U1 initial..side # magic is (not used)
+ok 159 - git diff -r initial..side # magic is (not used)
+ok 160 - git diff --stat initial..side # magic is (not used)
+ok 161 - git diff -r --stat initial..side # magic is (not used)
+ok 162 - git diff initial..side # magic is (not used)
+ok 163 - git diff --patch-with-stat initial..side # magic is (not used)
+ok 164 - git diff --patch-with-raw initial..side # magic is (not used)
+ok 165 - git diff --patch-with-raw initial..side # magic is noellipses
+ok 166 - git diff --patch-with-stat -r initial..side # magic is (not used)
+ok 167 - git diff --patch-with-raw -r initial..side # magic is (not used)
+ok 168 - git diff --patch-with-raw -r initial..side # magic is noellipses
+ok 169 - git diff --name-status dir2 dir # magic is (not used)
+ok 170 - git diff --no-index --name-status dir2 dir # magic is (not used)
+ok 171 - git diff --no-index --name-status -- dir2 dir # magic is (not used)
+ok 172 - git diff --no-index dir dir3 # magic is (not used)
+ok 173 - git diff main main^ side # magic is (not used)
+ok 174 - git diff --line-prefix=abc main main^ side # magic is (not used)
+ok 175 - git diff --dirstat main~1 main~2 # magic is (not used)
+ok 176 - git diff --dirstat initial rearrange # magic is (not used)
+ok 177 - git diff --dirstat-by-file initial rearrange # magic is (not used)
+ok 178 - git diff --dirstat --cc main~1 main # magic is (not used)
+ok 179 - git diff --raw initial # magic is (not used)
+ok 180 - git diff --raw initial # magic is noellipses
+ok 181 - git diff --raw --abbrev=4 initial # magic is (not used)
+ok 182 - git diff --raw --abbrev=4 initial # magic is noellipses
+ok 183 - git diff --raw --no-abbrev initial # magic is (not used)
+ok 184 - git diff --no-index --raw dir2 dir # magic is (not used)
+ok 185 - git diff --no-index --raw dir2 dir # magic is noellipses
+ok 186 - git diff --no-index --raw --abbrev=4 dir2 dir # magic is (not used)
+ok 187 - git diff --no-index --raw --abbrev=4 dir2 dir # magic is noellipses
+ok 188 - git diff --no-index --raw --no-abbrev dir2 dir # magic is (not used)
+ok 189 - git diff-tree --pretty --root --stat --compact-summary initial # magic is (not used)
+ok 190 - git diff-tree --pretty -R --root --stat --compact-summary initial # magic is (not used)
+ok 191 - git diff-tree --pretty note # magic is (not used)
+ok 192 - git diff-tree --pretty --notes note # magic is (not used)
+ok 193 - git diff-tree --format=%N note # magic is (not used)
+ok 194 - git diff-tree --stat --compact-summary initial mode # magic is (not used)
+ok 195 - git diff-tree -R --stat --compact-summary initial mode # magic is (not used)
+ok 196 - whatchanged needs --i-still-use-this
+ok 197 - log -m matches pure log
+ok 198 - log --diff-merges=on matches --diff-merges=separate
+ok 199 - log --dd matches --diff-merges=1 -p
+ok 200 - deny wrong log.diffMerges config
+ok 201 - git config log.diffMerges first-parent
+ok 202 - git config log.diffMerges first-parent vs -m
+ok 203 - git diff-index -m
+ok 204 - log -S requires an argument
+ok 205 - diff --cached on unborn branch
+ok 206 - diff --cached -- file on unborn branch
+ok 207 - diff --line-prefix with spaces
+ok 208 - diff-tree --stdin with log formatting
+ok 209 - diff-tree --stdin with pathspec
+ok 210 - show A B ... -- <pathspec>
+ok 211 - diff -I<regex>: setup
+ok 212 - diff -I<regex>
+ok 213 - diff -I<regex> --stat
+ok 214 - diff -I<regex>: detect malformed regex
+ok 215 - diff -I<regex>: ignore matching file
+ok 216 - diff -I<regex>: ignore all content changes
+ok 217 - diff-files does not respect diff.noPrefix
+ok 218 - diff-files respects --no-prefix
+ok 219 - diff respects diff.noPrefix
+ok 220 - diff --default-prefix overrides diff.noPrefix
+ok 221 - diff respects diff.mnemonicPrefix
+ok 222 - diff --default-prefix overrides diff.mnemonicPrefix
+ok 223 - diff respects diff.srcPrefix
+ok 224 - diff respects diff.dstPrefix
+ok 225 - diff --src-prefix overrides diff.srcPrefix
+ok 226 - diff --dst-prefix overrides diff.dstPrefix
+ok 227 - diff.{src,dst}Prefix ignored with diff.noPrefix
+ok 228 - diff.{src,dst}Prefix ignored with diff.mnemonicPrefix
+ok 229 - diff.{src,dst}Prefix ignored with --default-prefix
+ok 230 - diff --no-renames cannot be abbreviated
+# passed all 230 test(s)
+1..230
+# Tests: 230  Pass: 230  Fail: 0  Skip: 0

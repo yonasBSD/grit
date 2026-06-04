@@ -1,0 +1,557 @@
+ok 1 - setup
+ok 2 - usage on cmd and subcommand invalid option
+ok 3 - usage on main command -h emits a summary of subcommands
+ok 4 - usage for subcommands should emit subcommand usage
+ok 5 - stash some dirty working directory
+ok 6 - parents of stash
+ok 7 - applying bogus stash does nothing
+ok 8 - apply does not need clean working directory
+ok 9 - apply does not clobber working directory changes
+ok 10 - apply stashed changes
+ok 11 - apply stashed changes (including index)
+ok 12 - unstashing in a subdirectory
+ok 13 - stash drop complains of extra options
+ok 14 - drop top stash
+ok 15 - drop middle stash
+ok 16 - drop middle stash by index
+ok 17 - drop stash reflog updates refs/stash
+ok 18 - drop stash reflog updates refs/stash with rewrite
+ok 19 - stash pop
+ok 20 - stash branch
+ok 21 - apply -q is quiet
+ok 22 - apply --index -q is quiet
+ok 23 - save -q is quiet
+ok 24 - pop -q works and is quiet
+ok 25 - pop -q --index works and is quiet
+ok 26 - drop -q is quiet
+ok 27 - stash push -q --staged refreshes the index
+ok 28 - stash apply -q --index refreshes the index
+ok 29 - stash -k
+ok 30 - stash --no-keep-index
+ok 31 - stash --staged
+ok 32 - stash --staged with binary file
+ok 33 - dont assume push with non-option args
+ok 34 - stash --invalid-option
+ok 35 - stash an added file
+ok 36 - stash --intent-to-add file
+ok 37 - stash rm then recreate
+ok 38 - stash rm and ignore
+ok 39 - stash rm and ignore (stage .gitignore)
+ok 40 - stash file to symlink
+ok 41 - stash file to symlink (stage rm)
+ok 42 - stash file to symlink (full stage)
+ok 43 - stash symlink to file
+ok 44 - this must have re-created the symlink
+not ok 45 - unstash must re-create the file
+#	
+#		git stash apply &&
+#		! test -h filelink &&
+#		test bar = "$(cat file)"
+#	
+ok 46 - stash symlink to file (stage rm)
+ok 47 - this must have re-created the symlink
+not ok 48 - unstash must re-create the file
+#	
+#		git stash apply &&
+#		! test -h filelink &&
+#		test bar = "$(cat file)"
+#	
+ok 49 - stash symlink to file (full stage)
+ok 50 - this must have re-created the symlink
+not ok 51 - unstash must re-create the file
+#	
+#		git stash apply &&
+#		! test -h filelink &&
+#		test bar = "$(cat file)"
+#	
+ok 52 - stash directory to file
+ok 53 - stash file to directory
+ok 54 - giving too many ref arguments does not modify files
+ok 55 - drop: too many arguments errors out (does nothing)
+ok 56 - show: too many arguments errors out (does nothing)
+ok 57 - stash create - no changes
+not ok 58 - stash branch - no stashes on stack, stash-like argument
+#	
+#		git stash clear &&
+#		test_when_finished "git reset --hard HEAD" &&
+#		git reset --hard &&
+#		echo foo >>file &&
+#		STASH_ID=$(git stash create) &&
+#		git reset --hard &&
+#		git stash branch stash-branch ${STASH_ID} &&
+#		test_when_finished "git reset --hard HEAD && git checkout main &&
+#		git branch -D stash-branch" &&
+#		test $(git ls-files --modified | wc -l) -eq 1
+#	
+not ok 59 - stash branch - stashes on stack, stash-like argument
+#	
+#		git stash clear &&
+#		test_when_finished "git reset --hard HEAD" &&
+#		git reset --hard &&
+#		echo foo >>file &&
+#		git stash &&
+#		test_when_finished "git stash drop" &&
+#		echo bar >>file &&
+#		STASH_ID=$(git stash create) &&
+#		git reset --hard &&
+#		git stash branch stash-branch ${STASH_ID} &&
+#		test_when_finished "git reset --hard HEAD && git checkout main &&
+#		git branch -D stash-branch" &&
+#		test $(git ls-files --modified | wc -l) -eq 1
+#	
+ok 60 - stash branch complains with no arguments
+ok 61 - stash show format defaults to --stat
+ok 62 - stash show - stashes on stack, stash-like argument
+not ok 63 - stash show -p - stashes on stack, stash-like argument
+#	
+#		git stash clear &&
+#		test_when_finished "git reset --hard HEAD" &&
+#		git reset --hard &&
+#		echo foo >>file &&
+#		git stash &&
+#		test_when_finished "git stash drop" &&
+#		echo bar >>file &&
+#		STASH_ID=$(git stash create) &&
+#		git reset --hard &&
+#		cat >expected <<-EOF &&
+#		diff --git a/file b/file
+#		index 7601807..935fbd3 100644
+#		--- a/file
+#		+++ b/file
+#		@@ -1 +1,2 @@
+#		 baz
+#		+bar
+#		EOF
+#		git stash show -p ${STASH_ID} >actual &&
+#		diff_cmp expected actual
+#	
+ok 64 - stash show - no stashes on stack, stash-like argument
+not ok 65 - stash show -p - no stashes on stack, stash-like argument
+#	
+#		git stash clear &&
+#		test_when_finished "git reset --hard HEAD" &&
+#		git reset --hard &&
+#		echo foo >>file &&
+#		STASH_ID=$(git stash create) &&
+#		git reset --hard &&
+#		cat >expected <<-EOF &&
+#		diff --git a/file b/file
+#		index 7601807..71b52c4 100644
+#		--- a/file
+#		+++ b/file
+#		@@ -1 +1,2 @@
+#		 baz
+#		+foo
+#		EOF
+#		git stash show -p ${STASH_ID} >actual &&
+#		diff_cmp expected actual
+#	
+not ok 66 - stash show --patience shows diff
+#	
+#		git reset --hard &&
+#		echo foo >>file &&
+#		STASH_ID=$(git stash create) &&
+#		git reset --hard &&
+#		cat >expected <<-EOF &&
+#		diff --git a/file b/file
+#		index 7601807..71b52c4 100644
+#		--- a/file
+#		+++ b/file
+#		@@ -1 +1,2 @@
+#		 baz
+#		+foo
+#		EOF
+#		git stash show --patience ${STASH_ID} >actual &&
+#		diff_cmp expected actual
+#	
+not ok 67 - drop: fail early if specified stash is not a stash ref
+#	
+#		git stash clear &&
+#		test_when_finished "git reset --hard HEAD && git stash clear" &&
+#		git reset --hard &&
+#		echo foo >file &&
+#		git stash &&
+#		echo bar >file &&
+#		git stash &&
+#		test_must_fail git stash drop $(git rev-parse stash@{0}) &&
+#		git stash pop &&
+#		test bar = "$(cat file)" &&
+#		git reset --hard HEAD
+#	
+not ok 68 - pop: fail early if specified stash is not a stash ref
+#	
+#		git stash clear &&
+#		test_when_finished "git reset --hard HEAD && git stash clear" &&
+#		git reset --hard &&
+#		echo foo >file &&
+#		git stash &&
+#		echo bar >file &&
+#		git stash &&
+#		test_must_fail git stash pop $(git rev-parse stash@{0}) &&
+#		git stash pop &&
+#		test bar = "$(cat file)" &&
+#		git reset --hard HEAD
+#	
+ok 69 - ref with non-existent reflog
+ok 70 - invalid ref of the form stash@{n}, n >= N
+ok 71 - invalid ref of the form "n", n >= N
+not ok 72 - valid ref of the form "n", n < N
+#	
+#		git stash clear &&
+#		echo bar5 >file &&
+#		echo bar6 >file2 &&
+#		git add file2 &&
+#		git stash &&
+#		git stash show 0 &&
+#		git stash branch tmp 0 &&
+#		git checkout main &&
+#		git stash &&
+#		git stash apply 0 &&
+#		git reset --hard &&
+#		git stash pop 0 &&
+#		git stash &&
+#		git stash drop 0 &&
+#		test_must_fail git stash drop
+#	
+ok 73 - branch: do not drop the stash if the branch exists
+not ok 74 - branch: should not drop the stash if the apply fails
+#	
+#		git stash clear &&
+#		git reset HEAD~1 --hard &&
+#		echo foo >file &&
+#		git add file &&
+#		git commit -m initial &&
+#		echo bar >file &&
+#		git stash &&
+#		echo baz >file &&
+#		test_when_finished "git checkout main" &&
+#		test_must_fail git stash branch new_branch stash@{0} &&
+#		git rev-parse stash@{0} --
+#	
+not ok 75 - apply: show same status as git status (relative to ./)
+#	
+#		git stash clear &&
+#		mkdir -p subdir &&
+#		echo 1 >subdir/subfile1 &&
+#		echo 2 >subdir/subfile2 &&
+#		git add subdir/subfile1 &&
+#		git commit -m subdir &&
+#		(
+#			cd subdir &&
+#			echo x >subfile1 &&
+#			echo x >../file &&
+#			git status >../expect &&
+#			git stash &&
+#			sane_unset GIT_MERGE_VERBOSITY &&
+#			git stash apply
+#		) |
+#		sed -e 1d >actual && # drop "Saved..."
+#		test_cmp expect actual
+#	
+ok 76 - stash where working directory contains "HEAD" file
+ok 77 - store called with invalid commit
+ok 78 - store called with non-stash commit
+ok 79 - store updates stash ref and reflog
+not ok 80 - handle stash specification with spaces
+#	
+#		git stash clear &&
+#		echo pig >file &&
+#		git stash &&
+#		stamp=$(git log -g --format="%cd" -1 refs/stash) &&
+#		test_tick &&
+#		echo cow >file &&
+#		git stash &&
+#		git stash apply "stash@{$stamp}" &&
+#		grep pig file
+#	
+ok 81 - setup stash with index and worktree changes
+ok 82 - stash list -p shows simple diff
+ok 83 - stash list --cc shows combined diff
+ok 84 - stash is not confused by partial renames
+not ok 85 - push -m shows right message
+#	
+#		>foo &&
+#		git add foo &&
+#		git stash push -m "test message" &&
+#		echo "stash@{0}: On main: test message" >expect &&
+#		git stash list -1 >actual &&
+#		test_cmp expect actual
+#	
+not ok 86 - push -m also works without space
+#	
+#		>foo &&
+#		git add foo &&
+#		git stash push -m"unspaced test message" &&
+#		echo "stash@{0}: On main: unspaced test message" >expect &&
+#		git stash list -1 >actual &&
+#		test_cmp expect actual
+#	
+ok 87 - store -m foo shows right message
+ok 88 - store -mfoo shows right message
+ok 89 - store --message=foo shows right message
+ok 90 - store --message foo shows right message
+not ok 91 - push -mfoo uses right message
+#	
+#		>foo &&
+#		git add foo &&
+#		git stash push -m"test mfoo" &&
+#		echo "stash@{0}: On main: test mfoo" >expect &&
+#		git stash list -1 >actual &&
+#		test_cmp expect actual
+#	
+not ok 92 - push --message foo is synonym for -mfoo
+#	
+#		>foo &&
+#		git add foo &&
+#		git stash push --message "test message foo" &&
+#		echo "stash@{0}: On main: test message foo" >expect &&
+#		git stash list -1 >actual &&
+#		test_cmp expect actual
+#	
+not ok 93 - push --message=foo is synonym for -mfoo
+#	
+#		>foo &&
+#		git add foo &&
+#		git stash push --message="test message=foo" &&
+#		echo "stash@{0}: On main: test message=foo" >expect &&
+#		git stash list -1 >actual &&
+#		test_cmp expect actual
+#	
+not ok 94 - push -m shows right message
+#	
+#		>foo &&
+#		git add foo &&
+#		git stash push -m "test m foo" &&
+#		echo "stash@{0}: On main: test m foo" >expect &&
+#		git stash list -1 >actual &&
+#		test_cmp expect actual
+#	
+not ok 95 - create stores correct message
+#	
+#		>foo &&
+#		git add foo &&
+#		STASH_ID=$(git stash create "create test message") &&
+#		echo "On main: create test message" >expect &&
+#		git show --pretty=%s -s ${STASH_ID} >actual &&
+#		test_cmp expect actual
+#	
+ok 96 - create when branch name has /
+ok 97 - create with multiple arguments for the message
+not ok 98 - create in a detached state
+#	
+#		test_when_finished "git checkout main" &&
+#		git checkout HEAD~1 &&
+#		>foo &&
+#		git add foo &&
+#		STASH_ID=$(git stash create) &&
+#		HEAD_ID=$(git rev-parse --short HEAD) &&
+#		echo "WIP on (no branch): ${HEAD_ID} initial" >expect &&
+#		git show --pretty=%s -s ${STASH_ID} >actual &&
+#		test_cmp expect actual
+#	
+ok 99 - stash -- <pathspec> stashes and restores the file
+not ok 100 - stash --patch <pathspec> stash and restores the file
+#	
+#		test_write_lines b c >file &&
+#		git commit -m "add a few lines" file &&
+#		test_write_lines a b c d >file &&
+#		test_write_lines b c d >expect-file &&
+#		echo changed-other-file >other-file &&
+#		test_write_lines s y n | git stash -m "stash bar" --patch file &&
+#		test_cmp expect-file file &&
+#		echo changed-other-file >expect &&
+#		test_cmp expect other-file &&
+#		git checkout HEAD -- file &&
+#		git stash pop &&
+#		test_cmp expect other-file &&
+#		test_write_lines a b c >expect &&
+#		test_cmp expect file
+#	
+not ok 101 - stash <pathspec> -p is rejected
+#	
+#		test_must_fail git stash file -p 2>err &&
+#		test_grep "subcommand wasn${SQ}t specified; ${SQ}push${SQ} can${SQ}t be assumed due to unexpected token ${SQ}file${SQ}" err
+#	
+not ok 102 - stash -- <pathspec> stashes in subdirectory
+#	
+#		mkdir sub &&
+#		>foo &&
+#		>bar &&
+#		git add foo bar &&
+#		(
+#			cd sub &&
+#			git stash push -- ../foo
+#		) &&
+#		test_path_is_file bar &&
+#		test_path_is_missing foo &&
+#		git stash pop &&
+#		test_path_is_file foo &&
+#		test_path_is_file bar
+#	
+ok 103 - stash with multiple pathspec arguments
+ok 104 - stash with file including $IFS character
+ok 105 - stash with pathspec matching multiple paths
+ok 106 - stash push -p with pathspec shows no changes only once
+ok 107 - push <pathspec>: show no changes when there are none
+not ok 108 - push: <pathspec> not in the repository errors out
+#	
+#		>untracked &&
+#		test_must_fail git stash push untracked &&
+#		test_path_is_file untracked
+#	
+ok 109 - push: -q is quiet with changes
+ok 110 - push: -q is quiet with no changes
+not ok 111 - push: -q is quiet even if there is no initial commit
+#	
+#		git init foo_dir &&
+#		test_when_finished rm -rf foo_dir &&
+#		(
+#			cd foo_dir &&
+#			>bar &&
+#			test_must_fail git stash push -q >output 2>&1 &&
+#			test_must_be_empty output
+#		)
+#	
+ok 112 - untracked files are left in place when -u is not given
+ok 113 - stash without verb with pathspec
+ok 114 - stash -k -- <pathspec> leaves unstaged files intact
+ok 115 - stash -- <subdir> leaves untracked files in subdir intact
+ok 116 - stash -- <subdir> works with binary files
+ok 117 - stash with user.name and user.email set works
+not ok 118 - stash works when user.name and user.email are not set
+#	
+#		git reset &&
+#		>1 &&
+#		git add 1 &&
+#		echo "$GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>" >expect &&
+#		git stash &&
+#		git show -s --format="%an <%ae>" refs/stash >actual &&
+#		test_cmp expect actual &&
+#		>2 &&
+#		git add 2 &&
+#		test_config user.useconfigonly true &&
+#		(
+#			sane_unset GIT_AUTHOR_NAME &&
+#			sane_unset GIT_AUTHOR_EMAIL &&
+#			sane_unset GIT_COMMITTER_NAME &&
+#			sane_unset GIT_COMMITTER_EMAIL &&
+#			test_unconfig user.email &&
+#			test_unconfig user.name &&
+#			test_must_fail git commit -m "should fail" &&
+#			echo "git stash <git@stash>" >expect &&
+#			>2 &&
+#			git stash &&
+#			git show -s --format="%an <%ae>" refs/stash >actual &&
+#			test_cmp expect actual
+#		)
+#	
+ok 119 - stash --keep-index with file deleted in index does not resurrect it on disk
+ok 120 - stash --keep-index --include-untracked with empty tree
+not ok 121 - stash export and import round-trip stashes
+#	
+#		git reset &&
+#		>untracked &&
+#		>tracked1 &&
+#		>tracked2 &&
+#		git add tracked* &&
+#		git stash -- &&
+#		>subdir/untracked &&
+#		>subdir/tracked1 &&
+#		>subdir/tracked2 &&
+#		git add subdir/tracked* &&
+#		git stash --include-untracked -- subdir/ &&
+#		git tag t-stash0 stash@{0} &&
+#		git tag t-stash1 stash@{1} &&
+#		simple=$(git stash export --print) &&
+#		git stash clear &&
+#		git stash import "$simple" &&
+#		test_cmp_rev stash@{0} t-stash0 &&
+#		test_cmp_rev stash@{1} t-stash1 &&
+#		git stash export --to-ref refs/heads/foo &&
+#		test_cmp_rev "$(test_oid empty_tree)" foo: &&
+#		test_cmp_rev "$(test_oid empty_tree)" foo^: &&
+#		test_cmp_rev t-stash0 foo^2 &&
+#		test_cmp_rev t-stash1 foo^^2 &&
+#		git log --first-parent --format="%s" refs/heads/foo >log &&
+#		grep "^git stash: " log >log2 &&
+#		test_line_count = 13 log2 &&
+#		git stash clear &&
+#		git stash import foo &&
+#		test_cmp_rev stash@{0} t-stash0 &&
+#		test_cmp_rev stash@{1} t-stash1
+#	
+not ok 122 - stash import appends commits
+#	
+#		git log --format=oneline -g refs/stash >out &&
+#		cat out out >out2 &&
+#		git stash import refs/heads/foo &&
+#		git log --format=oneline -g refs/stash >actual &&
+#		test_line_count = $(wc -l <out2) actual
+#	
+not ok 123 - stash export can accept specified stashes
+#	
+#		git stash clear &&
+#		git stash import foo &&
+#		git stash export --to-ref refs/heads/bar stash@{1} stash@{0} &&
+#		git stash clear &&
+#		git stash import refs/heads/bar &&
+#		test_cmp_rev stash@{1} t-stash0 &&
+#		test_cmp_rev stash@{0} t-stash1 &&
+#		git log --format=oneline -g refs/stash >actual &&
+#		test_line_count = 2 actual
+#	
+ok 124 - stash export rejects invalid arguments
+ok 125 - stash can import and export zero stashes
+not ok 126 - stash rejects invalid attempts to import commits
+#	
+#		git stash import foo &&
+#		test_must_fail git stash import HEAD 2>output &&
+#		oid=$(git rev-parse HEAD) &&
+#		grep "$oid is not a valid exported stash commit" output &&
+#		test_cmp_rev stash@{0} t-stash0 &&
+#	
+#		git checkout --orphan orphan &&
+#		git commit-tree $(test_oid empty_tree) -p "$oid" -p "$oid^" -m "" >fake-commit &&
+#		git update-ref refs/heads/orphan "$(cat fake-commit)" &&
+#		oid=$(git rev-parse HEAD) &&
+#		test_must_fail git stash import orphan 2>output &&
+#		grep "found stash commit $oid without expected prefix" output &&
+#		test_cmp_rev stash@{0} t-stash0 &&
+#	
+#		git checkout --orphan orphan2 &&
+#		git commit-tree $(test_oid empty_tree) -m "" >fake-commit &&
+#		git update-ref refs/heads/orphan2 "$(cat fake-commit)" &&
+#		oid=$(git rev-parse HEAD) &&
+#		test_must_fail git stash import orphan2 2>output &&
+#		grep "found root commit $oid with invalid data" output &&
+#		test_cmp_rev stash@{0} t-stash0
+#	
+ok 127 - stash apply should succeed with unmodified file
+not ok 128 - stash handles skip-worktree entries nicely
+#	
+#		test_commit A &&
+#		echo changed >A.t &&
+#		git add A.t &&
+#		git update-index --skip-worktree A.t &&
+#		rm A.t &&
+#		git stash &&
+#	
+#		git rev-parse --verify refs/stash:A.t
+#	
+ok 129 - stash with core.fsyncmethod=batch
+ok 130 - git stash succeeds despite directory/file change
+ok 131 - git stash can pop file -> directory saved changes
+ok 132 - git stash can pop directory -> file saved changes
+ok 133 - restore untracked files even when we hit conflicts
+ok 134 - stash create reports a locked index
+ok 135 - stash push reports a locked index
+ok 136 - stash apply reports a locked index
+ok 137 - submodules does not affect the branch recorded in stash message
+ok 138 # skip stash show handles -- without leaking (missing SANITIZE_LEAK)
+ok 139 - controlled error return on unrecognized option
+ok 140 - stash.index=true implies --index
+ok 141 - stash.index=true overridden by --no-index
+ok 142 - stash.index=false overridden by --index
+# failed 33 among 142 test(s)
+1..142
+# Tests: 142  Pass: 109  Fail: 33  Skip: 1

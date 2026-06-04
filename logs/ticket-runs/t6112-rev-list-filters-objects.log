@@ -1,0 +1,86 @@
+ok 1 - setup r1
+ok 2 - verify blob:none omits all 5 blobs
+ok 3 - specify blob explicitly prevents filtering
+ok 4 - verify emitted+omitted == all
+ok 5 - setup r2
+ok 6 - verify blob:limit=500 omits all blobs
+ok 7 - verify emitted+omitted == all
+ok 8 - verify blob:limit=1000
+ok 9 - verify blob:limit=1001
+ok 10 - verify blob:limit=1k
+ok 11 - verify blob:limit=1m
+ok 12 - setup object-type
+ok 13 - verify object:type= fails with invalid type
+ok 14 - verify object:type=blob prints blob and commit
+ok 15 - verify object:type=tree prints tree and commit
+ok 16 - verify object:type=commit prints commit
+ok 17 - verify object:type=tag prints tag
+ok 18 - verify object:type=blob prints only blob with --filter-provided-objects
+ok 19 - verify object:type=tree prints only tree with --filter-provided-objects
+ok 20 - verify object:type=commit prints only commit with --filter-provided-objects
+ok 21 - verify object:type=tag prints only tag with --filter-provided-objects
+ok 22 - setup r3
+ok 23 - verify sparse:path=pattern1 fails
+ok 24 - verify sparse:path=pattern2 fails
+ok 25 - setup r3 part 2
+ok 26 - verify sparse:oid=OID omits top-level files
+ok 27 - verify sparse:oid=oid-ish omits top-level files
+ok 28 - rev-list W/ --missing=print and --missing=allow-any for trees
+ok 29 - verify tree:0 includes trees in "filtered" output
+not ok 30 - verify skipping tree iteration when not collecting omits
+#	
+#		GIT_TRACE=1 git -C r3 rev-list \
+#			--objects --filter=tree:0 HEAD 2>filter_trace &&
+#		grep "Skipping contents of tree [.][.][.]" filter_trace >actual &&
+#		# One line for each commit traversed.
+#		test_line_count = 2 actual &&
+#	
+#		# Make sure no other trees were considered besides the root.
+#		! grep "Skipping contents of tree [^.]" filter_trace &&
+#	
+#		# Try this again with "combine:". If both sub-filters are skipping
+#		# trees, the composite filter should also skip trees. This is not
+#		# important unless the user does combine:tree:X+tree:Y or another filter
+#		# besides "tree:" is implemented in the future which can skip trees.
+#		GIT_TRACE=1 git -C r3 rev-list \
+#			--objects --filter=combine:tree:1+tree:3 HEAD 2>filter_trace &&
+#	
+#		# Only skip the dir1/ tree, which is shared between the two commits.
+#		grep "Skipping contents of tree " filter_trace >actual &&
+#		test_write_lines "Skipping contents of tree dir1/..." >expected &&
+#		test_cmp expected actual
+#	
+ok 31 - verify tree:1 includes root trees
+ok 32 - verify tree:2 includes root trees and immediate children
+ok 33 - verify tree:3 includes everything expected
+ok 34 - combine:... for a simple combination
+ok 35 - combine:... with URL encoding
+ok 36 - combine:... while URL-encoding things that should not be
+ok 37 - combine: with nothing after the :
+ok 38 - parse error in first sub-filter in combine:
+ok 39 - combine:... with non-encoded reserved chars
+ok 40 - combine:... with edge-case hex digits: Ff Aa 0 9
+ok 41 - add sparse pattern blobs whose paths have reserved chars
+ok 42 - combine:... with more than two sub-filters
+ok 43 - setup r4
+ok 44 - test tree:# filter provisional omit for blob and tree
+ok 45 - verify skipping tree iteration when collecting omits
+ok 46 - setup r5
+ok 47 - verify collecting omits in combined: filter
+ok 48 - tree:<depth> where we iterate over tree at two levels
+ok 49 - tree:<depth> which filters out blob but given as arg
+ok 50 - rev-list W/ --missing=print
+ok 51 - rev-list W/O --missing fails
+ok 52 - rev-list W/ missing=allow-any
+not ok 53 - expand blob limit in protocol
+#	
+#		git -C r2 config --local uploadpack.allowfilter 1 &&
+#		GIT_TRACE_PACKET="$(pwd)/trace" git -c protocol.version=2 clone \
+#			--filter=blob:limit=1k "file://$(pwd)/r2" limit &&
+#		! grep "blob:limit=1k" trace &&
+#		grep "blob:limit=1024" trace
+#	
+ok 54 # skip large sparse filter file ignored (missing EXPENSIVE)
+# failed 2 among 54 test(s)
+1..54
+# Tests: 54  Pass: 52  Fail: 2  Skip: 1

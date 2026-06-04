@@ -1,0 +1,38 @@
+ok 1 - set up mode change in one branch
+ok 2 - resolve single mode change (recursive, a1)
+ok 3 - verify executable bit on file (recursive, a1)
+ok 4 - resolve single mode change (recursive, b1)
+ok 5 - verify executable bit on file (recursive, b1)
+ok 6 - resolve single mode change (resolve, a1)
+ok 7 - verify executable bit on file (resolve, a1)
+ok 8 - resolve single mode change (resolve, b1)
+ok 9 - verify executable bit on file (resolve, b1)
+ok 10 - set up mode change in both branches
+not ok 11 - detect conflict on double mode change (recursive)
+#	
+#			git reset --hard &&
+#			git checkout -f a2 &&
+#			test_must_fail git merge -s $strategy b2 &&
+#			git ls-files -u >actual &&
+#			test_cmp expect actual &&
+#			git ls-files -s file2 | grep ^100755
+#		
+ok 12 - verify executable bit on file (recursive)
+not ok 13 - detect conflict on double mode change (resolve)
+#	
+#			git reset --hard &&
+#			git checkout -f a2 &&
+#			test_must_fail git merge -s $strategy b2 &&
+#			git ls-files -u >actual &&
+#			test_cmp expect actual &&
+#			git ls-files -s file2 | grep ^100755
+#		
+ok 14 - verify executable bit on file (resolve)
+ok 15 - set up delete/modechange scenario
+ok 16 - detect delete/modechange conflict (recursive, b1)
+ok 17 - detect delete/modechange conflict (recursive, deletion)
+ok 18 - detect delete/modechange conflict (resolve, b1)
+ok 19 - detect delete/modechange conflict (resolve, deletion)
+# failed 2 among 19 test(s)
+1..19
+# Tests: 19  Pass: 17  Fail: 2  Skip: 0

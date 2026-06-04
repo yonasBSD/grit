@@ -1,0 +1,37 @@
+./lib-gettext.sh: line 17: /Users/schacon/grit/git/git-sh-i18n: No such file or directory
+ok 1 - create commits in different encodings
+ok 2 - log --grep searches in log output encoding (utf8)
+not ok 3 - log --grep searches in log output encoding (latin1)
+#	
+#		cat >expect <<-\EOF &&
+#		latin1
+#		utf8
+#		EOF
+#		git log --encoding=ISO-8859-1 --format=%s --grep=$latin1_e >actual &&
+#		test_cmp expect actual
+#	
+ok 4 - log --grep does not find non-reencoded values (utf8)
+not ok 5 - log --grep does not find non-reencoded values (latin1)
+#	
+#		git log --encoding=ISO-8859-1 --format=%s --grep=$utf8_e >actual &&
+#		test_must_be_empty actual
+#	
+ok 6 - config grep.patternType=fixed
+ok 7 # skip log --grep does not find non-reencoded values (latin1 + locale) (missing GETTEXT_LOCALE of GETTEXT_LOCALE,)
+ok 8 # skip log --grep searches in log output encoding (latin1 + locale) (missing GETTEXT_LOCALE of !MINGW,GETTEXT_LOCALE,GETTEXT_LOCALE,)
+ok 9 # skip log --grep does not die on invalid UTF-8 value (latin1 + locale + invalid needle) (missing GETTEXT_LOCALE of GETTEXT_LOCALE,!MINGW,GETTEXT_LOCALE,GETTEXT_LOCALE,)
+ok 10 - config grep.patternType=basic
+ok 11 # skip log --grep does not find non-reencoded values (latin1 + locale) (missing GETTEXT_LOCALE of GETTEXT_LOCALE,)
+ok 12 # skip log --grep searches in log output encoding (latin1 + locale) (missing GETTEXT_LOCALE of !MINGW,GETTEXT_LOCALE,GETTEXT_LOCALE,)
+ok 13 # skip log --grep does not die on invalid UTF-8 value (latin1 + locale + invalid needle) (missing GETTEXT_LOCALE of GETTEXT_LOCALE,!MINGW,GETTEXT_LOCALE,GETTEXT_LOCALE,)
+ok 14 - config grep.patternType=extended
+ok 15 # skip log --grep does not find non-reencoded values (latin1 + locale) (missing GETTEXT_LOCALE of GETTEXT_LOCALE,)
+ok 16 # skip log --grep searches in log output encoding (latin1 + locale) (missing GETTEXT_LOCALE of !MINGW,GETTEXT_LOCALE,GETTEXT_LOCALE,)
+ok 17 # skip log --grep does not die on invalid UTF-8 value (latin1 + locale + invalid needle) (missing GETTEXT_LOCALE of GETTEXT_LOCALE,!MINGW,GETTEXT_LOCALE,GETTEXT_LOCALE,)
+ok 18 # skip config grep.patternType=perl (missing PCRE)
+ok 19 # skip log --grep does not find non-reencoded values (latin1 + locale) (missing GETTEXT_LOCALE of GETTEXT_LOCALE,PCRE)
+ok 20 # skip log --grep searches in log output encoding (latin1 + locale) (missing GETTEXT_LOCALE of !MINGW,GETTEXT_LOCALE,GETTEXT_LOCALE,PCRE)
+ok 21 # skip log --grep does not die on invalid UTF-8 value (latin1 + locale + invalid needle) (missing GETTEXT_LOCALE of GETTEXT_LOCALE,!MINGW,GETTEXT_LOCALE,GETTEXT_LOCALE,PCRE)
+# failed 2 among 21 test(s)
+1..21
+# Tests: 21  Pass: 19  Fail: 2  Skip: 13

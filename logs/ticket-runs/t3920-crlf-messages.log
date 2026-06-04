@@ -1,0 +1,178 @@
+ok 1 - Setup refs with commit and tag messages using CRLF
+not ok 2 - branch: --verbose works with messages using CRLF
+#	
+#		rm -f expect &&
+#		for branch in $LIB_CRLF_BRANCHES
+#		do
+#			printf "  " >>expect &&
+#			cat .crlf-subject-${branch}.txt >>expect &&
+#			printf "\n" >>expect || return 1
+#		done &&
+#		git branch -v >tmp &&
+#		# Remove first two columns, and the line for the currently checked out branch
+#		current=$(git branch --show-current) &&
+#		awk "/$current/ { next } { \$1 = \$2 = \"\" } 1" <tmp >actual &&
+#		test_cmp expect actual
+#	
+not ok 3 - branch: --format='%(contents:subject)' works with messages using CRLF
+#	
+#				rm -f expect &&
+#				for ref in  crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline
+#				do
+#					cat .crlf-subject-"${ref}".txt >>expect &&
+#					printf "\n" >>expect || return 1
+#				done &&
+#				git branch --list crlf* --format="%(contents:subject)" >actual &&
+#				test_cmp expect actual
+#			
+not ok 4 - branch: --format='%(contents:body)' works with messages using CRLF
+#	
+#				rm -f expect &&
+#				for ref in  crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline
+#				do
+#					cat .crlf-body-"${ref}".txt >>expect &&
+#					printf "\n" >>expect || return 1
+#				done &&
+#				git branch --list crlf* --format="%(contents:body)" >actual &&
+#				test_cmp expect actual
+#			
+not ok 5 - branch: --format='%(contents)' works with messages using CRLF
+#	
+#				rm -f expect &&
+#				for ref in  crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline
+#				do
+#					cat .crlf-message-"${ref}".txt >>expect &&
+#					printf "\n" >>expect || return 1
+#				done &&
+#				git branch --list crlf* --format="%(contents)" >actual &&
+#				test_cmp expect actual
+#			
+not ok 6 - tag: --format='%(contents:subject)' works with messages using CRLF
+#	
+#				rm -f expect &&
+#				for ref in  crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline
+#				do
+#					cat .crlf-subject-"${ref}".txt >>expect &&
+#					printf "\n" >>expect || return 1
+#				done &&
+#				git tag --list tag-crlf* --format="%(contents:subject)" >actual &&
+#				test_cmp expect actual
+#			
+not ok 7 - tag: --format='%(contents:body)' works with messages using CRLF
+#	
+#				rm -f expect &&
+#				for ref in  crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline
+#				do
+#					cat .crlf-body-"${ref}".txt >>expect &&
+#					printf "\n" >>expect || return 1
+#				done &&
+#				git tag --list tag-crlf* --format="%(contents:body)" >actual &&
+#				test_cmp expect actual
+#			
+not ok 8 - tag: --format='%(contents)' works with messages using CRLF
+#	
+#				rm -f expect &&
+#				for ref in  crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline
+#				do
+#					cat .crlf-message-"${ref}".txt >>expect &&
+#					printf "\n" >>expect || return 1
+#				done &&
+#				git tag --list tag-crlf* --format="%(contents)" >actual &&
+#				test_cmp expect actual
+#			
+not ok 9 - for-each-ref: --format='%(contents:subject)' works with messages using CRLF
+#	
+#				rm -f expect &&
+#				for ref in  crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline
+#				do
+#					cat .crlf-subject-"${ref}".txt >>expect &&
+#					printf "\n" >>expect || return 1
+#				done &&
+#				git for-each-ref refs/heads/crlf* --format="%(contents:subject)" >actual &&
+#				test_cmp expect actual
+#			
+not ok 10 - for-each-ref: --format='%(contents:body)' works with messages using CRLF
+#	
+#				rm -f expect &&
+#				for ref in  crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline
+#				do
+#					cat .crlf-body-"${ref}".txt >>expect &&
+#					printf "\n" >>expect || return 1
+#				done &&
+#				git for-each-ref refs/heads/crlf* --format="%(contents:body)" >actual &&
+#				test_cmp expect actual
+#			
+ok 11 - for-each-ref: --format='%(contents)' works with messages using CRLF
+not ok 12 - log: --oneline works with messages using CRLF
+#	
+#		for branch in $LIB_CRLF_BRANCHES
+#		do
+#			cat .crlf-subject-${branch}.txt >expect &&
+#			printf "\n" >>expect &&
+#			git log --oneline -1 ${branch} >tmp-branch &&
+#			git log --oneline -1 tag-${branch} >tmp-tag &&
+#			cut -d" " -f2- <tmp-branch >actual-branch &&
+#			cut -d" " -f2- <tmp-tag >actual-tag &&
+#			test_cmp expect actual-branch &&
+#			test_cmp expect actual-tag || return 1
+#		done
+#	
+not ok 13 - log: --format='%s' works with messages using CRLF
+#	
+#				rm -f expect &&
+#				for ref in  crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline
+#				do
+#					cat .crlf-subject-"${ref}".txt >>expect &&
+#					printf "\n" >>expect || return 1
+#				done &&
+#				git log --all --reverse --grep Subject --format="%s" >actual &&
+#				test_cmp expect actual
+#			
+not ok 14 - log: --format='%b' works with messages using CRLF
+#	
+#				rm -f expect &&
+#				for ref in  crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline
+#				do
+#					cat .crlf-body-"${ref}".txt >>expect &&
+#					printf "\n" >>expect || return 1
+#				done &&
+#				git log --all --reverse --grep Subject --format="%b" >actual &&
+#				test_cmp expect actual
+#			
+ok 15 - log: --format='%B' works with messages using CRLF
+not ok 16 - show: --format='%s' works with messages using CRLF
+#	
+#				rm -f expect &&
+#				for ref in  crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline
+#				do
+#					cat .crlf-subject-"${ref}".txt >>expect &&
+#					printf "\n" >>expect || return 1
+#				done &&
+#				git show crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline --format="%s" >actual &&
+#				test_cmp expect actual
+#			
+not ok 17 - show: --format='%b' works with messages using CRLF
+#	
+#				rm -f expect &&
+#				for ref in  crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline
+#				do
+#					cat .crlf-body-"${ref}".txt >>expect &&
+#					printf "\n" >>expect || return 1
+#				done &&
+#				git show crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline --format="%b" >actual &&
+#				test_cmp expect actual
+#			
+not ok 18 - show: --format='%B' works with messages using CRLF
+#	
+#				rm -f expect &&
+#				for ref in  crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline
+#				do
+#					cat .crlf-message-"${ref}".txt >>expect &&
+#					printf "\n" >>expect || return 1
+#				done &&
+#				git show crlf crlf-empty-lines-after-subject crlf-two-line-subject crlf-two-line-subject-no-body crlf-two-line-subject-no-body-trailing-newline --format="%B" >actual &&
+#				test_cmp expect actual
+#			
+# failed 15 among 18 test(s)
+1..18
+# Tests: 18  Pass: 3  Fail: 15  Skip: 0

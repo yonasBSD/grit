@@ -1,0 +1,106 @@
+ok 1 - setup
+ok 2 - test option parsing
+ok 3 - merge -h with invalid index
+ok 4 - reject non-strategy with a git-merge-foo name
+ok 5 - merge c0 with c1
+ok 6 - merge c0 with c1 with --ff-only
+ok 7 - the same merge with merge.stat=diffstat
+ok 8 - the same merge with compact summary
+ok 9 - the same merge with compact summary
+ok 10 - the same merge with merge.stat=compact
+ok 11 - merge from unborn branch
+ok 12 - merge c1 with c2
+ok 13 - merge c1 with c2 when index.lock exists
+ok 14 - merge --squash c3 with c7
+ok 15 - merge --squash --autostash conflict does not attempt to apply autostash
+ok 16 - merge c3 with c7 with commit.cleanup = scissors
+ok 17 - merge c3 with c7 with --squash commit.cleanup = scissors
+ok 18 - merge c1 with c2 and c3
+ok 19 - merges with --ff-only
+ok 20 - merges with merge.ff=only
+ok 21 - merge c0 with c1 (no-commit)
+ok 22 - merge c1 with c2 (no-commit)
+ok 23 - merge c1 with c2 and c3 (no-commit)
+ok 24 - merge c0 with c1 (squash)
+ok 25 - merge c0 with c1 (squash, ff-only)
+ok 26 - merge c1 with c2 (squash)
+ok 27 - unsuccessful merge of c1 with c2 (squash, ff-only)
+not ok 28 - merge c1 with c2 and c3 (squash)
+#	
+#		git reset --hard c1 &&
+#		git merge --squash c2 c3 &&
+#		verify_merge file result.1-5-9 &&
+#		verify_head $c1 &&
+#		verify_no_mergehead &&
+#		test_cmp squash.1-5-9 .git/SQUASH_MSG
+#	
+ok 29 - merge c1 with c2 (no-commit in config)
+ok 30 - merge c1 with c2 (log in config)
+ok 31 - merge c1 with c2 (log in config gets overridden)
+ok 32 - merge c1 with c2 (squash in config)
+ok 33 - override config option -n with --summary
+ok 34 - override config option -n with --stat
+ok 35 - override config option --stat
+ok 36 - merge c1 with c2 (override --no-commit)
+ok 37 - merge c1 with c2 (override --squash)
+ok 38 - merge c0 with c1 (no-ff)
+ok 39 - merge c0 with c1 (merge.ff=false)
+ok 40 - combine branch.main.mergeoptions with merge.ff
+ok 41 - tolerate unknown values for merge.ff
+ok 42 - combining --squash and --no-ff is refused
+ok 43 - combining --squash and --commit is refused
+ok 44 - option --ff-only overwrites --no-ff
+ok 45 - option --no-ff overrides merge.ff=only config
+ok 46 - merge c0 with c1 (ff overrides no-ff)
+ok 47 - merge log message
+ok 48 - merge c1 with c0, c2, c0, and c1
+ok 49 - merge c1 with c0, c2, c0, and c1
+ok 50 - merge c1 with c1 and c2
+ok 51 - merge fast-forward in a dirty tree
+ok 52 - in-index merge
+ok 53 - refresh the index before merging
+ok 54 - merge with --autostash
+ok 55 - merge with merge.autoStash
+ok 56 - fast-forward merge with --autostash
+ok 57 - failed fast-forward merge with --autostash
+ok 58 - octopus merge with --autostash
+ok 59 - failed merge (exit 2) with --autostash
+ok 60 - conflicted merge with --autostash, --abort restores stash
+ok 61 - completed merge (git commit) with --no-commit and --autostash
+ok 62 - completed merge (git merge --continue) with --no-commit and --autostash
+ok 63 - aborted merge (merge --abort) with --no-commit and --autostash
+ok 64 - aborted merge (reset --hard) with --no-commit and --autostash
+ok 65 - quit merge with --no-commit and --autostash
+ok 66 - merge with conflicted --autostash changes
+ok 67 - merge early part of c2
+ok 68 - merge --no-ff --no-commit && commit
+ok 69 - amending no-ff merge commit
+not ok 70 - merge --no-ff --edit
+#	
+#		git reset --hard c0 &&
+#		EDITOR=./editor git merge --no-ff --edit c1 &&
+#		verify_parents $c0 $c1 &&
+#		git cat-file commit HEAD >raw &&
+#		grep "work done on the side branch" raw &&
+#		sed "1,/^$/d" >actual raw &&
+#		test_cmp expected actual
+#	
+ok 71 - merge annotated/signed tag w/o tracking
+ok 72 - merge annotated/signed tag w/ tracking
+gpg: keybox '/Users/schacon/grit/tests/trash.t7600-merge/gpghome/pubring.kbx' created
+gpg: can't open '/Users/schacon/grit/tests/lib-gpg/keyring.gpg': No such file or directory
+gpg: Total number processed: 0
+ok 73 # skip merge --ff-only tag (missing GPG)
+ok 74 # skip merge --no-edit tag should skip editor (missing GPG)
+ok 75 - set up mod-256 conflict scenario
+ok 76 - merge detects mod-256 conflicts (recursive)
+ok 77 - merge detects mod-256 conflicts (resolve)
+ok 78 - merge nothing into void
+ok 79 - merge can be completed with --continue
+ok 80 # skip killed merge can be completed with --continue (missing EXECKEEPSPID)
+ok 81 - merge --quit
+ok 82 - merge suggests matching remote refname
+ok 83 - suggested names are not ambiguous
+# failed 2 among 83 test(s)
+1..83
+# Tests: 83  Pass: 81  Fail: 2  Skip: 3

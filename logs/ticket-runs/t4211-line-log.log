@@ -1,0 +1,182 @@
+ok 1 - setup (import history)
+not ok 2 - basic command line parsing
+#	
+#		# This may fail due to "no such path a.c in commit", or
+#		# "-L is incompatible with pathspec", depending on the
+#		# order the error is checked.  Either is acceptable.
+#		test_must_fail git log -L1,1:a.c -- a.c &&
+#	
+#		# -L requires there is no pathspec
+#		test_must_fail git log -L1,1:b.c -- b.c 2>error &&
+#		test_grep "cannot be used with pathspec" error &&
+#	
+#		# This would fail because --follow wants a single path, but
+#		# we may fail due to incompatibility between -L/--follow in
+#		# the future.  Either is acceptable.
+#		test_must_fail git log -L1,1:b.c --follow &&
+#		test_must_fail git log --follow -L1,1:b.c &&
+#	
+#		# This would fail because -L wants no pathspec, but
+#		# we may fail due to incompatibility between -L/--follow in
+#		# the future.  Either is acceptable.
+#		test_must_fail git log --follow -L1,1:b.c -- b.c
+#	
+not ok 3 - -L 4,12:a.c simple
+#	
+#			git log -L 4,12:a.c simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.simple-f actual
+#		
+not ok 4 - -L 4,+9:a.c simple
+#	
+#			git log -L 4,+9:a.c simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.simple-f actual
+#		
+not ok 5 - -L '/long f/,/^}/:a.c' simple
+#	
+#			git log -L '/long f/,/^}/:a.c' simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.simple-f actual
+#		
+not ok 6 - -L :f:a.c simple
+#	
+#			git log -L :f:a.c simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.simple-f-to-main actual
+#		
+not ok 7 - -L '/main/,/^}/:a.c' simple
+#	
+#			git log -L '/main/,/^}/:a.c' simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.simple-main actual
+#		
+not ok 8 - -L :main:a.c simple
+#	
+#			git log -L :main:a.c simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.simple-main-to-end actual
+#		
+not ok 9 - -L 1,+4:a.c simple
+#	
+#			git log -L 1,+4:a.c simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.beginning-of-file actual
+#		
+not ok 10 - -L 20:a.c simple
+#	
+#			git log -L 20:a.c simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.end-of-file actual
+#		
+not ok 11 - -L '/long f/',/^}/:a.c -L /main/,/^}/:a.c simple
+#	
+#			git log -L '/long f/',/^}/:a.c -L /main/,/^}/:a.c simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.two-ranges actual
+#		
+not ok 12 - -L 24,+1:a.c simple
+#	
+#			git log -L 24,+1:a.c simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.vanishes-early actual
+#		
+not ok 13 - -M -L '/long f/,/^}/:b.c' move-support
+#	
+#			git log -M -L '/long f/,/^}/:b.c' move-support >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.move-support-f actual
+#		
+not ok 14 - -M -L ':f:b.c' parallel-change
+#	
+#			git log -M -L ':f:b.c' parallel-change >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.parallel-change-f-to-main actual
+#		
+not ok 15 - -L 4,12:a.c -L :main:a.c simple
+#	
+#			git log -L 4,12:a.c -L :main:a.c simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.multiple actual
+#		
+not ok 16 - -L 4,18:a.c -L ^:main:a.c simple
+#	
+#			git log -L 4,18:a.c -L ^:main:a.c simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.multiple-overlapping actual
+#		
+not ok 17 - -L :main:a.c -L 4,18:a.c simple
+#	
+#			git log -L :main:a.c -L 4,18:a.c simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.multiple-overlapping actual
+#		
+not ok 18 - -L 4:a.c -L 8,12:a.c simple
+#	
+#			git log -L 4:a.c -L 8,12:a.c simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.multiple-superset actual
+#		
+not ok 19 - -L 8,12:a.c -L 4:a.c simple
+#	
+#			git log -L 8,12:a.c -L 4:a.c simple >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.multiple-superset actual
+#		
+not ok 20 - -L 10,16:b.c -L 18,26:b.c main
+#	
+#			git log -L 10,16:b.c -L 18,26:b.c main >actual &&
+#			test_cmp "$TEST_DIRECTORY"/t4211/sha1/expect.no-assertion-error actual
+#		
+ok 21 - invalid args: -L
+ok 22 - invalid args: -L b.c
+ok 23 - invalid args: -L 1:
+ok 24 - invalid args: -L 1:nonexistent
+ok 25 - invalid args: -L 1:simple
+ok 26 - invalid args: -L '/foo:b.c'
+ok 27 - invalid args: -L 1000:b.c
+ok 28 - invalid args: -L :b.c
+ok 29 - invalid args: -L :foo:b.c
+ok 30 - -L X (X == nlines)
+ok 31 - -L X (X == nlines + 1)
+ok 32 - -L X (X == nlines + 2)
+ok 33 - -L ,Y (Y == nlines)
+ok 34 - -L ,Y (Y == nlines + 1)
+ok 35 - -L ,Y (Y == nlines + 2)
+ok 36 - -L with --first-parent and a merge
+not ok 37 - -L with --output
+#	
+#		git checkout parallel-change &&
+#		git log --output=log -L :main:b.c >output &&
+#		test_must_be_empty output &&
+#		test_line_count = 70 log
+#	
+ok 38 - range_set_union
+ok 39 - -s shows only line-log commits
+ok 40 - -p shows the default patch output
+not ok 41 - --raw is forbidden
+#	
+#		test_must_fail git log -L1,24:b.c --raw
+#	
+ok 42 - setup for checking fancy rename following
+not ok 43 - fancy rename following #1
+#	
+#		cat >expect <<-EOF &&
+#		$oid_merge Merge branch 'moves-side' into moves-main
+#		$oid_mod_f1_side_2 Modify file-1 on side #2
+#		$oid_mod_f1_side_1 Modify file-1 on side #1
+#		$oid_mod_r1_main Modify renamed-1 on main
+#		$oid_mod_f1_main Modify file-1 on main
+#		$oid_add_f1_f2 Add file-1 and file-2
+#		EOF
+#		git log -L1:renamed-1 --oneline --no-patch >actual &&
+#		test_cmp expect actual
+#	
+not ok 44 - fancy rename following #2
+#	
+#		cat >expect <<-EOF &&
+#		$oid_merge Merge branch 'moves-side' into moves-main
+#		$oid_mod_r2_side Modify renamed-2 on side
+#		$oid_mod_f2_side Modify file-2 on side
+#		$oid_mod_f2_main_2 Modify file-2 on main #2
+#		$oid_mod_f2_main_1 Modify file-2 on main #1
+#		$oid_add_f1_f2 Add file-1 and file-2
+#		EOF
+#		git log -L1:renamed-2 --oneline --no-patch >actual &&
+#		test_cmp expect actual
+#	
+ok 45 - setup for checking line-log and parent oids
+ok 46 - parent oids without parent rewriting
+ok 47 - parent oids with parent rewriting
+ok 48 - line-log with --before
+ok 49 - setup tests for zero-width regular expressions
+ok 50 - zero-width regex $ matches any function name
+ok 51 - zero-width regex ^ matches any function name
+ok 52 - zero-width regex .* matches any function name
+ok 53 - show line-log with graph
+# failed 23 among 53 test(s)
+1..53
+# Tests: 53  Pass: 30  Fail: 23  Skip: 0

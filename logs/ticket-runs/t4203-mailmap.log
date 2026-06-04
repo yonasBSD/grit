@@ -1,0 +1,77 @@
+ok 1 - setup commits and contacts file
+ok 2 - check-mailmap no arguments
+ok 3 - check-mailmap arguments
+ok 4 - check-mailmap --stdin
+ok 5 - check-mailmap --stdin arguments: no mapping
+ok 6 - check-mailmap --stdin arguments: mapping
+ok 7 - check-mailmap simple address: mapping
+ok 8 - check-mailmap --stdin simple address: mapping
+ok 9 - check-mailmap simple address: no mapping
+ok 10 - check-mailmap --stdin simple address: no mapping
+ok 11 - check-mailmap name and address: mapping
+ok 12 - No mailmap
+ok 13 - setup default .mailmap
+ok 14 - test default .mailmap
+ok 15 - mailmap.file set
+ok 16 - mailmap.file override
+ok 17 - mailmap.file non-existent
+ok 18 - name entry after email entry
+ok 19 - name entry after email entry, case-insensitive
+ok 20 - No mailmap files, but configured
+ok 21 - setup mailmap blob tests
+ok 22 - mailmap.blob set
+ok 23 - mailmap.blob overrides .mailmap
+ok 24 - mailmap.file overrides mailmap.blob
+ok 25 - mailmap.file can be missing
+ok 26 - mailmap.blob can be missing
+ok 27 - mailmap.blob might be the wrong type
+ok 28 - mailmap.blob defaults to off in non-bare repo
+ok 29 - mailmap.blob defaults to HEAD:.mailmap in bare repo
+ok 30 - mailmap.blob can handle blobs without trailing newline
+ok 31 - single-character name
+ok 32 - preserve canonical email case
+ok 33 - gitmailmap(5) example output: setup
+ok 34 - gitmailmap(5) example output: example #1
+ok 35 - gitmailmap(5) example output: example #2
+ok 36 - gitmailmap(5) example output: example #3
+ok 37 - Shortlog output (complex mapping)
+ok 38 - Log output (complex mapping)
+ok 39 - Log output (local-part email address)
+ok 40 - Log output with --use-mailmap
+ok 41 - Log output with log.mailmap
+ok 42 - log.mailmap=false disables mailmap
+ok 43 - --no-use-mailmap disables mailmap
+ok 44 - Grep author with --use-mailmap
+ok 45 - Grep author with log.mailmap
+ok 46 - log.mailmap is true by default these days
+ok 47 - Only grep replaced author with --use-mailmap
+ok 48 - Blame --porcelain output (complex mapping)
+ok 49 - Blame output (complex mapping)
+ok 50 - commit --author honors mailmap
+ok 51 - comment syntax: setup
+ok 52 - whitespace syntax: setup
+ok 53 - empty syntax: setup
+ok 54 - set up mailmap location tests
+ok 55 - bare repo with --work-tree finds mailmap at top-level
+ok 56 - bare repo does not look in current directory
+ok 57 - non-git shortlog respects mailmap in current dir
+ok 58 - shortlog on stdin respects mailmap from repo
+ok 59 - find top-level mailmap from subdir
+ok 60 - set up symlink tests
+ok 61 - symlinks respected in mailmap.file
+ok 62 - symlinks respected in non-repo shortlog
+ok 63 - symlinks not respected in-tree
+ok 64 - prepare for cat-file --mailmap
+ok 65 - --no-use-mailmap disables mailmap in cat-file
+ok 66 - --use-mailmap enables mailmap in cat-file
+ok 67 - --no-mailmap disables mailmap in cat-file for annotated tag objects
+ok 68 - --mailmap enables mailmap in cat-file for annotated tag objects
+ok 69 - git cat-file -s returns correct size with --use-mailmap
+ok 70 - git cat-file -s returns correct size with --use-mailmap for tag objects
+ok 71 - git cat-file --batch-check returns correct size with --use-mailmap
+ok 72 - git cat-file --batch-command returns correct size with --use-mailmap
+ok 73 - git cat-file --mailmap works with different author and committer
+ok 74 - git cat-file --mailmap maps both author and committer when both need mapping
+# passed all 74 test(s)
+1..74
+# Tests: 74  Pass: 74  Fail: 0  Skip: 0

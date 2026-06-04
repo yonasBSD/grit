@@ -1,0 +1,81 @@
+ok 1 - setup shallow clone
+ok 2 - clone http repository
+not ok 3 - no shallow lines after receiving ACK ready
+#	
+#		(
+#			cd shallow &&
+#			for i in $(test_seq 15)
+#			do
+#				git checkout --orphan unrelated$i &&
+#				test_commit unrelated$i &&
+#				git push -q "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" \
+#					refs/heads/unrelated$i:refs/heads/unrelated$i &&
+#				git push -q ../clone/.git \
+#					refs/heads/unrelated$i:refs/heads/unrelated$i ||
+#				exit 1
+#			done &&
+#			git checkout main &&
+#			test_commit new &&
+#			git push  "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" main
+#		) &&
+#		(
+#			cd clone &&
+#			git checkout --orphan newnew &&
+#			test_tick=1400000000 &&
+#			test_commit new-too &&
+#			# NEEDSWORK: If the overspecification of the expected result is reduced, we
+#			# might be able to run this test in all protocol versions.
+#			GIT_TRACE_PACKET="$TRASH_DIRECTORY/trace" GIT_TEST_PROTOCOL_VERSION=0 \
+#				git fetch --depth=2 &&
+#			grep "fetch-pack< ACK .* ready" ../trace &&
+#			! grep "fetch-pack> done" ../trace
+#		)
+#	
+ok 4 - clone shallow since ...
+not ok 5 - fetch shallow since ...
+#	
+#		git -C shallow11 fetch --shallow-since "200000000 +0700" origin &&
+#		git -C shallow11 log --pretty=tformat:%s origin/main >actual &&
+#		cat >expected <<-\EOF &&
+#		three
+#		two
+#		EOF
+#		test_cmp expected actual
+#	
+ok 6 - shallow clone exclude tag two
+not ok 7 - fetch exclude tag one
+#	
+#		git -C shallow12 fetch --shallow-exclude one origin &&
+#		git -C shallow12 log --pretty=tformat:%s origin/main >actual &&
+#		test_write_lines three two >expected &&
+#		test_cmp expected actual
+#	
+not ok 8 - fetching deepen
+#	
+#		test_create_repo shallow-deepen &&
+#		(
+#		cd shallow-deepen &&
+#		test_commit one &&
+#		test_commit two &&
+#		test_commit three &&
+#		mv .git "$HTTPD_DOCUMENT_ROOT_PATH/shallow-deepen.git" &&
+#		git clone --depth 1 $HTTPD_URL/smart/shallow-deepen.git deepen &&
+#		mv "$HTTPD_DOCUMENT_ROOT_PATH/shallow-deepen.git" .git &&
+#		test_commit four &&
+#		git -C deepen log --pretty=tformat:%s main >actual &&
+#		echo three >expected &&
+#		test_cmp expected actual &&
+#		mv .git "$HTTPD_DOCUMENT_ROOT_PATH/shallow-deepen.git" &&
+#		git -C deepen fetch --deepen=1 &&
+#		git -C deepen log --pretty=tformat:%s origin/main >actual &&
+#		cat >expected <<-\EOF &&
+#		four
+#		three
+#		two
+#		EOF
+#		test_cmp expected actual
+#		)
+#	
+# failed 4 among 8 test(s)
+1..8
+# Tests: 8  Pass: 4  Fail: 4  Skip: 0

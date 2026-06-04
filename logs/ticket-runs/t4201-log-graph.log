@@ -1,0 +1,45 @@
+ok 1 - setup: linear history
+ok 2 - log --graph runs without error
+ok 3 - log --graph shows all commits
+ok 4 - log --graph with -n limits output
+ok 5 - log --graph preserves commit order
+ok 6 - log --reverse shows oldest first
+ok 7 - log --reverse with -n limits correctly
+ok 8 - log --reverse first commit is root
+ok 9 - log --skip 0 shows all commits
+ok 10 - log --skip 2 skips two newest commits
+ok 11 - log --skip with -n combines correctly
+ok 12 - log --skip past all commits shows nothing
+ok 13 - log --first-parent on linear history shows all
+not ok 14 - log --graph --reverse shows graph in reverse
+#	
+#		(
+#		cd linear &&
+#		git log --graph --reverse --oneline >out &&
+#		head -1 out | grep "first" &&
+#		tail -1 out | grep "fifth"
+#		)
+#	
+ok 15 - log --skip 1 --reverse
+ok 16 - log --graph with --format shows custom format
+ok 17 - log --graph --oneline has short hashes
+ok 18 - log with explicit HEAD
+ok 19 - log with rev-parsed ancestor shows subset
+ok 20 - log with tag as revision
+not ok 21 - setup: create branch with extra commits
+#	
+#		(
+#		cd linear &&
+#		anc=$(git rev-parse HEAD~2) &&
+#		git branch side "$anc" &&
+#		git checkout side &&
+#		echo "side1" >side.txt && git add side.txt && git commit -m "side-one" &&
+#		echo "side2" >side.txt && git add side.txt && git commit -m "side-two" &&
+#		git checkout master
+#		)
+#	
+ok 22 - log branch shows branch-specific history
+ok 23 - log --graph on branch
+# failed 2 among 23 test(s)
+1..23
+# Tests: 23  Pass: 21  Fail: 2  Skip: 0

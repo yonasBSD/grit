@@ -1,0 +1,12 @@
+ok 1 - setup: merge with directory additions on both sides
+not ok 2 - merge brings in both directories
+#	
+#		cd merge-dirs &&
+#		git checkout sideA &&
+#		git merge sideB -m "merge sideB" &&
+#		test_path_is_file dirA/file &&
+#		test_path_is_file dirB/file
+#	
+# failed 1 among 2 test(s)
+1..2
+# Tests: 2  Pass: 1  Fail: 1  Skip: 0

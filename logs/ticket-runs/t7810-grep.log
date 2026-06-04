@@ -1,0 +1,589 @@
+ok 1 - setup
+ok 2 - grep should not segfault with a bad input
+ok 3 - invalid expression: grep --and -e A
+ok 4 - grep -w HEAD
+ok 5 - grep -w HEAD (with --column)
+ok 6 - grep -w HEAD (with --column, extended OR)
+ok 7 - grep -w HEAD (with --column, --invert-match)
+ok 8 - grep HEAD (with --column, --invert-match, extended OR)
+ok 9 - grep HEAD (with --column, --invert-match, extended AND)
+ok 10 - grep HEAD (with --column, double-negation)
+ok 11 - grep -w HEAD (with --column, -C)
+ok 12 - grep -w HEAD (with --line-number, --column)
+ok 13 - grep -w HEAD (with non-extended patterns, --column)
+ok 14 - grep -w HEAD
+ok 15 - grep -w HEAD
+ok 16 - grep -w HEAD (w)
+ok 17 - grep -w HEAD (x)
+ok 18 - grep -w HEAD (y-1)
+ok 19 - grep -w HEAD (y-2)
+ok 20 - grep -w HEAD (z)
+ok 21 - grep HEAD (with --column, --only-matching)
+ok 22 - grep HEAD (t-1)
+ok 23 - grep HEAD (t-2)
+ok 24 - grep HEAD (t-3)
+ok 25 - grep -c HEAD (no /dev/null)
+ok 26 - grep --max-depth -1 HEAD
+ok 27 - grep --max-depth 0 HEAD
+ok 28 - grep --max-depth 0 -- '*' HEAD
+ok 29 - grep --max-depth 1 HEAD
+ok 30 - grep --max-depth 0 -- t HEAD
+ok 31 - grep --max-depth 0 -- . t HEAD
+ok 32 - grep --max-depth 0 -- t . HEAD
+ok 33 - grep HEAD with '-c grep.extendedRegexp=false' interpreted as BRE
+ok 34 - grep HEAD with '-c grep.extendedRegexp=true' interpreted as ERE
+ok 35 - grep HEAD with '-c grep.patternType=basic' interpreted as BRE
+ok 36 - grep HEAD with '-c grep.patternType=extended' interpreted as ERE
+ok 37 - grep HEAD with '-c grep.patternType=fixed' interpreted as FIX
+ok 38 # skip grep HEAD with grep.patterntype=perl (missing PCRE)
+not ok 39 - grep HEAD with grep.patterntype=perl errors without PCRE
+#	
+#			test_must_fail git -c grep.patterntype=perl grep "foo.*bar"
+#		
+ok 40 - grep HEAD with '-c grep.patternType=default -c grep.extendedRegexp=true' interpreted as ERE
+ok 41 - grep HEAD with '-c grep.extendedRegexp=true -c grep.patternType=default' interpreted as ERE
+ok 42 - grep HEAD with '-c grep.patternType=extended -c grep.extendedRegexp=false' interpreted as ERE
+ok 43 - grep HEAD with '-c grep.patternType=basic -c grep.extendedRegexp=true' interpreted as BRE
+ok 44 - grep HEAD with '-c grep.extendedRegexp=false -c grep.patternType=extended' interpreted as ERE
+ok 45 - grep HEAD with '-c grep.extendedRegexp=true -c grep.patternType=basic' interpreted as BRE
+ok 46 - grep HEAD with '-c grep.extendedRegexp=true -c grep.extendedRegexp=false' interpreted as BRE
+ok 47 - grep HEAD with '-c grep.extendedRegexp=true -c grep.patternType=basic -c grep.extendedRegexp=false' interpreted as BRE
+ok 48 - grep HEAD with '-c grep.extendedRegexp=true -c grep.patternType=extended -c grep.extendedRegexp=false' interpreted as ERE
+ok 49 - grep HEAD with '-c grep.patternType=fixed -c grep.extendedRegexp=true -c grep.patternType=default' interpreted as ERE
+ok 50 - grep HEAD with '-c grep.extendedRegexp=false -c grep.patternType=default -c grep.extendedRegexp=true' interpreted as ERE
+ok 51 - grep HEAD with '-c grep.extendedRegexp=false -c grep.extendedRegexp=true -c grep.patternType=default' interpreted as ERE
+ok 52 - grep HEAD with '-c grep.patternType=default -c grep.extendedRegexp=true -c grep.patternType=basic' interpreted as BRE
+ok 53 - grep HEAD with '-c grep.patternType=extended -c grep.patternType=default' interpreted as BRE
+ok 54 - grep HEAD with '-c grep.patternType=extended -c grep.patternType=default -c grep.patternType=fixed' interpreted as FIX
+ok 55 - grep --count HEAD
+ok 56 - grep --count -h HEAD
+ok 57 - grep HEAD searches past invalid lines on UTF-8 locale
+ok 58 - grep HEAD should quote unusual pathnames
+not ok 59 - grep HEAD in subdir should quote unusual relative pathnames
+#	
+#			cat >expected <<-EOF &&
+#			${HC}"nested \"unusual\" pathname":unusual
+#			EOF
+#			(
+#				cd t &&
+#				git grep unusual $H
+#			) >actual &&
+#			test_cmp expected actual
+#		
+ok 60 - grep -z HEAD with unusual pathnames
+not ok 61 - grep -z HEAD in subdir with unusual relative pathnames
+#	
+#			cat >expected <<-EOF &&
+#			${HC}nested "unusual" pathname:unusual
+#			EOF
+#			(
+#				cd t &&
+#				git grep -z unusual $H
+#			) >actual &&
+#			tr "\0" ":" <actual >actual-replace-null &&
+#			test_cmp expected actual-replace-null
+#		
+ok 62 - grep -w in working tree
+ok 63 - grep -w in working tree (with --column)
+ok 64 - grep -w in working tree (with --column, extended OR)
+ok 65 - grep -w in working tree (with --column, --invert-match)
+ok 66 - grep in working tree (with --column, --invert-match, extended OR)
+ok 67 - grep in working tree (with --column, --invert-match, extended AND)
+ok 68 - grep in working tree (with --column, double-negation)
+ok 69 - grep -w in working tree (with --column, -C)
+ok 70 - grep -w in working tree (with --line-number, --column)
+ok 71 - grep -w in working tree (with non-extended patterns, --column)
+ok 72 - grep -w in working tree
+ok 73 - grep -w in working tree
+ok 74 - grep -w in working tree (w)
+ok 75 - grep -w in working tree (x)
+ok 76 - grep -w in working tree (y-1)
+ok 77 - grep -w in working tree (y-2)
+ok 78 - grep -w in working tree (z)
+ok 79 - grep in working tree (with --column, --only-matching)
+ok 80 - grep in working tree (t-1)
+ok 81 - grep in working tree (t-2)
+ok 82 - grep in working tree (t-3)
+ok 83 - grep -c in working tree (no /dev/null)
+ok 84 - grep --max-depth -1 in working tree
+ok 85 - grep --max-depth 0 in working tree
+ok 86 - grep --max-depth 0 -- '*' in working tree
+ok 87 - grep --max-depth 1 in working tree
+ok 88 - grep --max-depth 0 -- t in working tree
+ok 89 - grep --max-depth 0 -- . t in working tree
+ok 90 - grep --max-depth 0 -- t . in working tree
+ok 91 - grep in working tree with '-c grep.extendedRegexp=false' interpreted as BRE
+ok 92 - grep in working tree with '-c grep.extendedRegexp=true' interpreted as ERE
+ok 93 - grep in working tree with '-c grep.patternType=basic' interpreted as BRE
+ok 94 - grep in working tree with '-c grep.patternType=extended' interpreted as ERE
+ok 95 - grep in working tree with '-c grep.patternType=fixed' interpreted as FIX
+ok 96 # skip grep in working tree with grep.patterntype=perl (missing PCRE)
+not ok 97 - grep in working tree with grep.patterntype=perl errors without PCRE
+#	
+#			test_must_fail git -c grep.patterntype=perl grep "foo.*bar"
+#		
+ok 98 - grep in working tree with '-c grep.patternType=default -c grep.extendedRegexp=true' interpreted as ERE
+ok 99 - grep in working tree with '-c grep.extendedRegexp=true -c grep.patternType=default' interpreted as ERE
+ok 100 - grep in working tree with '-c grep.patternType=extended -c grep.extendedRegexp=false' interpreted as ERE
+ok 101 - grep in working tree with '-c grep.patternType=basic -c grep.extendedRegexp=true' interpreted as BRE
+ok 102 - grep in working tree with '-c grep.extendedRegexp=false -c grep.patternType=extended' interpreted as ERE
+ok 103 - grep in working tree with '-c grep.extendedRegexp=true -c grep.patternType=basic' interpreted as BRE
+ok 104 - grep in working tree with '-c grep.extendedRegexp=true -c grep.extendedRegexp=false' interpreted as BRE
+ok 105 - grep in working tree with '-c grep.extendedRegexp=true -c grep.patternType=basic -c grep.extendedRegexp=false' interpreted as BRE
+ok 106 - grep in working tree with '-c grep.extendedRegexp=true -c grep.patternType=extended -c grep.extendedRegexp=false' interpreted as ERE
+ok 107 - grep in working tree with '-c grep.patternType=fixed -c grep.extendedRegexp=true -c grep.patternType=default' interpreted as ERE
+ok 108 - grep in working tree with '-c grep.extendedRegexp=false -c grep.patternType=default -c grep.extendedRegexp=true' interpreted as ERE
+ok 109 - grep in working tree with '-c grep.extendedRegexp=false -c grep.extendedRegexp=true -c grep.patternType=default' interpreted as ERE
+ok 110 - grep in working tree with '-c grep.patternType=default -c grep.extendedRegexp=true -c grep.patternType=basic' interpreted as BRE
+ok 111 - grep in working tree with '-c grep.patternType=extended -c grep.patternType=default' interpreted as BRE
+ok 112 - grep in working tree with '-c grep.patternType=extended -c grep.patternType=default -c grep.patternType=fixed' interpreted as FIX
+ok 113 - grep --count in working tree
+ok 114 - grep --count -h in working tree
+ok 115 - grep in working tree searches past invalid lines on UTF-8 locale
+ok 116 - grep in working tree should quote unusual pathnames
+ok 117 - grep in working tree in subdir should quote unusual relative pathnames
+ok 118 - grep -z in working tree with unusual pathnames
+ok 119 - grep -z in working tree in subdir with unusual relative pathnames
+ok 120 - grep exactly one char in single-char multibyte file
+ok 121 - grep two chars in single-char multibyte file
+ok 122 - grep -l -C
+ok 123 - grep -c -C
+ok 124 - grep -L -C
+ok 125 - grep --files-without-match --quiet
+ok 126 - grep --max-count 0 (must exit with non-zero)
+ok 127 - grep --max-count 3
+ok 128 - grep --max-count -1 (no limit)
+ok 129 - grep --max-count 1 --context 2
+not ok 130 - grep --max-count 1 --show-function
+#	
+#		cat >expected <<-EOF &&
+#		hello.ps1=function hello() {
+#		hello.ps1:  echo "Hello world."
+#		EOF
+#		git grep --max-count 1 --show-function Hello hello.ps1 >actual &&
+#		test_cmp expected actual
+#	
+not ok 131 - grep --max-count 2 --show-function
+#	
+#		cat >expected <<-EOF &&
+#		hello.ps1=function hello() {
+#		hello.ps1:  echo "Hello world."
+#		hello.ps1:  echo "Hello again."
+#		EOF
+#		git grep --max-count 2 --show-function Hello hello.ps1 >actual &&
+#		test_cmp expected actual
+#	
+ok 132 - grep --max-count 1 --count
+ok 133 - grep --max-count 1 (multiple files)
+ok 134 - grep --max-count 1 --context 1 (multiple files)
+ok 135 - grep -e A --and -e B
+ok 136 - grep ( -e A --or -e B ) --and -e B
+ok 137 - grep -e A --and --not -e B
+ok 138 - grep should ignore GREP_OPTIONS
+ok 139 - grep -f, non-existent file
+ok 140 - grep -f, one pattern
+ok 141 - grep -f, multiple patterns
+ok 142 - grep, multiple patterns
+ok 143 - grep -f, ignore empty lines
+ok 144 - grep -f, ignore empty lines, read patterns from stdin
+ok 145 - grep -f, use cwd relative file
+ok 146 - grep -q, silently report matches
+ok 147 - grep -C1 hunk mark between files
+ok 148 - log grep setup
+ok 149 - log grep (1)
+ok 150 - log grep (2)
+ok 151 - log grep (3)
+ok 152 - log grep (4)
+ok 153 - log grep (5)
+ok 154 - log grep (6)
+ok 155 - log grep (7)
+ok 156 - log grep (8)
+ok 157 - log grep (9)
+ok 158 - log grep (9)
+ok 159 - log --grep-reflog can only be used under -g
+ok 160 - log with multiple --grep uses union
+ok 161 - log --all-match with multiple --grep uses intersection
+ok 162 - log with multiple --author uses union
+ok 163 - log --all-match with multiple --author still uses union
+ok 164 - log --grep --author uses intersection
+ok 165 - log --grep --grep --author takes union of greps and intersects with author
+ok 166 - log ---all-match -grep --author --author still takes union of authors and intersects with grep
+ok 167 - log --grep --author --author takes union of authors and intersects with grep
+ok 168 - log --all-match --grep --grep --author takes intersection
+ok 169 - log --author does not search in timestamp
+ok 170 - log --committer does not search in timestamp
+ok 171 - grep with CE_VALID file
+not ok 172 - grep -p with userdiff
+#	
+#		git config diff.custom.funcname "^#" &&
+#		echo "hello.c diff=custom" >.gitattributes &&
+#		git grep -p return >actual &&
+#		test_cmp expected actual
+#	
+not ok 173 - grep -p
+#	
+#		rm -f .gitattributes &&
+#		git grep -p return >actual &&
+#		test_cmp expected actual
+#	
+not ok 174 - grep -p -B5
+#	
+#		git grep -p -B5 return >actual &&
+#		test_cmp expected actual
+#	
+not ok 175 - grep -W
+#	
+#		git grep -W return >actual &&
+#		test_cmp expected actual
+#	
+not ok 176 - grep -W shows no trailing empty lines
+#	
+#		git grep -W stdio >actual &&
+#		test_cmp expected actual
+#	
+ok 177 - grep -W with userdiff
+not ok 178 -  includes preceding comment
+#	
+#		grep "# Say hello" function-context-userdiff-actual
+#	
+not ok 179 -  includes function line
+#	
+#		grep "=function hello" function-context-userdiff-actual
+#	
+ok 180 -  includes matching line
+not ok 181 -  includes last line of the function
+#	
+#		grep "} # hello" function-context-userdiff-actual
+#	
+ok 182 - grep --threads=0 & -c grep.threads=0
+ok 183 - grep --threads=1 & -c grep.threads=1
+ok 184 - grep --threads=2 & -c grep.threads=2
+ok 185 - grep --threads=3 & -c grep.threads=3
+ok 186 - grep --threads=4 & -c grep.threads=4
+ok 187 - grep --threads=5 & -c grep.threads=5
+ok 188 - grep --threads=6 & -c grep.threads=6
+ok 189 - grep --threads=7 & -c grep.threads=7
+ok 190 - grep --threads=8 & -c grep.threads=8
+ok 191 - grep --threads=9 & -c grep.threads=9
+ok 192 - grep --threads=10 & -c grep.threads=10
+ok 193 - grep --threads=N or pack.threads=N warns when no pthreads
+ok 194 - grep from a subdirectory to search wider area (1)
+ok 195 - grep from a subdirectory to search wider area (2)
+ok 196 - grep -Fi
+not ok 197 - outside of git repository
+#	
+#		rm -fr non &&
+#		mkdir -p non/git/sub &&
+#		echo hello >non/git/file1 &&
+#		echo world >non/git/sub/file2 &&
+#		{
+#			echo file1:hello &&
+#			echo sub/file2:world
+#		} >non/expect.full &&
+#		echo file2:world >non/expect.sub &&
+#		(
+#			GIT_CEILING_DIRECTORIES="$(pwd)/non" &&
+#			export GIT_CEILING_DIRECTORIES &&
+#			cd non/git &&
+#			test_must_fail git grep o &&
+#			git grep --no-index o >../actual.full &&
+#			test_cmp ../expect.full ../actual.full &&
+#			cd sub &&
+#			test_must_fail git grep o &&
+#			git grep --no-index o >../../actual.sub &&
+#			test_cmp ../../expect.sub ../../actual.sub
+#		) &&
+#	
+#		echo ".*o*" >non/git/.gitignore &&
+#		(
+#			GIT_CEILING_DIRECTORIES="$(pwd)/non" &&
+#			export GIT_CEILING_DIRECTORIES &&
+#			cd non/git &&
+#			test_must_fail git grep o &&
+#			git grep --no-index --exclude-standard o >../actual.full &&
+#			test_cmp ../expect.full ../actual.full &&
+#	
+#			{
+#				echo ".gitignore:.*o*" &&
+#				cat ../expect.full
+#			} >../expect.with.ignored &&
+#			git grep --no-index --no-exclude-standard o >../actual.full &&
+#			test_cmp ../expect.with.ignored ../actual.full
+#		)
+#	
+not ok 198 - outside of git repository with fallbackToNoIndex
+#	
+#		rm -fr non &&
+#		mkdir -p non/git/sub &&
+#		echo hello >non/git/file1 &&
+#		echo world >non/git/sub/file2 &&
+#		cat <<-\EOF >non/expect.full &&
+#		file1:hello
+#		sub/file2:world
+#		EOF
+#		echo file2:world >non/expect.sub &&
+#		(
+#			GIT_CEILING_DIRECTORIES="$(pwd)/non" &&
+#			export GIT_CEILING_DIRECTORIES &&
+#			cd non/git &&
+#			test_must_fail git -c grep.fallbackToNoIndex=false grep o &&
+#			git -c grep.fallbackToNoIndex=true grep o >../actual.full &&
+#			test_cmp ../expect.full ../actual.full &&
+#			cd sub &&
+#			test_must_fail git -c grep.fallbackToNoIndex=false grep o &&
+#			git -c grep.fallbackToNoIndex=true grep o >../../actual.sub &&
+#			test_cmp ../../expect.sub ../../actual.sub
+#		) &&
+#	
+#		echo ".*o*" >non/git/.gitignore &&
+#		(
+#			GIT_CEILING_DIRECTORIES="$(pwd)/non" &&
+#			export GIT_CEILING_DIRECTORIES &&
+#			cd non/git &&
+#			test_must_fail git -c grep.fallbackToNoIndex=false grep o &&
+#			git -c grep.fallbackToNoIndex=true grep --exclude-standard o >../actual.full &&
+#			test_cmp ../expect.full ../actual.full &&
+#	
+#			{
+#				echo ".gitignore:.*o*" &&
+#				cat ../expect.full
+#			} >../expect.with.ignored &&
+#			git -c grep.fallbackToNoIndex grep --no-exclude-standard o >../actual.full &&
+#			test_cmp ../expect.with.ignored ../actual.full
+#		)
+#	
+not ok 199 - no repository with path outside $cwd
+#	
+#		test_when_finished rm -fr non &&
+#		rm -fr non &&
+#		mkdir -p non/git/sub non/tig &&
+#		(
+#			GIT_CEILING_DIRECTORIES="$(pwd)/non" &&
+#			export GIT_CEILING_DIRECTORIES &&
+#			cd non/git &&
+#			test_expect_code 128 git grep --no-index search .. 2>error &&
+#			grep "is outside the directory tree" error
+#		) &&
+#		(
+#			GIT_CEILING_DIRECTORIES="$(pwd)/non" &&
+#			export GIT_CEILING_DIRECTORIES &&
+#			cd non/git &&
+#			test_expect_code 128 git grep --no-index search ../tig 2>error &&
+#			grep "is outside the directory tree" error
+#		) &&
+#		(
+#			GIT_CEILING_DIRECTORIES="$(pwd)/non" &&
+#			export GIT_CEILING_DIRECTORIES &&
+#			cd non/git &&
+#			test_expect_code 128 git grep --no-index search ../non 2>error &&
+#			grep "no such path in the working tree" error
+#		)
+#	
+not ok 200 - inside git repository but with --no-index
+#	
+#		rm -fr is &&
+#		mkdir -p is/git/sub &&
+#		echo hello >is/git/file1 &&
+#		echo world >is/git/sub/file2 &&
+#		echo ".*o*" >is/git/.gitignore &&
+#		{
+#			echo file1:hello &&
+#			echo sub/file2:world
+#		} >is/expect.unignored &&
+#		{
+#			echo ".gitignore:.*o*" &&
+#			cat is/expect.unignored
+#		} >is/expect.full &&
+#		echo file2:world >is/expect.sub &&
+#		(
+#			cd is/git &&
+#			git init &&
+#			test_must_fail git grep o >../actual.full &&
+#			test_must_be_empty ../actual.full &&
+#	
+#			git grep --untracked o >../actual.unignored &&
+#			test_cmp ../expect.unignored ../actual.unignored &&
+#	
+#			git grep --no-index o >../actual.full &&
+#			test_cmp ../expect.full ../actual.full &&
+#	
+#			git grep --no-index --exclude-standard o >../actual.unignored &&
+#			test_cmp ../expect.unignored ../actual.unignored &&
+#	
+#			cd sub &&
+#			test_must_fail git grep o >../../actual.sub &&
+#			test_must_be_empty ../../actual.sub &&
+#	
+#			git grep --no-index o >../../actual.sub &&
+#			test_cmp ../../expect.sub ../../actual.sub &&
+#	
+#			git grep --untracked o >../../actual.sub &&
+#			test_cmp ../../expect.sub ../../actual.sub
+#		)
+#	
+ok 201 - grep --no-index descends into repos, but not .git
+ok 202 - setup double-dash tests
+ok 203 - grep -- pattern
+ok 204 - grep -- pattern -- pathspec
+ok 205 - grep -e pattern -- path
+ok 206 - grep -e -- -- path
+ok 207 - dashdash disambiguates rev as rev
+ok 208 - dashdash disambiguates pathspec as pathspec
+ok 209 - report bogus arg without dashdash
+not ok 210 - report bogus rev with dashdash
+#	
+#		test_must_fail git grep o hello.c --
+#	
+ok 211 - allow non-existent path with dashdash
+ok 212 - grep --no-index pattern -- path
+not ok 213 - grep --no-index complains of revs
+#	
+#		test_must_fail git grep --no-index o main -- 2>err &&
+#		test_grep "cannot be used with revs" err
+#	
+ok 214 - grep --no-index prefers paths to revs
+ok 215 - grep --no-index does not "diagnose" revs
+ok 216 # skip grep --perl-regexp pattern (missing PCRE)
+not ok 217 - grep --perl-regexp pattern errors without PCRE
+#	
+#		test_must_fail git grep --perl-regexp "foo.*bar"
+#	
+ok 218 # skip grep -P pattern (missing PCRE)
+ok 219 # skip grep -P with (*NO_JIT) doesn't error out (missing LIBPCRE2)
+not ok 220 - grep -P pattern errors without PCRE
+#	
+#		test_must_fail git grep -P "foo.*bar"
+#	
+ok 221 - grep pattern with grep.extendedRegexp=true
+ok 222 # skip grep -P pattern with grep.extendedRegexp=true (missing PCRE)
+ok 223 # skip grep -P -v pattern (missing PCRE)
+ok 224 # skip grep -P -i pattern (missing PCRE)
+ok 225 # skip grep -P -w pattern (missing PCRE)
+ok 226 # skip grep -P backreferences work (the PCRE NO_AUTO_CAPTURE flag is not set) (missing PCRE)
+ok 227 - grep -G invalidpattern properly dies 
+ok 228 - grep invalidpattern properly dies with grep.patternType=basic
+ok 229 - grep -E invalidpattern properly dies 
+ok 230 - grep invalidpattern properly dies with grep.patternType=extended
+ok 231 # skip grep -P invalidpattern properly dies  (missing PCRE)
+ok 232 # skip grep invalidpattern properly dies with grep.patternType=perl (missing PCRE)
+ok 233 - grep -G -E -F pattern
+ok 234 - grep pattern with grep.patternType=basic, =extended, =fixed
+ok 235 - grep -E -F -G pattern
+ok 236 - grep pattern with grep.patternType=extended, =fixed, =basic
+ok 237 - grep -F -G -E pattern
+ok 238 - grep pattern with grep.patternType=fixed, =basic, =extended
+ok 239 - grep -G -F -P -E pattern
+ok 240 - grep pattern with grep.patternType=fixed, =basic, =perl, =extended
+ok 241 # skip grep -G -F -E -P pattern (missing PCRE)
+ok 242 # skip grep pattern with grep.patternType=fixed, =basic, =extended, =perl (missing PCRE)
+ok 243 # skip grep -P pattern with grep.patternType=fixed (missing PCRE)
+ok 244 - grep -F pattern with grep.patternType=basic
+ok 245 - grep -G pattern with grep.patternType=fixed
+ok 246 - grep -E pattern with grep.patternType=fixed
+not ok 247 - grep --color, separator
+#	
+#		test_config color.grep.context		normal &&
+#		test_config color.grep.filename		normal &&
+#		test_config color.grep.function		normal &&
+#		test_config color.grep.linenumber	normal &&
+#		test_config color.grep.match		normal &&
+#		test_config color.grep.selected		normal &&
+#		test_config color.grep.separator	red &&
+#	
+#		git grep --color=always -A1 -e char -e lo_w hello.c hello_world |
+#		test_decode_color >actual &&
+#		test_cmp expected actual
+#	
+ok 248 - grep --break
+not ok 249 - grep --break with context
+#	
+#		git grep --break -A1 -e char -e lo_w hello.c hello_world >actual &&
+#		test_cmp expected actual
+#	
+ok 250 - grep --heading
+not ok 251 - mimic ack-grep --group
+#	
+#		test_config color.grep.context		normal &&
+#		test_config color.grep.filename		"bold green" &&
+#		test_config color.grep.function		normal &&
+#		test_config color.grep.linenumber	normal &&
+#		test_config color.grep.match		"black yellow" &&
+#		test_config color.grep.selected		normal &&
+#		test_config color.grep.separator	normal &&
+#	
+#		git grep --break --heading -n --color \
+#			-e char -e lo_w hello.c hello_world |
+#		test_decode_color >actual &&
+#		test_cmp expected actual
+#	
+ok 252 # skip grep -E "^ " (missing PCRE)
+ok 253 # skip grep -P "^ " (missing PCRE)
+not ok 254 - grep --color -e A -e B with context
+#	
+#		test_config color.grep.context		normal &&
+#		test_config color.grep.filename		normal &&
+#		test_config color.grep.function		normal &&
+#		test_config color.grep.linenumber	normal &&
+#		test_config color.grep.matchContext	normal &&
+#		test_config color.grep.matchSelected	red &&
+#		test_config color.grep.selected		normal &&
+#		test_config color.grep.separator	normal &&
+#	
+#		git grep --color=always -C2 -e "with " -e space2  space |
+#		test_decode_color >actual &&
+#		test_cmp expected actual
+#	
+not ok 255 - grep --color -e A --and -e B with context
+#	
+#		test_config color.grep.context		normal &&
+#		test_config color.grep.filename		normal &&
+#		test_config color.grep.function		normal &&
+#		test_config color.grep.linenumber	normal &&
+#		test_config color.grep.matchContext	normal &&
+#		test_config color.grep.matchSelected	red &&
+#		test_config color.grep.selected		normal &&
+#		test_config color.grep.separator	normal &&
+#	
+#		git grep --color=always -C2 -e "with " --and -e space2  space |
+#		test_decode_color >actual &&
+#		test_cmp expected actual
+#	
+not ok 256 - grep --color -e A --and --not -e B with context
+#	
+#		test_config color.grep.context		normal &&
+#		test_config color.grep.filename		normal &&
+#		test_config color.grep.function		normal &&
+#		test_config color.grep.linenumber	normal &&
+#		test_config color.grep.matchContext	normal &&
+#		test_config color.grep.matchSelected	red &&
+#		test_config color.grep.selected		normal &&
+#		test_config color.grep.separator	normal &&
+#	
+#		git grep --color=always -C2 -e "with " --and --not -e space2  space |
+#		test_decode_color >actual &&
+#		test_cmp expected actual
+#	
+not ok 257 - grep --color -e A --and -e B -p with context
+#	
+#		test_config color.grep.context		normal &&
+#		test_config color.grep.filename		normal &&
+#		test_config color.grep.function		normal &&
+#		test_config color.grep.linenumber	normal &&
+#		test_config color.grep.matchContext	normal &&
+#		test_config color.grep.matchSelected	red &&
+#		test_config color.grep.selected		normal &&
+#		test_config color.grep.separator	normal &&
+#	
+#		git grep --color=always -p -C3 -e int --and -e Hello --no-index hello.c |
+#		test_decode_color >actual &&
+#		test_cmp expected actual
+#	
+ok 258 - grep can find things only in the work tree
+ok 259 - grep can find things only in the work tree (i-t-a)
+ok 260 - grep does not search work tree with assume unchanged
+ok 261 - grep can find things only in the index
+ok 262 - grep does not report i-t-a with -L --cached
+ok 263 - grep does not report i-t-a and assume unchanged with -L
+# failed 29 among 263 test(s)
+1..263
+# Tests: 263  Pass: 234  Fail: 29  Skip: 17

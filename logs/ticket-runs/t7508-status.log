@@ -1,0 +1,162 @@
+ok 1 - status -h in broken repository
+ok 2 - commit -h in broken repository
+ok 3 - create upstream branch
+ok 4 - setup
+ok 5 - status (1)
+ok 6 - status --column
+ok 7 - status --column status.displayCommentPrefix=false
+ok 8 - status with status.displayCommentPrefix=true
+ok 9 - status with status.displayCommentPrefix=false
+ok 10 - status -v
+ok 11 - status -v -v
+ok 12 - setup fake editor
+not ok 13 - commit ignores status.displayCommentPrefix=false in COMMIT_EDITMSG
+#	
+#		commit_template_commented
+#	
+ok 14 - status (advice.statusHints false)
+ok 15 - status -s
+ok 16 - status with gitignore
+ok 17 - status with gitignore (nothing untracked)
+ok 18 - status -s -b
+ok 19 - status -s -z -b
+ok 20 - setup dir3
+ok 21 - status -uno
+ok 22 - status (status.showUntrackedFiles no)
+ok 23 - status (status.showUntrackedFiles false)
+ok 24 - status (status.showUntrackedFiles 0)
+ok 25 - status -uno (advice.statusHints false)
+ok 26 - status -s -uno
+ok 27 - status -s (status.showUntrackedFiles no)
+ok 28 - status -unormal
+ok 29 - status (status.showUntrackedFiles normal)
+ok 30 - status (status.showUntrackedFiles true)
+ok 31 - status (status.showUntrackedFiles 1)
+ok 32 - status -s -unormal
+ok 33 - status -s (status.showUntrackedFiles normal)
+ok 34 - status -uall
+ok 35 - status (status.showUntrackedFiles all)
+ok 36 - teardown dir3
+ok 37 - status -s -uall
+ok 38 - status -s (status.showUntrackedFiles all)
+ok 39 - status with relative paths
+ok 40 - status -s with relative paths
+ok 41 - status --porcelain ignores relative paths setting
+ok 42 - setup unique colors
+ok 43 # skip status with color.ui (missing TTY)
+ok 44 # skip status with color.status (missing TTY)
+ok 45 # skip status -s with color.ui (missing TTY)
+ok 46 # skip status -s with color.status (missing TTY)
+ok 47 # skip status -s keeps colors with -z (missing TTY)
+ok 48 # skip status -s -b with color.status (missing TTY)
+ok 49 # skip status --porcelain ignores color.ui (missing TTY)
+ok 50 # skip status --porcelain ignores color.status (missing TTY)
+ok 51 - status --porcelain respects -b
+ok 52 - status without relative paths
+ok 53 - status -s without relative paths
+ok 54 - status -s without relative paths
+ok 55 - dry-run of partial commit excluding new file in index
+ok 56 - status refreshes the index
+ok 57 - status shows detached HEAD properly after checking out non-local upstream branch
+ok 58 - setup status submodule summary
+ok 59 - status submodule summary is disabled by default
+ok 60 - status --untracked-files=all does not show submodule
+ok 61 - status -s submodule summary is disabled by default
+ok 62 - status -s --untracked-files=all does not show submodule
+ok 63 - status submodule summary
+ok 64 - status submodule summary with status.displayCommentPrefix=false
+not ok 65 - commit with submodule summary ignores status.displayCommentPrefix
+#	
+#		commit_template_commented
+#	
+ok 66 - status -s submodule summary
+ok 67 - status submodule summary (clean submodule): commit
+ok 68 - status -s submodule summary (clean submodule)
+ok 69 - status -z implies porcelain
+ok 70 - commit --dry-run submodule summary (--amend)
+ok 71 - status succeeds in a read-only repository
+ok 72 - --ignore-submodules=untracked suppresses submodules with untracked content
+ok 73 - .gitmodules ignore=untracked suppresses submodules with untracked content
+ok 74 - .git/config ignore=untracked suppresses submodules with untracked content
+ok 75 - --ignore-submodules=dirty suppresses submodules with untracked content
+ok 76 - .gitmodules ignore=dirty suppresses submodules with untracked content
+ok 77 - .git/config ignore=dirty suppresses submodules with untracked content
+ok 78 - --ignore-submodules=dirty suppresses submodules with modified content
+ok 79 - .gitmodules ignore=dirty suppresses submodules with modified content
+ok 80 - .git/config ignore=dirty suppresses submodules with modified content
+ok 81 - --ignore-submodules=untracked doesn't suppress submodules with modified content
+ok 82 - .gitmodules ignore=untracked doesn't suppress submodules with modified content
+ok 83 - .git/config ignore=untracked doesn't suppress submodules with modified content
+ok 84 - --ignore-submodules=untracked doesn't suppress submodule summary
+ok 85 - .gitmodules ignore=untracked doesn't suppress submodule summary
+ok 86 - .git/config ignore=untracked doesn't suppress submodule summary
+ok 87 - --ignore-submodules=dirty doesn't suppress submodule summary
+ok 88 - .gitmodules ignore=dirty doesn't suppress submodule summary
+ok 89 - .git/config ignore=dirty doesn't suppress submodule summary
+ok 90 - status (core.commentchar with submodule summary)
+ok 91 - status (core.commentchar with two chars with submodule summary)
+ok 92 - --ignore-submodules=all suppresses submodule summary
+ok 93 - .gitmodules ignore=all suppresses unstaged submodule summary
+ok 94 - .git/config ignore=all suppresses unstaged submodule summary
+ok 95 - setup of test environment
+ok 96 - "status.short=true" same as "-s"
+ok 97 - "status.short=true" weaker than "--no-short"
+ok 98 - "status.short=false" same as "--no-short"
+ok 99 - "status.short=false" weaker than "-s"
+ok 100 - "status.branch=true" same as "-b"
+ok 101 - "status.branch=true" different from "--no-branch"
+ok 102 - "status.branch=true" weaker than "--no-branch"
+ok 103 - "status.branch=true" weaker than "--porcelain"
+ok 104 - "status.branch=false" same as "--no-branch"
+ok 105 - "status.branch=false" weaker than "-b"
+ok 106 - Restore default test environment
+ok 107 - git commit will commit a staged but ignored submodule
+ok 108 - git commit --dry-run will show a staged but ignored submodule
+ok 109 - git commit -m will commit a staged but ignored submodule
+ok 110 - show stash info with "--show-stash"
+ok 111 - no stash info with "--show-stash --no-show-stash"
+ok 112 - "status.showStash=false" weaker than "--show-stash"
+ok 113 - "status.showStash=true" weaker than "--no-show-stash"
+ok 114 - no additional info if no stash entries
+ok 115 - "No commits yet" should be noted in status output
+ok 116 - "No commits yet" should not be noted in status output
+ok 117 - "Initial commit" should be noted in commit template
+ok 118 - "Initial commit" should not be noted in commit template
+not ok 119 - --no-optional-locks prevents index update
+#	
+#		test_set_magic_mtime .git/index &&
+#		git --no-optional-locks status &&
+#		test_is_magic_mtime .git/index &&
+#		git status &&
+#		! test_is_magic_mtime .git/index
+#	
+not ok 120 - racy timestamps will be fixed for clean worktree
+#	
+#		echo content >racy-dirty &&
+#		echo content >racy-racy &&
+#		git add racy* &&
+#		git commit -m "racy test files" &&
+#		# let status rewrite the index, if necessary; after that we expect
+#		# no more index writes unless caused by racy timestamps; note that
+#		# timestamps may already be racy now (depending on previous tests)
+#		git status &&
+#		test_set_magic_mtime .git/index &&
+#		git status &&
+#		! test_is_magic_mtime .git/index
+#	
+not ok 121 - racy timestamps will be fixed for dirty worktree
+#	
+#		echo content2 >racy-dirty &&
+#		git status &&
+#		test_set_magic_mtime .git/index &&
+#		git status &&
+#		! test_is_magic_mtime .git/index
+#	
+ok 122 - setup slow status advice
+ok 123 - slow status advice when core.untrackedCache and fsmonitor are unset
+ok 124 - slow status advice when core.untrackedCache true, but not fsmonitor
+ok 125 - slow status advice when core.untrackedCache true, and fsmonitor
+ok 126 # skip status does not re-read unchanged 4 or 8 GiB file (missing EXPENSIVE)
+# failed 5 among 126 test(s)
+1..126
+# Tests: 126  Pass: 121  Fail: 5  Skip: 9

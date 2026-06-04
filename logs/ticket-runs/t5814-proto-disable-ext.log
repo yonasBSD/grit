@@ -1,0 +1,66 @@
+ok 1 - setup ext wrapper
+ok 2 - setup repository to clone
+ok 3 - clone remote-helper (enabled)
+not ok 4 - fetch remote-helper (enabled)
+#	
+#			(
+#				cd tmp.git &&
+#				GIT_ALLOW_PROTOCOL=$proto &&
+#				export GIT_ALLOW_PROTOCOL &&
+#				git fetch
+#			)
+#		
+not ok 5 - push remote-helper (enabled)
+#	
+#			(
+#				cd tmp.git &&
+#				GIT_ALLOW_PROTOCOL=$proto &&
+#				export GIT_ALLOW_PROTOCOL &&
+#				git push origin HEAD:pushed
+#			)
+#		
+ok 6 - push remote-helper (disabled)
+ok 7 - fetch remote-helper (disabled)
+ok 8 - clone remote-helper (disabled)
+ok 9 - clone remote-helper (env var has precedence)
+ok 10 - clone remote-helper (enabled with config)
+not ok 11 - fetch remote-helper (enabled)
+#	
+#			git -C tmp.git -c protocol.$proto.allow=always fetch
+#		
+not ok 12 - push remote-helper (enabled)
+#	
+#			git -C tmp.git -c protocol.$proto.allow=always  push origin HEAD:pushed
+#		
+ok 13 - push remote-helper (disabled)
+ok 14 - fetch remote-helper (disabled)
+ok 15 - clone remote-helper (disabled)
+ok 16 - clone remote-helper (enabled)
+not ok 17 - fetch remote-helper (enabled)
+#	
+#			git -C tmp.git -c protocol.$proto.allow=user fetch
+#		
+not ok 18 - push remote-helper (enabled)
+#	
+#			git -C tmp.git -c protocol.$proto.allow=user push origin HEAD:pushed
+#		
+ok 19 - push remote-helper (disabled)
+ok 20 - fetch remote-helper (disabled)
+ok 21 - clone remote-helper (disabled)
+ok 22 - clone remote-helper (enabled)
+not ok 23 - fetch remote-helper (enabled)
+#	
+#			test_config_global protocol.allow always &&
+#			git -C tmp.git fetch
+#		
+not ok 24 - push remote-helper (enabled)
+#	
+#			test_config_global protocol.allow always &&
+#			git -C tmp.git push origin HEAD:pushed
+#		
+ok 25 - push remote-helper (disabled)
+ok 26 - fetch remote-helper (disabled)
+ok 27 - clone remote-helper (disabled)
+# failed 8 among 27 test(s)
+1..27
+# Tests: 27  Pass: 19  Fail: 8  Skip: 0

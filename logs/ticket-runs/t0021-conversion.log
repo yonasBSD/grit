@@ -1,0 +1,129 @@
+ok 1 - setup
+ok 2 - check
+ok 3 - expanded_in_repo
+ok 4 - filter shell-escaped filenames
+ok 5 - required filter should filter data
+ok 6 - required filter smudge failure
+ok 7 - required filter clean failure
+ok 8 - required filter with absent clean field
+ok 9 - required filter with absent smudge field
+ok 10 - filtering large input to small output should use little memory
+ok 11 - filter that does not read is fine
+ok 12 # skip filter large file (missing EXPENSIVE)
+ok 13 - filter: clean empty file
+ok 14 - filter: smudge empty file
+ok 15 - disable filter with empty override
+ok 16 - diff does not reuse worktree files that need cleaning
+not ok 17 - required process filter should filter data
+#	
+#		test_config_global filter.protocol.process "test-tool rot13-filter --log=debug.log clean smudge" &&
+#		test_config_global filter.protocol.required true &&
+#		rm -rf repo &&
+#		mkdir repo &&
+#		(
+#			cd repo &&
+#			git init &&
+#	
+#			echo "*.r filter=protocol" >.gitattributes &&
+#			git add . &&
+#			git commit -m "test commit 1" &&
+#			git branch empty-branch &&
+#	
+#			cp "$TEST_ROOT/test.o" test.r &&
+#			cp "$TEST_ROOT/test2.o" test2.r &&
+#			mkdir testsubdir &&
+#			cp "$TEST_ROOT/test3 'sq',\$x=.o" "testsubdir/test3 'sq',\$x=.r" &&
+#			>test4-empty.r &&
+#	
+#			S=$(test_file_size test.r) &&
+#			S2=$(test_file_size test2.r) &&
+#			S3=$(test_file_size "testsubdir/test3 'sq',\$x=.r") &&
+#			M=$(git hash-object test.r) &&
+#			M2=$(git hash-object test2.r) &&
+#			M3=$(git hash-object "testsubdir/test3 'sq',\$x=.r") &&
+#			EMPTY=$(git hash-object /dev/null) &&
+#	
+#			filter_git add . &&
+#			cat >expected.log <<-EOF &&
+#				START
+#				init handshake complete
+#				IN: clean test.r $S [OK] -- OUT: $S . [OK]
+#				IN: clean test2.r $S2 [OK] -- OUT: $S2 . [OK]
+#				IN: clean test4-empty.r 0 [OK] -- OUT: 0  [OK]
+#				IN: clean testsubdir/test3 'sq',\$x=.r $S3 [OK] -- OUT: $S3 . [OK]
+#				STOP
+#			EOF
+#			test_cmp_count expected.log debug.log &&
+#	
+#			git commit -m "test commit 2" &&
+#			MAIN=$(git rev-parse --verify main) &&
+#			META="ref=refs/heads/main treeish=$MAIN" &&
+#			rm -f test2.r "testsubdir/test3 'sq',\$x=.r" &&
+#	
+#			filter_git checkout --quiet --no-progress . &&
+#			cat >expected.log <<-EOF &&
+#				START
+#				init handshake complete
+#				IN: smudge test2.r blob=$M2 $S2 [OK] -- OUT: $S2 . [OK]
+#				IN: smudge testsubdir/test3 'sq',\$x=.r blob=$M3 $S3 [OK] -- OUT: $S3 . [OK]
+#				STOP
+#			EOF
+#			test_cmp_exclude_clean expected.log debug.log &&
+#	
+#			# Make sure that the file appears dirty, so checkout below has to
+#			# run the configured filter.
+#			touch test.r &&
+#			filter_git checkout --quiet --no-progress empty-branch &&
+#			cat >expected.log <<-EOF &&
+#				START
+#				init handshake complete
+#				IN: clean test.r $S [OK] -- OUT: $S . [OK]
+#				STOP
+#			EOF
+#			test_cmp_exclude_clean expected.log debug.log &&
+#	
+#			filter_git checkout --quiet --no-progress main &&
+#			cat >expected.log <<-EOF &&
+#				START
+#				init handshake complete
+#				IN: smudge test.r $META blob=$M $S [OK] -- OUT: $S . [OK]
+#				IN: smudge test2.r $META blob=$M2 $S2 [OK] -- OUT: $S2 . [OK]
+#				IN: smudge test4-empty.r $META blob=$EMPTY 0 [OK] -- OUT: 0  [OK]
+#				IN: smudge testsubdir/test3 'sq',\$x=.r $META blob=$M3 $S3 [OK] -- OUT: $S3 . [OK]
+#				STOP
+#			EOF
+#			test_cmp_exclude_clean expected.log debug.log &&
+#	
+#			test_cmp_committed_rot13 "$TEST_ROOT/test.o" test.r &&
+#			test_cmp_committed_rot13 "$TEST_ROOT/test2.o" test2.r &&
+#			test_cmp_committed_rot13 "$TEST_ROOT/test3 'sq',\$x=.o" "testsubdir/test3 'sq',\$x=.r"
+#		)
+#	
+ok 18 - required process filter should filter data for various subcommands
+ok 19 - required process filter takes precedence
+ok 20 - required process filter should be used only for "clean" operation only
+ok 21 - required process filter should process multiple packets
+ok 22 - required process filter with clean error should fail
+ok 23 - process filter should restart after unexpected write failure
+ok 24 - process filter should not be restarted if it signals an error
+ok 25 - process filter abort stops processing of all further files
+ok 26 - invalid process filter must fail (and not hang!)
+ok 27 - delayed checkout in process filter
+ok 28 - missing file in delayed checkout
+ok 29 - invalid file in delayed checkout
+ok 30 # skip delayed checkout with case-collision don't write to the wrong place (missing CASE_INSENSITIVE_FS of SYMLINKS,CASE_INSENSITIVE_FS)
+ok 31 - delayed checkout with utf-8-collision don't write to the wrong place
+ok 32 # skip delayed checkout with submodule collision don't write to the wrong place (missing CASE_INSENSITIVE_FS of SYMLINKS,CASE_INSENSITIVE_FS)
+ok 33 - setup for progress tests
+ok 34 # skip delayed checkout shows progress by default on tty (pathspec checkout) (missing TTY)
+ok 35 - delayed checkout omits progress on non-tty (pathspec checkout)
+ok 36 # skip delayed checkout omits progress with --quiet (pathspec checkout) (missing TTY)
+ok 37 # skip delayed checkout honors --[no]-progress (pathspec checkout) (missing TTY)
+ok 38 # skip delayed checkout shows progress by default on tty (branch checkout) (missing TTY)
+ok 39 - delayed checkout omits progress on non-tty (branch checkout)
+ok 40 # skip delayed checkout omits progress with --quiet (branch checkout) (missing TTY)
+ok 41 # skip delayed checkout honors --[no]-progress (branch checkout) (missing TTY)
+ok 42 - delayed checkout correctly reports the number of updated entries
+# failed 1 among 42 test(s)
+1..42
+# Tests: 42  Pass: 41  Fail: 1  Skip: 9

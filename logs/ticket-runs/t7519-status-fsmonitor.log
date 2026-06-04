@@ -1,0 +1,84 @@
+ok 1 - incompatible bare repo
+ok 2 # skip run fsmonitor-daemon in bare repo (missing FSMONITOR_DAEMON)
+ok 3 # skip run fsmonitor-daemon in virtual repo (missing MINGW of MINGW,FSMONITOR_DAEMON)
+ok 4 - setup
+ok 5 - fsmonitor extension is off by default
+ok 6 - update-index --fsmonitor" adds the fsmonitor extension
+ok 7 - update-index --no-fsmonitor" removes the fsmonitor extension
+not ok 8 - update-index --fsmonitor-valid" sets the fsmonitor valid bit
+#	
+#		test_hook fsmonitor-test<<-\EOF &&
+#			printf "last_update_token\0"
+#		EOF
+#		git update-index --fsmonitor &&
+#		git update-index --fsmonitor-valid dir1/modified &&
+#		git update-index --fsmonitor-valid dir2/modified &&
+#		git update-index --fsmonitor-valid modified &&
+#		git ls-files -f >actual &&
+#		test_cmp expect actual
+#	
+ok 9 - update-index --no-fsmonitor-valid" clears the fsmonitor valid bit
+ok 10 - all files returned by integration script get flagged as invalid
+not ok 11 - newly added files are marked valid
+#	
+#		test_hook --setup --clobber fsmonitor-test<<-\EOF &&
+#			printf "last_update_token\0"
+#		EOF
+#		git add new &&
+#		git add dir1/new &&
+#		git add dir2/new &&
+#		git ls-files -f >actual &&
+#		test_cmp expect actual
+#	
+not ok 12 - all unmodified files get marked valid
+#	
+#		# modified files result in update-index returning 1
+#		test_must_fail git update-index --refresh --force-write-index &&
+#		git ls-files -f >actual &&
+#		test_cmp expect actual
+#	
+not ok 13 - *only* files returned by the integration script get flagged as invalid
+#	
+#		test_hook --clobber fsmonitor-test<<-\EOF &&
+#		printf "last_update_token\0"
+#		printf "dir1/modified\0"
+#		EOF
+#		clean_repo &&
+#		git update-index --refresh --force-write-index &&
+#		echo 1 >modified &&
+#		echo 2 >dir1/modified &&
+#		echo 3 >dir2/modified &&
+#		test_must_fail git update-index --refresh --force-write-index &&
+#		git ls-files -f >actual &&
+#		test_cmp expect actual
+#	
+ok 14 - refresh_index() invalidates fsmonitor cache
+ok 15 - setup preloadIndex to false
+ok 16 - setup untracked cache to false
+ok 17 - compare status with and without fsmonitor
+ok 18 - status doesn't detect unreported modifications
+ok 19 - setup untracked cache to true
+ok 20 - compare status with and without fsmonitor
+ok 21 - status doesn't detect unreported modifications
+ok 22 - setup preloadIndex to true
+ok 23 - setup untracked cache to false
+ok 24 - compare status with and without fsmonitor
+ok 25 - status doesn't detect unreported modifications
+ok 26 - setup untracked cache to true
+ok 27 - compare status with and without fsmonitor
+ok 28 - status doesn't detect unreported modifications
+ok 29 - splitting the index results in the same state
+ok 30 - ignore .git changes when invalidating UNTR
+not ok 31 - discard_index() also discards fsmonitor info
+#	
+#		test_config core.fsmonitor "$TEST_DIRECTORY/t7519/fsmonitor-all" &&
+#		test_might_fail git update-index --refresh &&
+#		test-tool read-cache --print-and-refresh=tracked 2 >actual &&
+#		printf "tracked is%s up to date\n" "" " not" >expect &&
+#		test_cmp expect actual
+#	
+ok 32 - status succeeds after staging/unstaging
+ok 33 - status succeeds with sparse index
+# failed 5 among 33 test(s)
+1..33
+# Tests: 33  Pass: 28  Fail: 5  Skip: 2

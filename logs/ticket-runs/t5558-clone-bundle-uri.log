@@ -1,0 +1,33 @@
+ok 1 - fail to clone from non-existent file
+ok 2 - fail to clone from non-bundle file
+ok 3 - create bundle
+ok 4 - clone with path bundle
+ok 5 - clone with bundle that has bad header
+ok 6 - clone with bundle that has bad object
+ok 7 - clone with path bundle and non-default hash
+ok 8 - clone with file:// bundle
+ok 9 - create bundle with tags
+ok 10 - clone with tags bundle
+ok 11 - construct incremental bundle list
+ok 12 - clone bundle list (file, no heuristic)
+ok 13 - clone bundle list (file, all mode, some failures)
+ok 14 - clone bundle list (file, all mode, all failures)
+ok 15 - clone bundle list (file, any mode)
+ok 16 - clone bundle list (file, any mode, all failures)
+ok 17 - negotiation: bundle with part of wanted commits
+ok 18 - negotiation: bundle with all wanted commits
+ok 19 - negotiation: bundle list (no heuristic)
+ok 20 - negotiation: bundle list (creationToken)
+ok 21 - negotiation: bundle list with all wanted commits
+ok 22 - fail to fetch from non-existent HTTP URL
+ok 23 - fail to fetch from non-bundle HTTP URL
+ok 24 - clone HTTP bundle
+ok 25 - clone HTTP bundle with non-default hash
+ok 26 - clone bundle list (HTTP, no heuristic)
+ok 27 - clone bundle list (HTTP, any mode)
+ok 28 - clone bundle list (http, creationToken)
+ok 29 - clone incomplete bundle list (http, creationToken)
+ok 30 - http clone with bundle.heuristic creates fetch.bundleURI
+ok 31 - creationToken heuristic with failed downloads (clone)
+
+# DRIVER: timed out after 180s

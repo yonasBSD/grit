@@ -1,0 +1,39 @@
+ok 1 - setup: repo with branches and tags
+ok 2 - for-each-ref %(refname) lists full ref names
+ok 3 - for-each-ref %(refname) output is sorted by default
+ok 4 - for-each-ref %(refname:short) strips refs prefix
+ok 5 - refname:short for tags omits refs/tags/
+ok 6 - for-each-ref %(objecttype) shows commit for branches
+ok 7 - for-each-ref %(objecttype) shows commit for lightweight tags
+ok 8 - for-each-ref %(objectname) shows 40-char hex
+ok 9 - objectname matches rev-parse for master
+ok 10 - objectname matches rev-parse for tag
+ok 11 - for-each-ref %(subject) shows commit message first line
+ok 12 - subject for tag points to tagged commit message
+ok 13 - format string with multiple atoms
+ok 14 - format string with literal text between atoms
+ok 15 - format string with only literal text (no atoms)
+ok 16 - --sort=refname sorts lexically
+ok 17 - --sort=-refname sorts reverse lexically
+ok 18 - --count=1 returns only one ref
+ok 19 - --count=2 returns two refs
+not ok 20 - --count larger than ref count returns all
+#	
+#		(
+#		cd repo &&
+#		grit for-each-ref --format="%(refname)" >all &&
+#		total=$(wc -l <all) &&
+#		grit for-each-ref --count=100 --format="%(refname)" >actual &&
+#		test_line_count = "$total" actual
+#		)
+#	
+ok 21 - pattern refs/tags/ filters to tags only
+ok 22 - pattern refs/heads/ filters to branches only
+ok 23 - pattern with specific ref matches exactly
+ok 24 - non-matching pattern produces empty output
+ok 25 - --sort and --count combined
+ok 26 - --count with pattern
+ok 27 - for-each-ref on repo with no refs (after deleting)
+# failed 1 among 27 test(s)
+1..27
+# Tests: 27  Pass: 26  Fail: 1  Skip: 0

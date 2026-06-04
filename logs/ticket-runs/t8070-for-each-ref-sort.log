@@ -1,0 +1,42 @@
+ok 1 - setup repository with multiple refs
+ok 2 - for-each-ref lists all refs
+ok 3 - for-each-ref default format has OID TYPE REFNAME
+ok 4 - format: %(refname) shows full ref path
+ok 5 - format: %(objectname) shows full SHA-1
+ok 6 - format: %(objecttype) shows commit for branches
+ok 7 - format: %(objecttype) shows tag for annotated tags
+ok 8 - format: %(objecttype) shows commit for lightweight tags
+ok 9 - format: multiple atoms in one format string
+ok 10 - format: literal text mixed with atoms
+ok 11 - sort: default sorts by refname ascending
+ok 12 - sort: --sort=refname ascending
+ok 13 - sort: --sort=-refname descending
+ok 14 - sort: --sort=objectname ascending
+ok 15 - sort: --sort=-objectname descending
+ok 16 - sort: --sort=objecttype groups refs by type
+ok 17 - sort: --sort=-objecttype reverse groups refs by type
+ok 18 - pattern: refs/heads/ filters to branches only
+ok 19 - pattern: refs/tags/ filters to tags only
+ok 20 - pattern: no match yields empty output
+ok 21 - count: --count=1 returns exactly one ref
+ok 22 - count: --count=2 returns exactly two refs
+not ok 23 - count: --count larger than total returns all
+#	
+#		(
+#		cd repo &&
+#		git for-each-ref >all &&
+#		total=$(wc -l <all) &&
+#		git for-each-ref --count=100 >out &&
+#		test_line_count = "$total" out
+#		)
+#	
+ok 24 - combined: sort + format + pattern for tags
+ok 25 - combined: reverse sort + format for branches
+ok 26 - combined: sort objectname + count + format
+ok 27 - format: objectname for lightweight vs annotated tag differs
+ok 28 - all refs: heads + tags pattern both work
+ok 29 - format: only objectname atom
+ok 30 - format: only refname atom
+# failed 1 among 30 test(s)
+1..30
+# Tests: 30  Pass: 29  Fail: 1  Skip: 0

@@ -1,0 +1,149 @@
+ok 1 - setup
+not ok 2 - --pathspec-from-file from stdin
+#	
+#		restore_checkpoint &&
+#	
+#		git rm fileA.t &&
+#		echo fileA.t | git reset --pathspec-from-file=- &&
+#	
+#		cat >expect <<-\EOF &&
+#		 D fileA.t
+#		EOF
+#		verify_expect
+#	
+not ok 3 - --pathspec-from-file from file
+#	
+#		restore_checkpoint &&
+#	
+#		git rm fileA.t &&
+#		echo fileA.t >list &&
+#		git reset --pathspec-from-file=list &&
+#	
+#		cat >expect <<-\EOF &&
+#		 D fileA.t
+#		EOF
+#		verify_expect
+#	
+not ok 4 - NUL delimiters
+#	
+#		restore_checkpoint &&
+#	
+#		git rm fileA.t fileB.t &&
+#		printf "fileA.t\0fileB.t\0" | git reset --pathspec-from-file=- --pathspec-file-nul &&
+#	
+#		cat >expect <<-\EOF &&
+#		 D fileA.t
+#		 D fileB.t
+#		EOF
+#		verify_expect
+#	
+not ok 5 - LF delimiters
+#	
+#		restore_checkpoint &&
+#	
+#		git rm fileA.t fileB.t &&
+#		printf "fileA.t\nfileB.t\n" | git reset --pathspec-from-file=- &&
+#	
+#		cat >expect <<-\EOF &&
+#		 D fileA.t
+#		 D fileB.t
+#		EOF
+#		verify_expect
+#	
+not ok 6 - no trailing delimiter
+#	
+#		restore_checkpoint &&
+#	
+#		git rm fileA.t fileB.t &&
+#		printf "fileA.t\nfileB.t" | git reset --pathspec-from-file=- &&
+#	
+#		cat >expect <<-\EOF &&
+#		 D fileA.t
+#		 D fileB.t
+#		EOF
+#		verify_expect
+#	
+not ok 7 - CRLF delimiters
+#	
+#		restore_checkpoint &&
+#	
+#		git rm fileA.t fileB.t &&
+#		printf "fileA.t\r\nfileB.t\r\n" | git reset --pathspec-from-file=- &&
+#	
+#		cat >expect <<-\EOF &&
+#		 D fileA.t
+#		 D fileB.t
+#		EOF
+#		verify_expect
+#	
+not ok 8 - quotes
+#	
+#		restore_checkpoint &&
+#	
+#		cat >list <<-\EOF &&
+#		"file\101.t"
+#		EOF
+#	
+#		git rm fileA.t &&
+#		git reset --pathspec-from-file=list &&
+#	
+#		cat >expect <<-\EOF &&
+#		 D fileA.t
+#		EOF
+#		verify_expect
+#	
+not ok 9 - quotes not compatible with --pathspec-file-nul
+#	
+#		restore_checkpoint &&
+#	
+#		cat >list <<-\EOF &&
+#		"file\101.t"
+#		EOF
+#	
+#		# Note: "git reset" has not yet learned to fail on wrong pathspecs
+#		git reset --pathspec-from-file=list --pathspec-file-nul &&
+#	
+#		cat >expect <<-\EOF &&
+#		 D fileA.t
+#		EOF
+#		verify_expect !
+#	
+not ok 10 - only touches what was listed
+#	
+#		restore_checkpoint &&
+#	
+#		git rm fileA.t fileB.t fileC.t fileD.t &&
+#		printf "fileB.t\nfileC.t\n" | git reset --pathspec-from-file=- &&
+#	
+#		cat >expect <<-\EOF &&
+#		D  fileA.t
+#		 D fileB.t
+#		 D fileC.t
+#		D  fileD.t
+#		EOF
+#		verify_expect
+#	
+not ok 11 - error conditions
+#	
+#		restore_checkpoint &&
+#		echo fileA.t >list &&
+#		git rm fileA.t &&
+#	
+#		test_must_fail git reset --pathspec-from-file=list --patch 2>err &&
+#		test_grep -e "options .--pathspec-from-file. and .--patch. cannot be used together" err &&
+#	
+#		test_must_fail git reset --pathspec-from-file=list -- fileA.t 2>err &&
+#		test_grep -e ".--pathspec-from-file. and pathspec arguments cannot be used together" err &&
+#	
+#		test_must_fail git reset --pathspec-file-nul 2>err &&
+#		test_grep -e "the option .--pathspec-file-nul. requires .--pathspec-from-file." err &&
+#	
+#		test_must_fail git reset --soft --pathspec-from-file=list 2>err &&
+#		test_grep -e "fatal: Cannot do soft reset with paths" err &&
+#	
+#		test_must_fail git reset --hard --pathspec-from-file=list 2>err &&
+#		test_grep -e "fatal: Cannot do hard reset with paths" err
+#	
+# failed 10 among 11 test(s)
+1..11
+# Tests: 11  Pass: 1  Fail: 10  Skip: 0

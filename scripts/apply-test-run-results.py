@@ -1,44 +1,16 @@
 #!/usr/bin/env python3
-"""Merge a batch of harness run results into data/test-files.csv and refresh dashboards."""
+"""Merge a batch of harness run results into data/tests/<group>/<stem>.toml files."""
 
 from __future__ import annotations
 
 import argparse
-import csv
-import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_status import TESTS_DATA, group_from_stem, load_one, save  # noqa: E402
+
 REPO = Path(__file__).resolve().parent.parent
-DEFAULT_CSV_PATH = REPO / "data" / "test-files.csv"
-GEN_DASH = REPO / "scripts" / "generate-dashboard-from-test-files.py"
-
-HEADER = [
-    "file",
-    "group",
-    "in_scope",
-    "tests_total",
-    "passed_last",
-    "failing",
-    "fully_passing",
-    "status",
-    "expect_failure",
-]
-
-
-def load_csv(csv_path: Path) -> list[dict[str, str]]:
-    if not csv_path.exists():
-        print(
-            f"ERROR: {csv_path} missing. Run: python3 scripts/generate-test-files-catalog.py",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    rows: list[dict[str, str]] = []
-    with csv_path.open(newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-        for row in reader:
-            rows.append(dict(row))
-    return rows
 
 
 def parse_run_file(path: Path) -> dict[str, tuple[int, int, int, str, int]]:
@@ -71,58 +43,51 @@ def main() -> None:
         help="TSV lines: file_base, tests_total, passed, failing, status, expect_failure",
     )
     parser.add_argument(
-        "--csv",
+        "--data-dir",
         type=Path,
         default=None,
         metavar="PATH",
-        help=f"Catalog CSV to read/update (default: {DEFAULT_CSV_PATH}).",
+        help=f"Status TOML tree to read/update (default: {TESTS_DATA}).",
     )
     parser.add_argument(
         "--skip-dashboard",
         action="store_true",
-        help="Update CSV only; skip docs dashboards (index.html, progress/index.html, testfiles.html, test-progress.svg; caller may run generate-dashboard-from-test-files.py once at the end).",
+        help="Deprecated no-op (dashboards are no longer regenerated here; run scripts/generate-dashboard-from-test-files.py).",
     )
     args = parser.parse_args()
-    csv_path = args.csv if args.csv is not None else DEFAULT_CSV_PATH
+    data_dir = args.data_dir
     run_path = args.run_path
     if not run_path.is_file():
         print(f"ERROR: {run_path} not found", file=sys.stderr)
         sys.exit(1)
 
-    updates = parse_run_file(run_path)
-    rows = load_csv(csv_path)
-    by_file = {r["file"]: i for i, r in enumerate(rows) if r.get("file")}
+    base_dir = data_dir if data_dir is not None else TESTS_DATA
+    if not base_dir.is_dir() and data_dir is None:
+        print(
+            f"ERROR: {base_dir} missing. Run: python3 scripts/generate-test-files-catalog.py",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
+    updates = parse_run_file(run_path)
     for base, (total, pass_n, fail_n, status, ef) in updates.items():
-        if base not in by_file:
+        group = group_from_stem(base)
+        existing = load_one(base, group, data_dir)
+        if existing is None and data_dir is None:
             print(f"WARNING: unknown file {base!r} (not in catalog); skipping", file=sys.stderr)
             continue
-        i = by_file[base]
-        row = rows[i]
-        row["tests_total"] = str(total)
-        row["passed_last"] = str(pass_n)
-        row["failing"] = str(fail_n)
-        row["status"] = status
-        row["expect_failure"] = str(ef)
-        fully = "true" if total > 0 and fail_n == 0 else "false"
-        row["fully_passing"] = fully
-
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=HEADER, delimiter="\t", lineterminator="\n")
-        w.writeheader()
-        for row in rows:
-            w.writerow({k: row.get(k, "") for k in HEADER})
-
-    if not args.skip_dashboard:
-        subprocess.run(
-            [sys.executable, str(GEN_DASH)],
-            cwd=str(REPO),
-            check=True,
+        fields = existing or {"in_scope": "yes"}
+        fields.update(
+            {
+                "tests_total": total,
+                "passed_last": pass_n,
+                "failing": fail_n,
+                "status": status,
+                "expect_failure": ef,
+                "fully_passing": total > 0 and fail_n == 0,
+            }
         )
-        print(
-            f"Updated {csv_path} and regenerated docs/index.html, docs/progress/index.html, docs/testfiles.html, docs/test-progress.svg"
-        )
+        save(base, group, fields, data_dir)
 
 
 if __name__ == "__main__":

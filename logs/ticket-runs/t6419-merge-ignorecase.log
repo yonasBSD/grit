@@ -1,0 +1,2 @@
+1..0 # SKIP skipping case insensitive tests - case sensitive file system
+# Tests: 0  Pass: 0  Fail: 0  Skip: 0

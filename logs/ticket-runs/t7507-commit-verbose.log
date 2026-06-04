@@ -1,0 +1,191 @@
+ok 1 - setup
+not ok 2 - initial commit shows verbose diff
+#	
+#		git commit --amend -v &&
+#		test_line_count = 1 out
+#	
+ok 3 - second commit
+not ok 4 - verbose diff is stripped out
+#	
+#		git commit --amend -v &&
+#		check_message message &&
+#		test_line_count = 1 out
+#	
+not ok 5 - verbose diff is stripped out (mnemonicprefix)
+#	
+#		git config diff.mnemonicprefix true &&
+#		git commit --amend -v &&
+#		check_message message &&
+#		test_line_count = 1 out
+#	
+ok 6 - diff in message is retained without -v
+ok 7 - diff in message is retained with -v
+ok 8 - submodule log is stripped out too with -v
+ok 9 - verbose diff is stripped out with set core.commentChar
+ok 10 - verbose diff is stripped with multi-byte comment char
+ok 11 - status does not verbose without --verbose
+ok 12 - setup -v -v
+not ok 13 - commit.verbose=true and --verbose omitted
+#	
+#			git -c commit.verbose=true commit --amend &&
+#			test_line_count = 1 out
+#		
+not ok 14 - commit.verbose=1 and --verbose omitted
+#	
+#			git -c commit.verbose=1 commit --amend &&
+#			test_line_count = 1 out
+#		
+not ok 15 - commit.verbose=false and --verbose omitted
+#	
+#			git -c commit.verbose=false commit --amend &&
+#			test_line_count = 0 out
+#		
+not ok 16 - commit.verbose=-2 and --verbose omitted
+#	
+#			git -c commit.verbose=-2 commit --amend &&
+#			test_line_count = 0 out
+#		
+not ok 17 - commit.verbose=-1 and --verbose omitted
+#	
+#			git -c commit.verbose=-1 commit --amend &&
+#			test_line_count = 0 out
+#		
+not ok 18 - commit.verbose=0 and --verbose omitted
+#	
+#			git -c commit.verbose=0 commit --amend &&
+#			test_line_count = 0 out
+#		
+not ok 19 - commit.verbose=2 and --verbose omitted
+#	
+#			git -c commit.verbose=2 commit --amend &&
+#			test_line_count = 2 out
+#		
+not ok 20 - commit.verbose=3 and --verbose omitted
+#	
+#			git -c commit.verbose=3 commit --amend &&
+#			test_line_count = 2 out
+#		
+not ok 21 - commit.verbose=true and --verbose
+#	
+#			git -c commit.verbose=true commit --amend --verbose &&
+#			test_line_count = 1 out
+#		
+not ok 22 - commit.verbose=true and --no-verbose
+#	
+#			git -c commit.verbose=true commit --amend --no-verbose &&
+#			test_line_count = 0 out
+#		
+not ok 23 - commit.verbose=true and -v -v
+#	
+#			git -c commit.verbose=true commit --amend -v -v &&
+#			test_line_count = 2 out
+#		
+not ok 24 - commit.verbose=false and --verbose
+#	
+#			git -c commit.verbose=false commit --amend --verbose &&
+#			test_line_count = 1 out
+#		
+not ok 25 - commit.verbose=false and --no-verbose
+#	
+#			git -c commit.verbose=false commit --amend --no-verbose &&
+#			test_line_count = 0 out
+#		
+not ok 26 - commit.verbose=false and -v -v
+#	
+#			git -c commit.verbose=false commit --amend -v -v &&
+#			test_line_count = 2 out
+#		
+not ok 27 - commit.verbose=-2 and --verbose
+#	
+#			git -c commit.verbose=-2 commit --amend --verbose &&
+#			test_line_count = 1 out
+#		
+not ok 28 - commit.verbose=-2 and --no-verbose
+#	
+#			git -c commit.verbose=-2 commit --amend --no-verbose &&
+#			test_line_count = 0 out
+#		
+not ok 29 - commit.verbose=-2 and -v -v
+#	
+#			git -c commit.verbose=-2 commit --amend -v -v &&
+#			test_line_count = 2 out
+#		
+not ok 30 - commit.verbose=-1 and --verbose
+#	
+#			git -c commit.verbose=-1 commit --amend --verbose &&
+#			test_line_count = 1 out
+#		
+not ok 31 - commit.verbose=-1 and --no-verbose
+#	
+#			git -c commit.verbose=-1 commit --amend --no-verbose &&
+#			test_line_count = 0 out
+#		
+not ok 32 - commit.verbose=-1 and -v -v
+#	
+#			git -c commit.verbose=-1 commit --amend -v -v &&
+#			test_line_count = 2 out
+#		
+not ok 33 - commit.verbose=0 and --verbose
+#	
+#			git -c commit.verbose=0 commit --amend --verbose &&
+#			test_line_count = 1 out
+#		
+not ok 34 - commit.verbose=0 and --no-verbose
+#	
+#			git -c commit.verbose=0 commit --amend --no-verbose &&
+#			test_line_count = 0 out
+#		
+not ok 35 - commit.verbose=0 and -v -v
+#	
+#			git -c commit.verbose=0 commit --amend -v -v &&
+#			test_line_count = 2 out
+#		
+not ok 36 - commit.verbose=1 and --verbose
+#	
+#			git -c commit.verbose=1 commit --amend --verbose &&
+#			test_line_count = 1 out
+#		
+not ok 37 - commit.verbose=1 and --no-verbose
+#	
+#			git -c commit.verbose=1 commit --amend --no-verbose &&
+#			test_line_count = 0 out
+#		
+not ok 38 - commit.verbose=1 and -v -v
+#	
+#			git -c commit.verbose=1 commit --amend -v -v &&
+#			test_line_count = 2 out
+#		
+not ok 39 - commit.verbose=2 and --verbose
+#	
+#			git -c commit.verbose=2 commit --amend --verbose &&
+#			test_line_count = 1 out
+#		
+not ok 40 - commit.verbose=2 and --no-verbose
+#	
+#			git -c commit.verbose=2 commit --amend --no-verbose &&
+#			test_line_count = 0 out
+#		
+not ok 41 - commit.verbose=2 and -v -v
+#	
+#			git -c commit.verbose=2 commit --amend -v -v &&
+#			test_line_count = 2 out
+#		
+not ok 42 - commit.verbose=3 and --verbose
+#	
+#			git -c commit.verbose=3 commit --amend --verbose &&
+#			test_line_count = 1 out
+#		
+not ok 43 - commit.verbose=3 and --no-verbose
+#	
+#			git -c commit.verbose=3 commit --amend --no-verbose &&
+#			test_line_count = 0 out
+#		
+not ok 44 - commit.verbose=3 and -v -v
+#	
+#			git -c commit.verbose=3 commit --amend -v -v &&
+#			test_line_count = 2 out
+#		
+ok 45 - status ignores commit.verbose=true
+# failed 35 among 45 test(s)
+1..45
+# Tests: 45  Pass: 10  Fail: 35  Skip: 0

@@ -1,0 +1,48 @@
+ok 1 - setup commits
+ok 2 - vanilla repack deltas one against two
+ok 3 - island repack with no island definition is vanilla
+ok 4 - island repack with no matches is vanilla
+not ok 5 - separate islands disallows delta
+#	
+#		git -c "pack.island=refs/heads/(.*)" repack -adfi &&
+#		! is_delta_base $one $two &&
+#		! is_delta_base $two $one
+#	
+ok 6 - same island allows delta
+ok 7 - coalesce same-named islands
+not ok 8 - island restrictions drop reused deltas
+#	
+#		git repack -adfi &&
+#		is_delta_base $one $two &&
+#		git -c "pack.island=refs/heads/(.*)" repack -adi &&
+#		! is_delta_base $one $two &&
+#		! is_delta_base $two $one
+#	
+ok 9 - island regexes are left-anchored
+ok 10 - island regexes follow last-one-wins scheme
+ok 11 - setup shared history
+ok 12 - vanilla delta goes between branches
+not ok 13 - deltas allowed against superset islands
+#	
+#		git -c "pack.island=refs/heads/(.*)" repack -adfi &&
+#		is_delta_base $one $root &&
+#		is_delta_base $two $root
+#	
+not ok 14 - island core places core objects first
+#	
+#		cat >expect <<-EOF &&
+#		$root
+#		$two
+#		EOF
+#		git -c "pack.island=refs/heads/(.*)" \
+#		    -c "pack.islandcore=one" \
+#		    repack -adfi &&
+#		git verify-pack -v .git/objects/pack/*.pack |
+#		cut -d" " -f1 |
+#		grep -E "$root|$two" >actual &&
+#		test_cmp expect actual
+#	
+ok 15 - unmatched island core is not fatal
+# failed 4 among 15 test(s)
+1..15
+# Tests: 15  Pass: 11  Fail: 4  Skip: 0

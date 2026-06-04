@@ -1,0 +1,73 @@
+ok 1 - setup submodule
+ok 2 - added submodule
+ok 3 - added submodule, set diff.submodule
+ok 4 - --submodule=short overrides diff.submodule
+ok 5 - diff.submodule does not affect plumbing
+ok 6 - modified submodule(forward)
+ok 7 - modified submodule(forward)
+ok 8 - modified submodule(forward) --submodule
+ok 9 - modified submodule(forward) --submodule=short
+ok 10 - modified submodule(backward)
+ok 11 - modified submodule(backward and forward)
+ok 12 - typechanged submodule(submodule->blob), --cached
+ok 13 - typechanged submodule(submodule->blob)
+ok 14 - typechanged submodule(submodule->blob)
+ok 15 - setup submodule anew
+ok 16 - nonexistent commit
+ok 17 - typechanged submodule(blob->submodule)
+warning: adding embedded git repository: sm1
+hint: You've added another git repository inside your current repository.
+hint: Clones of the outer repository will not contain the contents of
+hint: the embedded repository and will not know how to obtain it.
+hint: If you meant to add a submodule, use:
+hint:
+hint: 	git submodule add <url> sm1
+hint:
+hint: If you added this path by mistake, you can remove it from the
+hint: index with:
+hint:
+hint: 	git rm --cached sm1
+hint:
+hint: See "git help submodule" for more information.
+hint: Disable this message with "git config set advice.addEmbeddedRepo false"
+ok 18 - submodule is up to date
+ok 19 - submodule contains untracked content
+ok 20 - submodule contains untracked content (untracked ignored)
+ok 21 - submodule contains untracked content (dirty ignored)
+ok 22 - submodule contains untracked content (all ignored)
+ok 23 - submodule contains untracked and modified content
+ok 24 - submodule contains untracked and modified content (untracked ignored)
+ok 25 - submodule contains untracked and modified content (dirty ignored)
+ok 26 - submodule contains untracked and modified content (all ignored)
+ok 27 - submodule contains modified content
+ok 28 - submodule is modified
+ok 29 - modified submodule contains untracked content
+ok 30 - modified submodule contains untracked content (untracked ignored)
+ok 31 - modified submodule contains untracked content (dirty ignored)
+ok 32 - modified submodule contains untracked content (all ignored)
+ok 33 - modified submodule contains untracked and modified content
+ok 34 - modified submodule contains untracked and modified content (untracked ignored)
+ok 35 - modified submodule contains untracked and modified content (dirty ignored)
+ok 36 - modified submodule contains untracked and modified content (all ignored)
+ok 37 - modified submodule contains modified content
+ok 38 - deleted submodule
+ok 39 - create second submodule
+ok 40 - multiple submodules
+ok 41 - path filter
+ok 42 - given commit
+ok 43 - given commit --submodule
+ok 44 - given commit --submodule=short
+ok 45 - setup .git file for sm2
+not ok 46 - diff --submodule with .git file
+#	
+#		git diff --submodule HEAD^ >actual &&
+#		cat >expected <<-EOF &&
+#		Submodule sm1 $head6...0000000 (submodule deleted)
+#		Submodule sm2 0000000...$head7 (new submodule)
+#		EOF
+#		test_cmp expected actual
+#	
+ok 47 - diff --submodule with objects referenced by alternates
+# failed 1 among 47 test(s)
+1..47
+# Tests: 47  Pass: 46  Fail: 1  Skip: 0

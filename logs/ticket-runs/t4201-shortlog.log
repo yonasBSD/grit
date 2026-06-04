@@ -1,0 +1,65 @@
+ok 1 - setup
+ok 2 - default output format
+ok 3 - pretty format
+ok 4 - pretty format (with --date)
+ok 5 - --abbrev
+ok 6 - output from user-defined format is re-wrapped
+not ok 7 - shortlog wrapping
+#	
+#		cat >expect <<\EOF &&
+#	A U Thor (5):
+#	      Test
+#	      This is a very, very long first line for the commit message to see if
+#	         it is wrapped correctly
+#	      Th𝄞s 𝄞s a very, very long f𝄞rst l𝄞ne for the comm𝄞t message to see 𝄞f
+#	         𝄞t 𝄞s wrapped correctly
+#	      Th����s ����s a very, very long f����rst l����ne for the comm����t
+#	         message to see ����f ����t ����s wrapped correctly
+#	      a								12	34
+#	         56	78
+#	
+#	Someone else (1):
+#	      Commit by someone else
+#	
+#	EOF
+#		git shortlog -w HEAD >out &&
+#		test_cmp expect out
+#	
+not ok 8 - shortlog from non-git directory
+#	
+#		git log --no-expand-tabs HEAD >log &&
+#		GIT_DIR=non-existing git shortlog -w <log >out &&
+#		test_cmp expect out
+#	
+not ok 9 - shortlog can read --format=raw output
+#	
+#		git log --format=raw HEAD >log &&
+#		GIT_DIR=non-existing git shortlog -w <log >out &&
+#		test_cmp expect out
+#	
+ok 10 - shortlog from non-git directory refuses extra arguments
+ok 11 - shortlog --author from non-git directory does not segfault
+ok 12 - shortlog should add newline when input line matches wraplen
+ok 13 - shortlog encoding
+ok 14 - shortlog with revision pseudo options
+ok 15 - shortlog with --output=<file>
+ok 16 - shortlog --committer (internal)
+ok 17 - shortlog --committer (external)
+ok 18 - --group=committer is the same as --committer
+ok 19 - shortlog --group=trailer:signed-off-by
+ok 20 - shortlog --group=format
+ok 21 - shortlog --group=<format> DWIM
+ok 22 - shortlog bogus --group
+ok 23 - trailer idents are split
+ok 24 - trailer idents are mailmapped
+ok 25 - shortlog de-duplicates trailers in a single commit
+ok 26 - shortlog de-duplicates trailers in a single commit (folded/unfolded values)
+ok 27 - shortlog can match multiple groups
+ok 28 - shortlog can match multiple format groups
+ok 29 - set up option selection tests
+ok 30 - --no-group resets group list to author
+ok 31 - --no-group resets trailer list
+ok 32 - stdin with multiple groups reports error
+# failed 3 among 32 test(s)
+1..32
+# Tests: 32  Pass: 29  Fail: 3  Skip: 0

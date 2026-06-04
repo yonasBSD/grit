@@ -1,0 +1,19 @@
+ok 1 - setup
+ok 2 - merge c2 to c1 with recursive merge strategy fails with the current default myers diff algorithm
+ok 3 - merge c2 to c1 with recursive merge strategy succeeds with -Xdiff-algorithm=histogram
+ok 4 - merge c2 to c1 with recursive merge strategy succeeds with diff.algorithm = histogram
+ok 5 - cherry-pick c2 to c1 with recursive merge strategy fails with the current default myers diff algorithm
+not ok 6 - cherry-pick c2 to c1 with recursive merge strategy succeeds with -Xdiff-algorithm=histogram
+#	
+#		git reset --hard c1 &&
+#		git cherry-pick --strategy recursive -Xdiff-algorithm=histogram c2
+#	
+not ok 7 - cherry-pick c2 to c1 with recursive merge strategy succeeds with diff.algorithm = histogram
+#	
+#		git reset --hard c1 &&
+#		git config diff.algorithm histogram &&
+#		git cherry-pick --strategy recursive c2
+#	
+# failed 2 among 7 test(s)
+1..7
+# Tests: 7  Pass: 5  Fail: 2  Skip: 0

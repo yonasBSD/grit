@@ -1,0 +1,31 @@
+ok 1 - setup
+ok 2 - git rebase 
+ok 3 - git rebase --onto D
+ok 4 - git rebase --keep-base
+ok 5 - git rebase --no-fork-point
+ok 6 - git rebase --no-fork-point --onto D
+ok 7 - git rebase --no-fork-point --keep-base
+ok 8 - git rebase --fork-point refs/heads/main
+ok 9 - git rebase --fork-point main
+ok 10 - git rebase --fork-point --onto D refs/heads/main
+ok 11 - git rebase --fork-point --onto D main
+not ok 12 - git rebase --fork-point --keep-base refs/heads/main
+#	do_test_rebase 'G F B A' --fork-point --keep-base refs/heads/main
+not ok 13 - git rebase --fork-point --keep-base main
+#	do_test_rebase 'G F B A' --fork-point --keep-base main
+ok 14 - git rebase refs/heads/main
+ok 15 - git rebase main
+ok 16 - git rebase --onto D refs/heads/main
+ok 17 - git rebase --onto D main
+ok 18 - git rebase --keep-base refs/heads/main
+ok 19 - git rebase --keep-base main
+ok 20 - git rebase --fork-point with ambiguous refname
+ok 21 - --fork-point and --root both given
+ok 22 - rebase.forkPoint set to false
+ok 23 - rebase.forkPoint set to false and then to true
+ok 24 - rebase.forkPoint set to false and command line says --fork-point
+ok 25 - rebase.forkPoint set to true and command line says --no-fork-point
+ok 26 - rebase.forkPoint set to true and --root given
+# failed 2 among 26 test(s)
+1..26
+# Tests: 26  Pass: 24  Fail: 2  Skip: 0

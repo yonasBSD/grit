@@ -1,0 +1,195 @@
+ok 1 - setup
+ok 2 - nothing recorded without rerere
+ok 3 - activate rerere, old style (conflicting merge)
+ok 4 - rerere.enabled works, too
+ok 5 - set up rr-cache
+ok 6 - rr-cache looks sane
+ok 7 - rerere diff
+ok 8 - rerere status
+ok 9 - first postimage wins
+ok 10 - rerere updates postimage timestamp
+ok 11 - rerere clear
+ok 12 - leftover directory
+ok 13 - missing preimage
+ok 14 - set up for garbage collection tests
+ok 15 - gc preserves young or recently used records
+ok 16 - old records rest in peace
+ok 17 - rerere gc with custom expiry (5, 0)
+ok 18 - rerere gc with custom expiry (5.days.ago, now)
+ok 19 - setup: file2 added differently in two branches
+ok 20 - resolution was recorded properly
+ok 21 - rerere.autoupdate
+ok 22 - merge --rerere-autoupdate
+ok 23 - merge --no-rerere-autoupdate
+ok 24 - set up an unresolved merge
+ok 25 - explicit rerere
+ok 26 - explicit rerere with autoupdate
+ok 27 - explicit rerere --rerere-autoupdate overrides
+ok 28 - rerere --no-no-rerere-autoupdate
+ok 29 - rerere -h
+not ok 30 - multiple identical conflicts
+#	
+#		rm -fr .git/rr-cache &&
+#		mkdir .git/rr-cache &&
+#		git reset --hard &&
+#	
+#		test_seq 1 6 >early &&
+#		>late &&
+#		test_seq 11 15 >short &&
+#		test_seq 111 120 >long &&
+#		concat_insert short >file1 &&
+#		concat_insert long >file2 &&
+#		git add file1 file2 &&
+#		git commit -m base &&
+#		git tag base &&
+#		git checkout -b six.1 &&
+#		concat_insert short 6.1 >file1 &&
+#		concat_insert long 6.1 >file2 &&
+#		git add file1 file2 &&
+#		git commit -m 6.1 &&
+#		git checkout -b six.2 HEAD^ &&
+#		concat_insert short 6.2 >file1 &&
+#		concat_insert long 6.2 >file2 &&
+#		git add file1 file2 &&
+#		git commit -m 6.2 &&
+#	
+#		# At this point, six.1 and six.2
+#		# - derive from common ancestor that has two files
+#		#   1...6 7 11..15 (file1) and 1...6 7 111..120 (file2)
+#		# - six.1 replaces these 7s with 6.1
+#		# - six.2 replaces these 7s with 6.2
+#	
+#		merge_conflict_resolve &&
+#	
+#		# Check that rerere knows that file1 and file2 have conflicts
+#	
+#		printf "%s\n" file1 file2 >expect &&
+#		git ls-files -u | sed -e "s/^.*	//" | sort -u >actual &&
+#		test_cmp expect actual &&
+#	
+#		git rerere status | sort >actual &&
+#		test_cmp expect actual &&
+#	
+#		git rerere remaining >actual &&
+#		test_cmp expect actual &&
+#	
+#		count_pre_post 2 0 &&
+#	
+#		# Pretend that the conflicts were made quite some time ago
+#		test-tool chmtime -172800 $(find .git/rr-cache/ -type f) &&
+#	
+#		# Unresolved entries have not expired yet
+#		git -c gc.rerereresolved=5 -c gc.rerereunresolved=5 rerere gc &&
+#		count_pre_post 2 0 &&
+#	
+#		# Unresolved entries have expired
+#		git -c gc.rerereresolved=5 -c gc.rerereunresolved=1 rerere gc &&
+#		count_pre_post 0 0 &&
+#	
+#		# Recreate the conflicted state
+#		merge_conflict_resolve &&
+#		count_pre_post 2 0 &&
+#	
+#		# Clear it
+#		git rerere clear &&
+#		count_pre_post 0 0 &&
+#	
+#		# Recreate the conflicted state
+#		merge_conflict_resolve &&
+#		count_pre_post 2 0 &&
+#	
+#		# We resolved file1 and file2
+#		git rerere &&
+#		git rerere remaining >actual &&
+#		test_must_be_empty actual &&
+#	
+#		# We must have recorded both of them
+#		count_pre_post 2 2 &&
+#	
+#		# Now we should be able to resolve them both
+#		git reset --hard &&
+#		test_must_fail git merge six.1 &&
+#		git rerere &&
+#	
+#		git rerere remaining >actual &&
+#		test_must_be_empty actual &&
+#	
+#		concat_insert short 6.1 6.2 >file1.expect &&
+#		concat_insert long 6.1 6.2 >file2.expect &&
+#		test_cmp file1.expect file1 &&
+#		test_cmp file2.expect file2 &&
+#	
+#		# Forget resolution for file2
+#		git rerere forget file2 &&
+#		echo file2 >expect &&
+#		git rerere status >actual &&
+#		test_cmp expect actual &&
+#		count_pre_post 2 1 &&
+#	
+#		# file2 already has correct resolution, so record it again
+#		git rerere &&
+#	
+#		# Pretend that the resolutions are old again
+#		test-tool chmtime -172800 $(find .git/rr-cache/ -type f) &&
+#	
+#		# Resolved entries have not expired yet
+#		git -c gc.rerereresolved=5 -c gc.rerereunresolved=5 rerere gc &&
+#	
+#		count_pre_post 2 2 &&
+#	
+#		# Resolved entries have expired
+#		git -c gc.rerereresolved=1 -c gc.rerereunresolved=5 rerere gc &&
+#		count_pre_post 0 0
+#	
+ok 31 - rerere with unexpected conflict markers does not crash
+not ok 32 - rerere with inner conflict markers
+#	
+#		git reset --hard &&
+#	
+#		git checkout -b A main &&
+#		echo "bar" >test &&
+#		git add test &&
+#		git commit -q -m two &&
+#		echo "baz" >test &&
+#		git add test &&
+#		git commit -q -m three &&
+#	
+#		git reset --hard &&
+#		git checkout -b B main &&
+#		echo "foo" >test &&
+#		git add test &&
+#		git commit -q -a -m one &&
+#	
+#		test_must_fail git merge A~ &&
+#		git add test &&
+#		git commit -q -m "will solve conflicts later" &&
+#		test_must_fail git merge A &&
+#	
+#		echo "resolved" >test &&
+#		git add test &&
+#		git commit -q -m "solved conflict" &&
+#	
+#		echo "resolved" >expect &&
+#	
+#		git reset --hard HEAD~~ &&
+#		test_must_fail git merge A~ &&
+#		git add test &&
+#		git commit -q -m "will solve conflicts later" &&
+#		test_must_fail git merge A &&
+#		cat test >actual &&
+#		test_cmp expect actual &&
+#	
+#		git add test &&
+#		git commit -m "rerere solved conflict" &&
+#		git reset --hard HEAD~ &&
+#		test_must_fail git merge A &&
+#		cat test >actual &&
+#		test_cmp expect actual
+#	
+ok 33 - setup simple stage 1 handling
+ok 34 - test simple stage 1 handling
+ok 35 - rerere does not crash with missing preimage
+ok 36 - rerere does not crash with unmatched conflict marker
+# failed 2 among 36 test(s)
+1..36
+# Tests: 36  Pass: 34  Fail: 2  Skip: 0

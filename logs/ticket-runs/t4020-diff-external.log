@@ -1,0 +1,75 @@
+ok 1 - setup
+ok 2 - GIT_EXTERNAL_DIFF environment
+ok 3 - GIT_EXTERNAL_DIFF environment should apply only to diff
+ok 4 - GIT_EXTERNAL_DIFF environment and --no-ext-diff
+ok 5 - GIT_EXTERNAL_DIFF and --output
+ok 6 - typechange diff
+ok 7 - diff.external
+ok 8 - diff.external should apply only to diff
+ok 9 - diff.external and --no-ext-diff
+ok 10 - diff attribute
+ok 11 - diff attribute should apply only to diff
+ok 12 - diff attribute and --no-ext-diff
+ok 13 - diff attribute
+ok 14 - diff attribute should apply only to diff
+ok 15 - diff attribute and --no-ext-diff
+ok 16 - GIT_EXTERNAL_DIFF trumps diff.external
+ok 17 - attributes trump GIT_EXTERNAL_DIFF and diff.external
+ok 18 - no diff with -diff
+ok 19 - setup output files
+ok 20 - external diff 'echo output; exit 0;' with trustExitCode=off via attribute
+ok 21 - external diff 'echo output; exit 0;' with trustExitCode=off via diff.external
+ok 22 - external diff 'echo output; exit 0;' with trustExitCode=off via GIT_EXTERNAL_DIFF
+ok 23 - external diff 'echo output; exit 1;' with trustExitCode=off via attribute
+ok 24 - external diff 'echo output; exit 1;' with trustExitCode=off via diff.external
+ok 25 - external diff 'echo output; exit 1;' with trustExitCode=off via GIT_EXTERNAL_DIFF
+ok 26 - external diff 'echo output; exit 0;' with trustExitCode=on via attribute
+ok 27 - external diff 'echo output; exit 0;' with trustExitCode=on via diff.external
+ok 28 - external diff 'echo output; exit 0;' with trustExitCode=on via GIT_EXTERNAL_DIFF
+ok 29 - external diff 'echo output; exit 1;' with trustExitCode=on via attribute
+ok 30 - external diff 'echo output; exit 1;' with trustExitCode=on via diff.external
+ok 31 - external diff 'echo output; exit 1;' with trustExitCode=on via GIT_EXTERNAL_DIFF
+ok 32 - external diff 'echo output; exit 2;' with trustExitCode=on via attribute
+ok 33 - external diff 'echo output; exit 2;' with trustExitCode=on via diff.external
+ok 34 - external diff 'echo output; exit 2;' with trustExitCode=on via GIT_EXTERNAL_DIFF
+ok 35 - external diff 'echo output; exit 0;' with trustExitCode=off via attribute with --exit-code
+ok 36 - external diff 'echo output; exit 0;' with trustExitCode=off via diff.external with --exit-code
+ok 37 - external diff 'echo output; exit 0;' with trustExitCode=off via GIT_EXTERNAL_DIFF with --exit-code
+ok 38 - external diff 'echo output; exit 1;' with trustExitCode=off via attribute with --exit-code
+ok 39 - external diff 'echo output; exit 1;' with trustExitCode=off via diff.external with --exit-code
+ok 40 - external diff 'echo output; exit 1;' with trustExitCode=off via GIT_EXTERNAL_DIFF with --exit-code
+ok 41 - external diff 'echo output; exit 0;' with trustExitCode=on via attribute with --exit-code
+ok 42 - external diff 'echo output; exit 0;' with trustExitCode=on via diff.external with --exit-code
+ok 43 - external diff 'echo output; exit 0;' with trustExitCode=on via GIT_EXTERNAL_DIFF with --exit-code
+ok 44 - external diff 'echo output; exit 1;' with trustExitCode=on via attribute with --exit-code
+ok 45 - external diff 'echo output; exit 1;' with trustExitCode=on via diff.external with --exit-code
+ok 46 - external diff 'echo output; exit 1;' with trustExitCode=on via GIT_EXTERNAL_DIFF with --exit-code
+ok 47 - external diff 'echo output; exit 2;' with trustExitCode=on via attribute with --exit-code
+ok 48 - external diff 'echo output; exit 2;' with trustExitCode=on via diff.external with --exit-code
+ok 49 - external diff 'echo output; exit 2;' with trustExitCode=on via GIT_EXTERNAL_DIFF with --exit-code
+ok 50 - external diff 'echo output; exit 0;' with trustExitCode=off via attribute with --quiet
+ok 51 - external diff 'echo output; exit 0;' with trustExitCode=off via diff.external with --quiet
+ok 52 - external diff 'echo output; exit 0;' with trustExitCode=off via GIT_EXTERNAL_DIFF with --quiet
+ok 53 - external diff 'echo output; exit 1;' with trustExitCode=off via attribute with --quiet
+ok 54 - external diff 'echo output; exit 1;' with trustExitCode=off via diff.external with --quiet
+ok 55 - external diff 'echo output; exit 1;' with trustExitCode=off via GIT_EXTERNAL_DIFF with --quiet
+ok 56 - external diff 'echo output; exit 0;' with trustExitCode=on via attribute with --quiet
+ok 57 - external diff 'echo output; exit 0;' with trustExitCode=on via diff.external with --quiet
+ok 58 - external diff 'echo output; exit 0;' with trustExitCode=on via GIT_EXTERNAL_DIFF with --quiet
+ok 59 - external diff 'echo output; exit 1;' with trustExitCode=on via attribute with --quiet
+ok 60 - external diff 'echo output; exit 1;' with trustExitCode=on via diff.external with --quiet
+ok 61 - external diff 'echo output; exit 1;' with trustExitCode=on via GIT_EXTERNAL_DIFF with --quiet
+ok 62 - external diff 'echo output; exit 2;' with trustExitCode=on via attribute with --quiet
+ok 63 - external diff 'echo output; exit 2;' with trustExitCode=on via diff.external with --quiet
+ok 64 - external diff 'echo output; exit 2;' with trustExitCode=on via GIT_EXTERNAL_DIFF with --quiet
+ok 65 - force diff with "diff"
+ok 66 - GIT_EXTERNAL_DIFF with more than one changed files
+ok 67 - GIT_EXTERNAL_DIFF path counter/total
+ok 68 - GIT_EXTERNAL_DIFF generates pretty paths
+ok 69 - external diff with autocrlf = true
+ok 70 - diff --cached
+ok 71 - clean up crlf leftovers
+ok 72 - submodule diff
+# passed all 72 test(s)
+1..72
+# Tests: 72  Pass: 72  Fail: 0  Skip: 0
