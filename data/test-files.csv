@@ -1100,7 +1100,7 @@ t6302-for-each-ref-filter	t6	skip	51	0	0	false	ok	0
 t6304-for-each-ref-detached-head	t6	yes	10	10	0	true	ok	0
 t6400-merge-df	t6	yes	7	7	0	true	ok	0
 t6401-merge-criss-cross	t6	yes	4	4	0	true	ok	0
-t6402-merge-rename	t6	yes	46	42	4	false	ok	0
+t6402-merge-rename	t6	yes	46	43	3	false	ok	0
 t6403-merge-file	t6	yes	39	39	0	true	ok	0
 t6404-recursive-merge	t6	yes	6	5	1	false	ok	0
 t6405-merge-symlinks	t6	yes	7	7	0	true	ok	0
@@ -1251,7 +1251,7 @@ t7526-commit-pathspec-file	t7	yes	11	11	0	true	ok	0
 t7527-builtin-fsmonitor	t7	yes	0	0	0	false	ok	0
 t7528-signed-commit-ssh	t7	yes	0	0	0	false	timeout	3
 t7600-merge	t7	yes	83	81	2	false	ok	0
-t7601-merge-pull-config	t7	yes	65	63	2	false	ok	0
+t7601-merge-pull-config	t7	yes	65	65	0	true	ok	0
 t7602-merge-octopus-many	t7	yes	5	2	3	false	ok	0
 t7603-merge-reduce-heads	t7	yes	13	13	0	true	ok	0
 t7604-merge-custom-message	t7	yes	8	8	0	true	ok	0

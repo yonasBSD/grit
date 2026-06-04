@@ -1660,3 +1660,10 @@ Updated: 2026-06-01
   `cargo check -p grit-cli`, `cargo build --release -p grit-cli`,
   `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty`; the existing warning
   backlog remains and unrelated auto-fixes were reverted.
+- t6402 divergent pull exit-code focus: after returning Git's explicit 128 exit code for
+  divergent `pull` advice, `./scripts/run-tests.sh t6402-merge-rename.sh --verbose` improves
+  from 42/46 to 43/46 and `./scripts/run-tests.sh t7601-merge-pull-config.sh --verbose`
+  remains at 65/65. Also ran `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo build --release -p grit-cli`, `cargo test -p grit-lib --lib`, and
+  `cargo clippy --fix --allow-dirty`; the existing warning backlog remains and unrelated
+  auto-fixes were reverted.

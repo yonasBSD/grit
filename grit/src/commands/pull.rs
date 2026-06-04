@@ -3,6 +3,7 @@
 //! Equivalent to running `grit fetch` followed by `grit merge` (or
 //! `grit rebase` with `--rebase`).  Only local transports are supported.
 
+use crate::explicit_exit::ExplicitExit;
 use crate::protocol_wire;
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
@@ -758,7 +759,10 @@ fn do_merge_or_rebase_after_fetch(
     // covers `pull.ff` in config.
     if rebase_unspecified && divergent && !pull_ff_in_config && !cli_touched_ff && !ff_only {
         show_advice_pull_non_ff(config);
-        bail!("Need to specify how to reconcile divergent branches.");
+        return Err(anyhow::Error::new(ExplicitExit {
+            code: 128,
+            message: "Need to specify how to reconcile divergent branches.".to_owned(),
+        }));
     }
 
     if opt_rebase == RebaseTri::True {
