@@ -277,7 +277,7 @@ fn ensure_notes_ref_namespace(notes_ref: &str) -> Result<()> {
 /// Git refuses to add/edit/append/remove/copy when `--ref` / `GIT_NOTES_REF` uses revision syntax
 /// (`^{tree}`, `@{1}`, …) rather than a plain ref name under `refs/notes/`.
 fn ensure_notes_ref_is_plain_refname(notes_ref: &str) -> Result<()> {
-    if notes_ref.contains('^') || notes_ref.contains("@{") {
+    if notes_ref.contains('^') || notes_ref.contains("@{") || notes_ref.contains(':') {
         bail!("refusing to use notes ref {notes_ref}");
     }
     Ok(())
@@ -2541,7 +2541,11 @@ fn merge_notes_dispatch(
         return merge_notes_commit_cmd(repo);
     }
     let src_raw = source_ref.context("must specify a notes ref to merge")?;
-    let remote_ref = expand_notes_ref(src_raw);
+    let remote_ref = if src_raw.starts_with("refs/") {
+        src_raw.to_owned()
+    } else {
+        expand_notes_ref(src_raw)
+    };
     let verbosity = i32::from(verbose).saturating_sub(i32::from(quiet));
     if verbosity > 0 {
         eprintln!("Merging notes from {remote_ref} into {notes_ref}");

@@ -75,6 +75,9 @@
     add extra blank lines to custom `--format="%H %s%n%N"` notes verification output.
   - Completed: `t3310-notes-merge-manual-resolve.sh` (22/22) after rerunning with the current
     notes merge and custom log formatting fixes; no additional code changes were needed.
+  - Completed: `t3308-notes-merge.sh` (19/19) after rejecting revision-syntax/colon-bearing
+    active notes refs for merge operations and allowing fully qualified non-notes source refs such
+    as `refs/remote-notes/origin/x` to merge without being expanded under `refs/notes/`.
   - Completed opportunistic notes-adjacent fixture: `t3300-funny-names.sh` (21/21) after rerunning
     with the current diff/path quoting code; no additional code changes were needed.
   - Completed: `t3303-notes-subtrees.sh` (23/23) after fast-import now concatenates duplicate

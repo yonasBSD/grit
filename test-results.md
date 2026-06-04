@@ -1386,3 +1386,13 @@ Updated: 2026-06-01
 - Harness refresh: `./scripts/run-tests.sh t3310-notes-merge-manual-resolve.sh` passed 22/22 with
   the current notes merge and custom log formatting fixes.
 - No code changes were required for this fixture.
+
+## 2026-06-03 — t3308-notes-merge complete
+
+- Focus harness completed at 19/19 after active merge notes refs rejected colon-bearing names and
+  fully qualified merge source refs stopped being expanded under `refs/notes/`.
+- Related verification: `./scripts/run-tests.sh t3308-notes-merge.sh
+  t3309-notes-merge-auto-resolve.sh t3310-notes-merge-manual-resolve.sh t3301-notes.sh` passed
+  all four files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
