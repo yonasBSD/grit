@@ -5501,7 +5501,7 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         "pack-redundant" => commands::pack_redundant::run(parse_cmd_args(subcmd, rest)),
         "pack-refs" => commands::pack_refs::run(parse_cmd_args(subcmd, rest)),
         "patch-id" => commands::patch_id::run(parse_cmd_args(subcmd, rest)),
-        "prune" => commands::prune::run(parse_cmd_args(subcmd, rest)),
+        "prune" => commands::prune::run_from_argv(rest),
         "prune-packed" => commands::prune_packed::run(parse_cmd_args(subcmd, rest)),
         "pull" => commands::pull::run(parse_cmd_args(subcmd, rest)),
         "push" => commands::push::run(parse_cmd_args(subcmd, rest)),

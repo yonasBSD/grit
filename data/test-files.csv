@@ -870,7 +870,7 @@ t5302-pack-index	t5	yes	36	36	0	true	ok	0
 t5302-show-index	t5	yes	17	17	0	true	ok	0
 t5303-pack-corruption	t5	yes	25	25	0	true	ok	0
 t5303-pack-corruption-resilience	t5	yes	36	36	0	true	ok	0
-t5304-prune	t5	yes	32	27	5	false	ok	0
+t5304-prune	t5	yes	32	28	4	false	ok	0
 t5304-prune-packed	t5	yes	20	20	0	true	ok	0
 t5305-include-tag	t5	yes	15	15	0	true	ok	0
 t5306-pack-nobase	t5	yes	4	4	0	true	ok	0

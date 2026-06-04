@@ -54,6 +54,16 @@ pub struct Args {
     pub progress: bool,
 }
 
+/// Parse and run `grit prune` from raw argv so missing `--expire` values use Git wording.
+pub fn run_from_argv(rest: &[String]) -> Result<()> {
+    for (idx, arg) in rest.iter().enumerate() {
+        if arg == "--expire" && rest.get(idx + 1).is_none_or(|next| next.starts_with('-')) {
+            anyhow::bail!("option `expire' requires a value");
+        }
+    }
+    run(crate::parse_cmd_args("prune", rest))
+}
+
 /// Run `grit prune`.
 pub fn run(args: Args) -> Result<()> {
     let repo = Repository::discover(None).context("failed to discover repository")?;
