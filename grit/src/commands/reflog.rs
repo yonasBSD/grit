@@ -318,6 +318,8 @@ fn run_show(args: ShowArgs) -> Result<()> {
         find_object: None,
         pickaxe_grep: None,
         pickaxe_string: None,
+        ignore_matching_lines: Vec::new(),
+        ignore_blank_lines: false,
         pickaxe_regex: false,
         text: false,
         textconv: false,

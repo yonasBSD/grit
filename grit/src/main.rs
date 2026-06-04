@@ -4391,6 +4391,34 @@ fn preprocess_log_pickaxe_args(rest: Vec<String>) -> Vec<String> {
             i += 1;
             continue;
         }
+        // `-I<regex>` / `-I <regex>` / `--ignore-matching-lines[=<regex>]` (hunk-level line ignore).
+        // Canonicalize to `--ignore-matching-lines=<regex>` so clap recognizes the flag and the
+        // remaining `-p`/revision args parse normally.
+        if arg == "--ignore-matching-lines" {
+            if let Some(pat) = rest.get(i + 1) {
+                out.push(format!("--ignore-matching-lines={pat}"));
+                i += 2;
+                continue;
+            }
+        }
+        if arg.starts_with("--ignore-matching-lines=") {
+            out.push(arg.clone());
+            i += 1;
+            continue;
+        }
+        if let Some(pat) = arg.strip_prefix("-I") {
+            if pat.is_empty() {
+                if let Some(next) = rest.get(i + 1) {
+                    out.push(format!("--ignore-matching-lines={next}"));
+                    i += 2;
+                    continue;
+                }
+            } else {
+                out.push(format!("--ignore-matching-lines={pat}"));
+                i += 1;
+                continue;
+            }
+        }
         out.push(arg.clone());
         i += 1;
     }

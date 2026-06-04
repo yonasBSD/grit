@@ -14,7 +14,8 @@ use grit_lib::config::{parse_bool, parse_color, ConfigSet};
 use grit_lib::crlf::{get_file_attrs, load_gitattributes, DiffAttr};
 use grit_lib::diff::{
     count_changes, diff_trees, diff_trees_show_tree_entries, format_raw, format_raw_abbrev,
-    indent_heuristic_from_config, unified_diff, zero_oid, DiffEntry, DiffStatus,
+    indent_heuristic_from_config, unified_diff, unified_diff_histogram_hunks_only, zero_oid,
+    DiffEntry, DiffStatus,
 };
 use grit_lib::diffstat::{terminal_columns, write_diffstat_block, DiffstatOptions, FileStatInput};
 use grit_lib::git_date::parse::parse_date_basic;
@@ -320,6 +321,16 @@ pub struct Args {
     /// Pickaxe string (log `-S`; set via argv preprocessing).
     #[arg(long = "pickaxe-string", value_name = "STRING", hide = true)]
     pub pickaxe_string: Option<String>,
+
+    /// Ignore changed lines matching these regexes (`-I` / `--ignore-matching-lines`; `-I` is
+    /// canonicalized to `--ignore-matching-lines=<regex>` during argv preprocessing). A hunk whose
+    /// changed lines are all ignorable is dropped; a file with no surviving hunk emits no patch.
+    #[arg(long = "ignore-matching-lines", value_name = "REGEX")]
+    pub ignore_matching_lines: Vec<String>,
+
+    /// Ignore changes whose lines are all blank (`--ignore-blank-lines`).
+    #[arg(long = "ignore-blank-lines")]
+    pub ignore_blank_lines: bool,
 
     /// Treat `-S` needle as an extended regex (`--pickaxe-regex`).
     #[arg(long = "pickaxe-regex", hide = true)]
@@ -11240,6 +11251,22 @@ fn write_commit_diff_body(
     let combined_owned: Vec<DiffEntry> = combined_entries.to_vec();
     let entries_f = filter_diff_entries_by_pathspecs(entries_owned, pathspecs);
     let combined_f = filter_diff_entries_by_pathspecs(combined_owned, pathspecs);
+
+    // `-I` / `--ignore-blank-lines`: drop files whose changes are entirely ignorable so no patch,
+    // `--raw`, `--name-only`, `--name-status`, or `--stat` line is emitted for them (xdiff).
+    let line_ignore = compile_log_line_ignore(args);
+    let (entries_f, combined_f) =
+        if !line_ignore.is_empty() || args.ignore_blank_lines {
+            let f = |e: &DiffEntry| {
+                !log_entry_hidden_by_line_ignore(odb, e, &line_ignore, args.ignore_blank_lines)
+            };
+            (
+                entries_f.into_iter().filter(&f).collect::<Vec<_>>(),
+                combined_f.into_iter().filter(&f).collect::<Vec<_>>(),
+            )
+        } else {
+            (entries_f, combined_f)
+        };
     let list_raw_name: &[DiffEntry] = if combined_style {
         &combined_f
     } else {
@@ -11342,6 +11369,58 @@ fn write_commit_diff_body(
     }
 
     Ok(())
+}
+
+/// Compile the `-I` / `--ignore-matching-lines` regexes (invalid regex aborts with code 129,
+/// matching git's `invalid regex given to -I:` diagnostic).
+fn compile_log_line_ignore(args: &Args) -> Vec<Regex> {
+    let mut out = Vec::with_capacity(args.ignore_matching_lines.len());
+    for p in &args.ignore_matching_lines {
+        match Regex::new(p) {
+            Ok(re) => out.push(re),
+            Err(_) => {
+                eprintln!("error: invalid regex given to -I: {p}");
+                std::process::exit(129);
+            }
+        }
+    }
+    out
+}
+
+/// True when every hunk of this entry's diff is ignorable (so git emits no patch for the file).
+fn log_entry_hidden_by_line_ignore(
+    odb: &Odb,
+    entry: &DiffEntry,
+    ignore: &[Regex],
+    ignore_blank: bool,
+) -> bool {
+    if ignore.is_empty() && !ignore_blank {
+        return false;
+    }
+    if matches!(
+        entry.status,
+        DiffStatus::Renamed | DiffStatus::Copied | DiffStatus::TypeChanged | DiffStatus::Unmerged
+    ) {
+        return false;
+    }
+    if entry.old_mode != entry.new_mode {
+        return false;
+    }
+    let old = if entry.old_oid == zero_oid() {
+        String::new()
+    } else {
+        String::from_utf8_lossy(&read_blob_bytes(odb, &entry.old_oid)).into_owned()
+    };
+    let new = if entry.new_oid == zero_oid() {
+        String::new()
+    } else {
+        String::from_utf8_lossy(&read_blob_bytes(odb, &entry.new_oid)).into_owned()
+    };
+    let body = unified_diff_histogram_hunks_only(&old, &new, 3, 0);
+    if body.is_empty() {
+        return true;
+    }
+    crate::commands::diff::suppress_ignored_hunks_in_patch(&body, ignore, ignore_blank).is_empty()
 }
 
 /// Write a unified-diff block for one entry.
@@ -11506,6 +11585,13 @@ fn log_write_patch_entry(
         indent_heuristic,
         config.quote_path_fully(),
     );
+    // Drop hunks made up solely of ignorable changes (`-I` / `--ignore-blank-lines`).
+    let patch = if !args.ignore_matching_lines.is_empty() || args.ignore_blank_lines {
+        let ign = compile_log_line_ignore(args);
+        crate::commands::diff::suppress_ignored_hunks_in_patch(&patch, &ign, args.ignore_blank_lines)
+    } else {
+        patch
+    };
     let patch = apply_diff_output_indicators(&patch, args);
     write!(out, "{patch}")?;
 

@@ -962,6 +962,16 @@ impl WhitespaceMode {
         lines.join("\n")
     }
 
+    /// True when only `--ignore-blank-lines` is active among the whitespace modes (so blank-line
+    /// ignoring can be handled by xdiff-style hunk suppression rather than line deletion).
+    fn only_blank_lines(&self) -> bool {
+        self.ignore_blank_lines
+            && !self.ignore_all_space
+            && !self.ignore_space_change
+            && !self.ignore_space_at_eol
+            && !self.ignore_cr_at_eol
+    }
+
     /// Normalize a single line according to the active whitespace modes.
     fn normalize_line(&self, line: &str) -> String {
         let mut s = line.to_owned();
@@ -1947,6 +1957,7 @@ pub(crate) fn unstaged_patch_for_add_edit(
         &empty_sm,
         &empty_gm,
         None,
+        false,
         &diff_algo_ctx,
         diff_algo_cli,
         false,
@@ -2944,7 +2955,10 @@ pub fn run(mut args: Args) -> Result<()> {
     // When a whitespace-ignore mode is active, filter out entries whose
     // normalised content is identical. Deletions, additions, and mode
     // changes are always reported regardless of whitespace.
-    let entries = if ws_mode.any() {
+    //
+    // `--ignore-blank-lines` (alone) is handled by xdiff-style hunk suppression below so that
+    // line numbers stay intact, so it is excluded from this normalization-equality filter.
+    let entries = if ws_mode.any() && !ws_mode.only_blank_lines() {
         entries
             .into_iter()
             .filter(|e| {
@@ -2964,7 +2978,9 @@ pub fn run(mut args: Args) -> Result<()> {
         entries
     };
 
-    let entries = if let Some(ign) = line_ignore {
+    let entries = if line_ignore.is_some() || ws_mode.ignore_blank_lines {
+        let empty: &[Regex] = &[];
+        let ign = line_ignore.unwrap_or(empty);
         entries
             .into_iter()
             .filter(|e| !entry_hidden_by_line_ignore(e, &repo.odb, wt_for_content, &ws_mode, ign))
@@ -3633,6 +3649,7 @@ pub fn run(mut args: Args) -> Result<()> {
                     &path_to_sm_name,
                     &gm_sub_ignore,
                     line_ignore,
+                    ws_mode.ignore_blank_lines,
                     &diff_algo_ctx,
                     diff_algo_cli,
                     args.cached,
@@ -3861,6 +3878,7 @@ fn run_diff_blob_vs_file(
             &empty_sm,
             &empty_gm,
             None,
+            false,
             &diff_algo_ctx,
             diff_algo_cli,
             false,
@@ -6090,7 +6108,93 @@ fn apply_ignore_matching_lines_to_text(text: &str, ignore: &[Regex]) -> String {
     out
 }
 
-/// True when `-I` / `--ignore-matching-lines` removes all substantive differences (entry hidden like Git).
+/// True when a changed line (the text after the leading `+`/`-`) is "ignorable":
+/// it matches one of the `-I` regexes, or (with `--ignore-blank-lines`) is blank.
+fn changed_line_is_ignorable(body: &str, ignore: &[Regex], ignore_blank: bool) -> bool {
+    if ignore_blank && body.trim().is_empty() {
+        return true;
+    }
+    ignore.iter().any(|re| re.is_match(body))
+}
+
+/// Suppress hunks whose changed lines are *all* ignorable (xdiff `-I` / `--ignore-blank-lines`
+/// semantics: the diff is computed normally, then hunks made up entirely of ignorable changes
+/// are dropped at emission, preserving line numbers in the remaining hunks).
+///
+/// Operates on a single-file patch body (optional leading `diff --git`/`index`/`mode` lines, the
+/// `---`/`+++` header pair, then `@@` hunks). Returns the filtered patch; when no hunk survives the
+/// result is empty (the caller suppresses the whole file entry).
+pub(crate) fn suppress_ignored_hunks_in_patch(
+    patch: &str,
+    ignore: &[Regex],
+    ignore_blank: bool,
+) -> String {
+    if ignore.is_empty() && !ignore_blank {
+        return patch.to_owned();
+    }
+    let lines: Vec<&str> = patch.split_inclusive('\n').collect();
+    // Find where the first hunk header starts; everything before it is file header.
+    let first_hunk = lines.iter().position(|l| l.starts_with("@@ "));
+    let Some(first_hunk) = first_hunk else {
+        // No hunks (e.g. pure mode change / binary); leave untouched.
+        return patch.to_owned();
+    };
+    let header: String = lines[..first_hunk].concat();
+
+    let mut kept_hunks = String::new();
+    let mut any_kept = false;
+    let mut i = first_hunk;
+    while i < lines.len() {
+        // Collect this hunk: the @@ line plus following body lines until the next @@.
+        let hunk_start = i;
+        i += 1;
+        while i < lines.len() && !lines[i].starts_with("@@ ") {
+            i += 1;
+        }
+        let hunk_lines = &lines[hunk_start..i];
+
+        let mut has_change = false;
+        let mut all_ignorable = true;
+        for &l in &hunk_lines[1..] {
+            // Trim a single trailing newline for matching.
+            let l_trim = l.strip_suffix('\n').unwrap_or(l);
+            if let Some(body) = l_trim.strip_prefix('+') {
+                has_change = true;
+                if !changed_line_is_ignorable(body, ignore, ignore_blank) {
+                    all_ignorable = false;
+                }
+            } else if let Some(body) = l_trim.strip_prefix('-') {
+                has_change = true;
+                if !changed_line_is_ignorable(body, ignore, ignore_blank) {
+                    all_ignorable = false;
+                }
+            }
+            // Context lines (' ') and `\ No newline` markers don't affect ignorability.
+        }
+
+        if has_change && all_ignorable {
+            // Drop this hunk entirely.
+            continue;
+        }
+        any_kept = true;
+        for &l in hunk_lines {
+            kept_hunks.push_str(l);
+        }
+    }
+
+    if !any_kept {
+        return String::new();
+    }
+    let mut out = header;
+    out.push_str(&kept_hunks);
+    out
+}
+
+/// True when `-I` / `--ignore-matching-lines` (and `--ignore-blank-lines`) removes all substantive
+/// differences, so Git hides the file entirely (no `diff --git`, no `--raw`/`--name-only` line).
+///
+/// Mirrors xdiff: the diff is computed normally, then a file whose every hunk consists solely of
+/// ignorable changes (regex match or, with `--ignore-blank-lines`, blank lines) emits no patch.
 fn entry_hidden_by_line_ignore(
     entry: &DiffEntry,
     odb: &Odb,
@@ -6098,7 +6202,8 @@ fn entry_hidden_by_line_ignore(
     ws_mode: &WhitespaceMode,
     ignore: &[Regex],
 ) -> bool {
-    if ignore.is_empty() {
+    let ignore_blank = ws_mode.ignore_blank_lines;
+    if ignore.is_empty() && !ignore_blank {
         return false;
     }
     if matches!(
@@ -6126,13 +6231,23 @@ fn entry_hidden_by_line_ignore(
             read_content(odb, &entry.new_oid, work_tree, new_path),
         ),
     };
-    let mut old_f = apply_ignore_matching_lines_to_text(&old, ignore);
-    let mut new_f = apply_ignore_matching_lines_to_text(&new, ignore);
-    if ws_mode.any() {
-        old_f = ws_mode.normalize(&old_f);
-        new_f = ws_mode.normalize(&new_f);
+    // Apply non-blank whitespace normalization (blank-line ignoring is handled by hunk
+    // suppression so line numbers stay intact). When other ws flags are present the file would
+    // already have been dropped by the ws-equality filter, so this only refines the `-I` case.
+    let (old_f, new_f) = if ws_mode.any() && !ws_mode.only_blank_lines() {
+        (ws_mode.normalize(&old), ws_mode.normalize(&new))
+    } else {
+        (old, new)
+    };
+    if old_f == new_f {
+        return true;
     }
-    old_f == new_f
+    // Compute a plain unified body and check whether every hunk is ignorable.
+    let body = unified_diff_histogram_hunks_only(&old_f, &new_f, 3, 0);
+    if body.is_empty() {
+        return true;
+    }
+    suppress_ignored_hunks_in_patch(&body, ignore, ignore_blank).is_empty()
 }
 
 /// Read raw bytes for a diff entry side from the ODB.
@@ -7001,6 +7116,7 @@ fn write_patch_with_prefix(
     path_to_sm_name: &HashMap<String, String>,
     gm_sub_ignore: &HashMap<String, String>,
     line_ignore: Option<&[Regex]>,
+    ignore_blank: bool,
     algo_ctx: &DiffAlgoContext,
     algo_cli: Option<CliDiffAlgo>,
     cached: bool,
@@ -7357,12 +7473,9 @@ fn write_patch_with_prefix(
         } else {
             String::from_utf8_lossy(&new_content_raw).into_owned()
         };
-        if let Some(ign) = line_ignore {
-            if !ign.is_empty() {
-                old_content = apply_ignore_matching_lines_to_text(&old_content, ign);
-                new_content = apply_ignore_matching_lines_to_text(&new_content, ign);
-            }
-        }
+        // `-I` / `--ignore-blank-lines`: the diff is computed on the *full* content (so line
+        // numbers are preserved) and then ignorable hunks are dropped from the rendered patch
+        // below — never by pre-deleting lines here.
 
         // Intent-to-add empty file: header + `index 0000000..e69de29` only (t2203).
         if !cached
@@ -7488,6 +7601,13 @@ fn write_patch_with_prefix(
                 indent_heuristic,
                 quote_path_fully,
             );
+            let patch = match line_ignore {
+                Some(ign) if !ign.is_empty() || ignore_blank => {
+                    suppress_ignored_hunks_in_patch(&patch, ign, ignore_blank)
+                }
+                _ if ignore_blank => suppress_ignored_hunks_in_patch(&patch, &[], ignore_blank),
+                _ => patch,
+            };
             let patch = if suppress_blank_empty {
                 strip_blank_context_trailing_space(&patch)
             } else {
