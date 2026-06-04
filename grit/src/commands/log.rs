@@ -6338,17 +6338,21 @@ fn run_reflog_walk(
         if let Some(ref fmt) = args.format {
             match fmt.as_str() {
                 "oneline" => {
-                    let abbrev = &entry.new_oid.to_hex()[..7];
-                    let subject = commit_data.message.lines().next().unwrap_or("");
-                    let subject = if et > 0 {
-                        grit_lib::tab_expand::expand_tabs_in_line(subject, et)
+                    // `git log -g --pretty=oneline` prints
+                    // `<hash> <selector>: <reflog message>` (the reflog selector
+                    // and message, not the commit subject).
+                    let full_hex = entry.new_oid.to_hex();
+                    let abbrev = &full_hex[..reflog_abbrev_len.min(full_hex.len())];
+                    let reflog_msg = entry.message.trim_end_matches('\n');
+                    let reflog_msg = if et > 0 {
+                        grit_lib::tab_expand::expand_tabs_in_line(reflog_msg, et)
                     } else {
-                        subject.to_owned()
+                        reflog_msg.to_owned()
                     };
                     if args.null_terminator {
-                        write!(out, "{} {}\0", abbrev, subject)?;
+                        write!(out, "{} {}: {}\0", abbrev, selector, reflog_msg)?;
                     } else {
-                        writeln!(out, "{} {}", abbrev, subject)?;
+                        writeln!(out, "{} {}: {}", abbrev, selector, reflog_msg)?;
                     }
                 }
                 "short" => {
