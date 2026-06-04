@@ -3650,7 +3650,16 @@ fn filter_combined_paths_intersection(
         .collect();
     paths
         .into_iter()
-        .filter(|p| allowed.contains(&p.path))
+        .filter(|p| {
+            // `allowed` is a blob-level path list; tree entries (from `-t` /
+            // `--find-object`) are already intersection-filtered by the walker
+            // and must pass through (t4038: `diff-tree -c -t` shows `MM dir`).
+            let is_tree = (p.merge_mode & 0o170000) == 0o040000
+                || p.parents
+                    .iter()
+                    .any(|side| (side.mode & 0o170000) == 0o040000);
+            is_tree || allowed.contains(&p.path)
+        })
         .collect()
 }
 
