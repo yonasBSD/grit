@@ -414,9 +414,14 @@ pub fn run(mut args: Args) -> Result<()> {
                 "medium" | "short" | "full" | "fuller" | "reference" | "oneline" | "raw" | "email"
             )
         });
+    // `--oneline` (with the diff suppressed) prints one line per commit and Git
+    // emits no blank line between them, like `--format=%s`.
+    let oneline_compact = (args.oneline || args.format.as_deref() == Some("oneline"))
+        && (args.quiet || args.no_patch);
     let compact_multi_subject = ((args.quiet || args.no_patch)
         && args.format.as_deref() == Some("%s"))
-        || user_format_name_listing;
+        || user_format_name_listing
+        || oneline_compact;
 
     let notes_map = load_notes_map(&repo);
 
@@ -1035,10 +1040,13 @@ fn show_commit(
     );
 
     if args.oneline || resolved_format.as_deref() == Some("oneline") {
-        // Mirror `git log --oneline`, which decorates the header line with the refs pointing at
-        // the commit (`<hash> (HEAD -> main) subject`). This keeps `git show --oneline` output
-        // byte-for-byte identical to `git log --oneline` for the same commit.
-        let decoration = crate::commands::log::oneline_decoration_for_hex(repo, &hex);
+        // Mirror `git log --oneline`, which auto-decorates the header line with the refs pointing
+        // at the commit only when writing to a terminal; piped/redirected output is undecorated.
+        let decoration = if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+            crate::commands::log::oneline_decoration_for_hex(repo, &hex)
+        } else {
+            String::new()
+        };
         let first_line = commit.message.lines().next().unwrap_or("");
         let first_line = if expand_tabs_in_log > 0 {
             grit_lib::tab_expand::expand_tabs_in_line(first_line, expand_tabs_in_log)

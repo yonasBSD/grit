@@ -5631,19 +5631,24 @@ pub fn run_no_walk(
         commits.push((oid, info));
     }
 
-    // Sort by committer timestamp descending (same as regular log)
-    commits.sort_by(|a, b| {
-        let ts_a = committer_unix_seconds_for_ordering(&a.1.committer);
-        let ts_b = committer_unix_seconds_for_ordering(&b.1.committer);
-        ts_b.cmp(&ts_a)
-    });
+    // Sort by committer timestamp descending (same as regular log), unless
+    // `--no-walk=unsorted` was requested (then preserve the given order).
+    let unsorted = matches!(args.no_walk.as_deref(), Some("unsorted"));
+    if !unsorted {
+        commits.sort_by(|a, b| {
+            let ts_a = committer_unix_seconds_for_ordering(&a.1.committer);
+            let ts_b = committer_unix_seconds_for_ordering(&b.1.committer);
+            ts_b.cmp(&ts_a)
+        });
+    }
 
     if args.reverse {
         commits.reverse();
     }
 
     let stdout = io::stdout();
-    let mut out = stdout.lock();
+    let line_prefix = args.line_prefix.as_deref().unwrap_or("");
+    let mut out = LinePrefixWriter::new(stdout.lock(), line_prefix);
 
     let is_format_separator = args
         .format
@@ -8630,6 +8635,46 @@ fn encode_log_str(s: &str, encoding: Option<&str>) -> Vec<u8> {
         None => s.as_bytes().to_vec(),
         Some(label) => grit_lib::commit_encoding::encode_header_text(label, s)
             .unwrap_or_else(|| s.as_bytes().to_vec()),
+    }
+}
+
+/// A writer that prepends a fixed prefix at the start of every output line
+/// (Git's `--line-prefix`). The prefix is emitted before the first byte and
+/// again immediately after each `\n`, except a trailing `\n` does not trigger a
+/// dangling prefix until the next byte arrives.
+struct LinePrefixWriter<'a, W: Write> {
+    inner: W,
+    prefix: &'a [u8],
+    at_line_start: bool,
+}
+
+impl<'a, W: Write> LinePrefixWriter<'a, W> {
+    fn new(inner: W, prefix: &'a str) -> Self {
+        LinePrefixWriter {
+            inner,
+            prefix: prefix.as_bytes(),
+            at_line_start: true,
+        }
+    }
+}
+
+impl<W: Write> Write for LinePrefixWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        for &b in buf {
+            if self.at_line_start {
+                self.inner.write_all(self.prefix)?;
+                self.at_line_start = false;
+            }
+            self.inner.write_all(&[b])?;
+            if b == b'\n' {
+                self.at_line_start = true;
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
     }
 }
 
