@@ -1381,9 +1381,32 @@ fn diff_tree_vs_worktree(
                 );
                 continue;
             }
-            // Uninitialized / empty submodule worktree: no resolvable HEAD — do not report as
-            // modified vs index (matches Git; fixes `diff-index --ignore-submodules=none` on clones).
+            // Gitlink in the index, but a regular file/symlink now sits at the path: this is a
+            // submodule→blob typechange. Report `T` with the worktree blob on the new side so
+            // `--submodule` rendering emits the `(submodule deleted)` summary (with inner deleted
+            // files via the absorbed gitdir) followed by the blob add (t4060 #46).
             if sub_head.is_none() {
+                if let Ok(meta) = fs::symlink_metadata(&abs) {
+                    if meta.file_type().is_file() || meta.file_type().is_symlink() {
+                        if let Some(wt_snapshot) =
+                            read_worktree_snapshot_from_meta(repo, &abs, &meta)?
+                        {
+                            let old = tree_map.get(path).copied().or(Some(*index_snapshot));
+                            // Keep the real worktree blob hash on the new side so the typechange's
+                            // blob-add half shows `index 0000000..<hash>`; the content itself is read
+                            // lazily from the work tree at patch time (blob not in the ODB).
+                            merged.insert(
+                                path.clone(),
+                                RawChange {
+                                    path: path.clone(),
+                                    status: 'T',
+                                    old,
+                                    new: Some(wt_snapshot),
+                                },
+                            );
+                        }
+                    }
+                }
                 continue;
             }
             let tree_snap = tree_map.get(path).copied();
@@ -2326,6 +2349,30 @@ fn write_submodule_log_commit_lines(
     Ok(())
 }
 
+/// Locate the absorbed git directory of a submodule whose worktree is no longer present.
+///
+/// Git stores an absorbed submodule under `<super_git_dir>/modules/<name>`, keyed by the submodule
+/// logical *name* (from `.gitmodules`), which may differ from its path. Returns the path only if it
+/// exists and looks like a git directory.
+fn absorbed_submodule_gitdir(super_repo: &Repository, sub_path: &str) -> Option<PathBuf> {
+    let work_tree = super_repo.work_tree.as_deref()?;
+    let index = super_repo.load_index().ok();
+    let regs = grit_lib::submodule_config::load_submodule_registrations(
+        work_tree,
+        index.as_ref(),
+        Some(&super_repo.odb),
+    );
+    // Fall back to the path itself as the name (the common case where name == path).
+    let name = grit_lib::submodule_config::submodule_name_for_path(&regs, sub_path).unwrap_or(sub_path);
+    let gitdir =
+        grit_lib::submodule_gitdir::submodule_modules_git_dir(&super_repo.git_dir, name);
+    if grit_lib::submodule_gitdir::is_git_directory(&gitdir) {
+        Some(gitdir)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn write_submodule_diff_recursive(
     out: &mut impl Write,
     super_repo: &Repository,
@@ -2354,7 +2401,24 @@ pub(crate) fn write_submodule_diff_recursive(
         writeln!(out, "Submodule {sub_name} contains modified content")?;
     }
 
-    let sub_repo = Repository::discover(Some(&sub_path)).ok();
+    let mut sub_repo = Repository::discover(Some(&sub_path)).ok();
+    // `Repository::discover` walks up from a missing submodule path and may resolve to the
+    // *superproject* itself; that repo cannot read the submodule's objects. Treat it as "no
+    // submodule repo" so the absorbed-gitdir fallback below kicks in.
+    if sub_repo
+        .as_ref()
+        .is_some_and(|r| r.git_dir == super_repo.git_dir)
+    {
+        sub_repo = None;
+    }
+    // When the submodule worktree is gone (e.g. `mv sm sm-bak` or an outright delete) but its git
+    // directory was absorbed into `<super>/.git/modules/<name>`, Git still reads the submodule's
+    // objects from there to render the inner diff (t4060 #45/#46). Fall back to that gitdir.
+    if sub_repo.is_none() {
+        if let Some(gitdir) = absorbed_submodule_gitdir(super_repo, full_path_from_root) {
+            sub_repo = Repository::open(&gitdir, None).ok();
+        }
+    }
     let odb_for = sub_repo.as_ref().map(|r| &r.odb).unwrap_or(&super_repo.odb);
 
     let old_tree = if old_commit == z {
