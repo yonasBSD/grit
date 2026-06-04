@@ -1775,14 +1775,21 @@ impl DirstatOptions {
     }
 }
 
+/// Apply a comma-separated `--dirstat` / `diff.dirstat` parameter string to `opts`.
+///
+/// Mirrors Git's `parse_dirstat_params`: every token is processed and *all* unrecognised
+/// tokens / malformed percentages accumulate into `errors` (one indented line each), rather
+/// than aborting at the first bad token. The caller decides whether a non-empty `errors`
+/// list is fatal (CLI `--dirstat`/`-X`) or merely a warning (`diff.dirstat` config). The
+/// `strict` flag only controls the error-message header, not when errors are collected.
 fn parse_dirstat_apply_tokens(
     params: &str,
     opts: &mut DirstatOptions,
-    strict: bool,
-    warnings: &mut Vec<String>,
-) -> Result<()> {
+    _strict: bool,
+    errors: &mut Vec<String>,
+) {
     if params.is_empty() {
-        return Ok(());
+        return;
     }
     for raw in params.split(',') {
         let p = raw.trim();
@@ -1803,36 +1810,40 @@ fn parse_dirstat_apply_tokens(
             match parse_dirstat_percentage_permille(p) {
                 Some(pm) => opts.permille = pm,
                 None => {
-                    let msg = format!(
-                        "Failed to parse --dirstat/-X option parameter:\n  Failed to parse dirstat cut-off percentage '{p}'\n"
-                    );
-                    if strict {
-                        bail!("{msg}");
-                    }
-                    warnings.push(format!(
-                        "Found errors in 'diff.dirstat' config variable:\n  Failed to parse dirstat cut-off percentage '{p}'\n"
+                    errors.push(format!(
+                        "  Failed to parse dirstat cut-off percentage '{p}'\n"
                     ));
                 }
             }
         } else {
-            let msg = format!(
-                "Failed to parse --dirstat/-X option parameter:\n  Unknown dirstat parameter '{p}'\n"
-            );
-            if strict {
-                bail!("{msg}");
-            }
-            warnings.push(format!(
-                "Found errors in 'diff.dirstat' config variable:\n  Unknown dirstat parameter '{p}'\n"
-            ));
+            errors.push(format!("  Unknown dirstat parameter '{p}'\n"));
         }
     }
-    Ok(())
+}
+
+/// Apply CLI `--dirstat`/`-X` tokens, accumulating into `cli_errors` (joined and reported
+/// fatally by the caller). Kept as a thin wrapper so existing call sites read naturally.
+fn parse_dirstat_apply_tokens_cli(
+    params: &str,
+    opts: &mut DirstatOptions,
+    cli_errors: &mut Vec<String>,
+) {
+    parse_dirstat_apply_tokens(params, opts, true, cli_errors);
 }
 
 fn parse_dirstat_params_lenient(params: &str) -> (DirstatOptions, Vec<String>) {
     let mut o = DirstatOptions::default();
-    let mut warnings = Vec::new();
-    let _ = parse_dirstat_apply_tokens(params, &mut o, false, &mut warnings);
+    let mut errors = Vec::new();
+    parse_dirstat_apply_tokens(params, &mut o, false, &mut errors);
+    // Config errors are reported as a single warning with all offending tokens.
+    let warnings = if errors.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!(
+            "Found errors in 'diff.dirstat' config variable:\n{}",
+            errors.concat()
+        )]
+    };
     (o, warnings)
 }
 
@@ -2439,9 +2450,36 @@ pub fn run(mut args: Args) -> Result<()> {
                         args.find_renames = Some("50".to_owned());
                     }
                 }
-                // `-CC` is copy detection; combined diff is spelled `--cc` only (Git).
-                s if s == "-C" || s.starts_with("--find-copies") => {
-                    args.find_copies = Some("50".to_owned());
+                // `--find-copies-harder` enables copy detection *and* lets unmodified
+                // preimage files act as copy sources. Must precede the generic
+                // `--find-copies` arm below since it shares that prefix.
+                "--find-copies-harder" => {
+                    args.find_copies_harder = true;
+                    if args.find_copies.is_none() {
+                        args.find_copies = Some("50".to_owned());
+                    }
+                }
+                // `-C[<n>]` / `--find-copies[=<n>]` is copy detection (combined diff is `--cc`).
+                // A *second* `-C` (e.g. `git diff -C -C`) requests `--find-copies-harder`,
+                // matching Git's `diff_opt_parse`.
+                s if s == "-C"
+                    || (s.starts_with("-C")
+                        && s.len() > 2
+                        && s[2..].bytes().all(|b| b.is_ascii_digit() || b == b'%'))
+                    || s.starts_with("--find-copies") =>
+                {
+                    let val = if let Some(rest) = s.strip_prefix("--find-copies=") {
+                        rest.to_owned()
+                    } else if s.starts_with("-C") && s.len() > 2 {
+                        s[2..].to_owned()
+                    } else {
+                        "50".to_owned()
+                    };
+                    // Repeating bare `-C` / `--find-copies` upgrades to find-copies-harder.
+                    if (s == "-C" || s == "--find-copies") && args.find_copies.is_some() {
+                        args.find_copies_harder = true;
+                    }
+                    args.find_copies = Some(val);
                 }
                 "-l" => {
                     if rev_idx + 1 < revs.len() {
@@ -2459,10 +2497,6 @@ pub fn run(mut args: Args) -> Result<()> {
                 "--cc" => {
                     want_combined_diff = true;
                     combined_diff_dense = true;
-                }
-                "--find-copies-harder" => {
-                    args.find_copies_harder = true;
-                    args.find_copies = Some("50".to_owned());
                 }
                 s if s.starts_with("-S") => {
                     if s.len() > 2 {
@@ -2628,6 +2662,27 @@ pub fn run(mut args: Args) -> Result<()> {
     let mut symmetric_left_name = String::new();
     let mut symmetric_right_name = String::new();
     let mut symmetric_base_name = String::new();
+
+    // `git diff -C -C` (a repeated copy-detection flag) requests `--find-copies-harder`,
+    // letting unmodified preimage files act as copy sources. clap collapses the two `-C`
+    // tokens (`overrides_with`), so inspect raw argv directly: an explicit
+    // `--find-copies-harder`, or two or more bare `-C`/`--find-copies` flags.
+    {
+        let mut copy_flag_count = 0usize;
+        for a in raw_args.iter() {
+            if a == "--find-copies-harder" {
+                args.find_copies_harder = true;
+                if args.find_copies.is_none() {
+                    args.find_copies = Some("50".to_owned());
+                }
+            } else if a == "-C" || a == "--find-copies" {
+                copy_flag_count += 1;
+            }
+        }
+        if copy_flag_count >= 2 {
+            args.find_copies_harder = true;
+        }
+    }
 
     // -C implies -M (copy detection requires rename detection)
     if args.find_copies.is_some() && args.find_renames.is_none() {
@@ -3052,13 +3107,39 @@ pub fn run(mut args: Args) -> Result<()> {
 
     let entries = if let Some(threshold) = rename_threshold {
         if args.find_copies.is_some() {
+            // `--find-copies-harder` (`-C -C`) lets *unmodified* preimage files act as copy
+            // sources. Git seeds the rename pool with the whole preimage; replicate that by
+            // flattening the source tree into (path, mode, oid) tuples. Only the tree-based
+            // diff modes can supply a flat preimage cheaply; for index/worktree sources we
+            // fall back to the modified-only behaviour (empty slice).
+            //
+            // A rename limit (`-l <n>`) being hit disables the exhaustive scan: Git degrades
+            // to "only found copies from modified paths", so the unmodified preimage must not
+            // be added as copy sources (t4001 "many rename source candidates").
+            let rename_limited = args.rename_limit.is_some_and(|n| n > 0);
+            let source_tree_entries: Vec<(String, String, ObjectId)> = if args.find_copies_harder
+                && !rename_limited
+            {
+                source_tree_oid_for_find_copies_harder(&repo, &args, &revs, head_tree.as_ref())
+                    .and_then(|t| grit_lib::diff::head_path_states(&repo.odb, Some(&t)).ok())
+                    .map(|m| {
+                        m.into_iter()
+                            .map(|(p, (mode, oid))| {
+                                (p, grit_lib::diff::format_mode(mode), oid)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             detect_copies(
                 &repo.odb,
                 None,
                 entries,
                 threshold,
                 args.find_copies_harder,
-                &[],
+                &source_tree_entries,
             )
         } else {
             detect_renames(&repo.odb, None, entries, threshold)
@@ -5242,6 +5323,10 @@ fn diff_show_unified_patch_last_wins(argv: &[String]) -> bool {
             "--stat" | "--shortstat" | "--numstat" | "--raw" | "--name-only" | "--name-status"
             | "--summary" | "--compact-summary" | "--dirstat" | "--dirstat-by-file"
             | "--cumulative" => show = false,
+            // `-X` / `-X<param>` is the short form of `--dirstat` and likewise suppresses the
+            // unified patch. This scan runs on raw argv (pre-`-X`-translation), so handle it here.
+            "-X" => show = false,
+            s if s.starts_with("-X") => show = false,
             s if s.starts_with("--stat=") => show = false,
             s if s.starts_with("--dirstat=") => show = false,
             s if s.starts_with("--dirstat-by-file=") => show = false,
@@ -5515,22 +5600,42 @@ pub(crate) fn resolve_dirstat_options_from_cli(
         opts = o;
     }
 
+    // Each CLI dirstat option is parsed independently and, like Git's `parse_dirstat_opt`,
+    // dies with *all* of that option's bad tokens combined under one header.
+    let bail_on_cli_errors = |errs: Vec<String>| -> Result<()> {
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            bail!(
+                "Failed to parse --dirstat/-X option parameter:\n{}",
+                errs.concat()
+            )
+        }
+    };
+
     if cli.dirstat_cumulative_flag {
-        parse_dirstat_apply_tokens("cumulative", &mut opts, true, &mut warnings)?;
+        let mut errs = Vec::new();
+        parse_dirstat_apply_tokens_cli("cumulative", &mut opts, &mut errs);
+        bail_on_cli_errors(errs)?;
     }
 
     if let Some(ref p) = cli.dirstat_by_file {
-        parse_dirstat_apply_tokens("files", &mut opts, true, &mut warnings)?;
+        let mut errs = Vec::new();
+        parse_dirstat_apply_tokens_cli("files", &mut opts, &mut errs);
         if !p.is_empty() {
-            parse_dirstat_apply_tokens(p, &mut opts, true, &mut warnings)?;
+            parse_dirstat_apply_tokens_cli(p, &mut opts, &mut errs);
         }
+        bail_on_cli_errors(errs)?;
     }
 
     for param in &cli.dirstat {
-        if param.is_empty() {
-            opts = DirstatOptions::default();
-        } else {
-            parse_dirstat_apply_tokens(param, &mut opts, true, &mut warnings)?;
+        // Git's `parse_dirstat_params("")` is a no-op: a bare `--dirstat` enables dirstat
+        // output but applies no parameters, so the `diff.dirstat` config baseline (mode,
+        // cumulative, cut-off) is preserved rather than reset to the built-in defaults.
+        if !param.is_empty() {
+            let mut errs = Vec::new();
+            parse_dirstat_apply_tokens_cli(param, &mut opts, &mut errs);
+            bail_on_cli_errors(errs)?;
         }
     }
 
@@ -5570,6 +5675,16 @@ fn dirstat_damage_for_entry(
     mode: DirstatMode,
 ) -> u64 {
     let path = entry.path();
+
+    // Git's `show_dirstat`: before any mode-specific accounting, a pair whose pre-image and
+    // post-image blob OIDs are both valid and identical contributes zero damage — even in
+    // `--dirstat=files` mode. This is how a content-preserving rename/copy
+    // (`{src => dst}/... 0 0`) is excluded from the file count.
+    let z = zero_oid();
+    if entry.old_oid != z && entry.new_oid != z && entry.old_oid == entry.new_oid {
+        return 0;
+    }
+
     let old_raw = read_content_raw(odb, &entry.old_oid);
     let new_raw = read_content_raw_or_worktree(odb, &entry.new_oid, work_tree, path);
 
@@ -5663,6 +5778,11 @@ fn gather_dirstat_recursive(
         }
     }
 
+    // Git (`gather_dirstat` in diff.c): report a directory line for any directory other
+    // than the top level whose damage did not all funnel through a single sub-source
+    // (`sources != 1`). After printing in non-cumulative mode the directory's damage is
+    // *consumed* — it returns 0 so ancestors neither re-print nor double-count it. In all
+    // other cases the accumulated `sum` propagates upward unchanged.
     if base_len > 0 && sources != 1 && sum > 0 && changed_total > 0 {
         let permille_val = ((sum as u128) * 1000 / (changed_total as u128)) as u32;
         if permille_val >= permille {
@@ -5672,11 +5792,11 @@ fn gather_dirstat_recursive(
             // width-4 field provides the alignment).
             writeln!(out, "{:>4}.{}% {}", int_part, frac, &base[..base_len])?;
             if !cumulative {
-                return Ok(sum);
+                return Ok(0);
             }
         }
     }
-    Ok(if cumulative { 0 } else { sum })
+    Ok(sum)
 }
 
 pub(crate) fn write_dirstat(
@@ -6091,6 +6211,27 @@ fn resolve_commit_ish_for_merge_base(repo: &Repository, spec: &str) -> Result<Ob
 }
 
 /// Resolve a revision spec to a tree OID, handling both commit and tree objects.
+/// Resolve the preimage tree OID used to seed `--find-copies-harder` copy sources.
+///
+/// Mirrors the diff-mode dispatch above: a two-rev range diffs `revs[0]..revs[1]`
+/// (source = `revs[0]`), a single rev (or `--cached <rev>`) diffs against that rev's
+/// tree, and `--cached` with no rev diffs against `HEAD`. Index/worktree-only sources
+/// (`git diff`, `git diff <rev>`) have no cheap flat preimage here, so return `None`
+/// and let copy detection consider only modified files.
+fn source_tree_oid_for_find_copies_harder(
+    repo: &Repository,
+    args: &Args,
+    revs: &[String],
+    head_tree: Option<&ObjectId>,
+) -> Option<ObjectId> {
+    match (args.cached, revs.len()) {
+        (true, 0) => head_tree.copied(),
+        (_, 1) => commit_or_tree_oid(repo, &revs[0]).ok(),
+        (false, 2) => commit_or_tree_oid(repo, &revs[0]).ok(),
+        _ => None,
+    }
+}
+
 fn commit_or_tree_oid(repo: &Repository, spec: &str) -> Result<ObjectId> {
     let mut oid =
         resolve_revision(repo, spec).with_context(|| format!("unknown revision: '{spec}'"))?;
