@@ -1451,17 +1451,7 @@ fn do_fast_forward_inner(
         false,
     );
     let old_entries = tree_to_map(tree_to_index_entries(repo, &old_tree, "")?);
-    let index_dirty_vs_head = diff_index::index_cached_differs_from_head(repo)?;
     let index_already_at_target = index_matches_commit_tree(repo, merge_oid)?;
-    if !args.autostash && index_dirty_vs_head && !index_already_at_target {
-        return Err(anyhow::Error::new(ExplicitExit {
-            code: 2,
-            message: "Your local changes to the following files would be overwritten by merge:\n\
-Please commit your changes or stash them before you merge.\n\
-Aborting"
-                .to_string(),
-        }));
-    }
     if !index_already_at_target {
         bail_if_merge_would_overwrite_local_changes(repo, &old_entries, &new_index, &[], false)?;
     }

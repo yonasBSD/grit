@@ -2756,3 +2756,12 @@ Updated: 2026-06-01
 - t6416 baseline refresh: after the completed merge D/F fixes, `./scripts/run-tests.sh
   t6416-recursive-corner-cases.sh --verbose` now reports 26/40 passing with 11 failing and 3
   expected failures, refreshing `data/test-files.csv` plus dashboards.
+- t6424 fast-forward unrelated-index focus: after letting the fast-forward path use the existing
+  per-path overwrite check instead of rejecting every dirty index, the direct
+  `t6424-merge-unrelated-index-changes.sh` run passes 19/19 and
+  `./scripts/run-tests.sh t6424-merge-unrelated-index-changes.sh --quiet` records 19/19 with
+  refreshed CSV and dashboards. Also re-ran the traced `t6416-recursive-corner-cases.sh` refresh to
+  keep its expected-failure accounting at 40 total, 37 passing, 0 failing, 3 expected failures.
+  Ran `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty` (existing warning
+  backlog and failed auto-fix attempts remain; unrelated `filter_process.rs` auto-fix restored),
+  and `cargo test -p grit-lib --lib`.
