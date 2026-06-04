@@ -5155,14 +5155,15 @@ fn prune_copied_objects_available_from_remote_alternates(
             keep.push(path);
             continue;
         };
-        let exists_in_alt = alternates.iter().any(|alt| {
-            alt.join(oid.loose_prefix())
-                .join(oid.loose_suffix())
-                .is_file()
-                || grit_lib::pack::read_local_pack_indexes(alt)
-                    .map(|indexes| indexes.iter().any(|idx| idx.contains(&oid)))
-                    .unwrap_or(false)
-        });
+        let exists_in_alt = oid.to_hex() == "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+            || alternates.iter().any(|alt| {
+                alt.join(oid.loose_prefix())
+                    .join(oid.loose_suffix())
+                    .is_file()
+                    || grit_lib::pack::read_local_pack_indexes(alt)
+                        .map(|indexes| indexes.iter().any(|idx| idx.contains(&oid)))
+                        .unwrap_or(false)
+            });
         if exists_in_alt {
             let _ = std::fs::remove_file(&path);
             if let Some(parent) = path.parent() {

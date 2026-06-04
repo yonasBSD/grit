@@ -1633,10 +1633,16 @@ fn fetch_remote(
         } else {
             copy_reachable_objects(&remote_repo.git_dir, git_dir, &object_copy_roots)
                 .context("copying reachable objects from remote")?;
+            prune_loose_objects_available_from_alternates(git_dir)
+                .context("pruning objects available from alternates")?;
         }
         check_connectivity(git_dir, &object_copy_roots)?;
         (heads, tags, Vec::new())
     };
+    if !args.refetch {
+        prune_loose_objects_available_from_alternates(git_dir)
+            .context("pruning fetched objects available from alternates")?;
+    }
 
     let allow_remote_shallow_updates = args.update_shallow
         || args.depth.is_some()
@@ -4139,6 +4145,63 @@ fn copy_reachable_objects_internal(
         }
     }
     Ok(())
+}
+
+fn prune_loose_objects_available_from_alternates(git_dir: &Path) -> Result<()> {
+    let objects_dir = git_dir.join("objects");
+    let alternates = grit_lib::pack::read_alternates_recursive(&objects_dir).unwrap_or_default();
+    if alternates.is_empty() {
+        return Ok(());
+    }
+
+    for fanout in fs::read_dir(&objects_dir).with_context(|| {
+        format!(
+            "reading object directory while pruning alternates at {}",
+            objects_dir.display()
+        )
+    })? {
+        let fanout = fanout?;
+        let prefix = fanout.file_name();
+        let Some(prefix) = prefix.to_str() else {
+            continue;
+        };
+        if prefix.len() != 2 || !fanout.file_type()?.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(fanout.path())? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let suffix = entry.file_name();
+            let Some(suffix) = suffix.to_str() else {
+                continue;
+            };
+            if suffix.len() != 38 {
+                continue;
+            }
+            let Ok(oid) = ObjectId::from_hex(&format!("{prefix}{suffix}")) else {
+                continue;
+            };
+            if object_exists_in_any_objects_dir(&alternates, &oid) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+        let _ = fs::remove_dir(fanout.path());
+    }
+    Ok(())
+}
+
+fn object_exists_in_any_objects_dir(objects_dirs: &[PathBuf], oid: &ObjectId) -> bool {
+    objects_dirs.iter().any(|objects_dir| {
+        objects_dir
+            .join(oid.loose_prefix())
+            .join(oid.loose_suffix())
+            .is_file()
+            || grit_lib::pack::read_local_pack_indexes(objects_dir)
+                .map(|indexes| indexes.iter().any(|idx| idx.contains(oid)))
+                .unwrap_or(false)
+    })
 }
 
 /// Copy objects reachable from `roots`, but do not traverse parent commits past source shallow

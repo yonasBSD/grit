@@ -1663,13 +1663,65 @@ pub fn build_thin_push_pack(
     }
 
     let remote_objects = remote_git_dir.join("objects");
-    let remote_odb = Odb::new(&remote_objects);
-
     let mut have_roots: BTreeSet<ObjectId> = BTreeSet::new();
-    collect_all_loose(&remote_odb, &mut have_roots)?;
-    let remote_pack_dir = remote_objects.join("pack");
-    if remote_pack_dir.is_dir() {
-        let indexes = grit_lib::pack::read_local_pack_indexes(&remote_objects)
+    if let Ok(empty_tree) = ObjectId::from_hex("4b825dc642cb6eb9a060e54bf8d69288fbee4904") {
+        have_roots.insert(empty_tree);
+    }
+    collect_objects_dir_have_roots(&remote_objects, &mut have_roots)?;
+    if let Ok(alternates) = grit_lib::pack::read_alternates_recursive(&remote_objects) {
+        for alternate in alternates {
+            collect_objects_dir_have_roots(&alternate, &mut have_roots)?;
+        }
+    }
+    have_roots.retain(|oid| have_root_closure_is_local(local_repo, oid));
+
+    build_thin_push_pack_from_have_set(local_repo, push_tips, &have_roots)
+}
+
+fn have_root_closure_is_local(local_repo: &Repository, oid: &ObjectId) -> bool {
+    let mut stack = vec![*oid];
+    let mut seen = HashSet::new();
+    while let Some(next) = stack.pop() {
+        if !seen.insert(next) {
+            continue;
+        }
+        let Ok(obj) = local_repo.odb.read(&next) else {
+            return false;
+        };
+        match obj.kind {
+            ObjectKind::Commit => {
+                let Ok(commit) = parse_commit(&obj.data) else {
+                    return false;
+                };
+                stack.push(commit.tree);
+                stack.extend(commit.parents);
+            }
+            ObjectKind::Tree => {
+                let Ok(entries) = parse_tree(&obj.data) else {
+                    return false;
+                };
+                stack.extend(entries.into_iter().map(|entry| entry.oid));
+            }
+            ObjectKind::Tag => {
+                let Ok(tag) = parse_tag(&obj.data) else {
+                    return false;
+                };
+                stack.push(tag.object);
+            }
+            ObjectKind::Blob => {}
+        }
+    }
+    true
+}
+
+fn collect_objects_dir_have_roots(
+    objects_dir: &Path,
+    have_roots: &mut BTreeSet<ObjectId>,
+) -> Result<()> {
+    let odb = Odb::new(objects_dir);
+    collect_all_loose(&odb, have_roots)?;
+    if objects_dir.join("pack").is_dir() {
+        let indexes = grit_lib::pack::read_local_pack_indexes(objects_dir)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         for idx in indexes {
             for entry in idx.entries {
@@ -1679,9 +1731,7 @@ pub fn build_thin_push_pack(
             }
         }
     }
-    have_roots.retain(|oid| local_repo.odb.read(oid).is_ok());
-
-    build_thin_push_pack_from_have_set(local_repo, push_tips, &have_roots)
+    Ok(())
 }
 
 /// Build a thin push pack while excluding object IDs known to exist remotely.

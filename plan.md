@@ -90,6 +90,8 @@
     reserving `.have` advertisements for alternate refs only.
   - Opportunistic http-backend quick win: completed `t5561-http-backend.sh` (14/14) by
     adding `/smart_noexport` export checks and accurate smart HTTP access logging.
+  - Opportunistic fetch/push alternates quick win: completed `t5501-fetch-push-alternates.sh` (3/3)
+    by honoring shared alternates in local push/fetch object transfer.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

@@ -1,4 +1,10 @@
 
+## 2026-06-04 — t5501-fetch-push-alternates
+
+- Focus harness: `./scripts/run-tests.sh t5501-fetch-push-alternates.sh --verbose` passes 3/3 after shared-alternate object transfer pruning.
+- Regression harness: `./scripts/run-tests.sh t5501-fetch-push-alternates.sh t5519-push-alternates.sh t5529-push-errors.sh t5410-receive-pack.sh t5543-atomic-push.sh --verbose` passes all covered rows.
+
+
 ## 2026-06-04 — t5561-http-backend
 
 - Focus harness: `./scripts/run-tests.sh t5561-http-backend.sh --verbose` passes 14/14 after `/smart_noexport` export handling and accurate CGI access-log status/size fields.
