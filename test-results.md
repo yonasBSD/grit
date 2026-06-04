@@ -2850,3 +2850,7 @@ Updated: 2026-06-01
   include the prerequisite OID on the single error line, matching the upstream grep for unreachable
   prerequisite commits. Focused `./scripts/run-tests.sh t6020-bundle-misc.sh --quiet` improves from
   33/37 to 34/37. Direct verbose `--run=24-37 -i` advances to the bundle progress test.
+- t6020 bundle progress focus: `bundle create --progress` and `bundle create --no-quiet` now emit a
+  `Writing objects: 100%` progress line. Focused `./scripts/run-tests.sh t6020-bundle-misc.sh
+  --quiet` improves from 34/37 to 36/37. Direct verbose `-i` advances to the non-repository
+  unbundle diagnostic.

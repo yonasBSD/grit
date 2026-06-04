@@ -294,7 +294,13 @@ fn run_create(args: CreateArgs) -> Result<()> {
         )?;
     }
 
-    if args.progress || (!args.quiet && !args.no_quiet && args.file != "-") {
+    let show_progress = args.progress || args.no_quiet || (!args.quiet && args.file != "-");
+    if show_progress {
+        eprintln!(
+            "Writing objects: 100% ({}/{}), done.",
+            objects.len(),
+            objects.len()
+        );
         eprintln!("Total {} (delta 0), reused 0 (delta 0)", objects.len());
     }
 
