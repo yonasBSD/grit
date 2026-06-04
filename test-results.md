@@ -1666,3 +1666,9 @@ Updated: 2026-06-01
   five files.
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3405-rebase-malformed refresh
+
+- Harness refresh: `./scripts/run-tests.sh t3405-rebase-malformed.sh` passed 5/5 with the current
+  rebase implementation.
+- No code changes were required for this fixture.

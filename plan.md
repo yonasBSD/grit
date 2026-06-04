@@ -130,6 +130,8 @@
     options without consuming state, empty picks leave Git-compatible advice/state, manual
     `--allow-empty` commits reuse the original rebase pick author/message, and fixup/squash commits
     that empty the amended commit fail.
+  - Completed: `t3405-rebase-malformed.sh` (5/5) after rerunning with current rebase behavior; no
+    additional code changes were needed.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ## Active task — t6 family 100% pass
