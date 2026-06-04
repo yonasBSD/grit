@@ -9197,6 +9197,7 @@ pub(crate) fn merge_trees_for_replay(
     ignore_cr_at_eol: bool,
     merge_directory_renames_mode: MergeDirectoryRenamesMode,
     rename_options: MergeRenameOptions,
+    forced_branch_labels: Option<(String, String)>,
 ) -> Result<ReplayTreeMergeResult> {
     let head = HeadState::Invalid;
     let result = merge_trees(
@@ -9218,7 +9219,7 @@ pub(crate) fn merge_trees_for_replay(
         ignore_cr_at_eol,
         merge_directory_renames_mode,
         rename_options,
-        None,
+        forced_branch_labels,
         false,
         None,
     )?;

@@ -1,3 +1,17 @@
+## 2026-06-04 — t6430-merge-recursive D/F conflict suffixes
+
+- Focus harness: `./scripts/run-tests.sh t6430-merge-recursive.sh --verbose` improved from 31/36
+  to 33/36 after `merge-recursive` used explicit commit OID side labels for relocated D/F conflict
+  paths and made auto-D/F cleanup suffix-agnostic.
+- Regression harness: `./scripts/run-tests.sh t6430-merge-recursive.sh t3426-rebase-submodule.sh t2013-checkout-submodule.sh t6422-merge-rename-corner-cases.sh t6400-merge-df.sh t6438-submodule-directory-file-conflicts.sh --verbose --timeout 180`
+  reports `t6430` 33/36, `t3426` 11/29, `t2013` 62/74, `t6422` 12/26, `t6400` 7/7, and
+  `t6438` 56/56.
+- `cargo build --release -p grit-cli`, `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed with the
+  existing warning backlog; unrelated clippy auto-fixes were restored.
+- Broader `cargo test --workspace` and `./tests/harness/run.sh` were skipped for this focused t6
+  increment.
+
 ## 2026-06-04 — t6430-merge-recursive true D/F conflicts
 
 - Focus harness: `./scripts/run-tests.sh t6430-merge-recursive.sh --verbose` improved from 30/36

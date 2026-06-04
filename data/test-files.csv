@@ -472,7 +472,7 @@ t2009-checkout-statinfo	t2	yes	3	3	0	true	ok	0
 t2010-checkout-ambiguous	t2	yes	10	10	0	true	ok	0
 t2011-checkout-invalid-head	t2	yes	10	10	0	true	ok	0
 t2012-checkout-last	t2	yes	22	22	0	true	ok	0
-t2013-checkout-submodule	t2	yes	70	62	8	false	ok	0
+t2013-checkout-submodule	t2	yes	74	62	8	false	ok	0
 t2014-checkout-switch	t2	yes	4	4	0	true	ok	0
 t2015-checkout-unborn	t2	yes	6	6	0	true	ok	0
 t2016-checkout-patch	t2	yes	19	19	0	true	ok	0
@@ -1126,7 +1126,7 @@ t6426-merge-skip-unneeded-updates	t6	yes	13	13	0	true	ok	0
 t6427-diff3-conflict-markers	t6	yes	9	7	2	false	ok	0
 t6428-merge-conflicts-sparse	t6	yes	2	2	0	true	ok	0
 t6429-merge-sequence-rename-caching	t6	yes	11	11	0	true	ok	0
-t6430-merge-recursive	t6	yes	36	31	5	false	ok	0
+t6430-merge-recursive	t6	yes	36	33	3	false	ok	0
 t6430-merge-strategy-option	t6	yes	6	0	6	false	ok	0
 t6431-merge-criscross	t6	yes	2	2	0	true	ok	0
 t6432-merge-recursive-rename-options	t6	yes	3	1	2	false	ok	0

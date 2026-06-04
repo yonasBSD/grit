@@ -507,6 +507,7 @@ pub(crate) fn merge_trees_for_single_cherry_pick(
         false,
         MergeDirectoryRenamesMode::Disabled,
         rename_opts,
+        None,
     )
 }
 
@@ -605,6 +606,7 @@ pub(crate) fn replay_commits_onto(
             false,
             merge_dir_mode,
             rename_opts,
+            None,
         )?;
         if merge_result.has_conflicts {
             let reason = merge_result

@@ -69,12 +69,13 @@ pub fn run(args: Args) -> Result<()> {
         ws.ignore_cr_at_eol,
         MergeDirectoryRenamesMode::FromConfig,
         rename_options,
+        Some((ours_oid.to_hex(), theirs_oid.to_hex())),
     )?;
 
     let auto_resolved_directory_file_paths: Vec<Vec<u8>> = merge_result
         .conflict_descriptions
         .iter()
-        .filter(|desc| desc.subject_path.contains("~HEAD"))
+        .filter(|desc| desc.kind == "file/directory")
         .map(|desc| desc.subject_path.as_bytes().to_vec())
         .collect();
     let only_auto_resolved_directory_file_conflicts = !auto_resolved_directory_file_paths
@@ -82,10 +83,11 @@ pub fn run(args: Args) -> Result<()> {
         && auto_resolved_directory_file_paths
             .iter()
             .all(|path| relocated_unmerged_entries_match(&merge_result.index, path))
-        && merge_result
-            .conflict_descriptions
-            .iter()
-            .all(|desc| desc.subject_path.contains("~HEAD"));
+        && merge_result.conflict_descriptions.iter().all(|desc| {
+            auto_resolved_directory_file_paths
+                .iter()
+                .any(|path| desc.subject_path.as_bytes() == path.as_slice())
+        });
     if merge_result.has_conflicts && only_auto_resolved_directory_file_conflicts {
         merge_result.index.entries.retain(|entry| {
             entry.stage() == 0
