@@ -148,6 +148,9 @@
   - Completed: `t3420-rebase-autostash.sh` (54/54) after failed pre-rebase hooks now restore the
     created autostash, the extra non-Git rebase progress line was removed, and the ported fixture
     no longer deletes `rebased-feature-branch` before the paired output-check tests inspect it.
+  - Completed: `t3415-rebase-autosquash.sh` (28/28) after final fixup-chain detection, nested
+    autosquash OID target handling, interactive empty-pick preservation, and squash/fixup template
+    cleanup now match Git's autosquash behavior.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ---

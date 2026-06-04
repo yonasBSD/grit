@@ -1424,6 +1424,9 @@ fn rearrange_autosquash(
     let mut subject_to_index: HashMap<String, usize> = HashMap::new();
     let mut oid_to_index: HashMap<ObjectId, usize> = HashMap::new();
     let mut rearranged = false;
+    for (idx, oid) in oids.iter().copied().enumerate() {
+        oid_to_index.insert(oid, idx);
+    }
 
     for i in 0..n {
         let obj = repo.odb.read(&oids[i])?;
@@ -1481,7 +1484,6 @@ fn rearrange_autosquash(
 
         if target_idx.is_none() && !subject_to_index.contains_key(&subj) {
             subject_to_index.insert(subj.clone(), i);
-            oid_to_index.insert(oids[i], i);
         }
     }
 
@@ -2416,8 +2418,20 @@ fn cleanup_squash_editor_message(msg: &str, config: &ConfigSet) -> String {
             kept.push(line);
         }
     }
-    let mut cleaned = kept.join("\n");
-    cleaned.push('\n');
+    let mut collapsed: Vec<&str> = Vec::new();
+    for line in kept {
+        if line.trim().is_empty() && collapsed.last().is_none_or(|prev| prev.trim().is_empty()) {
+            continue;
+        }
+        collapsed.push(line);
+    }
+    while collapsed.last().is_some_and(|line| line.trim().is_empty()) {
+        collapsed.pop();
+    }
+    let mut cleaned = collapsed.join("\n");
+    if !cleaned.is_empty() {
+        cleaned.push('\n');
+    }
     let cleaned = apply_commit_msg_cleanup(&cleaned, "whitespace");
     apply_commit_msg_cleanup(&cleaned, rebase_commit_msg_cleanup(config))
 }
@@ -4259,7 +4273,7 @@ Use '--' to separate paths from revisions, like this:\n\
     if args.no_ff {
         fs::write(rb_dir.join("force-rewrite"), "")?;
     }
-    if args.keep_empty || args.interactive {
+    if args.keep_empty || want_autosquash {
         fs::write(rb_dir.join("keep-empty"), "")?;
     }
     // Persist the GPG/SSH signing decision so each pick (including those run from
@@ -6028,7 +6042,7 @@ fn cherry_pick_for_rebase(
 
     if !has_conflicts {
         let merged_tree_oid = write_tree_from_index(&repo.odb, &merged_index, "")?;
-        if matches!(todo_cmd, RebaseTodoCmd::Fixup | RebaseTodoCmd::Squash) {
+        if matches!(todo_cmd, RebaseTodoCmd::Fixup | RebaseTodoCmd::Squash) && !keep_empty {
             let head_obj = repo.odb.read(&head_oid)?;
             let head_commit = parse_commit(&head_obj.data)?;
             if let Some(amend_parent) = head_commit.parents.first() {
