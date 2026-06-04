@@ -3703,8 +3703,10 @@ pub fn run(mut args: Args) -> Result<()> {
                     eprintln!("fatal: external diff died, stopping at {path}");
                     std::process::exit(128);
                 }
-                ext_found_changes = summary.found_changes;
-                ext_diff_ran = true;
+                if summary.invoked {
+                    ext_found_changes = summary.found_changes;
+                    ext_diff_ran = true;
+                }
             }
         }
     }
@@ -3770,8 +3772,10 @@ pub fn run(mut args: Args) -> Result<()> {
                 eprintln!("fatal: external diff died, stopping at {path}");
                 std::process::exit(128);
             }
-            ext_found_changes = summary.found_changes;
-            ext_diff_ran = true;
+            if summary.invoked {
+                ext_found_changes = summary.found_changes;
+                ext_diff_ran = true;
+            }
         }
     }
 
@@ -7454,6 +7458,7 @@ fn write_patch_with_prefix(
 ) -> Result<ExtDiffSummary> {
     let ignore_blank = ws_mode.ignore_blank_lines;
     // External-diff bookkeeping mirroring Git's diff_options found_changes / die.
+    let mut ext_invoked = false;
     let mut ext_found_changes = false;
     let mut ext_died: Option<String> = None;
     let mut ext_counter: usize = 0;
@@ -7556,6 +7561,7 @@ fn write_patch_with_prefix(
                 external_diff.filter(|(s, _)| !s.is_empty())
             };
             if let Some((ext, trust)) = resolved {
+                ext_invoked = true;
                 ext_total = entries.len();
                 ext_counter += 1;
                 // `other` = the destination path for renames/copies (Git's `two->path`).
@@ -8110,6 +8116,7 @@ fn write_patch_with_prefix(
         }
     }
     Ok(ExtDiffSummary {
+        invoked: ext_invoked,
         found_changes: ext_found_changes,
         died_path: ext_died,
     })
@@ -8117,6 +8124,10 @@ fn write_patch_with_prefix(
 
 /// Summary of external-diff invocations across one patch run.
 struct ExtDiffSummary {
+    /// True if at least one external driver was actually invoked (or skipped via
+    /// the untrusted-`--quiet` shortcut). When false, `found_changes` is
+    /// meaningless and the caller falls back to the entry-derived `has_diff`.
+    invoked: bool,
     /// True if any external driver reported a change (Git's `found_changes`).
     found_changes: bool,
     /// If `Some(path)`, an external driver "died" at this path → exit 128.
