@@ -2382,6 +2382,14 @@ pub fn run(mut args: Args) -> Result<()> {
                 s if s.starts_with("--color-moved") => {
                     args.color_moved = Some("default".to_owned());
                 }
+                // `--ws-error-highlight=<kinds>` / `--ws-error-highlight <kinds>` is consumed
+                // separately from raw argv by `ws_error_highlight_from_argv`; just accept it here
+                // (and skip its detached value, which lands in the rev bucket) so it is not
+                // rejected as an unknown option.
+                s if s.starts_with("--ws-error-highlight=") => {}
+                "--ws-error-highlight" => {
+                    rev_idx += 1;
+                }
                 s if s.starts_with("-O") && s.len() > 2 => {
                     let path = s[2..].to_string();
                     if path == "/dev/null" {
