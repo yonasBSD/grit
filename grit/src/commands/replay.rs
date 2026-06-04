@@ -223,13 +223,35 @@ fn build_commit_to_refs_map(repo: &Repository) -> Result<HashMap<ObjectId, Vec<S
             map.entry(commit_oid).or_default().push("HEAD".to_owned());
         }
     }
-    for (name, oid) in refs::list_refs(&repo.git_dir, "refs/")? {
+    for (name, oid) in refs::list_refs(&repo.git_dir, "refs/heads/")? {
         let Ok(commit_oid) = grit_lib::rev_parse::peel_to_commit_for_merge_base(repo, oid) else {
             continue;
         };
         map.entry(commit_oid).or_default().push(name);
     }
     Ok(map)
+}
+
+fn commit_is_ancestor(repo: &Repository, ancestor: ObjectId, descendant: ObjectId) -> Result<bool> {
+    if ancestor == descendant {
+        return Ok(true);
+    }
+    let mut stack = vec![descendant];
+    let mut seen = HashSet::new();
+    while let Some(oid) = stack.pop() {
+        if !seen.insert(oid) {
+            continue;
+        }
+        let obj = repo.odb.read(&oid)?;
+        let commit = parse_commit(&obj.data)?;
+        for parent in commit.parents {
+            if parent == ancestor {
+                return Ok(true);
+            }
+            stack.push(parent);
+        }
+    }
+    Ok(false)
 }
 
 #[derive(Debug)]
@@ -307,15 +329,20 @@ pub fn run(args: Args) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("{}", e.to_string().trim_end_matches('\n')))?
     };
 
-    let positive_ref_fullnames: HashSet<String> = {
-        let mut s = HashSet::new();
+    let positive_ref_fullnames_order: Vec<String> = {
+        let mut refs = Vec::new();
+        let mut seen = HashSet::new();
         for spec in &positive_specs {
             if let Ok(Some(full)) = try_dwim_single_branch_ref(&repo.git_dir, spec) {
-                s.insert(full);
+                if seen.insert(full.clone()) {
+                    refs.push(full);
+                }
             }
         }
-        s
+        refs
     };
+    let positive_ref_fullnames: HashSet<String> =
+        positive_ref_fullnames_order.iter().cloned().collect();
 
     let advance_full_ref = if let Some(adv) = parsed.advance.as_deref() {
         Some(
@@ -327,17 +354,16 @@ pub fn run(args: Args) -> Result<()> {
         None
     };
 
-    if has_onto && positive_ref_fullnames.len() < positive_specs.len() {
+    if has_onto && positive_ref_fullnames.len() < positive_specs.len() && !detached_head {
         bail!("fatal: all positive revisions given must be references");
     }
 
     let commit_to_refs = build_commit_to_refs_map(&repo)?;
 
-    let (replayed_tip, replayed) = replay_commits_onto(&repo, &commits, onto_oid)?;
-
     let mut updates: Vec<RefUpdateLine> = Vec::new();
 
     if let Some(adv_full) = advance_full_ref {
+        let (replayed_tip, _replayed) = replay_commits_onto(&repo, &commits, onto_oid)?;
         let old_oid = resolve_ref(&repo.git_dir, &adv_full)?;
         updates.push(RefUpdateLine {
             refname: adv_full,
@@ -346,33 +372,64 @@ pub fn run(args: Args) -> Result<()> {
         });
     } else {
         let mut seen_ref: HashSet<String> = HashSet::new();
-        for commit_oid in &commits {
+        let mut push_ref_update = |updates: &mut Vec<RefUpdateLine>,
+                                   replayed: &HashMap<ObjectId, ObjectId>,
+                                   refname: &str,
+                                   commit_oid: &ObjectId|
+         -> Result<()> {
             let Some(&new_tip) = replayed.get(commit_oid) else {
-                continue;
+                return Ok(());
             };
-            let Some(refs_at) = commit_to_refs.get(commit_oid) else {
-                continue;
-            };
-            for r in refs_at {
-                if r == "HEAD" {
-                    if !detached_head {
-                        continue;
-                    }
-                } else if !parsed.contained && !positive_ref_fullnames.contains(r) {
-                    continue;
-                }
-                if !seen_ref.insert(r.clone()) {
-                    continue;
-                }
-                let old_oid = resolve_ref(&repo.git_dir, r)?;
-                if old_oid == new_tip {
-                    continue;
-                }
+            if !seen_ref.insert(refname.to_owned()) {
+                return Ok(());
+            }
+            let old_oid = resolve_ref(&repo.git_dir, refname)?;
+            if old_oid != new_tip {
                 updates.push(RefUpdateLine {
-                    refname: r.clone(),
+                    refname: refname.to_owned(),
                     new_oid: new_tip,
                     old_oid,
                 });
+            }
+            Ok(())
+        };
+
+        for positive_ref in &positive_ref_fullnames_order {
+            let positive_tip = resolve_ref(&repo.git_dir, positive_ref)?;
+            let branch_commits: Vec<ObjectId> = commits
+                .iter()
+                .copied()
+                .filter(|commit_oid| {
+                    commit_is_ancestor(&repo, *commit_oid, positive_tip).unwrap_or(false)
+                })
+                .collect();
+            let (_branch_tip, branch_replayed) =
+                replay_commits_onto(&repo, &branch_commits, onto_oid)?;
+            if !parsed.contained {
+                push_ref_update(&mut updates, &branch_replayed, positive_ref, &positive_tip)?;
+                continue;
+            }
+            for commit_oid in &branch_commits {
+                let Some(refs_at) = commit_to_refs.get(commit_oid) else {
+                    continue;
+                };
+                for r in refs_at {
+                    if r == "HEAD" || !r.starts_with("refs/heads/") {
+                        continue;
+                    }
+                    push_ref_update(&mut updates, &branch_replayed, r, commit_oid)?;
+                }
+            }
+        }
+        if detached_head && positive_ref_fullnames_order.is_empty() {
+            let (_replayed_tip, replayed) = replay_commits_onto(&repo, &commits, onto_oid)?;
+            for commit_oid in &commits {
+                let Some(refs_at) = commit_to_refs.get(commit_oid) else {
+                    continue;
+                };
+                if refs_at.iter().any(|r| r == "HEAD") {
+                    push_ref_update(&mut updates, &replayed, "HEAD", commit_oid)?;
+                }
             }
         }
     }

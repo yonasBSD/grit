@@ -3482,6 +3482,11 @@ pub(crate) fn parse_cmd_args<T: Args + FromArgMatches>(subcmd: &str, rest: &[Str
     if rest.len() == 1 {
         let arg = rest[0].as_str();
         if matches!(arg, "-h" | "--help" | "--help-all") {
+            if subcmd == "replay" {
+                println!();
+                println!("usage: git replay ([--contained] --onto <newbase> | --advance <branch>) [--ref-action[=<mode>]] <revision-range>");
+                std::process::exit(if arg == "--help" { 0 } else { 129 });
+            }
             if let Some(syn) = commands::upstream_synopsis_help::synopsis_for_builtin(subcmd) {
                 let code = if subcmd == "submodule" || arg == "--help" {
                     0

@@ -1435,3 +1435,16 @@ Updated: 2026-06-01
   t3512-cherry-pick-submodule.sh t3510-cherry-pick.sh` passed all three files.
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3650-replay-basics complete
+
+- Focus harness completed at 31/31 after replay help, branch/HEAD ref selection, independent
+  divergent-branch replay, detached-HEAD updates, and packed-branch force-update cleanup were
+  fixed.
+- Related verification: `./scripts/run-tests.sh t3650-replay-basics.sh t3200-branch.sh` passed
+  both files.
+- Sequencer sweep: `./scripts/run-tests.sh t3510-cherry-pick.sh
+  t3512-cherry-pick-submodule.sh t3513-revert-submodule.sh t3650-replay-basics.sh` passed all
+  four files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).

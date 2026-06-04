@@ -97,6 +97,11 @@
   - Completed: `t3513-revert-submodule.sh` (14/14) after applying the same submodule checkout
     preservation rules to revert while allowing revert's setup transitions to replace empty
     gitlink placeholders.
+  - Completed: `t3650-replay-basics.sh` (31/31) after adding replay's custom help synopsis,
+    limiting replay ref updates to branch/HEAD refs, replaying each requested branch independently
+    for divergent histories, supporting detached-HEAD replay updates, and allowing `branch -f` to
+    force-update an existing packed branch without treating the branch itself as a namespace
+    conflict.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ## Active task — t6 family 100% pass
