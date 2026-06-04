@@ -14,13 +14,13 @@ use regex::Regex;
 
 use std::collections::{HashMap, HashSet};
 
+use crate::check_ref_format::{check_refname_format, RefNameOptions};
 use crate::config::ConfigSet;
 use crate::error::{Error, Result};
 use crate::objects::{parse_commit, parse_tag, parse_tree, ObjectId, ObjectKind};
 use crate::pack;
 use crate::reflog::read_reflog;
 use crate::refs;
-use crate::check_ref_format::{check_refname_format, RefNameOptions};
 use crate::repo::Repository;
 
 /// Return `Some(repo)` when a repository can be discovered at `start`.
