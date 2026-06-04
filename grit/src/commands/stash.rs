@@ -1983,7 +1983,7 @@ fn do_push_staged(
     // The index was rebuilt from the HEAD tree (no cached stat); refresh stat for files whose
     // worktree content matches so a subsequent `git diff-files` sees them clean (t3903 'stash
     // push --staged refreshes the index').
-    grit_lib::diff::refresh_index_stat_content_verified(&mut new_index, work_tree);
+    grit_lib::diff::refresh_index_stat_content_verified(&mut new_index, work_tree, None);
     repo.write_index(&mut new_index)?;
 
     if !opts.quiet {
@@ -3790,7 +3790,7 @@ fn apply_stash_impl(
     // the recorded OID, so a following `git diff-files` reflects only genuine differences (t3903
     // 'stash apply --index refreshes the index').
     if !has_conflicts {
-        grit_lib::diff::refresh_index_stat_content_verified(&mut new_index, work_tree);
+        grit_lib::diff::refresh_index_stat_content_verified(&mut new_index, work_tree, None);
     }
     repo.write_index(&mut new_index)
         .context("writing index after stash apply")?;

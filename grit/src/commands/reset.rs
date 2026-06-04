@@ -1353,7 +1353,7 @@ fn refresh_stage0_index_stats_from_worktree(index: &mut Index, work_tree: &Path)
     // whose worktree content still matches the recorded OID; a genuinely modified file must keep
     // its stale stat so `status`/`diff-files` keep reporting it (t7508 108). Adopting the worktree
     // stat unconditionally would mark a modified file falsely clean.
-    grit_lib::diff::refresh_index_stat_content_verified(index, work_tree);
+    grit_lib::diff::refresh_index_stat_content_verified(index, work_tree, None);
 }
 
 /// Reset HEAD (and optionally index + working tree) to the given commit.

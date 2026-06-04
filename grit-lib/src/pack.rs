@@ -501,6 +501,22 @@ mod pack_cache {
         g.by_idx.clear();
         g.by_pack.clear();
     }
+
+    /// Re-stamp the cached signature for `pack_path` after the caller deliberately touched the
+    /// file's mtime (object freshening). Pack contents are immutable for a given pack name, so
+    /// a self-inflicted mtime bump must not evict the cached bytes — without this, every
+    /// `odb.write` of an already-packed object forced a full re-read of the pack on the next
+    /// lookup. External modifications still invalidate normally via the mtime/size check.
+    pub fn refresh_pack_signature(pack_path: &Path) {
+        if let Some((mtime, size)) = file_signature(pack_path) {
+            let mut g = lock();
+            if let Some(c) = g.by_pack.get_mut(pack_path) {
+                if c.size == size {
+                    c.mtime = mtime;
+                }
+            }
+        }
+    }
 }
 
 /// Read all pack indexes under `<objects_dir>/pack/` from the process-wide cache.
@@ -540,6 +556,12 @@ pub fn read_pack_bytes_cached(pack_path: &Path) -> Result<Arc<Vec<u8>>> {
 /// Drop all cached pack indexes and pack bytes (call after `repack`/`gc`).
 pub fn clear_pack_cache() {
     pack_cache::clear();
+}
+
+/// Re-stamp the cached pack-bytes signature after deliberately touching `pack_path`'s mtime
+/// (object freshening). See [`pack_cache::refresh_pack_signature`].
+pub fn refresh_pack_bytes_signature(pack_path: &Path) {
+    pack_cache::refresh_pack_signature(pack_path);
 }
 
 /// Collect aggregate local pack metrics.
@@ -1224,33 +1246,49 @@ fn read_pack_object_at(
         PackedType::OfsDelta => {
             let base_offset = parse_ofs_delta_base(pack_bytes, &mut pos, offset)?;
             let delta_data = decompress_pack_data(pack_bytes, &mut pos, size)?;
-            if let Some(dir) = objects_dir {
-                if let Some(base_entry) = idx.entries.iter().find(|e| e.offset == base_offset) {
-                    if base_entry.oid.len() == 20 {
-                        if let Ok(base_oid) = ObjectId::from_bytes(base_entry.oid.as_slice()) {
-                            let loose = dir
-                                .join(base_oid.loose_prefix())
-                                .join(base_oid.loose_suffix());
-                            if loose.is_file() {
-                                if let Ok(obj) =
-                                    crate::odb::Odb::read_loose_verify_oid(&loose, &base_oid)
+            // OFS_DELTA bases live in the same pack at a known offset (pack format spec):
+            // resolve in-pack first. Loose or other-pack copies of the base are consulted only
+            // when the in-pack read fails (e.g. a corrupt base rescued by another copy), which
+            // keeps hot reads free of per-link loose-path stats and pack-directory probes.
+            let in_pack = read_pack_object_at(pack_bytes, base_offset, idx, objects_dir, depth + 1);
+            match in_pack {
+                Ok((base_kind, base_data)) => {
+                    let result = apply_delta(&base_data, &delta_data)?;
+                    Ok((base_kind, result))
+                }
+                Err(err) => {
+                    if let Some(dir) = objects_dir {
+                        // Cold rescue path: identify the base OID (linear scan is fine here).
+                        if let Some(base_entry) =
+                            idx.entries.iter().find(|e| e.offset == base_offset)
+                        {
+                            if base_entry.oid.len() == 20 {
+                                if let Ok(base_oid) = ObjectId::from_bytes(base_entry.oid.as_slice())
                                 {
-                                    let result = apply_delta(&obj.data, &delta_data)?;
-                                    return Ok((obj.kind, result));
+                                    let loose = dir
+                                        .join(base_oid.loose_prefix())
+                                        .join(base_oid.loose_suffix());
+                                    if loose.is_file() {
+                                        if let Ok(obj) = crate::odb::Odb::read_loose_verify_oid(
+                                            &loose, &base_oid,
+                                        ) {
+                                            let result = apply_delta(&obj.data, &delta_data)?;
+                                            return Ok((obj.kind, result));
+                                        }
+                                    }
+                                    if let Ok(obj) =
+                                        read_object_from_other_pack(dir, idx, &base_oid, depth + 1)
+                                    {
+                                        let result = apply_delta(&obj.data, &delta_data)?;
+                                        return Ok((obj.kind, result));
+                                    }
                                 }
-                            }
-                            if let Ok(obj) = read_object_from_other_pack(dir, idx, &base_oid) {
-                                let result = apply_delta(&obj.data, &delta_data)?;
-                                return Ok((obj.kind, result));
                             }
                         }
                     }
+                    Err(err)
                 }
             }
-            let (base_kind, base_data) =
-                read_pack_object_at(pack_bytes, base_offset, idx, objects_dir, depth + 1)?;
-            let result = apply_delta(&base_data, &delta_data)?;
-            Ok((base_kind, result))
         }
         PackedType::RefDelta => {
             let hb = idx.hash_bytes;
@@ -1262,6 +1300,23 @@ fn read_pack_object_at(
             let base_raw = pack_bytes[pos..pos + hb].to_vec();
             pos += hb;
             let delta_data = decompress_pack_data(pack_bytes, &mut pos, size)?;
+            // In-pack base first (entries are sorted by OID — binary search), then loose and
+            // other packs for thin-pack-style external bases or corrupt-base rescue.
+            let in_pack_offset = idx
+                .entries
+                .binary_search_by(|e| e.oid.as_slice().cmp(base_raw.as_slice()))
+                .ok()
+                .map(|i| idx.entries[i].offset);
+            let mut in_pack_err = None;
+            if let Some(base_offset) = in_pack_offset {
+                match read_pack_object_at(pack_bytes, base_offset, idx, objects_dir, depth + 1) {
+                    Ok((base_kind, base_data)) => {
+                        let result = apply_delta(&base_data, &delta_data)?;
+                        return Ok((base_kind, result));
+                    }
+                    Err(err) => in_pack_err = Some(err),
+                }
+            }
             if hb == 20 {
                 if let (Some(dir), Ok(base_oid)) =
                     (objects_dir, ObjectId::from_bytes(base_raw.as_slice()))
@@ -1275,31 +1330,26 @@ fn read_pack_object_at(
                             return Ok((obj.kind, result));
                         }
                     }
-                    if let Ok(obj) = read_object_from_other_pack(dir, idx, &base_oid) {
+                    if let Ok(obj) = read_object_from_other_pack(dir, idx, &base_oid, depth + 1) {
                         let result = apply_delta(&obj.data, &delta_data)?;
                         return Ok((obj.kind, result));
                     }
                 }
             }
-            // Find the base in the same pack index
-            let base_entry = idx.entries.iter().find(|e| e.oid == base_raw).cloned();
-            let Some(base_entry) = base_entry else {
-                // Hot object lookup in Git trusts pack indexes and may return corrupted bytes from
-                // hand-edited packs; integrity commands verify hashes separately. Returning the
-                // raw delta payload as blob data lets porcelain reads continue while
-                // `verify-pack`/`fsck` still reject the pack via hash/trailer checks.
-                if idx.entries.len() > 100 {
-                    return Ok((ObjectKind::Blob, delta_data));
-                }
-                return Err(Error::CorruptObject(format!(
-                    "ref-delta base {} not found in pack",
-                    oid_bytes_to_hex(&base_raw)
-                )));
-            };
-            let (base_kind, base_data) =
-                read_pack_object_at(pack_bytes, base_entry.offset, idx, objects_dir, depth + 1)?;
-            let result = apply_delta(&base_data, &delta_data)?;
-            Ok((base_kind, result))
+            if let Some(err) = in_pack_err {
+                return Err(err);
+            }
+            // Hot object lookup in Git trusts pack indexes and may return corrupted bytes from
+            // hand-edited packs; integrity commands verify hashes separately. Returning the
+            // raw delta payload as blob data lets porcelain reads continue while
+            // `verify-pack`/`fsck` still reject the pack via hash/trailer checks.
+            if idx.entries.len() > 100 {
+                return Ok((ObjectKind::Blob, delta_data));
+            }
+            Err(Error::CorruptObject(format!(
+                "ref-delta base {} not found in pack",
+                oid_bytes_to_hex(&base_raw)
+            )))
         }
     }
 }
@@ -1308,13 +1358,16 @@ fn read_object_from_other_pack(
     objects_dir: &Path,
     current_idx: &PackIndex,
     oid: &ObjectId,
+    depth: usize,
 ) -> Result<Object> {
     for idx in read_local_pack_indexes_cached(objects_dir)? {
         if idx.idx_path == current_idx.idx_path {
             continue;
         }
         if idx.contains(oid) {
-            return read_object_from_pack(&idx, oid);
+            // Propagate the delta-chain depth: two packs holding copies of each other's bases
+            // can otherwise recurse forever (each hop restarting at depth 0 blew the stack).
+            return read_object_from_pack_at_depth(&idx, oid, depth);
         }
     }
     Err(Error::ObjectNotFound(oid.to_hex()))
@@ -1329,19 +1382,20 @@ fn read_object_from_other_pack(
 ///
 /// Returns [`Error::ObjectNotFound`] if the OID is not in this pack.
 pub fn read_object_from_pack(idx: &PackIndex, oid: &ObjectId) -> Result<Object> {
-    if idx.find_offset(oid).is_none() {
+    read_object_from_pack_at_depth(idx, oid, 0)
+}
+
+/// [`read_object_from_pack`] with an explicit starting delta-chain depth, used when the read
+/// itself resolves a delta base from another pack (the chain budget must carry across packs).
+fn read_object_from_pack_at_depth(idx: &PackIndex, oid: &ObjectId, depth: usize) -> Result<Object> {
+    let Some(offset) = idx.find_offset(oid) else {
         return Err(Error::ObjectNotFound(oid.to_hex()));
-    }
+    };
 
     let pack_bytes = read_pack_bytes_cached(&idx.pack_path)?;
     validate_pack_index_object_count(&pack_bytes, idx)?;
     let objects_dir = idx.pack_path.parent().and_then(Path::parent);
-    let entry = idx
-        .entries
-        .iter()
-        .find(|e| e.oid.as_slice() == oid.as_bytes().as_slice())
-        .ok_or_else(|| Error::ObjectNotFound(oid.to_hex()))?;
-    let (kind, data) = read_pack_object_at(&pack_bytes, entry.offset, idx, objects_dir, 0)?;
+    let (kind, data) = read_pack_object_at(&pack_bytes, offset, idx, objects_dir, depth)?;
     Ok(Object::new(kind, data))
 }
 
@@ -1352,12 +1406,13 @@ pub fn read_object_from_pack_bytes(
     oid: &[u8],
 ) -> Result<Object> {
     validate_pack_index_object_count(pack_bytes, idx)?;
-    let entry = idx
+    let entry_offset = idx
         .entries
-        .iter()
-        .find(|e| e.oid.as_slice() == oid)
+        .binary_search_by(|e| e.oid.as_slice().cmp(oid))
+        .ok()
+        .map(|i| idx.entries[i].offset)
         .ok_or_else(|| Error::ObjectNotFound(oid_bytes_to_hex(oid)))?;
-    let (kind, data) = read_pack_object_at(pack_bytes, entry.offset, idx, None, 0)?;
+    let (kind, data) = read_pack_object_at(pack_bytes, entry_offset, idx, None, 0)?;
     verify_packed_object_hash(kind, &data, oid)?;
     Ok(Object::new(kind, data))
 }

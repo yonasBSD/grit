@@ -965,11 +965,21 @@ impl Index {
     ///
     /// When `skip_hash` is true, the trailing SHA-1 is written as all zeros (Git `index.skipHash`).
     pub fn write_to_path(&self, path: &Path, skip_hash: bool) -> Result<()> {
-        let mut sorted = self.clone();
-        sorted.sort();
-
         let mut body = Vec::new();
-        sorted.serialize_into(&mut body)?;
+        // Fast path: entries loaded from disk (or maintained via `add_or_replace`) are already in
+        // canonical order; serializing from `&self` skips a full clone of every entry. The
+        // comparator must stay identical to [`Index::sort`] (path, then stage) — format v4 path
+        // compression depends on it.
+        let already_sorted = self
+            .entries
+            .is_sorted_by(|a, b| (&a.path, a.stage()) <= (&b.path, b.stage()));
+        if already_sorted {
+            self.serialize_into(&mut body)?;
+        } else {
+            let mut sorted = self.clone();
+            sorted.sort();
+            sorted.serialize_into(&mut body)?;
+        }
 
         let checksum: [u8; 20] = if skip_hash {
             [0u8; 20]

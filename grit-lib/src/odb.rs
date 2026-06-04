@@ -841,7 +841,12 @@ fn freshen_object_in_objects_dir(objects_dir: &Path, oid: &ObjectId) -> bool {
     };
     for idx in &indexes {
         if idx.contains(oid) {
-            return touch_path_mtime(&idx.pack_path);
+            let touched = touch_path_mtime(&idx.pack_path);
+            if touched {
+                // Keep the cached pack bytes valid: this mtime bump is ours, not a content change.
+                pack::refresh_pack_bytes_signature(&idx.pack_path);
+            }
+            return touched;
         }
     }
     false

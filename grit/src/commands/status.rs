@@ -887,9 +887,16 @@ pub fn run(mut args: Args) -> Result<()> {
         // Git refreshes the index during `status`: entries whose worktree content still matches
         // the recorded OID but whose stat went stale (e.g. `touch`) get their cached stat updated
         // so a subsequent `diff-files` sees them as clean (t7508 'status refreshes the index').
-        grit_lib::diff::refresh_index_stat_content_verified(&mut index, work_tree);
+        let refreshed = grit_lib::diff::refresh_index_stat_content_verified(
+            &mut index,
+            work_tree,
+            Some(index_file_mtime_pair(&index_path)),
+        );
+        // Opportunistic write, like Git: only persist when the refresh changed an entry.
         // Best-effort: status must succeed even when `.git/` is read-only (t7508).
-        let _ = repo.write_index_at(&index_path, &mut index);
+        if refreshed {
+            let _ = repo.write_index_at(&index_path, &mut index);
+        }
     }
 
     Ok(())

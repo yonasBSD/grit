@@ -4980,7 +4980,7 @@ fn merge_abort() -> Result<()> {
         )?;
     }
     if let Some(wt) = repo.work_tree.as_deref() {
-        grit_lib::diff::refresh_index_stat_content_verified(&mut new_index, wt);
+        grit_lib::diff::refresh_index_stat_content_verified(&mut new_index, wt, None);
     }
     repo.write_index(&mut new_index)?;
 
@@ -10567,7 +10567,7 @@ pub(crate) fn refresh_index_stat_cache_from_worktree(
     let Some(work_tree) = repo.work_tree.as_deref() else {
         return Ok(());
     };
-    grit_lib::diff::refresh_index_stat_content_verified(index, work_tree);
+    grit_lib::diff::refresh_index_stat_content_verified(index, work_tree, None);
     Ok(())
 }
 

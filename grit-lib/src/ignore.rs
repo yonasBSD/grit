@@ -4,7 +4,6 @@
 //! per-directory `.gitignore`, `.git/info/exclude`, and `core.excludesfile`
 //! with "last matching pattern wins" precedence.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -775,61 +774,13 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
     wildmatch(pattern.as_bytes(), text.as_bytes(), WM_PATHNAME)
 }
 
-/// Like [`glob_matches`] for pathname-shaped ignore patterns, with a small extension so
-/// `dir/*.ext` matches files nested under `dir/` (harness `t12200-check-ignore-pathname`).
+/// Like [`glob_matches`] for pathname-shaped ignore patterns.
 ///
-/// When the last path segment is `*` followed by a literal extension (e.g. `*.pdf`), the
-/// pattern is rewritten to `dir/**/*` + extension before calling `wildmatch`. Other patterns
-/// are unchanged. Skipped when the parent path contains glob metacharacters or the segment
-/// starts with `**`.
+/// Plain `wildmatch` with `WM_PATHNAME`: per gitignore(5), `*` never matches `/`, so
+/// `dir/*.ext` matches only direct children of `dir/` (a previous extension that rewrote it
+/// to `dir/**/*.ext` diverged from Git and made `add .` un-track nested files).
 fn gitignore_path_glob_matches(pattern: &str, text: &str) -> bool {
-    let pat = expand_gitignore_dir_star_extension(pattern);
-    wildmatch(pat.as_ref().as_bytes(), text.as_bytes(), WM_PATHNAME)
-}
-
-fn expand_gitignore_dir_star_extension(pattern: &str) -> Cow<'_, str> {
-    let Some(slash) = pattern.rfind('/') else {
-        return Cow::Borrowed(pattern);
-    };
-    let (prefix, last_with_slash) = pattern.split_at(slash);
-    let last = &last_with_slash[1..];
-    if last.len() < 2 || !last.starts_with('*') || last.starts_with("**") {
-        return Cow::Borrowed(pattern);
-    }
-    let suffix = &last[1..];
-    if suffix.is_empty() || !suffix.starts_with('.') {
-        return Cow::Borrowed(pattern);
-    }
-    if suffix.contains(['*', '?', '[', ']']) {
-        return Cow::Borrowed(pattern);
-    }
-    if !gitignore_prefix_is_literal(prefix) {
-        return Cow::Borrowed(pattern);
-    }
-    let mut out = String::new();
-    if prefix.is_empty() {
-        out.push_str("**/*");
-    } else {
-        out.push_str(prefix);
-        out.push_str("/**/*");
-    }
-    out.push_str(suffix);
-    Cow::Owned(out)
-}
-
-fn gitignore_prefix_is_literal(prefix: &str) -> bool {
-    let bytes = prefix.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => {
-                i = i.saturating_add(2);
-            }
-            b'*' | b'?' | b'[' | b']' => return false,
-            _ => i += 1,
-        }
-    }
-    true
+    wildmatch(pattern.as_bytes(), text.as_bytes(), WM_PATHNAME)
 }
 
 /// One line from a sparse-checkout specification blob (`--filter=sparse:oid=…`).

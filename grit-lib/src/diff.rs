@@ -1468,8 +1468,20 @@ pub fn stat_matches(ie: &IndexEntry, meta: &fs::Metadata) -> bool {
 /// Gitlinks, sparse (`skip_worktree`), `assume_unchanged` and intent-to-add entries are skipped.
 /// The blob comparison is a raw-content hash, so a CRLF-smudged match is conservatively missed
 /// (the entry simply stays stat-dirty and is re-hashed next time — never the reverse).
-pub fn refresh_index_stat_content_verified(index: &mut Index, work_tree: &Path) {
+///
+/// `index_mtime` is the on-disk index file's `(mtime_sec, mtime_nsec)` (see
+/// `entry_is_racy` / Git `is_racy_timestamp`); pass `None` when unknown — racy detection is
+/// then skipped, which is conservative for tree-built indexes whose zeroed stat never matches.
+///
+/// Returns `true` when at least one entry was refreshed or invalidated, so callers can write
+/// the index opportunistically (Git only persists a refresh that changed something).
+pub fn refresh_index_stat_content_verified(
+    index: &mut Index,
+    work_tree: &Path,
+    index_mtime: Option<(u32, u32)>,
+) -> bool {
     use crate::index::{MODE_EXECUTABLE, MODE_REGULAR, MODE_SYMLINK};
+    let mut changed = false;
     for ie in &mut index.entries {
         if ie.stage() != 0 || ie.skip_worktree() || ie.assume_unchanged() || ie.intent_to_add() {
             continue;
@@ -1484,16 +1496,21 @@ pub fn refresh_index_stat_content_verified(index: &mut Index, work_tree: &Path) 
         let Ok(meta) = fs::symlink_metadata(&abs) else {
             continue;
         };
-        let content_matches = worktree_content_matches_index_oid(ie, &abs, &meta);
         if stat_matches(ie, &meta) {
-            // Stat can be refreshed from the work tree without matching the indexed blob (e.g.
-            // after merge stat refresh while local edits remain). Invalidate so diff/status re-hash.
-            if !content_matches {
+            // Git `ie_match_stat`: a clean stat is trusted without reading the file unless the
+            // entry is racy (written within the index's own mtime). Only then re-verify content;
+            // stat can be refreshed from the work tree without matching the indexed blob (e.g.
+            // after merge stat refresh while local edits remain) — invalidate so diff/status
+            // re-hash.
+            if entry_is_racy(ie, index_mtime)
+                && !worktree_content_matches_index_oid(ie, &abs, &meta)
+            {
                 invalidate_index_stat_cache(ie);
+                changed = true;
             }
             continue;
         }
-        if !content_matches {
+        if !worktree_content_matches_index_oid(ie, &abs, &meta) {
             continue;
         }
         let refreshed = crate::index::entry_from_metadata(&meta, &ie.path, ie.oid, ie.mode);
@@ -1506,7 +1523,9 @@ pub fn refresh_index_stat_content_verified(index: &mut Index, work_tree: &Path) 
         ie.uid = refreshed.uid;
         ie.gid = refreshed.gid;
         ie.size = refreshed.size;
+        changed = true;
     }
+    changed
 }
 
 /// Whether the work tree blob at `abs` matches the index entry OID (raw bytes, no CRLF smudge).

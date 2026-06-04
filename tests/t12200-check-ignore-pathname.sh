@@ -100,12 +100,11 @@ test_expect_success 'check-ignore with wildcard in middle' '
     test_cmp expect actual
 '
 
-test_expect_success 'check-ignore wildcard also matches deeper nesting' '
+test_expect_success 'check-ignore wildcard does not match deeper nesting' '
     (cd repo &&
      mkdir -p doc/sub &&
-     grit check-ignore doc/sub/manual.pdf >../actual) &&
-    echo "doc/sub/manual.pdf" >expect &&
-    test_cmp expect actual
+     test_expect_code 1 grit check-ignore doc/sub/manual.pdf >../actual) &&
+    test_must_be_empty actual
 '
 
 test_expect_success 'check-ignore with double-star pattern' '
