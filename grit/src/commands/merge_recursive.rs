@@ -101,7 +101,8 @@ pub fn run(args: Args) -> Result<()> {
         merge_result.has_conflicts = false;
     }
 
-    repo.write_index(&mut merge_result.index)?;
+    let index_path = repo.index_path_for_env()?;
+    repo.write_index_at(&index_path, &mut merge_result.index)?;
     if let Some(ref wt) = repo.work_tree {
         remove_deleted_files(wt, &ours_entries, &merge_result.index)?;
         checkout_entries(&repo, wt, &merge_result.index)?;
