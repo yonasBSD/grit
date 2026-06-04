@@ -88,6 +88,15 @@
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
+## 2026-06-04 — t3404-rebase-interactive exec exit-code partial
+
+- Focus harness improved to 55/132 after failed interactive `exec` commands that exit 127 started
+  returning rebase status 1, matching Git's sequencer behavior.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3418-rebase-continue.sh --verbose` keeps `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3301-notes partial
 
 - Focus harness improved to 113/153 after `log --pretty=raw` stopped printing an extra trailing

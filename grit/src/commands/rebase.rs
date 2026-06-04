@@ -5150,7 +5150,7 @@ fn replay_remaining(
                         .status()
                         .with_context(|| format!("failed to execute: {}", exec_cmd))?;
                     if !status.success() {
-                        let code = status.code().unwrap_or(1);
+                        let code = status.code().filter(|code| *code != 127).unwrap_or(1);
                         let reschedule = rb_dir.join("reschedule-failed-exec").exists()
                             && !rb_dir.join("no-reschedule-failed-exec").exists();
                         eprintln!(
@@ -5429,7 +5429,8 @@ fn replay_remaining(
                                             format!("failed to execute: {}", global_exec)
                                         })?;
                                     if !status.success() {
-                                        let code = status.code().unwrap_or(1);
+                                        let code =
+                                            status.code().filter(|code| *code != 127).unwrap_or(1);
                                         let reschedule = rb_dir
                                             .join("reschedule-failed-exec")
                                             .exists()
