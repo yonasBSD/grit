@@ -2841,3 +2841,8 @@ Updated: 2026-06-01
   "+refs/*:refs/*"` unbundles objects and applies the CLI refspec to update local refs. Focused
   `./scripts/run-tests.sh t6020-bundle-misc.sh --quiet` improves from 27/37 to 28/37. Direct
   verbose `-i` advances through test 18 and next fails at filtered bundle metadata.
+- t6020 filtered bundle focus: `bundle create --filter=<spec>` now filters the rev-list object set
+  and records the filter capability, `bundle unbundle` leaves a promisor marker for filtered
+  bundles, and filtered bundle clones fail with the expected message. Focused
+  `./scripts/run-tests.sh t6020-bundle-misc.sh --quiet` improves from 28/37 to 33/37. Direct
+  verbose `-i` advances through test 23 and next fails at broken prerequisite verification.

@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 use grit_lib::objects::{parse_commit, parse_tag, ObjectId, ObjectKind};
 use grit_lib::refs;
 use grit_lib::repo::Repository;
-use grit_lib::rev_list::{rev_list, split_revision_token, RevListOptions};
+use grit_lib::rev_list::{rev_list, split_revision_token, ObjectFilter, RevListOptions};
 
 /// Arguments for `grit bundle`.
 #[derive(Debug, ClapArgs)]
@@ -66,6 +66,10 @@ pub struct CreateArgs {
     /// Ignore missing refs while parsing revision arguments.
     #[arg(long = "ignore-missing")]
     pub ignore_missing: bool,
+
+    /// Object filter to apply to the bundle.
+    #[arg(long = "filter", value_name = "FILTER-SPEC")]
+    pub filter: Option<String>,
 
     /// Revision arguments (refs, commit ranges, --all).
     #[arg(value_name = "REV", num_args = 0.., allow_hyphen_values = true, trailing_var_arg = true)]
@@ -121,7 +125,16 @@ fn run_create(args: CreateArgs) -> Result<()> {
     if version != 2 && version != 3 {
         bail!("unsupported bundle version {version}");
     }
-    let rev_args = collect_create_rev_args(&args)?;
+    let mut rev_args = collect_create_rev_args(&args)?;
+    let filter_spec = args
+        .filter
+        .clone()
+        .or_else(|| take_bundle_filter_arg(&mut rev_args));
+    let filter = filter_spec
+        .as_deref()
+        .map(ObjectFilter::parse)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let include_all = rev_args.iter().any(|arg| arg == "--all");
 
     let mut refs = collect_refs_for_bundle(&repo, &rev_args, args.ignore_missing)?;
@@ -139,6 +152,7 @@ fn run_create(args: CreateArgs) -> Result<()> {
         since_cutoff: cutoffs.since,
         until_cutoff: cutoffs.until,
         ignore_missing: args.ignore_missing,
+        filter,
         ..Default::default()
     };
     let listed =
@@ -259,11 +273,25 @@ fn run_create(args: CreateArgs) -> Result<()> {
     if args.file == "-" {
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
-        write_bundle(&mut out, version, &prerequisites, &refs, &pack_data)?;
+        write_bundle(
+            &mut out,
+            version,
+            filter_spec.as_deref(),
+            &prerequisites,
+            &refs,
+            &pack_data,
+        )?;
     } else {
         let mut out =
             fs::File::create(&args.file).with_context(|| format!("cannot create {}", args.file))?;
-        write_bundle(&mut out, version, &prerequisites, &refs, &pack_data)?;
+        write_bundle(
+            &mut out,
+            version,
+            filter_spec.as_deref(),
+            &prerequisites,
+            &refs,
+            &pack_data,
+        )?;
     }
 
     if args.progress || (!args.quiet && !args.no_quiet && args.file != "-") {
@@ -293,6 +321,7 @@ fn collect_create_rev_args(args: &CreateArgs) -> Result<Vec<String>> {
 fn write_bundle(
     out: &mut dyn Write,
     version: u8,
+    filter: Option<&str>,
     prerequisites: &[ObjectId],
     refs: &BTreeMap<String, ObjectId>,
     pack_data: &[u8],
@@ -302,6 +331,9 @@ fn write_bundle(
         out.write_all(b"@object-format=sha1\n")?;
     } else {
         out.write_all(b"# v2 git bundle\n")?;
+    }
+    if let Some(filter) = filter {
+        writeln!(out, "@filter={filter}")?;
     }
 
     for oid in prerequisites {
@@ -313,6 +345,33 @@ fn write_bundle(
     out.write_all(b"\n")?;
     out.write_all(pack_data)?;
     Ok(())
+}
+
+fn take_bundle_filter_arg(rev_args: &mut Vec<String>) -> Option<String> {
+    let mut filter = None;
+    let mut cleaned = Vec::with_capacity(rev_args.len());
+    let mut i = 0usize;
+    while i < rev_args.len() {
+        let arg = &rev_args[i];
+        if let Some(value) = arg.strip_prefix("--filter=") {
+            filter = Some(value.to_owned());
+            i += 1;
+            continue;
+        }
+        if arg == "--filter" {
+            if let Some(value) = rev_args.get(i + 1) {
+                filter = Some(value.clone());
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        cleaned.push(arg.clone());
+        i += 1;
+    }
+    *rev_args = cleaned;
+    filter
 }
 
 fn collect_refs_for_bundle(
@@ -916,6 +975,10 @@ fn run_unbundle(args: UnbundleArgs) -> Result<()> {
     let _count = grit_lib::unpack_objects::unpack_objects(&mut &pack_data[..], &repo.odb, &opts)
         .map_err(|e| anyhow::anyhow!("unbundle failed: {e}"))?;
 
+    if header.filter.is_some() {
+        write_filtered_bundle_promisor_marker(&repo, &header, pack_data)?;
+    }
+
     for (refname, oid) in &header.refs {
         println!("{} {refname}", oid.to_hex());
     }
@@ -932,6 +995,25 @@ struct BundleHeader {
     object_format: String,
     filter: Option<String>,
     pack_start: usize,
+}
+
+fn write_filtered_bundle_promisor_marker(
+    repo: &Repository,
+    header: &BundleHeader,
+    pack_data: &[u8],
+) -> Result<()> {
+    let pack_dir = repo.git_dir.join("objects/pack");
+    fs::create_dir_all(&pack_dir)?;
+    let mut hasher = Sha1::new();
+    hasher.update(pack_data);
+    let pack_hash = format!("{:x}", hasher.finalize());
+    let marker = pack_dir.join(format!("pack-{pack_hash}.promisor"));
+    let mut out = fs::File::create(&marker)
+        .with_context(|| format!("creating promisor marker {}", marker.display()))?;
+    for (refname, oid) in &header.refs {
+        writeln!(out, "{} {refname}", oid.to_hex())?;
+    }
+    Ok(())
 }
 
 fn read_bundle_arg(file: &str) -> Result<Vec<u8>> {

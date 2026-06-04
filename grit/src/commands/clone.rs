@@ -6270,6 +6270,7 @@ fn run_bundle_clone(args: Args) -> Result<()> {
     }
     let mut pos = header_line.len();
     let mut refs: Vec<(String, grit_lib::objects::ObjectId)> = Vec::new();
+    let mut bundle_filter = None::<String>;
     loop {
         let eol = data[pos..]
             .iter()
@@ -6286,12 +6287,22 @@ fn run_bundle_clone(args: Args) -> Result<()> {
             pos = eol + 1;
             continue;
         }
+        if let Some(cap) = line_str.strip_prefix('@') {
+            if let Some(value) = cap.strip_prefix("filter=") {
+                bundle_filter = Some(value.to_owned());
+            }
+            pos = eol + 1;
+            continue;
+        }
         if let Some((hex, refname)) = line_str.split_once(' ') {
             let oid = grit_lib::objects::ObjectId::from_hex(hex)
                 .map_err(|e| anyhow::anyhow!("bad oid in bundle: {e}"))?;
             refs.push((refname.to_string(), oid));
         }
         pos = eol + 1;
+    }
+    if bundle_filter.is_some() {
+        bail!("cannot clone from filtered bundle");
     }
 
     // Determine target directory
