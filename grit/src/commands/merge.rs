@@ -3104,6 +3104,39 @@ fn bail_if_merge_would_overwrite_local_changes(
         if meta.file_type().is_dir() && is_empty_dir_for_submodule_placeholder(&abs) {
             continue;
         }
+        if meta.file_type().is_dir() {
+            let mut has_untracked_descendant = false;
+            let mut stack = vec![(abs.clone(), rel.clone())];
+            while let Some((dir_abs, dir_rel)) = stack.pop() {
+                let Ok(entries) = fs::read_dir(&dir_abs) else {
+                    has_untracked_descendant = true;
+                    break;
+                };
+                for child in entries.flatten() {
+                    let child_name = child.file_name().to_string_lossy().to_string();
+                    let child_rel = format!("{dir_rel}/{child_name}");
+                    let child_abs = child.path();
+                    let Ok(child_meta) = fs::symlink_metadata(&child_abs) else {
+                        has_untracked_descendant = true;
+                        break;
+                    };
+                    if child_meta.file_type().is_dir() {
+                        stack.push((child_abs, child_rel));
+                        continue;
+                    }
+                    if !current_tracked_paths.contains(child_rel.as_bytes()) {
+                        has_untracked_descendant = true;
+                        break;
+                    }
+                }
+                if has_untracked_descendant {
+                    break;
+                }
+            }
+            if !has_untracked_descendant {
+                continue;
+            }
+        }
         overwrite_untracked.insert(rel.clone());
     }
 
@@ -9864,38 +9897,64 @@ fn apply_directory_file_conflicts(
 
         let branch_desc = if file_is_ours { ours_label } else { their_name };
         let path_display = String::from_utf8_lossy(&path).into_owned();
-        let new_path_str = format!("{path_display}~{branch_desc}");
         let path_str = path_display.clone();
 
-        let body = format!(
-            "directory in the way of {} from {}; moving it to {} instead.",
-            path_display, branch_desc, new_path_str
-        );
-        conflict_descriptions.push(ConflictDescription {
-            kind: "file/directory",
-            body,
-            subject_path: new_path_str.clone(),
-            remerge_anchor_path: Some(path_display.clone()),
-            rename_rr_ours_dest: None,
-            rename_rr_theirs_dest: None,
-            auto_merge_hint_path: None,
-        });
-
-        index.entries.retain(|e| e.path != path);
-
-        // When either side renamed a tracked file into `path` and the other side still has that
-        // file at the old path, merge-ort three-way merges the renamed blob with the other side's
-        // source-path blob, then relocates the result because `path/` is occupied by a directory.
-        let side_renames = if file_is_ours {
-            ours_renames
+        let side_entries = if file_is_ours {
+            ours_entries
         } else {
-            theirs_renames
+            theirs_entries
         };
         let other_entries = if file_is_ours {
             theirs_entries
         } else {
             ours_entries
         };
+        let side_renames = if file_is_ours {
+            ours_renames
+        } else {
+            theirs_renames
+        };
+        let opposite_renames = if file_is_ours {
+            theirs_renames
+        } else {
+            ours_renames
+        };
+        let rename_source = side_renames
+            .iter()
+            .find(|(_, dest)| dest.as_slice() == path.as_slice())
+            .map(|(source, _)| source);
+        let clean_rename_rename_df = rename_source.is_some_and(|source| {
+            opposite_renames.contains_key(source)
+                && path_descendants_match(base, other_entries, &path)
+                && !path_has_tree_descendant(side_entries, &path)
+        });
+        let new_path_str = if clean_rename_rename_df {
+            path_display.clone()
+        } else {
+            format!("{path_display}~{branch_desc}")
+        };
+
+        if !clean_rename_rename_df {
+            let body = format!(
+                "directory in the way of {} from {}; moving it to {} instead.",
+                path_display, branch_desc, new_path_str
+            );
+            conflict_descriptions.push(ConflictDescription {
+                kind: "file/directory",
+                body,
+                subject_path: new_path_str.clone(),
+                remerge_anchor_path: Some(path_display.clone()),
+                rename_rr_ours_dest: None,
+                rename_rr_theirs_dest: None,
+                auto_merge_hint_path: None,
+            });
+        }
+
+        index.entries.retain(|e| e.path != path);
+
+        // When either side renamed a tracked file into `path` and the other side still has that
+        // file at the old path, merge-ort three-way merges the renamed blob with the other side's
+        // source-path blob, then relocates the result because `path/` is occupied by a directory.
         if let Some((base_path, _)) = side_renames
             .iter()
             .find(|(_, dest)| dest.as_slice() == path.as_slice())
@@ -9999,20 +10058,6 @@ fn apply_directory_file_conflicts(
             }
         }
 
-        let side_renames = if file_is_ours {
-            ours_renames
-        } else {
-            theirs_renames
-        };
-        let opposite_renames = if file_is_ours {
-            theirs_renames
-        } else {
-            ours_renames
-        };
-        let rename_source = side_renames
-            .iter()
-            .find(|(_, dest)| dest.as_slice() == path.as_slice())
-            .map(|(source, _)| source);
         if let Some(source) = rename_source {
             if opposite_renames.contains_key(source) && index.get(source, 1).is_none() {
                 if let Some(be) = base.get(source) {
@@ -10059,15 +10104,17 @@ fn apply_directory_file_conflicts(
                     "{new_path_str} deleted in {ours_label} and modified in {their_name}.  Version {their_name} of {new_path_str} left in tree."
                 )
             };
-            conflict_descriptions.push(ConflictDescription {
-                kind: "modify/delete",
-                body: md_body,
-                subject_path: new_path_str.clone(),
-                remerge_anchor_path: Some(path_display.clone()),
-                rename_rr_ours_dest: None,
-                rename_rr_theirs_dest: None,
-                auto_merge_hint_path: None,
-            });
+            if !clean_rename_rename_df {
+                conflict_descriptions.push(ConflictDescription {
+                    kind: "modify/delete",
+                    body: md_body,
+                    subject_path: new_path_str.clone(),
+                    remerge_anchor_path: Some(path_display.clone()),
+                    rename_rr_ours_dest: None,
+                    rename_rr_theirs_dest: None,
+                    auto_merge_hint_path: None,
+                });
+            }
 
             // git also stages the base version (stage 1) at the relocated `path~SIDE`
             // path when the file existed in the merge base, so the modify/delete shows

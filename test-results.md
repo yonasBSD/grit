@@ -1674,3 +1674,11 @@ Updated: 2026-06-01
   `cargo build --release -p grit-cli`, `cargo test -p grit-lib --lib`, and
   `cargo clippy --fix --allow-dirty`; the existing warning backlog remains and unrelated
   auto-fixes were reverted.
+- t6402 clean rename/rename D/F focus: after staging rename/rename(1to2) D/F conflicts at the
+  real destination when the directory-side descendants match the base, `./scripts/run-tests.sh
+  t6402-merge-rename.sh --verbose` improves from 44/46 to 45/46 with refreshed
+  `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo build --release -p grit-cli`, `cargo test -p grit-lib --lib`, and
+  `cargo clippy --fix --allow-dirty`; clippy reported failed auto-fix attempts in the existing
+  warning backlog, and unrelated auto-fixes were reverted before a final `cargo check -p grit-cli`
+  passed.
