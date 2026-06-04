@@ -107,6 +107,10 @@
     skipped until the external GPG fixture is available.
   - Sequencer/cherry-pick/revert/replay group complete for runnable rows: `t3510`, `t3512`,
     `t3513`, and `t3650` all pass; `t3514` remains skipped for the missing GPG fixture.
+  - Completed timeout/validation row: `t3422-rebase-incompatible-options.sh` (52/52) after fixing
+    glued `-C<n>` preprocessing to advance the parser, and making apply-backend options respect
+    `--no-rebase-merges`/`--no-update-refs` overrides while still reporting config-specific
+    incompatibility advice.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ## Active task — t6 family 100% pass

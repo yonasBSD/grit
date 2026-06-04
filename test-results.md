@@ -1455,3 +1455,13 @@ Updated: 2026-06-01
   `tests/lib-gpg/keyring.gpg` is missing and the GPG prereq cannot be established.
 - The row remains skipped for the missing external GPG fixture; no code changes were made for this
   audit.
+
+## 2026-06-04 — t3422-rebase-incompatible-options complete
+
+- Focus harness completed at 52/52 after glued `-C<n>` preprocessing stopped looping and
+  apply/merge backend incompatibility checks honored explicit config overrides while preserving
+  config-specific advice.
+- Related verification: `./scripts/run-tests.sh t3422-rebase-incompatible-options.sh
+  t3650-replay-basics.sh` passed both files.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).

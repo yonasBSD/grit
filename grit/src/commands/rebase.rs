@@ -313,6 +313,7 @@ pub fn preprocess_rebase_argv(rest: &[String]) -> Vec<String> {
                 if suffix.chars().all(|c| c.is_ascii_digit()) {
                     out.push("-C".to_string());
                     out.push(suffix.to_string());
+                    i += 1;
                     continue;
                 }
                 out.push("-C".to_string());
@@ -637,7 +638,7 @@ fn merge_backend_requested_by_flags(
     if args.rebase_merges.is_some() {
         return true;
     }
-    if config_rebase_merges_settings(config).0 {
+    if effective_rebase_merges_settings(args, config).0 {
         return true;
     }
     if args.merge || args.interactive || args.exec.is_some() || args.keep_empty {
@@ -727,11 +728,6 @@ fn validate_apply_merge_backend_combo(
         return Ok(());
     }
 
-    let merge_requested = merge_backend_requested_by_flags(args, config, want_autosquash);
-    if merge_requested {
-        bail!("apply options and merge options cannot be used together");
-    }
-
     let (effective_rebase_merges, _) = effective_rebase_merges_settings(args, config);
 
     let update_refs_cli = if args.no_update_refs {
@@ -744,7 +740,7 @@ fn validate_apply_merge_backend_combo(
     let config_update_refs = config.get_bool("rebase.updateRefs").and_then(|r| r.ok());
     let effective_update_refs = update_refs_cli.unwrap_or(config_update_refs.unwrap_or(false));
 
-    if effective_rebase_merges {
+    if effective_rebase_merges && args.rebase_merges.is_none() {
         bail!(
             "apply options are incompatible with rebase.rebaseMerges.  Consider adding --no-rebase-merges"
         );
@@ -753,6 +749,11 @@ fn validate_apply_merge_backend_combo(
         bail!(
             "apply options are incompatible with rebase.updateRefs.  Consider adding --no-update-refs"
         );
+    }
+
+    let merge_requested = merge_backend_requested_by_flags(args, config, want_autosquash);
+    if merge_requested {
+        bail!("apply options and merge options cannot be used together");
     }
 
     Ok(())
