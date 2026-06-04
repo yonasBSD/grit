@@ -1,3 +1,16 @@
+## 2026-06-04 — t6430-merge-recursive true D/F conflicts
+
+- Focus harness: `./scripts/run-tests.sh t6430-merge-recursive.sh --verbose` improved from 30/36
+  to 31/36 after auto-D/F cleanup required relocated unmerged stages to match before clearing
+  conflict state.
+- Regression harness: `./scripts/run-tests.sh t6430-merge-recursive.sh t6422-merge-rename-corner-cases.sh t6400-merge-df.sh t6438-submodule-directory-file-conflicts.sh --verbose --timeout 180`
+  reports `t6430` 31/36, `t6422` 12/26, `t6400` 7/7, and `t6438` 56/56.
+- `cargo build --release -p grit-cli`, `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed with the
+  existing warning backlog; unrelated clippy auto-fixes were restored.
+- Broader `cargo test --workspace` and `./tests/harness/run.sh` were skipped for this focused t6
+  increment.
+
 ## 2026-06-04 — t6430-merge-recursive clean D/F auto-resolution
 
 - Focus harness: `./scripts/run-tests.sh t6430-merge-recursive.sh --verbose` improved from 28/36

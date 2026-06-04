@@ -79,6 +79,9 @@ pub fn run(args: Args) -> Result<()> {
         .collect();
     let only_auto_resolved_directory_file_conflicts = !auto_resolved_directory_file_paths
         .is_empty()
+        && auto_resolved_directory_file_paths
+            .iter()
+            .all(|path| relocated_unmerged_entries_match(&merge_result.index, path))
         && merge_result
             .conflict_descriptions
             .iter()
@@ -142,6 +145,21 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn relocated_unmerged_entries_match(index: &grit_lib::index::Index, path: &[u8]) -> bool {
+    let entries = index
+        .entries
+        .iter()
+        .filter(|entry| entry.stage() != 0 && entry.path == path)
+        .collect::<Vec<_>>();
+    let Some(first) = entries.first() else {
+        return false;
+    };
+    entries.len() > 1
+        && entries
+            .iter()
+            .all(|entry| entry.oid == first.oid && entry.mode == first.mode)
 }
 
 /// Discover the repo for `merge-recursive` when using an alternate `GIT_WORK_TREE` (and
