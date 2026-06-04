@@ -565,7 +565,10 @@ pub fn format_combined_diff_body(
     }
 
     let (res_lines, cnt) = split_lines_with_incomplete(result_text);
-    if cnt == 0 && result_text.is_empty() {
+    // An empty result with non-empty parents still produces a combined diff that
+    // shows every parent line as a deletion (e.g. a merge that empties a file).
+    // Only bail out when there is genuinely nothing on either side.
+    if cnt == 0 && result_text.is_empty() && parent_texts.iter().all(String::is_empty) {
         return String::new();
     }
 

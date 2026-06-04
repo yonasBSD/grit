@@ -891,9 +891,14 @@ fn emit_inserts_at(
     let has_theirs = !t_ins.is_empty();
 
     if has_ours && has_theirs {
-        // Both sides insert at the same position. If they share a common
-        // prefix, emit that prefix as unchanged and only conflict on the
-        // diverging remainder. This preserves superset insertions.
+        // Both sides insert at the same base position (empty base region). Git's
+        // `xdl_merge` treats this as a single overlapping change region and only
+        // auto-resolves when the two insertions are textually identical; any
+        // difference is a conflict. It still factors out a shared leading and
+        // trailing run as unchanged context (emitted outside the conflict
+        // markers), so we extract a common prefix *and* suffix and conflict on
+        // whatever remains -- even when one side's remainder is empty (a
+        // "superset" insertion still conflicts; see t4108/t4038).
         let o_lines: Vec<Vec<u8>> = o_ins
             .iter()
             .flat_map(|&(s, e)| ours[s..e].to_vec())
@@ -903,40 +908,39 @@ fn emit_inserts_at(
             .flat_map(|&(s, e)| theirs[s..e].to_vec())
             .collect();
 
-        let mut common_len = 0usize;
-        while common_len < o_lines.len()
-            && common_len < t_lines.len()
-            && o_lines[common_len] == t_lines[common_len]
+        let mut common_prefix = 0usize;
+        while common_prefix < o_lines.len()
+            && common_prefix < t_lines.len()
+            && o_lines[common_prefix] == t_lines[common_prefix]
         {
-            common_len += 1;
+            common_prefix += 1;
         }
 
-        if common_len > 0 {
-            hunks.push(Hunk::Unchanged(o_lines[..common_len].to_vec()));
+        let mut common_suffix = 0usize;
+        while common_suffix < o_lines.len() - common_prefix
+            && common_suffix < t_lines.len() - common_prefix
+            && o_lines[o_lines.len() - 1 - common_suffix] == t_lines[t_lines.len() - 1 - common_suffix]
+        {
+            common_suffix += 1;
         }
 
-        let ours_tail = o_lines[common_len..].to_vec();
-        let theirs_tail = t_lines[common_len..].to_vec();
+        if common_prefix > 0 {
+            hunks.push(Hunk::Unchanged(o_lines[..common_prefix].to_vec()));
+        }
 
-        let ours_has_extra = !ours_tail.is_empty();
-        let theirs_has_extra = !theirs_tail.is_empty();
+        let ours_tail = o_lines[common_prefix..o_lines.len() - common_suffix].to_vec();
+        let theirs_tail = t_lines[common_prefix..t_lines.len() - common_suffix].to_vec();
 
-        if ours_has_extra && theirs_has_extra {
+        if !ours_tail.is_empty() || !theirs_tail.is_empty() {
             hunks.push(Hunk::Conflict {
                 base: Vec::new(),
                 ours: ours_tail,
                 theirs: theirs_tail,
             });
-        } else if ours_has_extra {
-            hunks.push(Hunk::OnlyOurs {
-                base: Vec::new(),
-                ours: ours_tail,
-            });
-        } else if theirs_has_extra {
-            hunks.push(Hunk::OnlyTheirs {
-                base: Vec::new(),
-                theirs: theirs_tail,
-            });
+        }
+
+        if common_suffix > 0 {
+            hunks.push(Hunk::Unchanged(o_lines[o_lines.len() - common_suffix..].to_vec()));
         }
     } else if has_ours {
         for &(ns, ne) in o_ins {
