@@ -70,6 +70,8 @@
   - Opportunistic transport refresh: verified `t5404-tracking-branches.sh` (7/7); no code changes required.
   - Opportunistic push-errors quick win: completed `t5529-push-errors.sh` (8/8) by
     rejecting ambiguous same-name branch/tag source refspecs before contacting receive-pack.
+  - Opportunistic remote-subcommands quick win: completed `t5541-remote-subcommands.sh` (5/5)
+    and refreshed `t5506-remote-groups.sh` (9/9) by fixing remote update fetch argv wiring.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

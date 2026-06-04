@@ -1888,7 +1888,6 @@ fn run_fetch_for_update(remote: &str, verbose: bool, prune: Option<bool>) -> Res
     if verbose {
         cmd.arg("-v");
     }
-    cmd.arg("--multiple");
     cmd.arg(remote);
     println!("Fetching {remote}");
     let status = cmd.status().context("fetch failed")?;

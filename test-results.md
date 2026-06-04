@@ -1,4 +1,9 @@
 
+## 2026-06-04 — t5541-remote-subcommands / t5506-remote-groups
+
+- Focus/regression harness: `./scripts/run-tests.sh t5506-remote-groups.sh t5541-remote-subcommands.sh --verbose` passes 9/9 and 5/5 after remote update fetch argv wiring was fixed.
+
+
 ## 2026-06-03 — t5529-push-errors
 
 - Focus harness: `./scripts/run-tests.sh t5529-push-errors.sh --verbose` passes 8/8 after ambiguous source refspec rejection.
