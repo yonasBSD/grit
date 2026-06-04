@@ -1059,7 +1059,11 @@ fn push_to_url(
             &negs,
             refspec_force,
         )?;
-        let _ = matched;
+        if matched == 0 {
+            bail!(
+                "No refs in common and none specified; doing nothing.\nPerhaps you should specify a branch."
+            );
+        }
     } else if push_all {
         // Push all branches (refs/heads/*)
         let mut local_branches = refs::list_refs(&repo.git_dir, "refs/heads/")?;
@@ -4661,7 +4665,7 @@ fn resolve_push_src_for_refspec(
             Ok((name, oid, None))
         }
         _ => {
-            if !dst.is_empty() && !dst.contains('/') && !dst.starts_with("refs/") {
+            if src != dst && !dst.is_empty() && !dst.contains('/') && !dst.starts_with("refs/") {
                 if let Some((name, oid)) = matches
                     .iter()
                     .find(|(name, _)| name.starts_with("refs/heads/"))

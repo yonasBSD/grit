@@ -1,4 +1,10 @@
 
+## 2026-06-03 — t5529-push-errors
+
+- Focus harness: `./scripts/run-tests.sh t5529-push-errors.sh --verbose` passes 8/8 after ambiguous source refspec rejection.
+- Regression harness: `./scripts/run-tests.sh t5528-push-default.sh --verbose` remains fully passing with one expected failure (`31/32`, `failing=0`).
+
+
 ## 2026-06-03 — t5404-tracking-branches
 
 - Focus harness: `./scripts/run-tests.sh t5404-tracking-branches.sh --verbose` passes 7/7; no code changes required.

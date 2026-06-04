@@ -68,6 +68,8 @@
   - Opportunistic clone-options quick win: completed `t5606-clone-options.sh` (21/21)
     by fixing duplicate global-config cleanup in the synthetic fixture.
   - Opportunistic transport refresh: verified `t5404-tracking-branches.sh` (7/7); no code changes required.
+  - Opportunistic push-errors quick win: completed `t5529-push-errors.sh` (8/8) by
+    rejecting ambiguous same-name branch/tag source refspecs before contacting receive-pack.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---
