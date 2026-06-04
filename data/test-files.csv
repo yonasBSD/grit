@@ -627,7 +627,7 @@ t3436-rebase-more-options	t3	yes	19	2	17	false	ok	0
 t3437-rebase-fixup-options	t3	yes	13	1	12	false	ok	0
 t3438-rebase-broken-files	t3	yes	9	9	0	true	ok	0
 t3440-rebase-trailer	t3	yes	10	1	9	false	ok	0
-t3441-rebase-exec	t3	yes	3	1	2	false	ok	0
+t3441-rebase-exec	t3	yes	3	3	0	true	ok	0
 t3442-rebase-onto-upstream	t3	yes	3	1	2	false	ok	0
 t3450-history	t3	yes	2	2	0	true	ok	0
 t3451-history-reword	t3	yes	14	11	3	false	ok	0

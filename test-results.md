@@ -305,6 +305,11 @@
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
+## 2026-06-04 — t3441-rebase-exec
+
+- Focus harness: `./scripts/run-tests.sh t3441-rebase-exec.sh --verbose` passes 3/3 after wrapping
+  ported fixture bodies to prevent `cd repo` from leaking between top-level tests.
+
 ## 2026-06-04 — t3404-rebase-interactive direct reword partial
 
 - Focus harness improved to 74/132 after interactive `reword` entries started replaying in the
