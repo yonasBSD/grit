@@ -1,3 +1,15 @@
+## 2026-06-04 — t6016-rev-list-graph-simplify-history
+
+- Focus harness: `./scripts/run-tests.sh t6016-rev-list-graph-simplify-history.sh` passes 12/12
+  after preserving path-limited `--simplify-merges` merge nodes for `log --graph` lane rendering.
+- Regression harness: `./scripts/run-tests.sh t6016-rev-list-graph-simplify-history.sh t6012-rev-list-simplify.sh t6111-rev-list-treesame.sh t6019-rev-list-ancestry-path.sh`
+  passes 12/12, 42/42, 65/65, and 18/18.
+- `cargo build --release -p grit-cli`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` passed with the existing
+  warning backlog; unrelated clippy auto-fixes were restored.
+- Broader `cargo test --workspace` and `./tests/harness/run.sh` were skipped for this focused t6
+  increment.
+
 ## 2026-06-04 — t6137-rev-parse-misc
 
 - Focus harness: `./scripts/run-tests.sh t6137-rev-parse-misc.sh` passes 34/34 after the

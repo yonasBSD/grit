@@ -2335,6 +2335,7 @@ fn run_rev_list_log(
         parent_rewrite: args.show_parents || log_parent_format_requested(args),
         sparse: args.sparse,
         simplify_merges: args.simplify_merges,
+        preserve_simplify_merges_graph_merges: args.graph,
         show_pulls: args.show_pulls,
         exclude_first_parent_only: args.exclude_first_parent_only,
         paths: combined_pathspecs.clone(),
@@ -2632,6 +2633,7 @@ fn run_graph_log(
         parent_rewrite: args.show_parents || log_parent_format_requested(&args),
         sparse: args.sparse,
         simplify_merges: args.simplify_merges,
+        preserve_simplify_merges_graph_merges: args.graph,
         show_pulls: args.show_pulls,
         exclude_first_parent_only: args.exclude_first_parent_only,
         paths: if args.follow {

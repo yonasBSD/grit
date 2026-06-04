@@ -485,6 +485,8 @@ pub struct RevListOptions {
     pub sparse: bool,
     /// Further simplify history after path limiting (`--simplify-merges`).
     pub simplify_merges: bool,
+    /// Preserve path-limited simplify-merge nodes long enough for `log --graph` lane rendering.
+    pub preserve_simplify_merges_graph_merges: bool,
     /// Include "diverted" merge commits on the first-parent spine (`--show-pulls`).
     pub show_pulls: bool,
     /// When walking excluded commits, only follow the first parent (`--exclude-first-parent-only`).
@@ -571,6 +573,7 @@ impl Default for RevListOptions {
             parent_rewrite: false,
             sparse: false,
             simplify_merges: false,
+            preserve_simplify_merges_graph_merges: false,
             show_pulls: false,
             exclude_first_parent_only: false,
             filter: None,
@@ -1055,6 +1058,7 @@ pub fn rev_list(
                 path_effective_full,
                 options.sparse,
                 options.simplify_merges,
+                options.preserve_simplify_merges_graph_merges,
                 options.show_pulls,
                 options.parent_rewrite,
                 options.ancestry_path,
@@ -1079,6 +1083,7 @@ pub fn rev_list(
             &effective_ancestry_path_bottoms,
             options.ordering,
             options.show_pulls,
+            options.preserve_simplify_merges_graph_merges,
         )?;
     }
 
@@ -3444,6 +3449,7 @@ fn simplify_merges_commit_list(
     ancestry_path_bottoms: &[ObjectId],
     ordering: OrderingMode,
     show_pulls: bool,
+    preserve_graph_merges: bool,
 ) -> Result<Vec<ObjectId>> {
     let selected: HashSet<ObjectId> = commits.iter().copied().collect();
     let mut out = Vec::new();
@@ -3468,7 +3474,18 @@ fn simplify_merges_commit_list(
             out.push(*oid);
             continue;
         }
-        let mut simplified = graph_simplify_parent_list_lib(repo, &selected, &rewritten)?;
+        let mut simplified = if preserve_graph_merges {
+            let treesame_rewritten = path_treesame_parents(repo, *oid, paths, &rewritten)?;
+            let all_rewritten_treesame =
+                !rewritten.is_empty() && treesame_rewritten.len() == rewritten.len();
+            if all_rewritten_treesame {
+                vec![rewritten[0]]
+            } else {
+                graph_simplify_parent_list_lib(repo, &selected, &rewritten, &treesame_rewritten)?
+            }
+        } else {
+            graph_simplify_parent_list_lib(repo, &selected, &rewritten, &HashSet::new())?
+        };
         simplified.sort_unstable();
         simplified.dedup();
         if simplified.len() > 1 || pull_merge {
@@ -3597,15 +3614,48 @@ fn graph_simplify_parent_list_lib(
     repo: &Repository,
     selected: &HashSet<ObjectId>,
     parents: &[ObjectId],
+    protected_treesame: &HashSet<ObjectId>,
 ) -> Result<Vec<ObjectId>> {
     let mut out = Vec::new();
+    let protected_count = parents
+        .iter()
+        .filter(|parent| protected_treesame.contains(parent))
+        .count();
     for parent in parents {
         if parent_reachable_via_others_lib(repo, selected, *parent, parents)? {
+            if protected_count == 1 && protected_treesame.contains(parent) {
+                out.push(*parent);
+            }
             continue;
         }
         out.push(*parent);
     }
     Ok(out)
+}
+
+fn path_treesame_parents(
+    repo: &Repository,
+    oid: ObjectId,
+    paths: &[String],
+    parents: &[ObjectId],
+) -> Result<HashSet<ObjectId>> {
+    let mut treesame = HashSet::new();
+    if paths.is_empty() || parents.is_empty() {
+        return Ok(treesame);
+    }
+
+    let commit = load_commit(repo, oid)?;
+    let commit_map: HashMap<String, ObjectId> =
+        flatten_tree(repo, commit.tree, "")?.into_iter().collect();
+    for parent_oid in parents {
+        let parent = load_commit(repo, *parent_oid)?;
+        let parent_map: HashMap<String, ObjectId> =
+            flatten_tree(repo, parent.tree, "")?.into_iter().collect();
+        if !path_differs_for_specs(&commit_map, &parent_map, paths) {
+            treesame.insert(*parent_oid);
+        }
+    }
+    Ok(treesame)
 }
 
 fn parent_reachable_via_others_lib(
@@ -3898,6 +3948,7 @@ fn commit_touches_paths(
     full_history: bool,
     sparse: bool,
     simplify_merges: bool,
+    preserve_simplify_merges_graph_merges: bool,
     show_pulls: bool,
     parent_rewrite: bool,
     ancestry_path: bool,
@@ -4064,6 +4115,9 @@ fn commit_touches_paths(
     }
 
     if full_history && simplify_merges {
+        if preserve_simplify_merges_graph_merges {
+            return Ok(true);
+        }
         if treesame_parents == parents.len() {
             return Ok(true);
         }
