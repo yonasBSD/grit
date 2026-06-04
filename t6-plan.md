@@ -77,7 +77,7 @@ Completed rev-list/revision files: `t6004`, `t6005`, `t6007-rev-list-cherry-pick
   D/F conflicts still exit non-zero and use commit OID suffixes for relocated
   conflicted files, alternate `GIT_INDEX_FILE` writes land in the selected index,
   and unchanged-base file sides do not create D/F conflicts.
-- [~] `t6402-merge-rename.sh` — 45/46 passing, 1 failing.
+- [x] `t6402-merge-rename.sh` — 46/46 passing.
 - [ ] `t6416-recursive-corner-cases.sh` — 24/37 passing, 13 failing, with 3 expected failures.
 - [ ] `t6415-merge-dir-to-symlink.sh` — 13/24 passing, 11 failing.
 - [ ] `t6422-merge-rename-corner-cases.sh` — 11/20 passing, 9 failing, with 6 expected failures.

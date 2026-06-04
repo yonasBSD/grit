@@ -1682,3 +1682,10 @@ Updated: 2026-06-01
   `cargo clippy --fix --allow-dirty`; clippy reported failed auto-fix attempts in the existing
   warning backlog, and unrelated auto-fixes were reverted before a final `cargo check -p grit-cli`
   passed.
+- t6402 clean single-sided rename D/F focus: after keeping clean single-sided rename/directory
+  results at stage 0 when the directory side matches the base, `./scripts/run-tests.sh
+  t6402-merge-rename.sh --verbose` improves from 45/46 to 46/46 with refreshed
+  `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, `cargo build --release -p grit-cli`, and
+  `cargo clippy --fix --allow-dirty`; the existing warning backlog remains and unrelated
+  auto-fixes were reverted.

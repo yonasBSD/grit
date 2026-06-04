@@ -9923,18 +9923,15 @@ fn apply_directory_file_conflicts(
             .iter()
             .find(|(_, dest)| dest.as_slice() == path.as_slice())
             .map(|(source, _)| source);
-        let clean_rename_rename_df = rename_source.is_some_and(|source| {
-            opposite_renames.contains_key(source)
-                && path_descendants_match(base, other_entries, &path)
-                && !path_has_tree_descendant(side_entries, &path)
-        });
-        let new_path_str = if clean_rename_rename_df {
+        let clean_directory_side = path_descendants_match(base, other_entries, &path)
+            && !path_has_tree_descendant(side_entries, &path);
+        let new_path_str = if clean_directory_side {
             path_display.clone()
         } else {
             format!("{path_display}~{branch_desc}")
         };
 
-        if !clean_rename_rename_df {
+        if !clean_directory_side {
             let body = format!(
                 "directory in the way of {} from {}; moving it to {} instead.",
                 path_display, branch_desc, new_path_str
@@ -10013,6 +10010,16 @@ fn apply_directory_file_conflicts(
                     auto_merge_paths.as_deref_mut(),
                 )? {
                     ContentMergeResult::Clean(merged_oid, mode) => {
+                        if clean_directory_side {
+                            index.remove(&path);
+                            index.remove_descendants_under_path(&path_str);
+                            let mut merged_entry = file_entry.clone();
+                            merged_entry.path = path.clone();
+                            merged_entry.oid = merged_oid;
+                            merged_entry.mode = mode;
+                            index.add_or_replace(merged_entry);
+                            continue;
+                        }
                         // The file is relocated to `path~SIDE` because the directory occupies
                         // `path`; git records the unmerged entry under the relocated name (not bare
                         // `path`), matching `git ls-files -u` for rename/directory conflicts.
@@ -10104,7 +10111,7 @@ fn apply_directory_file_conflicts(
                     "{new_path_str} deleted in {ours_label} and modified in {their_name}.  Version {their_name} of {new_path_str} left in tree."
                 )
             };
-            if !clean_rename_rename_df {
+            if !clean_directory_side {
                 conflict_descriptions.push(ConflictDescription {
                     kind: "modify/delete",
                     body: md_body,
