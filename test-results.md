@@ -1667,3 +1667,10 @@ Updated: 2026-06-01
   `cargo build --release -p grit-cli`, `cargo test -p grit-lib --lib`, and
   `cargo clippy --fix --allow-dirty`; the existing warning backlog remains and unrelated
   auto-fixes were reverted.
+- t6402 empty D/F directory materialization focus: after allowing merge D/F conflict
+  materialization to replace empty in-the-way directories, `./scripts/run-tests.sh
+  t6402-merge-rename.sh --verbose` improves from 43/46 to 44/46 with refreshed
+  `data/test-files.csv` plus dashboards. Also ran `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo build --release -p grit-cli`, `cargo test -p grit-lib --lib`, and
+  `cargo clippy --fix --allow-dirty`; the existing warning backlog remains and unrelated
+  auto-fixes were reverted.

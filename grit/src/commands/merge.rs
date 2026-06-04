@@ -2609,6 +2609,12 @@ Aborting"
             } else {
                 content.clone()
             };
+            if abs.is_dir() {
+                if grit_lib::worktree_cwd::cwd_would_be_removed_with_repo_path(wt, path) {
+                    bail!("Refusing to remove the current working directory:\n{path}\n");
+                }
+                fs::remove_dir_all(&abs)?;
+            }
             fs::write(&abs, &output)?;
         }
     }
@@ -3043,7 +3049,7 @@ fn bail_if_merge_would_overwrite_local_changes(
             continue;
         }
         let abs = work_tree.join(&rel);
-        let Ok(_meta) = fs::symlink_metadata(&abs) else {
+        let Ok(meta) = fs::symlink_metadata(&abs) else {
             continue;
         };
 
@@ -3066,10 +3072,13 @@ fn bail_if_merge_would_overwrite_local_changes(
                 && path.get(new_entry.path.len()) == Some(&b'/')
         });
         if !has_tracked_prefix && !replaces_tracked_dir {
+            if meta.file_type().is_dir() && is_empty_dir_for_submodule_placeholder(&abs) {
+                continue;
+            }
             // Git allows merging in a new submodule when the path is an empty
             // directory (e.g. `mkdir sub1` before pull adds the submodule).
             if new_entry.mode == 0o160000
-                && abs.is_dir()
+                && meta.file_type().is_dir()
                 && is_empty_dir_for_submodule_placeholder(&abs)
             {
                 continue;
@@ -3089,9 +3098,13 @@ fn bail_if_merge_would_overwrite_local_changes(
             continue;
         }
         let abs = work_tree.join(rel);
-        if fs::symlink_metadata(&abs).is_ok() {
-            overwrite_untracked.insert(rel.clone());
+        let Ok(meta) = fs::symlink_metadata(&abs) else {
+            continue;
+        };
+        if meta.file_type().is_dir() && is_empty_dir_for_submodule_placeholder(&abs) {
+            continue;
         }
+        overwrite_untracked.insert(rel.clone());
     }
 
     // Also protect untracked files nested beneath directories that turn into
@@ -5109,6 +5122,12 @@ fn finish_octopus_merge_on_conflict(
             } else {
                 content.clone()
             };
+            if abs.is_dir() {
+                if grit_lib::worktree_cwd::cwd_would_be_removed_with_repo_path(wt, path) {
+                    bail!("Refusing to remove the current working directory:\n{path}\n");
+                }
+                fs::remove_dir_all(&abs)?;
+            }
             fs::write(&abs, &output)?;
         }
     }
