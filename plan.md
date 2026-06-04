@@ -145,6 +145,9 @@
   - Completed: `t3419-rebase-patch-id.sh` (8/8) after sequencer-style replay resolves conflicts
     where the replayed side and current upstream have the same blob content but the picked commit
     carries a mode-only change.
+  - Completed: `t3420-rebase-autostash.sh` (54/54) after failed pre-rebase hooks now restore the
+    created autostash, the extra non-Git rebase progress line was removed, and the ported fixture
+    no longer deletes `rebased-feature-branch` before the paired output-check tests inspect it.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ---

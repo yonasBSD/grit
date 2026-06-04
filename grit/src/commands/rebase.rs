@@ -4049,6 +4049,9 @@ Use '--' to separate paths from revisions, like this:\n\
     };
     if !args.no_verify {
         if let HookResult::Failed(_) = run_hook(&repo, "pre-rebase", &hook_args, None) {
+            if let Some(ref oid) = autostash_oid {
+                let _ = stash::pop_autostash_if_top(&repo, oid);
+            }
             bail!("The pre-rebase hook refused to rebase.");
         }
     }
@@ -4431,15 +4434,6 @@ Use '--' to separate paths from revisions, like this:\n\
         &start_msg,
         false,
     );
-
-    let onto_display = if args.root && args.onto.is_none() {
-        "root".to_owned()
-    } else {
-        onto_oid.to_hex()[..7].to_string()
-    };
-    if !rebase_quiet(&rb_dir) {
-        eprintln!("rebasing {} commits onto {}", total_cmds, onto_display);
-    }
 
     replay_remaining(
         &repo,

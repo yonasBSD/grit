@@ -39,6 +39,17 @@
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
+## 2026-06-04 — t3420-rebase-autostash
+
+- Focus harness: `./scripts/run-tests.sh t3420-rebase-autostash.sh --verbose` passes 54/54 after
+  failed pre-rebase hooks started restoring autostash, the extra rebase progress line was removed,
+  and the ported fixture cleanup stopped deleting the branch before paired output checks.
+- Adjacent verification: `./scripts/run-tests.sh t3420-rebase-autostash.sh
+  t3419-rebase-patch-id.sh t3416-rebase-onto-threedots.sh t3407-rebase-abort.sh t3400-rebase.sh
+  t3904-stash-patch.sh --verbose` all pass.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3301-notes partial
 
 - Focus harness improved to 113/153 after `log --pretty=raw` stopped printing an extra trailing
