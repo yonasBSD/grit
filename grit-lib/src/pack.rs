@@ -1263,7 +1263,8 @@ fn read_pack_object_at(
                             idx.entries.iter().find(|e| e.offset == base_offset)
                         {
                             if base_entry.oid.len() == 20 {
-                                if let Ok(base_oid) = ObjectId::from_bytes(base_entry.oid.as_slice())
+                                if let Ok(base_oid) =
+                                    ObjectId::from_bytes(base_entry.oid.as_slice())
                                 {
                                     let loose = dir
                                         .join(base_oid.loose_prefix())

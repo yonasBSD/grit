@@ -86,7 +86,7 @@ case "$1" in
     [ $# -eq 0 ] && usage
 
     for f in "$@"; do
-      cur=$(stat -c %Y "$f" 2>/dev/null) || {
+      cur=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null) || {
         echo "Failed to stat $f: skipping" >&2
         continue
       }
@@ -110,10 +110,12 @@ case "$1" in
       fi
 
       if [ "$new" -ne "$cur" ]; then
-        touch -d "@$new" "$f" 2>/dev/null || {
-          echo "Failed to modify time on $f" >&2
-          exit 1
-        }
+        touch -d "@$new" "$f" 2>/dev/null ||
+          python3 -c 'import os, sys; ts=int(sys.argv[1]); os.utime(sys.argv[2], (ts, ts))' "$new" "$f" 2>/dev/null ||
+          {
+            echo "Failed to modify time on $f" >&2
+            exit 1
+          }
       fi
     done
     ;;

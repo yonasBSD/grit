@@ -7046,9 +7046,20 @@ fn run_test_tool_chmtime(rest: &[String]) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("chmtime: cannot stat '{path}': {e}"))?;
         let current_mtime = meta.mtime();
         let new_mtime: i64 = if let Some(ts_str) = flag.strip_prefix('=') {
-            ts_str
-                .parse::<i64>()
-                .map_err(|e| anyhow::anyhow!("chmtime: invalid timestamp: {e}"))?
+            if ts_str.starts_with('+') || ts_str.starts_with('-') {
+                let offset = ts_str
+                    .parse::<i64>()
+                    .map_err(|e| anyhow::anyhow!("chmtime: invalid timestamp offset: {e}"))?;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| anyhow::anyhow!("chmtime: system clock before epoch: {e}"))?
+                    .as_secs() as i64;
+                now + offset
+            } else {
+                ts_str
+                    .parse::<i64>()
+                    .map_err(|e| anyhow::anyhow!("chmtime: invalid timestamp: {e}"))?
+            }
         } else if let Some(d) = flag.strip_prefix('+') {
             current_mtime
                 + d.parse::<i64>()

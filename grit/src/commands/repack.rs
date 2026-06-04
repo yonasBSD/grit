@@ -799,6 +799,10 @@ pub fn run(args: Args) -> Result<()> {
             prune_hidden_loose_objects_for_shallow_repo(&repo)?;
         } else if let Some(new_pack_name) = new_pack_names.first().cloned() {
             remove_superseded_packs_incremental(&pack_dir_abs, &new_pack_name, &args.keep_pack)?;
+            if args.no_write_bitmap_index {
+                prune_packed_objects(&repo.git_dir.join("objects"), PrunePackedOptions::default())
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
         }
     }
 

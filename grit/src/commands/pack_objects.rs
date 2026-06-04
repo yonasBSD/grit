@@ -670,7 +670,7 @@ pub fn run(mut args: Args) -> Result<()> {
         eprintln!("Enumerating objects: {}, done.", pack_list.oids.len());
     }
 
-    if pack_list.oids.is_empty() && !args.stdin_packs && !args.cruft {
+    if pack_list.oids.is_empty() && !args.stdin_packs && (!args.cruft || args.non_empty) {
         // `--non-empty` means "do not write an empty pack": Git's pack-objects
         // simply succeeds writing nothing (`if (non_empty && !nr_result) goto
         // cleanup;`), it never errors. A `repack --geometric --exclude-promisor-objects`
@@ -751,7 +751,10 @@ pub fn run(mut args: Args) -> Result<()> {
         pack_hash_bytes,
     )?;
 
-    if entries.is_empty() && (!args.stdin_packs || args.non_empty) && !args.cruft {
+    if entries.is_empty()
+        && (!args.stdin_packs || args.non_empty)
+        && (!args.cruft || args.non_empty)
+    {
         // `--non-empty` with an empty result is success (no pack written), never
         // an error — matches Git's pack-objects `goto cleanup`.
         if !args.stdout && !args.quiet {
@@ -1358,9 +1361,9 @@ fn recent_objects_hook_oids(repo: &Repository) -> Result<Vec<ObjectId>> {
         if let Some(work_tree) = &repo.work_tree {
             cmd.current_dir(work_tree);
         }
-        let output = cmd
-            .output()
-            .with_context(|| format!("unable to enumerate additional recent objects with {hook}"))?;
+        let output = cmd.output().with_context(|| {
+            format!("unable to enumerate additional recent objects with {hook}")
+        })?;
         if !output.status.success() {
             bail!("unable to enumerate additional recent objects");
         }
@@ -3245,6 +3248,11 @@ fn collect_incremental_repack_oids(repo: &Repository, args: &Args) -> Result<Pac
         }
     }
 
+    if args.no_write_bitmap_index {
+        let packed = packed_object_ids(repo)?;
+        ordered.retain(|oid| !packed.contains(oid));
+    }
+
     if !args.keep_pack.is_empty() {
         let skip = keep_pack_object_ids(repo, &args.keep_pack)?;
         ordered.retain(|o| !skip.contains(o));
@@ -3292,6 +3300,22 @@ fn keep_pack_object_ids(repo: &Repository, keep_pack: &[String]) -> Result<HashS
         for e in idx.entries {
             if e.oid.len() == 20 {
                 if let Ok(oid) = ObjectId::from_bytes(&e.oid) {
+                    out.insert(oid);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn packed_object_ids(repo: &Repository) -> Result<HashSet<ObjectId>> {
+    let indexes = grit_lib::pack::read_local_pack_indexes(repo.odb.objects_dir())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut out = HashSet::new();
+    for idx in indexes {
+        for entry in idx.entries {
+            if entry.oid.len() == 20 {
+                if let Ok(oid) = ObjectId::from_bytes(&entry.oid) {
                     out.insert(oid);
                 }
             }
@@ -3462,7 +3486,6 @@ fn collect_all_loose_in_dir(objects_dir: &Path, oids: &mut HashSet<ObjectId>) ->
     }
     Ok(())
 }
-
 
 /// For incremental `pack-objects --all --unpacked` with `--window=0`, order commit objects so the
 /// newest tip appears first and the first-parent chain follows (t5332 pack index order).

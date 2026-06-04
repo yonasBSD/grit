@@ -3304,3 +3304,12 @@ Updated: 2026-06-01
 - Focus harness: `./scripts/run-tests.sh t5537-fetch-shallow.sh --verbose` improved to 15/16 after `repack -f` started forwarding `--no-reuse-delta` to `pack-objects`.
 - Related verification: `./scripts/run-tests.sh t5329-pack-objects-cruft.sh t5304-prune.sh --verbose` passes 25/25 and 32/32.
 - Quality gates: `cargo check -p grit-cli` and `cargo test -p grit-lib --lib` completed; pre-existing unrelated warnings remain.
+- t6500 gc focus: auto-gc incremental repacks now avoid repacking already packed objects and prune
+  their loose copies, `--non-empty --cruft` avoids empty cruft packs, non-cruft `gc` forwards
+  `-A --unpack-unreachable=<expire>`, and chmtime helpers handle relative `=<offset>` timestamps on
+  macOS. Focused `./scripts/run-tests.sh t6500-gc.sh --quiet` improves from the merged-main 30/35
+  baseline to 35/35.
+- Quality gates: `cargo fmt -- --check`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`,
+  and `git diff --check` completed; `cargo test -p grit-lib --lib` is still blocked by the unrelated
+  `ignore::gitignore_glob_tests::{dir_star_extension_matches_nested_path,nested_dir_star_extension}`
+  failures in `grit-lib/src/ignore.rs`.

@@ -653,9 +653,11 @@ fn run_repack_for_gc(
                 cmd.arg(e);
             }
         } else {
-            // For expiring by date, let the subsequent `prune --expire=<date>` decide which
-            // loose unreachable objects to remove. Running `repack -A --unpack-unreachable` here
-            // in grit would drop too-new loose objects before prune can apply the grace period.
+            repack_trace.push("-A".into());
+            cmd.arg("-A");
+            let unpack_arg = format!("--unpack-unreachable={prune_expire}");
+            repack_trace.push(unpack_arg.clone());
+            cmd.arg(unpack_arg);
         }
 
         let keep = if gc_args.auto {

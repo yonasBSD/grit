@@ -230,7 +230,8 @@ fn hash_and_maybe_write(
     odb: Option<&Odb>,
 ) -> Result<grit_lib::objects::ObjectId> {
     if let Some(db) = odb {
-        db.write_loose_materialize(kind, data).context("writing object")
+        db.write_loose_materialize(kind, data)
+            .context("writing object")
     } else {
         Ok(Odb::hash_object_data(kind, data))
     }
