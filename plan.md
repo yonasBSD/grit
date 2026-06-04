@@ -67,6 +67,7 @@
     pack selection work; `t5331-pack-objects-stdin.sh` remains the current focus.
   - Opportunistic clone-options quick win: completed `t5606-clone-options.sh` (21/21)
     by fixing duplicate global-config cleanup in the synthetic fixture.
+  - Opportunistic transport refresh: verified `t5404-tracking-branches.sh` (7/7); no code changes required.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

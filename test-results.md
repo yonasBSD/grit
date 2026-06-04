@@ -1,4 +1,9 @@
 
+## 2026-06-03 — t5404-tracking-branches
+
+- Focus harness: `./scripts/run-tests.sh t5404-tracking-branches.sh --verbose` passes 7/7; no code changes required.
+
+
 ## 2026-06-03 — t5606-clone-options
 
 - Focus harness: `./scripts/run-tests.sh t5606-clone-options.sh --verbose` passes 21/21 after fixing duplicate global-config cleanup in the synthetic sticky recursive clone fixture.
