@@ -829,25 +829,39 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
     pub fn from_git_config_parameters(path: &Path, raw: &str) -> Result<Self> {
         let mut entries = Vec::new();
         let pseudo_path = path.to_path_buf();
-        for entry in parse_config_parameters(raw) {
-            if let Some((key, val)) = entry.split_once('\u{1}').or_else(|| entry.split_once('=')) {
-                let canon = canonical_key(key.trim())?;
-                entries.push(ConfigEntry {
-                    key: canon,
-                    value: Some(val.to_owned()),
-                    scope: ConfigScope::Command,
-                    file: Some(pseudo_path.clone()),
-                    line: 0,
-                });
-            } else {
-                let canon = canonical_key(entry.trim())?;
-                entries.push(ConfigEntry {
-                    key: canon,
-                    value: None,
-                    scope: ConfigScope::Command,
-                    file: Some(pseudo_path.clone()),
-                    line: 0,
-                });
+        for entry in parse_config_parameters_strict(raw)? {
+            match entry {
+                ConfigParameter::Pair { key, value } => {
+                    let canon = canonical_key(key.trim())?;
+                    entries.push(ConfigEntry {
+                        key: canon,
+                        value,
+                        scope: ConfigScope::Command,
+                        file: Some(pseudo_path.clone()),
+                        line: 0,
+                    });
+                }
+                ConfigParameter::OldStyle(entry) => {
+                    if let Some((key, val)) = entry.split_once('=') {
+                        let canon = canonical_key(key.trim())?;
+                        entries.push(ConfigEntry {
+                            key: canon,
+                            value: Some(val.to_owned()),
+                            scope: ConfigScope::Command,
+                            file: Some(pseudo_path.clone()),
+                            line: 0,
+                        });
+                    } else {
+                        let canon = canonical_key(entry.trim())?;
+                        entries.push(ConfigEntry {
+                            key: canon,
+                            value: None,
+                            scope: ConfigScope::Command,
+                            file: Some(pseudo_path.clone()),
+                            line: 0,
+                        });
+                    }
+                }
             }
         }
         Ok(Self {
@@ -2756,81 +2770,157 @@ pub fn git_config_parameters_last_value(raw: &str, key: &str) -> Option<String> 
         return None;
     };
     let mut last: Option<String> = None;
-    for entry in parse_config_parameters(raw) {
-        if let Some((k, v)) = entry.split_once('\u{1}').or_else(|| entry.split_once('=')) {
-            if canonical_key(k.trim()).ok().as_ref() == Some(&canon) {
-                last = Some(v.to_owned());
+    for entry in parse_config_parameters_strict(raw).ok()? {
+        match entry {
+            ConfigParameter::Pair { key, value } => {
+                if canonical_key(key.trim()).ok().as_ref() == Some(&canon) {
+                    last = Some(value.unwrap_or_else(|| "true".to_owned()));
+                }
             }
-        } else if canonical_key(entry.trim()).ok().as_ref() == Some(&canon) {
-            last = Some("true".to_owned());
+            ConfigParameter::OldStyle(entry) => {
+                if let Some((k, v)) = entry.split_once('=') {
+                    if canonical_key(k.trim()).ok().as_ref() == Some(&canon) {
+                        last = Some(v.to_owned());
+                    }
+                } else if canonical_key(entry.trim()).ok().as_ref() == Some(&canon) {
+                    last = Some("true".to_owned());
+                }
+            }
         }
     }
     last
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConfigParameter {
+    OldStyle(String),
+    Pair { key: String, value: Option<String> },
+}
+
 pub fn parse_config_parameters(raw: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut buf = String::new();
-    let mut in_single = false;
-    let mut in_double = false;
+    parse_config_parameters_strict(raw)
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|entry| match entry {
+                    ConfigParameter::OldStyle(entry) => entry,
+                    ConfigParameter::Pair {
+                        key,
+                        value: Some(value),
+                    } => format!("{key}\u{1}{value}"),
+                    ConfigParameter::Pair { key, value: None } => format!("{key}\u{1}"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
-    let mut chars = raw.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if in_single {
-            if ch == '\'' {
-                in_single = false;
-            } else {
-                buf.push(ch);
-            }
+fn parse_config_parameters_strict(raw: &str) -> Result<Vec<ConfigParameter>> {
+    let mut out: Vec<ConfigParameter> = Vec::new();
+    let chars: Vec<char> = raw.chars().collect();
+    let mut idx = skip_config_parameter_spaces(&chars, 0);
+
+    while idx < chars.len() {
+        let (key, next) = sq_dequote_step_chars(&chars, idx)?;
+        let Some(next_idx) = next else {
+            out.push(ConfigParameter::OldStyle(key));
+            break;
+        };
+
+        if chars[next_idx].is_whitespace() {
+            out.push(ConfigParameter::OldStyle(key));
+            idx = skip_config_parameter_spaces(&chars, next_idx);
             continue;
         }
-        if in_double {
-            if ch == '"' {
-                in_double = false;
-                continue;
+
+        if chars[next_idx] != '=' {
+            return Err(Error::ConfigError(
+                "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+            ));
+        }
+
+        let value_start = next_idx + 1;
+        if value_start >= chars.len() || chars[value_start].is_whitespace() {
+            out.push(ConfigParameter::Pair { key, value: None });
+            idx = skip_config_parameter_spaces(&chars, value_start);
+            continue;
+        }
+
+        if chars[value_start] != '\'' {
+            return Err(Error::ConfigError(
+                "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+            ));
+        }
+        let (value, value_next) = sq_dequote_step_chars(&chars, value_start)?;
+        if let Some(value_next) = value_next {
+            if !chars[value_next].is_whitespace() {
+                return Err(Error::ConfigError(
+                    "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+                ));
             }
-            if ch == '\\' {
-                if let Some(next) = chars.next() {
-                    let mapped = match next {
-                        'n' => '\n',
-                        't' => '\t',
-                        'r' => '\r',
-                        '"' => '"',
-                        '\\' => '\\',
-                        other => other,
-                    };
-                    buf.push(mapped);
+            idx = skip_config_parameter_spaces(&chars, value_next);
+        } else {
+            idx = chars.len();
+        }
+        out.push(ConfigParameter::Pair {
+            key,
+            value: Some(value),
+        });
+    }
+
+    Ok(out)
+}
+
+fn skip_config_parameter_spaces(chars: &[char], mut idx: usize) -> usize {
+    while idx < chars.len() && chars[idx].is_whitespace() {
+        idx += 1;
+    }
+    idx
+}
+
+fn sq_dequote_step_chars(chars: &[char], start: usize) -> Result<(String, Option<usize>)> {
+    if chars.get(start) != Some(&'\'') {
+        return Err(Error::ConfigError(
+            "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+        ));
+    }
+
+    let mut out = String::new();
+    let mut idx = start + 1;
+    loop {
+        let Some(&ch) = chars.get(idx) else {
+            return Err(Error::ConfigError(
+                "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+            ));
+        };
+        if ch != '\'' {
+            out.push(ch);
+            idx += 1;
+            continue;
+        }
+
+        idx += 1;
+        match chars.get(idx).copied() {
+            None => return Ok((out, None)),
+            Some('\\')
+                if chars
+                    .get(idx + 1)
+                    .copied()
+                    .is_some_and(needs_sq_backslash_quote)
+                    && chars.get(idx + 2) == Some(&'\'') =>
+            {
+                if let Some(escaped) = chars.get(idx + 1) {
+                    out.push(*escaped);
                 }
-                continue;
+                idx += 3;
             }
-            buf.push(ch);
-            continue;
+            _ => return Ok((out, Some(idx))),
         }
-
-        if ch == '\'' {
-            in_single = true;
-            continue;
-        }
-        if ch == '"' {
-            in_double = true;
-            continue;
-        }
-
-        if ch.is_whitespace() {
-            if !buf.is_empty() {
-                out.push(std::mem::take(&mut buf));
-            }
-            continue;
-        }
-
-        buf.push(ch);
     }
+}
 
-    if !buf.is_empty() {
-        out.push(buf);
-    }
-
-    out
+fn needs_sq_backslash_quote(ch: char) -> bool {
+    ch == '\'' || ch == '!'
 }
 
 /// Return candidate paths for the global config file, in priority order.
