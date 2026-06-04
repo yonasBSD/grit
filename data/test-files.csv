@@ -472,7 +472,7 @@ t2009-checkout-statinfo	t2	yes	3	3	0	true	ok	0
 t2010-checkout-ambiguous	t2	yes	10	10	0	true	ok	0
 t2011-checkout-invalid-head	t2	yes	10	10	0	true	ok	0
 t2012-checkout-last	t2	yes	22	22	0	true	ok	0
-t2013-checkout-submodule	t2	yes	74	70	0	true	ok	0
+t2013-checkout-submodule	t2	yes	70	70	0	true	ok	0
 t2014-checkout-switch	t2	yes	4	4	0	true	ok	0
 t2015-checkout-unborn	t2	yes	6	6	0	true	ok	0
 t2016-checkout-patch	t2	yes	19	19	0	true	ok	0
@@ -594,7 +594,7 @@ t3401-rebase-and-am-rename	t3	yes	10	10	0	true	ok	0
 t3401-rebase-basic	t3	yes	32	32	0	true	ok	0
 t3402-rebase-merge	t3	yes	13	13	0	true	ok	0
 t3403-rebase-skip	t3	yes	20	20	0	true	ok	0
-t3404-rebase-interactive	t3	yes	132	71	61	false	ok	0
+t3404-rebase-interactive	t3	yes	132	72	60	false	ok	0
 t3405-rebase-malformed	t3	yes	5	5	0	true	ok	0
 t3406-rebase-message	t3	yes	32	32	0	true	ok	0
 t3407-rebase-abort	t3	yes	17	17	0	true	ok	0

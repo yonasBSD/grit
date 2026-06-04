@@ -3582,7 +3582,7 @@ fn run_interactive_rebase(
     autostash_oid: Option<&ObjectId>,
     autosquash: bool,
     update_refs: bool,
-) -> Result<(Vec<String>, Vec<(ObjectId, RebaseTodoCmd)>)> {
+) -> Result<(Vec<String>, Vec<(ObjectId, RebaseTodoCmd)>, bool)> {
     if autosquash {
         validate_rebase_instruction_format(config)?;
     }
@@ -3647,7 +3647,14 @@ fn run_interactive_rebase(
             pick_like.push(pair);
         }
     }
-    Ok((lines, pick_like))
+    let original_lines = todo
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !rebase_todo_line_is_comment(line))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let changed = lines != original_lines;
+    Ok((lines, pick_like, changed))
 }
 
 fn flush_rebase_stdout() {
@@ -4207,7 +4214,7 @@ Use '--' to separate paths from revisions, like this:\n\
         // Even when the computed pick list is empty (`git rebase -i A A`), Git still runs the
         // sequence editor so the user can add `merge`/`exec` lines (t3436).
         let pre_editor_len = commits.len();
-        let (edited_lines, _) = run_interactive_rebase(
+        let (edited_lines, _, todo_changed) = run_interactive_rebase(
             &repo,
             git_dir,
             &commits,
@@ -4216,6 +4223,20 @@ Use '--' to separate paths from revisions, like this:\n\
             want_autosquash,
             rebase_update_refs_enabled(&args, &config),
         )?;
+        if !todo_changed
+            && !want_autosquash
+            && !args.no_ff
+            && args.onto.is_none()
+            && args.exec.is_none()
+            && !rebase_merges_on
+            && is_ancestor(&repo, upstream_oid, head_oid)?
+        {
+            print_branch_up_to_date(&head);
+            if let Some(ref oid) = autostash_oid {
+                apply_autostash_after_ff(&repo, oid)?;
+            }
+            return Ok(());
+        }
         if edited_lines.is_empty() {
             if pre_editor_len > 0 {
                 if worktree_matches_head(&repo, git_dir)? {

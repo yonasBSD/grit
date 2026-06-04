@@ -250,6 +250,16 @@
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
+## 2026-06-04 — t3404-rebase-interactive unchanged todo partial
+
+- Focus harness improved to 72/132 after unchanged, no-`--onto`, no-autosquash/no-exec
+  interactive rebases started short-circuiting as up-to-date instead of replaying identical
+  history and touching the worktree.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3415-rebase-autosquash.sh t3403-rebase-skip.sh --verbose` keeps `t3415` and `t3403` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3301-notes partial
 
 - Focus harness improved to 113/153 after `log --pretty=raw` stopped printing an extra trailing
