@@ -125,7 +125,9 @@ Completed describe/name files: `t6120-name-rev`, `t6120-describe`.
 ## Bundle, Object Reachability, And GC
 
 - [x] `t6020-bundle-misc.sh` — 37/37 passing.
-- [ ] `t6501-freshen-objects.sh` — 36/42 passing, 6 failing.
+- [x] `t6501-freshen-objects.sh` — 42/42 passing after preserving recent
+  unreachable loose objects during `--unpack-unreachable=<expire>` repacks and quieting
+  non-fatal commit-graph diagnostics under `gc -q`.
 - [x] `t6500-gc.sh` — 35/35 passing.
 
 ## Bisect

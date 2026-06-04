@@ -1045,7 +1045,12 @@ pub fn run(mut args: Args) -> Result<()> {
                 })
                 .collect();
             loosen_unused_packed_objects(&repo, &packed, &pack_hashes, args.honor_pack_keep)?;
-            prune_stale_loose_after_unpack_unreachable(&repo, &packed, &pack_list.oids)?;
+            prune_stale_loose_after_unpack_unreachable(
+                &repo,
+                &packed,
+                &pack_list.oids,
+                unpack_unreachable_threshold(args.unpack_unreachable.as_deref()),
+            )?;
         }
     }
 
@@ -3356,6 +3361,7 @@ fn prune_stale_loose_after_unpack_unreachable(
     repo: &Repository,
     packed: &HashSet<ObjectId>,
     enumeration: &[ObjectId],
+    expire_before: Option<u32>,
 ) -> Result<()> {
     let keep: HashSet<ObjectId> = enumeration.iter().copied().collect();
     let mut loose = BTreeSet::new();
@@ -3365,11 +3371,23 @@ fn prune_stale_loose_after_unpack_unreachable(
             continue;
         }
         let path = repo.odb.object_path(&oid);
+        if let Some(cutoff) = expire_before {
+            if file_mtime_u32(&path)
+                .map(|mtime| mtime >= cutoff)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+        }
         if path.is_file() {
             let _ = std::fs::remove_file(path);
         }
     }
     Ok(())
+}
+
+fn unpack_unreachable_threshold(raw: Option<&str>) -> Option<u32> {
+    cruft_expiration_threshold(raw)
 }
 
 fn loosen_unused_packed_objects(

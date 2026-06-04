@@ -217,8 +217,15 @@ fn build_tree_flat(
     });
 
     let data = serialize_tree(&tree_entries);
+    freshen_tree_entries(odb, &tree_entries);
     let oid = odb.write(ObjectKind::Tree, &data).context("writing tree")?;
     Ok((oid, i))
+}
+
+fn freshen_tree_entries(odb: &Odb, tree_entries: &[TreeEntry]) {
+    for entry in tree_entries {
+        let _ = odb.freshen_object(&entry.oid);
+    }
 }
 
 fn canonicalize_blob_mode(mode: u32) -> u32 {

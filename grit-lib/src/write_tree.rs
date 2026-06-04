@@ -141,6 +141,7 @@ fn build_tree(odb: &Odb, entries: &[&IndexEntry], dir_prefix: &[u8]) -> Result<O
     });
 
     let data = serialize_tree(&tree_entries);
+    freshen_tree_entries(odb, &tree_entries);
     odb.write(ObjectKind::Tree, &data)
 }
 
@@ -219,6 +220,7 @@ fn build_cache_tree_node(
     cache_children.sort_by(|a, b| a.name.cmp(&b.name));
 
     let data = serialize_tree(&tree_entries);
+    freshen_tree_entries(odb, &tree_entries);
     let oid = odb.write(ObjectKind::Tree, &data)?;
     Ok(CacheTreeNode::valid(
         name,
@@ -371,10 +373,17 @@ pub fn write_tree_partial_from_index(
             tree_entry_cmp(&a.name, a_tree, &b.name, b_tree)
         });
         let data = serialize_tree(&out);
+        freshen_tree_entries(odb, &out);
         odb.write(ObjectKind::Tree, &data)
     }
 
     merge_level(odb, index, base_tree_oid, b"", paths_from_index)
+}
+
+fn freshen_tree_entries(odb: &Odb, tree_entries: &[TreeEntry]) {
+    for entry in tree_entries {
+        let _ = odb.freshen_object(&entry.oid);
+    }
 }
 
 fn canonicalize_blob_mode(mode: u32) -> u32 {

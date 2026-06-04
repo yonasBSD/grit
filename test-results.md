@@ -3313,3 +3313,16 @@ Updated: 2026-06-01
   and `git diff --check` completed; `cargo test -p grit-lib --lib` is still blocked by the unrelated
   `ignore::gitignore_glob_tests::{dir_star_extension_matches_nested_path,nested_dir_star_extension}`
   failures in `grit-lib/src/ignore.rs`.
+
+## 2026-06-04 — t6501-freshen-objects complete
+
+- Focus harness: `./scripts/run-tests.sh t6501-freshen-objects.sh --quiet` passes 42/42 after
+  `pack-objects --unpack-unreachable=<expire>` started preserving recent loose objects, tree writes
+  freshen referenced child objects, and quiet `gc` stopped surfacing non-fatal commit-graph diagnostics
+  for intentionally broken unreachable objects.
+- Related verification: `./scripts/run-tests.sh t6500-gc.sh t5329-pack-objects-cruft.sh --quiet`
+  keeps `t6500-gc.sh` at 35/35 and `t5329-pack-objects-cruft.sh` at 25/25.
+- Quality gates: `cargo fmt -- --check`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`,
+  and `git diff --check` completed; `cargo test -p grit-lib --lib` is still blocked by the unrelated
+  `ignore::gitignore_glob_tests::{dir_star_extension_matches_nested_path,nested_dir_star_extension}`
+  failures in `grit-lib/src/ignore.rs`.

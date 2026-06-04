@@ -1016,10 +1016,13 @@ fn run_commit_graph_for_gc(
     if let Some(flag) = progress_flag {
         cmd.arg(flag);
     }
+    if quiet {
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    }
     let status = cmd
         .status()
         .context("failed to run grit commit-graph write for gc")?;
-    if !status.success() {
+    if !status.success() && !quiet {
         eprintln!("warning: commit-graph write returned non-zero status");
     }
     Ok(())
