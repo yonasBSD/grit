@@ -1,4 +1,10 @@
 
+## 2026-06-04 — t5544-pack-objects-hook
+
+- Focus harness: `./scripts/run-tests.sh t5544-pack-objects-hook.sh --verbose` passes 7/7 after protocol-v2 upload-pack global/protected filter config handling.
+- Regression harness: `./scripts/run-tests.sh t5555-http-smart-common.sh --verbose` passes 10/10.
+
+
 ## 2026-06-04 — t5405-send-pack-rewind
 
 - Focus harness: `./scripts/run-tests.sh t5405-send-pack-rewind.sh --verbose` passes 3/3; no code changes required.

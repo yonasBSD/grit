@@ -211,6 +211,14 @@ pub fn run(args: Args) -> Result<()> {
                     out.flush()?;
                     break;
                 }
+                if let Some(rest) = line.strip_prefix("filter ") {
+                    let spec = rest.trim();
+                    if !spec.is_empty() {
+                        grit_lib::upload_filter::validate_upload_filter_request(&config, spec)?;
+                        filter_spec = Some(spec.to_owned());
+                    }
+                    continue;
+                }
                 if let Some(hex) = line.strip_prefix("have ").map(str::trim) {
                     if let Ok(oid) = ObjectId::from_hex(hex) {
                         if repo.odb.read(&oid).is_err() {

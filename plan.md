@@ -72,6 +72,8 @@
     rejecting ambiguous same-name branch/tag source refspecs before contacting receive-pack.
   - Opportunistic remote-subcommands quick win: completed `t5541-remote-subcommands.sh` (5/5)
     and refreshed `t5506-remote-groups.sh` (9/9) by fixing remote update fetch argv wiring.
+  - Opportunistic pack-objects hook quick win: completed `t5544-pack-objects-hook.sh` (7/7)
+    by honoring protected/global uploadpack filter config in protocol v2.
   - Execution log: `logs/2026-06-03_2000-t5-family.md`.
 
 ---

@@ -2339,6 +2339,9 @@ fn collect_pack_objects_from_rev_stdin_lines(
         if trimmed.is_empty() {
             break;
         }
+        if trimmed.starts_with("filter ") {
+            continue;
+        }
         if args.shallow {
             if let Some(hex) = trimmed.strip_prefix("--shallow ") {
                 let oid = ObjectId::from_hex(hex.trim())

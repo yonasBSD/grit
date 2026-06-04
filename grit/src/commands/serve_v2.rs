@@ -367,7 +367,7 @@ fn cmd_fetch(
 ) -> Result<()> {
     let repo = Repository::open(git_dir, None)
         .with_context(|| format!("could not open repository at '{}'", git_dir.display()))?;
-    let config = ConfigSet::load(Some(git_dir), false).unwrap_or_default();
+    let config = ConfigSet::load(Some(git_dir), true).unwrap_or_default();
     grit_lib::upload_filter::validate_upload_filter_config(&config)?;
 
     let mut wants: Vec<ObjectId> = Vec::new();
@@ -706,10 +706,8 @@ fn read_config_bool(git_dir: &Path, key: &str) -> bool {
     if let Some(val) = check_git_config_parameters(key) {
         return matches!(val.to_lowercase().as_str(), "true" | "yes" | "1");
     }
-    // Check repo config
-    let config_path = git_dir.join("config");
-    if let Ok(contents) = std::fs::read_to_string(&config_path) {
-        if let Some(val) = parse_config_value(&contents, key) {
+    if let Ok(config) = ConfigSet::load(Some(git_dir), true) {
+        if let Some(val) = config.get(key) {
             return matches!(val.to_lowercase().as_str(), "true" | "yes" | "1");
         }
     }
@@ -723,9 +721,8 @@ fn read_config_nonempty(git_dir: &Path, key: &str) -> bool {
     if let Some(val) = check_git_config_parameters(key) {
         return !val.trim().is_empty();
     }
-    let config_path = git_dir.join("config");
-    if let Ok(contents) = std::fs::read_to_string(&config_path) {
-        if let Some(val) = parse_config_value(&contents, key) {
+    if let Ok(config) = ConfigSet::load(Some(git_dir), true) {
+        if let Some(val) = config.get(key) {
             return !val.trim().is_empty();
         }
     }
