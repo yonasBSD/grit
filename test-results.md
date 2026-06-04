@@ -1598,3 +1598,12 @@ Updated: 2026-06-01
   t3422-rebase-incompatible-options.sh` kept `t3418` and `t3422` green.
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3400-rebase update-ref comment partial
+
+- Focus harness improved from 35/39 to 36/39 after `--update-refs` interactive todos began
+  commenting out refs checked out in worktrees with the configured comment character.
+- Related verification: `./scripts/run-tests.sh t3400-rebase.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh` kept `t3418` and `t3422` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).

@@ -1678,6 +1678,9 @@ fn parse_interactive_rebase_todo_line(
     if cmd_lower == "noop" || cmd_lower == "drop" || cmd_lower == "d" {
         return Ok(Some(ParsedRebaseTodoLine::Noop));
     }
+    if cmd_lower == "update-ref" {
+        return Ok(Some(ParsedRebaseTodoLine::Noop));
+    }
     if cmd_lower == "break" || cmd_lower == "b" {
         return Ok(Some(ParsedRebaseTodoLine::Break));
     }
@@ -1744,7 +1747,7 @@ fn parse_interactive_rebase_todo_line(
 fn first_interactive_todo_pick_oid(repo: &Repository, todo_lines: &[&str]) -> Option<ObjectId> {
     for line in todo_lines {
         let t = line.trim();
-        if t.is_empty() || t.starts_with('#') {
+        if t.is_empty() || rebase_todo_line_is_comment(t) {
             continue;
         }
         if let Ok(Some(RebaseReplayStep::PickLike {
@@ -2603,12 +2606,17 @@ fn write_rebase_update_refs(git_dir: &Path, rebase_commits: &[ObjectId]) -> Resu
     Ok(())
 }
 
+fn rebase_todo_line_is_comment(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with('#') || t.starts_with('%')
+}
+
 fn rebase_todo_actionable_lines(content: &str) -> Vec<&str> {
     content
         .lines()
         .filter(|l| {
             let t = l.trim();
-            !t.is_empty() && !t.starts_with('#')
+            !t.is_empty() && !rebase_todo_line_is_comment(t)
         })
         .collect()
 }
@@ -3495,16 +3503,24 @@ fn run_interactive_rebase(
             .map(|o| (o, RebaseTodoCmd::Pick))
             .collect()
     };
-    let head_ref = match resolve_head(git_dir)? {
-        HeadState::Branch { refname, .. } => Some(refname),
-        _ => None,
-    };
     let mut todo = String::new();
     for (oid, cmd) in &entries {
         todo.push_str(&format_rebase_todo_line(repo, oid, *cmd, config, true)?);
         todo.push('\n');
         if update_refs {
-            for refname in branch_refs_at_commit(git_dir, *oid, head_ref.as_deref())? {
+            let comment_prefix = comment_line_prefix_full(config);
+            for refname in branch_refs_at_commit(git_dir, *oid, None)? {
+                if let Some(short) = refname.strip_prefix("refs/heads/") {
+                    if let Some(path) =
+                        crate::commands::worktree_refs::branch_occupied_any_worktree(repo, short)
+                    {
+                        todo.push_str(&format!(
+                            "{} Ref {refname} checked out at {}\n",
+                            comment_prefix, path
+                        ));
+                        continue;
+                    }
+                }
                 todo.push_str(&format!("update-ref {refname}\n"));
             }
         }
@@ -3531,7 +3547,7 @@ fn run_interactive_rebase(
     let mut pick_like: Vec<(ObjectId, RebaseTodoCmd)> = Vec::new();
     for line in edited.lines() {
         let t = line.trim();
-        if t.is_empty() || t.starts_with('#') {
+        if t.is_empty() || rebase_todo_line_is_comment(t) {
             continue;
         }
         lines.push(t.to_owned());
