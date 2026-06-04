@@ -2068,6 +2068,66 @@ fn clear_squash_ctx(rb_dir: &Path) {
     let _ = fs::remove_file(rb_dir.join("message-fixup"));
 }
 
+fn drop_last_squash_message_section(rb_dir: &Path) -> Result<()> {
+    let mut ctx = read_squash_ctx(rb_dir);
+    if ctx.count == 0 {
+        return Ok(());
+    }
+    ctx.count -= 1;
+    write_squash_ctx(rb_dir, ctx)?;
+    let path = rb_dir.join("message-squash");
+    let Ok(mut msg) = fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    if let Some(pos) = msg.rfind("\n# This is the commit message #") {
+        msg.truncate(pos);
+        msg.push('\n');
+    }
+    if let Some(first_nl) = msg.find('\n') {
+        let count = ctx.count + 1;
+        if msg.starts_with("# This is a combination of") {
+            msg.replace_range(
+                ..first_nl + 1,
+                &format!("# This is a combination of {count} commits.\n"),
+            );
+        }
+    }
+    fs::write(path, msg)?;
+    Ok(())
+}
+
+fn cleanup_head_message_after_fixup_skip(repo: &Repository, git_dir: &Path) -> Result<()> {
+    let head = resolve_head(git_dir)?;
+    let Some(head_oid) = head.oid().copied() else {
+        return Ok(());
+    };
+    let obj = repo.odb.read(&head_oid)?;
+    let commit = parse_commit(&obj.data)?;
+    if !commit.message.starts_with("# This is a combination of") {
+        return Ok(());
+    }
+    let message = String::from_utf8_lossy(&grit_lib::stripspace::process(
+        commit.message.as_bytes(),
+        &grit_lib::stripspace::Mode::StripComments("#".to_string()),
+    ))
+    .into_owned();
+    let commit_data = CommitData {
+        tree: commit.tree,
+        parents: commit.parents,
+        author: commit.author.clone(),
+        committer: commit.committer.clone(),
+        author_raw: commit.author_raw.clone(),
+        committer_raw: commit.committer_raw.clone(),
+        encoding: commit.encoding,
+        message,
+        raw_message: None,
+    };
+    let bytes = serialize_commit(&commit_data);
+    let new_oid = repo.odb.write(ObjectKind::Commit, &bytes)?;
+    fs::write(git_dir.join("HEAD"), format!("{}\n", new_oid.to_hex()))?;
+    Ok(())
+}
+
 fn message_body_after_subject(message: &str) -> &str {
     match message.find('\n') {
         Some(i) => &message[i + 1..],
@@ -2110,7 +2170,10 @@ fn append_nth_squash_message(
     seen_squash: bool,
     n: usize,
 ) {
-    buf.push_str("\n# This is the commit message #");
+    if !buf.ends_with("\n\n") {
+        buf.push('\n');
+    }
+    buf.push_str("# This is the commit message #");
     buf.push_str(&n.to_string());
     buf.push_str(":\n\n");
     let pre = squash_comment_subject_prefix(body, cmd, seen_squash).min(body.len());
@@ -2316,7 +2379,11 @@ fn update_squash_message_file(
 ) -> Result<()> {
     let squash_path = rb_dir.join("message-squash");
     let fixup_path = rb_dir.join("message-fixup");
-    let body = message_body_after_subject(&picked.message);
+    let body = if cmd == RebaseTodoCmd::Squash {
+        picked.message.as_str()
+    } else {
+        message_body_after_subject(&picked.message)
+    };
 
     if ctx.count == 0 {
         let head_oid = resolve_head(git_dir)?
@@ -2329,7 +2396,7 @@ fn update_squash_message_file(
         let hbody = message_body_after_subject(&head_commit.message);
         let mut buf = String::new();
         buf.push_str("# This is a combination of 2 commits.\n");
-        buf.push_str("# The first commit's message is:\n\n");
+        buf.push_str("# This is the 1st commit message:\n\n");
         if cmd == RebaseTodoCmd::Fixup {
             let mut fixup_msg = String::new();
             fixup_msg.push_str("# This is a combination of 2 commits.\n");
@@ -5091,6 +5158,7 @@ fn replay_remaining(
                                 rb_dir.join("stopped-sha"),
                                 format!("{}\n", commit_oid.to_hex()),
                             );
+                            let _ = fs::write(rb_dir.join("patch"), "");
                             let _ = fs::write(rb_dir.join("rebase-amend-continue"), "1\n");
                             std::process::exit(0);
                         }
@@ -5107,6 +5175,7 @@ fn replay_remaining(
                                 rb_dir.join("stopped-sha"),
                                 format!("{}\n", commit_oid.to_hex()),
                             );
+                            let _ = fs::write(rb_dir.join("patch"), "");
 
                             let obj = repo.odb.read(&commit_oid)?;
                             let commit = parse_commit(&obj.data)?;
@@ -5855,7 +5924,7 @@ fn cherry_pick_for_rebase(
             let tmpl = fs::read_to_string(rb_dir.join("message-squash"))?;
             let raw =
                 commit_message_after_prepare_hook(repo, git_dir, &tmpl, "message", Some(":"))?;
-            let cleaned = apply_commit_msg_cleanup(&raw, default_commit_msg_cleanup(&config));
+            let cleaned = apply_commit_msg_cleanup(&raw, rebase_commit_msg_cleanup(&config));
             let new_oid = commit_from_merged_index(
                 repo,
                 git_dir,
@@ -6445,6 +6514,7 @@ fn do_continue() -> Result<()> {
         ObjectId::from_hex(hex).ok()
     });
     let _ = fs::remove_file(&stopped_path);
+    let _ = fs::remove_file(rb_dir.join("patch"));
 
     if !rb_dir.join("current").exists() {
         let first_line = todo_lines_continue.iter().copied().find(|l| {
@@ -6548,7 +6618,7 @@ fn do_continue() -> Result<()> {
             let tmpl = fs::read_to_string(rb_dir.join("message-squash"))?;
             let raw =
                 commit_message_after_prepare_hook(&repo, git_dir, &tmpl, "message", Some(":"))?;
-            let cleaned = apply_commit_msg_cleanup(&raw, default_commit_msg_cleanup(&config));
+            let cleaned = apply_commit_msg_cleanup(&raw, rebase_commit_msg_cleanup(&config));
             commit_from_merged_index(
                 &repo,
                 git_dir,
@@ -6846,6 +6916,10 @@ fn do_skip() -> Result<()> {
     }
 
     if interactive_skip {
+        let skipped_cmd = read_current_rebase_todo_cmd(&rb_dir);
+        if matches!(skipped_cmd, RebaseTodoCmd::Fixup | RebaseTodoCmd::Squash) {
+            let _ = drop_last_squash_message_section(&rb_dir);
+        }
         let todo_raw = fs::read_to_string(rb_dir.join("todo"))?;
         let mut lines: Vec<&str> = todo_raw.lines().collect();
         if let Some(pos) = lines.iter().position(|l| {
@@ -6853,14 +6927,13 @@ fn do_skip() -> Result<()> {
             !t.is_empty() && !t.starts_with('#')
         }) {
             lines.remove(pos);
-            let new_todo = if lines.is_empty() {
-                String::new()
-            } else {
-                lines.join("\n") + "\n"
-            };
-            let n = lines.iter().filter(|l| !l.trim().is_empty()).count();
-            fs::write(rb_dir.join("todo"), new_todo)?;
-            fs::write(rb_dir.join("end"), n.to_string())?;
+            write_rebase_todo_slice(&rb_dir, &lines)?;
+            if lines
+                .iter()
+                .all(|line| line.trim().is_empty() || line.trim().starts_with('#'))
+            {
+                cleanup_head_message_after_fixup_skip(&repo, git_dir)?;
+            }
         }
         fs::write(rb_dir.join("msgnum"), "1")?;
     }

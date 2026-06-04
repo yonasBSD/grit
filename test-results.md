@@ -1542,3 +1542,14 @@ Updated: 2026-06-01
 - Remaining `t3418` failures are still tests 8, 20, 23, and 24.
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3418-rebase-continue fixup skip partial
+
+- Harness `t3418-rebase-continue.sh` remains 26/30, but skipped squash/fixup continuation now
+  synchronizes both todo files, adjusts squash-message state when a squash is skipped, preserves
+  non-final squash comment templates, and stripspace-cleans final skipped-fixup messages.
+- Related verification: `./scripts/run-tests.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh` kept `t3422` green at 52/52.
+- Remaining `t3418` failures are still tests 8, 20, 23, and 24.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
