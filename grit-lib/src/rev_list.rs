@@ -3701,8 +3701,23 @@ fn load_raw_parents_lib(repo: &Repository, oid: ObjectId) -> Result<Vec<ObjectId
     Ok(load_commit(repo, oid)?.parents)
 }
 
-fn first_parent_of_commit_lib(repo: &Repository, oid: ObjectId) -> Result<Option<ObjectId>> {
-    let parents = load_raw_parents_lib(repo, oid)?;
+fn load_navigation_parents_lib(
+    repo: &Repository,
+    oid: ObjectId,
+    grafts: &HashMap<ObjectId, Vec<ObjectId>>,
+) -> Result<Vec<ObjectId>> {
+    if let Some(grafted) = grafts.get(&oid) {
+        return Ok(grafted.clone());
+    }
+    load_raw_parents_lib(repo, oid)
+}
+
+fn first_parent_of_commit_lib(
+    repo: &Repository,
+    oid: ObjectId,
+    grafts: &HashMap<ObjectId, Vec<ObjectId>>,
+) -> Result<Option<ObjectId>> {
+    let parents = load_navigation_parents_lib(repo, oid, grafts)?;
     Ok(parents.first().copied())
 }
 
@@ -3710,6 +3725,7 @@ fn first_parent_anchor_in_set_lib(
     repo: &Repository,
     start: ObjectId,
     anchors: &HashSet<ObjectId>,
+    grafts: &HashMap<ObjectId, Vec<ObjectId>>,
 ) -> Result<Option<ObjectId>> {
     let mut seen = HashSet::new();
     let mut cursor = Some(start);
@@ -3720,7 +3736,7 @@ fn first_parent_anchor_in_set_lib(
         if anchors.contains(&oid) {
             return Ok(Some(oid));
         }
-        cursor = first_parent_of_commit_lib(repo, oid)?;
+        cursor = first_parent_of_commit_lib(repo, oid, grafts)?;
     }
     Ok(None)
 }
@@ -3730,6 +3746,7 @@ fn collect_visible_parent_for_graph_lib(
     candidate: ObjectId,
     included: &HashSet<ObjectId>,
     first_parent_only: bool,
+    grafts: &HashMap<ObjectId, Vec<ObjectId>>,
     seen: &mut HashSet<ObjectId>,
     out: &mut Vec<ObjectId>,
 ) -> Result<()> {
@@ -3740,7 +3757,7 @@ fn collect_visible_parent_for_graph_lib(
         out.push(candidate);
         return Ok(());
     }
-    let mut parents = load_raw_parents_lib(repo, candidate)?;
+    let mut parents = load_navigation_parents_lib(repo, candidate, grafts)?;
     if parents.is_empty() {
         return Ok(());
     }
@@ -3748,7 +3765,15 @@ fn collect_visible_parent_for_graph_lib(
         parents.truncate(1);
     }
     for parent in parents {
-        collect_visible_parent_for_graph_lib(repo, parent, included, first_parent_only, seen, out)?;
+        collect_visible_parent_for_graph_lib(
+            repo,
+            parent,
+            included,
+            first_parent_only,
+            grafts,
+            seen,
+            out,
+        )?;
     }
     Ok(())
 }
@@ -3759,7 +3784,8 @@ fn visible_parents_for_graph_lib(
     included: &HashSet<ObjectId>,
     first_parent_only: bool,
 ) -> Result<Vec<ObjectId>> {
-    let mut direct = load_raw_parents_lib(repo, oid)?;
+    let grafts = crate::rev_parse::load_graft_parents(&repo.git_dir);
+    let mut direct = load_navigation_parents_lib(repo, oid, &grafts)?;
     if first_parent_only && direct.len() > 1 {
         direct.truncate(1);
     }
@@ -3771,6 +3797,7 @@ fn visible_parents_for_graph_lib(
             parent,
             included,
             first_parent_only,
+            &grafts,
             &mut seen,
             &mut out,
         )?;
@@ -3790,6 +3817,7 @@ fn reorder_path_limited_graph_commits(
     }
 
     let included: HashSet<ObjectId> = commits.iter().copied().collect();
+    let grafts = crate::rev_parse::load_graft_parents(&repo.git_dir);
     let mut chain = Vec::new();
     let mut chain_seen = HashSet::new();
     let mut cursor = Some(commits[0]);
@@ -3808,7 +3836,7 @@ fn reorder_path_limited_graph_commits(
         if chain_set.contains(oid) {
             continue;
         }
-        let anchor = first_parent_anchor_in_set_lib(repo, *oid, &chain_set)?;
+        let anchor = first_parent_anchor_in_set_lib(repo, *oid, &chain_set, &grafts)?;
         grouped.entry(anchor).or_default().push(*oid);
     }
 
@@ -3838,6 +3866,7 @@ fn expand_sparse_path_limited_graph_history(
 
     let mut expanded = Vec::new();
     let mut seen = HashSet::new();
+    let grafts = crate::rev_parse::load_graft_parents(&repo.git_dir);
     let mut push_unique = |oid: ObjectId, out: &mut Vec<ObjectId>| {
         if seen.insert(oid) {
             out.push(oid);
@@ -3849,7 +3878,7 @@ fn expand_sparse_path_limited_graph_history(
         let to = window[1];
         push_unique(from, &mut expanded);
 
-        let mut cursor = first_parent_of_commit_lib(repo, from)?;
+        let mut cursor = first_parent_of_commit_lib(repo, from, &grafts)?;
         let mut chain = Vec::new();
         let mut found_target = false;
         let mut local_seen = HashSet::new();
@@ -3862,7 +3891,7 @@ fn expand_sparse_path_limited_graph_history(
                 break;
             }
             chain.push(oid);
-            cursor = first_parent_of_commit_lib(repo, oid)?;
+            cursor = first_parent_of_commit_lib(repo, oid, &grafts)?;
         }
         if found_target {
             for oid in chain {
@@ -3873,14 +3902,14 @@ fn expand_sparse_path_limited_graph_history(
 
     if let Some(&last) = commits.last() {
         push_unique(last, &mut expanded);
-        let mut cursor = first_parent_of_commit_lib(repo, last)?;
+        let mut cursor = first_parent_of_commit_lib(repo, last, &grafts)?;
         let mut tail_seen = HashSet::new();
         while let Some(oid) = cursor {
             if !tail_seen.insert(oid) {
                 break;
             }
             push_unique(oid, &mut expanded);
-            cursor = first_parent_of_commit_lib(repo, oid)?;
+            cursor = first_parent_of_commit_lib(repo, oid, &grafts)?;
         }
     }
 

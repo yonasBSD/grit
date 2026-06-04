@@ -1253,6 +1253,8 @@ pub fn run(args: Args) -> Result<()> {
     };
 
     let graft_parents = load_graft_parents(&repo.git_dir);
+    let selected_for_parent_rewrite: HashSet<ObjectId> = result.commits.iter().copied().collect();
+    let rewrite_path_limited_parents = !options.paths.is_empty();
 
     // Build the children decoration like Git's set_children(): iterate the output
     // commit list in order and, for each commit, prepend it to each of its parents'
@@ -1322,9 +1324,15 @@ pub fn run(args: Args) -> Result<()> {
                     if (!no_commit_header || is_named_format) && !is_oneline {
                         let mut header = format!("commit {prefix}{oid}");
                         if show_parents {
-                            // Match Git: parent lines come from the commit object (and grafts), not
-                            // from "visible" parents after narrowing the walk (e.g. `-n 1`).
-                            let parents = commit_parents_for_output(&repo, *oid, &graft_parents)?;
+                            // Path-limited history rewrites parents through omitted commits. Other
+                            // narrowing, such as `-n`, still shows stored/grafted parents.
+                            let parents = commit_parents_for_output_mode(
+                                &repo,
+                                *oid,
+                                &graft_parents,
+                                rewrite_path_limited_parents,
+                                &selected_for_parent_rewrite,
+                            )?;
                             for parent in parents {
                                 header.push(' ');
                                 header.push_str(&parent.to_hex());
@@ -1360,9 +1368,15 @@ pub fn run(args: Args) -> Result<()> {
                     }
                 }
                 OutputMode::Parents => {
-                    // Same as Git `rev-list --parents`: always emit stored parent OIDs, even when
-                    // those parents are outside the selected commit set (`-n`, etc.).
-                    let parents = commit_parents_for_output(&repo, *oid, &graft_parents)?;
+                    // Path-limited history rewrites parents through omitted commits. Other
+                    // narrowing, such as `-n`, still shows stored/grafted parents.
+                    let parents = commit_parents_for_output_mode(
+                        &repo,
+                        *oid,
+                        &graft_parents,
+                        rewrite_path_limited_parents,
+                        &selected_for_parent_rewrite,
+                    )?;
                     let children = children_suffix(oid);
                     if parents.is_empty() {
                         emit_record(&format!("{prefix}{oid}{children}"));
@@ -2159,4 +2173,68 @@ fn commit_parents_for_output(
     let object = repo.odb.read(&oid)?;
     let commit = parse_commit(&object.data)?;
     Ok(commit.parents)
+}
+
+fn collect_visible_parents_for_output(
+    repo: &Repository,
+    candidate: ObjectId,
+    graft_parents: &HashMap<ObjectId, Vec<ObjectId>>,
+    selected: &HashSet<ObjectId>,
+    seen: &mut HashSet<ObjectId>,
+    out: &mut Vec<ObjectId>,
+) -> Result<()> {
+    if !seen.insert(candidate) {
+        return Ok(());
+    }
+    if selected.contains(&candidate) {
+        out.push(candidate);
+        return Ok(());
+    }
+
+    let mut parents = commit_parents_for_output(repo, candidate, graft_parents)?;
+    if parents.len() > 1 {
+        parents.truncate(1);
+    }
+    for parent in parents {
+        collect_visible_parents_for_output(repo, parent, graft_parents, selected, seen, out)?;
+    }
+    Ok(())
+}
+
+fn visible_parents_for_path_limited_output(
+    repo: &Repository,
+    oid: ObjectId,
+    graft_parents: &HashMap<ObjectId, Vec<ObjectId>>,
+    selected: &HashSet<ObjectId>,
+) -> Result<Vec<ObjectId>> {
+    let parents = commit_parents_for_output(repo, oid, graft_parents)?;
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for parent in parents {
+        collect_visible_parents_for_output(
+            repo,
+            parent,
+            graft_parents,
+            selected,
+            &mut seen,
+            &mut out,
+        )?;
+    }
+    let mut dedup = HashSet::new();
+    out.retain(|parent| dedup.insert(*parent));
+    Ok(out)
+}
+
+fn commit_parents_for_output_mode(
+    repo: &Repository,
+    oid: ObjectId,
+    graft_parents: &HashMap<ObjectId, Vec<ObjectId>>,
+    rewrite_path_limited_parents: bool,
+    selected: &HashSet<ObjectId>,
+) -> Result<Vec<ObjectId>> {
+    if rewrite_path_limited_parents {
+        visible_parents_for_path_limited_output(repo, oid, graft_parents, selected)
+    } else {
+        commit_parents_for_output(repo, oid, graft_parents)
+    }
 }
