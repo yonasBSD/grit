@@ -296,6 +296,7 @@ fn run_show(args: ShowArgs) -> Result<()> {
         merges: false,
         date: args.date,
         walk_reflogs: true,
+        reflog: false,
         patch: false,
         no_patch: false,
         patch_u: false,

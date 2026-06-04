@@ -227,8 +227,13 @@ pub struct Args {
     pub date: Option<String>,
 
     /// Walk the reflog instead of the commit ancestry chain.
-    #[arg(short = 'g', long = "walk-reflogs", alias = "reflog")]
+    #[arg(short = 'g', long = "walk-reflogs")]
     pub walk_reflogs: bool,
+
+    /// Add every reflog entry as an additional starting commit (like `--all`,
+    /// but over reflogs). Unlike `--walk-reflogs`, output is ordinary commits.
+    #[arg(long = "reflog")]
+    pub reflog: bool,
 
     /// Show unified diff (patch) after each commit.
     #[arg(short = 'p', long = "patch")]
@@ -4901,6 +4906,17 @@ pub fn run(mut args: Args) -> Result<()> {
         if args.all {
             start_oids.extend(collect_all_ref_oids(&repo.git_dir)?);
         }
+        if args.reflog {
+            // `--reflog` adds every reflog entry's old/new OID as a pending tip
+            // (Git's `add_reflogs_to_pending`); rev-list then dedupes and sorts.
+            let mut reflog_oids: Vec<ObjectId> =
+                grit_lib::reflog::all_reflog_oids(&repo.git_dir)?
+                    .into_iter()
+                    .collect();
+            // Stable order so dedupe/tie-breaks are deterministic.
+            reflog_oids.sort_by(|a, b| a.to_hex().cmp(&b.to_hex()));
+            start_oids.extend(reflog_oids);
+        }
         if stdin_all_refs {
             stdin_merged_all_refs = true;
             start_oids.extend(collect_all_ref_oids(&repo.git_dir)?);
@@ -4915,6 +4931,7 @@ pub fn run(mut args: Args) -> Result<()> {
         let rev_input_given = !pos_s.is_empty()
             || !neg_s.is_empty()
             || args.all
+            || args.reflog
             || args.branches.is_some()
             || stdin_all_refs
             || (args.read_stdin && args.ignore_missing)
@@ -9444,6 +9461,9 @@ fn apply_format_string(
         align: Align,
         trunc: Trunc,
         absolute: bool,
+        /// `%>>` (flush_left_and_steal): right-align but first reclaim trailing
+        /// spaces from the already-emitted output when the value overflows.
+        steal: bool,
     }
     // Git-style display width of a single character: control characters render
     // with zero columns, wide characters with two, everything else with one.
@@ -9568,6 +9588,7 @@ fn apply_format_string(
     fn parse_col_spec(
         chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
         align: Align,
+        steal: bool,
     ) -> Option<ColSpec> {
         // Check for | (absolute column) variant
         let absolute = if chars.peek() == Some(&'|') {
@@ -9635,6 +9656,7 @@ fn apply_format_string(
             align,
             trunc,
             absolute,
+            steal,
         })
     }
 
@@ -9651,7 +9673,7 @@ fn apply_format_string(
             if chars.peek() == Some(&'<') {
                 let mut probe = chars.clone();
                 probe.next(); // consume '<'
-                if let Some(spec) = parse_col_spec(&mut probe, Align::Left) {
+                if let Some(spec) = parse_col_spec(&mut probe, Align::Left, false) {
                     chars = probe;
                     pending_col = Some(spec);
                 } else {
@@ -9664,12 +9686,13 @@ fn apply_format_string(
                 probe.next(); // consume '>'
                 let parsed = if probe.peek() == Some(&'<') {
                     probe.next();
-                    parse_col_spec(&mut probe, Align::Center)
+                    parse_col_spec(&mut probe, Align::Center, false)
                 } else if probe.peek() == Some(&'>') {
                     probe.next();
-                    parse_col_spec(&mut probe, Align::Right)
+                    // `%>>` is flush_left_and_steal: right-align with stealing.
+                    parse_col_spec(&mut probe, Align::Right, true)
                 } else {
-                    parse_col_spec(&mut probe, Align::Right)
+                    parse_col_spec(&mut probe, Align::Right, false)
                 };
                 if let Some(spec) = parsed {
                     chars = probe;
@@ -10245,8 +10268,12 @@ fn apply_format_string(
                 _ => result.push('%'),
             }
             // Apply add/space/del magic to the just-produced placeholder output.
-            if magic != Magic::None {
-                let produced_empty = result.len() == magic_start;
+            // Git (pretty.c format_commit_item) applies the column padding to the
+            // placeholder *first*, then inserts the magic char OUTSIDE the padded
+            // column. So when a column is pending, defer the magic until after the
+            // padding step below (inserting at `col_start`); otherwise apply it now.
+            let produced_empty = result.len() == magic_start;
+            if magic != Magic::None && pending_col.is_none() {
                 match magic {
                     Magic::AddLf => {
                         if !produced_empty {
@@ -10278,24 +10305,67 @@ fn apply_format_string(
             if let Some(spec) = pending_col.take() {
                 let added = result[col_start..].to_owned();
                 result.truncate(col_start);
-                if spec.absolute {
-                    // Absolute column: pad from start of current line to target column
+                // `%>>` (flush_left_and_steal): when the value overflows the
+                // column, reclaim trailing spaces already emitted on this line
+                // and credit them to the padding budget (Git pretty.c).
+                let mut effective_width = if spec.absolute {
                     let line_start = result.rfind('\n').map(|p| p + 1).unwrap_or(0);
                     let current_col = display_width(&result[line_start..]);
-                    let target_width = spec.width.saturating_sub(current_col);
+                    spec.width.saturating_sub(current_col)
+                } else {
+                    spec.width
+                };
+                if spec.steal {
+                    let line_start = result.rfind('\n').map(|p| p + 1).unwrap_or(0);
+                    let added_w = display_width(&added);
+                    while added_w > effective_width
+                        && result.len() > line_start
+                        && result.as_bytes()[result.len() - 1] == b' '
+                    {
+                        result.pop();
+                        effective_width += 1;
+                    }
+                }
+                if spec.absolute {
                     let mut adjusted_spec = ColSpec {
-                        width: target_width,
+                        width: effective_width,
                         align: spec.align,
                         trunc: spec.trunc,
                         absolute: false,
+                        steal: false,
                     };
                     // For absolute positioning, ensure minimum width matches the value length
-                    if target_width < display_width(&added) {
+                    if effective_width < display_width(&added) {
                         adjusted_spec.width = display_width(&added);
                     }
                     result.push_str(&apply_col(&adjusted_spec, &added));
                 } else {
-                    result.push_str(&apply_col(&spec, &added));
+                    let adjusted_spec = ColSpec {
+                        width: effective_width,
+                        align: spec.align,
+                        trunc: spec.trunc,
+                        absolute: false,
+                        steal: false,
+                    };
+                    result.push_str(&apply_col(&adjusted_spec, &added));
+                }
+                // Deferred magic: applied OUTSIDE the padded column (Git
+                // pretty.c inserts the magic char before the whole padded run).
+                if magic != Magic::None && !produced_empty {
+                    match magic {
+                        Magic::AddLf => result.insert(col_start, '\n'),
+                        Magic::AddSp => result.insert(col_start, ' '),
+                        Magic::DelLf => {
+                            let mut cut = col_start;
+                            while cut > 0 && result.as_bytes()[cut - 1] == b'\n' {
+                                cut -= 1;
+                            }
+                            if cut < col_start {
+                                result.replace_range(cut..col_start, "");
+                            }
+                        }
+                        Magic::None => {}
+                    }
                 }
             }
         } else {
@@ -10809,50 +10879,48 @@ impl DecorationFilter {
     }
 }
 
-/// Match a single `--decorate-refs[-exclude]` pattern against a full refname,
-/// trying the abbreviations Git's `ref_rev_parse_rules` would (full name and
-/// the name with `refs/`, `refs/tags/`, `refs/heads/`, `refs/remotes/` stripped).
+/// Normalize a `--decorate-refs[-exclude]` / `log.excludeDecoration` pattern the
+/// way Git's `normalize_glob_ref` (refs.c) does: prepend `refs/` unless it already
+/// starts with `refs/` or is exactly `HEAD`, then strip a single trailing `/`.
+fn normalize_glob_ref(pattern: &str) -> String {
+    let mut out = String::new();
+    if !pattern.starts_with("refs/") && pattern != "HEAD" {
+        out.push_str("refs/");
+    }
+    out.push_str(pattern);
+    if out.ends_with('/') {
+        out.pop();
+    }
+    out
+}
+
+/// Match a single (already-normalized) `--decorate-refs[-exclude]` pattern against
+/// a full refname, mirroring Git's `match_ref_pattern` (log-tree.c): glob patterns
+/// use `wildmatch`; non-glob patterns match as a prefix at a component boundary.
 fn decoration_pattern_matches(pattern: &str, refname: &str) -> bool {
     let has_glob = pattern.bytes().any(|b| matches!(b, b'*' | b'?' | b'['));
-    let mut candidates = vec![refname];
-    for prefix in [
-        "refs/",
-        "refs/tags/",
-        "refs/heads/",
-        "refs/remotes/",
-    ] {
-        if let Some(rest) = refname.strip_prefix(prefix) {
-            candidates.push(rest);
-        }
-    }
-    for cand in candidates {
-        if has_glob {
-            if grit_lib::wildmatch::wildmatch(
-                pattern.as_bytes(),
-                cand.as_bytes(),
-                grit_lib::wildmatch::WM_PATHNAME,
-            ) {
-                return true;
-            }
+    if has_glob {
+        grit_lib::wildmatch::wildmatch(pattern.as_bytes(), refname.as_bytes(), 0)
+    } else {
+        // `skip_prefix(refname, pattern, &rest) && (!*rest || *rest == '/')`.
+        if let Some(rest) = refname.strip_prefix(pattern) {
+            rest.is_empty() || rest.starts_with('/')
         } else {
-            // Prefix match at a component boundary (`item->util` case).
-            if cand == pattern
-                || (cand.starts_with(pattern)
-                    && cand.as_bytes().get(pattern.len()) == Some(&b'/'))
-            {
-                return true;
-            }
+            false
         }
     }
-    false
 }
 
 /// Build the decoration filter from command-line args and `log.excludeDecoration`
 /// config.
 fn build_decoration_filter(args: &Args, git_dir: &Path) -> DecorationFilter {
     let mut filter = DecorationFilter {
-        include: args.decorate_refs.clone(),
-        exclude: args.decorate_refs_exclude.clone(),
+        include: args.decorate_refs.iter().map(|p| normalize_glob_ref(p)).collect(),
+        exclude: args
+            .decorate_refs_exclude
+            .iter()
+            .map(|p| normalize_glob_ref(p))
+            .collect(),
         exclude_config: Vec::new(),
     };
     // `--clear-decorations` drops the config-based exclusions (and Git's default
@@ -10862,7 +10930,7 @@ fn build_decoration_filter(args: &Args, git_dir: &Path) -> DecorationFilter {
             for value in cfg.get_all("log.excludeDecoration") {
                 let v = value.trim();
                 if !v.is_empty() {
-                    filter.exclude_config.push(v.to_owned());
+                    filter.exclude_config.push(normalize_glob_ref(v));
                 }
             }
         }

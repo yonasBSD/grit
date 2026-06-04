@@ -335,6 +335,37 @@ pub fn run(mut args: Args) -> Result<()> {
         args.format = args.pretty.clone();
     }
 
+    // `git show` accepts `--pretty`/`--format` (and `-s`) *after* a revision
+    // (e.g. `git show -s HEAD --pretty=short`). Clap's `trailing_var_arg`
+    // captures everything after the first positional into `objects`, so pull
+    // any such formatting options back out and apply them, mirroring git's
+    // `setup_revisions` interleaving of options and revisions.
+    {
+        let mut kept: Vec<String> = Vec::with_capacity(args.objects.len());
+        let mut iter = args.objects.iter().peekable();
+        while let Some(tok) = iter.next() {
+            if let Some(v) = tok
+                .strip_prefix("--pretty=")
+                .or_else(|| tok.strip_prefix("--format="))
+            {
+                args.format = Some(v.to_owned());
+            } else if tok == "--pretty" || tok == "--format" {
+                if let Some(v) = iter.peek() {
+                    args.format = Some((*v).clone());
+                    iter.next();
+                } else {
+                    // Bare `--pretty` defaults to medium (git's behaviour).
+                    args.format = Some("medium".to_owned());
+                }
+            } else if tok == "-s" || tok == "--no-patch" {
+                args.no_patch = true;
+            } else {
+                kept.push(tok.clone());
+            }
+        }
+        args.objects = kept;
+    }
+
     // `--root` forces a root commit's diff against the empty tree even when
     // `log.showroot=false`. It is not a real object, so strip it from the list.
     let want_root = args.objects.iter().any(|s| s == "--root");
@@ -1207,8 +1238,7 @@ fn show_commit(
             if let Some(sig) = &signature_lines {
                 out.write_all(sig.as_bytes())?;
             }
-            let author_name = extract_name(&commit.author);
-            writeln!(out, "Author: {author_name}")?;
+            writeln!(out, "Author: {}", format_ident_display(&commit.author))?;
             writeln!(out)?;
             for line in commit.message.lines().take(1) {
                 writeln!(

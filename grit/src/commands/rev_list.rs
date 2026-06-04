@@ -402,6 +402,7 @@ pub fn run(args: Args) -> Result<()> {
     let mut cli_date_order = false;
     let mut cli_author_date_order = false;
     let mut walk_reflog = false;
+    let mut add_reflog_tips = false;
     let mut ref_exclusions = RefExclusions::default();
     let mut ref_exclude_patterns = Vec::new();
     let mut saw_pseudo_ref = false;
@@ -778,8 +779,13 @@ pub fn run(args: Args) -> Result<()> {
                 }
                 "--abbrev-commit" | "--no-abbrev-commit" => { /* silently accept */ }
                 "--abbrev" => abbrev_len = 7,
-                "--reflog" | "--walk-reflogs" | "-g" => {
+                "--walk-reflogs" | "-g" => {
                     walk_reflog = true;
+                }
+                "--reflog" => {
+                    // `--reflog` (unlike `-g`/`--walk-reflogs`) adds every reflog
+                    // entry's OID as a pending tip; the normal walk dedupes/sorts.
+                    add_reflog_tips = true;
                 }
                 _ if arg.starts_with("--filter=") => {
                     let spec = arg.trim_start_matches("--filter=");
@@ -934,6 +940,20 @@ pub fn run(args: Args) -> Result<()> {
     }
     options.parent_rewrite =
         show_parents || output_mode_requests_parent_rewrite(&options.output_mode);
+
+    // `--reflog` adds every reflog entry's OID as a positive tip; the ordinary
+    // walk below dedupes and date-sorts them (Git's `add_reflogs_to_pending`).
+    if add_reflog_tips {
+        saw_pseudo_ref = true;
+        let mut reflog_oids: Vec<ObjectId> =
+            grit_lib::reflog::all_reflog_oids(&repo.git_dir)?
+                .into_iter()
+                .collect();
+        reflog_oids.sort_by(|a, b| a.to_hex().cmp(&b.to_hex()));
+        for oid in reflog_oids {
+            revision_specs.push(oid.to_hex());
+        }
+    }
 
     // Apply --default when no revision specs given
     if revision_specs.is_empty() {
