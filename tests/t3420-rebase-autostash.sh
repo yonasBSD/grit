@@ -140,7 +140,6 @@ testrebase () {
 		git reset --hard &&
 		git branch -D rebased-feature-branch 2>/dev/null || true &&
 		git checkout -b rebased-feature-branch feature-branch &&
-		test_when_finished git branch -D rebased-feature-branch &&
 		test_when_finished git checkout feature-branch &&
 		echo dirty >>file3 &&
 		git rebase$type unrelated-onto-branch >actual 2>&1 &&

@@ -134,6 +134,32 @@
     history through the content-merge path.
   - Completed: `t3405-rebase-malformed.sh` (5/5) after rerunning with current rebase behavior; no
     additional code changes were needed.
+  - Completed: `t3407-rebase-abort.sh` (17/17) after rebase now resolves upstream and `--onto`
+    commit-ish arguments by peeling annotated tags to commits before replay/state setup, fixing the
+    tag checkout abort cases for both apply and merge backends.
+  - Completed: `t3412-rebase-root.sh` (25/25) after rerunning with the current binary; the prior
+    root-rebase implementation and recent commit-ish peeling fixes left the stale CSV row green.
+  - Completed: `t3416-rebase-onto-threedots.sh` (18/18) after branch-argument rebase now carries
+    the pre-checkout upstream commit OID into replay setup instead of resolving tokens such as
+    `HEAD` after checking out the branch being rebased.
+  - Completed: `t3419-rebase-patch-id.sh` (8/8) after sequencer-style replay resolves conflicts
+    where the replayed side and current upstream have the same blob content but the picked commit
+    carries a mode-only change.
+  - Completed: `t3420-rebase-autostash.sh` (54/54) after failed pre-rebase hooks now restore the
+    created autostash, the extra non-Git rebase progress line was removed, and the ported fixture
+    no longer deletes `rebased-feature-branch` before the paired output-check tests inspect it.
+  - Completed: `t3415-rebase-autosquash.sh` (28/28) after final fixup-chain detection, nested
+    autosquash OID target handling, interactive empty-pick preservation, and squash/fixup template
+    cleanup now match Git's autosquash behavior.
+  - Completed: `t3423-rebase-reword.sh` (3/3) after rerunning with the current reword editor
+    handling; no additional code changes were needed.
+  - Completed: `t3429-rebase-edit-todo.sh` (7/7) after rebase now re-reads todo edits made by
+    successful `exec` and editor-driven `--edit-todo` commands before trimming the completed
+    command.
+  - Completed: `t3441-rebase-exec.sh` (3/3) after wrapping the ported fixture bodies in subshells
+    so the setup `cd repo` does not leak into later tests.
+  - Completed: `t3442-rebase-onto-upstream.sh` (3/3) after wrapping the ported fixture bodies in
+    subshells so the setup `cd repo` does not leak into later tests.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ---

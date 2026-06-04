@@ -10,6 +10,7 @@ cd "$(dirname "$0")" || exit 1
 
 test_expect_success 'setup: divergent branches' '
 	git init repo &&
+	(
 	cd repo &&
 	echo base >file.txt &&
 	git add file.txt &&
@@ -31,9 +32,11 @@ test_expect_success 'setup: divergent branches' '
 
 	git checkout -b newbase main &&
 	echo newbase >nb.txt && git add nb.txt && git commit -m "newbase"
+	)
 '
 
 test_expect_success 'rebase --onto newbase main feature replays feature onto newbase' '
+	(
 	cd repo &&
 	git checkout feature &&
 	git rebase --onto newbase main &&
@@ -44,11 +47,14 @@ test_expect_success 'rebase --onto newbase main feature replays feature onto new
 	grep "feat1" ../onto_top &&
 	# newbase commit should be an ancestor
 	grep "newbase" ../onto_log
+	)
 '
 
 test_expect_success 'rebased commits have newbase as ancestor' '
+	(
 	cd repo &&
 	git log --format="%s" | grep "newbase"
+	)
 '
 
 test_done

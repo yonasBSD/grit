@@ -2704,7 +2704,7 @@ fn stage_gitlink(
         path: rel_path.as_bytes().to_vec(),
         base_index_pos: 0,
     };
-    index.add_or_replace(entry);
+    index.stage_file(entry);
 
     if verbose {
         println!("add '{rel_path}'");

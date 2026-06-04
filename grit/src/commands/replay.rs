@@ -546,7 +546,7 @@ pub(crate) fn merge_trees_for_single_cherry_pick(
             rename_opts,
         );
 
-    merge_trees_for_replay(
+    let mut result = merge_trees_for_replay(
         repo,
         &base_entries,
         &ours_for_merge,
@@ -565,7 +565,61 @@ pub(crate) fn merge_trees_for_single_cherry_pick(
         MergeDirectoryRenamesMode::Disabled,
         rename_opts,
         None,
-    )
+    )?;
+    resolve_same_blob_mode_only_replay_conflicts(&mut result);
+    Ok(result)
+}
+
+fn resolve_same_blob_mode_only_replay_conflicts(result: &mut ReplayTreeMergeResult) {
+    let paths = result
+        .index
+        .entries
+        .iter()
+        .filter(|entry| entry.stage() != 0)
+        .map(|entry| entry.path.clone())
+        .collect::<BTreeSet<_>>();
+
+    for path in paths {
+        let Some(stage2) = result
+            .index
+            .entries
+            .iter()
+            .find(|entry| entry.path == path && entry.stage() == 2)
+            .cloned()
+        else {
+            continue;
+        };
+        let Some(stage3) = result
+            .index
+            .entries
+            .iter()
+            .find(|entry| entry.path == path && entry.stage() == 3)
+            .cloned()
+        else {
+            continue;
+        };
+        if stage2.oid != stage3.oid || stage2.mode == stage3.mode {
+            continue;
+        }
+
+        result.index.entries.retain(|entry| entry.path != path);
+        let mut resolved = stage3;
+        resolved.flags &= 0x0FFF;
+        result.index.entries.push(resolved);
+
+        let path_str = String::from_utf8_lossy(&path);
+        result
+            .conflict_files
+            .retain(|(conflict_path, _)| conflict_path != path_str.as_ref());
+        result
+            .conflict_descriptions
+            .retain(|desc| desc.subject_path != path_str.as_ref());
+    }
+
+    result.index.sort();
+    result.has_conflicts = result.index.entries.iter().any(|entry| entry.stage() != 0)
+        || !result.conflict_files.is_empty()
+        || !result.conflict_descriptions.is_empty();
 }
 
 /// Replay `commits` (oldest first) onto `onto`, returning the new tip and a map from each

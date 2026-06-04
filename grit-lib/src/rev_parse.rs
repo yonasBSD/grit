@@ -2416,6 +2416,13 @@ fn try_resolve_at_minus(repo: &Repository, spec: &str) -> Result<Option<ObjectId
                             return Ok(Some(oid));
                         }
                     }
+                    if is_hex_prefix(from_branch) {
+                        if let Ok(oid) = resolve_revision_for_range_end(repo, from_branch)
+                            .and_then(|oid| peel_to_commit_for_merge_base(repo, oid))
+                        {
+                            return Ok(Some(oid));
+                        }
+                    }
                     return Err(Error::InvalidRef(format!(
                         "cannot resolve @{{-{n}}}: branch '{}' not found",
                         from_branch

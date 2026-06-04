@@ -6,6 +6,341 @@
 - Note: `cargo clippy --workspace --all-targets` was probed but remains blocked by a broad
   pre-existing Clippy backlog, including denied unwrap/expect use in test targets and hundreds of
   style warnings.
+## 2026-06-04 — t3407-rebase-abort
+
+- Focus harness: `./scripts/run-tests.sh t3407-rebase-abort.sh --verbose` passes 17/17 after
+  rebase started peeling annotated-tag upstream and `--onto` arguments to commits before replay.
+- Adjacent verification: `./scripts/run-tests.sh t3407-rebase-abort.sh t3400-rebase.sh
+  t3402-rebase-merge.sh t3403-rebase-skip.sh t3406-rebase-message.sh
+  t3418-rebase-continue.sh t3422-rebase-incompatible-options.sh --verbose` all pass.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3412-rebase-root
+
+- Focus harness: `./scripts/run-tests.sh t3412-rebase-root.sh --verbose` passes 25/25 with the
+  current binary; no additional code changes were needed.
+- Quality gates were not rerun for this CSV/dashboard-only refresh; the previous t3407 gates still
+  cover the current code revision.
+
+## 2026-06-04 — t3416-rebase-onto-threedots
+
+- Focus harness: `./scripts/run-tests.sh t3416-rebase-onto-threedots.sh --verbose` passes 18/18
+  after branch-argument rebase started carrying the pre-checkout upstream commit OID into replay
+  setup.
+- Adjacent verification: `./scripts/run-tests.sh t3416-rebase-onto-threedots.sh
+  t3407-rebase-abort.sh t3400-rebase.sh t3431-rebase-fork-point.sh
+  t3432-rebase-fast-forward.sh --verbose` kept `t3416`, `t3407`, and `t3400` green; `t3431` and
+  `t3432` remain known non-green future targets.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3419-rebase-patch-id
+
+- Focus harness: `./scripts/run-tests.sh t3419-rebase-patch-id.sh --verbose` passes 8/8 after
+  sequencer replay started resolving same-blob stage-2/stage-3 mode-only conflicts to the picked
+  side's mode.
+- Adjacent verification: `./scripts/run-tests.sh t3419-rebase-patch-id.sh
+  t3416-rebase-onto-threedots.sh t3407-rebase-abort.sh --verbose` all pass. `t6400-merge-df.sh`
+  also remains green; `t6402-merge-rename.sh` currently reports 45/46 on its mtime preservation
+  case and is outside the active t3 plan.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3420-rebase-autostash
+
+- Focus harness: `./scripts/run-tests.sh t3420-rebase-autostash.sh --verbose` passes 54/54 after
+  failed pre-rebase hooks started restoring autostash, the extra rebase progress line was removed,
+  and the ported fixture cleanup stopped deleting the branch before paired output checks.
+- Adjacent verification: `./scripts/run-tests.sh t3420-rebase-autostash.sh
+  t3419-rebase-patch-id.sh t3416-rebase-onto-threedots.sh t3407-rebase-abort.sh t3400-rebase.sh
+  t3904-stash-patch.sh --verbose` all pass.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3415-rebase-autosquash partial
+
+- Focus harness improved to 25/28 after final-fixup detection, interactive begin-empty replay, and
+  squash/fixup template cleanup changes. Remaining failures are tests 26, 27, and 28.
+- Adjacent verification: `./scripts/run-tests.sh t3415-rebase-autosquash.sh
+  t3420-rebase-autostash.sh t3418-rebase-continue.sh --verbose` keeps `t3420` and `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3415-rebase-autosquash
+
+- Focus harness: `./scripts/run-tests.sh t3415-rebase-autosquash.sh --verbose` passes 28/28 after
+  nested autosquash OID target handling, empty final squash handling, and squash/fixup template
+  cleanup fixes.
+- Adjacent verification: `./scripts/run-tests.sh t3415-rebase-autosquash.sh
+  t3403-rebase-skip.sh t3418-rebase-continue.sh t3420-rebase-autostash.sh --verbose` all pass.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive partial
+
+- Focus harness improved to 50/132 after interactive `exec` commands started stopping when they
+  leave index/worktree changes behind.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3415-rebase-autosquash.sh t3418-rebase-continue.sh --verbose` keeps `t3415` and `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive todo/exec partial
+
+- Focus harness improved to 54/132 after comments-only todo edits report `nothing to do`, glued
+  `-x<cmd>` is parsed as an exec command, and invalid exec strings are rejected before up-to-date
+  short-circuiting.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3415-rebase-autosquash.sh t3418-rebase-continue.sh --verbose` keeps `t3415` and `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive exec exit-code partial
+
+- Focus harness improved to 55/132 after failed interactive `exec` commands that exit 127 started
+  returning rebase status 1, matching Git's sequencer behavior.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3418-rebase-continue.sh --verbose` keeps `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive conflict patch partial
+
+- Focus harness improved to 56/132 after conflict stops started writing the stopped patch, removing
+  the stopped commit from the interactive todo, and labeling conflict markers with `<abbrev>
+  (<subject>)`.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3418-rebase-continue.sh t3415-rebase-autosquash.sh --verbose` keeps `t3418` and `t3415` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive REBASE_HEAD cleanup partial
+
+- Focus harness improved to 59/132 after `rebase --abort` started removing `REBASE_HEAD`, avoiding
+  stale rebase author reuse in later plain commits.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3418-rebase-continue.sh t3415-rebase-autosquash.sh --verbose` keeps `t3418` and `t3415` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive current status
+
+- Re-ran `./scripts/run-tests.sh t3404-rebase-interactive.sh --verbose` with test identity env
+  unset; current result remains 59/132.
+- Current first failure is test 30: `git rebase -v -i --onto new-branch1 HEAD^` succeeds instead
+  of stopping for the expected conflict before `--continue`.
+
+## 2026-06-04 — t3404-rebase-interactive branch reflog partial
+
+- Focus harness currently records 59/132 after no-op rebase finishes stopped appending branch
+  reflog entries that hide earlier reflog positions, while meaningful rewritten-tip finishes still
+  append their branch reflog entry.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh t3400-rebase.sh
+  t3200-branch.sh --verbose` keeps `t3400` and `t3200` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive verbose continue partial
+
+- Focus harness improved to 60/132 after `rebase --continue` started printing the just-created
+  commit's diffstat when the in-progress rebase was started with `--verbose`.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3418-rebase-continue.sh t3415-rebase-autosquash.sh t3400-rebase.sh t3200-branch.sh --verbose`
+  keeps the adjacent files green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3415-rebase-autosquash hook preservation follow-up
+
+- Regression check: `./scripts/run-tests.sh t3415-rebase-autosquash.sh
+  t3404-rebase-interactive.sh --verbose` keeps `t3415` green at 28/28 and records `t3404` at
+  60/132 after final all-fixup chains skipped the editor while still running `prepare-commit-msg`.
+
+## 2026-06-04 — t3404-rebase-interactive conflict fixup message partial
+
+- Focus harness improved to 61/132 after edited intermediate fixup messages started persisting to
+  `message-fixup` for subsequent final fixups.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3418-rebase-continue.sh t3415-rebase-autosquash.sh --verbose` keeps `t3418` and `t3415` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive squash-after-fixup partial
+
+- Focus harness improved to 62/132 after final squash templates following fixups started
+  preserving the edited fixup-chain message and presenting a two-commit header to the editor.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3415-rebase-autosquash.sh t3418-rebase-continue.sh --verbose` keeps `t3415` and `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive fixup/squash editor partial
+
+- Focus harness improved to 66/132 after edited non-final fixup messages started persisting for
+  later steps and final fixups following squashes started using the squash message template.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3415-rebase-autosquash.sh t3418-rebase-continue.sh --verbose` keeps `t3415` and `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive squash cleanup partial
+
+- Focus harness improved to 67/132 after squash/fixup cleanup started uncommenting sequencer
+  commit-message section lines while preserving hook comments in skipped sections.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3415-rebase-autosquash.sh t3418-rebase-continue.sh --verbose` keeps `t3415` and `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive edit-continue partial
+
+- Current focus harness result is 67/132. `edit` todo stops now mark the following
+  `rebase --continue` so it invokes the commit-message editor for the amended commit.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3418-rebase-continue.sh --verbose` keeps `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive edit auto-amend follow-up
+
+- Current focus harness remains 67/132 after `rebase --continue` learned to reject dirty
+  worktrees following a manual commit made during an `edit` stop, while clean manual amends can
+  resume.
+- Adjacent verification kept `t3418-rebase-continue.sh` green.
+
+## 2026-06-04 — t3404-rebase-interactive failed-exec continue partial
+
+- Focus harness improved to 71/132 after `rebase --continue` learned to report staged/worktree
+  changes left after a failed `exec` when no current commit remains.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3418-rebase-continue.sh --verbose` keeps `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive detached @{-N} partial
+
+- Current focus harness records 68/132 after `@{-N}` started resolving abbreviated detached commit
+  reflog entries.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3403-rebase-skip.sh t3424-rebase-empty.sh --verbose` keeps `t3403` green and refreshes
+  still-failing future target `t3424`.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive same-tree noop partial
+
+- Current focus harness records 69/132 after no-`--onto` interactive rebases learned to noop a
+  single non-begin-empty commit whose tree already equals the upstream tree.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3403-rebase-skip.sh t3424-rebase-empty.sh --verbose` keeps `t3403` green and refreshes
+  still-failing future target `t3424`.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive submodule gitlink add partial
+
+- Focus harness improved to 70/132 after `git add <submodule>` started clearing unmerged stages
+  when staging the resolved gitlink.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t2013-checkout-submodule.sh t7400-submodule-basic.sh --verbose` keeps the adjacent submodule
+  files green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive unstaged submodule continue partial
+
+- Focus harness improved to 71/132 after `rebase --continue` learned to finish when a submodule
+  conflict was reset in the index and only the submodule worktree remains dirty.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t2013-checkout-submodule.sh t7400-submodule-basic.sh --verbose` keeps the adjacent submodule
+  files green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive unchanged todo partial
+
+- Focus harness improved to 72/132 after unchanged, no-`--onto`, no-autosquash/no-exec
+  interactive rebases started short-circuiting as up-to-date instead of replaying identical
+  history and touching the worktree.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3415-rebase-autosquash.sh t3403-rebase-skip.sh --verbose` keeps `t3415` and `t3403` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive reword spacing partial
+
+- Focus harness improved to 73/132 after reword editor templates started preserving a blank line
+  before editor-appended text.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3423-rebase-reword.sh t3415-rebase-autosquash.sh --verbose` keeps `t3423` and `t3415` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive nested editor env partial
+
+- Focus harness improved to 80/132 after rebase editor subprocesses stopped inheriting internal
+  rebase-pick environment variables, allowing nested `git rebase --edit-todo` calls from editor
+  scripts.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3418-rebase-continue.sh t3415-rebase-autosquash.sh --verbose` keeps `t3418` and `t3415` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive fast-forward reword partial
+
+- Current focus harness records 80/132 after fast-forwardable `reword` picks started placing HEAD
+  at the original commit before opening the editor.
+- Follow-up removed the internal force-rewrite guard from that fast-forward editor setup so the
+  interactive replay path also exposes the original OID.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3423-rebase-reword.sh t3418-rebase-continue.sh --verbose` keeps `t3423` and `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3423-rebase-reword
+
+- Focus harness: `./scripts/run-tests.sh t3423-rebase-reword.sh --verbose` passes 3/3 with the
+  current reword editor handling.
+
+## 2026-06-04 — t3429-rebase-edit-todo
+
+- Focus harness: `./scripts/run-tests.sh t3429-rebase-edit-todo.sh --verbose` passes 7/7 after
+  rebase started re-reading todo edits after successful exec/editor steps and root reword commits
+  stopped recording a synthetic zero parent.
+- Adjacent verification: `./scripts/run-tests.sh t3429-rebase-edit-todo.sh
+  t3412-rebase-root.sh t3423-rebase-reword.sh --verbose` keeps adjacent root/reword files green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3441-rebase-exec
+
+- Focus harness: `./scripts/run-tests.sh t3441-rebase-exec.sh --verbose` passes 3/3 after wrapping
+  ported fixture bodies to prevent `cd repo` from leaking between top-level tests.
+
+## 2026-06-04 — t3442-rebase-onto-upstream
+
+- Focus harness: `./scripts/run-tests.sh t3442-rebase-onto-upstream.sh --verbose` passes 3/3 after
+  wrapping ported fixture bodies to prevent `cd repo` from leaking between top-level tests.
+
+## 2026-06-04 — t3404-rebase-interactive direct reword partial
+
+- Focus harness improved to 74/132 after interactive `reword` entries started replaying in the
+  parent process, avoiding stale internal child state during nested editor `rebase --edit-todo`
+  calls.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3423-rebase-reword.sh t3418-rebase-continue.sh --verbose` keeps `t3423` and `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3404-rebase-interactive reword todo reread partial
+
+- Focus harness improved to 81/132 after rebase started removing a completed reword command from
+  re-read todo files even when an editor inserted new commands before it.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3429-rebase-edit-todo.sh t3418-rebase-continue.sh --verbose` keeps `t3429` and `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
 ## 2026-06-03 — t3301-notes partial
 
