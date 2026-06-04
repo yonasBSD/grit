@@ -2265,7 +2265,7 @@ pub(crate) fn format_commit_placeholder(
     apply_format_string(template, oid, commit, None, 0)
 }
 
-fn apply_format_string(
+pub(crate) fn apply_format_string(
     template: &str,
     oid: &ObjectId,
     commit: &grit_lib::objects::CommitData,
@@ -2766,7 +2766,7 @@ fn collect_tree_entries_recursive(
 }
 
 /// Load notes from the configured notes ref (or `refs/notes/commits` default).
-fn load_notes_map(repo: &Repository) -> HashMap<ObjectId, Vec<u8>> {
+pub(crate) fn load_notes_map(repo: &Repository) -> HashMap<ObjectId, Vec<u8>> {
     use grit_lib::config::ConfigSet;
     use grit_lib::refs::resolve_ref;
 

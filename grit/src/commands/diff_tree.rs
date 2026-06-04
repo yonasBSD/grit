@@ -98,6 +98,8 @@ struct Options {
     suppress_diff: bool,
     /// Show a `Notes:` block in the pretty header (`--notes`); map is keyed by commit OID.
     notes_blocks: Option<std::collections::HashMap<ObjectId, String>>,
+    /// Raw note bytes per commit, for the `%N` placeholder in a user `--format` string.
+    format_notes: Option<std::collections::HashMap<ObjectId, Vec<u8>>>,
     /// Output binary patches (--binary).
     binary: bool,
     /// Show diffs for merge commits in stdin mode (`-m`).
@@ -249,6 +251,7 @@ impl Default for Options {
             stdin_mode: false,
             no_commit_id: false,
             notes_blocks: None,
+            format_notes: None,
             verbose: false,
             suppress_diff: false,
             binary: false,
@@ -592,6 +595,19 @@ fn parse_options(repo: &Repository, argv: &[String]) -> Result<Options> {
     }
     if opts.summary {
         opts.recursive = true;
+    }
+
+    // A user `--format`/`--pretty=format:` string with the `%N` placeholder needs the raw
+    // note bytes for each commit; load them once here (default notes ref).
+    if opts.format_notes.is_none() {
+        if let Some(p) = &opts.pretty {
+            let template = p
+                .strip_prefix("tformat:")
+                .or_else(|| p.strip_prefix("format:"));
+            if template.is_some_and(|t| t.contains("%N")) {
+                opts.format_notes = Some(crate::commands::show::load_notes_map(repo));
+            }
+        }
     }
 
     Ok(opts)
@@ -3159,16 +3175,21 @@ fn write_commit_header(
             .strip_prefix("tformat:")
             .or_else(|| pretty_fmt.strip_prefix("format:"))
         {
-            if template == "%s" {
-                let first_line = commit.message.lines().next().unwrap_or("");
-                writeln!(out, "{first_line}")?;
-                // The trailing blank line separates the subject from the raw/patch
-                // diff; with `-s`/`--no-patch` there is no diff, so git omits it.
-                if !opts.suppress_diff {
-                    writeln!(out)?;
-                }
-                return Ok(false);
+            // General user-format expansion (`%s`, `%N`, `%H`, …). Mirrors `git log --format`.
+            let note_bytes = opts
+                .format_notes
+                .as_ref()
+                .and_then(|m| m.get(oid))
+                .map(|v| v.as_slice());
+            let formatted =
+                crate::commands::show::apply_format_string(template, oid, &commit, note_bytes, 0);
+            writeln!(out, "{formatted}")?;
+            // A blank line separates the format header from the raw/patch diff; with
+            // `-s`/`--no-patch` there is no diff, so git omits it.
+            if !opts.suppress_diff {
+                writeln!(out)?;
             }
+            return Ok(false);
         }
         if let Some(p) = from_parent {
             writeln!(out, "commit {} (from {})", oid.to_hex(), p.to_hex())?;
