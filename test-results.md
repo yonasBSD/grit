@@ -1448,3 +1448,10 @@ Updated: 2026-06-01
   four files.
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3514-cherry-pick-revert-gpg skipped audit
+
+- Direct audit: `bash t3514-cherry-pick-revert-gpg.sh --verbose` skipped all tests because
+  `tests/lib-gpg/keyring.gpg` is missing and the GPG prereq cannot be established.
+- The row remains skipped for the missing external GPG fixture; no code changes were made for this
+  audit.

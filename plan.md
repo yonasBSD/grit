@@ -102,6 +102,11 @@
     for divergent histories, supporting detached-HEAD replay updates, and allowing `branch -f` to
     force-update an existing packed branch without treating the branch itself as a namespace
     conflict.
+  - Audited skipped GPG row: `t3514-cherry-pick-revert-gpg.sh` still cannot run in this
+    environment because `lib-gpg.sh` cannot import `tests/lib-gpg/keyring.gpg`; keep the row
+    skipped until the external GPG fixture is available.
+  - Sequencer/cherry-pick/revert/replay group complete for runnable rows: `t3510`, `t3512`,
+    `t3513`, and `t3650` all pass; `t3514` remains skipped for the missing GPG fixture.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ## Active task — t6 family 100% pass
