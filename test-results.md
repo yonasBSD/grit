@@ -1,3 +1,14 @@
+## 2026-06-04 — t6138-rev-list-boundary
+
+- Focus harness: `./scripts/run-tests.sh t6138-rev-list-boundary.sh --verbose` passes 29/29
+  after the synthetic fixture explicitly requests its hard-coded `master` initial branch under the
+  harness.
+- `cargo fmt`, `cargo check -p grit-cli`, `cargo test -p grit-lib --lib`, and
+  `cargo clippy --fix --allow-dirty` passed with the existing warning backlog; unrelated
+  fmt/clippy auto-fixes were restored.
+- Broader `cargo test --workspace` and `./tests/harness/run.sh` were skipped for this fixture-only
+  t6138 increment.
+
 ## 2026-06-04 — t6015-rev-list-show-all-parents
 
 - Focus harness: `./scripts/run-tests.sh t6015-rev-list-show-all-parents.sh --verbose` passes

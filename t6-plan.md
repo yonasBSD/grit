@@ -49,7 +49,8 @@ dependency/topic groups. Mark an item `[~]` when claimed and `[x]` only after th
   fixture request its expected `master` initial branch under the harness.
 - [x] `t6015-rev-list-show-all-parents.sh` — 38/38 passing after making the
   synthetic fixture request its expected `master` initial branch under the harness.
-- [ ] `t6138-rev-list-boundary.sh` — 24/29 passing, 5 failing.
+- [x] `t6138-rev-list-boundary.sh` — 29/29 passing after making the synthetic
+  fixture request its expected `master` initial branch under the harness.
 - [ ] `t6001-rev-list-graft.sh` — 10/14 passing, 4 failing.
 - [ ] `t6101-rev-parse-parents.sh` — 35/38 passing, 3 failing.
 - [ ] `t6010-merge-base.sh` — 10/12 passing, 2 failing.
