@@ -1198,6 +1198,22 @@ pub(crate) fn stage_pathspecs_for_commit(
 
     let mut matched_paths = HashSet::new();
 
+    let remove_path_and_descendants = |idx: &mut Index, path: &[u8]| -> Vec<Vec<u8>> {
+        let removed: Vec<Vec<u8>> = idx
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.path == path
+                    || (entry.path.starts_with(path) && entry.path.get(path.len()) == Some(&b'/'))
+            })
+            .map(|entry| entry.path.clone())
+            .collect();
+        for p in &removed {
+            idx.remove(p);
+        }
+        removed
+    };
+
     let reject_skip_worktree = |idx: &Index, path: &[u8]| -> Result<()> {
         if idx.get(path, 0).is_some_and(|e| e.skip_worktree()) {
             bail!("cannot update skip-worktree entry");
@@ -1273,8 +1289,12 @@ pub(crate) fn stage_pathspecs_for_commit(
             let meta = match fs::symlink_metadata(&abs_path) {
                 Ok(m) => m,
                 Err(_) => {
-                    index.remove(resolved.as_bytes());
-                    matched_paths.insert(resolved.as_bytes().to_vec());
+                    let removed = remove_path_and_descendants(&mut index, resolved.as_bytes());
+                    if removed.is_empty() {
+                        matched_paths.insert(resolved.as_bytes().to_vec());
+                    } else {
+                        matched_paths.extend(removed);
+                    }
                     continue;
                 }
             };

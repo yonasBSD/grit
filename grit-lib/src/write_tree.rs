@@ -259,6 +259,16 @@ pub fn write_tree_partial_from_index(
             .any(|p| p == dir || (p.starts_with(dir) && p.get(dir.len()) == Some(&b'/')))
     }
 
+    fn index_has_entry_under(index: &Index, dir: &[u8]) -> bool {
+        index.entries.iter().any(|entry| {
+            entry.stage() == 0
+                && !entry.intent_to_add()
+                && entry.mode != MODE_TREE
+                && entry.path.starts_with(dir)
+                && entry.path.get(dir.len()) == Some(&b'/')
+        })
+    }
+
     fn merge_level(
         odb: &Odb,
         index: &Index,
@@ -275,6 +285,9 @@ pub fn write_tree_partial_from_index(
             if !subtree_affected(paths_from_index, &fp) {
                 by_name.insert(te.name.clone(), te);
             } else if te.mode == MODE_TREE {
+                if paths_from_index.contains(&fp) && !index_has_entry_under(index, &fp) {
+                    continue;
+                }
                 let sub_oid = merge_level(odb, index, &te.oid, &fp, paths_from_index)?;
                 by_name.insert(
                     te.name.clone(),
