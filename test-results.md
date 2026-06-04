@@ -2836,3 +2836,8 @@ Updated: 2026-06-01
   `cargo fmt`, `cargo check -p grit-cli`, `cargo build --release -p grit-cli`, `cargo clippy
   --fix --allow-dirty` (existing warning backlog and failed auto-fix attempts remain; unrelated
   `filter_process.rs` auto-fix restored), `cargo test -p grit-lib --lib`, and `git diff --check`.
+- t6020 bundle clone/fetch focus: `clone --mirror <bundle>` now keeps advertised refs under their
+  original names and configures the mirror fetch refspec, while explicit `fetch <bundle>
+  "+refs/*:refs/*"` unbundles objects and applies the CLI refspec to update local refs. Focused
+  `./scripts/run-tests.sh t6020-bundle-misc.sh --quiet` improves from 27/37 to 28/37. Direct
+  verbose `-i` advances through test 18 and next fails at filtered bundle metadata.

@@ -1133,6 +1133,7 @@ fn fetch_remote(
         if url_override.is_none() {
             return Ok(());
         }
+        let bundle_refs = parse_bundle_fetch_refs(&remote_path)?;
         crate::commands::bundle::run(crate::commands::bundle::Args {
             action: crate::commands::bundle::BundleAction::Unbundle(
                 crate::commands::bundle::UnbundleArgs {
@@ -1141,6 +1142,7 @@ fn fetch_remote(
                 },
             ),
         })?;
+        update_refs_from_bundle_fetch(git_dir, &bundle_refs, args, is_bare_repo)?;
         return Ok(());
     }
 
@@ -5550,6 +5552,112 @@ fn remote_path_is_git_bundle_file(path: &Path) -> bool {
         }
     }
     false
+}
+
+fn parse_bundle_fetch_refs(path: &Path) -> Result<Vec<(String, ObjectId)>> {
+    let data = fs::read(path).with_context(|| format!("reading bundle {}", path.display()))?;
+    let header_v2 = b"# v2 git bundle\n";
+    let header_v3 = b"# v3 git bundle\n";
+    let mut pos = if data.starts_with(header_v2) {
+        header_v2.len()
+    } else if data.starts_with(header_v3) {
+        header_v3.len()
+    } else {
+        bail!("not a git bundle");
+    };
+    let mut out = Vec::new();
+    loop {
+        let eol = data[pos..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|i| pos + i)
+            .ok_or_else(|| anyhow::anyhow!("truncated bundle header"))?;
+        let line = &data[pos..eol];
+        pos = eol + 1;
+        if line.is_empty() {
+            break;
+        }
+        let line = std::str::from_utf8(line).context("invalid UTF-8 in bundle header")?;
+        if line.starts_with('-') || line.starts_with('@') {
+            continue;
+        }
+        if let Some((hex, refname)) = line.split_once(' ') {
+            let oid = ObjectId::from_hex(hex)
+                .map_err(|e| anyhow::anyhow!("bad oid in bundle header: {e}"))?;
+            out.push((refname.to_owned(), oid));
+        }
+    }
+    Ok(out)
+}
+
+fn update_refs_from_bundle_fetch(
+    git_dir: &Path,
+    bundle_refs: &[(String, ObjectId)],
+    args: &Args,
+    is_bare_repo: bool,
+) -> Result<()> {
+    if args.refspecs.is_empty() {
+        return Ok(());
+    }
+
+    let refspecs = parse_cli_fetch_refspecs(&args.refspecs);
+    let ff_repo = Repository::open(git_dir, None).context("open repository for bundle fetch")?;
+    let mut pending_atomic_ref_ops = Vec::new();
+    let mut ref_update_failures = Vec::new();
+
+    for (remote_ref, oid) in bundle_refs {
+        let Some(local_ref) = map_ref_through_refspecs(remote_ref, &refspecs) else {
+            continue;
+        };
+        let local_ref = normalize_fetch_refspec_dst(&local_ref);
+        if local_ref.starts_with("refs/heads/") && !args.update_head_ok && !is_bare_repo {
+            if let Some(wt_path) = is_branch_in_worktree(git_dir, &local_ref) {
+                bail!(
+                    "refusing to fetch into branch '{}' checked out at '{}'",
+                    local_ref,
+                    wt_path
+                );
+            }
+        }
+
+        let old_oid = read_ref_oid(git_dir, &local_ref);
+        if old_oid.as_ref() == Some(oid) {
+            continue;
+        }
+        let forced = args.force
+            || refspecs.iter().any(|rs| {
+                !rs.negative
+                    && rs.force
+                    && match_refspec_pattern(&rs.src, &rs.dst, remote_ref).is_some()
+            });
+        if let Some(old) = old_oid {
+            if old != *oid && !forced {
+                let is_ff = merge_base::is_ancestor(&ff_repo, old, *oid).unwrap_or(true);
+                if !is_ff {
+                    eprintln!(
+                        " ! [rejected]        {remote_ref} -> {local_ref} (non-fast-forward)"
+                    );
+                    bail!("cannot fast-forward ref '{local_ref}'");
+                }
+            }
+        }
+
+        apply_single_ref_update(
+            args,
+            git_dir,
+            &mut pending_atomic_ref_ops,
+            &local_ref,
+            old_oid,
+            *oid,
+            &mut ref_update_failures,
+        )?;
+    }
+
+    apply_pending_ref_ops_atomic(git_dir, &pending_atomic_ref_ops)?;
+    if !ref_update_failures.is_empty() {
+        bail!("some local refs could not be updated");
+    }
+    Ok(())
 }
 
 /// Open a repository (bare or non-bare).

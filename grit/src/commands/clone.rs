@@ -6422,24 +6422,35 @@ fn run_bundle_clone(args: Args) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("unbundle failed: {e}"))?;
     }
 
-    // Write refs as remote tracking refs under origin/
-    for (refname, oid) in &refs {
-        if refname == "HEAD" {
-            continue;
+    if args.mirror {
+        for (refname, oid) in &refs {
+            if refname == "HEAD" {
+                continue;
+            }
+            if refname.starts_with("refs/") {
+                clone_write_direct_ref(&dest.git_dir, refname, &oid.to_hex())?;
+            }
         }
-        // Write as remote tracking ref
-        if let Some(branch) = refname.strip_prefix("refs/heads/") {
-            let dst_name = format!("refs/remotes/origin/{branch}");
-            clone_write_direct_ref(&dest.git_dir, &dst_name, &oid.to_hex())?;
-        }
-        // Also write tags directly
-        if refname.starts_with("refs/tags/") {
-            clone_write_direct_ref(&dest.git_dir, refname, &oid.to_hex())?;
+    } else {
+        // Write refs as remote tracking refs under origin/
+        for (refname, oid) in &refs {
+            if refname == "HEAD" {
+                continue;
+            }
+            // Write as remote tracking ref
+            if let Some(branch) = refname.strip_prefix("refs/heads/") {
+                let dst_name = format!("refs/remotes/origin/{branch}");
+                clone_write_direct_ref(&dest.git_dir, &dst_name, &oid.to_hex())?;
+            }
+            // Also write tags directly
+            if refname.starts_with("refs/tags/") {
+                clone_write_direct_ref(&dest.git_dir, refname, &oid.to_hex())?;
+            }
         }
     }
 
     // Create the local branch only when the bundle lists that branch under `refs/heads/`.
-    if !orphan_bundle_head {
+    if !args.mirror && !orphan_bundle_head {
         if let Some((_, oid)) = refs
             .iter()
             .find(|(r, _)| r == &format!("refs/heads/{head_branch}"))
@@ -6451,8 +6462,13 @@ fn run_bundle_clone(args: Args) -> Result<()> {
 
     // Set up origin remote config
     let bundle_abs = fs::canonicalize(&bundle_path).unwrap_or(bundle_path);
-    let refspec = "+refs/heads/*:refs/remotes/origin/*".to_string();
-    setup_origin_remote(&dest.git_dir, &bundle_abs, "origin", &refspec)?;
+    if args.mirror {
+        let url = bundle_abs.to_string_lossy();
+        setup_remote_mirror_fetch_and_url(&dest.git_dir, &url, "origin")?;
+    } else {
+        let refspec = "+refs/heads/*:refs/remotes/origin/*".to_string();
+        setup_origin_remote(&dest.git_dir, &bundle_abs, "origin", &refspec)?;
+    }
 
     // Checkout if not bare
     if !args.bare {
