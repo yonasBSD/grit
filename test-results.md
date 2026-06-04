@@ -2846,3 +2846,7 @@ Updated: 2026-06-01
   bundles, and filtered bundle clones fail with the expected message. Focused
   `./scripts/run-tests.sh t6020-bundle-misc.sh --quiet` improves from 28/37 to 33/37. Direct
   verbose `-i` advances through test 23 and next fails at broken prerequisite verification.
+- t6020 broken-prerequisite diagnostic focus: disconnected prerequisite verify/unbundle errors now
+  include the prerequisite OID on the single error line, matching the upstream grep for unreachable
+  prerequisite commits. Focused `./scripts/run-tests.sh t6020-bundle-misc.sh --quiet` improves from
+  33/37 to 34/37. Direct verbose `--run=24-37 -i` advances to the bundle progress test.

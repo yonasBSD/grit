@@ -893,7 +893,7 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
             if !grit_lib::connectivity::bundle_prerequisites_connected_to_refs(repo, &prereq_oids)
                 .map_err(|e| anyhow::anyhow!("{e}"))?
             {
-                eprintln!("error: some prerequisite commits are not connected to the repository");
+                eprintln!("{}", disconnected_prerequisites_message(&prereq_oids));
                 return Err(anyhow::Error::new(SilentNonZeroExit { code: 1 }));
             }
         }
@@ -961,7 +961,7 @@ fn run_unbundle(args: UnbundleArgs) -> Result<()> {
     if !grit_lib::connectivity::bundle_prerequisites_connected_to_refs(&repo, &prereq_oids)
         .map_err(|e| anyhow::anyhow!("{e}"))?
     {
-        eprintln!("error: some prerequisite commits are not connected to the repository");
+        eprintln!("{}", disconnected_prerequisites_message(&prereq_oids));
         return Err(anyhow::Error::new(SilentNonZeroExit { code: 1 }));
     }
 
@@ -1014,6 +1014,14 @@ fn write_filtered_bundle_promisor_marker(
         writeln!(out, "{} {refname}", oid.to_hex())?;
     }
     Ok(())
+}
+
+fn disconnected_prerequisites_message(prerequisites: &[ObjectId]) -> String {
+    let detail = prerequisites
+        .first()
+        .map(ObjectId::to_hex)
+        .unwrap_or_else(|| "unknown".to_owned());
+    format!("error: some prerequisite commits {detail} are not connected to the repository")
 }
 
 fn read_bundle_arg(file: &str) -> Result<Vec<u8>> {
