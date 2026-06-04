@@ -6480,24 +6480,31 @@ fn cherry_pick_for_rebase(
             finalize_message_for_commit_encoding(pick_msg, &config);
         let author = rebase_replayed_author_line(&commit.author, replay_opts, now)?;
         let committer = rebase_replayed_committer_line(&config, &commit.author, replay_opts, now)?;
-        let (author_raw, committer_raw) =
-            grit_lib::commit_encoding::identity_raw_for_serialized_commit(
-                &enc_pick, &author, &committer,
-            );
-        let pick_data = CommitData {
-            tree: tree_oid,
-            parents: vec![head_oid],
-            author: author.clone(),
-            committer: committer.clone(),
-            author_raw,
-            committer_raw,
-            encoding: enc_pick,
-            message: pick_message.clone(),
-            raw_message: raw_pick,
+        let fast_forward_reword = commit.parents.first().copied() == Some(head_oid)
+            && !force_rewrite_commits
+            && !replay_opts.committer_date_is_author_date
+            && !replay_opts.ignore_date;
+        let pick_oid = if fast_forward_reword {
+            *commit_oid
+        } else {
+            let (author_raw, committer_raw) =
+                grit_lib::commit_encoding::identity_raw_for_serialized_commit(
+                    &enc_pick, &author, &committer,
+                );
+            let pick_data = CommitData {
+                tree: tree_oid,
+                parents: vec![head_oid],
+                author: author.clone(),
+                committer: committer.clone(),
+                author_raw,
+                committer_raw,
+                encoding: enc_pick,
+                message: pick_message.clone(),
+                raw_message: raw_pick,
+            };
+            let pick_bytes = serialize_commit(&pick_data);
+            write_replayed_commit(repo, rb_dir, &config, &pick_data.committer, pick_bytes)?
         };
-        let pick_bytes = serialize_commit(&pick_data);
-        let pick_oid =
-            write_replayed_commit(repo, rb_dir, &config, &pick_data.committer, pick_bytes)?;
         fs::write(git_dir.join("HEAD"), format!("{}\n", pick_oid.to_hex()))?;
 
         let after_editor = run_commit_editor_for_reword(repo, git_dir, &pick_message)?;
