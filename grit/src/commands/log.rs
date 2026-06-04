@@ -8125,6 +8125,101 @@ fn commit_pickaxe_matches(
     Ok(false)
 }
 
+/// Return the set of paths whose change matches the active pickaxe (`-S` / `-G`).
+///
+/// Mirrors [`commit_pickaxe_matches`] but collects every matching path instead of
+/// short-circuiting. Used to limit the `-p` patch to matching files unless
+/// `--pickaxe-all` is given (Git's `diffcore_pickaxe` behaviour).
+fn pickaxe_matching_paths(
+    git_dir: &Path,
+    odb: &Odb,
+    entries: &[DiffEntry],
+    args: &Args,
+) -> Result<std::collections::HashSet<String>> {
+    let mut matched = std::collections::HashSet::new();
+    let use_textconv = !args.no_textconv;
+    let config = ConfigSet::load(Some(git_dir), true).unwrap_or_default();
+
+    let grep_re = if let Some(ref pat) = args.pickaxe_grep {
+        Some(
+            RegexBuilder::new(pat)
+                .case_insensitive(args.regexp_ignore_case)
+                .build()
+                .with_context(|| format!("invalid pickaxe regex: {pat}"))?,
+        )
+    } else {
+        None
+    };
+    let s_pickaxe_re = if args.pickaxe_regex {
+        let needle = args
+            .pickaxe_string
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("internal: --pickaxe-regex without -S"))?;
+        Some(
+            RegexBuilder::new(needle)
+                .case_insensitive(args.regexp_ignore_case)
+                .build()
+                .with_context(|| format!("invalid pickaxe regex: {needle}"))?,
+        )
+    } else {
+        None
+    };
+
+    for entry in entries {
+        let path = entry.path();
+        let old_raw = read_blob_bytes(odb, &entry.old_oid);
+        let new_raw = read_blob_bytes(odb, &entry.new_oid);
+
+        if grep_re.is_some() && !args.text {
+            let has_textconv_driver =
+                use_textconv && path_has_textconv_driver(git_dir, &config, path);
+            let old_bin = is_binary_for_diff(git_dir, path, &old_raw);
+            let new_bin = is_binary_for_diff(git_dir, path, &new_raw);
+            if (!has_textconv_driver && old_bin) || (!has_textconv_driver && new_bin) {
+                continue;
+            }
+        }
+
+        let old_text = blob_text_for_diff(git_dir, &config, path, &old_raw, use_textconv);
+        let new_text = blob_text_for_diff(git_dir, &config, path, &new_raw, use_textconv);
+
+        if let Some(ref re) = grep_re {
+            let patch = unified_diff(
+                old_text.as_str(),
+                new_text.as_str(),
+                entry.old_path.as_deref().unwrap_or(path),
+                entry.new_path.as_deref().unwrap_or(path),
+                3,
+                indent_heuristic_from_config(&config),
+                config.quote_path_fully(),
+            );
+            if pickaxe_g_matches_diff_lines(re, &patch) {
+                matched.insert(path.to_owned());
+            }
+            continue;
+        }
+
+        if let Some(ref needle) = args.pickaxe_string {
+            let differs = if args.pickaxe_regex {
+                let re = s_pickaxe_re.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("internal: --pickaxe-regex without compiled regex")
+                })?;
+                re.find_iter(old_text.as_str()).count() != re.find_iter(new_text.as_str()).count()
+            } else if args.regexp_ignore_case && needle.is_ascii() {
+                count_ascii_case_insensitive(&old_text, needle)
+                    != count_ascii_case_insensitive(&new_text, needle)
+            } else {
+                old_text.matches(needle.as_str()).count()
+                    != new_text.matches(needle.as_str()).count()
+            };
+            if differs {
+                matched.insert(path.to_owned());
+            }
+        }
+    }
+    Ok(matched)
+}
+
 fn read_blob_bytes(odb: &Odb, oid: &ObjectId) -> Vec<u8> {
     if oid.is_zero() {
         return Vec::new();
@@ -10967,6 +11062,19 @@ fn write_commit_diff(
     let mut entries = compute_commit_diff(odb, info)?;
     if entries.is_empty() {
         return Ok(());
+    }
+
+    // Pickaxe (`-S` / `-G`) without `--pickaxe-all` limits the patch to the files whose
+    // change matches the needle (Git's `diffcore_pickaxe`).
+    if !args.pickaxe_all
+        && !is_merge
+        && (args.pickaxe_string.is_some() || args.pickaxe_grep.is_some())
+    {
+        let matched = pickaxe_matching_paths(git_dir, odb, &entries, args)?;
+        entries.retain(|e| matched.contains(e.path()));
+        if entries.is_empty() {
+            return Ok(());
+        }
     }
 
     if let Some(ref order_path) = args.order_file {
