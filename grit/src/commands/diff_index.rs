@@ -2494,7 +2494,47 @@ pub(crate) fn write_submodule_diff_recursive(
     if message == Some("(commits not present)") {
         return Ok(());
     }
-    if message.is_some() {
+    // For `(new submodule)`/`(submodule deleted)`, `--submodule=diff` still renders the
+    // inner per-file diff (empty-tree → new_tree for a new submodule, old_tree → empty-tree
+    // for a deleted one) whenever the submodule objects are reachable; the message is only a
+    // header annotation. `log`/`short` stop at the header. When the submodule repo is gone
+    // (e.g. `rm -rf sm`), both trees are None and the inner diff is empty, so only the header
+    // prints — matching Git.
+    let new_or_deleted = message == Some("(new submodule)") || message == Some("(submodule deleted)");
+    if message.is_some() && !(new_or_deleted && submodule_format == SubmodulePatchFormat::Diff) {
+        return Ok(());
+    }
+    if new_or_deleted && submodule_format == SubmodulePatchFormat::Diff {
+        let odb_inner = sub_repo.as_ref().map(|r| &r.odb).unwrap_or(&super_repo.odb);
+        let inner = diff_trees(odb_inner, old_tree.as_ref(), new_tree.as_ref(), "")?;
+        for e in &inner {
+            let inner_full = format!("{full_path_from_root}/{}", e.path());
+            if e.old_mode == "160000" || e.new_mode == "160000" {
+                write_patch_entry(
+                    out,
+                    super_repo,
+                    odb_inner,
+                    e,
+                    context_lines,
+                    None,
+                    SubmodulePatchFormat::Diff,
+                    submodule_ignore,
+                    &inner_full,
+                    indent_heuristic,
+                )?;
+            } else {
+                write_patch_entry_inner(
+                    out,
+                    super_repo,
+                    odb_inner,
+                    e,
+                    context_lines,
+                    None,
+                    full_path_from_root,
+                    indent_heuristic,
+                )?;
+            }
+        }
         return Ok(());
     }
 
