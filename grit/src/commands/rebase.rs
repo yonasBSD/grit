@@ -210,6 +210,10 @@ pub struct Args {
     #[arg(short = 'v', long = "verbose", conflicts_with = "abort")]
     pub verbose: bool,
 
+    /// Be quiet.
+    #[arg(short = 'q', long = "quiet")]
+    pub quiet: bool,
+
     /// Update stale tracking branches after rebase.
     #[arg(long = "update-refs", conflicts_with = "no_update_refs")]
     pub update_refs: bool,
@@ -470,6 +474,16 @@ pub fn run(mut args: Args) -> Result<()> {
     };
     if args.branch.is_some() {
         let repo = Repository::discover(None).context("not a git repository")?;
+        if let Some(branch) = args.branch.as_deref() {
+            if resolve_ref(&repo.git_dir, &format!("refs/heads/{branch}")).is_ok() {
+                if let Some(wt_path) =
+                    crate::commands::worktree_refs::branch_occupied_by_other_worktree(&repo, branch)
+                        .or_else(|| branch_checked_out_in_linked_worktree(&repo, branch))
+                {
+                    bail!("fatal: '{branch}' is already used by worktree at '{wt_path}'");
+                }
+            }
+        }
         let uspec = args
             .upstream
             .as_deref()
@@ -3259,6 +3273,20 @@ fn run_post_rewrite_after_rebase(repo: &Repository, rb_dir: &Path) {
     let Ok(bytes) = fs::read(&path) else {
         return;
     };
+    if let Ok(self_exe) = std::env::current_exe() {
+        if let Ok(mut child) = std::process::Command::new(self_exe)
+            .args(["notes", "copy", "--for-rewrite=rebase"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(&bytes);
+            }
+            let _ = child.wait();
+        }
+    }
     let _ = run_hook(repo, "post-rewrite", &["rebase"], Some(&bytes));
 }
 
@@ -3313,6 +3341,37 @@ fn reset_index_to_head(repo: &Repository, git_dir: &Path) -> Result<()> {
 fn git_editor_cmd(config: &ConfigSet) -> Result<String> {
     crate::editor::resolve_git_editor(config, false)
         .ok_or_else(|| anyhow::anyhow!("Terminal is dumb, but EDITOR unset"))
+}
+
+fn branch_checked_out_in_linked_worktree(repo: &Repository, branch: &str) -> Option<String> {
+    let common = grit_lib::refs::common_dir(&repo.git_dir).unwrap_or_else(|| repo.git_dir.clone());
+    let worktrees = common.join("worktrees");
+    let target = format!("ref: refs/heads/{branch}");
+    let entries = fs::read_dir(worktrees).ok()?;
+    for entry in entries.flatten() {
+        let admin = entry.path();
+        let Ok(head) = fs::read_to_string(admin.join("HEAD")) else {
+            continue;
+        };
+        if head.trim() != target {
+            continue;
+        }
+        let path = fs::read_to_string(admin.join("gitdir"))
+            .ok()
+            .and_then(|gitdir| {
+                Path::new(gitdir.trim())
+                    .parent()
+                    .map(|p| p.display().to_string())
+            })
+            .unwrap_or_else(|| admin.display().to_string());
+        if !crate::commands::worktree_refs::worktree_paths_equal_pub(
+            &path,
+            &crate::commands::worktree_refs::current_worktree_path_for_repo(repo),
+        ) {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// Resolves the program to run for `rebase -i` / autosquash todo editing (`git_sequence_editor`).
@@ -4165,6 +4224,9 @@ Use '--' to separate paths from revisions, like this:\n\
     if args.verbose {
         fs::write(rb_dir.join("verbose"), "")?;
     }
+    if args.quiet {
+        fs::write(rb_dir.join("quiet"), "")?;
+    }
     fs::write(rb_dir.join("msgnum"), "1")?;
     fs::write(rb_dir.join("last"), total_cmds.to_string())?;
     fs::write(rb_dir.join("next"), "1")?;
@@ -4330,7 +4392,9 @@ Use '--' to separate paths from revisions, like this:\n\
     } else {
         onto_oid.to_hex()[..7].to_string()
     };
-    eprintln!("rebasing {} commits onto {}", total_cmds, onto_display);
+    if !rebase_quiet(&rb_dir) {
+        eprintln!("rebasing {} commits onto {}", total_cmds, onto_display);
+    }
 
     replay_remaining(
         &repo,
@@ -4880,7 +4944,7 @@ fn replay_remaining(
         let msgnum: usize = fs::read_to_string(rb_dir.join("msgnum"))?.trim().parse()?;
 
         if !rewind_done && !todo.is_empty() {
-            if print_am_style_progress && !rewind_marker.exists() {
+            if print_am_style_progress && !rewind_marker.exists() && !rebase_quiet(rb_dir) {
                 println!("First, rewinding head to replay your work on top of it...");
                 flush_rebase_stdout();
                 let _ = fs::write(&rewind_marker, "");
@@ -4994,7 +5058,9 @@ fn replay_remaining(
                     fs::write(rb_dir.join("msgnum"), "1")?;
                     let rem_n = count_rebase_todo_actionable_lines(&rem_body);
                     fs::write(rb_dir.join("end"), rem_n.to_string())?;
-                    eprintln!("Executing: {}", exec_cmd);
+                    if !rebase_quiet(rb_dir) {
+                        eprintln!("Executing: {}", exec_cmd);
+                    }
                     let status = std::process::Command::new("sh")
                         .arg("-c")
                         .arg(&exec_cmd)
@@ -5059,10 +5125,10 @@ fn replay_remaining(
                             let merge_obj = repo.odb.read(&merge_oid)?;
                             let mc = parse_commit(&merge_obj.data)?;
                             let subject = mc.message.lines().next().unwrap_or("");
-                            if print_am_style_progress {
+                            if print_am_style_progress && !rebase_quiet(rb_dir) {
                                 println!("Applying: {}", subject);
                                 flush_rebase_stdout();
-                            } else {
+                            } else if !rebase_quiet(rb_dir) {
                                 eprintln!("Applying: {}", subject);
                             }
                             let msg = format!("{ra} (merge): {subject}");
@@ -5149,7 +5215,7 @@ fn replay_remaining(
                             let msg_for_log =
                                 message_for_root_replayed_commit(repo, &commit, root_rebase);
                             let subject = msg_for_log.lines().next().unwrap_or("");
-                            if print_am_style_progress {
+                            if print_am_style_progress && !rebase_quiet(rb_dir) {
                                 println!("Applying: {}", subject);
                                 flush_rebase_stdout();
                             }
@@ -5241,7 +5307,7 @@ fn replay_remaining(
                             let msg_for_log =
                                 message_for_root_replayed_commit(repo, &commit, root_rebase);
                             let subject = msg_for_log.lines().next().unwrap_or("");
-                            if print_am_style_progress {
+                            if print_am_style_progress && !rebase_quiet(rb_dir) {
                                 println!("Applying: {}", subject);
                                 flush_rebase_stdout();
                             }
@@ -5253,7 +5319,9 @@ fn replay_remaining(
                             if let Ok(global_exec) = fs::read_to_string(rb_dir.join("exec")) {
                                 let global_exec = global_exec.trim();
                                 if !global_exec.is_empty() {
-                                    eprintln!("Executing: {}", global_exec);
+                                    if !rebase_quiet(rb_dir) {
+                                        eprintln!("Executing: {}", global_exec);
+                                    }
                                     let status = std::process::Command::new("sh")
                                         .arg("-c")
                                         .arg(global_exec)
@@ -5350,6 +5418,10 @@ fn replay_remaining(
 }
 fn rebase_keep_empty(rb_dir: &Path) -> bool {
     rb_dir.join("keep-empty").exists()
+}
+
+fn rebase_quiet(rb_dir: &Path) -> bool {
+    rb_dir.join("quiet").exists()
 }
 
 fn rebase_orig_head_oid(rb_dir: &Path) -> Option<ObjectId> {
@@ -6223,6 +6295,7 @@ fn finish_rebase(
 
     flush_rebase_rewritten_pending(git_dir, rb_dir)?;
     run_post_rewrite_after_rebase(repo, rb_dir);
+    let quiet = rebase_quiet(rb_dir);
 
     // Leave the index matching the new tip (matches Git; avoids spurious "dirty index" on the next command).
     let _ = reset_index_to_head(repo, git_dir);
@@ -6234,7 +6307,9 @@ fn finish_rebase(
             }
             cleanup_rebase_state(git_dir);
             flush_rebase_stdout();
-            eprintln!("Successfully rebased and updated {success_target}.");
+            if !quiet {
+                eprintln!("Successfully rebased and updated {success_target}.");
+            }
         }
         RebaseBackend::Apply => {
             cleanup_rebase_state(git_dir);
@@ -6243,7 +6318,7 @@ fn finish_rebase(
             }
             // With `--apply`, Git omits the "Successfully rebased" line on stdout when autostash
             // was used (see t3420 `create_expected_success_apply`).
-            if !had_autostash_finish {
+            if !had_autostash_finish && !quiet {
                 println!("Successfully rebased and updated {success_target}.");
             }
         }
@@ -6836,7 +6911,7 @@ fn do_continue() -> Result<()> {
     record_rebase_in_rewritten_pending(git_dir, &rb_dir, oid_for_rewrite, next_after_continue)?;
 
     let subject = original_commit.message.lines().next().unwrap_or("");
-    if matches!(backend_continue, RebaseBackend::Apply) {
+    if matches!(backend_continue, RebaseBackend::Apply) && !rebase_quiet(&rb_dir) {
         println!("Applying: {}", subject);
         flush_rebase_stdout();
     }

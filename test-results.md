@@ -1589,3 +1589,12 @@ Updated: 2026-06-01
   t3422-rebase-incompatible-options.sh t3400-rebase.sh` kept `t3418` and `t3422` green.
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3400-rebase quiet/worktree partial
+
+- Focus harness improved from 30/39 to 35/39 after `rebase -q` quiet mode was parsed/persisted and
+  explicit branch rebases learned to reject branches checked out in linked worktrees.
+- Related verification: `./scripts/run-tests.sh t3400-rebase.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh` kept `t3418` and `t3422` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).

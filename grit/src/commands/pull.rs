@@ -803,6 +803,7 @@ fn do_merge_or_rebase_after_fetch(
             reapply_cherry_picks: false,
             no_reapply_cherry_picks: false,
             verbose: false,
+            quiet: false,
             update_refs: false,
             no_update_refs: false,
             empty: None,
