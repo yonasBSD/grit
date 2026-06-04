@@ -1744,26 +1744,46 @@ fn resolve_decoration_display(
             },
         }
     }
+    // Scan raw argv in order so the last decoration directive wins, matching Git's
+    // last-wins handling of `--decorate`, `--decorate=<mode>`, and `--no-decorate`.
+    // Stop scanning at a bare `--` (end of options).
     for arg in std::env::args_os().map(|a| a.to_string_lossy().into_owned()) {
+        if arg == "--" {
+            break;
+        }
         if arg == "--no-decorate" {
             show = false;
             full = false;
-        } else if arg.starts_with("--decorate") {
+        } else if arg == "--decorate" {
             show = true;
-            full = arg == "--decorate=full";
-        }
-    }
-    if args.decorate.is_some() {
-        show = true;
-        if let Some(Some(mode)) = &args.decorate {
-            if mode == "full" {
-                full = true;
+            full = false;
+        } else if let Some(mode) = arg.strip_prefix("--decorate=") {
+            match mode.to_ascii_lowercase().as_str() {
+                "full" => {
+                    show = true;
+                    full = true;
+                }
+                "short" | "auto" => {
+                    show = true;
+                    full = false;
+                }
+                other => match parse_bool(other) {
+                    Ok(true) => {
+                        show = true;
+                        full = false;
+                    }
+                    Ok(false) => {
+                        show = false;
+                        full = false;
+                    }
+                    // Unknown mode: be permissive and enable short decorations.
+                    Err(_) => {
+                        show = true;
+                        full = false;
+                    }
+                },
             }
         }
-    }
-    if args.no_decorate {
-        show = false;
-        full = false;
     }
     let oneline_like = log_uses_builtin_oneline(args);
     if oneline_like && !args.no_decorate && !show {
