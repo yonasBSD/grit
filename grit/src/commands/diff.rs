@@ -888,11 +888,17 @@ fn emit_ws_markup_line(
     };
     match ws_color {
         None => {
-            // No highlighting: `{set}{sign}{body}{reset}`.
+            // No highlighting (Git `emit_line_0`): a trailing carriage return is
+            // emitted *after* the reset, so it never lands inside the line color.
+            let (body_core, cr) = match body_no_nl.strip_suffix('\r') {
+                Some(b) => (b, "\r"),
+                None => (body_no_nl, ""),
+            };
             out.push_str(set);
             out.push(sign);
-            out.push_str(body_no_nl);
+            out.push_str(body_core);
             out.push_str(reset);
+            out.push_str(cr);
             out.push_str(nl);
         }
         Some(ws) if blank_at_eof => {
