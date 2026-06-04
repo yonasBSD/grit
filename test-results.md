@@ -1,4 +1,10 @@
 
+## 2026-06-04 — t5614-clone-submodules-shallow
+
+- Focus harness: `./scripts/run-tests.sh t5614-clone-submodules-shallow.sh --verbose` passes 9/9 after aligning fixture cleanup scoping with upstream.
+- Regression harness: `./scripts/run-tests.sh t5614-clone-submodules-shallow.sh t5619-clone-local-ambiguous-transport.sh t5611-clone-config.sh --verbose` passes all covered rows.
+
+
 ## 2026-06-04 — t5551-http-fetch-smart refresh
 
 - Harness refresh: `./scripts/run-tests.sh t5551-http-fetch-smart.sh --verbose` reports a successful row (31/37 with 6 expected TODO failures).
