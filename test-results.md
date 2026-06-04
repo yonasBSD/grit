@@ -1,3 +1,14 @@
+## 2026-06-04 — t6404 recursive merge complete
+
+- Focus harness: `t6404-recursive-merge.sh` improved from 5/6 to 6/6 after virtual merge-base
+  folding preserved upstream's newer-first order for three-or-more ambiguous bases.
+- Regression harness: `t6416-recursive-corner-cases.sh` remains 37/40 passing, 0 failing,
+  with 3 expected failures.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`,
+  and `cargo test -p grit-lib --lib` completed; the library test run passed 238/238. The broad
+  pre-existing Clippy warning backlog remains, and unrelated `clippy --fix` cleanup in
+  `grit-lib/src/filter_process.rs` was restored.
+
 ## 2026-06-04 — t6416 recursive nested conflicts complete
 
 - Focus harness: `t6416-recursive-corner-cases.sh` now records 37/40 passing, 0 failing,

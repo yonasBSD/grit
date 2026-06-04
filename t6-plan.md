@@ -87,12 +87,12 @@ Completed rev-list/revision files: `t6004`, `t6005`, `t6007-rev-list-cherry-pick
 - [ ] `t6436-merge-overwrite.sh` — 12/18 passing, 6 failing.
 - [ ] `t6418-merge-text-auto.sh` — 7/11 passing, 4 failing.
 - [ ] `t6421-merge-partial-clone.sh` — 0/3 passing, 3 failing.
-- [ ] `t6400-merge-df.sh` — 5/7 passing, 2 failing.
+- [x] `t6400-merge-df.sh` — 7/7 passing.
 - [ ] `t6411-merge-filemode.sh` — 17/19 passing, 2 failing.
 - [ ] `t6427-diff3-conflict-markers.sh` — 7/9 passing, 2 failing.
 - [ ] `t6432-merge-recursive-rename-options.sh` — 1/3 passing, 2 failing.
 - [ ] `t6434-merge-with-no-common-ancestor.sh` — 1/3 passing, 2 failing.
-- [ ] `t6404-recursive-merge.sh` — 5/6 passing, 1 failing.
+- [x] `t6404-recursive-merge.sh` — 6/6 passing.
 - [ ] `t6424-merge-unrelated-index-changes.sh` — 18/19 passing, 1 failing.
 - [ ] `t6435-merge-sparse-directory.sh` — 1/2 passing, 1 failing.
 

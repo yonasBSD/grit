@@ -1102,7 +1102,7 @@ t6400-merge-df	t6	yes	7	7	0	true	ok	0
 t6401-merge-criss-cross	t6	yes	4	4	0	true	ok	0
 t6402-merge-rename	t6	yes	46	46	0	true	ok	0
 t6403-merge-file	t6	yes	39	39	0	true	ok	0
-t6404-recursive-merge	t6	yes	6	5	1	false	ok	0
+t6404-recursive-merge	t6	yes	6	6	0	true	ok	0
 t6405-merge-symlinks	t6	yes	7	7	0	true	ok	0
 t6406-merge-attr	t6	yes	13	13	0	true	ok	0
 t6407-merge-binary	t6	yes	3	3	0	true	ok	0
