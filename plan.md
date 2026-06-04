@@ -120,7 +120,8 @@
     fork-point based default-upstream rebases skip preemptive no-op detection when upstream was
     rewound. Cherry-pick/fork-point now filters patch-id duplicates against the upstream tip.
     Quiet mode, linked-worktree branch occupancy checks, and `--update-refs` worktree comment
-    generation are now handled. Current count: 36/39.
+    generation are now handled. Notes rewrite avoids duplicating identical note blobs across
+    repeated rewrites. Current count: 37/39.
   - Execution log: `logs/2026-06-03_t3-family.md`.
 
 ## Active task — t6 family 100% pass

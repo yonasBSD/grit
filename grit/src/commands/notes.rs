@@ -1556,6 +1556,7 @@ fn apply_rewrite_copy(
                 (None, None) => return Ok(()),
                 (None, Some(n)) => n,
                 (Some(c), None) => c,
+                (Some(c), Some(n)) if c == n => c,
                 (Some(c), Some(n)) => combine_notes_concatenate(repo, Some(&c), Some(&n))?,
             };
             entries.retain(|e| note_object_name(&e.path).as_deref() != Some(to_hex.as_str()));

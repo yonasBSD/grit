@@ -1607,3 +1607,12 @@ Updated: 2026-06-01
   t3422-rebase-incompatible-options.sh` kept `t3418` and `t3422` green.
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
+## 2026-06-04 — t3400-rebase notes rewrite partial
+
+- Focus harness improved from 36/39 to 37/39 after notes rewrite concatenation stopped duplicating
+  identical source/destination note blobs.
+- Related verification: `./scripts/run-tests.sh t3400-rebase.sh t3418-rebase-continue.sh
+  t3301-notes.sh` kept `t3418` and `t3301` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
