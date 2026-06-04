@@ -232,6 +232,9 @@ pub fn config_file_display_for_error(path: &Path) -> String {
 }
 
 fn config_error_path_display(path: &Path) -> String {
+    if path == Path::new("-") {
+        return "standard input".to_owned();
+    }
     if path.file_name().and_then(|s| s.to_str()) == Some("config")
         && path
             .parent()
@@ -697,8 +700,13 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
                 continue;
             } else {
                 let file_disp = config_error_path_display(path);
+                let location = if path == Path::new("-") {
+                    file_disp
+                } else {
+                    format!("file {file_disp}")
+                };
                 return Err(Error::Message(format!(
-                    "fatal: bad config line {} in file {file_disp}",
+                    "fatal: bad config line {} in {location}",
                     start_idx + 1
                 )));
             }
@@ -1222,28 +1230,28 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
         let (sec_name, sub_name) = parse_section_name(section);
         let sec_lower = sec_name.to_lowercase();
 
-        // Find section header line and all lines that belong to it
-        let mut start = None;
-        let mut end = 0;
+        let mut remove = vec![false; self.raw_lines.len()];
+        let mut removing = false;
+        let mut found = false;
         let mut parser = Parser::new();
 
         for (idx, line) in self.raw_lines.iter().enumerate() {
             if parser.try_parse_section(line) {
-                if parser.section.to_lowercase() == sec_lower
-                    && parser.subsection.as_deref() == sub_name
-                {
-                    start = Some(idx);
-                    end = idx;
-                } else if start.is_some() {
-                    break;
-                }
-            } else if start.is_some() {
-                end = idx;
+                removing = section_matches(&parser, &sec_lower, sub_name);
+                found |= removing;
+            }
+            if removing {
+                remove[idx] = true;
             }
         }
 
-        if let Some(s) = start {
-            self.raw_lines.drain(s..=end);
+        if found {
+            self.raw_lines = self
+                .raw_lines
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, line)| (!remove[idx]).then_some(line.clone()))
+                .collect();
             let content = self.raw_lines.join("\n");
             let reparsed = Self::parse(&self.path, &content, self.scope)?;
             self.entries = reparsed.entries;
@@ -1263,16 +1271,18 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
     pub fn rename_section(&mut self, old_name: &str, new_name: &str) -> Result<bool> {
         let (old_sec, old_sub) = parse_section_name(old_name);
         let (new_sec, new_sub) = parse_section_name(new_name);
+        validate_section_name(new_sec, new_sub)?;
         let old_lower = old_sec.to_lowercase();
 
         let mut found = false;
         let mut parser = Parser::new();
 
-        for idx in 0..self.raw_lines.len() {
-            let line = &self.raw_lines[idx];
-            if parser.try_parse_section(line)
-                && parser.section.to_lowercase() == old_lower
-                && parser.subsection.as_deref() == old_sub
+        let mut idx = 0usize;
+        while idx < self.raw_lines.len() {
+            let line = self.raw_lines[idx].clone();
+            let mut inline_remainder = None;
+            if parser.try_parse_section_with_remainder(&line, &mut inline_remainder)
+                && section_matches(&parser, &old_lower, old_sub)
             {
                 // Rewrite the section header
                 let header = match new_sub {
@@ -1280,8 +1290,14 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
                     None => format!("[{}]", new_sec),
                 };
                 self.raw_lines[idx] = header;
+                if let Some(remainder) = inline_remainder {
+                    self.raw_lines
+                        .insert(idx + 1, format!("\t{}", remainder.trim()));
+                    idx += 1;
+                }
                 found = true;
             }
+            idx += 1;
         }
 
         if found {
@@ -2125,12 +2141,12 @@ impl ConfigSet {
 /// Note: bare config keys are represented as `None` in [`ConfigEntry`] and
 /// are normalized to `"true"` by higher-level readers (`ConfigSet::get`).
 /// An explicit empty assignment (`key =` with no value) is stored as `""` and
-/// is treated as true for `--bool` / [`parse_bool`], consistent with bare keys
-/// (implicit true) and the harness expectations for `config --bool`.
+/// is treated as false for `--bool` / [`parse_bool`]. Bare keys are represented
+/// as `None` and normalized to `"true"` by callers before reaching this parser.
 pub fn parse_bool(s: &str) -> std::result::Result<bool, String> {
     match s.to_lowercase().as_str() {
         "true" | "yes" | "on" => Ok(true),
-        "" => Ok(true),
+        "" => Ok(false),
         "false" | "no" | "off" => Ok(false),
         _ => {
             // Try parsing as integer: 0 → false, non-zero → true
@@ -3085,6 +3101,32 @@ fn parse_section_name(name: &str) -> (&str, Option<&str>) {
         Some(i) => (&name[..i], Some(&name[i + 1..])),
         None => (name, None),
     }
+}
+
+fn section_matches(parser: &Parser, section_lower: &str, subsection: Option<&str>) -> bool {
+    if parser.section.to_lowercase() == section_lower && parser.subsection.as_deref() == subsection
+    {
+        return true;
+    }
+    let Some(subsection) = subsection else {
+        return false;
+    };
+    parser.subsection.is_none()
+        && parser.section.to_lowercase() == format!("{section_lower}.{}", subsection.to_lowercase())
+}
+
+fn validate_section_name(section: &str, subsection: Option<&str>) -> Result<()> {
+    if section.is_empty()
+        || !section
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        || subsection.is_some_and(str::is_empty)
+    {
+        return Err(Error::ConfigError(format!(
+            "invalid section name: {section}"
+        )));
+    }
+    Ok(())
 }
 
 /// Extract the original-case variable name from a raw (user-typed) key.

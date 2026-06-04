@@ -1106,6 +1106,7 @@ fn cmd_rename_section(
     new_name: &str,
 ) -> Result<()> {
     reject_stdin_write(file_path)?;
+    reject_overlong_config_lines(file_path)?;
     let mut config = ConfigFile::from_path(file_path, scope).context("reading config file")?;
 
     match config {
@@ -1116,6 +1117,23 @@ fn cmd_rename_section(
             cfg.write().context("writing config file")?;
         }
         None => bail!("config file not found: {}", file_path.display()),
+    }
+    Ok(())
+}
+
+fn reject_overlong_config_lines(file_path: &Path) -> Result<()> {
+    const MAX_CONFIG_LINE_LEN: usize = 512 * 1024;
+    let Ok(content) = std::fs::read_to_string(file_path) else {
+        return Ok(());
+    };
+    for (idx, line) in content.lines().enumerate() {
+        if line.len() > MAX_CONFIG_LINE_LEN {
+            return Err(anyhow::anyhow!(
+                "refusing to work with overly long line in '{}' on line {}",
+                file_path.display(),
+                idx + 1
+            ));
+        }
     }
     Ok(())
 }
