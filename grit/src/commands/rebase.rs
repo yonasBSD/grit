@@ -6481,7 +6481,6 @@ fn cherry_pick_for_rebase(
         let author = rebase_replayed_author_line(&commit.author, replay_opts, now)?;
         let committer = rebase_replayed_committer_line(&config, &commit.author, replay_opts, now)?;
         let fast_forward_reword = commit.parents.first().copied() == Some(head_oid)
-            && !force_rewrite_commits
             && !replay_opts.committer_date_is_author_date
             && !replay_opts.ignore_date;
         let pick_oid = if fast_forward_reword {

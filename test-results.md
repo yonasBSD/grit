@@ -283,6 +283,8 @@
 
 - Current focus harness records 80/132 after fast-forwardable `reword` picks started placing HEAD
   at the original commit before opening the editor.
+- Follow-up removed the internal force-rewrite guard from that fast-forward editor setup so the
+  interactive replay path also exposes the original OID.
 - Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
   t3423-rebase-reword.sh t3418-rebase-continue.sh --verbose` keeps `t3423` and `t3418` green.
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
