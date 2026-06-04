@@ -1048,7 +1048,7 @@ t6007-rev-list-cherry-pick-file	t6	yes	23	23	0	true	ok	0
 t6007-rev-list-cherry-pick-status	t6	yes	29	29	0	true	ok	0
 t6008-rev-list-submodule	t6	yes	2	2	0	true	ok	0
 t6009-rev-list-parent	t6	yes	15	15	0	true	ok	0
-t6010-merge-base	t6	yes	12	10	2	false	ok	0
+t6010-merge-base	t6	yes	12	12	0	true	ok	0
 t6011-rev-list-with-bad-commit	t6	yes	6	5	1	false	ok	0
 t6011-rev-list-with-hierarchies	t6	yes	28	28	0	true	ok	0
 t6012-rev-list-simplify	t6	yes	42	42	0	true	ok	0

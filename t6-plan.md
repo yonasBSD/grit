@@ -55,7 +55,8 @@ dependency/topic groups. Mark an item `[~]` when claimed and `[x]` only after th
   parent rewriting and graph ordering honor grafted parents.
 - [x] `t6101-rev-parse-parents.sh` — 38/38 passing after making `rev-list`
   reuse the shared parent shorthand expansion for `^-` ranges.
-- [ ] `t6010-merge-base.sh` — 10/12 passing, 2 failing.
+- [x] `t6010-merge-base.sh` — 12/12 passing after default multi-commit
+  `merge-base` used first-vs-rest semantics instead of octopus semantics.
 - [ ] `t6011-rev-list-with-bad-commit.sh` — 5/6 passing, 1 failing.
 - [ ] `t6013-rev-list-reverse-parents.sh` — 2/3 passing, 1 failing.
 

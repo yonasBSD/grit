@@ -1,3 +1,15 @@
+## 2026-06-04 — t6010-merge-base
+
+- Focus harness: `./scripts/run-tests.sh t6010-merge-base.sh --verbose` passes 12/12 after
+  default multi-commit `merge-base` used first-vs-rest semantics instead of octopus semantics.
+- Regression harness: `./scripts/run-tests.sh t6010-merge-base.sh t6101-rev-parse-parents.sh t6600-test-reach.sh t6019-rev-list-ancestry-path.sh t6003-rev-list-topo-order.sh --verbose`
+  passes 12/12, 38/38, 47/47, 18/18, and 36/36.
+- `cargo build --release -p grit-cli`, `cargo fmt`, `cargo check -p grit-cli`,
+  `cargo test -p grit-lib --lib`, and `cargo clippy --fix --allow-dirty` completed with the
+  existing warning backlog; unrelated fmt/clippy auto-fixes were restored.
+- Broader `cargo test --workspace` and `./tests/harness/run.sh` were skipped for this focused t6
+  increment.
+
 ## 2026-06-04 — t6101-rev-parse-parents
 
 - Focus harness: `./scripts/run-tests.sh t6101-rev-parse-parents.sh --verbose` passes 38/38
