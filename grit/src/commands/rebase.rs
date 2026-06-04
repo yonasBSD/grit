@@ -1683,7 +1683,7 @@ fn parse_interactive_rebase_todo_line(
             };
             let merge_oid = resolve_revision(repo, merge_ref)
                 .with_context(|| format!("todo merge: bad revision '{merge_ref}'"))?;
-            let tail: Vec<&str> = rest.collect();
+            let tail: Vec<&str> = rest.take_while(|tok| *tok != "#").collect();
             let merge_args = tail.join(" ");
             return Ok(Some(ParsedRebaseTodoLine::MergeReuseMessage {
                 merge_oid,
@@ -2826,6 +2826,82 @@ fn load_rebase_rerere_autoupdate(rb_dir: &Path) -> grit_lib::rerere::RerereAutou
         grit_lib::rerere::RerereAutoupdate::No
     } else {
         grit_lib::rerere::RerereAutoupdate::FromConfig
+    }
+}
+
+fn hex_encode_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn hex_decode_string(hex: &str) -> Option<String> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    let mut iter = hex.as_bytes().chunks_exact(2);
+    for pair in &mut iter {
+        let hi = (pair[0] as char).to_digit(16)? as u8;
+        let lo = (pair[1] as char).to_digit(16)? as u8;
+        bytes.push((hi << 4) | lo);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn maybe_run_rebase_merge_strategy(
+    repo: &Repository,
+    git_dir: &Path,
+    rb_dir: &Path,
+    commit_oid: ObjectId,
+) -> Result<()> {
+    let Ok(strategy_raw) = fs::read_to_string(rb_dir.join("strategy")) else {
+        return Ok(());
+    };
+    let strategy = strategy_raw.trim();
+    if strategy.is_empty() || matches!(strategy, "ort" | "recursive" | "resolve") {
+        return Ok(());
+    }
+    let commit_obj = repo.odb.read(&commit_oid)?;
+    let commit = parse_commit(&commit_obj.data)?;
+    let Some(parent_oid) = commit.parents.first().copied() else {
+        return Ok(());
+    };
+    let head_oid = resolve_head(git_dir)?
+        .oid()
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("HEAD has no OID"))?;
+    let mut cmd = std::process::Command::new(format!("git-merge-{strategy}"));
+    if let Ok(opts) = fs::read_to_string(rb_dir.join("strategy-opts")) {
+        for encoded in opts.lines() {
+            if encoded.is_empty() {
+                continue;
+            }
+            let Some(opt) = hex_decode_string(encoded) else {
+                continue;
+            };
+            if opt.starts_with("--") {
+                cmd.arg(opt);
+            } else {
+                cmd.arg(format!("--{opt}"));
+            }
+        }
+    }
+    cmd.arg(parent_oid.to_hex())
+        .arg("--")
+        .arg(head_oid.to_hex())
+        .arg(commit_oid.to_hex());
+    let status = cmd
+        .current_dir(repo.work_tree.as_deref().unwrap_or_else(|| Path::new(".")))
+        .status();
+    match status {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).context("run rebase merge strategy"),
     }
 }
 
@@ -4023,6 +4099,19 @@ Use '--' to separate paths from revisions, like this:\n\
 
     if let Some(ref exec_cmd) = args.exec {
         fs::write(rb_dir.join("exec"), exec_cmd)?;
+    }
+    if let Some(ref strategy) = args.strategy {
+        fs::write(rb_dir.join("strategy"), format!("{strategy}\n"))?;
+    }
+    if !args.strategy_option.is_empty() {
+        fs::write(
+            rb_dir.join("strategy-opts"),
+            args.strategy_option
+                .iter()
+                .map(|opt| hex_encode_bytes(opt.as_bytes()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )?;
     }
 
     if let Some(ref oid) = autostash_oid {
@@ -5585,6 +5674,7 @@ fn cherry_pick_for_rebase(
     if let Some(wt) = repo.work_tree.as_deref() {
         bail_if_df_merge_would_remove_cwd(wt, &base_entries, &ours_entries, &theirs_entries)?;
     }
+    maybe_run_rebase_merge_strategy(repo, git_dir, rb_dir, *commit_oid)?;
     let conflict_ctx = RebaseConflictContext {
         backend,
         picked_subject: commit.message.lines().next().unwrap_or("replayed commit"),
@@ -6339,6 +6429,7 @@ fn do_continue() -> Result<()> {
     let current_hex = fs::read_to_string(rb_dir.join("current"))?;
     let current_hex = current_hex.trim();
     let mut current_oid = ObjectId::from_hex(current_hex)?;
+    maybe_run_rebase_merge_strategy(&repo, git_dir, &rb_dir, current_oid)?;
 
     if interactive_continue {
         if let Some(first_pick) = first_interactive_todo_pick_oid(&repo, &todo_lines_continue) {

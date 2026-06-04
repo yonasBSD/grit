@@ -1487,3 +1487,14 @@ Updated: 2026-06-01
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 - Regression verification: `./scripts/run-tests.sh t3422-rebase-incompatible-options.sh
   t3650-replay-basics.sh` passed both files.
+
+## 2026-06-04 — t3418-rebase-continue strategy partial
+
+- Harness `t3418-rebase-continue.sh` now records 22/30 after merge strategy state/option replay
+  and interactive merge todo comment parsing fixes.
+- Related verification: `./scripts/run-tests.sh t3418-rebase-continue.sh
+  t3422-rebase-incompatible-options.sh` kept `t3422` green at 52/52.
+- Remaining `t3418` failures: skipped fixup message cleanup, patch cleanup before `break`,
+  reschedule-failed-exec behavior, and conflict-message editor/comment handling.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
