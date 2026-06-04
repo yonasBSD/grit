@@ -954,7 +954,13 @@ fn run_list_heads(args: ListHeadsArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn run_unbundle(args: UnbundleArgs) -> Result<()> {
-    let repo = Repository::discover(None).context("not a git repository")?;
+    let repo = match Repository::discover(None) {
+        Ok(repo) => repo,
+        Err(_) => {
+            eprintln!("fatal: Need a repository to unbundle.");
+            return Err(anyhow::Error::new(SilentNonZeroExit { code: 128 }));
+        }
+    };
     let data = read_bundle_arg(&args.file)?;
     let header = parse_bundle_header(&data)?;
 

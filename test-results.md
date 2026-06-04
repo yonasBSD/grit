@@ -2854,3 +2854,6 @@ Updated: 2026-06-01
   `Writing objects: 100%` progress line. Focused `./scripts/run-tests.sh t6020-bundle-misc.sh
   --quiet` improves from 34/37 to 36/37. Direct verbose `-i` advances to the non-repository
   unbundle diagnostic.
+- t6020 non-repository unbundle focus: `bundle unbundle` now emits Git's exact
+  `fatal: Need a repository to unbundle.` diagnostic outside a repository. Focused
+  `./scripts/run-tests.sh t6020-bundle-misc.sh --quiet` improves from 36/37 to 37/37.

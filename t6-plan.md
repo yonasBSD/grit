@@ -124,7 +124,7 @@ Completed describe/name files: `t6120-name-rev`, `t6120-describe`.
 
 ## Bundle, Object Reachability, And GC
 
-- [~] `t6020-bundle-misc.sh` — 36/37 passing, 1 failing.
+- [x] `t6020-bundle-misc.sh` — 37/37 passing.
 - [ ] `t6501-freshen-objects.sh` — 36/42 passing, 6 failing.
 - [ ] `t6500-gc.sh` — 34/35 passing, 1 failing.
 
