@@ -29,6 +29,7 @@ use grit_lib::diff::{
     anchored_unified_diff, count_changes, count_changes_with_algorithm, count_git_lines,
     detect_copies, detect_renames, diff_index_to_tree, diff_index_to_worktree,
     diff_slice_ops_compacted, diff_tree_to_worktree, diff_trees, diffcore_count_changes,
+    word_diff_ops_imara,
     empty_blob_oid, format_stat_line, resolve_indent_heuristic,
     rewrite_dissimilarity_index_percent, should_break_rewrite_for_stat,
     unified_diff_histogram_hunks_only, unified_diff_with_prefix,
@@ -7845,6 +7846,80 @@ pub struct WordRe {
     longest: regex_automata::dfa::regex::Regex,
 }
 
+/// Translate a POSIX ERE (as used by Git's `wordRegex`) into a pattern the `regex` crate accepts.
+///
+/// POSIX bracket expressions allow `]` as the first member of a class (e.g. `[][)(]` or the
+/// scheme driver's `[^][)(}{[ \t]`), but the `regex` crate requires it to be escaped. We rewrite
+/// a `]` that immediately follows `[` or `[^` into `\]`. Backslash escapes are passed through so
+/// existing `\]`, `\[`, etc. are untouched.
+fn posix_ere_to_rust_regex(pattern: &str) -> String {
+    let bytes = pattern.as_bytes();
+    let mut out = String::with_capacity(pattern.len() + 4);
+    let mut i = 0usize;
+    let mut in_class = false;
+    // Position (in `out`-equivalent terms) tracking where the current class body began, so we can
+    // detect the "first member" slot (just after `[` or `[^`).
+    let mut class_just_opened = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'\\' && i + 1 < bytes.len() {
+            // Pass through an escape pair verbatim.
+            out.push('\\');
+            out.push(bytes[i + 1] as char);
+            i += 2;
+            class_just_opened = false;
+            continue;
+        }
+        if !in_class {
+            if c == b'[' {
+                in_class = true;
+                class_just_opened = true;
+                out.push('[');
+                i += 1;
+                // Handle a leading negation.
+                if i < bytes.len() && bytes[i] == b'^' {
+                    out.push('^');
+                    i += 1;
+                }
+                continue;
+            }
+            out.push(c as char);
+            i += 1;
+            continue;
+        }
+        // Inside a character class.
+        if class_just_opened && c == b']' {
+            // `]` as the first member is a literal in POSIX; escape it for the regex crate.
+            out.push_str("\\]");
+            i += 1;
+            class_just_opened = false;
+            continue;
+        }
+        class_just_opened = false;
+        if c == b']' {
+            in_class = false;
+            out.push(']');
+            i += 1;
+            continue;
+        }
+        if c == b'[' {
+            // A POSIX bracket expression (`[:alpha:]`, `[.ch.]`, `[=a=]`) is passed through;
+            // any other `[` is a literal member, which the `regex` crate would otherwise treat
+            // as the start of a nested class, so escape it.
+            if i + 1 < bytes.len() && matches!(bytes[i + 1], b':' | b'.' | b'=') {
+                out.push('[');
+            } else {
+                out.push_str("\\[");
+            }
+            i += 1;
+            continue;
+        }
+        out.push(c as char);
+        i += 1;
+    }
+    out
+}
+
 impl WordRe {
     fn build(pattern: &str, case_insensitive: bool) -> Option<Self> {
         use regex_automata::{
@@ -7852,6 +7927,7 @@ impl WordRe {
             util::syntax,
             MatchKind,
         };
+        let pattern = &posix_ere_to_rust_regex(pattern);
         let start = RegexBuilder::new(pattern)
             .multi_line(true)
             .case_insensitive(case_insensitive)
@@ -8056,13 +8132,9 @@ fn git_word_diff_show(
         .map(|(a, b)| plus.get(*a..*b).unwrap_or(""))
         .collect();
 
-    // Diff the word streams with raw Myers (no Git-style hunk sliding). Git's
-    // word diff keeps each changed run bounded by the surrounding equal words;
-    // applying `xdl_change_compact`-style sliding here can over-merge a changed
-    // word with an adjacent equal one across line boundaries (e.g. gluing the
-    // closing `'` of `'x'`/`'y'` to the changed letter), so we deliberately use
-    // `capture_diff_slices` rather than `diff_slice_ops_compacted`.
-    let ops = similar::capture_diff_slices(similar::Algorithm::Myers, &mw, &pw);
+    // Diff the word streams with imara's Myers (Git's default xdiff engine) followed by
+    // `xdl_change_compact`, matching Git's word-level alignment and tie-breaking.
+    let ops = word_diff_ops_imara(&mw, &pw);
 
     // current_plus tracks the byte offset into `plus` already emitted.
     let mut current_plus: usize = 0;
@@ -9015,7 +9087,10 @@ fn color_hunk_header_word_diff(header: &str, cb: &str, cr: &str, fb: &str, fr: &
     if func_part.is_empty() {
         format!("{cb}{frag}{cr}{rest}")
     } else {
-        format!("{cb}{frag}{cr}{space_part}{fb}{func_part}{fr}")
+        // Git `emit_hunk_header`: the blank before the func header is emitted in
+        // the (empty) context color and closed with a reset, then the func part.
+        let space_reset = if space_part.is_empty() { "" } else { cr };
+        format!("{cb}{frag}{cr}{space_part}{space_reset}{fb}{func_part}{fr}")
     }
 }
 

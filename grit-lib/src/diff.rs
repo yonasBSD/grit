@@ -285,6 +285,76 @@ pub fn parse_indent_heuristic_cli_flags(argv: &[String]) -> (bool, bool) {
     (indent_heuristic, no_indent_heuristic)
 }
 
+/// Diff two token streams with imara's Myers implementation (Git's default xdiff engine) and
+/// return the result as `similar::DiffOp`s. Used by the word-diff machinery, where matching
+/// Git's exact LCS tie-breaking matters (`similar`'s Myers picks different — but equally
+/// minimal — alignments, mismatching Git's reference output for e.g. the `ada` driver).
+#[must_use]
+pub fn word_diff_ops_imara(old_words: &[&str], new_words: &[&str]) -> Vec<similar::DiffOp> {
+    use imara_diff::{Algorithm, Diff, InternedInput};
+    use similar::DiffOp;
+
+    let mut input: InternedInput<&str> = InternedInput::default();
+    input.update_before(old_words.iter().copied());
+    input.update_after(new_words.iter().copied());
+    let mut diff = Diff::compute(Algorithm::Myers, &input);
+    diff.postprocess_lines(&input);
+
+    let mut ops: Vec<DiffOp> = Vec::new();
+    let mut old_pos = 0usize;
+    let mut new_pos = 0usize;
+    for hunk in diff.hunks() {
+        let b_start = hunk.before.start as usize;
+        let b_end = hunk.before.end as usize;
+        let a_start = hunk.after.start as usize;
+        let a_end = hunk.after.end as usize;
+        if b_start > old_pos {
+            let len = b_start - old_pos;
+            ops.push(DiffOp::Equal {
+                old_index: old_pos,
+                new_index: new_pos,
+                len,
+            });
+            old_pos += len;
+            new_pos += len;
+        }
+        let del = b_end - b_start;
+        let ins = a_end - a_start;
+        if del > 0 && ins > 0 {
+            ops.push(DiffOp::Replace {
+                old_index: b_start,
+                old_len: del,
+                new_index: a_start,
+                new_len: ins,
+            });
+        } else if del > 0 {
+            ops.push(DiffOp::Delete {
+                old_index: b_start,
+                old_len: del,
+                new_index: a_start,
+            });
+        } else if ins > 0 {
+            ops.push(DiffOp::Insert {
+                old_index: b_start,
+                new_index: a_start,
+                new_len: ins,
+            });
+        }
+        old_pos = b_end;
+        new_pos = a_end;
+    }
+    if old_pos < old_words.len() {
+        ops.push(DiffOp::Equal {
+            old_index: old_pos,
+            new_index: new_pos,
+            len: old_words.len() - old_pos,
+        });
+    }
+    // Slide changed runs to Git's canonical position (`xdl_change_compact`); the word
+    // diff never enables the indent heuristic.
+    diff_indent_heuristic::apply_change_compact_to_ops(&ops, old_words, new_words, false)
+}
+
 /// Line-diff ops for string slices after Git `xdl_change_compact` (and optional indent heuristic).
 #[must_use]
 pub fn diff_slice_ops_compacted(
