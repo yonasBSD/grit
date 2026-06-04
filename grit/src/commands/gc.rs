@@ -100,6 +100,7 @@ pub struct Args {
 pub fn run(args: Args) -> Result<()> {
     let repo = Repository::discover(None).context("not a git repository")?;
     let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    validate_gc_prune_expire_config(&repo.git_dir, &cfg)?;
 
     let quiet = args.quiet && !args.no_quiet;
 
@@ -257,6 +258,46 @@ fn reftable_auto_pack_needed(repo: &Repository) -> bool {
 }
 
 /// Expire argument for `git prune` during `gc`: `None` means skip pruning (Git `never`).
+fn validate_gc_prune_expire_config(git_dir: &Path, cfg: &ConfigSet) -> Result<()> {
+    let Some(value) = cfg.get("gc.pruneexpire") else {
+        return Ok(());
+    };
+    if gc_prune_expire_value_is_valid(&value) {
+        return Ok(());
+    }
+    let config_path = git_dir.join("config");
+    let line = fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .position(|line| line.to_ascii_lowercase().contains("pruneexpire"))
+                .map(|idx| idx + 1)
+        })
+        .unwrap_or(1);
+    bail!(
+        "Invalid gc.pruneexpire: '{value}'\nfatal: bad config variable 'gc.pruneexpire' in file '.git/config' at line {line}"
+    )
+}
+
+fn gc_prune_expire_value_is_valid(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "now" | "all" | "never") {
+        return true;
+    }
+    let normalized = normalized.replace('.', " ");
+    let parts: Vec<&str> = normalized.split_whitespace().collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    if parts[0].parse::<u64>().is_err() {
+        return false;
+    }
+    matches!(
+        parts[1].trim_end_matches('s'),
+        "second" | "minute" | "hour" | "day" | "week" | "month" | "year"
+    )
+}
+
 fn gc_prune_expire_cli(args: &Args, cfg: &ConfigSet) -> Option<String> {
     let from_flag = match &args.prune {
         Some(Some(s)) if s.is_empty() => cfg.get("gc.pruneexpire").clone(),
@@ -553,7 +594,10 @@ fn run_repack_for_gc(
             .and_then(parse_byte_size_with_suffix);
         let max_cruft = max_cruft_cli.or(max_cruft_cfg);
 
-        if prune_expire == "now" && !(cruft_on && expire_to.is_some()) {
+        if gc_args.no_prune || prune_expire.eq_ignore_ascii_case("never") {
+            // `git gc --no-prune` / `--prune=never` must not loosen and then delete
+            // unreachable objects; leave the repack as the base `repack -d -l` pass.
+        } else if prune_expire == "now" && !(cruft_on && expire_to.is_some()) {
             repack_trace.push("-a".into());
             cmd.arg("-a");
         } else if cruft_on {
