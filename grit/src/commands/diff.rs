@@ -5485,7 +5485,9 @@ fn gather_dirstat_recursive(
         if permille_val >= permille {
             let int_part = permille_val / 10;
             let frac = permille_val % 10;
-            writeln!(out, " {:>4}.{}% {}", int_part, frac, &base[..base_len])?;
+            // Git formats dirstat lines as `%4d.%01d%% %s` (no leading space; the
+            // width-4 field provides the alignment).
+            writeln!(out, "{:>4}.{}% {}", int_part, frac, &base[..base_len])?;
             if !cumulative {
                 return Ok(sum);
             }
