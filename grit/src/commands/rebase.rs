@@ -5376,7 +5376,26 @@ fn replay_remaining(
                         .unwrap_or_else(diff::zero_oid);
 
                     append_interactive_rebase_done_line(rb_dir, todo[i])?;
-                    match run_rebase_pick_in_clean_child_process(repo, i, force_rewrite_commits) {
+                    let pick_result = if todo_cmd == RebaseTodoCmd::Reword {
+                        let final_fixup =
+                            is_final_fixup_in_todo(repo, rb_dir, &todo, i, rebase_interactive);
+                        let next_after =
+                            peek_next_rebase_flush_hint(repo, &todo, i + 1, rebase_interactive);
+                        cherry_pick_for_rebase(
+                            repo,
+                            rb_dir,
+                            &commit_oid,
+                            backend,
+                            todo_cmd,
+                            final_fixup,
+                            next_after,
+                            true,
+                            force_rewrite_commits,
+                        )
+                    } else {
+                        run_rebase_pick_in_clean_child_process(repo, i, force_rewrite_commits)
+                    };
+                    match pick_result {
                         Ok(()) => {
                             let head = resolve_head(git_dir)?;
                             let new_oid = *head

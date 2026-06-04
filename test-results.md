@@ -305,6 +305,16 @@
 - Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
   grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
 
+## 2026-06-04 — t3404-rebase-interactive direct reword partial
+
+- Focus harness improved to 74/132 after interactive `reword` entries started replaying in the
+  parent process, avoiding stale internal child state during nested editor `rebase --edit-todo`
+  calls.
+- Adjacent verification: `./scripts/run-tests.sh t3404-rebase-interactive.sh
+  t3423-rebase-reword.sh t3418-rebase-continue.sh --verbose` keeps `t3423` and `t3418` green.
+- Quality gates: `cargo fmt`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty -p
+  grit-cli`, and `cargo test -p grit-lib --lib` completed (pre-existing warnings remain).
+
 ## 2026-06-03 — t3301-notes partial
 
 - Focus harness improved to 113/153 after `log --pretty=raw` stopped printing an extra trailing
