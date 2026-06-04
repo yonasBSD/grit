@@ -2254,3 +2254,9 @@ Updated: 2026-06-01
 - Focus harness: `./scripts/run-tests.sh t5304-prune.sh t5605-clone-local.sh --verbose` passes 32/32 and 23/23 after gc/local-clone mtime and upload-pack-source fixes.
 - Related verification: `./scripts/run-tests.sh t5304-prune-packed.sh t5312-prune-corruption.sh t5606-clone-options.sh --verbose` passes 20/20, 11/11, and 21/21.
 - Quality gates: `cargo fmt`, `cargo build --release -p grit-cli`, `cargo check -p grit-cli`, `cargo clippy --fix --allow-dirty`, and `cargo test -p grit-lib --lib` completed; pre-existing unrelated warnings remain.
+
+## 2026-06-04 — t5329-pack-objects-cruft partial
+
+- Focus harness: `./scripts/run-tests.sh t5329-pack-objects-cruft.sh --verbose` improved to 14/25 after adding `test-tool pack-mtimes`, writing `.mtimes` sidecars for cruft packs, and fixing fixture cleanup scope.
+- Related verification: `./scripts/run-tests.sh t5331-pack-objects-stdin.sh t5304-prune.sh --verbose` passes 16/16 and 32/32.
+- Quality gates: `cargo build --release -p grit-cli` and `cargo check -p grit-cli` completed with pre-existing unrelated warnings.

@@ -1482,6 +1482,45 @@ fn run_test_tool_delta(rest: &[String]) -> Result<()> {
     }
 }
 
+fn run_test_tool_pack_mtimes(rest: &[String]) -> Result<()> {
+    if rest.len() != 2 {
+        bail!("usage: test-tool pack-mtimes <pack-name.mtimes>");
+    }
+    let repo = grit_lib::repo::Repository::discover(None)?;
+    let mtimes_name = Path::new(&rest[1])
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("invalid mtimes filename"))?;
+    let stem = mtimes_name
+        .strip_suffix(".mtimes")
+        .ok_or_else(|| anyhow::anyhow!("usage: test-tool pack-mtimes <pack-name.mtimes>"))?;
+    let pack_dir = repo.git_dir.join("objects").join("pack");
+    let idx_path = pack_dir.join(format!("{stem}.idx"));
+    let mtimes_path = pack_dir.join(mtimes_name);
+    let idx = grit_lib::pack::read_pack_index(&idx_path)
+        .map_err(|e| anyhow::anyhow!("could not load pack index: {e}"))?;
+    let bytes = fs::read(&mtimes_path).context("could not load pack .mtimes")?;
+    let count = idx.entries.len();
+    let expected = 12usize
+        .saturating_add(count.saturating_mul(4))
+        .saturating_add(idx.hash_bytes.saturating_mul(2));
+    if bytes.len() != expected || bytes.len() < 12 {
+        bail!("could not load pack .mtimes");
+    }
+    if u32::from_be_bytes(bytes[0..4].try_into()?) != 0x4d54_4d45
+        || u32::from_be_bytes(bytes[4..8].try_into()?) != 1
+    {
+        bail!("could not load pack .mtimes");
+    }
+    let mut pos = 12usize;
+    for entry in &idx.entries {
+        let mtime = u32::from_be_bytes(bytes[pos..pos + 4].try_into()?);
+        pos += 4;
+        println!("{} {mtime}", hex::encode(&entry.oid));
+    }
+    Ok(())
+}
+
 /// `test-tool lazy-init-name-hash` — exercise case-folding name/dir hash init (t3008, perf tests).
 fn run_test_tool_lazy_init_name_hash(rest: &[String]) -> Result<()> {
     use anyhow::Context;
@@ -5692,6 +5731,7 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
                 "mergesort" => run_test_tool_mergesort(rest),
                 "hexdump" => run_test_tool_hexdump(rest),
                 "chmtime" => run_test_tool_chmtime(&rest[1..]),
+                "pack-mtimes" => run_test_tool_pack_mtimes(rest),
                 "read-cache" => run_test_tool_read_cache(rest),
                 "dump-cache-tree" => run_test_tool_dump_cache_tree(),
                 "scrap-cache-tree" => run_test_tool_scrap_cache_tree(),

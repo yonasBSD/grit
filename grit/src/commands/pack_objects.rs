@@ -27,7 +27,7 @@ use sha2::{Digest as Sha256Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use crate::grit_exe;
 use grit_lib::delta_encode::{encode_lcp_delta, encode_prefix_extension_delta};
@@ -848,6 +848,11 @@ pub fn run(mut args: Args) -> Result<()> {
         &pack_list.thin_blob_deltas,
         pack_hash_bytes,
     )?;
+    let cruft_mtimes = if args.cruft && !args.incremental {
+        Some(collect_cruft_mtime_map(&repo, &pack_list.oids)?)
+    } else {
+        None
+    };
 
     let mut trace_pack_reused: Option<u32> = None;
     let mut trace_packs_reused: Option<u32> = None;
@@ -1000,7 +1005,15 @@ pub fn run(mut args: Args) -> Result<()> {
             if let (Some(dir), Some(stem)) = (pb.parent(), pb.file_stem().and_then(|s| s.to_str()))
             {
                 if args.cruft && !args.incremental {
-                    let _ = std::fs::write(dir.join(format!("{stem}.mtimes")), b"");
+                    if let Some(mtimes) = cruft_mtimes.as_ref() {
+                        write_pack_mtimes_file(
+                            &dir.join(format!("{stem}.mtimes")),
+                            chunk,
+                            mtimes,
+                            &pack_bytes[pack_bytes.len() - pack_hash_bytes..],
+                            pack_hash_bytes,
+                        )?;
+                    }
                 } else {
                     // A full repack without `--cruft` may reuse the same pack hash as a former cruft
                     // pack (same object set); drop stale `.mtimes` so `gc --keep-largest-pack` matches Git.
@@ -4199,6 +4212,123 @@ fn build_idx_for_pack(
         .collect();
 
     Ok((buf, idx_order_offsets))
+}
+
+fn collect_cruft_mtime_map(repo: &Repository, oids: &[ObjectId]) -> Result<HashMap<ObjectId, u32>> {
+    let needed: HashSet<ObjectId> = oids.iter().copied().collect();
+    let mut out = HashMap::new();
+
+    for oid in &needed {
+        let path = repo.odb.object_path(oid);
+        if let Some(mtime) = file_mtime_u32(&path) {
+            out.insert(*oid, mtime);
+        }
+    }
+
+    let indexes = grit_lib::pack::read_local_pack_indexes(repo.odb.objects_dir())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    for idx in indexes {
+        let fallback_mtime = file_mtime_u32(&idx.pack_path).unwrap_or(0);
+        let mtimes = read_pack_mtimes_sidecar(&idx)?;
+        for (pos, entry) in idx.entries.iter().enumerate() {
+            if entry.oid.len() != 20 {
+                continue;
+            }
+            let Ok(oid) = ObjectId::from_bytes(&entry.oid) else {
+                continue;
+            };
+            if !needed.contains(&oid) || out.contains_key(&oid) {
+                continue;
+            }
+            let mtime = mtimes
+                .as_ref()
+                .and_then(|v| v.get(pos).copied())
+                .unwrap_or(fallback_mtime);
+            out.insert(oid, mtime);
+        }
+    }
+
+    Ok(out)
+}
+
+fn file_mtime_u32(path: &Path) -> Option<u32> {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs().min(u64::from(u32::MAX)) as u32)
+}
+
+fn read_pack_mtimes_sidecar(idx: &PackIndex) -> Result<Option<Vec<u32>>> {
+    let path = idx.pack_path.with_extension("mtimes");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&path)?;
+    let count = idx.entries.len();
+    let expected = 12usize
+        .saturating_add(count.saturating_mul(4))
+        .saturating_add(idx.hash_bytes.saturating_mul(2));
+    if bytes.len() != expected || bytes.len() < 12 {
+        return Ok(None);
+    }
+    if u32::from_be_bytes(bytes[0..4].try_into()?) != 0x4d54_4d45 {
+        return Ok(None);
+    }
+    if u32::from_be_bytes(bytes[4..8].try_into()?) != 1 {
+        return Ok(None);
+    }
+    let mut out = Vec::with_capacity(count);
+    let mut pos = 12usize;
+    for _ in 0..count {
+        out.push(u32::from_be_bytes(bytes[pos..pos + 4].try_into()?));
+        pos += 4;
+    }
+    Ok(Some(out))
+}
+
+fn write_pack_mtimes_file(
+    path: &Path,
+    entries: &[PackWriteEntry],
+    mtimes: &HashMap<ObjectId, u32>,
+    pack_checksum: &[u8],
+    hash_bytes: usize,
+) -> Result<()> {
+    let mut sorted: Vec<(Vec<u8>, ObjectId)> = entries
+        .iter()
+        .map(|entry| match entry {
+            PackWriteEntry::Full(pe) => (pe.pack_id.clone(), pe.oid),
+            PackWriteEntry::RefDelta {
+                target_pack, oid, ..
+            } => (target_pack.clone(), *oid),
+            PackWriteEntry::ReusedSlice { pack_id, oid, .. } => (pack_id.clone(), *oid),
+        })
+        .collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut bytes = Vec::with_capacity(12 + sorted.len() * 4 + hash_bytes * 2);
+    bytes.extend_from_slice(&0x4d54_4d45u32.to_be_bytes());
+    bytes.extend_from_slice(&1u32.to_be_bytes());
+    bytes.extend_from_slice(&(if hash_bytes == 32 { 2u32 } else { 1u32 }).to_be_bytes());
+    for (_, oid) in sorted {
+        bytes.extend_from_slice(&mtimes.get(&oid).copied().unwrap_or(0).to_be_bytes());
+    }
+    bytes.extend_from_slice(pack_checksum);
+    match hash_bytes {
+        20 => {
+            let mut h = Sha1::new();
+            Sha1Digest::update(&mut h, &bytes);
+            bytes.extend_from_slice(h.finalize().as_slice());
+        }
+        32 => {
+            let mut h = Sha256::new();
+            Sha256Digest::update(&mut h, &bytes);
+            bytes.extend_from_slice(h.finalize().as_slice());
+        }
+        _ => bail!("unsupported pack hash width {hash_bytes}"),
+    }
+    std::fs::write(path, bytes)?;
+    Ok(())
 }
 
 enum PackIndexVersion {
