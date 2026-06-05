@@ -784,9 +784,18 @@ pub fn run(mut args: Args) -> Result<()> {
         file_v2_preflight_head = Some(preflight_head);
     }
 
+    // `--branch <name>` may name a branch (refs/heads/<name>) or a tag (refs/tags/<name>):
+    // upstream's `find_remote_branch` tries heads first, then tags. A tag target makes the clone
+    // check out a detached HEAD at the tag and (under `--single-branch`) fetch only that tag.
+    let mut branch_is_tag = false;
     if let Some(branch) = args.branch.as_deref() {
         let remote_branch = format!("refs/heads/{branch}");
-        if !clone_ref_file_exists(&source.git_dir, &remote_branch) {
+        let remote_tag = format!("refs/tags/{branch}");
+        if clone_ref_file_exists(&source.git_dir, &remote_branch) {
+            // ordinary branch
+        } else if clone_ref_file_exists(&source.git_dir, &remote_tag) {
+            branch_is_tag = true;
+        } else {
             bail!("Remote branch {branch} not found in upstream {remote_name}");
         }
     }
@@ -847,10 +856,14 @@ pub fn run(mut args: Args) -> Result<()> {
         } else {
             args.repository.clone()
         }
-    } else if let Ok(abs) = source_path.canonicalize() {
-        abs.to_string_lossy().to_string()
     } else {
-        source_path.to_string_lossy().to_string()
+        // Git stores the remote URL as the *absolute* form of the literal path the user gave
+        // (builtin/clone.c `get_repo_path` -> `absolute_pathdup`): it prepends the cwd when the
+        // path is relative but does NOT normalize `.`/`..`/`./` away. So `git clone .` yields
+        // `<cwd>/.` and `git clone $pwd/submodule` yields `$pwd/submodule` verbatim. We mirror
+        // this so a later `git fetch`'s `From <url>` header matches Git (e.g. t5526 expects the
+        // superproject's `From <pwd>/.` but a submodule's `From <pwd>/submodule` with no `/.`).
+        absolute_clone_source_url(&source_path)
     };
 
     let use_upload_for_protocol_v1 = protocol_wire::effective_client_protocol_version() == 1
@@ -864,7 +877,17 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     // Branch to checkout: explicit -b/--branch, else guess from remote HEAD (Git semantics).
-    let head_branch = if args.branch.is_some() {
+    // When `--branch` names a tag, there is no local branch to create — HEAD is detached at the
+    // tag's target object.
+    let head_branch = if branch_is_tag {
+        if let Some(tag) = args.branch.as_deref() {
+            if let Some(oid) = ref_oid_hex_in_repo(&source.git_dir, &format!("refs/tags/{tag}")) {
+                source_head_symref = None;
+                source_head_oid = Some(oid);
+            }
+        }
+        None
+    } else if args.branch.is_some() {
         determine_head_branch(&source.git_dir, args.branch.as_deref())?
     } else if use_upload_for_protocol_v1 {
         None
@@ -1310,6 +1333,64 @@ pub fn run(mut args: Args) -> Result<()> {
                         .context("setting detached HEAD")?;
                     fs::write(dest.git_dir.join("HEAD"), format!("{oid}\n"))?;
                 }
+            }
+        } else if branch_is_tag {
+            // `--branch <tag>`: detached HEAD at the tag, fetch refspec follows just that tag, and
+            // (unless --no-tags) all tags whose objects were transferred are written locally —
+            // matching upstream `git clone --single-branch --branch <tag>` of a local repository.
+            let tag = args.branch.as_deref().unwrap_or_default();
+            copy_followed_tags_for_tag_clone(&source.git_dir, &dest.git_dir, args.no_tags)
+                .context("copying tags")?;
+
+            let refspec = format!("+refs/tags/{tag}:refs/tags/{tag}");
+            if is_file_url {
+                setup_origin_remote_url(
+                    &dest.git_dir,
+                    remote_url_for_config.as_str(),
+                    &remote_name,
+                    &refspec,
+                )
+                .context("setting up origin remote")?;
+            } else {
+                setup_origin_remote(&dest.git_dir, &source_path, &remote_name, &refspec)
+                    .context("setting up origin remote")?;
+            }
+            setup_remote_tracking_head(
+                &dest.git_dir,
+                &remote_name,
+                &source.git_dir,
+                source_head_symref.as_deref(),
+                source_head_oid.as_deref(),
+            )?;
+
+            if let Some(ref oid) = source_head_oid {
+                verify_detached_head_object_present(&dest, oid).context("setting detached HEAD")?;
+                fs::write(dest.git_dir.join("HEAD"), format!("{oid}\n"))?;
+            }
+        } else if args.single_branch
+            && head_branch.is_none()
+            && source_head_symref.is_none()
+            && source_head_oid.is_some()
+        {
+            // `--single-branch` from a detached source HEAD: upstream's `guess_remote_head` cannot
+            // pick a branch to follow, so it writes no fetch refspec and no remote-tracking ref.
+            // Only the (object-present) tags are followed, and HEAD is detached at the source OID.
+            copy_followed_tags_for_tag_clone(&source.git_dir, &dest.git_dir, args.no_tags)
+                .context("copying tags")?;
+            if is_file_url {
+                setup_origin_remote_bare_url(
+                    &dest.git_dir,
+                    remote_url_for_config.as_str(),
+                    &remote_name,
+                )
+                .context("setting up origin remote")?;
+            } else {
+                setup_origin_remote_bare(&dest.git_dir, &source_path, &remote_name)
+                    .context("setting up origin remote")?;
+            }
+            if let Some(ref oid) = source_head_oid {
+                verify_detached_head_object_present(&dest, oid).context("setting detached HEAD")?;
+                fs::write(dest.git_dir.join("HEAD"), format!("{oid}\n"))?;
             }
         } else {
             // Non-bare clone: copy refs as remote-tracking refs
@@ -5093,6 +5174,32 @@ fn match_refspec_glob<'a>(refname: &'a str, prefix: &str, suffix: &str) -> Optio
         .and_then(|rest| rest.strip_suffix(suffix))
 }
 
+/// Write source tags into the destination for a `--branch <tag>` clone.
+///
+/// Mirrors upstream `write_followtags`: every tag whose target object was transferred (for a local
+/// clone, the whole object store is copied, so all tags qualify) is written under `refs/tags/`.
+/// With `--no-tags`, no tags are written here (the explicit `+refs/tags/<tag>:refs/tags/<tag>`
+/// refspec still fetches the named tag on a subsequent `git fetch`).
+fn copy_followed_tags_for_tag_clone(
+    src_git_dir: &Path,
+    dst_git_dir: &Path,
+    no_tags: bool,
+) -> Result<()> {
+    if no_tags {
+        return Ok(());
+    }
+    let dst_odb = grit_lib::odb::Odb::new(&dst_git_dir.join("objects"));
+    let tags =
+        grit_lib::refs::list_refs(src_git_dir, "refs/tags/").map_err(|e| anyhow::anyhow!("{e}"))?;
+    for (refname, oid) in &tags {
+        if !dst_odb.exists(oid) {
+            continue;
+        }
+        clone_write_direct_ref(dst_git_dir, refname, &oid.to_hex())?;
+    }
+    Ok(())
+}
+
 /// Copy refs from source into remote-tracking refs in the destination.
 /// Copy source refs into the destination as remote-tracking refs.
 ///
@@ -5391,6 +5498,26 @@ fn setup_origin_remote_bare(git_dir: &Path, source_path: &Path, remote_name: &st
     config.write().context("writing config")?;
 
     Ok(())
+}
+
+/// Absolute form of a local clone source path, matching Git's `absolute_pathdup`: prepend the
+/// current directory when relative, but leave `.`/`..`/`./` components untouched (no
+/// normalization). Symlinks in the *parent* of the source are resolved (Git resolves the cwd via
+/// `getcwd`) by canonicalizing the existing directory portion and re-appending the literal final
+/// component, so `git clone .` yields `<cwd>/.` while `git clone /abs/submodule` stays verbatim.
+fn absolute_clone_source_url(source_path: &Path) -> String {
+    if source_path.is_absolute() {
+        return source_path.to_string_lossy().to_string();
+    }
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c.canonicalize().unwrap_or(c),
+        Err(_) => return source_path.to_string_lossy().to_string(),
+    };
+    let r = cwd.join(source_path).to_string_lossy().to_string();
+    if std::env::var("GRIT_DBG_FROM").is_ok() {
+        eprintln!("DBG absolute_clone_source_url sp={source_path:?} -> {r:?}");
+    }
+    r
 }
 
 fn setup_origin_remote_bare_url(git_dir: &Path, remote_url: &str, remote_name: &str) -> Result<()> {
@@ -6196,6 +6323,24 @@ fn determine_head_branch(src_git_dir: &Path, requested: Option<&str>) -> Result<
 
 /// Read source `HEAD` as either a symref target or a raw object id.
 fn read_source_head_info(src_git_dir: &Path) -> (Option<String>, Option<String>) {
+    // Under `GIT_NAMESPACE`, a local clone must choose HEAD from the namespaced
+    // `refs/namespaces/<ns>/HEAD` (Git resolves this through the namespace-aware transport). The
+    // advertised symref target is the namespace-stripped logical ref (t5509 clone chooses HEAD).
+    if grit_lib::ref_namespace::ref_storage_prefix().is_some() {
+        match grit_lib::refs::read_symbolic_ref(src_git_dir, "HEAD") {
+            Ok(Some(target)) => {
+                let logical = grit_lib::ref_namespace::strip_namespace_prefix(&target).into_owned();
+                return (Some(logical), None);
+            }
+            _ => {
+                // No namespaced HEAD symref: fall back to a detached OID if HEAD resolves.
+                if let Ok(oid) = grit_lib::refs::resolve_ref(src_git_dir, "HEAD") {
+                    return (None, Some(oid.to_hex()));
+                }
+                return (None, None);
+            }
+        }
+    }
     let head_path = src_git_dir.join("HEAD");
     let Ok(content) = fs::read_to_string(&head_path) else {
         return (None, None);
@@ -6725,6 +6870,7 @@ fn run_bundle_clone(args: Args) -> Result<()> {
             dry_run: false,
             quiet: true,
             max_input_bytes: None,
+            ..Default::default()
         };
         grit_lib::unpack_objects::unpack_objects(&mut &pack_data[..], &dest.odb, &opts)
             .map_err(|e| anyhow::anyhow!("unbundle failed: {e}"))?;
