@@ -5,6 +5,7 @@ edition.workspace = true
 license = "MIT"
 description = "A simplified alternative CLI for Grit"
 repository = "https://github.com/schacon/grit"
+readme = "README.md"
 
 [[bin]]
 name = "gi"
