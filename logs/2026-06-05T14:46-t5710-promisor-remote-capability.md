@@ -30,5 +30,17 @@ advertisement) and fix clone packfile storage so the test suite passes.
 
 ## Status
 
-14/22 -> (see below). Remaining work: storeFields/sendFields/checkFields/filter=auto trace
-expectations (15/16/17/18), KnownName missing-URL + KnownUrl server-side lazy fetch (10/11/19/22).
+18/22 passing (was 10/22). Additional fixes:
+- `config_info_list` treats a remote as promisor if `.promisor=true` OR `.partialCloneFilter` set
+  (matches `promisor_remote_config`), in config order — needed otherLop advertisement (15/16).
+- Lazy fetch from a promisor remote now registers `remote.<lop>.partialCloneFilter=blob:none`
+  (Git `partial_clone_register`); makes the server advertise `partialCloneFilter=blob:none` for lop.
+- Clone no longer inherits the source's `blob:none` promisor filter when an explicit `--filter`
+  was given (`args.filter` non-empty) — was downgrading a `blob:limit=5k` clone to `blob:none`,
+  stripping small blobs (15/16/17/19).
+
+Remaining (10, 11, 18, 22): a `blob:limit` `--filter` clone does not set up `extensions.partialclone
+=origin`, so when the client cannot lazy-fetch from the accepted LOP (no URL: test 10; KnownUrl
+reject: test 11) it cannot fall back to origin and checkout fails. Test 18 (`--filter=auto`) needs
+the wire filter resolved to the combined advertised filter AND persisted; test 22 is the
+advertise=false subsequent-fetch case. These share the missing `origin` promisor fallback.

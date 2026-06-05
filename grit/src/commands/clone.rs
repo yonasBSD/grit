@@ -749,9 +749,15 @@ pub fn run(mut args: Args) -> Result<()> {
         filter_spec.as_deref(),
         Some("blob:limit=0") | Some("blob:size=0")
     );
+    // The source's own promisor filter is only inherited when the client did NOT pass an explicit
+    // `--filter`; an explicit filter (e.g. `--filter=blob:limit=5k`) takes precedence and must not
+    // be silently downgraded to the source's `blob:none` (`t5710`: a `blob:limit` clone of a server
+    // whose LOP remote is recorded as `blob:none` must still keep small blobs).
+    let inherited_blob_none = args.filter.is_empty()
+        && inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
     let partial_blob_none = matches!(filter_spec.as_deref(), Some("blob:none"))
         || (partial_blob_limit_zero && uploadpack_filter_allowed(&source.git_dir))
-        || inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
+        || inherited_blob_none;
     let pack_filter_active = clone_pack_filter_active(&args, Some(&source.git_dir));
 
     let remote_name = resolve_remote_name(&args)?;
@@ -2625,9 +2631,15 @@ fn run_ssh_clone(args: Args) -> Result<()> {
         filter_spec.as_deref(),
         Some("blob:limit=0") | Some("blob:size=0")
     );
+    // The source's own promisor filter is only inherited when the client did NOT pass an explicit
+    // `--filter`; an explicit filter (e.g. `--filter=blob:limit=5k`) takes precedence and must not
+    // be silently downgraded to the source's `blob:none` (`t5710`: a `blob:limit` clone of a server
+    // whose LOP remote is recorded as `blob:none` must still keep small blobs).
+    let inherited_blob_none = args.filter.is_empty()
+        && inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
     let partial_blob_none = matches!(filter_spec.as_deref(), Some("blob:none"))
         || (partial_blob_limit_zero && uploadpack_filter_allowed(&source.git_dir))
-        || inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
+        || inherited_blob_none;
     let pack_filter_active = clone_pack_filter_active(&args, Some(&source.git_dir));
 
     if effective_reject_shallow(&args) && source_repo_is_shallow(&source.git_dir) {

@@ -84,30 +84,35 @@ fn urldecode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// All promisor remotes configured on this repository (`remote.<name>.promisor=true`) that also
-/// have a non-empty `remote.<name>.url`, in config order. Each remote's `partialCloneFilter` and
-/// `token` are populated only when listed in `field_names`.
+/// All promisor remotes configured on this repository, in config order, that also have a non-empty
+/// `remote.<name>.url`. Matching Git's `promisor_remote_config`, a remote is a promisor remote when
+/// `remote.<name>.promisor` is true OR `remote.<name>.partialCloneFilter` is set. Each remote's
+/// `partialCloneFilter` and `token` are populated only when listed in `field_names`.
 fn config_info_list(cfg: &ConfigSet, field_names: &[String]) -> Vec<PromisorInfo> {
-    let mut out = Vec::new();
-    let mut seen = Vec::new();
+    // Discover promisor remote names in first-seen config order.
+    let mut names: Vec<String> = Vec::new();
     for e in cfg.entries() {
-        // Match `remote.<name>.promisor` keys (subsection preserves case).
         let Some(rest) = e.key.strip_prefix("remote.") else {
             continue;
         };
-        let Some(name) = rest.strip_suffix(".promisor") else {
-            continue;
+        let is_promisor = if let Some(name) = rest.strip_suffix(".promisor") {
+            // Bare boolean keys store None -> treated as "true".
+            let val = e.value.clone().unwrap_or_else(|| "true".to_owned());
+            val.eq_ignore_ascii_case("true").then(|| name.to_string())
+        } else if let Some(name) = rest.strip_suffix(".partialclonefilter") {
+            Some(name.to_string())
+        } else {
+            None
         };
-        // Bare boolean keys store None -> treated as "true".
-        let val = e.value.clone().unwrap_or_else(|| "true".to_owned());
-        if !val.eq_ignore_ascii_case("true") {
-            continue;
+        if let Some(name) = is_promisor {
+            if !names.contains(&name) {
+                names.push(name);
+            }
         }
-        if seen.iter().any(|n| n == name) {
-            continue;
-        }
-        seen.push(name.to_string());
+    }
 
+    let mut out = Vec::new();
+    for name in names {
         let url = cfg.get(&format!("remote.{name}.url"));
         // Only advertise remotes with a non-empty URL.
         let Some(url) = url.filter(|u| !u.is_empty()) else {
@@ -115,7 +120,7 @@ fn config_info_list(cfg: &ConfigSet, field_names: &[String]) -> Vec<PromisorInfo
         };
 
         let mut info = PromisorInfo {
-            name: name.to_string(),
+            name: name.clone(),
             url: Some(url),
             ..Default::default()
         };

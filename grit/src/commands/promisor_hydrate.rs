@@ -3,7 +3,7 @@
 //! Used by partial-clone hydration, `sparse-checkout` updates, and `backfill`.
 
 use anyhow::{bail, Context, Result};
-use grit_lib::config::ConfigSet;
+use grit_lib::config::{ConfigFile, ConfigScope, ConfigSet};
 use grit_lib::diff::{zero_oid, DiffEntry, DiffStatus};
 use grit_lib::objects::{parse_commit, parse_tree, Object, ObjectId, ObjectKind};
 use grit_lib::promisor::{
@@ -276,6 +276,7 @@ pub(crate) fn try_lazy_fetch_promisor_object(repo: &Repository, oid: ObjectId) -
                             write_promisor_pack_for_local_oids(repo, &[oid]).with_context(
                                 || format!("writing promisor pack for {}", oid.to_hex()),
                             )?;
+                            register_promisor_default_filter(&repo.git_dir, &remote_name);
                             return Ok(());
                         }
                     }
@@ -313,6 +314,7 @@ pub(crate) fn try_lazy_fetch_promisor_object(repo: &Repository, oid: ObjectId) -
                         .with_context(|| format!("indexing promisor pack from {remote_name}"))?;
                 }
                 if repo.odb.read(&oid).is_ok() {
+                    register_promisor_default_filter(&repo.git_dir, &remote_name);
                     return Ok(());
                 }
             }
@@ -320,6 +322,7 @@ pub(crate) fn try_lazy_fetch_promisor_object(repo: &Repository, oid: ObjectId) -
                 if run_http_fetch_objects(repo, remote, &[oid], false).is_ok()
                     && repo.odb.read(&oid).is_ok()
                 {
+                    register_promisor_default_filter(&repo.git_dir, &remote_name);
                     return Ok(());
                 }
             }
@@ -427,6 +430,7 @@ pub(crate) fn try_lazy_fetch_promisor_objects_batch(
                     let _ = ingest
                         .with_context(|| format!("indexing promisor pack from {remote_name}"))?;
                 }
+                register_promisor_default_filter(&repo.git_dir, &remote_name);
                 need.retain(|o| !repo.odb.exists_local(o));
                 if need.is_empty() {
                     return Ok(());
@@ -434,6 +438,7 @@ pub(crate) fn try_lazy_fetch_promisor_objects_batch(
             }
             PromisorSource::Http { remote } => {
                 if run_http_fetch_objects(repo, remote, &need, false).is_ok() {
+                    register_promisor_default_filter(&repo.git_dir, &remote_name);
                     need.retain(|o| !repo.odb.exists_local(o));
                     if need.is_empty() {
                         return Ok(());
@@ -450,6 +455,36 @@ pub(crate) fn try_lazy_fetch_promisor_objects_batch(
             "could not fetch {} object(s) from promisor remote",
             need.len()
         )
+    }
+}
+
+/// Mirror Git's `partial_clone_register` for a lazy fetch: the promisor fetch always uses
+/// `--filter=blob:none`, and Git records that filter as the default for the remote (only if the
+/// remote does not already have a `partialCloneFilter`). This is what makes a server that lazily
+/// fetched from its LOP later advertise `partialCloneFilter=blob:none` for that remote (`t5710`).
+fn register_promisor_default_filter(git_dir: &Path, remote_name: &str) {
+    let cfg = ConfigSet::load(Some(git_dir), true).unwrap_or_default();
+    let key = format!("remote.{remote_name}.partialclonefilter");
+    if cfg.get(&key).filter(|v| !v.is_empty()).is_some() {
+        return;
+    }
+    let config_path = git_dir.join("config");
+    let mut file = match ConfigFile::from_path(&config_path, ConfigScope::Local) {
+        Ok(Some(f)) => f,
+        Ok(None) => match ConfigFile::parse(&config_path, "", ConfigScope::Local) {
+            Ok(f) => f,
+            Err(_) => return,
+        },
+        Err(_) => return,
+    };
+    if file
+        .set(
+            &format!("remote.{remote_name}.partialCloneFilter"),
+            "blob:none",
+        )
+        .is_ok()
+    {
+        let _ = file.write();
     }
 }
 
