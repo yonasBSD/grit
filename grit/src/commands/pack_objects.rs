@@ -3336,7 +3336,13 @@ fn collect_incremental_repack_oids(repo: &Repository, args: &Args) -> Result<Pac
         }
     }
 
-    if args.no_write_bitmap_index {
+    // `--incremental` (`git pack-objects --incremental`): "an object already in a pack is ignored
+    // even if it would have otherwise been packed." The `rev-list --objects --unpacked` walk emits
+    // the full object closure of unpacked commits (including tree/blob objects that already live in
+    // a pack), so without this filter an incremental `repack -d` re-packs already-packed objects
+    // and produces packs with the wrong object membership (t5319 BTMP chunk: each per-commit pack
+    // must hold exactly its 3 new objects, not parent blobs/trees).
+    if args.incremental {
         let packed = packed_object_ids(repo)?;
         ordered.retain(|oid| !packed.contains(oid));
     }
