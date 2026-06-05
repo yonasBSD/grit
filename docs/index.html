@@ -733,14 +733,27 @@
           padding-top: 2rem;
         }
       }
+      .install-section {
+        text-align: center;
+      }
+      .install-section .section-intro {
+        max-width: 46rem;
+        margin-right: auto;
+        margin-left: auto;
+      }
       .install-block {
-        margin-bottom: 1.2rem;
+        display: grid;
+        justify-items: center;
+        width: 100%;
       }
       .install-cmd {
-        display: inline-flex;
+        display: flex;
         align-items: center;
-        gap: 0.6rem;
-        padding: 0.72rem 1rem;
+        justify-content: space-between;
+        gap: 0.8rem;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0.9rem 1.05rem 0.9rem 1.3rem;
         border: 1px solid #2d231d;
         border-radius: 0.65rem;
         background: var(--code-bg);
@@ -1387,7 +1400,7 @@ grit-lib = <span class="string">"0.1"</span>
         </div>
       </section>
 
-      <section class="wrap section" id="install">
+      <section class="wrap section install-section" id="install">
         <h2>Try it out.</h2>
         <p class="section-intro">
           Install the <code>grit</code> CLI and use it as a drop-in replacement
@@ -1404,18 +1417,6 @@ grit-lib = <span class="string">"0.1"</span>
           <div class="install-alt">
             or <code>cargo install grit-cli</code>
           </div>
-        </div>
-        <div class="cta">
-          <a class="button" href="https://crates.io/crates/grit-lib"
-            >grit-lib crate</a
-          >
-          <a
-            class="button"
-            href="https://github.com/schacon/grit/tree/main/grit-lib/examples"
-            >Examples</a
-          >
-          <a class="button" href="https://docs.rs/grit-lib">Library docs</a>
-          <a class="button" href="progress/">Compatibility progress</a>
         </div>
       </section>
     </main>
