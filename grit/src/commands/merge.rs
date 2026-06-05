@@ -4479,6 +4479,18 @@ fn do_octopus_merge(
     }
 
     if !args.quiet {
+        if head_is_ancestor_of_all {
+            if let Some(first) = merge_names.first() {
+                println!("Fast-forwarding to: {first}");
+            }
+            for name in merge_names.iter().skip(1) {
+                println!("Trying simple merge with {name}");
+            }
+        } else {
+            for name in &merge_names {
+                println!("Trying simple merge with {name}");
+            }
+        }
         println!("Merge made by the '{strategy_name}' strategy.");
         let show_stat = args.stat || args.summary || !args.no_stat;
         if show_stat {
