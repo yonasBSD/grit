@@ -67,6 +67,16 @@ falls through (in git) to the changed task and is annotated `at commit <super_oi
 unpopulated (`--work-tree=.`) shows `at commit <sub_head>` (fixes 27/28) without regressing the
 normal populated case (20/22/23/25 stay un-annotated). Net 37→39.
 
+## Regression fix: t7400 #96 (submodule add reactivation)
+
+My `did_clone` change exposed a latent bug: `git submodule add --force` of a path whose
+`.git/modules/<name>` already exists (re-adding a `git rm`-ed submodule) was doing
+remove-module-dir + re-clone. Git instead REUSES the existing module dir (no clone — the source
+URL need not even exist), drops the stale `index`, connects the work tree, and checks out
+(builtin/submodule--helper.c `clone_submodule`: it only clones `if (!file_exists(sm_gitdir))`).
+Rewrote the clone block in submodule.rs to reactivate an existing module dir instead of
+removing+cloning. t7400 back to 124/124.
+
 ## Remaining failures (17): 30-36, 38-45, 55, 56
 
 - **30** (`setup downstream branch with other submodule`) fails on
