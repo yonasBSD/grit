@@ -3455,7 +3455,10 @@ fn git_editor_cmd(config: &ConfigSet) -> Result<String> {
             }
         }
     }
-    crate::editor::resolve_git_editor(config, false)
+    // This command is about to *launch* the editor, so treat `:` placeholders in EDITOR/VISUAL as
+    // unset (for_launch=true) — the harness sets `VISUAL=:` while a fake editor lives in EDITOR
+    // (t5520 `pull.rebase=interactive`), and an interactive rebase must not silently no-op.
+    crate::editor::resolve_git_editor(config, true)
         .ok_or_else(|| anyhow::anyhow!("Terminal is dumb, but EDITOR unset"))
 }
 

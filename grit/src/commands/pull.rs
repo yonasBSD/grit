@@ -460,6 +460,34 @@ where
     target
 }
 
+/// git pull.c `require_clean_work_tree(r, "pull with rebase", ...)`: a `pull --rebase` without
+/// autostash refuses to start when the index or work tree is dirty, *before* fetching anything.
+fn require_clean_work_tree_for_rebase(repo: &Repository) -> Result<()> {
+    use grit_lib::diff::{diff_index_to_tree, diff_index_to_worktree};
+    let Some(work_tree) = repo.work_tree.as_deref() else {
+        return Ok(());
+    };
+    let index = repo.load_index().unwrap_or_default();
+    let head_tree = resolve_head(&repo.git_dir)?.oid().and_then(|oid| {
+        let obj = repo.odb.read(oid).ok()?;
+        grit_lib::objects::parse_commit(&obj.data)
+            .ok()
+            .map(|c| c.tree)
+    });
+    let staged = diff_index_to_tree(&repo.odb, &index, head_tree.as_ref(), true)?;
+    let mut unstaged = diff_index_to_worktree(&repo.odb, &index, work_tree, false, false)?;
+    unstaged.retain(|e| e.old_mode != "160000" && e.new_mode != "160000");
+    if !staged.is_empty() {
+        bail!(
+            "cannot pull with rebase: Your index contains uncommitted changes.\nPlease commit or stash them."
+        );
+    }
+    if !unstaged.is_empty() {
+        bail!("cannot pull with rebase: You have unstaged changes.\nPlease commit or stash them.");
+    }
+    Ok(())
+}
+
 /// `git pull` refuses to start while the index has unresolved (stage > 0) entries
 /// (builtin/pull.c `repo_read_index_unmerged` -> `die_resolve_conflict("pull")`).
 fn die_if_index_unmerged(repo: &Repository) -> Result<()> {
@@ -583,6 +611,31 @@ pub fn run(args: Args) -> Result<()> {
                     opt_rebase_for_msg,
                 ));
             }
+        }
+    }
+
+    // git pull.c: when this pull will rebase, two guards run *before* fetch so a dirty tree never
+    // gets a fetch's worth of work done first (t5520 "pull --rebase dies early ..."): rebasing onto
+    // an unborn branch that has staged changes is impossible, and a dirty tree without autostash is
+    // refused with "cannot pull with rebase".
+    if pull_will_rebase_for_diag(&args, &config, current_branch.as_deref()) {
+        let autostash = resolve_pull_autostash(&args, &config);
+        // For a rebase, an Unset autostash decision falls back to `rebase.autostash`.
+        let autostash_on = match autostash {
+            AutostashTri::On => true,
+            AutostashTri::Off => false,
+            AutostashTri::Unset => config
+                .get_bool("rebase.autostash")
+                .map(|r| r.unwrap_or(false))
+                .unwrap_or(false),
+        };
+        if head.oid().is_none() {
+            let index = repo.load_index().unwrap_or_default();
+            if !index.entries.is_empty() {
+                bail!("Updating an unborn branch with changes added to the index.");
+            }
+        } else if !autostash_on {
+            require_clean_work_tree_for_rebase(&repo)?;
         }
     }
 
@@ -1352,7 +1405,11 @@ fn do_merge_or_rebase_after_fetch(
     }
 
     if opt_rebase == RebaseTri::True {
-        if can_ff {
+        // A plain/merges rebase onto an upstream that fast-forwards can shortcut to a
+        // `merge --ff-only` (recording `pull: Fast-forward` in the reflog). An *interactive*
+        // rebase must still run so the editor opens with the todo list even on a fast-forward
+        // (t5520 `pull.rebase=interactive`), so do not take the shortcut for it.
+        if can_ff && rebase_kind != PullRebaseKind::Interactive {
             let merge_args = build_pull_merge_args(
                 args,
                 false,
