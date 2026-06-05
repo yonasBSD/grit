@@ -80,6 +80,19 @@ fn index_file_mtime_pair(index_path: &Path) -> (u32, u32) {
     (0, 0)
 }
 
+fn has_racy_timestamp(index: &Index, index_mtime_sec: u32, index_mtime_nsec: u32) -> bool {
+    if index_mtime_sec == 0 {
+        return false;
+    }
+    index.entries.iter().any(|entry| {
+        if entry.stage() != 0 || entry.mode == MODE_GITLINK {
+            return false;
+        }
+        index_mtime_sec < entry.mtime_sec
+            || (index_mtime_sec == entry.mtime_sec && index_mtime_nsec <= entry.mtime_nsec)
+    })
+}
+
 /// Arguments for `grit status`.
 #[derive(Debug, ClapArgs)]
 #[command(about = "Show the working tree status")]
@@ -1007,11 +1020,14 @@ directory contents. Running 'git clean' may assist in this cleanup."
         let refreshed = grit_lib::diff::refresh_index_stat_content_verified(
             &mut index,
             work_tree,
-            Some(index_file_mtime_pair(&index_path)),
+            Some(index_mtime),
         );
-        // Opportunistic write, like Git: only persist when the refresh changed an entry.
+        let (index_mtime_sec, index_mtime_nsec) = index_mtime;
+        let racy = has_racy_timestamp(&index, index_mtime_sec, index_mtime_nsec);
+        // Opportunistic write, like Git: persist when refresh changed an entry or when the
+        // index itself is stale/racy enough that rewriting advances its mtime.
         // Best-effort: status must succeed even when `.git/` is read-only (t7508).
-        if refreshed || force_full_index_write || force_sparse_index_write {
+        if refreshed || racy || force_full_index_write || force_sparse_index_write {
             if force_sparse_index_write {
                 if let Ok(trace2_event) = std::env::var("GIT_TRACE2_EVENT") {
                     if !trace2_event.trim().is_empty() {
