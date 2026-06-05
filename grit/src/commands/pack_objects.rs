@@ -21,7 +21,8 @@ use grit_lib::pack_rev::{
     build_pack_rev_bytes_from_index_order_offsets_and_checksum, rev_path_for_index,
 };
 use grit_lib::rev_list::{
-    rev_list, shallow_boundary_oids, MissingAction, ObjectFilter, RevListOptions,
+    rev_list, shallow_boundary_oids, url_encode_object_filter_subspec, MissingAction, ObjectFilter,
+    RevListOptions,
 };
 use sha1::{Digest as Sha1Digest, Sha1};
 use sha2::{Digest as Sha256Digest, Sha256};
@@ -663,12 +664,28 @@ pub fn run(mut args: Args) -> Result<()> {
     let pack_hash_bytes = pack_trailer_bytes_for_repo(&repo.git_dir);
 
     validate_filter_specs()?;
+    let effective_filter = effective_filter_spec(args.filter.last().map(String::as_str))?;
     // Collect object IDs.
-    let mut pack_list = collect_oids(&repo, &args)?;
+    let mut pack_list = if args.all
+        && effective_filter
+            .as_deref()
+            .is_some_and(filter_needs_rev_list_walk)
+    {
+        PackObjectList {
+            oids: collect_filtered_all_objects_via_rev_list(
+                &repo,
+                effective_filter.as_deref().unwrap_or_default(),
+            )?,
+            force_include: Vec::new(),
+            thin_blob_deltas: Vec::new(),
+            rev_list_stdin: true,
+        }
+    } else {
+        collect_oids(&repo, &args)?
+    };
     if args.include_tag {
         include_annotated_tags_for_packed_commits(&repo, &mut pack_list.oids)?;
     }
-    let effective_filter = effective_filter_spec(args.filter.last().map(String::as_str))?;
     omit_prefiltered_blobs(&repo, &mut pack_list.oids, effective_filter.as_deref())?;
 
     // Git shows this progress title when progress is enabled. Tests set `GIT_PROGRESS_DELAY` and
@@ -2289,20 +2306,18 @@ fn effective_filter_spec(default: Option<&str>) -> Result<Option<String>> {
     if specs.is_empty() {
         return Ok(None);
     }
-    let mut blob_limit: Option<u64> = None;
-    let mut chosen = None;
-    for spec in specs {
-        let parsed = ObjectFilter::parse(&spec).map_err(|e| anyhow::anyhow!("{e}"))?;
-        if let ObjectFilter::BlobLimit(n) = parsed {
-            blob_limit = Some(blob_limit.map_or(n, |old| old.min(n)));
-        } else if matches!(parsed, ObjectFilter::BlobNone) {
-            chosen = Some(spec);
-        }
+    for spec in &specs {
+        ObjectFilter::parse(spec).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
-    if let Some(n) = blob_limit {
-        return Ok(Some(format!("blob:limit={n}")));
+    if specs.len() == 1 {
+        return Ok(Some(specs[0].clone()));
     }
-    Ok(chosen.or_else(|| default.map(str::to_string)))
+    let combined = specs
+        .iter()
+        .map(|spec| url_encode_object_filter_subspec(spec))
+        .collect::<Vec<_>>()
+        .join("+");
+    Ok(Some(format!("combine:{combined}")))
 }
 
 /// Whether `--filter=<spec>` needs the reachability-aware `rev-list` object walk rather than the
@@ -2346,6 +2361,34 @@ fn collect_filtered_objects_via_rev_list(
     opts.filter = Some(filter);
     let r = rev_list(repo, positive, negative, &opts)
         .map_err(|e| anyhow::anyhow!("rev-list for pack-objects --filter: {e}"))?;
+    let mut seen: HashSet<ObjectId> = HashSet::new();
+    let mut out: Vec<ObjectId> = Vec::new();
+    for c in &r.commits {
+        if seen.insert(*c) {
+            out.push(*c);
+        }
+    }
+    for (o, _) in &r.objects {
+        if seen.insert(*o) {
+            out.push(*o);
+        }
+    }
+    Ok(out)
+}
+
+fn collect_filtered_all_objects_via_rev_list(
+    repo: &Repository,
+    filter_spec: &str,
+) -> Result<Vec<ObjectId>> {
+    let filter = ObjectFilter::parse(filter_spec)
+        .map_err(|e| anyhow::anyhow!("invalid filter spec '{filter_spec}': {e}"))?;
+    let mut opts = RevListOptions::default();
+    opts.objects = true;
+    opts.all_refs = true;
+    opts.missing_action = MissingAction::Allow;
+    opts.filter = Some(filter);
+    let r = rev_list(repo, &[], &[], &opts)
+        .map_err(|e| anyhow::anyhow!("rev-list for pack-objects --all --filter: {e}"))?;
     let mut seen: HashSet<ObjectId> = HashSet::new();
     let mut out: Vec<ObjectId> = Vec::new();
     for c in &r.commits {
@@ -3422,7 +3465,7 @@ fn collect_stdin_packs_oids(
                         if !exclude.contains(&oid) && seen_result.insert(oid) {
                             oids.push(oid);
                         }
-                    } else {
+                    } else if !exclude.contains(&oid) {
                         oids.push(oid);
                     }
                 }

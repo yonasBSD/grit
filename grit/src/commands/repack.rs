@@ -17,7 +17,6 @@ use grit_lib::midx::{
     clear_pack_midx_state, write_multi_pack_index_with_options, WriteMultiPackIndexOptions,
 };
 use grit_lib::objects::{parse_commit, parse_tag, parse_tree, ObjectId, ObjectKind};
-use grit_lib::pack::read_pack_index;
 use grit_lib::pack_geometry::{
     collect_geometry_packs, collect_promisor_geometry_packs, compute_geometry_split,
     preferred_pack_stem_after_split, GeometricPack,
@@ -107,8 +106,8 @@ pub struct Args {
     pub unpack_unreachable: Option<String>,
 
     /// List-objects filter (forwarded to `pack-objects`, e.g. `blob:none`).
-    #[arg(long = "filter", value_name = "SPEC")]
-    pub filter: Option<String>,
+    #[arg(long = "filter", value_name = "SPEC", action = clap::ArgAction::Append)]
+    pub filter: Vec<String>,
 
     /// Destination pack prefix for filtered-out objects (`git repack --filter-to`).
     #[arg(long = "filter-to", value_name = "DIR")]
@@ -246,9 +245,6 @@ fn resolve_pack_kept_objects(
 pub fn run(args: Args) -> Result<()> {
     let repo = Repository::discover(None).context("not a git repository")?;
     let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
-    if std::env::var("GIT_REF_PARANOIA").ok().as_deref() != Some("0") {
-        guard_against_corrupt_loose_refs_for_repack(&repo)?;
-    }
 
     let geometric = args.geometric.unwrap_or(0).max(0);
     let full_repack_early = args.all || args.repack_all_unpack || args.cruft;
@@ -282,11 +278,7 @@ pub fn run(args: Args) -> Result<()> {
     if (args.all || args.repack_all_unpack)
         && !args.cruft
         && !args.write_midx
-        && args
-            .filter
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|s| !s.is_empty())
+        && args.filter.iter().any(|s| !s.trim().is_empty())
     {
         let wb = effective_write_bitmaps_int(&args, &cfg, true, bare_repo);
         if wb > 0 {
@@ -309,6 +301,9 @@ pub fn run(args: Args) -> Result<()> {
 
     let pack_dir_abs = repo.odb.objects_dir().join("pack");
     ensure_no_orphan_pack_indexes(&pack_dir_abs)?;
+    if std::env::var("GIT_REF_PARANOIA").ok().as_deref() != Some("0") {
+        guard_against_corrupt_loose_refs_for_repack(&repo)?;
+    }
 
     let full_repack = args.all || args.repack_all_unpack || args.cruft;
     // Git only drops the existing MIDX when it is about to rewrite it (`--write-midx`) or when
@@ -373,7 +368,7 @@ pub fn run(args: Args) -> Result<()> {
         }
         write_bitmaps = 0;
     }
-    if pack_dir_has_any_keep_file(&pack_dir_abs) {
+    if pack_dir_has_any_keep_file(&pack_dir_abs) && !pack_kept_objects {
         write_bitmaps = 0;
     }
     if let Some(raw) = cfg
@@ -486,7 +481,7 @@ pub fn run(args: Args) -> Result<()> {
                     .arg("--incremental");
             }
 
-            if let Some(ref f) = args.filter {
+            for f in &args.filter {
                 if !f.is_empty() {
                     cmd.arg(format!("--filter={f}"));
                 }
@@ -661,14 +656,7 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     // Second `pack-objects --stdin-packs` pass for `repack --filter` (Git `write_filtered_pack`).
-    if full_repack
-        && !args.cruft
-        && args
-            .filter
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|s| !s.is_empty())
-    {
+    if full_repack && !args.cruft && args.filter.iter().any(|s| !s.trim().is_empty()) {
         if let Some(last) = new_pack_names.last().cloned() {
             let explicit_filter_to = args
                 .filter_to
@@ -742,7 +730,7 @@ pub fn run(args: Args) -> Result<()> {
         trace_argv.push("--keep-pack".to_string());
         trace_argv.push(k.clone());
     }
-    if let Some(ref f) = args.filter {
+    for f in &args.filter {
         if !f.is_empty() {
             trace_argv.push(format!("--filter={f}"));
         }
@@ -822,11 +810,7 @@ pub fn run(args: Args) -> Result<()> {
             let simple_full_repack = (args.all || args.repack_all_unpack)
                 && !args.cruft
                 && !grafts_or_replace_in_effect
-                && args
-                    .filter
-                    .as_deref()
-                    .map(str::trim)
-                    .is_none_or(|f| f.is_empty());
+                && !args.filter.iter().any(|f| !f.trim().is_empty());
             remove_superseded_packs_after_full_repack(
                 &pack_dir_abs,
                 &keep,
@@ -896,6 +880,9 @@ pub fn run(args: Args) -> Result<()> {
                 },
             )
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+            if bitmap_placeholders {
+                remove_pack_bitmap_sidecars(&pack_dir_abs)?;
+            }
         }
     }
 
@@ -934,7 +921,7 @@ fn run_geometric(
         eprintln!("warning: disabling bitmap writing, as some objects are not being packed");
         write_bitmaps = 0;
     }
-    if pack_dir_has_any_keep_file(&pack_dir) {
+    if pack_dir_has_any_keep_file(&pack_dir) && !pack_kept_objects {
         write_bitmaps = 0;
     }
     if let Some(raw) = cfg
@@ -1670,7 +1657,7 @@ fn ensure_no_orphan_pack_indexes(pack_dir: &Path) -> Result<()> {
         if path.extension().and_then(|s| s.to_str()) != Some("idx") {
             continue;
         }
-        if read_pack_index(&path).is_err() {
+        if path.metadata().map(|m| m.len()).unwrap_or(0) == 0 {
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -1704,6 +1691,21 @@ fn remove_pack_sidecars(pack_dir: &Path, stem: &str) {
     let _ = fs::remove_file(pack_dir.join(format!("{stem}.mtimes")));
     let _ = fs::remove_file(pack_dir.join(format!("{stem}.rev")));
     let _ = fs::remove_file(pack_dir.join(format!("{stem}.bitmap")));
+}
+
+fn remove_pack_bitmap_sidecars(pack_dir: &Path) -> Result<()> {
+    let rd = match fs::read_dir(pack_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("pack-") && name.ends_with(".bitmap") {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 /// Union OIDs from every `.idx` in `dirs` (non-recursive). Used for `--filter-to` packs written

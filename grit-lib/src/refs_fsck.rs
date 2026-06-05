@@ -60,7 +60,7 @@ fn canonical_git_dir(git_dir: &Path) -> PathBuf {
 }
 
 fn is_pseudo_ref(name: &str) -> bool {
-    matches!(name, "FETCH_HEAD" | "MERGE_HEAD")
+    matches!(name, "FETCH_HEAD" | "MERGE_HEAD" | "ORIG_HEAD")
 }
 
 fn is_root_ref_syntax(name: &str) -> bool {

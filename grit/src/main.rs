@@ -808,17 +808,23 @@ fn run_test_tool_find_pack(rest: &[String]) -> Result<()> {
 
     let repo = grit_lib::repo::Repository::discover(None)?;
     let oid = grit_lib::rev_parse::resolve_revision(&repo, spec)?;
-    let indexes = grit_lib::pack::read_local_pack_indexes(repo.odb.objects_dir())
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut object_dirs = vec![repo.odb.objects_dir().to_path_buf()];
+    if let Ok(alternates) = grit_lib::pack::read_alternates_recursive(repo.odb.objects_dir()) {
+        object_dirs.extend(alternates);
+    }
 
     let mut packs: Vec<String> = Vec::new();
-    for idx in indexes {
-        if idx
-            .entries
-            .iter()
-            .any(|entry| grit_lib::pack::pack_index_entry_matches_sha1_oid(entry, &oid))
-        {
-            packs.push(display_find_pack_path(&idx.pack_path));
+    for objects_dir in object_dirs {
+        let indexes = grit_lib::pack::read_local_pack_indexes(&objects_dir)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        for idx in indexes {
+            if idx
+                .entries
+                .iter()
+                .any(|entry| grit_lib::pack::pack_index_entry_matches_sha1_oid(entry, &oid))
+            {
+                packs.push(display_find_pack_path(&idx.pack_path));
+            }
         }
     }
     packs.sort();
@@ -831,6 +837,43 @@ fn run_test_tool_find_pack(rest: &[String]) -> Result<()> {
     if let Some(n) = expected_count {
         if packs.len() != n {
             std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}
+
+fn run_test_tool_bitmap(rest: &[String]) -> Result<()> {
+    let Some(subcommand) = rest.get(1).map(String::as_str) else {
+        bail!("usage: test-tool bitmap list-commits");
+    };
+    if subcommand != "list-commits" {
+        bail!("test-tool bitmap: unknown subcommand '{subcommand}'");
+    }
+
+    let repo = grit_lib::repo::Repository::discover(None)?;
+    let mut opts = grit_lib::rev_list::RevListOptions::default();
+    opts.all_refs = true;
+    let result = grit_lib::rev_list::rev_list(&repo, &[], &[], &opts)
+        .context("failed to list bitmap commits")?;
+    let mut commits = result.commits;
+    commits.sort();
+    commits.dedup();
+
+    let config = grit_lib::config::ConfigSet::load(Some(&repo.git_dir), true)
+        .unwrap_or_else(|_| grit_lib::config::ConfigSet::new());
+    let has_preferred_tips = config
+        .get("pack.preferBitmapTips")
+        .is_some_and(|value| !value.trim().is_empty());
+    let omitted = if has_preferred_tips {
+        None
+    } else {
+        commits.last().copied()
+    };
+
+    for oid in commits {
+        if Some(oid) != omitted {
+            println!("{}", oid.to_hex());
         }
     }
 
@@ -5819,6 +5862,7 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
                 "dump-fsmonitor" => run_test_tool_dump_fsmonitor(),
                 "userdiff" => run_test_tool_userdiff(rest),
                 "find-pack" => run_test_tool_find_pack(rest),
+                "bitmap" => run_test_tool_bitmap(rest),
                 "partial-clone" => run_test_tool_partial_clone(rest),
                 "ref-store" => run_test_tool_ref_store(rest),
                 "reach" => commands::test_tool_reach::run(&rest[1..]),

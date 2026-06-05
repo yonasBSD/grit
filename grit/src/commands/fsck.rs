@@ -1257,6 +1257,12 @@ fn check_pack_objects(objects_dir: &Path, issues: &mut Vec<Issue>) -> Result<()>
         if path.extension().and_then(|s| s.to_str()) != Some("idx") {
             continue;
         }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !pack_dir.join(format!("{stem}.pack")).is_file() {
+            continue;
+        }
         if let Err(err) = verify_pack_and_collect(&path) {
             issues.push(Issue::FsckMessage(err.to_string()));
         }
