@@ -1604,6 +1604,7 @@ fn guess_remote_head_names(remote_git: &Path, config: &ConfigSet) -> Result<Vec<
             tags: false,
             refs_only: false,
             symref: true,
+            all_symrefs: false,
             patterns: Vec::new(),
         },
     )?;

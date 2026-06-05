@@ -263,7 +263,7 @@ fn write_ls_refs_request_for_ls_remote(
         pkt_line::write_line(stdin, "peel")?;
         trace_packet_git('>', "peel");
     }
-    if args.heads {
+    if args.branches {
         pkt_line::write_line(stdin, "ref-prefix refs/heads/")?;
         trace_packet_git('>', "ref-prefix refs/heads/");
     }

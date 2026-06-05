@@ -3542,6 +3542,34 @@ fn preprocess_blame_h_rev(rest: &[String]) -> Vec<String> {
     out
 }
 
+/// Translate `ls-remote` short flags that clash with clap's reserved `-h`.
+///
+/// Upstream `git ls-remote` uses `-h`/`--heads` as a hidden, deprecated synonym
+/// for `-b`/`--branches`. clap reserves `-h` for help, so rewrite the short
+/// forms to their canonical long names before parsing. The sole-`-h` help case
+/// is intercepted earlier in [`parse_cmd_args`], so reaching here always means
+/// `-h` is being used as the branches flag.
+fn preprocess_ls_remote_argv(rest: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(rest.len());
+    let mut after_ddash = false;
+    for arg in rest {
+        if after_ddash {
+            out.push(arg.clone());
+            continue;
+        }
+        match arg.as_str() {
+            "--" => {
+                after_ddash = true;
+                out.push(arg.clone());
+            }
+            "-h" => out.push("--heads".to_owned()),
+            "-b" => out.push("--branches".to_owned()),
+            _ => out.push(arg.clone()),
+        }
+    }
+    out
+}
+
 /// Strip leading `-C <dir>` pairs from `rest` and `chdir` for each (Git allows `-C` after the subcommand).
 ///
 /// Do not confuse this with `diff-tree -C` / `diff-index -C` (find copies): the next token there is
@@ -3617,6 +3645,8 @@ pub(crate) fn parse_cmd_args<T: Args + FromArgMatches>(subcmd: &str, rest: &[Str
         preprocess_commit_argv(rest)
     } else if subcmd == "blame" {
         preprocess_blame_h_rev(rest)
+    } else if subcmd == "ls-remote" {
+        preprocess_ls_remote_argv(rest)
     } else {
         rest.to_vec()
     };
