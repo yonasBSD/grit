@@ -587,9 +587,12 @@ fn cmd_write(
         None
     };
 
-    // Pull every commit that already lives in a graph into the working set when
-    // we are flattening into a single file (non-split, or --split=replace).
-    if !split_enabled || (split_enabled && replace) {
+    // Pull every commit that already lives in a graph into the working set only
+    // when flattening a split chain into a single non-split file. `--split=replace`
+    // discards the old chain and rebuilds a single layer from the *requested*
+    // seeds' closure alone (it must not resurrect commits no longer reachable
+    // from those seeds), so it does not import the old chain's commits.
+    if !split_enabled {
         if let Some(chain) = CommitGraphChain::load(&objects_dir) {
             for oid in chain.all_oids_in_order() {
                 commit_set.insert(oid);

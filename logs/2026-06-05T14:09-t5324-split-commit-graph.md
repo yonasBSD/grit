@@ -43,7 +43,16 @@ Ticket: fba897. Subsystem: pack-storage (commit-graph machinery).
 - generationVersion=1 forces no GDA2 chunk; a split write atop a non-GDA2 base
   also drops GDA2 (only ever *removes* generation data). Tests 37, 38, 39.
 
-## Remaining failures (9): 13, 15, 25, 26, 31, 33, 34, 40, 42.
+## Third batch (37/42)
+- core.sharedRepository perms on the new layer + chain file via
+  shared_repo::adjust_shared_perm_path (set both to 0444 first). Tests 33, 34.
+- Discard temporary layer on write failure: every parent of a commit being
+  written must be in a base layer or readable; otherwise bail before writing any
+  file. Test 42.
+- --split=replace with --stdin-commits must NOT import the old chain's commits
+  (only the seeds' closure). Test 31. (Flaky in shared-binary runs but verified.)
+
+## Remaining failures (5): 13, 15, 25, 26, 40.
 - 13, 25: alternates — chain spans an alternate object dir; CommitGraphChain::load
   only reads layer files from the local objects dir, so cross-alternate chains
   don't load/write the right number of layers.
