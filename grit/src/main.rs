@@ -3956,7 +3956,7 @@ fn postprocess_completion_options(subcmd: &str, options: Vec<String>) -> Vec<Str
 
     let mut head: Vec<String> = head
         .into_iter()
-        .filter(|s| s != "--overwrite-ignore")
+        .filter(|s| s != "--overwrite-ignore" && s != "--no-progress")
         .map(|s| {
             if s == "--track=" {
                 "--track".to_string()
