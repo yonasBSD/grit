@@ -1082,29 +1082,44 @@ fn format_rebase_todo_line(
     let commit = parse_commit(&obj.data)?;
     let subj = commit.message.lines().next().unwrap_or("");
     let empty = is_commit_tree_unchanged(repo, oid).unwrap_or(false);
+    let cmd_word = rebase_todo_command_for_display(cmd, &commit);
     let oid_field = if short_oid_field {
         abbreviate_object_id(repo, *oid, 7)?
     } else {
         oid.to_hex()
     };
     let mut line = match config.get("rebase.instructionFormat") {
-        None => format!("{} {} # {}", cmd.as_str(), oid_field, subj),
-        Some(raw) if raw.trim().is_empty() => {
-            format!("{} {} # {}", cmd.as_str(), oid_field, subj)
-        }
+        None => format!("{cmd_word} {oid_field} # {subj}"),
+        Some(raw) if raw.trim().is_empty() => format!("{cmd_word} {oid_field} # {subj}"),
         Some(tmpl) => {
             let mut t = tmpl.clone();
             if !t.starts_with('#') {
                 t = format!("# {t}");
             }
             let rest = crate::commands::show::format_commit_placeholder(&t, oid, &commit);
-            format!("{} {} {}", cmd.as_str(), oid_field, rest)
+            format!("{cmd_word} {oid_field} {rest}")
         }
     };
     if empty {
         line.push_str(" # empty");
     }
     Ok(line)
+}
+
+fn rebase_todo_command_for_display(cmd: RebaseTodoCmd, commit: &CommitData) -> &'static str {
+    if cmd == RebaseTodoCmd::Fixup
+        && commit
+            .message
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim_start()
+            .starts_with("amend! ")
+    {
+        "fixup -C"
+    } else {
+        cmd.as_str()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1841,6 +1856,12 @@ fn parse_interactive_rebase_todo_line(
                         FixupMessageMode::UseCommit
                     });
                     next = parts.next();
+                } else if flag.len() > 2 && flag.starts_with("-C") {
+                    fixup_message_mode = Some(FixupMessageMode::UseCommit);
+                    next = Some(&flag[2..]);
+                } else if flag.len() > 2 && flag.starts_with("-c") {
+                    fixup_message_mode = Some(FixupMessageMode::EditCommit);
+                    next = Some(&flag[2..]);
                 }
             }
         }
@@ -2203,6 +2224,8 @@ fn clear_squash_ctx(rb_dir: &Path) {
     let _ = fs::remove_file(squash_ctx_path(rb_dir));
     let _ = fs::remove_file(rb_dir.join("message-squash"));
     let _ = fs::remove_file(rb_dir.join("message-fixup"));
+    let _ = fs::remove_file(rb_dir.join("message-fixup-edit"));
+    let _ = fs::remove_file(rb_dir.join("message-fixup-active-section"));
 }
 
 fn drop_last_squash_message_section(rb_dir: &Path) -> Result<()> {
@@ -2277,6 +2300,26 @@ fn message_body_after_subject(message: &str) -> &str {
     }
 }
 
+fn skip_blank_lines(mut message: &str) -> &str {
+    loop {
+        let trimmed = message.trim_start_matches([' ', '\t']);
+        if trimmed.starts_with('\n') {
+            message = &trimmed[1..];
+            continue;
+        }
+        return message;
+    }
+}
+
+fn fixup_replacement_message(message: &str) -> String {
+    let subject = message.lines().next().unwrap_or("").trim_start();
+    if subject.starts_with("amend! ") {
+        complete_line(skip_blank_lines(message_body_after_subject(message)))
+    } else {
+        complete_line(message)
+    }
+}
+
 fn first_line_len(body: &str) -> usize {
     match body.find('\n') {
         Some(i) => i,
@@ -2299,10 +2342,65 @@ fn squash_comment_subject_prefix(body: &str, cmd: RebaseTodoCmd, seen_squash: bo
 
 fn append_commented(buf: &mut String, text: &str) {
     for line in text.lines() {
-        buf.push_str("# ");
-        buf.push_str(line);
+        if line.is_empty() {
+            buf.push_str("#\n");
+        } else {
+            buf.push_str("# ");
+            buf.push_str(line);
+            buf.push('\n');
+        }
+    }
+}
+
+fn comment_block(text: &str) -> String {
+    let mut out = String::new();
+    append_commented(&mut out, text.trim_end_matches('\n'));
+    out
+}
+
+fn comment_block_preserving_comments(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.trim_end_matches('\n').lines() {
+        if line.starts_with('#') {
+            out.push_str(line);
+            out.push('\n');
+        } else if line.is_empty() {
+            out.push_str("#\n");
+        } else {
+            out.push_str("# ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn mark_squash_section_skipped(buf: &mut String, section: usize) {
+    let header = format!("# This is the commit message #{section}:\n\n");
+    let Some(start) = buf.find(&header) else {
+        return;
+    };
+    let body_start = start + header.len();
+    let tail = &buf[body_start..];
+    let next_rel = tail.find("\n# This is the commit message #");
+    let next_rel = next_rel.or_else(|| tail.find("\n# The commit message #"));
+    let body_end = next_rel.map_or(buf.len(), |pos| body_start + pos + 1);
+    let body = buf[body_start..body_end].to_string();
+    let replacement = format!(
+        "# The commit message #{section} will be skipped:\n\n{}",
+        comment_block_preserving_comments(&body)
+    );
+    buf.replace_range(start..body_end, &replacement);
+}
+
+fn append_skipped_squash_message(buf: &mut String, body: &str, n: usize) {
+    if !buf.ends_with("\n\n") {
         buf.push('\n');
     }
+    buf.push_str("# The commit message #");
+    buf.push_str(&n.to_string());
+    buf.push_str(" will be skipped:\n\n");
+    append_commented(buf, body.trim_end_matches('\n'));
 }
 
 fn append_nth_squash_message(
@@ -2321,6 +2419,10 @@ fn append_nth_squash_message(
     let pre = squash_comment_subject_prefix(body, cmd, seen_squash).min(body.len());
     if pre > 0 {
         append_commented(buf, &body[..pre]);
+        let rest = &body[pre..];
+        let rest = rest.strip_prefix('\n').unwrap_or(rest);
+        buf.push_str(rest);
+        return;
     }
     buf.push_str(&body[pre..]);
 }
@@ -2570,6 +2672,42 @@ fn final_squash_template_after_fixups(fixup_message: &str, squash_body: &str) ->
     out
 }
 
+fn fixup_edit_template(rb_dir: &Path, fixup_message: &str) -> String {
+    let ctx = read_squash_ctx(rb_dir);
+    let n = ctx.count + 1;
+    let mut out = String::new();
+    out.push_str(&format!("# This is a combination of {n} commits.\n"));
+    out.push_str("# This is the 1st commit message:\n\n");
+    out.push_str("\n# This is the commit message #");
+    out.push_str(&n.to_string());
+    out.push_str(":\n\n");
+    out.push_str(fixup_message.trim_end_matches('\n'));
+    out.push_str("\n\n");
+    out
+}
+
+fn message_with_editor_separator(message: &str) -> String {
+    let mut out = message.trim_end_matches('\n').to_string();
+    out.push_str("\n\n");
+    out
+}
+
+fn write_fixup_message_mode(rb_dir: &Path, mode: Option<FixupMessageMode>) -> Result<()> {
+    let edit_path = rb_dir.join("message-fixup-edit");
+    match mode {
+        Some(FixupMessageMode::EditCommit) => fs::write(edit_path, "1\n")?,
+        Some(FixupMessageMode::UseCommit) => {
+            let _ = fs::remove_file(edit_path);
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+fn fixup_message_opens_editor(rb_dir: &Path) -> bool {
+    rb_dir.join("message-fixup-edit").exists()
+}
+
 fn update_squash_message_file(
     repo: &Repository,
     rb_dir: &Path,
@@ -2581,10 +2719,27 @@ fn update_squash_message_file(
 ) -> Result<()> {
     let squash_path = rb_dir.join("message-squash");
     let fixup_path = rb_dir.join("message-fixup");
-    let body = if cmd == RebaseTodoCmd::Squash {
-        picked.message.as_str()
+    let mut display_message = picked.message.clone();
+    if rebase_signoff(rb_dir)
+        && cmd == RebaseTodoCmd::Fixup
+        && fixup_message_mode.is_some()
+        && !ctx.seen_squash
+    {
+        let config = ConfigSet::load(Some(git_dir), true)?;
+        let committer = rebase_replayed_committer_line(
+            &config,
+            &picked.author,
+            load_rebase_replay_commit_opts(rb_dir),
+            time::OffsetDateTime::now_utc(),
+        )?;
+        let (name, email, _) = split_stored_author_line(&committer)?;
+        let sob = format_signoff_line(&name, &email);
+        append_signoff_trailer(&mut display_message, &sob, &config);
+    }
+    let body = if cmd == RebaseTodoCmd::Squash || cmd == RebaseTodoCmd::Fixup {
+        display_message.as_str()
     } else {
-        message_body_after_subject(&picked.message)
+        message_body_after_subject(&display_message)
     };
 
     if ctx.count == 0 {
@@ -2598,10 +2753,15 @@ fn update_squash_message_file(
         let hbody = message_body_after_subject(&head_commit.message);
         let mut buf = String::new();
         buf.push_str("# This is a combination of 2 commits.\n");
-        buf.push_str("# This is the 1st commit message:\n\n");
         if cmd == RebaseTodoCmd::Fixup {
+            buf.push_str("# The 1st commit message will be skipped:\n\n");
+        } else {
+            buf.push_str("# This is the 1st commit message:\n\n");
+        }
+        if cmd == RebaseTodoCmd::Fixup {
+            write_fixup_message_mode(rb_dir, fixup_message_mode)?;
             let fixup_msg = if fixup_message_mode.is_some() {
-                complete_line(&picked.message)
+                fixup_replacement_message(&picked.message)
             } else {
                 let mut fixup_msg = String::new();
                 fixup_msg.push_str("# This is a combination of 2 commits.\n");
@@ -2629,12 +2789,28 @@ fn update_squash_message_file(
                 buf.push('\n');
             }
         }
-        append_nth_squash_message(&mut buf, body, cmd, ctx.seen_squash, 2);
+        if cmd == RebaseTodoCmd::Fixup && fixup_message_mode.is_none() {
+            append_skipped_squash_message(&mut buf, body, 2);
+        } else {
+            append_nth_squash_message(&mut buf, body, cmd, ctx.seen_squash, 2);
+        }
+        if cmd == RebaseTodoCmd::Fixup && fixup_message_mode.is_some() {
+            fs::write(rb_dir.join("message-fixup-active-section"), "2\n")?;
+        }
         fs::write(&squash_path, buf)?;
     } else {
         let mut buf = fs::read_to_string(&squash_path)?;
         if cmd == RebaseTodoCmd::Fixup && fixup_message_mode.is_some() {
-            fs::write(&fixup_path, complete_line(&picked.message))?;
+            if !ctx.seen_squash {
+                if let Ok(section) = fs::read_to_string(rb_dir.join("message-fixup-active-section"))
+                {
+                    if let Ok(section) = section.trim().parse::<usize>() {
+                        mark_squash_section_skipped(&mut buf, section);
+                    }
+                }
+            }
+            write_fixup_message_mode(rb_dir, fixup_message_mode)?;
+            fs::write(&fixup_path, fixup_replacement_message(&picked.message))?;
         }
         let n = ctx.count + 2;
         if let Some(pos) = buf.find('\n') {
@@ -2645,11 +2821,22 @@ fn update_squash_message_file(
                 );
             }
         }
-        append_nth_squash_message(&mut buf, body, cmd, ctx.seen_squash, ctx.count + 2);
+        if cmd == RebaseTodoCmd::Fixup && fixup_message_mode.is_none() {
+            append_skipped_squash_message(&mut buf, body, ctx.count + 2);
+        } else {
+            append_nth_squash_message(&mut buf, body, cmd, ctx.seen_squash, ctx.count + 2);
+        }
+        if cmd == RebaseTodoCmd::Fixup && fixup_message_mode.is_some() && !ctx.seen_squash {
+            fs::write(
+                rb_dir.join("message-fixup-active-section"),
+                format!("{}\n", ctx.count + 2),
+            )?;
+        }
         fs::write(&squash_path, buf)?;
     }
 
     if cmd == RebaseTodoCmd::Squash {
+        let _ = fs::remove_file(rb_dir.join("message-fixup-active-section"));
         ctx.seen_squash = true;
     }
     ctx.count += 1;
@@ -6659,7 +6846,12 @@ fn cherry_pick_for_rebase(
 
     if !has_conflicts {
         let merged_tree_oid = write_tree_from_index(&repo.odb, &merged_index, "")?;
-        if matches!(todo_cmd, RebaseTodoCmd::Fixup | RebaseTodoCmd::Squash) && !keep_empty {
+        let fixup_replacement_empty =
+            todo_cmd == RebaseTodoCmd::Fixup && fixup_message_mode.is_some();
+        if matches!(todo_cmd, RebaseTodoCmd::Fixup | RebaseTodoCmd::Squash)
+            && !fixup_replacement_empty
+            && !keep_empty
+        {
             let head_obj = repo.odb.read(&head_oid)?;
             let head_commit = parse_commit(&head_obj.data)?;
             if let Some(amend_parent) = head_commit.parents.first() {
@@ -6673,7 +6865,7 @@ fn cherry_pick_for_rebase(
                 }
             }
         }
-        if merged_tree_oid == head_tree_oid && !keep_empty {
+        if merged_tree_oid == head_tree_oid && !fixup_replacement_empty && !keep_empty {
             // A commit whose result is empty: if it did *not* start empty (its tree differed from
             // its parent's, so it became empty only because a prerequisite was already applied
             // upstream — e.g. `pull --rebase` after the upstream was rebased), a non-interactive
@@ -6821,8 +7013,12 @@ fn cherry_pick_for_rebase(
             let squash_ctx = read_squash_ctx(rb_dir);
             let mut cleaned = if fixup_path.exists() && !squash_ctx.seen_squash {
                 let tmpl = fs::read_to_string(&fixup_path)?;
-                let raw =
-                    commit_message_after_prepare_hook(repo, git_dir, &tmpl, "message", Some(":"))?;
+                let raw = if fixup_message_opens_editor(rb_dir) {
+                    let edit_tmpl = fixup_edit_template(rb_dir, &tmpl);
+                    run_commit_editor_for_template(repo, git_dir, &edit_tmpl, "squash", None)?
+                } else {
+                    commit_message_after_prepare_hook(repo, git_dir, &tmpl, "message", Some(":"))?
+                };
                 cleanup_squash_editor_message(&raw, &config)
             } else {
                 let tmpl = fs::read_to_string(rb_dir.join("message-squash"))?;
@@ -7625,6 +7821,50 @@ fn do_continue() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("HEAD has no OID"))?
         .to_owned();
 
+    if interactive_continue && matches!(todo_cmd, RebaseTodoCmd::Fixup | RebaseTodoCmd::Squash) {
+        let head_tree = commit_tree_oid_for_rebase(&repo, head_oid)?;
+        if diff_index_to_tree(&repo.odb, &index, Some(&head_tree), false)
+            .map(|diffs| diffs.is_empty())
+            .unwrap_or(false)
+        {
+            let _ = drop_last_squash_message_section(&rb_dir);
+            if todo_lines_continue
+                .first()
+                .and_then(|line| {
+                    parse_rebase_replay_step(&repo, line, interactive_continue)
+                        .ok()
+                        .flatten()
+                })
+                .and_then(|step| match step {
+                    RebaseReplayStep::PickLike { oid, .. } | RebaseReplayStep::Edit(oid) => {
+                        Some(oid)
+                    }
+                    _ => None,
+                })
+                == Some(current_oid)
+            {
+                pop_first_nonempty_todo_line(&repo, &rb_dir)?;
+            }
+            let remaining = read_rebase_todo_file(&repo, &rb_dir)?;
+            if rebase_todo_actionable_lines(&remaining).is_empty() {
+                cleanup_head_message_after_fixup_skip(&repo, git_dir, None)?;
+                clear_squash_ctx(&rb_dir);
+            }
+            let _ = fs::remove_file(rb_dir.join("current"));
+            let _ = fs::remove_file(rb_dir.join("current-cmd"));
+            let _ = fs::remove_file(rb_dir.join("current-final-fixup"));
+            let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
+            return replay_remaining(
+                &repo,
+                &rb_dir,
+                autostash_continue,
+                backend_continue,
+                had_autostash_continue,
+                force_rewrite_continue,
+            );
+        }
+    }
+
     if stopped_oid.is_some() && worktree_matches_head(&repo, git_dir)? {
         let oid_for_rewrite = stopped_oid.as_ref().unwrap_or(&current_oid);
         let next_after_continue =
@@ -7714,7 +7954,7 @@ fn do_continue() -> Result<()> {
                 &index,
                 &config,
                 vec![amend_parent],
-                &original_commit.author,
+                &hc.author,
                 cleaned,
                 replay_opts_continue,
                 now_continue,
@@ -7730,7 +7970,7 @@ fn do_continue() -> Result<()> {
                 &index,
                 &config,
                 vec![amend_parent],
-                &original_commit.author,
+                &hc.author,
                 cleaned,
                 replay_opts_continue,
                 now_continue,
@@ -7740,8 +7980,14 @@ fn do_continue() -> Result<()> {
             let squash_ctx = read_squash_ctx(&rb_dir);
             let mut cleaned = if fixup_path.exists() && !squash_ctx.seen_squash {
                 let tmpl = fs::read_to_string(&fixup_path)?;
-                let after_editor =
-                    run_commit_editor_for_template(&repo, git_dir, &tmpl, "message", None)?;
+                let edit_tmpl;
+                let after_editor = if fixup_message_opens_editor(&rb_dir) {
+                    edit_tmpl = fixup_edit_template(&rb_dir, &tmpl);
+                    run_commit_editor_for_template(&repo, git_dir, &edit_tmpl, "squash", None)?
+                } else {
+                    edit_tmpl = message_with_editor_separator(&tmpl);
+                    run_commit_editor_for_template(&repo, git_dir, &edit_tmpl, "squash", None)?
+                };
                 cleanup_squash_editor_message(&after_editor, &config)
             } else {
                 let tmpl = fs::read_to_string(rb_dir.join("message-squash"))?;
@@ -7756,7 +8002,7 @@ fn do_continue() -> Result<()> {
                 &index,
                 &config,
                 vec![amend_parent],
-                &original_commit.author,
+                &hc.author,
                 cleaned,
                 replay_opts_continue,
                 now_continue,
@@ -7786,7 +8032,7 @@ fn do_continue() -> Result<()> {
                 &index,
                 &config,
                 vec![amend_parent],
-                &original_commit.author,
+                &hc.author,
                 cleaned,
                 replay_opts_continue,
                 now_continue,
