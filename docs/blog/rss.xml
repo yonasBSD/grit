@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0"><channel>
+  <title>project notes from Grit</title>
+  <link>https://grit-scm.com/blog/</link>
+  <description>Short deep dives into building a Git-compatible, library-oriented Rust implementation.</description>
+  <lastBuildDate>Fri, 05 Jun 2026 00:00:00 +0000</lastBuildDate>
+  <item>
+    <title>Introducing the Grit project blog</title>
+    <link>https://grit-scm.com/blog/introducing-grit/</link>
+    <guid>https://grit-scm.com/blog/introducing-grit/</guid>
+    <pubDate>Fri, 05 Jun 2026 00:00:00 +0000</pubDate>
+    <description>Notes from the effort to rebuild Git as an idiomatic Rust library.</description>
+  </item>
+</channel></rss>

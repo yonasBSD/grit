@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Introducing the Grit project blog - the Grit project</title>
+<meta name="description" content="Notes from the effort to rebuild Git as an idiomatic Rust library." />
+<link rel="alternate" type="application/rss+xml" title="Grit blog RSS" href="/blog/rss.xml" />
+<link rel="alternate" type="application/atom+xml" title="Grit blog Atom" href="/blog/atom.xml" />
+<link rel="canonical" href="https://grit-scm.com/blog/introducing-grit/" />
+<meta property="og:title" content="Introducing the Grit project blog" />
+<style>
+:root{--bg:#f8f2e8;--ink:#211711;--muted:#736961;--line:#e2d6c7;--accent:#b64729;--paper:#fff9f1;--code:#f3e8de}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:20px;line-height:1.75}.site-header{height:6.4rem;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 3.7rem}.brand{display:flex;align-items:center;gap:.85rem;color:var(--ink);font-weight:720;text-decoration:none}.brand img{width:3rem;height:3rem}.brand span span{color:#645a52;font-weight:650}.brand strong{color:var(--ink)}nav{display:flex;gap:2.2rem}nav a,.content a,.breadcrumb a{color:var(--accent);text-decoration:none}.blog-index{max-width:75rem;margin:0 auto;padding:7rem 2rem}.hero{text-align:center;max-width:54rem;margin:0 auto 4rem}.eyebrow,.toc h2{text-transform:uppercase;letter-spacing:.28em;color:var(--accent);font:700 .9rem/1 ui-monospace,SFMono-Regular,Menlo,monospace}.hero h1{font:800 clamp(3.5rem,7vw,6rem)/.95 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.05em;margin:1.4rem 0;color:var(--ink)}.hero p:not(.eyebrow){font-size:1.45rem;color:#534941}.post-list{list-style:none;margin:0 auto;padding:0;max-width:60rem;border-top:1px solid var(--line)}.post-list li{display:flex;gap:1.5rem;border-bottom:1px solid var(--line);padding:1rem 0;font:700 1.05rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}.post-list time{color:#837a72;min-width:10.5rem}.post-list a{color:var(--accent);text-decoration:none}.post-layout{display:grid;grid-template-columns:minmax(0,1fr) 18rem;gap:5rem;max-width:110rem;margin:0 auto;padding:6.5rem 5rem}.post{max-width:75rem}.breadcrumb{font:700 1rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#837a72;margin:0 0 2.1rem}.post>h1{font:850 clamp(3.2rem,6.3vw,5.5rem)/.98 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.065em;margin:0 0 2.8rem}.dek{font-size:1.35rem;color:#584d45}.content h2{font-size:1.7rem;line-height:1.2;margin:3.2rem 0 1rem}.content h3{font-size:1.25rem;margin:2.4rem 0 .7rem}.content p{margin:0 0 1.6rem;color:#51473f}.content ul,.content ol{color:#51473f;margin:0 0 1.6rem 1.2rem}.content code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);border:1px solid #ded0c4;border-radius:.35rem;padding:.05rem .32rem}.content pre{background:#fff6ee;border:1px solid #ded0c4;border-radius:.8rem;padding:1.3rem;margin:1.8rem 0;overflow:auto}.content pre code{background:transparent;border:0;padding:0}.content blockquote{border-left:3px solid var(--accent);margin:1.8rem 0;padding:.2rem 0 .2rem 1.2rem;color:#5c5148}.toc{position:sticky;top:2rem;align-self:start;border-left:1px solid var(--line);padding-left:1.4rem;font:700 1rem/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:#81776f}.toc h2{color:#81776f;margin:0 0 1.3rem}.toc ol{list-style:none;margin:0;padding:0}.toc li{margin:0 0 1rem}.toc a{color:#81776f;text-decoration:none}.toc-level-3{padding-left:1rem}@media(max-width:900px){.site-header{padding:0 1.4rem}.post-layout{display:block;padding:3rem 1.4rem}.toc{position:static;border-left:0;border-top:1px solid var(--line);margin-top:3rem;padding:1.5rem 0 0}.blog-index{padding:4rem 1.4rem}.post-list li{display:block}.post-list time{display:block;margin-bottom:.3rem}.post>h1{font-size:3rem}}
+</style>
+</head>
+<body>
+<header class="site-header">
+  <a class="brand" href="/"><img src="/grit-logo.svg" alt="" /> <span><span>the</span> <strong>Grit</strong> <span>project</span></span></a>
+  <nav aria-label="Primary"><a href="/blog/">Blog</a><a href="/blog/rss.xml">RSS</a><a href="/v1-scope.md">Spec →</a></nav>
+</header>
+<main class="post-layout">
+  <article class="post">
+    <p class="breadcrumb"><a href="/blog/">blog</a> / <time datetime="2026-06-05">2026-06-05</time> / schacon</p>
+    <h1>Introducing the Grit project blog</h1>
+    <p class="dek">Notes from the effort to rebuild Git as an idiomatic Rust library.</p>
+    <div class="content"><p>Welcome to the Grit project blog. This is where we will publish short notes about implementation details, compatibility work, and the strange corners of Git that become clearer when you rebuild them from scratch.</p>
+<h2 id="why-a-blog">Why a blog?</h2>
+<p>Grit is both a command-line tool and a library-oriented reimplementation of Git. The test suite tells us what works, but it does not always explain why a behavior exists or how the Rust API should expose it.</p>
+<p>These posts are a place for that connective tissue:</p>
+<ul>
+<li>design notes for library boundaries,</li>
+<li>writeups for tricky upstream tests,</li>
+<li>explanations of Git file formats, and</li>
+<li>progress updates that need more room than a dashboard card.</li>
+</ul>
+<h2 id="how-posts-are-built">How posts are built</h2>
+<p>Posts live as Markdown files under <code>content/blog/</code>. Running:</p>
+<pre><code>python3 scripts/blog.py</code></pre>
+<p>renders the blog index, each post page, and RSS plus Atom feeds into <code>docs/blog/</code> for static hosting.</p>
+<h2 id="what-comes-next">What comes next</h2>
+<p>Expect focused posts about object storage, refs, the index, merges, and the long tail of porcelain behavior needed to pass the upstream Git test suite.</p></div>
+  </article>
+  <aside class="toc" aria-label="On this page"><h2>On this page</h2><ol><li class="toc-level-2"><a href="#why-a-blog">Why a blog?</a></li>
+<li class="toc-level-2"><a href="#how-posts-are-built">How posts are built</a></li>
+<li class="toc-level-2"><a href="#what-comes-next">What comes next</a></li></ol></aside>
+</main>
+</body>
+</html>
