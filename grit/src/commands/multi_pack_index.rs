@@ -302,6 +302,11 @@ fn cmd_write(repo: &Repository, args: &WriteArgs) -> Result<()> {
     };
     let write_bitmaps = args.bitmap && !args.no_bitmap;
     let force_progress = args.progress && !args.no_progress;
+    // `midx.version` selects the on-disk MIDX format (default v2).
+    let version = grit_lib::config::ConfigSet::load(Some(&repo.git_dir), true)
+        .ok()
+        .and_then(|c| c.get_i64("midx.version").and_then(|r| r.ok()))
+        .map(|v| v as u8);
     if let Err(e) = write_multi_pack_index_with_options(
         &pack_dir(repo),
         &WriteMultiPackIndexOptions {
@@ -311,6 +316,7 @@ fn cmd_write(repo: &Repository, args: &WriteArgs) -> Result<()> {
             write_bitmap_placeholders: write_bitmaps,
             incremental: args.incremental,
             write_rev_placeholder: write_rev && write_bitmaps,
+            version,
         },
     ) {
         let msg = e.to_string();

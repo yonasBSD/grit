@@ -69,6 +69,9 @@ pub struct WriteMultiPackIndexOptions {
     /// When true with [`Self::write_bitmap_placeholders`], also create an empty `.rev`
     /// sidecar (Git `GIT_TEST_MIDX_WRITE_REV` compatibility).
     pub write_rev_placeholder: bool,
+    /// On-disk MIDX format version to write (`1` or `2`). `None` writes the default (v2).
+    /// Set from `midx.version`.
+    pub version: Option<u8>,
 }
 
 fn normalize_pack_idx_basename(raw: &str) -> Result<String> {
@@ -390,6 +393,7 @@ fn build_midx_bytes(
     preferred_idx: Option<usize>,
     write_bitmap_placeholders: bool,
     omit_embedded_ridx_chunk: bool,
+    version: u8,
 ) -> Result<(Vec<u8>, Option<Vec<u32>>)> {
     let preferred_pack_idx = preferred_idx.map(|p| p as u32);
     let pack_mtimes: Vec<std::time::SystemTime> = indexes.iter().map(pack_mtime_for_midx).collect();
@@ -575,7 +579,11 @@ fn build_midx_bytes(
 
     let mut out = Vec::with_capacity(MIDX_HEADER_SIZE + body.len() + 20);
     out.extend_from_slice(&MIDX_SIGNATURE.to_be_bytes());
-    out.push(MIDX_VERSION_V2);
+    out.push(if version == MIDX_VERSION_V1 {
+        MIDX_VERSION_V1
+    } else {
+        MIDX_VERSION_V2
+    });
     out.push(HASH_VERSION_SHA1);
     out.push(num_chunks);
     out.push(0);
@@ -1804,6 +1812,18 @@ pub fn write_multi_pack_index_with_options(
     pack_dir: &Path,
     opts: &WriteMultiPackIndexOptions,
 ) -> Result<()> {
+    // Git warns and ignores an existing MIDX whose checksum does not validate when
+    // writing a fresh (non-stdin-packs) MIDX (git/midx-write.c `write_midx_internal`).
+    if opts.pack_names_subset_ordered.is_none() {
+        if let Some(existing) = resolve_tip_midx_path(pack_dir) {
+            if let Ok(bytes) = fs::read(&existing) {
+                if !midx_checksum_is_valid(&bytes) {
+                    eprintln!("warning: ignoring existing multi-pack-index; checksum mismatch");
+                }
+            }
+        }
+    }
+
     // Git's MIDX covers every pack index in the directory regardless of its
     // basename (the `.git/objects/pack/test-*.idx` packs created by t7900's
     // incremental-repack test, for instance), so include any `*.idx` whose
@@ -1979,6 +1999,7 @@ pub fn write_multi_pack_index_with_options(
         preferred_idx,
         bitmap_placeholders,
         omit_embedded_ridx,
+        opts.version.unwrap_or(MIDX_VERSION_V2),
     )?;
 
     let hash = &out[out.len() - 20..];
