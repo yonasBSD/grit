@@ -340,8 +340,13 @@ pub fn run(args: Args) -> Result<()> {
                     // Must match the collision rules used for normal renames. Without this,
                     // `git mv <submodule-dir> <existing-file>` could update `.gitmodules` /
                     // `.git/modules/` and then fail `rename(2)`, leaving the repo dirty (t7001).
-                    let dst_fs_collides = dst_abs.exists()
-                        && !(ignore_case && index_src_rel.eq_ignore_ascii_case(&dst_rel));
+                    let dst_fs_collides = destination_fs_collides(
+                        &src_abs,
+                        &dst_abs,
+                        ignore_case,
+                        &index_src_rel,
+                        &dst_rel,
+                    )?;
                     if dst_fs_collides
                         && !(args.force
                             && (dst_abs.is_file() || dst_abs.is_symlink())
@@ -569,7 +574,7 @@ pub fn run(args: Args) -> Result<()> {
         // only differs by case from the source is not a separate destination — `exists()` would
         // still be true for the same inode.
         let dst_fs_collides =
-            dst_abs.exists() && !(ignore_case && index_src_rel.eq_ignore_ascii_case(&dst_rel));
+            destination_fs_collides(&src_abs, &dst_abs, ignore_case, &index_src_rel, &dst_rel)?;
 
         if dst_fs_collides
             && !(args.force && (dst_abs.is_file() || dst_abs.is_symlink()) && !dst_abs.is_dir())
@@ -1269,6 +1274,28 @@ fn rename_worktree_path(
     } else {
         fs::rename(src, dst)
     }
+}
+
+fn destination_fs_collides(
+    src: &Path,
+    dst: &Path,
+    ignore_case_config: bool,
+    src_rel: &str,
+    dst_rel: &str,
+) -> std::io::Result<bool> {
+    if !dst.exists() {
+        return Ok(false);
+    }
+    if src_rel == dst_rel {
+        return Ok(false);
+    }
+    if !src_rel.eq_ignore_ascii_case(dst_rel) {
+        return Ok(true);
+    }
+    if ignore_case_config {
+        return Ok(false);
+    }
+    same_filesystem_identity(src, dst).map(|same| !same)
 }
 
 fn needs_case_only_two_step_rename(
