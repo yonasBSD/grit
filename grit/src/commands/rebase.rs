@@ -5486,12 +5486,8 @@ fn replay_remaining(
                             let remaining: Vec<&str> = todo[i + 1..].to_vec();
                             write_rebase_todo_slice(rb_dir, &remaining)?;
                             if rebase_interactive {
-                                let total = fs::read_to_string(rb_dir.join("total-cmds"))
-                                    .unwrap_or_else(|_| remaining.len().to_string());
-                                let completed = fs::read_to_string(rb_dir.join("completed-cmds"))
-                                    .unwrap_or_else(|_| (i + 1).to_string());
-                                fs::write(rb_dir.join("end"), total)?;
-                                fs::write(rb_dir.join("msgnum"), completed)?;
+                                fs::write(rb_dir.join("end"), remaining.len().to_string())?;
+                                fs::write(rb_dir.join("msgnum"), "1")?;
                             }
                             let _ = fs::write(
                                 rb_dir.join("stopped-sha"),
@@ -6253,6 +6249,19 @@ fn cherry_pick_for_rebase(
                 let pick_oid =
                     write_replayed_commit(repo, rb_dir, &config, &pick_data.committer, pick_bytes)?;
                 fs::write(git_dir.join("HEAD"), format!("{}\n", pick_oid.to_hex()))?;
+                let ra = load_rebase_reflog_action(rb_dir);
+                let ident = reflog_identity(repo);
+                let pick_subject = pick_data.message.lines().next().unwrap_or("");
+                let pick_reflog_msg = format!("{ra} (pick): {pick_subject}");
+                let _ = append_reflog(
+                    git_dir,
+                    "HEAD",
+                    &head_oid,
+                    &pick_oid,
+                    &ident,
+                    &pick_reflog_msg,
+                    false,
+                );
 
                 let after_editor = run_commit_editor_for_reword(repo, git_dir, &pick_message)?;
                 let cleaned = message_from_reword_editor(
@@ -6615,7 +6624,7 @@ fn cherry_pick_for_rebase(
             } else {
                 let tmpl = fs::read_to_string(rb_dir.join("message-squash"))?;
                 let after_editor =
-                    run_commit_editor_for_template(repo, git_dir, &tmpl, "squash", None)?;
+                    run_commit_editor_for_template(repo, git_dir, &tmpl, "message", None)?;
                 cleanup_squash_editor_message(&after_editor, &config)
             };
             let new_oid = commit_from_merged_index(
@@ -6644,12 +6653,12 @@ fn cherry_pick_for_rebase(
             let body = message_body_after_subject(&commit.message);
             let tmpl = final_squash_template_after_fixups(&fixup_msg, body);
             let after_editor =
-                run_commit_editor_for_template(repo, git_dir, &tmpl, "squash", None)?;
+                run_commit_editor_for_template(repo, git_dir, &tmpl, "message", None)?;
             cleanup_squash_editor_message(&after_editor, &config)
         } else {
             let tmpl = fs::read_to_string(&squash_path)?;
             let after_editor =
-                run_commit_editor_for_template(repo, git_dir, &tmpl, "squash", None)?;
+                run_commit_editor_for_template(repo, git_dir, &tmpl, "message", None)?;
             cleanup_squash_editor_message(&after_editor, &config)
         };
         let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
@@ -6724,6 +6733,19 @@ fn cherry_pick_for_rebase(
             write_replayed_commit(repo, rb_dir, &config, &pick_data.committer, pick_bytes)?
         };
         fs::write(git_dir.join("HEAD"), format!("{}\n", pick_oid.to_hex()))?;
+        let ra = load_rebase_reflog_action(rb_dir);
+        let ident = reflog_identity(repo);
+        let pick_subject = pick_message.lines().next().unwrap_or("");
+        let pick_reflog_msg = format!("{ra} (pick): {pick_subject}");
+        let _ = append_reflog(
+            git_dir,
+            "HEAD",
+            &head_oid,
+            &pick_oid,
+            &ident,
+            &pick_reflog_msg,
+            false,
+        );
 
         let after_editor = run_commit_editor_for_reword(repo, git_dir, &pick_message)?;
         let cleaned =
@@ -7188,10 +7210,8 @@ fn do_continue() -> Result<()> {
         } else {
             head_oid
         };
-        if rb_dir.join("rebase-edit-continue").exists()
-            && head_oid != amend_old_oid
-            && worktree_matches_head(&repo, git_dir)?
-        {
+        let edit_continue = rb_dir.join("rebase-edit-continue").exists();
+        if edit_continue && head_oid != amend_old_oid && worktree_matches_head(&repo, git_dir)? {
             let next_peek_amend =
                 peek_next_rebase_flush_hint(&repo, &todo_lines_continue, 0, interactive_continue);
             record_rebase_in_rewritten_pending(git_dir, &rb_dir, &amend_old_oid, next_peek_amend)?;
@@ -7221,7 +7241,23 @@ fn do_continue() -> Result<()> {
         } else {
             hc.message.clone()
         };
-        let mut message = if rb_dir.join("rebase-edit-continue").exists() {
+        let mut message = if edit_continue && head_oid != amend_old_oid {
+            let raw_msg = commit_message_after_prepare_hook(
+                &repo,
+                git_dir,
+                msg_src.trim(),
+                "message",
+                Some(":"),
+            )?;
+            let mut template = raw_msg.clone();
+            if !template.ends_with('\n') {
+                template.push('\n');
+            }
+            template.push_str("\n# Changes to be committed\n");
+            let raw_msg =
+                run_commit_editor_for_template(&repo, git_dir, &template, "message", Some(":"))?;
+            apply_commit_msg_cleanup(&raw_msg, rebase_commit_msg_cleanup(&config))
+        } else if edit_continue {
             let after_editor = run_commit_editor_for_reword(&repo, git_dir, msg_src.trim())?;
             message_from_reword_editor(&after_editor, rebase_commit_msg_cleanup(&config), &config)?
         } else {
@@ -7245,6 +7281,7 @@ fn do_continue() -> Result<()> {
             let sob = format_signoff_line(&name, &email);
             append_signoff_trailer(&mut message, &sob, &config);
         }
+        let message_subject = message.lines().next().unwrap_or("").to_owned();
         let new_oid = commit_from_merged_index(
             &repo,
             git_dir,
@@ -7257,6 +7294,12 @@ fn do_continue() -> Result<()> {
             now_continue,
         )?;
         fs::write(git_dir.join("HEAD"), format!("{}\n", new_oid.to_hex()))?;
+        if edit_continue && head_oid != amend_old_oid {
+            let ra = load_rebase_reflog_action(&rb_dir);
+            let ident = reflog_identity(&repo);
+            let msg = format!("{ra} (continue): {message_subject}");
+            let _ = append_reflog(git_dir, "HEAD", &head_oid, &new_oid, &ident, &msg, false);
+        }
         let next_peek_amend =
             peek_next_rebase_flush_hint(&repo, &todo_lines_continue, 0, interactive_continue);
         record_rebase_in_rewritten_pending(git_dir, &rb_dir, &amend_old_oid, next_peek_amend)?;
@@ -7365,6 +7408,26 @@ fn do_continue() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("HEAD has no OID"))?
         .to_owned();
 
+    if stopped_oid.is_some() && worktree_matches_head(&repo, git_dir)? {
+        let oid_for_rewrite = stopped_oid.as_ref().unwrap_or(&current_oid);
+        let next_after_continue =
+            peek_next_rebase_flush_hint(&repo, &todo_lines_continue, 0, interactive_continue);
+        record_rebase_in_rewritten_pending(git_dir, &rb_dir, oid_for_rewrite, next_after_continue)?;
+        let _ = fs::remove_file(rb_dir.join("current"));
+        let _ = fs::remove_file(rb_dir.join("current-cmd"));
+        let _ = fs::remove_file(rb_dir.join("current-final-fixup"));
+        let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
+        let _ = fs::remove_file(git_dir.join("REBASE_HEAD"));
+        return replay_remaining(
+            &repo,
+            &rb_dir,
+            autostash_continue,
+            backend_continue,
+            had_autostash_continue,
+            force_rewrite_continue,
+        );
+    }
+
     if interactive_continue {
         let head_tree = commit_tree_oid_for_rebase(&repo, head_oid)?;
         let current_tree = commit_tree_oid_for_rebase(&repo, current_oid)?;
@@ -7425,7 +7488,7 @@ fn do_continue() -> Result<()> {
                 hc.message.clone()
             };
             let after_editor =
-                run_commit_editor_for_template(&repo, git_dir, &tmpl, "squash", None)?;
+                run_commit_editor_for_template(&repo, git_dir, &tmpl, "message", None)?;
             let cleaned = cleanup_squash_editor_message(&after_editor, &config);
             let _ = fs::write(&fixup_path, &cleaned);
             commit_from_merged_index(
@@ -7461,12 +7524,12 @@ fn do_continue() -> Result<()> {
             let cleaned = if fixup_path.exists() && !squash_ctx.seen_squash {
                 let tmpl = fs::read_to_string(&fixup_path)?;
                 let after_editor =
-                    run_commit_editor_for_template(&repo, git_dir, &tmpl, "squash", None)?;
+                    run_commit_editor_for_template(&repo, git_dir, &tmpl, "message", None)?;
                 cleanup_squash_editor_message(&after_editor, &config)
             } else {
                 let tmpl = fs::read_to_string(rb_dir.join("message-squash"))?;
                 let after_editor =
-                    run_commit_editor_for_template(&repo, git_dir, &tmpl, "squash", None)?;
+                    run_commit_editor_for_template(&repo, git_dir, &tmpl, "message", None)?;
                 cleanup_squash_editor_message(&after_editor, &config)
             };
             let oid = commit_from_merged_index(
@@ -7490,12 +7553,12 @@ fn do_continue() -> Result<()> {
                 let body = message_body_after_subject(&original_commit.message);
                 let tmpl = final_squash_template_after_fixups(&fixup_msg, body);
                 let after_editor =
-                    run_commit_editor_for_template(&repo, git_dir, &tmpl, "squash", None)?;
+                    run_commit_editor_for_template(&repo, git_dir, &tmpl, "message", None)?;
                 cleanup_squash_editor_message(&after_editor, &config)
             } else {
                 let tmpl = fs::read_to_string(&squash_path)?;
                 let after_editor =
-                    run_commit_editor_for_template(&repo, git_dir, &tmpl, "squash", None)?;
+                    run_commit_editor_for_template(&repo, git_dir, &tmpl, "message", None)?;
                 cleanup_squash_editor_message(&after_editor, &config)
             };
             let oid = commit_from_merged_index(
@@ -7567,11 +7630,7 @@ fn do_continue() -> Result<()> {
     } else {
         let (message, _, _) = read_rebase_continue_message(git_dir, &original_commit, &config)?;
         let tree_oid = write_tree_from_index(&repo.odb, &index, "")?;
-        let hook_arg1 = if git_dir.join("MERGE_MSG").exists() {
-            "merge"
-        } else {
-            "message"
-        };
+        let hook_arg1 = "message";
         let raw_msg =
             commit_message_after_prepare_hook(&repo, git_dir, &message, hook_arg1, Some(":"))?;
         let edited_message = stopped_oid.is_some();
