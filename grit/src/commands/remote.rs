@@ -89,6 +89,23 @@ fn print_remote_usage_fallback() {
     println!("{}", remote_usage_lines());
 }
 
+/// Build the `usage: ...` / `   or: ...` block for a subcommand and return it as an `ExplicitExit`
+/// with code 129, matching Git's `usage_with_options` (printed to stderr, no `error:` prefix).
+fn usage_exit(lines: &[&str]) -> anyhow::Error {
+    let mut msg = String::new();
+    for (i, l) in lines.iter().enumerate() {
+        if i == 0 {
+            msg.push_str(&format!("usage: {l}"));
+        } else {
+            msg.push_str(&format!("\n    or: {l}"));
+        }
+    }
+    anyhow::Error::new(ExplicitExit {
+        code: 129,
+        message: msg,
+    })
+}
+
 fn valid_remote_name(name: &str) -> bool {
     let probe = format!("refs/remotes/{name}/test");
     check_refname_format(&probe, &RefNameOptions::default()).is_ok()
@@ -144,6 +161,16 @@ fn load_or_create_config_file(config_path: &Path) -> Result<ConfigFile> {
         Some(cfg) => Ok(cfg),
         None => Ok(ConfigFile::parse(config_path, "", ConfigScope::Local)?),
     }
+}
+
+/// Write `config_file`, but first reject the write if `<config>.lock` already exists, mirroring
+/// Git's config locking (`git remote set-url` with a stale lock must fail without clobbering).
+fn write_config_respecting_lock(config_file: &ConfigFile, config_path: &Path) -> Result<()> {
+    let lock = config_path.with_extension("lock");
+    if lock.exists() {
+        bail!("could not lock config file {}", config_path.display());
+    }
+    config_file.write().context("writing config")
 }
 
 fn find_git_dir(path: &Path) -> Result<PathBuf> {
@@ -334,9 +361,16 @@ fn cmd_add(rest: &[String]) -> Result<()> {
             _ => break,
         }
     }
+    // Mirror Git's argument validation in `add`.
+    if !matches!(mirror, MirrorOpt::None) && master.is_some() {
+        bail!("specifying a master branch makes no sense with --mirror");
+    }
+    if matches!(mirror, MirrorOpt::Push) && !track.is_empty() {
+        bail!("specifying branches to track makes sense only with fetch mirrors");
+    }
     let rest = &rest[i..];
     if rest.len() != 2 {
-        bail!("usage: git remote add [<options>] <name> <url>");
+        return Err(usage_exit(&["git remote add [<options>] <name> <url>"]));
     }
     let name = rest[0].clone();
     let mut url = rest[1].clone();
@@ -355,42 +389,44 @@ fn cmd_add(rest: &[String]) -> Result<()> {
 
     let mut config_file = load_or_create_config_file(&config_path)?;
 
-    match mirror {
-        MirrorOpt::None => {
-            config_file.set(&format!("remote.{name}.url"), &url)?;
-            let fetch_refspec = if track.is_empty() {
-                format!("+refs/heads/*:refs/remotes/{name}/*")
+    // Mirror Git's `add`: a fetch refspec is written for everything except a push-only mirror; the
+    // `mirror=true` flag is written for push and both. Track branches default to "*".
+    if track.is_empty() {
+        track.push("*".to_owned());
+    }
+    let write_fetch = matches!(mirror, MirrorOpt::None | MirrorOpt::Both | MirrorOpt::Fetch);
+    let write_mirror_flag = matches!(mirror, MirrorOpt::Both | MirrorOpt::Push);
+    // A fetch mirror writes `+refs/<b>:refs/<b>` rather than remote-tracking destinations.
+    let mirror_fetch = matches!(mirror, MirrorOpt::Both | MirrorOpt::Fetch);
+
+    config_file.set(&format!("remote.{name}.url"), &url)?;
+    let fetch_key = format!("remote.{name}.fetch");
+    if write_fetch {
+        for (idx, b) in track.iter().enumerate() {
+            // `add_branch`: mirror -> `+refs/<b>:refs/<b>`, else `+refs/heads/<b>:refs/remotes/<n>/<b>`.
+            let spec = if mirror_fetch {
+                format!("+refs/{b}:refs/{b}")
             } else {
-                track
-                    .iter()
-                    .map(|b| format!("+refs/heads/{b}:refs/remotes/{name}/{b}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                format!("+refs/heads/{b}:refs/remotes/{name}/{b}")
             };
-            config_file.set(&format!("remote.{name}.fetch"), &fetch_refspec)?;
-            match tags {
-                TagsMode::All => {
-                    config_file.set(&format!("remote.{name}.tagopt"), "--tags")?;
-                }
-                TagsMode::None => {
-                    config_file.set(&format!("remote.{name}.tagopt"), "--no-tags")?;
-                }
-                _ => {}
+            if idx == 0 {
+                config_file.set(&fetch_key, &spec)?;
+            } else {
+                config_file.add_value(&fetch_key, &spec)?;
             }
         }
-        MirrorOpt::Both => {
-            config_file.set(&format!("remote.{name}.url"), &url)?;
-            config_file.set(&format!("remote.{name}.mirror"), "true")?;
-            config_file.set(&format!("remote.{name}.fetch"), "+refs/*:refs/*")?;
+    }
+    if write_mirror_flag {
+        config_file.set(&format!("remote.{name}.mirror"), "true")?;
+    }
+    match tags {
+        TagsMode::All => {
+            config_file.set(&format!("remote.{name}.tagopt"), "--tags")?;
         }
-        MirrorOpt::Fetch => {
-            config_file.set(&format!("remote.{name}.url"), &url)?;
-            config_file.set(&format!("remote.{name}.fetch"), "+refs/*:refs/*")?;
+        TagsMode::None => {
+            config_file.set(&format!("remote.{name}.tagopt"), "--no-tags")?;
         }
-        MirrorOpt::Push => {
-            config_file.set(&format!("remote.{name}.url"), &url)?;
-            config_file.set(&format!("remote.{name}.mirror"), "true")?;
-        }
+        _ => {}
     }
     config_file.write().context("writing config")?;
 
@@ -451,7 +487,7 @@ fn cmd_list(verbose: bool) -> Result<()> {
 
 fn cmd_remove(rest: &[String]) -> Result<()> {
     if rest.len() != 1 {
-        bail!("usage: git remote remove <name>");
+        return Err(usage_exit(&["git remote remove <name>"]));
     }
     let name = &rest[0];
     let git_dir = resolve_git_dir()?;
@@ -664,7 +700,9 @@ fn cmd_rename(rest: &[String], _from_add: bool) -> Result<()> {
     }
     let rest = &rest[i..];
     if rest.len() != 2 {
-        bail!("usage: git remote rename <old> <new>");
+        return Err(usage_exit(&[
+            "git remote rename [--[no-]progress] <old> <new>",
+        ]));
     }
     let old = rest[0].clone();
     let new = rest[1].clone();
@@ -861,7 +899,7 @@ fn cmd_get_url(rest: &[String]) -> Result<()> {
     }
     let rest = &rest[i..];
     if rest.len() != 1 {
-        bail!("usage: git remote get-url [--push] [--all] <name>");
+        return Err(usage_exit(&["git remote get-url [--push] [--all] <name>"]));
     }
     let name = &rest[0];
     let git_dir = resolve_git_dir()?;
@@ -921,8 +959,15 @@ fn cmd_set_url(rest: &[String]) -> Result<()> {
         bail!("--add --delete doesn't make sense");
     }
     let rest = &rest[i..];
-    if rest.is_empty() {
-        bail!("usage: git remote set-url [<options>] <name> <newurl> [<oldurl>]");
+    let set_url_usage = || {
+        usage_exit(&[
+            "git remote set-url [--push] <name> <newurl> [<oldurl>]",
+            "git remote set-url --add <name> <newurl>",
+            "git remote set-url --delete <name> <url>",
+        ])
+    };
+    if rest.is_empty() || rest.len() > 3 {
+        return Err(set_url_usage());
     }
     let name = &rest[0];
     let git_dir = resolve_git_dir()?;
@@ -950,7 +995,7 @@ fn cmd_set_url(rest: &[String]) -> Result<()> {
         } else {
             config_file.set(&key, newurl)?;
         }
-        config_file.write().context("writing config")?;
+        write_config_respecting_lock(&config_file, &config_path)?;
         return Ok(());
     }
 
@@ -970,15 +1015,15 @@ fn cmd_set_url(rest: &[String]) -> Result<()> {
         if matches_ct == 0 {
             bail!("No such URL found: {pat}");
         }
-        if delete && !push && matches_ct == vals.len() {
+        if !push && matches_ct == vals.len() {
             bail!("Will not delete all non-push URLs");
         }
-        for v in vals {
-            if re.is_match(&v) {
-                let _ = config_file.replace_all(&key, "", Some(v.as_str()));
-            }
-        }
-        config_file.write().context("writing config")?;
+        // Remove the matching value lines entirely (Git deletes via multivar unset, not by
+        // blanking the value). Keep the section header even if it becomes empty.
+        config_file
+            .unset_matching(&key, Some(pat), true)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        write_config_respecting_lock(&config_file, &config_path)?;
         return Ok(());
     }
 
@@ -1000,7 +1045,7 @@ fn cmd_set_url(rest: &[String]) -> Result<()> {
         bail!("No such URL found: {oldpat}");
     }
     config_file.replace_all(&key, newurl, Some(oldpat))?;
-    config_file.write().context("writing config")?;
+    write_config_respecting_lock(&config_file, &config_path)?;
     Ok(())
 }
 
@@ -1076,7 +1121,9 @@ fn cmd_set_head(rest: &[String]) -> Result<()> {
     }
     let rest = &rest[i..];
     if rest.is_empty() {
-        bail!("usage: git remote set-head <name> (-a | --auto | -d | --delete | <branch>)");
+        return Err(usage_exit(&[
+            "git remote set-head <name> (-a | --auto | -d | --delete | <branch>)",
+        ]));
     }
     let remote_name = rest[0].clone();
     let git_dir = resolve_git_dir()?;
@@ -1156,7 +1203,9 @@ fn cmd_set_head(rest: &[String]) -> Result<()> {
     }
 
     if rest.len() != 2 {
-        bail!("usage: git remote set-head <name> <branch>");
+        return Err(usage_exit(&[
+            "git remote set-head <name> (-a | --auto | -d | --delete | <branch>)",
+        ]));
     }
     let branch = rest[1].trim();
     let short = branch.strip_prefix("refs/heads/").unwrap_or(branch).trim();
@@ -1853,6 +1902,38 @@ fn cmd_prune(rest: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Reverse-map a local ref through the positive fetch refspecs, returning every remote source name
+/// that would produce it (Git's `refspec_find_all_matches` with `find_src`). Returns an empty list
+/// when the local ref is shielded by a negative refspec or matches no refspec destination.
+fn stale_candidate_sources(local_ref: &str, refspecs: &[FetchRefspec]) -> Vec<String> {
+    if local_ref_protected_by_negative_show(local_ref, refspecs) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for rs in refspecs {
+        if rs.negative || rs.dst.is_empty() {
+            continue;
+        }
+        if let Some(src) = reverse_map_src(&rs.dst, &rs.src, local_ref) {
+            out.push(src);
+        }
+    }
+    out
+}
+
+/// Whether `local_ref` reverse-maps to a remote source caught by a negative refspec (so it must not
+/// be treated as matching the refspec set at all). Mirrors `refspec_find_negative_match`.
+fn local_ref_protected_by_negative_show(local_ref: &str, refspecs: &[FetchRefspec]) -> bool {
+    if !refspecs.iter().any(|rs| rs.negative) {
+        return false;
+    }
+    refspecs
+        .iter()
+        .filter(|rs| !rs.negative && !rs.dst.is_empty())
+        .filter_map(|rs| reverse_map_src(&rs.dst, &rs.src, local_ref))
+        .any(|src| ref_excluded_by_fetch_refspecs(&src, refspecs))
+}
+
 fn prune_one(git_dir: &Path, config: &ConfigSet, name: &str, dry: bool) -> Result<()> {
     if !remote_section_exists(config, name) {
         bail!("No such remote '{}'", name);
@@ -1864,30 +1945,37 @@ fn prune_one(git_dir: &Path, config: &ConfigSet, name: &str, dry: bool) -> Resul
         return Ok(());
     };
     let remote_git = find_git_dir(&path)?;
-    let remote_heads: HashSet<String> = refs::list_refs(&remote_git, "refs/heads/")?
+    // Source ref names currently advertised by the remote (all refs, not just heads — mirrors
+    // fetch `refs/*:refs/*`).
+    let advertised_srcs: HashSet<String> = refs::list_refs(&remote_git, "refs/")?
         .into_iter()
         .map(|(r, _)| r)
         .collect();
-    let prefix = format!("refs/remotes/{name}/");
-    let local_tracking = refs::list_refs(git_dir, &prefix)?;
+    let fetch = build_remote_stub(config, name).fetch;
+
+    // Stale = local refs that a fetch refspec maps from, whose remote source no longer exists.
     let mut stale: Vec<String> = Vec::new();
-    for (local_ref, _) in &local_tracking {
-        if local_ref.ends_with("/HEAD") {
+    for (local_ref, _) in refs::list_refs(git_dir, "refs/")? {
+        // Symbolic refs (e.g. refs/remotes/<n>/HEAD) are never pruned here.
+        if let Ok(Some(_)) = grit_lib::refs::read_symbolic_ref(git_dir, &local_ref) {
             continue;
         }
-        let branch = local_ref.strip_prefix(&prefix).unwrap_or(local_ref);
-        let remote_ref = format!("refs/heads/{branch}");
-        if !remote_heads.contains(&remote_ref) {
-            stale.push(local_ref.clone());
+        let candidates = stale_candidate_sources(&local_ref, &fetch);
+        if candidates.is_empty() {
+            continue;
+        }
+        if !candidates.iter().any(|c| advertised_srcs.contains(c)) {
+            stale.push(local_ref);
         }
     }
+    stale.sort();
     if stale.is_empty() {
         return Ok(());
     }
     println!("Pruning {name}");
     println!("URL: {url}");
     for r in &stale {
-        let short = r.strip_prefix("refs/remotes/").unwrap_or(r);
+        let short = abbrev_branch(r);
         if dry {
             println!(" * [would prune] {short}");
         } else {
