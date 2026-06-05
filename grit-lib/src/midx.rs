@@ -1426,34 +1426,15 @@ pub fn midx_oid_listed_in_tip(objects_dir: &Path, oid: &ObjectId) -> Result<Opti
         return Ok(None);
     };
     let data = fs::read(&midx_path).map_err(Error::Io)?;
-    let (_, hdr_end, hash_bytes) = parse_midx_header(&data)?;
-    if hash_bytes != 1 {
-        eprintln!(
-            "error: multi-pack-index hash version {} does not match version 1",
-            hash_bytes
-        );
-        return Err(Error::CorruptObject(
-            "multi-pack-index hash version mismatch".to_owned(),
-        ));
-    }
-    let (oidf_off, oidf_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_OIDFANOUT)?;
-    if oidf_len != 256 * 4 {
-        eprintln!("error: multi-pack-index OID fanout is of the wrong size");
-        return Err(Error::CorruptObject(
-            "multi-pack-index OID fanout is of the wrong size".to_owned(),
-        ));
-    }
-    let (oidl_off, oidl_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_OIDLOOKUP)?;
-    let (_ooff_off, ooff_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_OBJECTOFFSETS)?;
-    let num_objects = ooff_len / 8;
-    if oidl_len != num_objects * 20 || ooff_len != num_objects * 8 {
-        if oidl_len != num_objects * 20 {
-            eprintln!("error: multi-pack-index OID lookup chunk is the wrong size");
-        } else {
-            eprintln!("error: multi-pack-index object offset chunk is the wrong size");
-        }
-        return Err(Error::CorruptObject("midx chunk size mismatch".to_owned()));
-    }
+    let MidxReadView {
+        oidf_off,
+        oidl_off,
+        num_objects,
+        ..
+    } = match midx_load_for_read(&data) {
+        MidxLoadResult::Ok(v) => v,
+        MidxLoadResult::Skip => return Ok(None),
+    };
 
     let first = oid.as_bytes()[0] as usize;
     let lo = if first == 0 {
@@ -1462,19 +1443,9 @@ pub fn midx_oid_listed_in_tip(objects_dir: &Path, oid: &ObjectId) -> Result<Opti
         read_be_u32(&data, oidf_off + (first - 1) * 4)?
     };
     let hi = read_be_u32(&data, oidf_off + first * 4)?;
-    if lo > hi || hi as usize > num_objects {
-        eprintln!(
-            "error: oid fanout out of order: fanout[{}] = {:08x} > {:08x} = fanout[{}]",
-            first.saturating_sub(1),
-            lo,
-            hi,
-            first
-        );
-        return Err(Error::CorruptObject("oid fanout out of order".to_owned()));
-    }
 
     let mut i = lo as usize;
-    while i < hi as usize {
+    while i < hi as usize && i < num_objects {
         let o = ObjectId::from_bytes(&data[oidl_off + i * 20..oidl_off + (i + 1) * 20])?;
         match o.cmp(oid) {
             std::cmp::Ordering::Equal => return Ok(Some(true)),
@@ -1483,6 +1454,210 @@ pub fn midx_oid_listed_in_tip(objects_dir: &Path, oid: &ObjectId) -> Result<Opti
         }
     }
     Ok(Some(false))
+}
+
+/// Chunk offsets and metadata of a successfully loaded MIDX, ready for object reads.
+struct MidxReadView {
+    oidf_off: usize,
+    oidl_off: usize,
+    ooff_off: usize,
+    loff: Option<(usize, usize)>,
+    num_objects: usize,
+    pack_names: Vec<String>,
+}
+
+enum MidxLoadResult {
+    Ok(MidxReadView),
+    /// The MIDX is unusable but not fatal (Git returns NULL and falls back to packs);
+    /// an `error:`/`warning:` line has already been printed.
+    Skip,
+}
+
+/// Print a recoverable MIDX `error:`/`warning:` line at most once per process.
+///
+/// Git loads the MIDX once and caches it, so a recoverable corruption is reported a
+/// single time. grit re-reads the MIDX per object lookup, so without deduping the same
+/// line would repeat; this guard restores the single-report behavior the tests expect.
+fn midx_warn_once(line: &str) {
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut set) = seen.lock() {
+        if set.insert(line.to_string()) {
+            eprintln!("{line}");
+        }
+    } else {
+        eprintln!("{line}");
+    }
+}
+
+/// Print Git-style `error:`/`fatal:` lines and exit 128, mirroring `die()` after the
+/// preceding `error()` calls. `lines` are printed as `error:` except the last as `fatal:`.
+fn midx_die(lines: &[&str]) -> ! {
+    use std::io::Write;
+    let mut err = std::io::stderr().lock();
+    let n = lines.len();
+    for (i, l) in lines.iter().enumerate() {
+        if i + 1 == n {
+            let _ = writeln!(err, "fatal: {l}");
+        } else {
+            let _ = writeln!(err, "error: {l}");
+        }
+    }
+    let _ = err.flush();
+    std::process::exit(128);
+}
+
+/// Validate and load a MIDX image for object reads, mirroring `load_multi_pack_index`
+/// in git/midx.c. Fatal corruptions print `error:`/`fatal:` and exit (Git `die()`);
+/// recoverable corruptions print an `error:`/`warning:` and return [`MidxLoadResult::Skip`].
+fn midx_load_for_read(data: &[u8]) -> MidxLoadResult {
+    if data.len() < MIDX_HEADER_SIZE + 20 {
+        return MidxLoadResult::Skip;
+    }
+    let sig = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+    if sig != MIDX_SIGNATURE {
+        midx_die(&[&format!(
+            "multi-pack-index signature 0x{sig:08x} does not match signature 0x{MIDX_SIGNATURE:08x}"
+        )]);
+    }
+    let version = data[4];
+    if version != MIDX_VERSION_V1 && version != MIDX_VERSION_V2 {
+        midx_die(&[&format!(
+            "multi-pack-index version {version} not recognized"
+        )]);
+    }
+    let hash_version = data[5];
+    if hash_version != HASH_VERSION_SHA1 {
+        // `load_multi_pack_index` error()s then `goto cleanup_fail` (returns NULL),
+        // so this is recoverable, not fatal.
+        midx_warn_once(&format!(
+            "error: multi-pack-index hash version {hash_version} does not match version {HASH_VERSION_SHA1}"
+        ));
+        return MidxLoadResult::Skip;
+    }
+    let hash_len = 20usize;
+    let num_packs = u32::from_be_bytes([data[8], data[9], data[10], data[11]]) as usize;
+
+    // Table of contents (chunk-format.c read_table_of_contents). Recoverable failures
+    // (unaligned / improper offset / duplicate / non-zero terminator) print error() and
+    // return NULL.
+    let mut toc_errors: Vec<String> = Vec::new();
+    let chunks = match parse_midx_toc(data, hash_len, &mut toc_errors) {
+        Ok(c) => c,
+        Err(_) => {
+            for e in &toc_errors {
+                midx_warn_once(&format!("error: {e}"));
+            }
+            return MidxLoadResult::Skip;
+        }
+    };
+
+    // Required pack-names chunk.
+    let Some((pn_off, pn_len)) = toc_chunk_range(&chunks, data.len(), MIDX_CHUNKID_PACKNAMES)
+    else {
+        midx_die(&["multi-pack-index required pack-name chunk missing or corrupted"]);
+    };
+
+    // Required oid-fanout chunk + size + ordering (midx_read_oid_fanout).
+    let Some((oidf_off, oidf_len)) = toc_chunk_range(&chunks, data.len(), MIDX_CHUNKID_OIDFANOUT)
+    else {
+        midx_die(&["multi-pack-index required OID fanout chunk missing or corrupted"]);
+    };
+    if oidf_len != 256 * 4 {
+        midx_die(&[
+            "multi-pack-index OID fanout is of the wrong size",
+            "multi-pack-index required OID fanout chunk missing or corrupted",
+        ]);
+    }
+    let fanout = |i: usize| -> u32 {
+        let b = oidf_off + i * 4;
+        u32::from_be_bytes([data[b], data[b + 1], data[b + 2], data[b + 3]])
+    };
+    for i in 0..255 {
+        let f1 = fanout(i);
+        let f2 = fanout(i + 1);
+        if f1 > f2 {
+            midx_die(&[
+                &format!(
+                    "oid fanout out of order: fanout[{i}] = {f1:x} > {f2:x} = fanout[{}]",
+                    i + 1
+                ),
+                "multi-pack-index required OID fanout chunk missing or corrupted",
+            ]);
+        }
+    }
+    let num_objects = fanout(255) as usize;
+
+    // Required oid-lookup chunk + size (midx_read_oid_lookup).
+    let Some((oidl_off, oidl_len)) = toc_chunk_range(&chunks, data.len(), MIDX_CHUNKID_OIDLOOKUP)
+    else {
+        midx_die(&["multi-pack-index required OID lookup chunk missing or corrupted"]);
+    };
+    if oidl_len != hash_len * num_objects {
+        midx_die(&[
+            "multi-pack-index OID lookup chunk is the wrong size",
+            "multi-pack-index required OID lookup chunk missing or corrupted",
+        ]);
+    }
+
+    // Required object-offsets chunk + size (midx_read_object_offsets).
+    let Some((ooff_off, ooff_len)) =
+        toc_chunk_range(&chunks, data.len(), MIDX_CHUNKID_OBJECTOFFSETS)
+    else {
+        midx_die(&["multi-pack-index required object offsets chunk missing or corrupted"]);
+    };
+    if ooff_len != num_objects * 8 {
+        midx_die(&[
+            "multi-pack-index object offset chunk is the wrong size",
+            "multi-pack-index required object offsets chunk missing or corrupted",
+        ]);
+    }
+
+    let loff = toc_chunk_range(&chunks, data.len(), MIDX_CHUNKID_LARGEOFFSETS);
+
+    // Optional revindex chunk — wrong size warns but does not fail the load.
+    if let Some((_, rlen)) = toc_chunk_range(&chunks, data.len(), MIDX_CHUNKID_REVINDEX) {
+        if rlen != num_objects * 4 {
+            midx_warn_once("error: multi-pack-index reverse-index chunk is the wrong size");
+            midx_warn_once("warning: multi-pack bitmap is missing required reverse index");
+        }
+    }
+
+    // Pack-name parsing (die if a name is unterminated).
+    let mut pack_names: Vec<String> = Vec::with_capacity(num_packs);
+    let blob = &data[pn_off..pn_off + pn_len];
+    let mut start = 0usize;
+    for _ in 0..num_packs {
+        let Some(rel) = blob[start..].iter().position(|&b| b == 0) else {
+            midx_die(&["multi-pack-index pack-name chunk is too short"]);
+        };
+        let name = match std::str::from_utf8(&blob[start..start + rel]) {
+            Ok(s) => s.to_string(),
+            Err(_) => midx_die(&["multi-pack-index pack-name chunk is too short"]),
+        };
+        if version == MIDX_VERSION_V1
+            && !pack_names.is_empty()
+            && name.as_str() <= pack_names.last().map(|s| s.as_str()).unwrap_or("")
+        {
+            midx_die(&[&format!(
+                "multi-pack-index pack names out of order: '{}' before '{name}'",
+                pack_names.last().cloned().unwrap_or_default()
+            )]);
+        }
+        pack_names.push(name);
+        start += rel + 1;
+    }
+
+    MidxLoadResult::Ok(MidxReadView {
+        oidf_off,
+        oidl_off,
+        ooff_off,
+        loff,
+        num_objects,
+        pack_names,
+    })
 }
 
 /// When `core.multiPackIndex` is enabled, try to read `oid` from the active MIDX in `objects_dir`.
@@ -1498,55 +1673,21 @@ pub fn try_read_object_via_midx(
         return Ok(None);
     };
     let data = fs::read(&midx_path).map_err(Error::Io)?;
-    let (_, hdr_end, hash_bytes) = parse_midx_header(&data)?;
-    let num_packs_hdr = read_be_u32(&data, 8)?;
-    if hash_bytes != 1 {
-        eprintln!(
-            "error: multi-pack-index hash version {} does not match version 1",
-            hash_bytes
-        );
-        return Err(Error::CorruptObject(
-            "multi-pack-index hash version mismatch".to_owned(),
-        ));
-    }
-    let (pn_off, pn_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_PACKNAMES)?;
-    let pack_names = parse_pack_names_blob(&data[pn_off..pn_off + pn_len])?;
-    if pack_names.len() != num_packs_hdr as usize {
-        return Err(Error::CorruptObject(
-            "multi-pack-index pack-name chunk is too short".to_owned(),
-        ));
-    }
-    let (oidf_off, oidf_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_OIDFANOUT)?;
-    if oidf_len != 256 * 4 {
-        eprintln!("error: multi-pack-index OID fanout is of the wrong size");
-        return Err(Error::CorruptObject(
-            "multi-pack-index OID fanout is of the wrong size".to_owned(),
-        ));
-    }
-    let (oidl_off, oidl_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_OIDLOOKUP)?;
-    let (ooff_off, ooff_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_OBJECTOFFSETS)?;
-    let num_objects = ooff_len / 8;
-    if oidl_len != num_objects * 20 {
-        eprintln!("error: multi-pack-index OID lookup chunk is the wrong size");
-        return Err(Error::CorruptObject(
-            "multi-pack-index OID lookup chunk is the wrong size".to_owned(),
-        ));
-    }
-    if ooff_len != num_objects * 8 {
-        eprintln!("error: multi-pack-index object offset chunk is the wrong size");
-        return Err(Error::CorruptObject(
-            "multi-pack-index object offset chunk is the wrong size".to_owned(),
-        ));
-    }
-    let loff = find_chunk(&data, hdr_end, MIDX_CHUNKID_LARGEOFFSETS).ok();
-    let ridx = find_chunk(&data, hdr_end, MIDX_CHUNKID_REVINDEX).ok();
 
-    if let Some((_, rlen)) = ridx {
-        if rlen != num_objects * 4 {
-            eprintln!("error: multi-pack-index reverse-index chunk is the wrong size");
-            eprintln!("warning: multi-pack bitmap is missing required reverse index");
-        }
-    }
+    // Load-time validation, mirroring `load_multi_pack_index` in git/midx.c.
+    // Fatal corruptions `die()` (print error + fatal, exit 128); recoverable
+    // ones (e.g. an unaligned chunk table) skip the MIDX entirely.
+    let MidxReadView {
+        oidf_off,
+        oidl_off,
+        ooff_off,
+        loff,
+        num_objects,
+        pack_names,
+    } = match midx_load_for_read(&data) {
+        MidxLoadResult::Ok(v) => v,
+        MidxLoadResult::Skip => return Ok(None),
+    };
 
     let first = oid.as_bytes()[0] as usize;
     let lo = if first == 0 {
@@ -1555,20 +1696,10 @@ pub fn try_read_object_via_midx(
         read_be_u32(&data, oidf_off + (first - 1) * 4)?
     };
     let hi = read_be_u32(&data, oidf_off + first * 4)?;
-    if lo > hi || hi as usize > num_objects {
-        eprintln!(
-            "error: oid fanout out of order: fanout[{}] = {:08x} > {:08x} = fanout[{}]",
-            first.saturating_sub(1),
-            lo,
-            hi,
-            first
-        );
-        return Err(Error::CorruptObject("oid fanout out of order".to_owned()));
-    }
 
     let mut pos = None;
     let mut i = lo as usize;
-    while i < hi as usize {
+    while i < hi as usize && i < num_objects {
         let o = ObjectId::from_bytes(&data[oidl_off + i * 20..oidl_off + (i + 1) * 20])?;
         let c = o.cmp(oid);
         if c == std::cmp::Ordering::Equal {
@@ -1588,19 +1719,17 @@ pub fn try_read_object_via_midx(
     let pack_id = read_be_u32(&data, obase)?;
     let raw_off = read_be_u32(&data, obase + 4)?;
     let _offset = if (raw_off & MIDX_LARGE_OFFSET_NEEDED) != 0 {
-        let Some((loff_off, loff_len)) = loff else {
-            return Err(Error::CorruptObject(
-                "multi-pack-index large offset missing LOFF chunk".to_owned(),
-            ));
-        };
         let idx = (raw_off & !MIDX_LARGE_OFFSET_NEEDED) as usize;
         let need = (idx + 1) * 8;
-        if loff_len < need {
-            return Err(Error::CorruptObject(
-                "multi-pack-index large offset out of bounds".to_owned(),
-            ));
+        match loff {
+            Some((loff_off, loff_len)) if loff_len >= need => {
+                read_be_u64(&data, loff_off + idx * 8)?
+            }
+            _ => {
+                // git/midx.c `nth_midxed_offset`: die on out-of-bounds large offset.
+                midx_die(&["multi-pack-index large offset out of bounds"]);
+            }
         }
-        read_be_u64(&data, loff_off + idx * 8)?
     } else {
         u64::from(raw_off)
     };
