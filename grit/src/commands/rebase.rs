@@ -612,8 +612,8 @@ fn run_internal_rebase_pick_line(line_index: usize) -> Result<()> {
     let force_rewrite = std::env::var(INTERNAL_REBASE_FORCE_FF_ENV).ok().as_deref() == Some("1")
         || rb_dir.join("force-rewrite").exists();
     let rebase_interactive = rb_dir.join("interactive").exists();
-    let todo_content = fs::read_to_string(rb_dir.join("todo"))?;
-    let todo: Vec<&str> = todo_content.lines().filter(|l| !l.is_empty()).collect();
+    let todo_content = read_rebase_todo_file(&repo, &rb_dir)?;
+    let todo: Vec<&str> = rebase_todo_actionable_lines(&todo_content);
     let i = line_index;
     if i >= todo.len() {
         bail!("internal rebase pick: line index out of range");
@@ -6549,11 +6549,8 @@ fn cherry_pick_for_rebase(
             git_dir.join("REBASE_HEAD"),
             format!("{}\n", commit_oid.to_hex()),
         );
-        if todo_cmd == RebaseTodoCmd::Reword {
-            let (unicode, _enc, _raw) = transcoded_replayed_message(&commit, &config);
-            write_rebase_conflict_message(git_dir, &commit, &config)?;
-            fs::write(rb_dir.join("message"), unicode)?;
-        } else {
+        write_rebase_conflict_message(git_dir, &commit, &config)?;
+        if todo_cmd != RebaseTodoCmd::Reword {
             let mut merge_msg = commit.message.clone();
             append_rebase_conflicts_comment_block(&mut merge_msg, &merge_conflict_files, &config);
             fs::write(git_dir.join("MERGE_MSG"), merge_msg)?;
