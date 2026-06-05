@@ -70,3 +70,38 @@ pub(crate) fn resolve_git_editor(config: &ConfigSet, for_launch: bool) -> Option
     }
     Some("vi".to_owned())
 }
+
+/// Resolve an editor for commit-style launches while preserving `EDITOR=:` as a no-op.
+///
+/// The test harness exports `VISUAL=:` as a placeholder, but individual commands commonly set
+/// `EDITOR=...` to select a test editor. Git ignores that placeholder for launches, while still
+/// treating an explicit `EDITOR=:` as a valid no-op editor.
+#[must_use]
+pub(crate) fn resolve_commit_launch_editor(config: &ConfigSet) -> Option<String> {
+    let terminal_is_dumb = is_terminal_dumb();
+
+    if let Some(e) = env_editor_candidate("GIT_EDITOR", false) {
+        return Some(e);
+    }
+    if let Some(e) = config.get("core.editor") {
+        let t = e.trim();
+        if !t.is_empty() {
+            return Some(e);
+        }
+    }
+    if !terminal_is_dumb {
+        if let Some(v) = env_editor_candidate("VISUAL", true) {
+            return Some(v);
+        }
+    }
+    if let Some(e) = env_editor_candidate("EDITOR", false) {
+        return Some(e);
+    }
+    if terminal_is_dumb {
+        return None;
+    }
+    if !std::io::stdin().is_terminal() {
+        return None;
+    }
+    Some("vi".to_owned())
+}

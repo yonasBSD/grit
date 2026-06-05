@@ -1031,7 +1031,7 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     let template_path = resolve_commit_template_path(&args, &config)?;
-    let use_editor_for_message = commit_uses_editor(&args, fixup_parsed.as_ref());
+    let use_editor_for_message = commit_uses_editor(&args, fixup_parsed.as_ref(), &repo.git_dir);
 
     let verbose_level = resolve_commit_verbose_level(&args, &config);
     let commit_cleanup_mode = resolve_commit_cleanup_mode(&args, &config, use_editor_for_message);
@@ -2981,10 +2981,10 @@ fn commit_rename_settings(config: &ConfigSet) -> (Option<u32>, bool) {
     }
 }
 
-fn commit_uses_editor(args: &Args, fixup: Option<&FixupParsed>) -> bool {
+fn commit_uses_editor(args: &Args, fixup: Option<&FixupParsed>, git_dir: &Path) -> bool {
     // Mirror `builtin/commit.c`: first derive a default `use_editor` from the message source,
     // then let an explicit `-e`/`--no-edit` override it (upstream `edit_flag` tri-state).
-    let base = commit_uses_editor_default(args, fixup);
+    let base = commit_uses_editor_default(args, fixup, git_dir);
     if args.edit {
         return true;
     }
@@ -2995,12 +2995,15 @@ fn commit_uses_editor(args: &Args, fixup: Option<&FixupParsed>) -> bool {
 }
 
 /// Default `use_editor` before applying an explicit `-e`/`--no-edit` override.
-fn commit_uses_editor_default(args: &Args, fixup: Option<&FixupParsed>) -> bool {
+fn commit_uses_editor_default(args: &Args, fixup: Option<&FixupParsed>, git_dir: &Path) -> bool {
     // `-c`/`-C` (reuse), `-m`, and `-F` all disable the editor by default.
     if args.reuse_message.is_some() && args.reedit_message.is_none() {
         return false;
     }
     if !args.message.is_empty() || args.file.is_some() {
+        return false;
+    }
+    if git_dir.join("MERGE_MSG").exists() || git_dir.join("SQUASH_MSG").exists() {
         return false;
     }
     if let Some(f) = fixup {
@@ -3278,7 +3281,7 @@ fn build_initial_commit_buffer(
 
 pub(crate) fn launch_commit_editor(repo: &Repository, path: &Path) -> Result<()> {
     let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
-    let editor = crate::editor::resolve_git_editor(&config, true)
+    let editor = crate::editor::resolve_commit_launch_editor(&config)
         .ok_or_else(|| anyhow::anyhow!("Terminal is dumb, but EDITOR unset"))?;
 
     // Git treats `:` as a no-op editor (`launch_specified_editor`).

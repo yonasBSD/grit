@@ -2275,15 +2275,70 @@ fn attempt_trivial_in_index_merge(
         format!("{}\n", head_oid.to_hex()),
     )?;
 
+    let config = ConfigSet::load(Some(&repo.git_dir), true)?;
     let mut new_index = result;
     new_index.sort();
-    let tree_oid = write_tree_from_index(&repo.odb, &new_index, "")?;
+    run_pre_merge_commit_hook(
+        repo,
+        args.no_verify,
+        args.edit && !args.no_edit,
+        &mut new_index,
+    )?;
+    repo.write_index(&mut new_index)?;
 
-    let config = ConfigSet::load(Some(&repo.git_dir), true)?;
+    let effective_custom_msg = if let Some(ref file_path) = args.file {
+        Some(read_merge_message_from_file(Path::new(file_path), &config)?)
+    } else {
+        args.message.clone()
+    };
+    let mut msg = build_merge_message(
+        head,
+        &args.commits[0],
+        effective_custom_msg.as_deref(),
+        repo,
+    );
+    if let Some(max_log) = args.log {
+        let log_entries = build_merge_log(repo, head_oid, merge_oid, &args.commits[0], max_log)?;
+        if !log_entries.is_empty() {
+            if !msg.ends_with('\n') {
+                msg.push('\n');
+            }
+            msg.push('\n');
+            msg.push_str(&log_entries);
+        }
+    }
+    if args.signoff && !args.no_signoff {
+        let sob_name = std::env::var("GIT_COMMITTER_NAME")
+            .ok()
+            .or_else(|| config.get("user.name"))
+            .unwrap_or_else(|| "Unknown".to_owned());
+        let sob_email = std::env::var("GIT_COMMITTER_EMAIL")
+            .ok()
+            .or_else(|| config.get("user.email"))
+            .unwrap_or_default();
+        msg = append_signoff(&msg, &sob_name, &sob_email);
+    }
+    if let Some(ref mode) = args.cleanup {
+        msg = cleanup_message(&msg, mode);
+    }
+    let will_edit = args.edit && !args.no_edit;
+    let hook_cleanup = args.cleanup.as_deref().unwrap_or("whitespace");
+    msg = run_merge_commit_msg_hooks(
+        repo,
+        args.no_verify,
+        will_edit,
+        msg,
+        &mut new_index,
+        hook_cleanup,
+    )?;
+    if will_edit && msg.trim().is_empty() {
+        bail!("Empty commit message.");
+    }
+
+    let tree_oid = write_tree_from_index(&repo.odb, &new_index, "")?;
     let now = OffsetDateTime::now_utc();
     let author = resolve_ident(&config, "author", now)?;
     let committer = resolve_ident(&config, "committer", now)?;
-    let msg = build_merge_message(head, &args.commits[0], args.message.as_deref(), repo);
     let finalized = finalize_merge_commit_message(msg, &config);
     let commit_data = CommitData {
         tree: tree_oid,
@@ -4721,8 +4776,7 @@ fn build_squash_msg(
 
     // The `git log` body follows a single blank line (git's `squash_message` joins
     // `"Squashed commit of the following:\n\n"` with the log output). Each commit renders
-    // exactly as `git log` (medium format) does — no extra blank line between commits —
-    // so a byte-for-byte `test_cmp` against `git log --no-merges` output succeeds.
+    // exactly as `git log` (medium format) does, including the blank separator between commits.
     for (i, (oid, commit)) in commits_to_show.iter().enumerate() {
         if i == 0 {
             msg.push('\n');
@@ -4739,6 +4793,9 @@ fn build_squash_msg(
         msg.push('\n');
         for line in commit.message.trim_end().lines() {
             msg.push_str(&format!("    {}\n", line));
+        }
+        if i + 1 < commits_to_show.len() {
+            msg.push('\n');
         }
     }
 
