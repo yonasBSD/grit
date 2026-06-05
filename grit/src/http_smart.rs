@@ -852,8 +852,13 @@ fn read_shallow_info_section(r: &mut impl Read) -> Result<(Vec<ObjectId>, Vec<Ob
     let mut unshallow = Vec::new();
     loop {
         match pkt_line::read_packet(r)? {
-            None | Some(pkt_line::Packet::Flush) => break,
-            Some(pkt_line::Packet::Delim) => continue,
+            // A protocol-v2 `fetch` response separates its sections with a delim packet (`0001`),
+            // not a flush. The `shallow-info` section therefore ends at the delim that precedes the
+            // following `packfile` section. Treating the delim as a no-op (`continue`) would consume
+            // the `packfile` header and the entire pack as if they were shallow-info lines, leaving
+            // nothing for the caller to unpack — the fetched objects would silently never be stored
+            // (t5537 "shallow fetches check connectivity before writing shallow file").
+            None | Some(pkt_line::Packet::Flush) | Some(pkt_line::Packet::Delim) => break,
             Some(pkt_line::Packet::Data(line)) => {
                 if let Some(rest) = line.strip_prefix("shallow ") {
                     let oid = ObjectId::from_hex(rest.trim())

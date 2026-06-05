@@ -4983,8 +4983,15 @@ pub fn shallow_grafts_for_upload_pack_deepen(
     let server_shallow = shallow_boundary_oids(&repo.git_dir);
     let client_set: HashSet<ObjectId> = client_shallow.iter().copied().collect();
 
+    // For a fresh (non-shallow) client, an absolute `deepen N` keeps exactly N commits counting
+    // from the wanted tips, so the boundary sits at the N-th commit and the base offset is 0.
+    // Using 1 here over-counts by one: with `deepen 2` on a 3-commit history the border lands on
+    // the root commit (which has no parents) and no `shallow` line is advertised at all, leaving
+    // the client believing it received full history and failing connectivity/fsck for the cut-off
+    // parents (t5537 "shallow fetches check connectivity before writing shallow file"). When the
+    // client already has a shallow boundary, `min_client_shallow_distance` supplies the real base.
     let min_hit = min_client_shallow_distance(repo, wants, &client_set, &server_shallow);
-    let base = min_hit.unwrap_or(1);
+    let base = min_hit.unwrap_or(0);
     let target_depth = base.saturating_add(deepen);
 
     let included = commits_within_parent_depth(repo, wants, target_depth, &server_shallow);

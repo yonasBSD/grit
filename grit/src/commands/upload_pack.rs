@@ -271,13 +271,18 @@ pub fn run(args: Args) -> Result<()> {
             // Avoid excluding those unseen ancestors from the generated pack.
             Vec::new()
         };
-        if let Some(depth) = requested_depth {
-            exclusion_commits.extend(crate::pack_objects_upload::compute_depth_exclude_commits(
-                &repo,
-                &want_unique,
-                depth,
-            )?);
-        }
+        // For a depth-limited request, cut the parent chains of the boundary commits via
+        // `--shallow <oid>` rather than excluding the boundary's *parents* via `--not`. A plain
+        // `--not <parent>` exclusion drops every object reachable from the cut-off history,
+        // including trees/blobs still referenced by an in-depth commit (e.g. a file added in the
+        // very first commit and never changed). That yields a corrupt shallow pack whose refs
+        // point at objects with missing blobs, which `git fsck` rejects
+        // (t5537 "shallow fetches check connectivity before writing shallow file").
+        let shallow_commits: Vec<ObjectId> = if let Some(depth) = requested_depth {
+            crate::pack_objects_upload::compute_depth_boundary_commits(&repo, &want_unique, depth)?
+        } else {
+            Vec::new()
+        };
         exclusion_commits.sort_by_key(|oid| oid.to_hex());
         exclusion_commits.dedup();
         // Thin packs subtract the full closure of `have` commits. That is only safe when every
@@ -286,17 +291,19 @@ pub fn run(args: Args) -> Result<()> {
         let thin = client_shallow_boundaries.is_empty()
             && !exclusion_commits.is_empty()
             && wants_include_only_commits(&repo, &want_unique);
-        let mut child = crate::pack_objects_upload::spawn_pack_objects_upload(
+        let mut child = crate::pack_objects_upload::spawn_pack_objects_upload_shallow(
             &repo.git_dir,
             thin,
             filter_spec.as_deref(),
+            !shallow_commits.is_empty(),
         )?;
         {
             let mut pin = child.stdin.take().context("pack-objects stdin")?;
-            crate::pack_objects_upload::write_pack_objects_revs_stdin(
+            crate::pack_objects_upload::write_pack_objects_revs_stdin_shallow(
                 &mut pin,
                 &want_unique,
                 &exclusion_commits,
+                &shallow_commits,
             )?;
         }
         crate::pack_objects_upload::drain_pack_objects_child(child, &mut out, true)?;

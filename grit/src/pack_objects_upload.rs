@@ -29,6 +29,17 @@ pub fn spawn_pack_objects_upload(
     thin: bool,
     filter_spec: Option<&str>,
 ) -> Result<Child> {
+    spawn_pack_objects_upload_shallow(git_dir, thin, filter_spec, false)
+}
+
+/// Like [`spawn_pack_objects_upload`], but passes `--shallow` so `--shallow <oid>` stdin lines cut
+/// the parent chains of those commits (used to produce a depth-limited shallow pack).
+pub fn spawn_pack_objects_upload_shallow(
+    git_dir: &Path,
+    thin: bool,
+    filter_spec: Option<&str>,
+    shallow: bool,
+) -> Result<Child> {
     let protected = ConfigSet::load_protected(true).unwrap_or_default();
     let hook_raw = protected.get("uploadpack.packobjectshook");
     let grit = grit_executable();
@@ -45,6 +56,9 @@ pub fn spawn_pack_objects_upload(
         if thin {
             c.arg("--thin");
         }
+        if shallow {
+            c.arg("--shallow");
+        }
         if let Some(spec) = filter_spec.map(str::trim).filter(|s| !s.is_empty()) {
             c.arg(format!("--filter={spec}"));
         }
@@ -57,6 +71,9 @@ pub fn spawn_pack_objects_upload(
         c.arg("pack-objects").arg("--revs");
         if thin {
             c.arg("--thin");
+        }
+        if shallow {
+            c.arg("--shallow");
         }
         if let Some(spec) = filter_spec.map(str::trim).filter(|s| !s.is_empty()) {
             c.arg(format!("--filter={spec}"));
@@ -87,6 +104,21 @@ pub fn write_pack_objects_revs_stdin(
     wants: &[ObjectId],
     exclude_commits: &[ObjectId],
 ) -> Result<()> {
+    write_pack_objects_revs_stdin_shallow(pin, wants, exclude_commits, &[])
+}
+
+/// Like [`write_pack_objects_revs_stdin`], but also emits `--shallow <oid>` lines (consumed by
+/// `pack-objects --shallow`) so the parent chains of `shallow_commits` are cut at the depth
+/// boundary while their full trees remain in the pack.
+pub fn write_pack_objects_revs_stdin_shallow(
+    pin: &mut impl Write,
+    wants: &[ObjectId],
+    exclude_commits: &[ObjectId],
+    shallow_commits: &[ObjectId],
+) -> Result<()> {
+    for s in shallow_commits {
+        writeln!(pin, "--shallow {}", s.to_hex())?;
+    }
     for w in wants {
         writeln!(pin, "{}", w.to_hex())?;
     }
@@ -152,6 +184,74 @@ pub fn compute_depth_exclude_commits(
     }
 
     let mut out: Vec<ObjectId> = excludes.into_iter().collect();
+    out.sort_by_key(|oid| oid.to_hex());
+    Ok(out)
+}
+
+/// Compute the shallow-boundary commits for a depth-limited upload-pack response.
+///
+/// These are the deepest in-depth commits (those at distance `depth - 1` from a wanted tip that
+/// still have parents). Passing them as `--shallow <oid>` to `pack-objects` cuts their parent
+/// chains so history stops at the boundary, while every object reachable from the wanted commits'
+/// trees — including blobs that were first introduced beyond the boundary but are still referenced
+/// by an in-depth tree — is fully included.
+///
+/// This is the correct shallow-pack mechanism: a plain `--not <boundary-parent>` exclusion would
+/// drop blobs/trees shared between the in-depth commits and the cut-off history (e.g. a file added
+/// in the first commit and never modified), producing an inconsistent shallow repo that fails
+/// `git fsck` (t5537 "shallow fetches check connectivity before writing shallow file").
+pub fn compute_depth_boundary_commits(
+    repo: &Repository,
+    wants: &[ObjectId],
+    depth: usize,
+) -> Result<Vec<ObjectId>> {
+    if depth == 0 || wants.is_empty() || depth >= i32::MAX as usize {
+        return Ok(Vec::new());
+    }
+
+    let mut queue: VecDeque<(ObjectId, usize)> = VecDeque::new();
+    let mut seen: std::collections::HashMap<ObjectId, usize> = std::collections::HashMap::new();
+
+    for want in wants {
+        if let Some(commit_oid) = peel_commit_oid(repo, *want)? {
+            if seen.insert(commit_oid, 0).is_none() {
+                queue.push_back((commit_oid, 0));
+            }
+        }
+    }
+
+    let mut boundary: HashSet<ObjectId> = HashSet::new();
+    while let Some((oid, dist)) = queue.pop_front() {
+        let obj = match repo.odb.read(&oid) {
+            Ok(obj) => obj,
+            Err(_) => continue,
+        };
+        if obj.kind != ObjectKind::Commit {
+            continue;
+        }
+        let commit = parse_commit(&obj.data)?;
+        if dist + 1 >= depth {
+            // This commit is at the depth boundary; its parents are cut off. Only commits that
+            // actually have parents become shallow grafts (a root commit needs no graft).
+            if !commit.parents.is_empty() {
+                boundary.insert(oid);
+            }
+            continue;
+        }
+        for parent in commit.parents {
+            let next_dist = dist + 1;
+            if seen
+                .get(&parent)
+                .is_some_and(|existing| *existing <= next_dist)
+            {
+                continue;
+            }
+            seen.insert(parent, next_dist);
+            queue.push_back((parent, next_dist));
+        }
+    }
+
+    let mut out: Vec<ObjectId> = boundary.into_iter().collect();
     out.sort_by_key(|oid| oid.to_hex());
     Ok(out)
 }

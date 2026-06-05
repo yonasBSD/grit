@@ -1199,6 +1199,20 @@ fn cmd_is_needed(rest: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Return `path` as an absolute path, joining it onto the current working
+/// directory when it is relative. Unlike `canonicalize`, this does not require
+/// the path to exist and does not resolve symlinks, so it is safe for paths
+/// inside a repository that is about to be removed.
+fn absolutize_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+}
+
 fn cmd_run(rest: &[String]) -> Result<()> {
     let repo = Repository::discover(None).context("not a git repository")?;
     let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
@@ -1285,6 +1299,26 @@ fn cmd_run(rest: &[String]) -> Result<()> {
         if let Some(s) = schedule {
             c.arg(format!("--schedule={}", s.as_str()));
         }
+        // The detached maintenance process must not keep the repository's working
+        // tree (or git dir) as its current working directory: a live process whose
+        // cwd is inside a directory prevents that directory from being removed on
+        // macOS (`rm -rf` reports "Directory not empty"). Several tests fetch into a
+        // throwaway repo and immediately `rm -rf` it in a `test_when_finished`
+        // cleanup (t5537 "fetch --update-shallow ... into a repo with submodules"),
+        // which races the background maintenance child. Upstream avoids this by
+        // running maintenance in the foreground under the test harness
+        // (`GIT_TEST_MAINT_AUTO_DETACH=false`); we additionally detach the child's
+        // cwd from the repo so the race cannot happen regardless of that setting.
+        // The child rediscovers the repo from the absolute GIT_DIR/GIT_WORK_TREE we
+        // pass, so its functional behaviour is unchanged.
+        let abs_git_dir = absolutize_path(&repo.git_dir);
+        c.env("GIT_DIR", &abs_git_dir);
+        if let Some(wt) = repo.work_tree.as_deref() {
+            c.env("GIT_WORK_TREE", absolutize_path(wt));
+        }
+        // Run from a directory guaranteed to be outside the repo so removing the
+        // repo never fails because this child holds it as cwd.
+        c.current_dir(std::path::Component::RootDir.as_os_str());
         c.stdin(Stdio::null());
         c.stdout(Stdio::null());
         c.stderr(Stdio::null());

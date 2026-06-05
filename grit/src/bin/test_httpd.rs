@@ -1048,18 +1048,22 @@ fn apply_one_time_script(script_path: &Path, input: &[u8]) -> Result<Vec<u8>, St
         .output()
         .map_err(|e| format!("Failed to execute one-time-script: {e}"))?;
     let _ = fs::remove_file(&tmp_path);
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "one-time-script exited with status {}: {}",
-            output.status.code().unwrap_or(-1),
-            err.trim()
-        ));
-    }
-    // Match upstream `apply-one-time-script.sh`: only consume the one-time script when it actually
-    // modified the response. A preceding `ls-refs` round whose response is passed through unchanged
-    // must NOT consume the script, so the subsequent `fetch` response is the one that gets rewritten
-    // (t5616 HTTP partial-clone tests rely on the fetch pack being the substituted one).
+    // Match upstream `lib-httpd/apply-one-time-script.sh`, which runs
+    // `./one-time-script out >out_modified` and *ignores the script's exit status*.
+    // It only compares the script's stdout against the original response:
+    //   * if they differ, it serves the modified output and removes the script
+    //     ("consumes" it) so later responses are no longer rewritten;
+    //   * if they are identical, it serves the original output and keeps the
+    //     script (so a preceding unchanged `ls-refs` round does not consume it,
+    //     leaving the subsequent `fetch` response as the one that gets rewritten,
+    //     which t5616's HTTP partial-clone tests rely on).
+    //
+    // Crucially, a script that fails (e.g. a deliberately broken `sed` whose
+    // stdout ends up empty, as in t5537 "shallow fetches check connectivity
+    // before writing shallow file") still produces output that differs from the
+    // input, so it is consumed and its (possibly empty/truncated) output is
+    // served verbatim. Erroring out here instead would leave the script in place
+    // and abort the connection, which diverges from upstream.
     if output.stdout != input {
         let _ = fs::remove_file(script_path);
     }

@@ -543,10 +543,27 @@ fn cmd_fetch(
 
     pkt_line::write_line(out, "packfile")?;
     let thin = !have_oids.is_empty() && client_shallow_oids.is_empty();
-    let mut child = crate::pack_objects_upload::spawn_pack_objects_upload(
+    // For a depth-limited request, cut the boundary commits' parent chains with `--shallow <oid>`
+    // instead of excluding the boundary's parents with `--not`. Excluding the parents would also
+    // drop trees/blobs shared between the in-depth commits and the cut-off history (e.g. a file
+    // added in the first commit and never modified), producing a shallow pack whose refs reference
+    // missing objects — caught by `git fsck` in t5537 "shallow fetches check connectivity before
+    // writing shallow file".
+    let shallow_commits: Vec<ObjectId> = if let Some(mut depth) = depth_request {
+        if deepen_relative && !client_shallow_oids.is_empty() {
+            let base =
+                relative_depth_base_from_client_shallows(&repo, &wants, &client_shallow_oids);
+            depth = depth.saturating_add(base);
+        }
+        crate::pack_objects_upload::compute_depth_boundary_commits(&repo, &wants, depth)?
+    } else {
+        Vec::new()
+    };
+    let mut child = crate::pack_objects_upload::spawn_pack_objects_upload_shallow(
         git_dir,
         thin,
         filter_spec.as_deref(),
+        !shallow_commits.is_empty(),
     )?;
     {
         let mut pin = child
@@ -558,22 +575,13 @@ fn cmd_fetch(
         } else {
             Vec::new()
         };
-        if let Some(mut depth) = depth_request {
-            if deepen_relative && !client_shallow_oids.is_empty() {
-                let base =
-                    relative_depth_base_from_client_shallows(&repo, &wants, &client_shallow_oids);
-                depth = depth.saturating_add(base);
-            }
-            let depth_excludes =
-                crate::pack_objects_upload::compute_depth_exclude_commits(&repo, &wants, depth)?;
-            exclude_commits.extend(depth_excludes);
-            exclude_commits.sort_by_key(|oid| oid.to_hex());
-            exclude_commits.dedup();
-        }
-        crate::pack_objects_upload::write_pack_objects_revs_stdin(
+        exclude_commits.sort_by_key(|oid| oid.to_hex());
+        exclude_commits.dedup();
+        crate::pack_objects_upload::write_pack_objects_revs_stdin_shallow(
             &mut pin,
             &wants,
             &exclude_commits,
+            &shallow_commits,
         )?;
     }
     // Protocol v2 fetch streams the pack inside side-band-64k (matches `git upload-pack`).
