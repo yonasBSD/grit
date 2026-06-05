@@ -8559,6 +8559,13 @@ fn merge_trees(
                     // Submodule replaces a former directory tree (e.g. d/e → gitlink d); not D/F.
                     index.entries.push(oe.clone());
                 } else if has_descendant(&theirs_entries, path) {
+                    if path_descendants_match(&base, &theirs_entries, path) {
+                        index.entries.push(oe.clone());
+                        mark_path_descendants_handled(&mut handled_paths, &base, path);
+                        mark_path_descendants_handled(&mut handled_paths, &theirs_entries, path);
+                        continue;
+                    }
+
                     has_conflicts = true;
                     let path_str = String::from_utf8_lossy(path).to_string();
                     let conflict_path = format!("{path_str}~{merge_ours_oid_hex}");
@@ -8617,6 +8624,13 @@ fn merge_trees(
                 if te.mode == MODE_GITLINK {
                     index.entries.push(te.clone());
                 } else if has_descendant(&ours_entries, path) {
+                    if path_descendants_match(&base, &ours_entries, path) {
+                        index.entries.push(te.clone());
+                        mark_path_descendants_handled(&mut handled_paths, &base, path);
+                        mark_path_descendants_handled(&mut handled_paths, &ours_entries, path);
+                        continue;
+                    }
+
                     has_conflicts = true;
                     let path_str = String::from_utf8_lossy(path).to_string();
                     let conflict_path = format!("{path_str}~{merge_theirs_oid_hex}");
@@ -10287,6 +10301,14 @@ fn apply_directory_file_conflicts(
             .map(|(source, _)| source);
         let clean_directory_side = path_descendants_match(base, other_entries, &path)
             && !path_has_tree_descendant(side_entries, &path);
+        if clean_directory_side && rename_source.is_none() {
+            index.remove(&path);
+            index.remove_descendants_under_path(&path_str);
+            index.add_or_replace(file_entry.clone());
+            mark_path_descendants_handled(handled_paths, base, &path);
+            mark_path_descendants_handled(handled_paths, other_entries, &path);
+            continue;
+        }
         let new_path_str = if clean_directory_side {
             path_display.clone()
         } else {
