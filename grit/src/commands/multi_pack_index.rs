@@ -324,6 +324,7 @@ fn cmd_write(repo: &Repository, args: &WriteArgs) -> Result<()> {
         // library; exit non-zero without the CLI re-printing the message.
         if msg.contains("no pack files to index.")
             || msg.contains("cannot select preferred pack with no objects")
+            || msg.contains("could not load pack")
         {
             return Err(crate::explicit_exit::SilentNonZeroExit { code: 1 }.into());
         }

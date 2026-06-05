@@ -1897,7 +1897,22 @@ pub fn write_multi_pack_index_with_options(
     if opts.pack_names_subset_ordered.is_none() {
         if let Some(existing) = resolve_tip_midx_path(pack_dir) {
             if let Ok(bytes) = fs::read(&existing) {
-                if !midx_checksum_is_valid(&bytes) {
+                if midx_checksum_is_valid(&bytes) {
+                    // A fresh write copies the existing MIDX's packs. Loading a pack
+                    // it references whose `.pack` is gone fails with `could not load
+                    // pack N` (git/midx-write.c `fill_pack_from_midx`).
+                    if let Ok((_, existing_names)) = oids_and_packs_from_midx_data(&bytes) {
+                        for (i, name) in existing_names.iter().enumerate() {
+                            let stem = name.strip_suffix(".idx").unwrap_or(name);
+                            if !pack_dir.join(format!("{stem}.pack")).exists() {
+                                eprintln!("error: could not load pack {i}");
+                                return Err(Error::CorruptObject(format!(
+                                    "could not load pack {i}"
+                                )));
+                            }
+                        }
+                    }
+                } else {
                     eprintln!("warning: ignoring existing multi-pack-index; checksum mismatch");
                 }
             }
