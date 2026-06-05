@@ -413,6 +413,16 @@ fn index_path_for_update(repo: &Repository) -> Result<PathBuf> {
     Ok(repo.index_path())
 }
 
+fn write_update_index(
+    repo: &Repository,
+    index_path: &Path,
+    index: &mut Index,
+    split_write: WriteSplitIndexRequest,
+) -> Result<()> {
+    repo.write_index_at_split_with_post_index_change(index_path, index, split_write, false, true)?;
+    Ok(())
+}
+
 /// Run `grit update-index`.
 pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
     let repo = Repository::discover(None).context("not a git repository")?;
@@ -477,15 +487,13 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
         } else {
             index.untracked_cache = Some(UntrackedCache::new_shell(flags, ident));
         }
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
         return Ok(());
     }
 
     if args.no_untracked_cache {
         index.untracked_cache = None;
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
     } else if args.untracked_cache {
         let flags = untracked_cache::dir_flags_from_config(&config);
         let ident = untracked_cache::untracked_cache_ident(work_tree);
@@ -495,8 +503,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
         } else {
             index.untracked_cache = Some(UntrackedCache::new_shell(flags, ident));
         }
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
     }
 
     if args.fsmonitor && args.no_fsmonitor {
@@ -516,8 +523,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
         if index.fsmonitor_last_update.is_none() {
             index.fsmonitor_last_update = Some("builtin:fake".to_string());
         }
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
     } else if args.no_fsmonitor {
         index.fsmonitor_last_update = None;
         for entry in &mut index.entries {
@@ -525,8 +531,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
                 entry.set_fsmonitor_valid(false);
             }
         }
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
     }
 
     if !args.fsmonitor_valid.is_empty() || !args.no_fsmonitor_valid.is_empty() {
@@ -547,8 +552,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
                 e.set_fsmonitor_valid(false);
             }
         }
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
     }
 
     if args.show_index_version {
@@ -562,8 +566,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
             println!("index-version: was {old_ver}, set to {ver}");
         }
         index.version = ver;
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
         return Ok(());
     }
 
@@ -573,8 +576,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
 
     if args.clear_resolve_undo {
         index.clear_resolve_undo();
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
         return Ok(());
     }
 
@@ -707,8 +709,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
             let rel_bytes = path_to_bytes(&rel_path)?;
             let _ = index.unmerge_path_from_resolve_undo(&rel_bytes);
         }
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
         return Ok(());
     }
 
@@ -1115,7 +1116,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
         let need_write =
             index_modified || has_racy_timestamp(&index, index_mtime_sec, index_mtime_nsec);
         if need_write {
-            repo.write_index_at_split(&index_path, &mut index, split_write)
+            write_update_index(&repo, &index_path, &mut index, split_write)
                 .context("writing index")?;
         }
         // Git `builtin/update-index.c`: the command always `return has_errors ? 1 : 0`
@@ -1127,8 +1128,14 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
         return Ok(());
     }
 
-    repo.write_index_at_split(&index_path, &mut index, split_write)
-        .context("writing index")?;
+    let needs_final_write = args.split_index
+        || args.no_split_index
+        || !args.files.is_empty()
+        || !args.cacheinfo.is_empty()
+        || !args.chmod.is_empty();
+    if needs_final_write {
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
+    }
     Ok(())
 }
 
@@ -1218,8 +1225,7 @@ fn run_index_info(
         }
     }
 
-    repo.write_index_at_split(index_path, index, split_write)
-        .context("writing index")?;
+    write_update_index(repo, index_path, index, split_write).context("writing index")?;
     Ok(())
 }
 
@@ -1691,8 +1697,7 @@ fn run_update_index_again(
         }
     }
 
-    repo.write_index_at_split(index_path, index, split_write)
-        .context("writing index")?;
+    write_update_index(repo, index_path, index, split_write).context("writing index")?;
     Ok(())
 }
 

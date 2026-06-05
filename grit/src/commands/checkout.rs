@@ -1178,6 +1178,7 @@ pub fn run(mut args: Args) -> Result<()> {
                     RECURSE_SUBMODULES.with(|r| r.get()),
                 );
             }
+            write_noop_checkout_index(&repo)?;
         }
         return Ok(());
     }
@@ -1993,7 +1994,7 @@ fn merge_branch_working_tree(
     }
     let mut final_index = final_index;
     set_checkout_cache_tree(repo, &mut final_index)?;
-    repo.write_index_at(&index_path, &mut final_index)
+    repo.write_index_at_with_post_index_change(&index_path, &mut final_index, true, false)
         .context("writing index after merge checkout")?;
 
     if recurse_submodules {
@@ -2039,6 +2040,18 @@ fn remove_branch_state(git_dir: &Path) {
     let _ = std::fs::remove_file(git_dir.join("SQUASH_MSG"));
 }
 
+fn write_noop_checkout_index(repo: &Repository) -> Result<()> {
+    let index_path = repo
+        .index_path_for_env()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut index = repo
+        .load_index_at(&index_path)
+        .unwrap_or_else(|_| Index::new());
+    repo.write_index_at_with_post_index_change(&index_path, &mut index, true, false)
+        .context("writing index")?;
+    Ok(())
+}
+
 fn switch_branch(
     repo: &Repository,
     branch_name: &str,
@@ -2082,6 +2095,8 @@ fn switch_branch(
                     false,
                     RECURSE_SUBMODULES.with(|r| r.get()),
                 )?;
+            } else {
+                write_noop_checkout_index(repo)?;
             }
             let tip = head
                 .oid()
@@ -2389,6 +2404,7 @@ fn create_and_switch_branch(
             RECURSE_SUBMODULES.with(|r| r.get()),
         )?;
     } else {
+        write_noop_checkout_index(repo)?;
         run_post_checkout_hook(repo, old_head_commit.as_ref(), &start_oid, true)?;
     }
 
@@ -2528,6 +2544,7 @@ fn force_create_and_switch_branch(
             RECURSE_SUBMODULES.with(|r| r.get()),
         )?;
     } else {
+        write_noop_checkout_index(repo)?;
         run_post_checkout_hook(repo, old_head_commit.as_ref(), &start_oid, true)?;
     }
 
@@ -2680,7 +2697,8 @@ fn create_orphan_branch(
         new_index.entries = new_entries;
         new_index.sort();
         checkout_index_to_worktree(repo, &old_index, &new_index, work_tree, true, true, true)?;
-        repo.write_index(&mut new_index).context("writing index")?;
+        repo.write_index_with_post_index_change(&mut new_index, true, false)
+            .context("writing index")?;
     } else {
         // No start point: match `git checkout --orphan` — HEAD becomes unborn but the index
         // and working tree stay as-is so the next `commit -a` can amend content from the
@@ -2737,7 +2755,8 @@ fn force_reset_to_tree(repo: &Repository, target_tree: &ObjectId) -> Result<()> 
         )?;
     }
 
-    repo.write_index(&mut new_index).context("writing index")?;
+    repo.write_index_with_post_index_change(&mut new_index, true, false)
+        .context("writing index")?;
 
     trace2_emit_checkout_parallel_workers(checkout_parallel_worker_spawns(repo, work_units));
     if RECURSE_SUBMODULES.with(|r| r.get()) {
@@ -2862,7 +2881,7 @@ fn force_reset_to_head(repo: &Repository) -> Result<()> {
         .index_path_for_env()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     set_checkout_cache_tree(repo, &mut new_index)?;
-    repo.write_index_at(&index_path, &mut new_index)
+    repo.write_index_at_with_post_index_change(&index_path, &mut new_index, true, false)
         .context("writing index")?;
 
     trace2_emit_checkout_parallel_workers(checkout_parallel_worker_spawns(repo, work_units));
@@ -2931,6 +2950,7 @@ fn detach_head_inner(
             RECURSE_SUBMODULES.with(|r| r.get()),
         )?;
     } else {
+        write_noop_checkout_index(repo)?;
         run_post_checkout_hook(repo, old_head_commit.as_ref(), oid, true)?;
     }
 
@@ -3246,7 +3266,7 @@ fn switch_to_tree(
 
     // Write the new index
     set_checkout_cache_tree(repo, &mut new_index)?;
-    repo.write_index_at(&index_path, &mut new_index)
+    repo.write_index_at_with_post_index_change(&index_path, &mut new_index, true, false)
         .context("writing index")?;
 
     trace2_emit_checkout_parallel_workers(checkout_parallel_worker_spawns(repo, work_units));
@@ -4785,7 +4805,7 @@ checking out of the index."
             if refresh_written_index_entries(&mut index, work_tree, &checkout_written_paths) {
                 index_modified = true;
             }
-            if index_modified {
+            if index_modified || !paths.is_empty() {
                 repo.write_index(&mut index).context("writing index")?;
             }
         }

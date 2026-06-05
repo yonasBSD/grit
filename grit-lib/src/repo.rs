@@ -509,9 +509,60 @@ impl Repository {
         self.write_index_at(&self.index_path(), index)
     }
 
+    /// Write the index to the default path and pass explicit `post-index-change` hook flags.
+    ///
+    /// Parameters:
+    /// - `index` is the in-memory index to serialize.
+    /// - `updated_workdir` reports that the write is paired with a working-tree update.
+    /// - `updated_skipworktree` reports that skip-worktree related index state changed.
+    ///
+    /// Returns `Ok(())` after the index is written and the hook has been attempted.
+    ///
+    /// Errors when the index cannot be finalized or written.
+    pub fn write_index_with_post_index_change(
+        &self,
+        index: &mut Index,
+        updated_workdir: bool,
+        updated_skipworktree: bool,
+    ) -> Result<()> {
+        self.write_index_at_with_post_index_change(
+            &self.index_path(),
+            index,
+            updated_workdir,
+            updated_skipworktree,
+        )
+    }
+
     /// Like [`Repository::write_index`], but writes to an explicit index file path.
     pub fn write_index_at(&self, path: &std::path::Path, index: &mut Index) -> Result<()> {
         self.write_index_at_split(path, index, WriteSplitIndexRequest::default())
+    }
+
+    /// Like [`Repository::write_index_at`], but passes explicit `post-index-change` hook flags.
+    ///
+    /// Parameters:
+    /// - `path` is the destination index file.
+    /// - `index` is the in-memory index to serialize.
+    /// - `updated_workdir` reports that the write is paired with a working-tree update.
+    /// - `updated_skipworktree` reports that skip-worktree related index state changed.
+    ///
+    /// Returns `Ok(())` after the index is written and the hook has been attempted.
+    ///
+    /// Errors when the index cannot be finalized or written.
+    pub fn write_index_at_with_post_index_change(
+        &self,
+        path: &std::path::Path,
+        index: &mut Index,
+        updated_workdir: bool,
+        updated_skipworktree: bool,
+    ) -> Result<()> {
+        self.write_index_at_split_with_post_index_change(
+            path,
+            index,
+            WriteSplitIndexRequest::default(),
+            updated_workdir,
+            updated_skipworktree,
+        )
     }
 
     /// Write the index to `path`, optionally emitting a split index (shared base + `link` extension).
@@ -521,13 +572,42 @@ impl Repository {
         index: &mut Index,
         split: WriteSplitIndexRequest,
     ) -> Result<()> {
+        self.write_index_at_split_with_post_index_change(path, index, split, false, false)
+    }
+
+    /// Write the index to `path`, optionally emitting a split index, with explicit hook flags.
+    ///
+    /// Parameters:
+    /// - `path` is the destination index file.
+    /// - `index` is the in-memory index to serialize.
+    /// - `split` controls whether a split index should be written.
+    /// - `updated_workdir` reports that the write is paired with a working-tree update.
+    /// - `updated_skipworktree` reports that skip-worktree related index state changed.
+    ///
+    /// Returns `Ok(())` after the index is written and the hook has been attempted.
+    ///
+    /// Errors when the index cannot be finalized or written.
+    pub fn write_index_at_split_with_post_index_change(
+        &self,
+        path: &std::path::Path,
+        index: &mut Index,
+        split: WriteSplitIndexRequest,
+        updated_workdir: bool,
+        updated_skipworktree: bool,
+    ) -> Result<()> {
         self.finalize_sparse_index_if_needed(index)?;
         let cfg = ConfigSet::load(Some(&self.git_dir), true).unwrap_or_default();
         let skip_hash = crate::index::index_skip_hash_for_write(Some(&cfg));
         write_index_file_split(path, &self.git_dir, index, &cfg, split, skip_hash)?;
         // Git `write_locked_index`: `post-index-change` after a successful index write (t1800).
-        // Grit does not yet track `updated_workdir` / `updated_skipworktree`; pass `0` `0`.
-        let _ = run_hook(self, "post-index-change", &["0", "0"], None);
+        let updated_workdir_arg = if updated_workdir { "1" } else { "0" };
+        let updated_skipworktree_arg = if updated_skipworktree { "1" } else { "0" };
+        let _ = run_hook(
+            self,
+            "post-index-change",
+            &[updated_workdir_arg, updated_skipworktree_arg],
+            None,
+        );
         Ok(())
     }
 

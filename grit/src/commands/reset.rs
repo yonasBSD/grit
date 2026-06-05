@@ -1837,11 +1837,23 @@ Use '--' to separate paths from revisions, like this:\n\
         let cache_tree = build_cache_tree_from_index(&repo.odb, &new_index)?;
         new_index.set_cache_tree(cache_tree);
     }
+    let (updated_workdir, updated_skipworktree) = if needs_worktree_checkout {
+        (true, false)
+    } else if mode == ResetMode::Mixed {
+        (false, true)
+    } else {
+        (false, false)
+    };
     if preserve_partial_sparse_index {
         new_index.write(&index_path).context("writing index")?;
     } else {
-        repo.write_index_at(&index_path, &mut new_index)
-            .context("writing index")?;
+        repo.write_index_at_with_post_index_change(
+            &index_path,
+            &mut new_index,
+            updated_workdir,
+            updated_skipworktree,
+        )
+        .context("writing index")?;
     }
     // For MIXED (and SOFT) resets, do NOT re-apply sparse-checkout. Git's `reset`
     // only copies the existing entry's skip-worktree bit and never deletes
