@@ -17,6 +17,54 @@ use grit_lib::refs;
 use grit_lib::repo::Repository;
 use grit_lib::rev_list::{rev_list, split_revision_token, ObjectFilter, RevListOptions};
 
+/// Insertion-order-preserving map of bundle ref name to object id.
+///
+/// Git records bundle refs in the order they appear on the command line
+/// (matching `revs->pending` iteration in `bundle.c`), so a plain `BTreeMap`
+/// (which sorts alphabetically) cannot reproduce the header ordering. This
+/// thin wrapper keeps the first-seen position of each ref name while still
+/// de-duplicating repeated names.
+#[derive(Debug, Default, Clone)]
+struct BundleRefs {
+    entries: Vec<(String, ObjectId)>,
+}
+
+impl BundleRefs {
+    /// Insert or update a ref, preserving first-insertion order.
+    fn insert(&mut self, name: String, oid: ObjectId) {
+        if let Some(slot) = self.entries.iter_mut().find(|(n, _)| *n == name) {
+            slot.1 = oid;
+        } else {
+            self.entries.push((name, oid));
+        }
+    }
+
+    /// Returns true when no refs are recorded.
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Number of recorded refs.
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Iterate over `(name, oid)` pairs in insertion order.
+    fn iter(&self) -> impl Iterator<Item = (&String, &ObjectId)> {
+        self.entries.iter().map(|(n, o)| (n, o))
+    }
+
+    /// Iterate over object ids in insertion order.
+    fn values(&self) -> impl Iterator<Item = &ObjectId> {
+        self.entries.iter().map(|(_, o)| o)
+    }
+
+    /// Retain only entries for which the predicate returns true.
+    fn retain<F: FnMut(&str, &mut ObjectId) -> bool>(&mut self, mut keep: F) {
+        self.entries.retain_mut(|(name, oid)| keep(name, oid));
+    }
+}
+
 /// Arguments for `grit bundle`.
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -269,6 +317,14 @@ fn run_create(args: CreateArgs) -> Result<()> {
     // Build pack data.
     let pack_data = build_pack_data(&objects)?;
 
+    // Pair each prerequisite (boundary commit) with its oneline subject so the
+    // bundle header records `-<oid> <subject>` like git's
+    // `write_bundle_prerequisites`.
+    let prerequisites_with_subjects: Vec<(ObjectId, String)> = prerequisites
+        .iter()
+        .map(|oid| (*oid, commit_subject(&repo, oid).unwrap_or_default()))
+        .collect();
+
     // Write bundle file.
     if args.file == "-" {
         let stdout = std::io::stdout();
@@ -277,7 +333,7 @@ fn run_create(args: CreateArgs) -> Result<()> {
             &mut out,
             version,
             filter_spec.as_deref(),
-            &prerequisites,
+            &prerequisites_with_subjects,
             &refs,
             &pack_data,
         )?;
@@ -288,7 +344,7 @@ fn run_create(args: CreateArgs) -> Result<()> {
             &mut out,
             version,
             filter_spec.as_deref(),
-            &prerequisites,
+            &prerequisites_with_subjects,
             &refs,
             &pack_data,
         )?;
@@ -328,8 +384,8 @@ fn write_bundle(
     out: &mut dyn Write,
     version: u8,
     filter: Option<&str>,
-    prerequisites: &[ObjectId],
-    refs: &BTreeMap<String, ObjectId>,
+    prerequisites: &[(ObjectId, String)],
+    refs: &BundleRefs,
     pack_data: &[u8],
 ) -> Result<()> {
     if version == 3 {
@@ -342,8 +398,11 @@ fn write_bundle(
         writeln!(out, "@filter={filter}")?;
     }
 
-    for oid in prerequisites {
-        writeln!(out, "-{} ", oid.to_hex())?;
+    // Match git's `write_bundle_prerequisites`: `-<oid> <oneline subject>`.
+    // The trailing space after the oid is always emitted even when the
+    // subject is empty.
+    for (oid, subject) in prerequisites {
+        writeln!(out, "-{} {}", oid.to_hex(), subject)?;
     }
     for (refname, oid) in bundle_refs_for_output(refs) {
         writeln!(out, "{} {}", oid.to_hex(), refname)?;
@@ -384,8 +443,8 @@ fn collect_refs_for_bundle(
     repo: &Repository,
     rev_args: &[String],
     ignore_missing: bool,
-) -> Result<BTreeMap<String, ObjectId>> {
-    let mut refs = BTreeMap::new();
+) -> Result<BundleRefs> {
+    let mut refs = BundleRefs::default();
 
     let include_all = rev_args.iter().any(|a| a == "--all");
 
@@ -516,7 +575,7 @@ fn retain_refs_for_included_commits(
     repo: &Repository,
     included_commits: &BTreeSet<ObjectId>,
     cutoffs: &BundleRevCutoffs,
-    refs: &mut BTreeMap<String, ObjectId>,
+    refs: &mut BundleRefs,
     oids: &mut BTreeSet<ObjectId>,
 ) {
     refs.retain(|_, oid| ref_peels_to_included_commit(repo, oid, included_commits, cutoffs, oids));
@@ -525,7 +584,7 @@ fn retain_refs_for_included_commits(
 fn retain_all_refs_after_exclusions(
     repo: &Repository,
     included_commits: &BTreeSet<ObjectId>,
-    refs: &mut BTreeMap<String, ObjectId>,
+    refs: &mut BundleRefs,
     oids: &mut BTreeSet<ObjectId>,
 ) {
     refs.retain(|_, oid| {
@@ -698,9 +757,9 @@ fn parse_bundle_rev_list_args(
     }
 
     if include_all && positive.is_empty() {
-        let mut refs = BTreeMap::new();
+        let mut refs = BundleRefs::default();
         collect_all_refs(repo, &mut refs)?;
-        positive.extend(refs.keys().cloned());
+        positive.extend(refs.iter().map(|(name, _)| name.clone()));
     }
 
     if positive.is_empty() && !include_all {
@@ -823,16 +882,21 @@ fn parse_bundle_date(s: &str) -> Result<i64> {
         .with_context(|| format!("invalid date '{trimmed}'"))
 }
 
-fn collect_all_refs(repo: &Repository, refs: &mut BTreeMap<String, ObjectId>) -> Result<()> {
-    // HEAD
-    if let Ok(oid) = resolve_ref(repo, "HEAD") {
-        refs.insert("HEAD".to_string(), oid);
-    }
-
-    // Walk refs/ directory.
+fn collect_all_refs(repo: &Repository, refs: &mut BundleRefs) -> Result<()> {
+    // Collect `refs/*` into a sorted map first so `--all` emits refs in
+    // alphabetical order, matching git's `for_each_ref` traversal. HEAD is
+    // appended afterwards so it lands last in the bundle header.
+    let mut sorted = BTreeMap::new();
     let refs_dir = repo.git_dir.join("refs");
     if refs_dir.exists() {
-        walk_refs_dir(&refs_dir, "refs", repo, refs)?;
+        walk_refs_dir(&refs_dir, "refs", repo, &mut sorted)?;
+    }
+    for (name, oid) in sorted {
+        refs.insert(name, oid);
+    }
+
+    if let Ok(oid) = resolve_ref(repo, "HEAD") {
+        refs.insert("HEAD".to_string(), oid);
     }
 
     Ok(())
@@ -991,7 +1055,7 @@ fn run_unbundle(args: UnbundleArgs) -> Result<()> {
         write_filtered_bundle_promisor_marker(&repo, &header, pack_data)?;
     }
 
-    for (refname, oid) in &header.refs {
+    for (refname, oid) in header.refs.iter() {
         println!("{} {refname}", oid.to_hex());
     }
     Ok(())
@@ -1002,7 +1066,7 @@ fn run_unbundle(args: UnbundleArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 struct BundleHeader {
-    refs: BTreeMap<String, ObjectId>,
+    refs: BundleRefs,
     prerequisites: Vec<(ObjectId, String)>,
     object_format: String,
     filter: Option<String>,
@@ -1022,7 +1086,7 @@ fn write_filtered_bundle_promisor_marker(
     let marker = pack_dir.join(format!("pack-{pack_hash}.promisor"));
     let mut out = fs::File::create(&marker)
         .with_context(|| format!("creating promisor marker {}", marker.display()))?;
-    for (refname, oid) in &header.refs {
+    for (refname, oid) in header.refs.iter() {
         writeln!(out, "{} {refname}", oid.to_hex())?;
     }
     Ok(())
@@ -1053,13 +1117,10 @@ fn bundle_display_name(file: &str) -> &str {
     }
 }
 
-fn bundle_refs_for_output(refs: &BTreeMap<String, ObjectId>) -> Vec<(&String, &ObjectId)> {
-    let mut ordered = Vec::with_capacity(refs.len());
-    ordered.extend(refs.iter().filter(|(name, _)| name.as_str() != "HEAD"));
-    if let Some(head) = refs.get_key_value("HEAD") {
-        ordered.push(head);
-    }
-    ordered
+fn bundle_refs_for_output(refs: &BundleRefs) -> Vec<(&String, &ObjectId)> {
+    // Refs are already stored in command-line / header order (HEAD wherever it
+    // was listed), so emit them as-is.
+    refs.iter().collect()
 }
 
 /// Parse the bundle header, returning refs/prerequisites and the pack byte offset.
@@ -1073,7 +1134,7 @@ fn parse_bundle_header(data: &[u8]) -> Result<BundleHeader> {
     } else {
         bail!("not a git bundle");
     };
-    let mut refs = BTreeMap::new();
+    let mut refs = BundleRefs::default();
     let mut prerequisites = Vec::new();
     let mut object_format = "sha1".to_string();
     let mut filter = None;

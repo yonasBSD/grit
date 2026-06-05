@@ -5729,6 +5729,43 @@ fn parse_bundle_fetch_refs(path: &Path) -> Result<Vec<(String, ObjectId)>> {
     Ok(out)
 }
 
+/// Resolve which local refs a bundle fetch should update.
+///
+/// A bundle header records full ref names while a CLI refspec source may be an
+/// abbreviated name (e.g. `main:main`). For each positive refspec, the source
+/// is resolved against the bundle's ref list with git's DWIM rules
+/// ([`resolve_advertised_ref_for_fetch_src`]) and wildcard refspecs are matched
+/// directly. Returns `(remote bundle ref, oid, local destination ref)` tuples.
+fn resolve_bundle_fetch_ref_updates(
+    bundle_refs: &[(String, ObjectId)],
+    refspecs: &[FetchRefspec],
+) -> Vec<(String, ObjectId, String)> {
+    let mut out = Vec::new();
+    for rs in refspecs {
+        if rs.negative || rs.dst.is_empty() {
+            continue;
+        }
+        if rs.src.contains('*') {
+            // Wildcard refspec: match every bundle ref against the source pattern.
+            for (remote_ref, oid) in bundle_refs {
+                if let Some(local) = match_refspec_pattern(&rs.src, &rs.dst, remote_ref) {
+                    out.push((remote_ref.clone(), *oid, local));
+                }
+            }
+            continue;
+        }
+        // Exact / abbreviated refspec: DWIM the source against the bundle refs.
+        let Some(resolved) = resolve_advertised_ref_for_fetch_src(&rs.src, bundle_refs, None)
+        else {
+            continue;
+        };
+        if let Some((_, oid)) = bundle_refs.iter().find(|(name, _)| *name == resolved) {
+            out.push((resolved, *oid, rs.dst.clone()));
+        }
+    }
+    out
+}
+
 fn update_refs_from_bundle_fetch(
     git_dir: &Path,
     bundle_refs: &[(String, ObjectId)],
@@ -5744,11 +5781,15 @@ fn update_refs_from_bundle_fetch(
     let mut pending_atomic_ref_ops = Vec::new();
     let mut ref_update_failures = Vec::new();
 
-    for (remote_ref, oid) in bundle_refs {
-        let Some(local_ref) = map_ref_through_refspecs(remote_ref, &refspecs) else {
-            continue;
-        };
-        let local_ref = normalize_fetch_refspec_dst(&local_ref);
+    // Build the set of (remote bundle ref, local ref) updates. A bundle records
+    // full ref names (e.g. `refs/heads/main`) while a CLI refspec source may be
+    // abbreviated (`main:main`), so resolve each refspec's source against the
+    // bundle's ref list with the same DWIM rules used for an advertised remote.
+    let bundle_updates = resolve_bundle_fetch_ref_updates(bundle_refs, &refspecs);
+
+    for (remote_ref, oid, local_ref) in &bundle_updates {
+        let remote_ref = remote_ref.as_str();
+        let local_ref = normalize_fetch_refspec_dst(local_ref);
         if local_ref.starts_with("refs/heads/") && !args.update_head_ok && !is_bare_repo {
             if let Some(wt_path) = is_branch_in_worktree(git_dir, &local_ref) {
                 bail!(
@@ -5767,7 +5808,8 @@ fn update_refs_from_bundle_fetch(
             || refspecs.iter().any(|rs| {
                 !rs.negative
                     && rs.force
-                    && match_refspec_pattern(&rs.src, &rs.dst, remote_ref).is_some()
+                    && (match_refspec_pattern(&rs.src, &rs.dst, remote_ref).is_some()
+                        || normalize_fetch_refspec_dst(&rs.dst) == local_ref)
             });
         if let Some(old) = old_oid {
             if old != *oid && !forced {
