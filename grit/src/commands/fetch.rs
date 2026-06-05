@@ -3076,7 +3076,20 @@ fn maybe_run_auto_maintenance_after_fetch(git_dir: &Path, args: &Args) -> Result
     if cfg.get_bool("maintenance.auto").and_then(|r| r.ok()) == Some(false) {
         return Ok(());
     }
-    let foreground_maintenance = args.refetch || repo_treats_promisor_packs(git_dir, &cfg);
+    // When auto-detach is disabled the gc task must run in the foreground so its
+    // "Auto packing the repository" notice reaches the caller's stderr instead of
+    // a detached child's discarded output (t5510 "fetching with auto-gc does not
+    // lock up"). `maintenance.autoDetach` takes precedence over `gc.autoDetach`,
+    // matching git's `gc_config` (`builtin/gc.c`).
+    let auto_detach_disabled = cfg
+        .get_bool("maintenance.autoDetach")
+        .or_else(|| cfg.get_bool("maintenance.autodetach"))
+        .or_else(|| cfg.get_bool("gc.autoDetach"))
+        .or_else(|| cfg.get_bool("gc.autodetach"))
+        .and_then(|r| r.ok())
+        == Some(false);
+    let foreground_maintenance =
+        args.refetch || repo_treats_promisor_packs(git_dir, &cfg) || auto_detach_disabled;
     let detach_arg = if foreground_maintenance {
         "--no-detach"
     } else {
