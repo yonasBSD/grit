@@ -100,7 +100,17 @@ pub struct ExpireArgs {
 }
 
 #[derive(Debug, ClapArgs)]
-pub struct CompactArgs {}
+pub struct CompactArgs {
+    /// Write a new incremental MIDX layer (the only supported compaction mode).
+    #[arg(long)]
+    pub incremental: bool,
+    /// Write a multi-pack bitmap (and reverse index) for the compacted layer.
+    #[arg(long)]
+    pub bitmap: bool,
+    /// Compaction endpoints: `<from>` (older) and `<to>` (newer) layer checksums.
+    #[arg(value_name = "MIDX")]
+    pub endpoints: Vec<String>,
+}
 
 /// Run `grit multi-pack-index`.
 pub fn run(args: Args) -> Result<()> {
@@ -110,7 +120,7 @@ pub fn run(args: Args) -> Result<()> {
         MpiCommand::Write(w) => cmd_write(&repo, &w),
         MpiCommand::Repack(a) => cmd_repack(&repo, &a),
         MpiCommand::Expire(e) => cmd_expire(&repo, e.progress && !e.no_progress),
-        MpiCommand::Compact(_) => cmd_compact(&repo),
+        MpiCommand::Compact(c) => cmd_compact(&repo, &c),
     }
 }
 
@@ -252,10 +262,28 @@ pub fn run_from_argv(argv: &[String]) -> Result<()> {
             cmd_expire(&repo, progress && !no_progress)
         }
         "compact" => {
-            if rest.len() > 1 {
-                bail!("unsupported multi-pack-index compact arguments");
+            let mut incremental = false;
+            let mut bitmap = false;
+            let mut endpoints: Vec<String> = Vec::new();
+            for a in rest.iter().skip(1) {
+                match a.as_str() {
+                    "--incremental" => incremental = true,
+                    "--bitmap" => bitmap = true,
+                    "--no-progress" | "--progress" => {}
+                    other if other.starts_with("--") => {
+                        bail!("unsupported multi-pack-index compact option: {other}")
+                    }
+                    other => endpoints.push(other.to_string()),
+                }
             }
-            cmd_compact(&repo)
+            cmd_compact(
+                &repo,
+                &CompactArgs {
+                    incremental,
+                    bitmap,
+                    endpoints,
+                },
+            )
         }
         other => bail!("unsupported multi-pack-index subcommand: {other}"),
     }
@@ -612,9 +640,31 @@ fn select_packs_for_batch(
     Ok(include)
 }
 
-fn cmd_compact(repo: &Repository) -> Result<()> {
-    write_multi_pack_index_with_options(&pack_dir(repo), &WriteMultiPackIndexOptions::default())
-        .map_err(|e| anyhow::anyhow!("{e}"))
+fn cmd_compact(repo: &Repository, args: &CompactArgs) -> Result<()> {
+    if args.endpoints.len() != 2 {
+        bail!("usage: git multi-pack-index compact [--[no-]incremental] <from> <to>");
+    }
+    let from = &args.endpoints[0];
+    let to = &args.endpoints[1];
+    let write_rev = std::env::var("GIT_TEST_MIDX_WRITE_REV").ok().as_deref() == Some("1");
+    let version = grit_lib::config::ConfigSet::load(Some(&repo.git_dir), true)
+        .ok()
+        .and_then(|c| c.get_i64("midx.version").and_then(|r| r.ok()))
+        .map(|v| v as u8);
+    match grit_lib::midx::compact_multi_pack_index(
+        &pack_dir(repo),
+        from,
+        to,
+        args.bitmap,
+        write_rev && args.bitmap,
+        version,
+    ) {
+        Ok(()) => Ok(()),
+        // git's `cmd_multi_pack_index_compact` reports every failure via `die()`, which
+        // emits a `fatal:` prefix and exits 128. Prefix the message so the top-level
+        // handler prints it verbatim with that prefix (it strips a leading `fatal:`).
+        Err(e) => Err(anyhow::anyhow!("fatal: {e}")),
+    }
 }
 
 fn midx_chain_path(pack_dir: &Path) -> PathBuf {

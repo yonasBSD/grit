@@ -240,6 +240,27 @@ pub fn resolve_tip_midx_path(pack_dir: &Path) -> Option<std::path::PathBuf> {
     Some(midx_d_dir(pack_dir).join(format!("multi-pack-index-{last}.midx")))
 }
 
+/// Resolve a specific MIDX layer file by its lowercase hex checksum. Searches the
+/// incremental chain (`multi-pack-index.d/multi-pack-index-<hash>.midx`) and the
+/// single-file root MIDX. Returns `None` when no layer matches that checksum.
+pub fn resolve_midx_layer_path(pack_dir: &Path, checksum: &str) -> Option<std::path::PathBuf> {
+    let checksum = checksum.to_ascii_lowercase();
+    if let Ok(hashes) = read_chain_layer_hashes(pack_dir) {
+        if hashes.contains(&checksum) {
+            return Some(midx_d_dir(pack_dir).join(format!("multi-pack-index-{checksum}.midx")));
+        }
+    }
+    let root = pack_dir.join("multi-pack-index");
+    if root.exists() {
+        if let Ok(hex) = midx_checksum_hex_from_path(&root) {
+            if hex == checksum {
+                return Some(root);
+            }
+        }
+    }
+    None
+}
+
 fn load_midx_file(path: &Path) -> Result<Vec<u8>> {
     let data = fs::read(path).map_err(Error::Io)?;
     let _ = parse_midx_header(&data)?;
@@ -387,13 +408,19 @@ fn midx_pick_better_entry(
     }
 }
 
-fn build_midx_bytes(
+/// Build a MIDX layer's bytes, omitting objects whose OID is present in
+/// `exclude_oids` (the base chain for incremental layers and compaction, where
+/// objects already provided by a lower layer must not be repeated). Pass `None`
+/// for a full (non-incremental) MIDX.
+#[allow(clippy::too_many_arguments)]
+fn build_midx_bytes_filtered(
     idx_names: &[String],
     indexes: &[PackIndex],
     preferred_idx: Option<usize>,
     write_bitmap_placeholders: bool,
     omit_embedded_ridx_chunk: bool,
     version: u8,
+    exclude_oids: Option<&HashSet<ObjectId>>,
 ) -> Result<(Vec<u8>, Option<Vec<u32>>)> {
     let preferred_pack_idx = preferred_idx.map(|p| p as u32);
     let pack_mtimes: Vec<std::time::SystemTime> = indexes.iter().map(pack_mtime_for_midx).collect();
@@ -411,6 +438,11 @@ fn build_midx_bytes(
             let Ok(oid) = ObjectId::from_bytes(&e.oid) else {
                 continue;
             };
+            if let Some(ex) = exclude_oids {
+                if ex.contains(&oid) {
+                    continue;
+                }
+            }
             let cand = MidxEntry {
                 oid,
                 pack_id,
@@ -1127,13 +1159,33 @@ pub fn midx_checksum_hex(objects_dir: &Path) -> Result<String> {
     midx_checksum_hex_from_path(&path)
 }
 
+/// Resolve the MIDX file to read for `test-tool read-midx`: a specific layer when
+/// `checksum` is `Some`, otherwise the chain tip / root MIDX. A checksum that does
+/// not name any layer yields a `could not find MIDX with checksum` error matching
+/// git's `test-read-midx.c`.
+fn resolve_read_midx_path(pack_dir: &Path, checksum: Option<&str>) -> Result<std::path::PathBuf> {
+    match checksum {
+        Some(cs) => resolve_midx_layer_path(pack_dir, cs)
+            .ok_or_else(|| Error::CorruptObject(format!("could not find MIDX with checksum {cs}"))),
+        None => resolve_tip_midx_path(pack_dir)
+            .ok_or_else(|| Error::CorruptObject("no multi-pack-index found".to_owned())),
+    }
+}
+
 /// Human-readable dump of the MIDX (matches `test-tool read-midx` layout closely enough for grep-based tests).
 /// Emit one line per MIDX object: `{oid} {offset}\t{pack-idx-name}` (matches Git `test-read-midx.c`).
 pub fn format_midx_show_objects(objects_dir: &Path) -> Result<String> {
-    let mut out = format_midx_dump(objects_dir)?;
+    format_midx_show_objects_layer(objects_dir, None)
+}
+
+/// Like [`format_midx_show_objects`] but reads a specific layer by checksum.
+pub fn format_midx_show_objects_layer(
+    objects_dir: &Path,
+    checksum: Option<&str>,
+) -> Result<String> {
+    let mut out = format_midx_dump_layer(objects_dir, checksum)?;
     let pack_dir = objects_dir.join("pack");
-    let path = resolve_tip_midx_path(&pack_dir)
-        .ok_or_else(|| Error::CorruptObject("no multi-pack-index found".to_owned()))?;
+    let path = resolve_read_midx_path(&pack_dir, checksum)?;
     let data = fs::read(&path).map_err(Error::Io)?;
     let (_, hdr_end, _) = parse_midx_header(&data)?;
     let (pn_off, pn_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_PACKNAMES)?;
@@ -1182,9 +1234,14 @@ pub fn format_midx_show_objects(objects_dir: &Path) -> Result<String> {
 }
 
 pub fn format_midx_dump(objects_dir: &Path) -> Result<String> {
+    format_midx_dump_layer(objects_dir, None)
+}
+
+/// Like [`format_midx_dump`] but reads a specific layer by checksum (chain layer or
+/// root MIDX). Used by `test-tool read-midx <object-dir> <checksum>`.
+pub fn format_midx_dump_layer(objects_dir: &Path, checksum: Option<&str>) -> Result<String> {
     let pack_dir = objects_dir.join("pack");
-    let path = resolve_tip_midx_path(&pack_dir)
-        .ok_or_else(|| Error::CorruptObject("no multi-pack-index found".to_owned()))?;
+    let path = resolve_read_midx_path(&pack_dir, checksum)?;
     let data = fs::read(&path).map_err(Error::Io)?;
     let (hdr, hdr_end, _) = parse_midx_header(&data)?;
     let sig = read_be_u32(&data, 0)?;
@@ -1226,7 +1283,8 @@ pub fn format_midx_dump(objects_dir: &Path) -> Result<String> {
     let (_ooff_off, ooff_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_OBJECTOFFSETS)?;
     let num_objects = ooff_len / 8;
 
-    let pack_names = read_midx_pack_idx_names(objects_dir)?;
+    let (pn_off, pn_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_PACKNAMES)?;
+    let pack_names = parse_pack_names_blob(&data[pn_off..pn_off + pn_len])?;
 
     let mut out = String::new();
     out.push_str(&format!(
@@ -2090,13 +2148,22 @@ pub fn write_multi_pack_index_with_options(
         opts.write_bitmap_placeholders && (!opts.incremental || !best.is_empty());
 
     let omit_embedded_ridx = opts.write_rev_placeholder;
-    let (out, rev_sidecar_order) = build_midx_bytes(
+    // An incremental layer must not repeat objects already provided by the base
+    // chain even when the layer's own pack physically contains them (a fresh pack
+    // built with `--revs` from a tag range, for instance). Filter by base OID.
+    let exclude = if opts.incremental && !base_oids.is_empty() {
+        Some(&base_oids)
+    } else {
+        None
+    };
+    let (out, rev_sidecar_order) = build_midx_bytes_filtered(
         work_names,
         &indexes,
         preferred_idx,
         bitmap_placeholders,
         omit_embedded_ridx,
         opts.version.unwrap_or(MIDX_VERSION_V2),
+        exclude,
     )?;
 
     let hash = &out[out.len() - 20..];
@@ -2203,6 +2270,222 @@ fn pack_names_match_layer(base_name: &str, disk_idx: &str) -> bool {
         return true;
     }
     cmp_idx_or_pack_name(disk_idx, base_name).is_eq()
+}
+
+/// Failure modes of [`compact_multi_pack_index`], each mapping to one of git's
+/// user-facing diagnostics in `cmd_multi_pack_index_compact`.
+#[derive(Debug)]
+pub enum CompactError {
+    /// `--incremental` was requested but no chain exists yet.
+    NoChain,
+    /// One of the endpoint checksums does not name a layer in the chain. Carries the
+    /// raw argument text so the message matches `could not find MIDX: <arg>`.
+    MissingEndpoint(String),
+    /// Both endpoints resolve to the same layer.
+    IdenticalEndpoints,
+    /// `from` (argv[0]) is newer than `to` (argv[1]); git requires `from` to be an
+    /// ancestor of `to`. Carries `(from, to)` arg text for the diagnostic.
+    NotAncestor(String, String),
+    /// Compaction was requested with the v1 on-disk MIDX format.
+    V1Format,
+    /// Any underlying I/O or parse failure.
+    Other(String),
+}
+
+impl std::fmt::Display for CompactError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompactError::NoChain => write!(f, "no multi-pack-index chain to compact"),
+            CompactError::MissingEndpoint(s) => write!(f, "could not find MIDX: {s}"),
+            CompactError::IdenticalEndpoints => {
+                write!(f, "MIDX compaction endpoints must be unique")
+            }
+            CompactError::NotAncestor(from, to) => {
+                write!(f, "MIDX {from} must be an ancestor of {to}")
+            }
+            CompactError::V1Format => write!(f, "cannot perform MIDX compaction with v1 format"),
+            CompactError::Other(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl From<Error> for CompactError {
+    fn from(e: Error) -> Self {
+        CompactError::Other(e.to_string())
+    }
+}
+
+/// Collect every OID provided by the chain layers in `hashes` (each layer file is
+/// self-contained: it lists only its own incremental objects).
+fn collect_layer_oids(pack_dir: &Path, hashes: &[String]) -> Result<HashSet<ObjectId>> {
+    let mut oids = HashSet::new();
+    for h in hashes {
+        let p = midx_d_dir(pack_dir).join(format!("multi-pack-index-{h}.midx"));
+        let data = load_midx_file(&p)?;
+        let (layer_oids, _) = oids_and_packs_from_midx_data(&data)?;
+        oids.extend(layer_oids);
+    }
+    Ok(oids)
+}
+
+/// Pack idx basenames listed by a single chain layer, in the layer's stored order.
+fn layer_pack_names(pack_dir: &Path, hash: &str) -> Result<Vec<String>> {
+    let p = midx_d_dir(pack_dir).join(format!("multi-pack-index-{hash}.midx"));
+    let data = load_midx_file(&p)?;
+    let (_, hdr_end, _) = parse_midx_header(&data)?;
+    let (pn_off, pn_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_PACKNAMES)?;
+    parse_pack_names_blob(&data[pn_off..pn_off + pn_len])
+}
+
+/// `git multi-pack-index compact <from> <to>`: merge the inclusive chain range
+/// `[from..to]` (oldest→newest, matching git's `from`=argv[0] / `to`=argv[1]) into a
+/// single new incremental layer, preserving pack order, and rewrite the chain as
+/// `[layers before from] + [compacted layer] + [layers after to]`.
+///
+/// Mirrors `write_midx_file_compact` (git/midx-write.c). Because grit's chain layers
+/// are self-contained (each lists only its own packs/objects), layers outside the
+/// compacted range keep their existing files and checksums untouched.
+pub fn compact_multi_pack_index(
+    pack_dir: &Path,
+    from_arg: &str,
+    to_arg: &str,
+    write_bitmaps: bool,
+    write_rev: bool,
+    version: Option<u8>,
+) -> std::result::Result<(), CompactError> {
+    if version == Some(MIDX_VERSION_V1) {
+        return Err(CompactError::V1Format);
+    }
+
+    let chain = read_chain_layer_hashes(pack_dir).map_err(|_| CompactError::NoChain)?;
+    if chain.is_empty() {
+        return Err(CompactError::NoChain);
+    }
+
+    let from_hex = from_arg.to_ascii_lowercase();
+    let to_hex = to_arg.to_ascii_lowercase();
+
+    let from_pos = chain.iter().position(|h| *h == from_hex);
+    let to_pos = chain.iter().position(|h| *h == to_hex);
+
+    // Match git: report `from` first, then `to`, when an endpoint is missing.
+    let Some(from_pos) = from_pos else {
+        return Err(CompactError::MissingEndpoint(from_arg.to_string()));
+    };
+    let Some(to_pos) = to_pos else {
+        return Err(CompactError::MissingEndpoint(to_arg.to_string()));
+    };
+
+    if from_pos == to_pos {
+        return Err(CompactError::IdenticalEndpoints);
+    }
+    // git walks `base_midx` from `from`; reaching `to` means `from` is an ancestor of
+    // `to`, i.e. `from` is newer (higher chain index) than `to`. That is the reverse
+    // of what compaction expects, so report the "must be an ancestor" error.
+    if from_pos > to_pos {
+        return Err(CompactError::NotAncestor(
+            from_arg.to_string(),
+            to_arg.to_string(),
+        ));
+    }
+
+    // Layers strictly before `from` form the base; their objects are excluded from
+    // the compacted layer.
+    let base_hashes = &chain[..from_pos];
+    let merged_hashes = &chain[from_pos..=to_pos];
+    let upper_hashes = &chain[to_pos + 1..];
+
+    let base_oids = collect_layer_oids(pack_dir, base_hashes)?;
+
+    // Gather the merged layers' pack idx names in chain order (oldest layer first),
+    // preserving each layer's internal order (git's `fill_packs_from_midx_range`).
+    let mut ordered_idx_names: Vec<String> = Vec::new();
+    for h in merged_hashes {
+        for name in layer_pack_names(pack_dir, h)? {
+            if !ordered_idx_names.contains(&name) {
+                ordered_idx_names.push(name);
+            }
+        }
+    }
+
+    if ordered_idx_names.is_empty() {
+        return Err(CompactError::Other(
+            "no packs found in compaction range".to_owned(),
+        ));
+    }
+
+    // Load the pack indexes in the resolved order.
+    let mut indexes: Vec<PackIndex> = Vec::with_capacity(ordered_idx_names.len());
+    for name in &ordered_idx_names {
+        let path = pack_dir.join(name);
+        indexes.push(crate::pack::read_pack_index_no_verify(&path)?);
+    }
+
+    // When writing a bitmap, git sets the preferred pack to the first (oldest) pack
+    // of the compacted range so its objects win duplicate selection.
+    let preferred_idx = if write_bitmaps { Some(0usize) } else { None };
+
+    let exclude = if base_oids.is_empty() {
+        None
+    } else {
+        Some(&base_oids)
+    };
+
+    let (out, rev_sidecar_order) = build_midx_bytes_filtered(
+        &ordered_idx_names,
+        &indexes,
+        preferred_idx,
+        write_bitmaps,
+        write_rev,
+        version.unwrap_or(MIDX_VERSION_V2),
+        exclude,
+    )?;
+
+    let hash = &out[out.len() - 20..];
+    let hash_hex = hex::encode(hash);
+    let hash_arr: [u8; 20] = hash
+        .try_into()
+        .map_err(|_| CompactError::Other("midx hash length mismatch".to_owned()))?;
+
+    let midx_d = midx_d_dir(pack_dir);
+    fs::create_dir_all(&midx_d).map_err(Error::Io)?;
+
+    let layer_path = midx_d.join(format!("multi-pack-index-{hash_hex}.midx"));
+    fs::write(&layer_path, &out).map_err(Error::Io)?;
+
+    // New chain: base layers, the compacted layer, then the untouched upper layers.
+    let mut new_chain: Vec<String> = Vec::new();
+    new_chain.extend(base_hashes.iter().cloned());
+    new_chain.push(hash_hex.clone());
+    new_chain.extend(upper_hashes.iter().cloned());
+
+    let mut chain_data = String::new();
+    for h in &new_chain {
+        chain_data.push_str(h);
+        chain_data.push('\n');
+    }
+    fs::write(chain_file_path(pack_dir), chain_data.as_bytes()).map_err(Error::Io)?;
+
+    if write_bitmaps {
+        fs::write(
+            midx_d.join(format!("multi-pack-index-{hash_hex}.bitmap")),
+            [],
+        )
+        .map_err(Error::Io)?;
+        let rev_path = midx_d.join(format!("multi-pack-index-{hash_hex}.rev"));
+        if write_rev {
+            if let Some(order) = rev_sidecar_order.as_ref() {
+                write_midx_rev_sidecar(&rev_path, order, &hash_arr)?;
+            } else {
+                fs::write(rev_path, []).map_err(Error::Io)?;
+            }
+        }
+    }
+
+    // Drop the now-removed range layers and their sidecars.
+    clear_stale_split_layers(pack_dir, &new_chain)?;
+
+    Ok(())
 }
 
 fn scrub_root_midx_sidecars(pack_dir: &Path) -> Result<()> {
