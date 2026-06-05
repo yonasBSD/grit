@@ -59,7 +59,15 @@ regresses to the `/.`-on-submodule failure, re-apply that one-liner.
      the oids on the first fetch wrongly produced `-> FETCH_HEAD` instead of `-> origin/sub`.
    This got 52/53 (name-conflicted submodules) passing too.
 
-## Remaining failures (19): 27, 28, 30-36, 38-45, 55, 56
+## Round 3 (→ 39/56): nested deep "at commit" annotation
+
+fetch_submodule_recurse.rs index loop: an index-listed gitlink whose **work tree is absent**
+falls through (in git) to the changed task and is annotated `at commit <super_oid>`. Gate
+`at_commit` on `!populated` so a nested deepsubmodule reached while its parent submodule is itself
+unpopulated (`--work-tree=.`) shows `at commit <sub_head>` (fixes 27/28) without regressing the
+normal populated case (20/22/23/25 stay un-annotated). Net 37→39.
+
+## Remaining failures (17): 30-36, 38-45, 55, 56
 
 - **30** (`setup downstream branch with other submodule`) fails on
   `git checkout --recurse-submodules super`: "pathspec '<oid>' did not match" / "failed to

@@ -284,7 +284,16 @@ pub(crate) fn recursive_fetch_submodules_after_fetch(
                         "on-demand"
                     },
                     git_dir: gd.clone(),
-                    at_commit: None,
+                    // Git's index task only handles a *populated* gitlink ("Fetching submodule X",
+                    // no annotation). An index entry whose work tree is absent has no populated
+                    // repo handle, so it falls through to the changed task which annotates it
+                    // `at commit <super_oid>` — e.g. a nested deepsubmodule reached while the parent
+                    // submodule is itself unpopulated (`--work-tree=.`), t5526 #27/#28.
+                    at_commit: if populated {
+                        None
+                    } else {
+                        changed_by_name.get(&sm.name).map(|c| c.super_oid)
+                    },
                     // If the superproject's new commits reference commits outside the submodule's
                     // standard refspec, a by-OID follow-up fetch brings them in (git's
                     // `oid_fetch_tasks` second pass) — needed for name-conflicted submodules (t5526
