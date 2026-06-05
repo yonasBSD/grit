@@ -510,6 +510,7 @@ fn unescape_value(s: &str) -> String {
             '"' => { /* strip quotes */ }
             '\\' => match chars.next() {
                 Some('n') => result.push('\n'),
+                Some('r') => result.push('\r'),
                 Some('t') => result.push('\t'),
                 Some('\\') => result.push('\\'),
                 Some('"') => result.push('"'),
@@ -555,6 +556,7 @@ fn escape_value(s: &str) -> String {
         || s.contains('"')
         || s.contains('\\')
         || s.contains('\n')
+        || s.contains('\r')
         || s.contains('#')
         || s.contains(';');
 
@@ -569,6 +571,7 @@ fn escape_value(s: &str) -> String {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             other => out.push(other),
         }
@@ -1387,9 +1390,15 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
             }
             let has_attached_leading_comment = self.raw_lines[..i]
                 .iter()
+                .enumerate()
                 .rev()
-                .find(|line| !line.trim().is_empty())
-                .is_some_and(|line| comment_re.is_match(line));
+                .find(|(_, line)| !line.trim().is_empty())
+                .is_some_and(|(idx, line)| {
+                    comment_re.is_match(line)
+                        && idx
+                            .checked_sub(1)
+                            .is_none_or(|prev| !value_line_continues(&self.raw_lines[prev]))
+                });
             if has_attached_leading_comment {
                 continue;
             }
