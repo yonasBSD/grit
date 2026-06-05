@@ -1362,7 +1362,7 @@ fn do_stash_patch_push(
 
     let now = OffsetDateTime::now_utc();
     let identity = resolve_identity(repo, now)?;
-    let index_tree_oid = write_tree_from_index(&repo.odb, index, "")?;
+    let index_tree_oid = write_tree_from_expanded_index(&repo.odb, index)?;
     let index_commit_data = CommitData {
         tree: index_tree_oid,
         parents: vec![head_oid],
@@ -1377,7 +1377,7 @@ fn do_stash_patch_push(
     let index_commit_oid = repo
         .odb
         .write(ObjectKind::Commit, &serialize_commit(&index_commit_data))?;
-    let wt_tree_oid = write_tree_from_index(&repo.odb, &wt_index, "")?;
+    let wt_tree_oid = write_tree_from_expanded_index(&repo.odb, &wt_index)?;
     let stash_msg = stash_save_msg(head, opts.message.as_deref());
     let stash_commit = CommitData {
         tree: wt_tree_oid,
@@ -1690,7 +1690,7 @@ fn do_push_pathspec(
     let identity = resolve_identity(repo, now)?;
 
     // 1. Create index-state commit (current full index)
-    let index_tree_oid = write_tree_from_index(&repo.odb, index, "")?;
+    let index_tree_oid = write_tree_from_expanded_index(&repo.odb, index)?;
     let index_commit_data = CommitData {
         tree: index_tree_oid,
         parents: vec![*head_oid],
@@ -1780,7 +1780,7 @@ fn do_push_pathspec(
                 wt_index.remove(path.as_bytes());
             }
         }
-        write_tree_from_index(&repo.odb, &wt_index, "")?
+        write_tree_from_expanded_index(&repo.odb, &wt_index)?
     };
 
     let stash_msg = stash_save_msg(head, opts.message.as_deref());
@@ -1903,7 +1903,7 @@ fn do_push_staged(
     let identity = resolve_identity(repo, now)?;
 
     // The "index commit" is the current index state (which has staged changes)
-    let index_tree_oid = write_tree_from_index(&repo.odb, index, "")?;
+    let index_tree_oid = write_tree_from_expanded_index(&repo.odb, index)?;
     let index_commit_data = CommitData {
         tree: index_tree_oid,
         parents: vec![*head_oid],
@@ -3684,6 +3684,11 @@ fn apply_stash_impl(
         }
         // Handle files added in the index but not in base
         // (already covered above)
+        for path in wt_changes.keys() {
+            if let Some(ie) = new_index.get_mut(path.as_bytes(), 0) {
+                ie.set_skip_worktree(false);
+            }
+        }
         new_index.sort();
     } else {
         // Without --index: index tracks current HEAD for paths the stash touched
@@ -4276,7 +4281,7 @@ fn create_stash_commit(
     let identity = resolve_identity(repo, now)?;
 
     // 1. Create index-state commit (tree from current index)
-    let index_tree_oid = write_tree_from_index(&repo.odb, index, "")?;
+    let index_tree_oid = write_tree_from_expanded_index(&repo.odb, index)?;
     let index_commit_data = CommitData {
         tree: index_tree_oid,
         parents: vec![*head_oid],
@@ -4339,6 +4344,12 @@ fn create_stash_commit(
     let stash_oid = repo.odb.write(ObjectKind::Commit, &stash_bytes)?;
 
     Ok(stash_oid)
+}
+
+fn write_tree_from_expanded_index(odb: &Odb, index: &Index) -> Result<ObjectId> {
+    let mut index_for_tree = index.clone();
+    index_for_tree.expand_sparse_directory_placeholders(odb)?;
+    Ok(write_tree_from_index(odb, &index_for_tree, "")?)
 }
 
 /// Generate the stash save message (used as commit message).
@@ -5075,6 +5086,7 @@ fn create_worktree_tree(
     head_tree: &ObjectId,
 ) -> Result<ObjectId> {
     let mut temp_index = index.clone();
+    temp_index.expand_sparse_directory_placeholders(odb)?;
 
     let head_entries = flatten_tree_full(odb, head_tree, "")?;
     let index_paths: BTreeSet<Vec<u8>> = temp_index
@@ -5210,6 +5222,9 @@ fn create_worktree_tree(
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound
                 || e.raw_os_error() == Some(20) /* ENOTDIR */ => {
+                if entry.skip_worktree() {
+                    continue;
+                }
                 // File not found OR path component is not a directory.
                 // Check if a file exists at a parent path (type change: dir->file).
                 // Walk up the path to find which component is now a file.

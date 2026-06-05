@@ -59,3 +59,11 @@
   write collapsed sparse directories. Focused subtest 43 reproduction now matches full, sparse, and
   sparse-index repositories through status and tree checks.
 - Canonical harness: `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh` -> `82/106`.
+- Subtest 47 (`stash`) created sparse stash commits that omitted out-of-cone tracked paths because
+  sparse-directory placeholders were written directly to stash trees. Stash snapshots now expand
+  sparse placeholders before tree writing, and working-tree stash snapshots preserve absent
+  skip-worktree entries instead of treating them as deletions.
+- `stash apply --index` also left restored out-of-cone entries marked skip-worktree, hiding the
+  expected worktree deletions from sparse status. Clearing skip-worktree for stash-touched paths
+  makes the status match full checkout.
+- Canonical harness: `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh` -> `83/106`.
