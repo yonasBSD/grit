@@ -463,7 +463,7 @@ pub fn run(args: Args) -> Result<()> {
             false,
         )?;
     }
-    if !old_index.entries.is_empty() {
+    if args.update && !old_index.entries.is_empty() {
         if let Some(work_tree) = repo.work_tree.as_deref() {
             grit_lib::diff::refresh_index_stat_content_verified(&mut new_index, work_tree, None);
         }
