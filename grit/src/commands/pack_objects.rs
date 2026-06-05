@@ -174,6 +174,15 @@ pub struct Args {
     #[arg(long = "no-write-bitmap-index")]
     pub no_write_bitmap_index: bool,
 
+    /// Prefer a reachability bitmap when enumerating objects (accepted for compat; grit produces
+    /// the same object set with or without bitmaps).
+    #[arg(long = "use-bitmap-index")]
+    pub use_bitmap_index: bool,
+
+    /// Do not use a reachability bitmap when enumerating objects (accepted for compat).
+    #[arg(long = "no-use-bitmap-index")]
+    pub no_use_bitmap_index: bool,
+
     /// Filter specification (accepted for compat).
     #[arg(long = "filter", action = clap::ArgAction::Append)]
     pub filter: Vec<String>,
@@ -1647,7 +1656,12 @@ fn warn_pack_threads(args: &Args) {
 }
 
 fn pack_delta_depth_limit(args: &Args) -> Option<usize> {
-    let _ = (args.path_walk, args.no_path_walk);
+    let _ = (
+        args.path_walk,
+        args.no_path_walk,
+        args.use_bitmap_index,
+        args.no_use_bitmap_index,
+    );
     let from_extra = || {
         for a in &args.extra {
             if let Some(rest) = a.strip_prefix("--depth=") {
