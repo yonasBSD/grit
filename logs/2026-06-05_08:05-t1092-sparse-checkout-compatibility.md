@@ -97,3 +97,10 @@
   expansion for trailing-slash directory pathspecs like `folder1/`.
 - Direct `--run=1,59` passes, and canonical harness:
   `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh` -> `89/106`.
+- Subtest 15 (`status/add: outside sparse cone`) mismatched the long sparse-checkout banner after
+  materializing `folder1/a` outside the cone: a full sparse-checkout index reported a tracked-file
+  percentage, while sparse-index always used the short sparse banner. Status now remembers the raw
+  sparse-directory prefixes before expanding them and only keeps the short sparse-index banner when
+  no expanded sparse path became present/non-skip-worktree.
+- Direct `--run=1,15` passes, and canonical harness:
+  `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh` -> `90/106`.

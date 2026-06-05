@@ -506,6 +506,12 @@ pub fn run(mut args: Args) -> Result<()> {
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
         Err(e) => return Err(e.into()),
     };
+    let sparse_directory_prefixes: Vec<Vec<u8>> = index
+        .entries
+        .iter()
+        .filter(|entry| entry.is_sparse_directory_placeholder())
+        .map(|entry| entry.path.clone())
+        .collect();
     let index_sparse_on_disk =
         index.sparse_directories || index.has_sparse_directory_placeholders();
     let _ = index.expand_sparse_directory_placeholders(&repo.odb);
@@ -859,6 +865,7 @@ pub fn run(mut args: Args) -> Result<()> {
             &wt_state,
             &index,
             index_sparse_on_disk,
+            &sparse_directory_prefixes,
             &staged_long,
             &unstaged_long,
             &untracked_long,
@@ -2169,6 +2176,7 @@ fn sparse_checkout_banner(
     config: &ConfigSet,
     expanded_index: &Index,
     index_sparse_on_disk: bool,
+    sparse_directory_prefixes: &[Vec<u8>],
 ) -> Option<String> {
     let sparse_enabled = config
         .get("core.sparseCheckout")
@@ -2177,7 +2185,16 @@ fn sparse_checkout_banner(
     if !sparse_enabled || expanded_index.entries.is_empty() {
         return None;
     }
-    if index_sparse_on_disk {
+    let materialized_sparse_path = index_sparse_on_disk
+        && expanded_index.entries.iter().any(|entry| {
+            entry.stage() == 0
+                && entry.mode != MODE_TREE
+                && !entry.skip_worktree()
+                && sparse_directory_prefixes
+                    .iter()
+                    .any(|prefix| entry.path.starts_with(prefix))
+        });
+    if index_sparse_on_disk && !materialized_sparse_path {
         return Some("You are in a sparse checkout.".to_owned());
     }
     let mut skip = 0usize;
@@ -2812,6 +2829,7 @@ fn format_long(
     state: &WtStatusState,
     expanded_index: &Index,
     index_sparse_on_disk: bool,
+    sparse_directory_prefixes: &[Vec<u8>],
     staged: &[grit_lib::diff::DiffEntry],
     unstaged: &[grit_lib::diff::DiffEntry],
     untracked: &[String],
@@ -3084,7 +3102,12 @@ fn format_long(
         cpw(out, cp, "")?;
     }
 
-    if let Some(msg) = sparse_checkout_banner(config, expanded_index, index_sparse_on_disk) {
+    if let Some(msg) = sparse_checkout_banner(
+        config,
+        expanded_index,
+        index_sparse_on_disk,
+        sparse_directory_prefixes,
+    ) {
         cpw(out, cp, "")?;
         cpw(out, cp, &msg)?;
         cpw(out, cp, "")?;
