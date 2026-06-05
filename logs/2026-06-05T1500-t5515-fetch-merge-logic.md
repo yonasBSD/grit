@@ -50,3 +50,18 @@ and CLI-url cases. Investigating.
 
 Progress 13/65 -> 39/65. Remaining: branches-one (#frag), branches-default merge/octopus variants,
 and the CLI `../.git` url cases (main/br-unconfig + tag args). Investigating.
+
+## Round 3
+
+8. **First-refspec for-merge head**: `fetch_head_is_for_merge_first_refspec_only` used advertised
+   `idx==0`, but Git marks the first ref *matched by the first non-pattern refspec* regardless of
+   advertised position. Replaced with `fetch_head_first_refspec_merge_ref` (matches via
+   `refname_match`), fixing branches-one (`one` for-merge, not idx 0).
+
+9. **`add_merge_config`**: for default fetch, `branch.<b>.merge` entries not already fetched by the
+   configured refspec are fetched FETCH_HEAD-only (no tracking ref) and marked for-merge, prepended
+   in merge-config order. Fixes branches-default/one merge + octopus (merge refs three / one,two
+   absent from the branches refspec).
+
+Progress 43/65 -> 51/65. Remaining 14: all CLI `../.git` url cases (main/br-unconfig with
+positional refspec / --tags / tag args). Investigating.

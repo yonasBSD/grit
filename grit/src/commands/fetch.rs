@@ -841,7 +841,7 @@ fn parse_git_bool(value: &str) -> Option<bool> {
 /// The repository default branch name (Git `repo_default_branch_name`): `init.defaultBranch`
 /// config when set and valid, otherwise `master`. Used to pick the branch a `#frag`-less
 /// `.git/branches/<name>` remote fetches.
-fn repo_default_branch_name(git_dir: &Path, config: &ConfigSet) -> String {
+fn repo_default_branch_name(config: &ConfigSet) -> String {
     if let Ok(env) = std::env::var("GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME") {
         let env = env.trim();
         if !env.is_empty() {
@@ -900,19 +900,25 @@ fn fetch_head_is_for_merge_with_branch(
         .any(|merge_ref| refname_match(merge_ref.trim(), remote_refname))
 }
 
-/// When there is no `branch.*.merge` for HEAD, Git marks only the first ref from the first
-/// non-pattern remote fetch refspec as for-merge (`get_ref_map` in fetch.c).
-fn fetch_head_is_for_merge_first_refspec_only(
+/// When there is no `branch.*.merge` for HEAD, Git marks at most one FETCH_HEAD entry as
+/// for-merge: the first ref produced by the *first* configured fetch refspec, and only when that
+/// refspec is non-pattern (`get_ref_map` in fetch.c, lines `!i && !has_merge && ... !pattern`).
+///
+/// `ordered_refs` must be the advertised refs in the order Git would build the fetch map (the same
+/// order they are iterated for ref updates). Returns the full refname to mark for-merge, if any.
+fn fetch_head_first_refspec_merge_ref(
     refspecs: &[FetchRefspec],
-    is_first_remote_head: bool,
-) -> bool {
-    if !is_first_remote_head {
-        return false;
+    ordered_refs: &[(String, ObjectId)],
+) -> Option<String> {
+    let first = refspecs.iter().find(|r| !r.negative && !r.src.is_empty())?;
+    if first.src.contains('*') {
+        return None;
     }
-    let Some(first) = refspecs.iter().find(|r| !r.negative && !r.src.is_empty()) else {
-        return false;
-    };
-    !first.src.contains('*')
+    ordered_refs
+        .iter()
+        .map(|(refname, _)| refname)
+        .find(|refname| first.src == **refname || refname_match(&first.src, refname))
+        .cloned()
 }
 
 /// True when `HEAD` names `refs/heads/<b>`, `branch.<b>.remote` matches `remote_name`, and
@@ -1714,7 +1720,7 @@ fn fetch_remote(
         let frag = br
             .default_branch
             .clone()
-            .unwrap_or_else(|| repo_default_branch_name(git_dir, config));
+            .unwrap_or_else(|| repo_default_branch_name(config));
         vec![FetchRefspec {
             src: format!("refs/heads/{frag}"),
             dst: format!("refs/heads/{remote_name}"),
@@ -2959,6 +2965,13 @@ fn fetch_remote(
 
         // Standard path: update refs according to configured fetch refspecs.
         let has_merge_cfg = branch_has_merge_config_for_remote(git_dir, config, remote_name);
+        // Without `branch.*.merge`, Git marks only the first ref of the first non-pattern refspec
+        // as for-merge, regardless of where it lands in advertised order.
+        let first_refspec_merge_ref = if !has_merge_cfg && !refspecs.is_empty() {
+            fetch_head_first_refspec_merge_ref(&refspecs, &refs_for_mapping)
+        } else {
+            None
+        };
 
         for (idx, (refname, advertised_oid)) in refs_for_mapping.iter().enumerate() {
             let branch = refname.strip_prefix("refs/heads/").unwrap_or(refname);
@@ -2988,7 +3001,7 @@ fn fetch_remote(
                         None => idx == 0,
                     }
                 } else {
-                    fetch_head_is_for_merge_first_refspec_only(&refspecs, idx == 0)
+                    first_refspec_merge_ref.as_deref() == Some(refname.as_str())
                 };
                 fetch_head_entries.push(fetch_head_branch_line(
                     &remote_oid,
@@ -3097,6 +3110,47 @@ fn fetch_remote(
                 );
             }
         }
+
+        // Git `add_merge_config`: for the default fetch, any `branch.<b>.merge` entry that was not
+        // already fetched into FETCH_HEAD via the configured refspec is additionally fetched
+        // FETCH-HEAD-only (no tracking ref) and marked for-merge. These entries are emitted in
+        // merge-config order ahead of the refspec branch lines (t5515 branches-default-merge /
+        // -octopus, where the merge refs `three` / `one`,`two` are not in the branches refspec).
+        if has_merge_cfg {
+            if let Some(branch) = current_branch_from_head(git_dir) {
+                let merge_key = format!("branch.{branch}.merge");
+                let mut merge_lines: Vec<String> = Vec::new();
+                for merge_ref in config.get_all(&merge_key) {
+                    let merge_ref = merge_ref.trim();
+                    if merge_ref.is_empty() {
+                        continue;
+                    }
+                    // Already represented by a configured-refspec FETCH_HEAD line?
+                    let already = refs_for_mapping.iter().any(|(refname, _)| {
+                        (refname.starts_with("refs/heads/")
+                            && map_ref_through_refspecs(refname, &union_refspecs).is_some())
+                            && refname_match(merge_ref, refname)
+                    });
+                    if already {
+                        continue;
+                    }
+                    let Some((refname, oid)) = refs_for_mapping
+                        .iter()
+                        .find(|(refname, _)| refname_match(merge_ref, refname))
+                    else {
+                        continue;
+                    };
+                    let branch_name = refname.strip_prefix("refs/heads/").unwrap_or(refname);
+                    merge_lines.push(fetch_head_branch_line(oid, branch_name, &display_url, true));
+                }
+                // Prepend so for-merge merge-config lines precede the not-for-merge refspec lines.
+                if !merge_lines.is_empty() {
+                    merge_lines.extend(fetch_head_entries.drain(..));
+                    fetch_head_entries = merge_lines;
+                }
+            }
+        }
+
         if user_passed_cli_refspecs {
             updated_refs = prune_updated_refs;
         }
