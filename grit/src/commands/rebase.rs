@@ -3464,10 +3464,7 @@ fn git_editor_cmd(config: &ConfigSet) -> Result<String> {
             }
         }
     }
-    // This command is about to *launch* the editor, so treat `:` placeholders in EDITOR/VISUAL as
-    // unset (for_launch=true) — the harness sets `VISUAL=:` while a fake editor lives in EDITOR
-    // (t5520 `pull.rebase=interactive`), and an interactive rebase must not silently no-op.
-    crate::editor::resolve_git_editor(config, true)
+    crate::editor::resolve_git_editor(config, false)
         .ok_or_else(|| anyhow::anyhow!("Terminal is dumb, but EDITOR unset"))
 }
 
@@ -5078,6 +5075,29 @@ fn print_diffstat_from_entries(repo: &Repository, entries: &[DiffEntry]) {
     println!(" {}", parts.join(", "));
 }
 
+/// Materialize `rebase-merge/done` when a *non-interactive* merge-backend rebase stops on a
+/// conflict. The merge backend always leaves a `done` file listing the picks already applied; the
+/// non-interactive backend keeps the conflicting pick in `git-rebase-todo`, so `done` holds only the
+/// strictly-earlier picks (t5520 "pull --rebase does not reapply old patches" reads both files).
+/// Interactive rebases already build `done` incrementally via `append_interactive_rebase_done_line`.
+fn write_non_interactive_done_on_stop(
+    rb_dir: &Path,
+    todo: &[&str],
+    current: usize,
+    rebase_interactive: bool,
+) {
+    if rebase_interactive {
+        return;
+    }
+    let body = todo[..current].join("\n");
+    let body = if body.is_empty() {
+        String::new()
+    } else {
+        format!("{body}\n")
+    };
+    let _ = fs::write(rb_dir.join("done"), body);
+}
+
 /// Append a completed interactive todo line to `rebase-merge/done` (Git `sequencer.c:save_todo`).
 fn append_interactive_rebase_done_line(rb_dir: &Path, todo_line: &str) -> Result<()> {
     if !rb_dir.join("interactive").exists() {
@@ -5489,6 +5509,12 @@ fn replay_remaining(
                                 todo[i..].to_vec()
                             };
                             write_rebase_todo_slice(rb_dir, &remaining)?;
+                            write_non_interactive_done_on_stop(
+                                rb_dir,
+                                &todo,
+                                i,
+                                rebase_interactive,
+                            );
                             let ff =
                                 is_final_fixup_in_todo(repo, rb_dir, &todo, i, rebase_interactive);
                             fs::write(
@@ -5648,6 +5674,12 @@ fn replay_remaining(
                                 todo[i..].to_vec()
                             };
                             write_rebase_todo_slice(rb_dir, &remaining)?;
+                            write_non_interactive_done_on_stop(
+                                rb_dir,
+                                &todo,
+                                i,
+                                rebase_interactive,
+                            );
                             let ff =
                                 is_final_fixup_in_todo(repo, rb_dir, &todo, i, rebase_interactive);
                             fs::write(
