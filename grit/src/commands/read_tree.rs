@@ -12,6 +12,7 @@ use grit_lib::diff::{read_submodule_head_oid, submodule_embedded_git_dir};
 use grit_lib::ignore::IgnoreMatcher;
 use grit_lib::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_SYMLINK, MODE_TREE};
 use grit_lib::objects::{parse_commit, parse_tree, ObjectId, ObjectKind};
+use grit_lib::odb::Odb;
 use grit_lib::refs::resolve_ref;
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse::resolve_revision;
@@ -329,6 +330,15 @@ pub fn run(args: Args) -> Result<()> {
                 recurse_submodules_effective,
                 true,
             )?;
+        }
+        if !dry_run && args.update {
+            if let Some(work_tree) = repo.work_tree.as_deref() {
+                grit_lib::diff::refresh_index_stat_content_verified(
+                    &mut new_index,
+                    work_tree,
+                    None,
+                );
+            }
         }
         if !dry_run {
             write_index_with_cache_tree(&repo, &index_path, &mut new_index)
@@ -823,9 +833,26 @@ fn submodule_has_nonignored_untracked(
     let index_path = sub_git.join("index");
     let sub_index = match Index::load(&index_path) {
         Ok(ix) => ix,
-        // Missing or corrupt submodule index: fall back to superproject stage-0 paths under `rel_sub`
-        // so untracked files inside the checkout are still detected (t1013.9).
+        // Missing or corrupt submodule index: first try the gitlink commit from a local
+        // `.gitmodules` URL. Some test setups leave a stale gitfile after copying a checkout.
         Err(_) => {
+            if let Some(paths) = submodule_tracked_paths_from_gitmodules_url(
+                repo,
+                super_work_tree,
+                super_index,
+                rel_sub,
+            ) {
+                return submodule_dir_has_untracked_paths(
+                    repo,
+                    super_work_tree,
+                    super_index,
+                    rel_sub,
+                    &paths,
+                );
+            }
+            // Last resort: fall back to superproject stage-0 paths under `rel_sub` so untracked
+            // files inside the checkout are still detected when replacing a submodule with a file
+            // (t1013.9).
             let prefix = format!("{rel_sub}/");
             let mut synthetic = Index::new();
             for e in &super_index.entries {
@@ -855,6 +882,17 @@ fn submodule_has_nonignored_untracked(
         .filter(|e| e.stage() == 0)
         .map(|e| String::from_utf8_lossy(&e.path).into_owned())
         .collect();
+    submodule_dir_has_untracked_paths(repo, super_work_tree, super_index, rel_sub, &tracked)
+}
+
+fn submodule_dir_has_untracked_paths(
+    repo: &Repository,
+    super_work_tree: &Path,
+    super_index: &Index,
+    rel_sub: &str,
+    tracked: &std::collections::BTreeSet<String>,
+) -> Result<bool> {
+    let sub_dir = super_work_tree.join(rel_sub);
     let mut matcher = submodule_ignore_matcher_for_untracked(repo, rel_sub)?;
     fn walk(
         dir: &Path,
@@ -883,6 +921,9 @@ fn submodule_has_nonignored_untracked(
                 .unwrap_or_else(|_| name.clone());
             let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
             if is_dir {
+                if tracked.contains(&rel) && path.join(".git").exists() {
+                    continue;
+                }
                 if walk(
                     &path,
                     sub_root,
@@ -918,6 +959,68 @@ fn submodule_has_nonignored_untracked(
         super_index,
         &mut matcher,
     )
+}
+
+fn submodule_tracked_paths_from_gitmodules_url(
+    repo: &Repository,
+    super_work_tree: &Path,
+    super_index: &Index,
+    rel_sub: &str,
+) -> Option<std::collections::BTreeSet<String>> {
+    let gitlink_oid = super_index.get(rel_sub.as_bytes(), 0)?.oid;
+    let rel_norm = rel_sub.replace('\\', "/");
+    let modules =
+        crate::commands::submodule::parse_gitmodules_with_repo(super_work_tree, Some(repo)).ok()?;
+    let info = modules
+        .iter()
+        .find(|m| m.path.replace('\\', "/") == rel_norm && !m.url.trim().is_empty())?;
+    let url_path = Path::new(info.url.trim());
+    let repo_path = if url_path.is_absolute() {
+        url_path.to_path_buf()
+    } else {
+        super_work_tree.join(url_path)
+    };
+    let git_dir = if repo_path.join(".git").is_dir() {
+        repo_path.join(".git")
+    } else if repo_path.join("objects").is_dir() {
+        repo_path
+    } else {
+        return None;
+    };
+    let odb = Odb::new(&git_dir.join("objects"));
+    let commit_obj = odb.read(&gitlink_oid).ok()?;
+    if commit_obj.kind != ObjectKind::Commit {
+        return None;
+    }
+    let commit = parse_commit(&commit_obj.data).ok()?;
+    let mut paths = std::collections::BTreeSet::new();
+    collect_submodule_tree_paths(&odb, &commit.tree, "", &mut paths).ok()?;
+    Some(paths)
+}
+
+fn collect_submodule_tree_paths(
+    odb: &Odb,
+    tree_oid: &ObjectId,
+    prefix: &str,
+    out: &mut std::collections::BTreeSet<String>,
+) -> Result<()> {
+    let obj = odb.read(tree_oid)?;
+    if obj.kind != ObjectKind::Tree {
+        return Ok(());
+    }
+    for entry in parse_tree(&obj.data)? {
+        let name = String::from_utf8_lossy(&entry.name);
+        let path = if prefix.is_empty() {
+            name.into_owned()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        out.insert(path.clone());
+        if entry.mode == MODE_TREE {
+            collect_submodule_tree_paths(odb, &entry.oid, &path, out)?;
+        }
+    }
+    Ok(())
 }
 
 fn stage0_index_map(index: &Index) -> HashMap<Vec<u8>, IndexEntry> {
@@ -1522,10 +1625,11 @@ fn checkout_index_entries(
         let was_gitlink = old_stage0
             .get(old_path)
             .is_some_and(|e| e.mode == MODE_GITLINK);
+        let gitlink_becomes_tree =
+            populate_gitlinks && was_gitlink && index_has_strict_path_prefix(new_index, old_path);
         if populate_gitlinks && was_gitlink && abs.is_dir() {
             let dot_git = abs.join(".git");
             let modules_dir = submodule_modules_git_dir(&repo.git_dir, &rel);
-            let keep_modules = index_has_strict_path_prefix(new_index, old_path);
             if dot_git.is_dir() {
                 // In-tree `.git` directory (after `replace_gitfile_with_git_dir`): absorb into
                 // `.git/modules/<path>/` before removing the work tree (t1013.7).
@@ -1536,7 +1640,7 @@ fn checkout_index_entries(
                     let _ = std::fs::create_dir_all(parent);
                 }
                 let _ = std::fs::rename(&dot_git, &modules_dir);
-            } else if modules_dir.exists() && !keep_modules {
+            } else if modules_dir.exists() && !gitlink_becomes_tree {
                 // Standard gitfile submodule: drop separate git dir with the work tree unless the
                 // gitlink becomes a directory tree (t1013 replace_sub1_with_directory).
                 let _ = std::fs::remove_dir_all(&modules_dir);
@@ -1551,7 +1655,15 @@ fn checkout_index_entries(
             // (t2500: `git am --skip` after `rm newfile; mkdir newfile`). Without
             // `--recurse-submodules` a gitlink path is handled above and never
             // reaches here.
-            if worktree_has_untracked_under_path(&work_tree, old_index, &rel)? {
+            let pure_gitlink_removal = populate_gitlinks && was_gitlink && !gitlink_becomes_tree;
+            let has_blocking_untracked = !force_gitlink_checkout
+                && !pure_gitlink_removal
+                && if populate_gitlinks && was_gitlink {
+                    submodule_has_nonignored_untracked(repo, &work_tree, old_index, &rel)?
+                } else {
+                    worktree_has_untracked_under_path(&work_tree, old_index, &rel)?
+                };
+            if has_blocking_untracked {
                 bail!("Updating '{rel}' would lose untracked files in it");
             }
             let _ = std::fs::remove_dir_all(&abs);
@@ -1911,6 +2023,19 @@ fn validate_worktree_updates(
 
         if let (Some(oe), Some(ne)) = (old, new) {
             if oe.mode == MODE_GITLINK && ne.mode != MODE_GITLINK {
+                if !recurse_submodules {
+                    if let Some(p) = super_prefix {
+                        bail!(
+                            "local changes to '{}{}' would be overwritten by merge",
+                            p,
+                            rel_path
+                        );
+                    }
+                    bail!(
+                        "local changes to '{}' would be overwritten by merge",
+                        rel_path
+                    );
+                }
                 if recurse_submodules
                     && submodule_has_nonignored_untracked(repo, &work_tree, old_index, &rel_path)?
                 {
@@ -1934,6 +2059,17 @@ fn validate_worktree_updates(
             (None, Some(new_entry)) => {
                 if reset_allows_untracked_overwrite {
                     continue;
+                }
+                if recurse_submodules && new_entry.mode == MODE_GITLINK {
+                    let is_dir = std::fs::symlink_metadata(&abs_path)
+                        .map(|m| m.is_dir())
+                        .unwrap_or(false);
+                    let (ignored, _) = repo_ignore
+                        .check_path(repo, Some(old_index), &rel_path, is_dir)
+                        .map_err(anyhow::Error::from)?;
+                    if ignored {
+                        continue;
+                    }
                 }
                 if allow_ignored_overwrite {
                     let is_dir = std::fs::symlink_metadata(&abs_path)
