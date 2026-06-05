@@ -1794,6 +1794,55 @@ fn midx_load_for_read(data: &[u8]) -> MidxLoadResult {
     })
 }
 
+/// Eagerly validate that every pack named by the active MIDX has a readable `.idx`.
+///
+/// Mirrors git/packfile.c `open_pack_index`: when `prepare_packed_git` registers the
+/// packs the MIDX references, a pack whose `.idx` cannot be opened (truncated/corrupt)
+/// triggers `error: packfile <pack> index unavailable`. Git reports this once because the
+/// MIDX/pack store is prepared a single time; this routine reproduces that even when the
+/// object that triggered the read is found loose (so it never reaches the per-object MIDX
+/// lookup). Runs at most once per process per `objects_dir`.
+pub fn validate_midx_referenced_packs(objects_dir: &Path) {
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+    static DONE: OnceLock<Mutex<HashSet<std::path::PathBuf>>> = OnceLock::new();
+    let done = DONE.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut set) = done.lock() {
+        if !set.insert(objects_dir.to_path_buf()) {
+            return;
+        }
+    }
+
+    let pack_dir = objects_dir.join("pack");
+    let Some(midx_path) = resolve_tip_midx_path(&pack_dir) else {
+        return;
+    };
+    let Ok(data) = fs::read(&midx_path) else {
+        return;
+    };
+    let MidxReadView { pack_names, .. } = match midx_load_for_read(&data) {
+        MidxLoadResult::Ok(v) => v,
+        MidxLoadResult::Skip => return,
+    };
+    for idx_name in &pack_names {
+        let idx_path = pack_dir.join(idx_name);
+        // A MIDX may name a pack whose files were later deleted; Git skips the missing
+        // pack silently (it is not "unavailable", just gone). Only a present-but-corrupt
+        // idx produces the "index unavailable" error.
+        if !idx_path.exists() {
+            continue;
+        }
+        if crate::pack::read_pack_index(&idx_path).is_err() {
+            let mut pack_path = idx_path.clone();
+            pack_path.set_extension("pack");
+            midx_warn_once(&format!(
+                "error: packfile {} index unavailable",
+                pack_path.display()
+            ));
+        }
+    }
+}
+
 /// When `core.multiPackIndex` is enabled, try to read `oid` from the active MIDX in `objects_dir`.
 ///
 /// Returns [`None`] when no MIDX exists or `oid` is not listed. Returns [`Some(Err(..))`] when the
@@ -1879,7 +1928,23 @@ pub fn try_read_object_via_midx(
     if !idx_path.exists() {
         return Ok(None);
     }
-    let idx = crate::pack::read_pack_index(&idx_path)?;
+    // Mirror git/packfile.c `open_pack_index`: when a pack's idx cannot be read
+    // (e.g. truncated/corrupt), Git emits `error: packfile <pack> index unavailable`,
+    // marks the pack invalid, and continues to other object sources. The object
+    // may still be found loose or in another pack, so fall through rather than
+    // surfacing the parse error as fatal.
+    let idx = match crate::pack::read_pack_index(&idx_path) {
+        Ok(idx) => idx,
+        Err(_) => {
+            let mut pack_path = idx_path.clone();
+            pack_path.set_extension("pack");
+            midx_warn_once(&format!(
+                "error: packfile {} index unavailable",
+                pack_path.display()
+            ));
+            return Ok(None);
+        }
+    };
     crate::pack::read_object_from_pack(&idx, oid).map(Some)
 }
 

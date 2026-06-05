@@ -177,6 +177,42 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
+    // Validate that every `want` is something we are allowed to serve: either a tip of an
+    // advertised (non-hidden) ref, or — when `uploadpack.allow{Tip,Reachable,Any}SHA1InWant` is
+    // set — an existing object (optionally reachable from a ref). A `want` for an object we do not
+    // have, or for a non-tip object the policy forbids, draws an `ERR upload-pack: not our ref`
+    // packet on stdout plus a matching error on stderr and exit 128 (t5530 bad-want subtests).
+    let allow_tip = config_bool(&config, "uploadpack.allowtipsha1inwant");
+    let allow_reachable = config_bool(&config, "uploadpack.allowreachablesha1inwant");
+    let allow_any = config_bool(&config, "uploadpack.allowanysha1inwant");
+    if !allow_any {
+        let our_refs = our_ref_oids(&repo.git_dir);
+        for w in &want_unique {
+            if our_refs.contains(w) {
+                continue;
+            }
+            let exists = repo.odb.read(w).is_ok();
+            if !exists {
+                // Object not present at all — never our ref regardless of policy.
+                return reject_not_our_ref(&mut out, w);
+            }
+            if allow_tip {
+                // Any existing object tip is acceptable.
+                continue;
+            }
+            if allow_reachable && is_reachable_from_our_refs(&repo, &our_refs, w) {
+                continue;
+            }
+            // `check_non_tip`: without allow-reachable, a non-stateless client cannot legitimately
+            // ask for a non-tip object, so reject immediately. A stateless client's choice may be
+            // based on a stale advertisement, so it is given the benefit of a reachability check —
+            // but with the default (deny) policy we still reject unreachable non-tips.
+            if !args.stateless_rpc || !is_reachable_from_our_refs(&repo, &our_refs, w) {
+                return reject_not_our_ref(&mut out, w);
+            }
+        }
+    }
+
     let want_set: HashSet<ObjectId> = want_unique.iter().copied().collect();
 
     let mut got_common = false;
@@ -184,6 +220,32 @@ pub fn run(args: Args) -> Result<()> {
     let mut last_hex = String::new();
     let mut client_known: HashSet<ObjectId> = HashSet::new();
     let mut client_have_commits: Vec<ObjectId> = Vec::new();
+    // Distinct server-known `have` objects, mirroring `upload-pack.c`'s `have_obj` array. Each OID
+    // sets its `THEY_HAVE` flag once; the non-multi-ack ACK is sent whenever `have_obj.nr == 1`, so
+    // a repeated `have` for the same (and only) object is ACKed each time (t5530 protocol-v0 ACKs
+    // repeated non-commit objects repeatedly).
+    let mut they_have: HashSet<ObjectId> = HashSet::new();
+    let mut have_obj_count: usize = 0;
+
+    // For a stateless client, EOF immediately after the want/shallow/deepen flush is acceptable: it
+    // consumes the shallow list and re-issues the haves in a later RPC. Emit the shallow-list
+    // response (if any) before negotiating so the client can read it (t5530 EOF just after
+    // stateless client wants).
+    if args.stateless_rpc {
+        emit_v0_shallow_list(
+            &mut out,
+            &repo,
+            &want_unique,
+            &client_shallow_boundaries,
+            requested_depth,
+        )?;
+        out.flush()?;
+    }
+
+    // Whether the client actually negotiated (sent any `have`/`done`). A stateless client that
+    // closes its input right after the want/shallow/deepen flush must not trigger pack generation;
+    // it will resume with haves in a follow-up RPC.
+    let mut saw_negotiation = false;
 
     loop {
         match pkt_line::read_packet(&mut stdin)? {
@@ -196,6 +258,17 @@ pub fn run(args: Args) -> Result<()> {
                 {
                     pkt_line::write_line(&mut out, &format!("ACK {last_hex} ready"))?;
                 }
+                if args.stateless_rpc {
+                    // Stateless negotiation ends at a flush: mirror `get_common_commits` —
+                    // write NAK only when no server-known `have` was received (or multi-ack), then
+                    // exit without generating a pack. The client re-sends its haves in a later RPC
+                    // (t5530 ACKs repeated non-commit objects; EOF after stateless wants).
+                    if have_obj_count == 0 || multi_ack_detailed {
+                        pkt_line::write_line(&mut out, "NAK")?;
+                    }
+                    out.flush()?;
+                    return Ok(());
+                }
                 if got_common || multi_ack_detailed {
                     pkt_line::write_line(&mut out, "NAK")?;
                 }
@@ -205,6 +278,7 @@ pub fn run(args: Args) -> Result<()> {
             }
             Some(pkt_line::Packet::Data(line)) => {
                 if line == "done" {
+                    saw_negotiation = true;
                     if !last_hex.is_empty() && multi_ack_detailed {
                         pkt_line::write_line(&mut out, &format!("ACK {last_hex}"))?;
                     } else if got_common {
@@ -225,6 +299,7 @@ pub fn run(args: Args) -> Result<()> {
                 }
                 if let Some(hex) = line.strip_prefix("have ").map(str::trim) {
                     if let Ok(oid) = ObjectId::from_hex(hex) {
+                        saw_negotiation = true;
                         if repo.odb.read(&oid).is_err() {
                             got_other = true;
                             if multi_ack_detailed && ok_to_give_up(&repo, &want_set, &client_known)
@@ -237,16 +312,33 @@ pub fn run(args: Args) -> Result<()> {
                         } else {
                             got_common = true;
                             last_hex = oid.to_hex();
-                            client_have_commits.push(oid);
-                            merge_ancestors_into(
-                                &repo,
-                                oid,
-                                &mut client_known,
-                                Some(&client_shallow_boundaries),
-                            )?;
+                            // A `have` may name any object type. Only commits contribute ancestor
+                            // history and pack-exclusion roots; trees/blobs are recorded purely so
+                            // they can be ACKed (t5530 repeated non-commit `have`s).
+                            let is_commit = matches!(
+                                repo.odb.read(&oid).map(|o| o.kind),
+                                Ok(ObjectKind::Commit)
+                            );
+                            if is_commit {
+                                client_have_commits.push(oid);
+                                merge_ancestors_into(
+                                    &repo,
+                                    oid,
+                                    &mut client_known,
+                                    Some(&client_shallow_boundaries),
+                                )?;
+                            } else {
+                                client_known.insert(oid);
+                            }
+                            // Mirror `do_got_oid`: each object increments `have_obj.nr` only the
+                            // first time it is seen. The non-multi-ack ACK fires whenever the count
+                            // is exactly 1, so a single repeated object is ACKed every time.
+                            if they_have.insert(oid) {
+                                have_obj_count += 1;
+                            }
                             if multi_ack_detailed {
                                 pkt_line::write_line(&mut out, &format!("ACK {last_hex} common"))?;
-                            } else {
+                            } else if have_obj_count == 1 {
                                 pkt_line::write_line(&mut out, &format!("ACK {last_hex}"))?;
                             }
                         }
@@ -256,6 +348,14 @@ pub fn run(args: Args) -> Result<()> {
             }
             _ => {}
         }
+    }
+
+    // A stateless client that closed its input right after the want/shallow/deepen flush (without
+    // sending any `have`/`done`) only wanted the shallow list; do not generate a pack. The client
+    // resumes negotiation with haves in a follow-up RPC (t5530 EOF just after stateless wants).
+    if args.stateless_rpc && !saw_negotiation {
+        out.flush()?;
+        return Ok(());
     }
 
     // Only short-circuit to an empty pack when every `want` is a commit the client already has.
@@ -317,6 +417,141 @@ pub fn run(args: Args) -> Result<()> {
     pkt_line::write_flush(&mut out)?;
     out.flush()?;
     Ok(())
+}
+
+/// Read a boolean config value (default `false`).
+fn config_bool(config: &ConfigSet, key: &str) -> bool {
+    config.get_bool(key).and_then(|r| r.ok()).unwrap_or(false)
+}
+
+/// Emit the protocol-v0 shallow-list response (`shallow`/`unshallow` lines + flush) for a
+/// depth-limited request, mirroring `upload-pack.c`'s `send_shallow_list`/`packet_flush(1)`. Only
+/// a `deepen <n>` request produces a flush here; without deepening there is nothing to send.
+fn emit_v0_shallow_list(
+    out: &mut impl Write,
+    repo: &Repository,
+    wants: &[ObjectId],
+    client_shallow: &HashSet<ObjectId>,
+    requested_depth: Option<usize>,
+) -> Result<()> {
+    let Some(depth) = requested_depth else {
+        return Ok(());
+    };
+    let client_shallow_vec: Vec<ObjectId> = client_shallow.iter().copied().collect();
+    let new_shallow = grit_lib::rev_list::shallow_grafts_for_upload_pack_deepen(
+        repo,
+        wants,
+        &client_shallow_vec,
+        depth,
+    );
+    let new_shallow_set: HashSet<ObjectId> = new_shallow.iter().copied().collect();
+    for oid in &new_shallow {
+        if !client_shallow.contains(oid) {
+            pkt_line::write_line(out, &format!("shallow {}", oid.to_hex()))?;
+        }
+    }
+    // A client-declared shallow commit is `unshallow`ed only once the deepened history reaches past
+    // it — i.e. all of its parents are now within the fetched depth (matching `send_unshallow`,
+    // which emits only commits flagged `NOT_SHALLOW`). A commit that remains the depth boundary
+    // (its parents are still cut off) keeps its shallow status and emits nothing (t5530 deepen 1).
+    let included = commits_within_depth(repo, wants, depth);
+    for oid in &client_shallow_vec {
+        if new_shallow_set.contains(oid) {
+            continue;
+        }
+        if !included.contains(oid) {
+            continue;
+        }
+        let parents = commit_parents(repo, oid);
+        let interior = !parents.is_empty() && parents.iter().all(|p| included.contains(p));
+        if interior {
+            pkt_line::write_line(out, &format!("unshallow {}", oid.to_hex()))?;
+        }
+    }
+    pkt_line::write_flush(out)?;
+    Ok(())
+}
+
+/// Parent OIDs of a commit (empty if `oid` is missing or not a commit).
+fn commit_parents(repo: &Repository, oid: &ObjectId) -> Vec<ObjectId> {
+    match repo.odb.read(oid) {
+        Ok(obj) if obj.kind == ObjectKind::Commit => parse_commit(&obj.data)
+            .map(|c| c.parents)
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// BFS the commit graph from `wants`, returning every commit reachable within `depth` generations
+/// (the want itself is depth 1). Mirrors `commits_within_parent_depth` used by the shallow-graft
+/// machinery so the v0 shallow-list response agrees with the generated pack.
+fn commits_within_depth(repo: &Repository, wants: &[ObjectId], depth: usize) -> HashSet<ObjectId> {
+    use std::collections::VecDeque;
+    let mut best: std::collections::HashMap<ObjectId, usize> = std::collections::HashMap::new();
+    let mut q: VecDeque<(ObjectId, usize)> = VecDeque::new();
+    for &w in wants {
+        best.insert(w, 1);
+        q.push_back((w, 1));
+    }
+    while let Some((oid, d)) = q.pop_front() {
+        if best.get(&oid).copied() != Some(d) || d >= depth {
+            continue;
+        }
+        for p in commit_parents(repo, &oid) {
+            let nd = d + 1;
+            if nd > depth {
+                continue;
+            }
+            if best.get(&p).copied().unwrap_or(usize::MAX) > nd {
+                best.insert(p, nd);
+                q.push_back((p, nd));
+            }
+        }
+    }
+    best.into_keys().collect()
+}
+
+/// Collect the OIDs that are tips of advertised (non-hidden) refs, i.e. the objects a client is
+/// allowed to `want` by default. This mirrors upstream `mark_our_ref`: HEAD plus every ref under
+/// `refs/`.
+fn our_ref_oids(git_dir: &Path) -> HashSet<ObjectId> {
+    let mut set: HashSet<ObjectId> = HashSet::new();
+    if let Ok(oid) = refs::resolve_ref(git_dir, "HEAD") {
+        set.insert(oid);
+    }
+    if let Ok(entries) = refs::list_refs(git_dir, "refs/") {
+        for (_name, oid) in entries {
+            set.insert(oid);
+        }
+    }
+    set
+}
+
+/// Whether `oid` is reachable (as a commit ancestor) from any of our advertised ref tips. Used for
+/// the `allow-reachable-sha1-in-want` policy and the stateless non-tip tolerance check.
+fn is_reachable_from_our_refs(
+    repo: &Repository,
+    our_refs: &HashSet<ObjectId>,
+    oid: &ObjectId,
+) -> bool {
+    for tip in our_refs {
+        if let Ok(reachable) = merge_base::ancestor_closure(repo, *tip) {
+            if reachable.contains(oid) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Send `ERR upload-pack: not our ref <oid>` on stdout, emit a matching `error:` line on stderr,
+/// flush, and exit 128 — matching `upload-pack.c` `check_non_tip` / `parse_want` rejection.
+fn reject_not_our_ref(out: &mut impl Write, oid: &ObjectId) -> Result<()> {
+    let hex = oid.to_hex();
+    pkt_line::write_line(out, &format!("ERR upload-pack: not our ref {hex}"))?;
+    out.flush()?;
+    eprintln!("error: git upload-pack: not our ref {hex}");
+    std::process::exit(128);
 }
 
 /// Returns `true` when every wanted OID resolves to a commit object in the server ODB.

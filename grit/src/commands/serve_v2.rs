@@ -396,7 +396,14 @@ fn cmd_fetch(
     let config = ConfigSet::load(Some(git_dir), true).unwrap_or_default();
     grit_lib::upload_filter::validate_upload_filter_config(&config)?;
 
+    let hide_ref_patterns = grit_lib::hide_refs::hide_ref_patterns_uploadpack(&config);
+
     let mut wants: Vec<ObjectId> = Vec::new();
+    // `want-ref` lines, in first-seen order, resolved to `(logical refname, oid)`.
+    // Emitted back to the client as the `wanted-refs` section (matches
+    // `upload-pack.c` `send_wanted_ref_info`).
+    let mut wanted_refs: Vec<(String, ObjectId)> = Vec::new();
+    let mut wanted_ref_names: HashSet<String> = HashSet::new();
     let mut have_oids: Vec<ObjectId> = Vec::new();
     let mut client_shallow_oids: HashSet<ObjectId> = HashSet::new();
     let mut depth_request: Option<usize> = None;
@@ -462,7 +469,47 @@ fn cmd_fetch(
                     deepen_not.push(oid);
                 }
             }
-            s if s.starts_with("want-ref ") => {}
+            s if s.starts_with("want-ref ") => {
+                if !caps.advertise_ref_in_want {
+                    bail!("unexpected line: '{s}'");
+                }
+                let refname = s.strip_prefix("want-ref ").unwrap_or("").trim().to_owned();
+                // Resolve the ref relative to the active namespace and reject it when
+                // hidden or absent (matches `upload-pack.c` `parse_want_ref`, which
+                // forms `<namespace><refname>` then checks `ref_is_hidden` and
+                // `refs_read_ref`). On failure the server writes a pkt-line error and
+                // dies, which the client surfaces as "unknown ref <refname>".
+                let storage = grit_lib::ref_namespace::storage_ref_name(&refname);
+                let hidden =
+                    grit_lib::hide_refs::ref_is_hidden(&refname, &storage, &hide_ref_patterns);
+                // Resolve the *storage* refname exactly (no DWIM, no fallback to the
+                // non-namespaced name). `parse_want_ref` reads `<namespace><refname>`
+                // directly, so `want-ref refs/heads/ns-no` under `GIT_NAMESPACE=ns` must
+                // not silently fall back to a top-level `refs/heads/ns-no` (t5703 "with
+                // namespace: want-ref outside namespace is unknown").
+                let resolved = if hidden {
+                    None
+                } else {
+                    refs::resolve_ref(git_dir, &storage).ok()
+                };
+                let oid = match resolved {
+                    Some(oid) => oid,
+                    None => {
+                        pkt_line::write_line(out, &format!("ERR unknown ref {refname}"))?;
+                        out.flush()?;
+                        eprintln!("fatal: unknown ref {refname}");
+                        std::process::exit(128);
+                    }
+                };
+                if !wanted_ref_names.insert(refname.clone()) {
+                    pkt_line::write_line(out, &format!("ERR duplicate want-ref {refname}"))?;
+                    out.flush()?;
+                    eprintln!("fatal: duplicate want-ref {refname}");
+                    std::process::exit(128);
+                }
+                wanted_refs.push((refname, oid));
+                wants.push(oid);
+            }
             s if s.starts_with("filter ") => {
                 if !caps.advertise_filter {
                     bail!("unexpected line: '{s}'");
@@ -491,17 +538,31 @@ fn cmd_fetch(
 
     let want_set: HashSet<ObjectId> = wants.iter().copied().collect();
     let mut have_commits: Vec<ObjectId> = Vec::new();
+    // `acknowledgments` ACKs every `have` the server already has, de-duplicated and in first-seen
+    // order (matching `upload-pack.c` `do_got_oid`: each object's `THEY_HAVE` flag is set once, so a
+    // repeated `have` for the same object is ACKed only once). Non-commit `have` objects (trees,
+    // blobs) are ACKed too — they just do not contribute ancestor history.
+    let mut acks: Vec<ObjectId> = Vec::new();
+    let mut acked: HashSet<ObjectId> = HashSet::new();
     for h in &have_oids {
         if let Ok(obj) = repo.odb.read(h) {
             if obj.kind == ObjectKind::Commit {
                 have_commits.push(*h);
+            }
+            if acked.insert(*h) {
+                acks.push(*h);
             }
         }
     }
 
     if !have_oids.is_empty() && !seen_done {
         pkt_line::write_line(out, "acknowledgments")?;
-        pkt_line::write_line(out, "NAK")?;
+        if acks.is_empty() {
+            pkt_line::write_line(out, "NAK")?;
+        }
+        for oid in &acks {
+            pkt_line::write_line(out, &format!("ACK {}", oid.to_hex()))?;
+        }
         if ok_to_give_up_v2(&repo, &want_set, &have_commits) {
             pkt_line::write_line(out, "ready")?;
             pkt_line::write_delim(out)?;
@@ -509,6 +570,17 @@ fn cmd_fetch(
             pkt_line::write_flush(out)?;
         }
         return Ok(());
+    }
+
+    // `wanted-refs` resolves the client's `want-ref` requests to concrete OIDs.
+    // Sent only once the server is ready to stream the pack, immediately before
+    // `shallow-info` / `packfile` (matches `upload-pack.c` `send_wanted_ref_info`).
+    if !wanted_refs.is_empty() {
+        pkt_line::write_line(out, "wanted-refs")?;
+        for (refname, oid) in &wanted_refs {
+            pkt_line::write_line(out, &format!("{} {}", oid.to_hex(), refname))?;
+        }
+        pkt_line::write_delim(out)?;
     }
 
     let client_shallow_vec = client_shallow_oids.iter().copied().collect::<Vec<_>>();

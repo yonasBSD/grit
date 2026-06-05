@@ -688,7 +688,44 @@ pub fn run(mut args: Args) -> Result<()> {
         // cleanup;`), it never errors. A `repack --geometric --exclude-promisor-objects`
         // on a partial clone can legitimately enumerate zero non-promisor objects
         // (t5616 "after fetching descendants of non-promisor commits, gc works").
-        if !args.stdout && !args.quiet {
+        //
+        // Without `--non-empty`, writing to a file still produces an empty pack and
+        // prints its name: `git pack-objects <base> </dev/null` is used to manufacture
+        // an empty pack (t5319 "preferred packs must be non-empty").
+        if !args.non_empty && !args.stdout {
+            if let Some(base) = args.base_name.as_ref() {
+                write_empty_pack_to_file(&repo, base, pack_hash_bytes)?;
+                if !args.quiet {
+                    eprintln!("Total 0 (delta 0), reused 0 (delta 0)");
+                }
+                if args.unpack_unreachable.is_some() {
+                    loosen_unused_packed_objects(
+                        &repo,
+                        &HashSet::new(),
+                        &[],
+                        args.honor_pack_keep,
+                    )?;
+                }
+                return Ok(());
+            }
+        }
+        if args.stdout {
+            // Git's `write_pack_file()` is always called (unless `--non-empty`), so an
+            // empty enumeration still streams a valid 32-byte empty pack to stdout. The
+            // protocol-v2 `fetch` "want-ref with ref we already have commit for" case
+            // (t5703) relies on this: the client already has every wanted object, so the
+            // pack is empty but `index-pack` must still accept it.
+            if !args.quiet {
+                eprintln!("Total 0 (delta 0), reused 0 (delta 0)");
+            }
+            let pack_bytes = build_pack(&[], false, pack_hash_bytes, Compression::default())?;
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            out.write_all(&pack_bytes)?;
+            out.flush()?;
+            return Ok(());
+        }
+        if !args.quiet {
             eprintln!("Total 0 (delta 0), reused 0 (delta 0)");
         }
         // `--unpack-unreachable` (repack -A) must still run the loosen pass and
@@ -710,7 +747,13 @@ pub fn run(mut args: Args) -> Result<()> {
         } {
             Ok(obj) => obj,
             Err(_) if args.missing.as_deref() == Some("allow-any") => continue,
-            Err(err) => return Err(err),
+            // An object that survived enumeration (its OID was discovered via a tree entry) but is
+            // unreadable during the write phase mirrors Git's `pack-objects.c` `die("unable to
+            // read %s")`. Enumeration-time failures (a bad/unparsable tree) already surface as
+            // "bad tree object" from the walk. Distinguishing them lets upload-pack report the
+            // upstream wording: a missing blob -> "unable to read", a corrupt tree -> "bad tree
+            // object" (t5530 packing vs. enumeration errors).
+            Err(_) => bail!("unable to read {}", oid.to_hex()),
         };
         let mut pack_id = hash_object_bytes(obj.kind, &obj.data, pack_hash_bytes)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -3293,7 +3336,13 @@ fn collect_incremental_repack_oids(repo: &Repository, args: &Args) -> Result<Pac
         }
     }
 
-    if args.no_write_bitmap_index {
+    // `--incremental` (`git pack-objects --incremental`): "an object already in a pack is ignored
+    // even if it would have otherwise been packed." The `rev-list --objects --unpacked` walk emits
+    // the full object closure of unpacked commits (including tree/blob objects that already live in
+    // a pack), so without this filter an incremental `repack -d` re-packs already-packed objects
+    // and produces packs with the wrong object membership (t5319 BTMP chunk: each per-commit pack
+    // must hold exactly its 3 new objects, not parent blobs/trees).
+    if args.incremental {
         let packed = packed_object_ids(repo)?;
         ordered.retain(|oid| !packed.contains(oid));
     }
@@ -3314,6 +3363,16 @@ fn collect_incremental_repack_oids(repo: &Repository, args: &Args) -> Result<Pac
             let promisor = promisor_pack_object_ids(&repo.git_dir.join("objects"));
             ordered.retain(|o| !promisor.contains(o));
         }
+    }
+
+    // `pack-objects --local` packs only objects in the local object store, never objects that
+    // live in an alternate ODB (git/pack-objects.c `want_object_in_pack` honors `local`). The
+    // `--unpacked` walk treats alternate-packed objects as "unpacked" (they are not in a *local*
+    // pack), so without this filter `git repack --local` would copy the alternate's objects into
+    // a new local pack (t5319 "multi-pack-index in an alternate").
+    if args.local {
+        let alt_oids = alternate_object_ids(repo)?;
+        ordered.retain(|o| !alt_oids.contains(o));
     }
 
     Ok(PackObjectList {
@@ -4313,6 +4372,39 @@ fn encode_pack_object_header(buf: &mut Vec<u8>, type_code: u8, payload_len: usiz
 }
 
 /// Build a PACK v2 byte stream (full objects and optional delta blobs).
+/// Write an empty pack (header + trailer, zero objects) to `<base>-<hash>.pack`/`.idx`
+/// and print its hash to stdout, mirroring Git's `pack-objects <base> </dev/null`.
+///
+/// Git always writes a pack file (even with no objects) and reports its name unless
+/// `--non-empty` is in effect; `multi-pack-index write --preferred-pack=<empty>` relies on
+/// the empty pack existing so the writer can reject it with "with no objects".
+fn write_empty_pack_to_file(
+    repo: &Repository,
+    base: &str,
+    pack_hash_bytes: usize,
+) -> Result<String> {
+    let pack_bytes = build_pack(&[], false, pack_hash_bytes, Compression::default())?;
+    let pack_hash = hex::encode(&pack_bytes[pack_bytes.len() - pack_hash_bytes..]);
+    let pack_path = format!("{base}-{pack_hash}.pack");
+    let idx_path = format!("{base}-{pack_hash}.idx");
+    std::fs::write(&pack_path, &pack_bytes)?;
+    let (idx_bytes, idx_order_offsets) =
+        build_idx_for_pack(&pack_bytes, &[], pack_hash_bytes, None)?;
+    std::fs::write(&idx_path, &idx_bytes)?;
+
+    let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let idx_pb = Path::new(&idx_path);
+    if cfg.pack_write_reverse_index_default() {
+        let rev_bytes = build_pack_rev_bytes_from_index_order_offsets_and_checksum(
+            &idx_order_offsets,
+            &pack_bytes[pack_bytes.len() - pack_hash_bytes..],
+        );
+        std::fs::write(rev_path_for_index(idx_pb), rev_bytes)?;
+    }
+    println!("{pack_hash}");
+    Ok(pack_hash)
+}
+
 fn build_pack(
     entries: &[PackWriteEntry],
     use_ofs_delta: bool,
