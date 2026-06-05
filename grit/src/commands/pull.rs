@@ -257,6 +257,113 @@ fn normalize_pull_fetch_refspecs(
     Ok(out)
 }
 
+/// Reproduce git pull.c `die_no_merge_candidates`: pick the precise diagnostic for why a pull has
+/// nothing to merge, given whether a `<repo>` was named on the CLI, whether a refspec was given,
+/// the current branch and its configured `branch.<name>.remote`/`.merge`.
+///
+/// `opt_rebase` is true when this pull would rebase (the wording for the no-candidate / no-tracking
+/// cases differs slightly, but the substrings the tests grep for are unaffected).
+fn die_no_merge_candidates(
+    repo_arg: Option<&str>,
+    have_refspec: bool,
+    current_branch: Option<&str>,
+    config: &ConfigSet,
+    opt_rebase: bool,
+) -> anyhow::Error {
+    let branch_remote = current_branch.and_then(|b| config.get(&format!("branch.{b}.remote")));
+    let merge_nr = current_branch
+        .map(|b| config.get(&format!("branch.{b}.merge")).is_some())
+        .unwrap_or(false);
+
+    if have_refspec {
+        if opt_rebase {
+            eprintln!(
+                "There is no candidate for rebasing against among the refs that you just fetched."
+            );
+        } else {
+            eprintln!("There are no candidates for merging among the refs that you just fetched.");
+        }
+        eprintln!(
+            "Generally this means that you provided a wildcard refspec which had no\nmatches on the remote end."
+        );
+    } else if let (Some(repo), Some(_)) = (repo_arg, current_branch) {
+        // A `<repo>` was named that is not the branch's configured remote: the configured
+        // tracking branch does not apply, so a branch must be given explicitly.
+        let is_default = branch_remote.as_deref() == Some(repo);
+        if !is_default {
+            eprintln!(
+                "You asked to pull from the remote '{repo}', but did not specify\na branch. Because this is not the default configured remote\nfor your current branch, you must specify a branch on the command line."
+            );
+        } else {
+            // repo == configured remote but no merge ref: fall through to the no-tracking message.
+            die_no_tracking_information(current_branch, config, opt_rebase);
+        }
+    } else if current_branch.is_none() {
+        eprintln!("You are not currently on a branch.");
+        if opt_rebase {
+            eprintln!("Please specify which branch you want to rebase against.");
+        } else {
+            eprintln!("Please specify which branch you want to merge with.");
+        }
+        eprintln!("See git-pull(1) for details.");
+        eprintln!();
+        eprintln!("    git pull <remote> <branch>");
+        eprintln!();
+    } else if !merge_nr {
+        die_no_tracking_information(current_branch, config, opt_rebase);
+    } else {
+        let merge_ref = current_branch
+            .and_then(|b| config.get(&format!("branch.{b}.merge")))
+            .unwrap_or_default();
+        eprintln!(
+            "Your configuration specifies to merge with the ref '{}'\nfrom the remote, but no such ref was fetched.",
+            merge_ref.strip_prefix("refs/heads/").unwrap_or(&merge_ref)
+        );
+    }
+    anyhow::Error::new(ExplicitExit {
+        code: 1,
+        message: String::new(),
+    })
+}
+
+fn die_no_tracking_information(current_branch: Option<&str>, config: &ConfigSet, opt_rebase: bool) {
+    let branch = current_branch.unwrap_or("<branch>");
+    eprintln!("There is no tracking information for the current branch.");
+    if opt_rebase {
+        eprintln!("Please specify which branch you want to rebase against.");
+    } else {
+        eprintln!("Please specify which branch you want to merge with.");
+    }
+    eprintln!("See git-pull(1) for details.");
+    eprintln!();
+    eprintln!("    git pull <remote> <branch>");
+    eprintln!();
+    eprintln!("If you wish to set tracking information for this branch you can do so with:");
+    eprintln!();
+    eprintln!("    git branch --set-upstream-to=<remote>/<branch> {branch}\n");
+}
+
+/// Best-effort "will this pull rebase?" used only to pick the wording of `die_no_merge_candidates`
+/// (rebase vs merge phrasing). CLI flags win; otherwise consult `branch.<b>.rebase`/`pull.rebase`.
+fn pull_will_rebase_for_diag(
+    args: &Args,
+    config: &ConfigSet,
+    current_branch: Option<&str>,
+) -> bool {
+    if args.no_rebase {
+        return false;
+    }
+    if let Some(ref s) = args.rebase {
+        return parse_rebase_value("--rebase", s)
+            .map(|t| t == RebaseTri::True)
+            .unwrap_or(false);
+    }
+    matches!(
+        config_pull_rebase(config, current_branch),
+        Ok((RebaseTri::True, _, _))
+    )
+}
+
 fn merge_branch_for_pull(
     effective_refspecs: &[String],
     remote_name: &str,
@@ -353,6 +460,38 @@ where
     target
 }
 
+/// `git pull` refuses to start while the index has unresolved (stage > 0) entries
+/// (builtin/pull.c `repo_read_index_unmerged` -> `die_resolve_conflict("pull")`).
+fn die_if_index_unmerged(repo: &Repository) -> Result<()> {
+    let Ok(index) = repo.load_index() else {
+        return Ok(());
+    };
+    if index.entries.iter().any(|e| e.stage() != 0) {
+        eprintln!("error: Pulling is not possible because you have unmerged files.");
+        eprintln!("hint: Fix them up in the work tree, and then use 'git add/rm <file>'");
+        eprintln!("hint: as appropriate to mark resolution and make a commit.");
+        return Err(anyhow::Error::new(ExplicitExit {
+            code: 128,
+            message: "Exiting because of an unresolved conflict.".to_owned(),
+        }));
+    }
+    Ok(())
+}
+
+/// `git pull` refuses to start when a merge is in progress (MERGE_HEAD exists)
+/// (builtin/pull.c `die_conclude_merge`).
+fn die_if_merge_in_progress(repo: &Repository) -> Result<()> {
+    if repo.git_dir.join("MERGE_HEAD").exists() {
+        eprintln!("error: You have not concluded your merge (MERGE_HEAD exists).");
+        eprintln!("hint: Please, commit your changes before merging.");
+        return Err(anyhow::Error::new(ExplicitExit {
+            code: 128,
+            message: "Exiting because of unfinished merge.".to_owned(),
+        }));
+    }
+    Ok(())
+}
+
 pub fn run(args: Args) -> Result<()> {
     let mut args = normalize_pull_positionals(args);
     // Reconcile `-q`/`-v` into Git's single verbosity counter (clap parses them as independent
@@ -366,6 +505,12 @@ pub fn run(args: Args) -> Result<()> {
 
     let head = resolve_head(&repo.git_dir)?;
     let current_branch = head.branch_name().map(|s| s.to_owned());
+
+    // git pull.c runs these guards before fetching: a pull cannot proceed with an unmerged index
+    // or an in-progress merge (MERGE_HEAD), and `--rebase` onto an unborn branch with staged
+    // changes is rejected up front.
+    die_if_index_unmerged(&repo)?;
+    die_if_merge_in_progress(&repo)?;
 
     // `git pull --all` fetches from every configured remote (no single repository argument).
     // Delegate to the real `git fetch --all` machinery — which writes FETCH_HEAD with the
@@ -395,6 +540,52 @@ pub fn run(args: Args) -> Result<()> {
 
     let effective_refspecs =
         normalize_pull_fetch_refspecs(&repo, &args, remote_name, local_remote_path.as_deref())?;
+
+    // Decide up front whether this pull can determine a branch to merge. Without an explicit
+    // refspec, git relies on `branch.<name>.merge`; when that is absent (or we are detached, or a
+    // non-default remote was named) there is nothing to merge and git pull.c emits a tailored
+    // diagnostic via `die_no_merge_candidates`.
+    if effective_refspecs.is_empty() {
+        // A raw path/URL `<repo>` (e.g. `git pull ..`) that is not a configured remote always has
+        // a merge candidate: fetch marks the remote's default branch for-merge. Only named/default
+        // remotes consult `branch.<b>.merge`, so the no-candidate diagnostics apply to them.
+        let repo_is_raw_path = args
+            .remote
+            .as_deref()
+            .map(|r| {
+                remote_token_looks_like_path(r) && config.get(&format!("remote.{r}.url")).is_none()
+            })
+            .unwrap_or(false);
+        if !repo_is_raw_path {
+            let opt_rebase_for_msg =
+                pull_will_rebase_for_diag(&args, &config, current_branch.as_deref());
+            if current_branch.is_none() {
+                return Err(die_no_merge_candidates(
+                    args.remote.as_deref(),
+                    false,
+                    None,
+                    &config,
+                    opt_rebase_for_msg,
+                ));
+            }
+            let branch = current_branch.as_deref().unwrap();
+            let has_merge_cfg = config.get(&format!("branch.{branch}.merge")).is_some();
+            // No `branch.<b>.merge` and no explicit refspec: there is no branch to merge. The exact
+            // diagnostic (specify-a-branch vs no-tracking-information) is chosen inside
+            // `die_no_merge_candidates` from whether `<repo>` was named and matches the configured
+            // remote.
+            if !has_merge_cfg {
+                return Err(die_no_merge_candidates(
+                    args.remote.as_deref(),
+                    false,
+                    Some(branch),
+                    &config,
+                    opt_rebase_for_msg,
+                ));
+            }
+        }
+    }
+
     let merge_branch = merge_branch_for_pull(
         &effective_refspecs,
         remote_name,
@@ -483,8 +674,22 @@ pub fn run(args: Args) -> Result<()> {
             return Ok(());
         }
         let lines = if args.refspecs.is_empty() {
-            let remote_oid = resolve_revision(&repo, &merge_branch)
-                .with_context(|| format!("bad revision '{merge_branch}'"))?;
+            let remote_oid =
+                match refs::resolve_ref(&repo.git_dir, &format!("refs/heads/{merge_branch}"))
+                    .or_else(|_| resolve_revision(&repo, &merge_branch))
+                {
+                    Ok(oid) => oid,
+                    Err(_) => {
+                        // The configured `branch.<b>.merge` ref does not exist locally / on `.`.
+                        return Err(die_no_merge_candidates(
+                            args.remote.as_deref(),
+                            false,
+                            current_branch.as_deref(),
+                            &config,
+                            pull_will_rebase_for_diag(&args, &config, current_branch.as_deref()),
+                        ));
+                    }
+                };
             vec![format!(
                 "{}\t\tbranch 'refs/heads/{merge_branch}' of .\n",
                 remote_oid.to_hex()
@@ -492,6 +697,23 @@ pub fn run(args: Args) -> Result<()> {
         } else {
             let mut out = Vec::new();
             for spec in &args.refspecs {
+                // A wildcard refspec (`refs/foo/*:refs/bar/*`) that matches nothing on the remote
+                // yields no merge candidate — git pull.c `die_no_merge_candidates` (the *refspecs
+                // branch).
+                let (src, _dst) = split_pull_refspec(spec);
+                if src.contains('*')
+                    && refs::list_refs_glob(&repo.git_dir, src)
+                        .map(|m| m.is_empty())
+                        .unwrap_or(true)
+                {
+                    return Err(die_no_merge_candidates(
+                        args.remote.as_deref(),
+                        true,
+                        current_branch.as_deref(),
+                        &config,
+                        pull_will_rebase_for_diag(&args, &config, current_branch.as_deref()),
+                    ));
+                }
                 let (oid, desc) = pull_fetch_head_line(&repo, spec)?;
                 out.push(format!("{}\t\t{desc}\n", oid.to_hex()));
             }
@@ -586,6 +808,23 @@ fn run_pull_all(
     repo: &Repository,
     head: &grit_lib::state::HeadState,
 ) -> Result<()> {
+    // `git pull --all` still needs a branch to merge: without `branch.<name>.merge` there is no
+    // for-merge candidate after the multi-remote fetch, so emit the no-tracking diagnostic up front
+    // (git pull.c `die_no_merge_candidates`).
+    let current_branch = head.branch_name();
+    let has_merge_cfg = current_branch
+        .map(|b| config.get(&format!("branch.{b}.merge")).is_some())
+        .unwrap_or(false);
+    if !has_merge_cfg {
+        return Err(die_no_merge_candidates(
+            None,
+            false,
+            current_branch,
+            config,
+            pull_will_rebase_for_diag(args, config, current_branch),
+        ));
+    }
+
     let fetch_recurse = if args.no_recurse_submodules {
         None
     } else if config
