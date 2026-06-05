@@ -2783,7 +2783,7 @@ pub fn get_urlmatch_all_in_section(
             continue;
         }
         let entry_variable = &key[last_dot + 1..];
-        let val = entry.value.as_deref().unwrap_or("true");
+        let val = entry.value.as_deref().unwrap_or("");
         if first_dot == last_dot {
             let canonical = format!("{}.{}", section_lower, entry_variable);
             matches.push((
