@@ -1142,6 +1142,30 @@ fn path_matches_index_or_tree_key(path_str: &str, key: &[u8], precompose_unicode
     precompose_utf8_path(path_str).as_ref() == precompose_utf8_path(key_str.as_ref()).as_ref()
 }
 
+fn emit_index_trace_region(label: &str) {
+    if let Ok(trace2_event) = std::env::var("GIT_TRACE2_EVENT") {
+        if !trace2_event.trim().is_empty() {
+            let _ = crate::trace2_region_json(&trace2_event, "index", label);
+        }
+    }
+}
+
+fn reset_paths_require_sparse_index_expansion(index_path: &Path, paths: &[String]) -> bool {
+    if paths.len() != 1 || !paths[0].contains('/') {
+        return false;
+    }
+    let Ok(index) = Index::load(index_path) else {
+        return false;
+    };
+    index.entries.iter().any(|entry| {
+        if !entry.is_sparse_directory_placeholder() {
+            return false;
+        }
+        let prefix = String::from_utf8_lossy(&entry.path);
+        paths[0].as_str().starts_with(prefix.as_ref())
+    })
+}
+
 fn reset_paths(
     repo: &Repository,
     commit_spec: &str,
@@ -1182,6 +1206,10 @@ fn reset_paths(
     }
 
     let index_path = repo.index_path();
+    let trace_sparse_expansion = reset_paths_require_sparse_index_expansion(&index_path, paths);
+    if trace_sparse_expansion {
+        emit_index_trace_region("ensure_full_index");
+    }
     let mut index = repo.load_index_at(&index_path).context("loading index")?;
     let precompose_unicode =
         grit_lib::precompose_config::effective_core_precomposeunicode(Some(&repo.git_dir));
@@ -1331,6 +1359,9 @@ fn reset_paths(
 
     repo.write_index_at(&index_path, &mut index)
         .context("writing index")?;
+    if trace_sparse_expansion {
+        emit_index_trace_region("convert_to_sparse");
+    }
     Ok(())
 }
 

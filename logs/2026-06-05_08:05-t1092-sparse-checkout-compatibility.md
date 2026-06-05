@@ -80,3 +80,14 @@
   the missing outside-cone worktree file error included absolute paths with the repo directory
   name. The apply preimage stat check now reports the adjusted repo-relative path.
 - Canonical harness: `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh` -> `87/106`.
+- The first trace2 sparse-index check regressed badly with broad repository-level index trace
+  hooks, so that approach was backed out. Narrow command-level trace regions now report the
+  expansion/conversion case for `reset -- folder1/a`, plain `ls-files` expansion, and
+  `status -c index.sparse=false`/conversion writes without tripping later `ensure_not_expanded`
+  checks.
+- Canonical harness: `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh` -> `88/106`.
+- Follow-up direct run showed subtest 58 still missed the first `ensure_full_index` region when the
+  sparse index had placeholder entries but the in-memory `sparse_directories` flag was false. Status
+  now detects sparse-index-on-disk from actual placeholder entries too. Direct `--run=1,57,58,59`
+  passes subtests 57 and 58, then fails at the pre-existing subtest 59 block; full harness remains
+  `88/106`.

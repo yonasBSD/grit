@@ -343,11 +343,21 @@ pub fn run(args: Args) -> Result<()> {
         && grit_lib::precompose_config::filesystem_nfd_nfc_aliases(&repo.git_dir);
     let quote_fully = config.quote_path_fully();
     let index_path = resolved_env_index_path(&repo);
+    let raw_index_had_sparse_dirs = grit_lib::index::Index::load(&index_path)
+        .map(|idx| idx.has_sparse_directory_placeholders())
+        .unwrap_or(false);
     let mut index = if args.sparse {
         grit_lib::index::Index::load(&index_path).context("loading index")?
     } else {
         repo.load_index_at(&index_path).context("loading index")?
     };
+    if !args.sparse && args.pathspecs.is_empty() && raw_index_had_sparse_dirs {
+        if let Ok(trace2_event) = std::env::var("GIT_TRACE2_EVENT") {
+            if !trace2_event.trim().is_empty() {
+                let _ = crate::trace2_region_json(&trace2_event, "index", "ensure_full_index");
+            }
+        }
+    }
 
     if args.recurse_submodules
         && (args.deleted

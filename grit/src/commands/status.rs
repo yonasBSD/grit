@@ -506,8 +506,28 @@ pub fn run(mut args: Args) -> Result<()> {
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
         Err(e) => return Err(e.into()),
     };
-    let index_sparse_on_disk = index.sparse_directories;
+    let index_sparse_on_disk =
+        index.sparse_directories || index.has_sparse_directory_placeholders();
     let _ = index.expand_sparse_directory_placeholders(&repo.odb);
+    let index_sparse_config_enabled = config
+        .get("index.sparse")
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"));
+    let index_sparse_config_disabled = config
+        .get("index.sparse")
+        .is_some_and(|v| v.eq_ignore_ascii_case("false"));
+    let sparse_checkout_enabled = config
+        .get("core.sparseCheckout")
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"));
+    let force_full_index_write = index_sparse_on_disk && index_sparse_config_disabled;
+    let force_sparse_index_write =
+        !index_sparse_on_disk && index_sparse_config_enabled && sparse_checkout_enabled;
+    if force_full_index_write {
+        if let Ok(trace2_event) = std::env::var("GIT_TRACE2_EVENT") {
+            if !trace2_event.trim().is_empty() {
+                let _ = crate::trace2_region_json(&trace2_event, "index", "ensure_full_index");
+            }
+        }
+    }
 
     // A skip-worktree entry whose file is actually present on disk is treated by git as a
     // normal (no longer sparse) path, so worktree modifications are reported. `load_index_at`
@@ -902,7 +922,15 @@ pub fn run(mut args: Args) -> Result<()> {
         );
         // Opportunistic write, like Git: only persist when the refresh changed an entry.
         // Best-effort: status must succeed even when `.git/` is read-only (t7508).
-        if refreshed {
+        if refreshed || force_full_index_write || force_sparse_index_write {
+            if force_sparse_index_write {
+                if let Ok(trace2_event) = std::env::var("GIT_TRACE2_EVENT") {
+                    if !trace2_event.trim().is_empty() {
+                        let _ =
+                            crate::trace2_region_json(&trace2_event, "index", "convert_to_sparse");
+                    }
+                }
+            }
             let _ = repo.write_index_at(&index_path, &mut index);
         }
     }
