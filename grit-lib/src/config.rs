@@ -2090,51 +2090,50 @@ impl ConfigSet {
                 "exceeded maximum include depth".to_owned(),
             ));
         }
-        // First pass: find include paths
-        let mut includes: Vec<(String, Option<String>)> = Vec::new();
-
-        for entry in &file.entries {
-            if entry.key == "include.path" {
-                if let Some(ref val) = entry.value {
-                    includes.push((val.clone(), None));
-                }
-            } else if entry.key.starts_with("includeif.") && entry.key.ends_with(".path") {
-                // Extract condition from key: includeif.<condition>.path
-                let mid = &entry.key["includeif.".len()..entry.key.len() - ".path".len()];
-                if let Some(ref val) = entry.value {
-                    includes.push((val.clone(), Some(mid.to_owned())));
-                }
-            }
+        if !process_includes {
+            set.merge(file);
+            return Ok(());
         }
 
-        // Merge the file's own entries
-        set.merge(file);
+        for entry in &file.entries {
+            set.entries.push(entry.clone());
 
-        // Process includes
-        if process_includes {
-            for (inc_path, condition) in includes {
-                if let Some(ref cond) = condition {
-                    if !evaluate_include_condition(cond, file, ctx) {
-                        continue;
-                    }
+            let Some((inc_path, condition)) = include_directive_for_entry(entry) else {
+                continue;
+            };
+            if let Some(ref cond) = condition {
+                if !evaluate_include_condition(cond, file, ctx) {
+                    continue;
                 }
+            }
 
-                let resolved = match resolve_include_file_path(&inc_path, file, ctx) {
-                    Ok(p) => p,
-                    Err(Error::ConfigError(msg)) if msg.is_empty() => continue,
-                    Err(e) => return Err(e),
-                };
-                // Git's `git_config_from_file` surfaces parse errors in an included file as a
-                // fatal error (t0001 #102 `re-init reads matching includeIf.onbranch`). A missing
-                // include target is silently skipped (`from_path` -> `Ok(None)`).
-                if let Some(inc_file) = ConfigFile::from_path(&resolved, file.scope)? {
-                    Self::merge_with_includes(set, &inc_file, process_includes, depth + 1, ctx)?;
-                }
+            let resolved = match resolve_include_file_path(&inc_path, file, ctx) {
+                Ok(p) => p,
+                Err(Error::ConfigError(msg)) if msg.is_empty() => continue,
+                Err(e) => return Err(e),
+            };
+            // Git's `git_config_from_file` surfaces parse errors in an included file as a
+            // fatal error (t0001 #102 `re-init reads matching includeIf.onbranch`). A missing
+            // include target is silently skipped (`from_path` -> `Ok(None)`).
+            if let Some(inc_file) = ConfigFile::from_path(&resolved, file.scope)? {
+                Self::merge_with_includes(set, &inc_file, process_includes, depth + 1, ctx)?;
             }
         }
 
         Ok(())
     }
+}
+
+fn include_directive_for_entry(entry: &ConfigEntry) -> Option<(String, Option<String>)> {
+    let val = entry.value.as_ref()?;
+    if entry.key == "include.path" {
+        return Some((val.clone(), None));
+    }
+    if entry.key.starts_with("includeif.") && entry.key.ends_with(".path") {
+        let mid = &entry.key["includeif.".len()..entry.key.len() - ".path".len()];
+        return Some((val.clone(), Some(mid.to_owned())));
+    }
+    None
 }
 
 fn add_environment_config_pairs(set: &mut ConfigSet) -> Result<()> {
