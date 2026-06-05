@@ -293,6 +293,30 @@ fn has_type(args: &Args) -> bool {
     effective_type(args).is_some()
 }
 
+fn reject_fixed_value(args: &Args) -> Result<()> {
+    if args.fixed_value {
+        bail!("error: --fixed-value only applies with a value-pattern");
+    }
+    Ok(())
+}
+
+fn require_fixed_value_pattern(args: &Args, value_pattern: Option<&str>) -> Result<()> {
+    if args.fixed_value && value_pattern.is_none() {
+        bail!("error: --fixed-value only applies with a value-pattern");
+    }
+    Ok(())
+}
+
+fn regex_api_value_pattern(args: &Args, value_pattern: Option<&str>) -> Option<String> {
+    value_pattern.map(|pattern| {
+        if args.fixed_value {
+            regex::escape(pattern)
+        } else {
+            pattern.to_owned()
+        }
+    })
+}
+
 /// Modern subcommand interface for `grit config`.
 #[derive(Debug, Subcommand)]
 pub enum ConfigSubcommand {
@@ -340,6 +364,10 @@ pub struct GetArgs {
     #[arg(long = "url")]
     pub url: Option<String>,
 
+    /// Only return values matching this pattern.
+    #[arg(long = "value")]
+    pub value: Option<String>,
+
     /// Show origin file and scope for each entry.
     #[arg(long = "show-origin")]
     pub show_origin: bool,
@@ -376,6 +404,10 @@ pub struct UnsetArgs {
     /// Remove all occurrences.
     #[arg(long)]
     pub all: bool,
+
+    /// Only unset values matching this pattern.
+    #[arg(long = "value")]
+    pub value: Option<String>,
 }
 
 /// Arguments for `grit config list`.
@@ -454,15 +486,25 @@ pub fn run(args: Args) -> Result<()> {
     // Handle subcommands first
     if let Some(ref sub) = args.subcommand {
         return match sub {
-            ConfigSubcommand::Get(get_args) => cmd_get(&args, get_args, git_dir.as_deref(), None),
+            ConfigSubcommand::Get(get_args) => cmd_get(
+                &args,
+                get_args,
+                git_dir.as_deref(),
+                get_args.value.as_deref(),
+            ),
             ConfigSubcommand::Set(set_args) => cmd_set(&args, set_args, scope, &file_path, None),
             ConfigSubcommand::Unset(unset_args) => {
                 cmd_unset(
-                    &args, unset_args, scope, &file_path, None,
+                    &args,
+                    unset_args,
+                    scope,
+                    &file_path,
+                    unset_args.value.as_deref(),
                     /* preserve_empty_section_header_on_unset_all */ false,
                 )
             }
             ConfigSubcommand::List(list_args) => {
+                reject_fixed_value(&args)?;
                 // Merge list-level flags into top-level args
                 let mut merged = Args {
                     name_only: args.name_only || list_args.name_only,
@@ -474,19 +516,28 @@ pub fn run(args: Args) -> Result<()> {
                 cmd_list(&merged, git_dir.as_deref())
             }
             ConfigSubcommand::RenameSection(rs) => {
+                reject_fixed_value(&args)?;
                 cmd_rename_section(scope, &file_path, &rs.old_name, &rs.new_name)
             }
-            ConfigSubcommand::RemoveSection(rs) => cmd_remove_section(scope, &file_path, &rs.name),
-            ConfigSubcommand::Edit(_) => cmd_edit(&file_path),
+            ConfigSubcommand::RemoveSection(rs) => {
+                reject_fixed_value(&args)?;
+                cmd_remove_section(scope, &file_path, &rs.name)
+            }
+            ConfigSubcommand::Edit(_) => {
+                reject_fixed_value(&args)?;
+                cmd_edit(&file_path)
+            }
         };
     }
 
     // Legacy interface
     if args.edit {
+        reject_fixed_value(&args)?;
         return cmd_edit(&file_path);
     }
 
     if args.list {
+        reject_fixed_value(&args)?;
         return cmd_list(&args, git_dir.as_deref());
     }
 
@@ -510,6 +561,7 @@ pub fn run(args: Args) -> Result<()> {
             show_names: false,
             default: args.default_value.clone(),
             url: None,
+            value: None,
             show_origin: false,
             show_scope: false,
         };
@@ -534,6 +586,7 @@ pub fn run(args: Args) -> Result<()> {
             show_names: false,
             default: args.default_value.clone(),
             url: None,
+            value: None,
             show_origin: false,
             show_scope: false,
         };
@@ -542,13 +595,22 @@ pub fn run(args: Args) -> Result<()> {
 
     if let Some(ref pattern_raw) = args.get_regexp {
         let mut show_origin = args.show_origin;
-        let pattern = if pattern_raw == "--show-origin" {
+        let (pattern, value_pattern) = if pattern_raw == "--show-origin" {
             show_origin = true;
-            args.positional.first().cloned().unwrap_or_default()
+            (
+                args.positional.first().cloned().unwrap_or_default(),
+                args.positional.get(1).map(|s| s.as_str()),
+            )
         } else if pattern_raw.is_empty() {
-            args.positional.first().cloned().unwrap_or_default()
+            (
+                args.positional.first().cloned().unwrap_or_default(),
+                args.positional.get(1).map(|s| s.as_str()),
+            )
         } else {
-            pattern_raw.clone()
+            (
+                pattern_raw.clone(),
+                args.positional.first().map(|s| s.as_str()),
+            )
         };
         if pattern.is_empty() {
             bail!("usage: git config --get-regexp <pattern>");
@@ -560,13 +622,15 @@ pub fn run(args: Args) -> Result<()> {
             show_names: true,
             default: args.default_value.clone(),
             url: None,
+            value: None,
             show_origin,
             show_scope: false,
         };
-        return cmd_get(&args, &get_args, git_dir.as_deref(), None);
+        return cmd_get(&args, &get_args, git_dir.as_deref(), value_pattern);
     }
 
     if let Some(ref key_raw) = args.get_urlmatch_key {
+        reject_fixed_value(&args)?;
         let (key, url) = if key_raw.is_empty() {
             if args.positional.len() < 2 {
                 bail!("usage: git config --get-urlmatch <key> <URL>");
@@ -582,6 +646,7 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     if let Some(ref key) = args.get_color_key {
+        reject_fixed_value(&args)?;
         let default_color = args.positional.first().map(|s| s.as_str()).unwrap_or("");
         return cmd_get_color(key, default_color, git_dir.as_deref());
     }
@@ -618,7 +683,11 @@ pub fn run(args: Args) -> Result<()> {
         if key.is_empty() {
             bail!("usage: git config --unset <key>");
         }
-        let unset_args = UnsetArgs { key, all: false };
+        let unset_args = UnsetArgs {
+            key,
+            all: false,
+            value: None,
+        };
         return cmd_unset(&args, &unset_args, scope, &file_path, value_pattern, false);
     }
 
@@ -633,11 +702,16 @@ pub fn run(args: Args) -> Result<()> {
         if key.is_empty() {
             bail!("usage: git config --unset-all <key>");
         }
-        let unset_args = UnsetArgs { key, all: true };
+        let unset_args = UnsetArgs {
+            key,
+            all: true,
+            value: None,
+        };
         return cmd_unset(&args, &unset_args, scope, &file_path, value_pattern, false);
     }
 
     if let Some(ref key_raw) = args.add_key {
+        reject_fixed_value(&args)?;
         let (key, value) = if key_raw.is_empty() {
             if args.positional.len() < 2 {
                 bail!("usage: git config --add <key> <value>");
@@ -653,6 +727,7 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     if args.remove_section {
+        reject_fixed_value(&args)?;
         if args.positional.is_empty() {
             bail!("missing section name");
         }
@@ -660,6 +735,7 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     if args.rename_section {
+        reject_fixed_value(&args)?;
         if args.positional.len() < 2 {
             bail!("missing old-name and/or new-name");
         }
@@ -684,6 +760,7 @@ pub fn run(args: Args) -> Result<()> {
                 show_names: false,
                 default: args.default_value.clone(),
                 url: None,
+                value: None,
                 show_origin: false,
                 show_scope: false,
             };
@@ -761,6 +838,7 @@ fn cmd_get(
     git_dir: Option<&Path>,
     value_pattern: Option<&str>,
 ) -> Result<()> {
+    require_fixed_value_pattern(args, value_pattern)?;
     let config = load_config(args, git_dir, ConfigReadIncludeMode::Lookup)?;
     let terminator = if args.null_terminated { '\0' } else { '\n' };
     let cwd = std::env::current_dir().ok();
@@ -802,9 +880,19 @@ fn cmd_get(
     }
 
     if get_args.regexp {
-        let matches = config
+        let mut matches = config
             .get_regexp(&get_args.key)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
+        if let Some(pattern) = value_pattern {
+            let mut filtered = Vec::new();
+            for entry in matches {
+                let value = entry.value.as_deref().unwrap_or("true");
+                if value_matches_pattern(value, pattern, args.fixed_value)? {
+                    filtered.push(entry);
+                }
+            }
+            matches = filtered;
+        }
         if matches.is_empty() {
             std::process::exit(1);
         }
@@ -962,6 +1050,11 @@ fn cmd_set(
     file_path: &Path,
     value_pattern: Option<&str>,
 ) -> Result<()> {
+    if set_args.append {
+        reject_fixed_value(args)?;
+    } else {
+        require_fixed_value_pattern(args, value_pattern)?;
+    }
     reject_stdin_write(file_path)?;
     // Validate --comment: must not contain LF
     if let Some(ref c) = args.comment {
@@ -996,10 +1089,17 @@ fn cmd_set(
         None => ConfigFile::parse(file_path, "", scope)?,
     };
 
+    let regex_value_pattern = regex_api_value_pattern(args, value_pattern);
+
     if set_args.append {
         config.add_value(&set_args.key, &value)?;
     } else if set_args.all {
-        config.replace_all_with_comment(&set_args.key, &value, value_pattern, comment)?;
+        config.replace_all_with_comment(
+            &set_args.key,
+            &value,
+            regex_value_pattern.as_deref(),
+            comment,
+        )?;
     } else if let Some(pattern) = value_pattern {
         let canon = grit_lib::config::canonical_key(&set_args.key)?;
         let mut matches: Vec<String> = config
@@ -1013,7 +1113,12 @@ fn cmd_set(
             eprintln!("warning: {} has multiple values", set_args.key);
             std::process::exit(5);
         }
-        config.replace_all_with_comment(&set_args.key, &value, Some(pattern), comment)?;
+        config.replace_all_with_comment(
+            &set_args.key,
+            &value,
+            regex_value_pattern.as_deref(),
+            comment,
+        )?;
     } else {
         config.set_with_comment(&set_args.key, &value, comment)?;
     }
@@ -1022,27 +1127,31 @@ fn cmd_set(
 }
 
 fn cmd_unset(
-    _args: &Args,
+    args: &Args,
     unset_args: &UnsetArgs,
     scope: ConfigScope,
     file_path: &Path,
     value_pattern: Option<&str>,
     preserve_empty_section_header_on_unset_all: bool,
 ) -> Result<()> {
+    require_fixed_value_pattern(args, value_pattern)?;
     reject_stdin_write(file_path)?;
     let mut config = ConfigFile::from_path(file_path, scope).context("reading config file")?;
+    let regex_value_pattern = regex_api_value_pattern(args, value_pattern);
 
     match config {
         Some(ref mut cfg) => {
             if unset_args.all {
                 let preserve = preserve_empty_section_header_on_unset_all;
-                let removed = cfg.unset_matching(&unset_args.key, value_pattern, preserve)?;
+                let removed =
+                    cfg.unset_matching(&unset_args.key, regex_value_pattern.as_deref(), preserve)?;
                 if removed == 0 {
                     std::process::exit(5);
                 }
-            } else if let Some(pattern) = value_pattern {
+            } else if value_pattern.is_some() {
                 // --unset with value-pattern: remove only matching values
-                let removed = cfg.unset_matching(&unset_args.key, Some(pattern), false)?;
+                let removed =
+                    cfg.unset_matching(&unset_args.key, regex_value_pattern.as_deref(), false)?;
                 if removed == 0 {
                     std::process::exit(5);
                 }
@@ -1607,26 +1716,30 @@ fn filter_values_by_pattern(
     pattern: &str,
     fixed_value: bool,
 ) -> Result<()> {
-    if fixed_value {
-        values.retain(|v| v == pattern);
-    } else {
-        let (negated, pat) = if let Some(rest) = pattern.strip_prefix('!') {
-            (true, rest)
-        } else {
-            (false, pattern)
-        };
-        let re = regex::Regex::new(pat)
-            .with_context(|| format!("invalid value-pattern regex: {pat}"))?;
-        values.retain(|v| {
-            let matched = re.is_match(v);
-            if negated {
-                !matched
-            } else {
-                matched
-            }
-        });
+    let mut filtered = Vec::new();
+    for value in values.drain(..) {
+        if value_matches_pattern(&value, pattern, fixed_value)? {
+            filtered.push(value);
+        }
     }
+    *values = filtered;
     Ok(())
+}
+
+fn value_matches_pattern(value: &str, pattern: &str, fixed_value: bool) -> Result<bool> {
+    if fixed_value {
+        return Ok(value == pattern);
+    }
+
+    let (negated, pat) = if let Some(rest) = pattern.strip_prefix('!') {
+        (true, rest)
+    } else {
+        (false, pattern)
+    };
+    let re =
+        regex::Regex::new(pat).with_context(|| format!("invalid value-pattern regex: {pat}"))?;
+    let matched = re.is_match(value);
+    Ok(if negated { !matched } else { matched })
 }
 
 /// Resolve the git directory (best-effort; returns None outside a repo).
