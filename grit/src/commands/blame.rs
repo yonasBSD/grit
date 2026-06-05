@@ -2365,9 +2365,7 @@ pub fn run(mut args: Args) -> Result<()> {
         if let Some(work_tree) = repo.work_tree.as_deref() {
             let abs_path = work_tree.join(&file_path);
             if std::fs::symlink_metadata(&abs_path).is_err() {
-                ensure_index_knows_path(&repo, &file_path).map_err(|_| {
-                    anyhow::anyhow!("fatal: Cannot lstat '{file_path}': No such file or directory")
-                })?;
+                bail!("fatal: Cannot lstat '{file_path}': No such file or directory");
             }
         }
     }

@@ -2069,8 +2069,7 @@ fn switch_branch(
                 .load_index()
                 .map(|idx| idx.entries.is_empty())
                 .unwrap_or(true);
-            let sparse_on = sparse_checkout_config_enabled(&repo.git_dir);
-            if sparse_on || index_empty || !index_matches_flat_tree(repo, &target_tree)? {
+            if index_empty {
                 switch_to_tree(
                     repo,
                     &head,
@@ -3971,6 +3970,21 @@ fn checkout_record_index_result(
     }
 }
 
+fn clear_skip_worktree_on_df_descendants(index: &mut Index, path: &[u8]) -> bool {
+    let mut prefix = Vec::with_capacity(path.len() + 1);
+    prefix.extend_from_slice(path);
+    prefix.push(b'/');
+
+    let mut changed = false;
+    for entry in &mut index.entries {
+        if entry.stage() == 0 && entry.skip_worktree() && entry.path.starts_with(&prefix) {
+            entry.set_skip_worktree(false);
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn refresh_written_index_entries(
     index: &mut Index,
     work_tree: &Path,
@@ -4782,6 +4796,7 @@ checking out of the index."
                             // restored path becomes a single stage-0 entry, matching git.
                             index.remove_path_all_stages(&flat_entry.path);
                             index.add_or_replace(flat_entry.clone());
+                            clear_skip_worktree_on_df_descendants(&mut index, &flat_entry.path);
                             index_modified = true;
                             matched = true;
                         }
@@ -4874,6 +4889,7 @@ checking out of the index."
                             // restored path becomes a single stage-0 entry, matching git.
                             index.remove_path_all_stages(&flat_entry.path);
                             index.add_or_replace(flat_entry.clone());
+                            clear_skip_worktree_on_df_descendants(&mut index, &flat_entry.path);
                             index_modified = true;
                             matched = true;
                         }
@@ -5046,6 +5062,7 @@ checking out of the index."
                         // restored path becomes a single stage-0 entry, matching git.
                         index.remove_path_all_stages(&path_bytes);
                         index.add_or_replace(entry);
+                        clear_skip_worktree_on_df_descendants(&mut index, &path_bytes);
                         index_modified = true;
                     }
                     checkout_record_path_result(w, &mut updated_paths, &mut path_errors);

@@ -1245,6 +1245,9 @@ fn reset_paths(
         let mut out: Vec<String> = set.into_iter().collect();
         out.sort();
         if out.is_empty() {
+            if commit_spec != "HEAD" && commit_spec != "@" {
+                return Ok(());
+            }
             bail!(
                 "pathspec '{}' did not match any file(s) known to git",
                 paths.join(" ")

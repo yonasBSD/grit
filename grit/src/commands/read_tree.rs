@@ -1129,6 +1129,9 @@ fn require_uptodate(repo: &Repository, entry: &IndexEntry) -> Result<()> {
     };
     let rel = String::from_utf8_lossy(&entry.path);
     let abs = wt.join(rel.as_ref());
+    if entry.skip_worktree() && std::fs::symlink_metadata(&abs).is_err() {
+        return Ok(());
+    }
     if !worktree_matches_entry(repo, entry, &abs)? {
         bail!("read-tree: local changes would be overwritten by merge");
     }

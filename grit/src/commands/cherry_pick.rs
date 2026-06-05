@@ -34,6 +34,7 @@ use grit_lib::reflog::read_reflog;
 use grit_lib::refs::append_reflog;
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse::resolve_revision;
+use grit_lib::sparse_checkout::apply_sparse_checkout_skip_worktree;
 use grit_lib::state::{resolve_head, HeadState};
 use grit_lib::write_tree::write_tree_from_index;
 
@@ -1006,6 +1007,13 @@ fn cherry_pick_one_commit(
         &mut merge_result.index,
         label_theirs.as_str(),
     );
+    apply_sparse_checkout_skip_worktree(
+        &repo.git_dir,
+        repo.work_tree.as_deref(),
+        &mut merge_result.index,
+        false,
+    );
+    clear_skip_worktree_for_changed_entries(&mut merge_result.index, &ours_entries);
 
     let has_conflicts = merge_result.index.entries.iter().any(|e| e.stage() != 0);
 
@@ -2271,7 +2279,9 @@ fn create_cherry_pick_commit(
     original_commit: &CommitData,
     source_commit_oid: ObjectId,
 ) -> Result<()> {
-    let tree_oid = write_tree_from_index(&repo.odb, index, "")?;
+    let mut index_for_tree = index.clone();
+    index_for_tree.expand_sparse_directory_placeholders(&repo.odb)?;
+    let tree_oid = write_tree_from_index(&repo.odb, &index_for_tree, "")?;
     let git_dir = &repo.git_dir;
 
     let mut parents = Vec::new();
@@ -2596,6 +2606,24 @@ pub(crate) fn bail_if_df_merge_would_remove_cwd(
 
 fn same_blob(a: &IndexEntry, b: &IndexEntry) -> bool {
     a.oid == b.oid && a.mode == b.mode
+}
+
+fn clear_skip_worktree_for_changed_entries(
+    index: &mut Index,
+    ours_entries: &HashMap<Vec<u8>, IndexEntry>,
+) {
+    for entry in &mut index.entries {
+        if entry.stage() != 0 || !entry.skip_worktree() {
+            continue;
+        }
+        let changed = match ours_entries.get(&entry.path) {
+            Some(ours) => !same_blob(ours, entry),
+            None => true,
+        };
+        if changed {
+            entry.set_skip_worktree(false);
+        }
+    }
 }
 
 fn parent_dir(path: &[u8]) -> Vec<u8> {
@@ -3057,10 +3085,16 @@ pub(crate) fn preflight_cherry_pick_cwd_obstruction(
 
     let mut written = HashSet::new();
     for entry in &index.entries {
+        if entry.stage() == 0 && (entry.skip_worktree() || entry.mode == MODE_TREE) {
+            continue;
+        }
         let path_str = String::from_utf8_lossy(&entry.path).into_owned();
         let abs_path = work_tree.join(&path_str);
 
         if entry.stage() == 0 {
+            if entry.skip_worktree() {
+                continue;
+            }
             if let Some(prev) = old_stage0.get(&entry.path) {
                 if same_blob(prev, entry) {
                     written.insert(entry.path.clone());
@@ -3179,6 +3213,9 @@ fn checkout_merged_index(
     }
     let mut written = HashSet::new();
     for entry in &index.entries {
+        if entry.stage() == 0 && (entry.skip_worktree() || entry.mode == MODE_TREE) {
+            continue;
+        }
         let path_str = String::from_utf8_lossy(&entry.path).into_owned();
         let abs_path = work_tree.join(&path_str);
 
@@ -3235,7 +3272,8 @@ fn write_entry_to_worktree(
     entry: &IndexEntry,
 ) -> Result<()> {
     if let Some(parent) = abs_path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating parent directory for {path_str}"))?;
     }
 
     if entry.mode == 0o160000 {
@@ -3246,12 +3284,16 @@ fn write_entry_to_worktree(
             let _ = fs::remove_file(abs_path);
         }
         if !abs_path.is_dir() {
-            fs::create_dir_all(abs_path)?;
+            fs::create_dir_all(abs_path)
+                .with_context(|| format!("creating gitlink directory {path_str}"))?;
         }
         return Ok(());
     }
 
-    let obj = repo.odb.read(&entry.oid)?;
+    let obj = repo
+        .odb
+        .read(&entry.oid)
+        .with_context(|| format!("reading object for {path_str}"))?;
 
     if entry.mode == MODE_SYMLINK {
         let target =
@@ -3262,20 +3304,25 @@ fn write_entry_to_worktree(
             }
             let _ = fs::remove_file(abs_path);
         }
-        std::os::unix::fs::symlink(target, abs_path)?;
+        std::os::unix::fs::symlink(target, abs_path)
+            .with_context(|| format!("creating symlink {path_str}"))?;
     } else {
         if abs_path.is_dir() {
             if grit_lib::worktree_cwd::cwd_would_be_removed_with_repo_path(work_tree, path_str) {
                 bail!("Refusing to remove the current working directory:\n{path_str}\n");
             }
-            fs::remove_dir_all(abs_path)?;
+            fs::remove_dir_all(abs_path)
+                .with_context(|| format!("removing directory before writing {path_str}"))?;
         }
-        fs::write(abs_path, &obj.data)?;
+        fs::write(abs_path, &obj.data).with_context(|| format!("writing {path_str}"))?;
         if entry.mode == MODE_EXECUTABLE {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(abs_path)?.permissions();
+            let mut perms = fs::metadata(abs_path)
+                .with_context(|| format!("reading permissions for {path_str}"))?
+                .permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(abs_path, perms)?;
+            fs::set_permissions(abs_path, perms)
+                .with_context(|| format!("setting executable permissions on {path_str}"))?;
         }
     }
 

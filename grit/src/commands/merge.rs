@@ -2843,6 +2843,9 @@ Aborting"
     if will_edit && msg.trim().is_empty() {
         bail!("Empty commit message.");
     }
+    merge_result
+        .index
+        .expand_sparse_directory_placeholders(&repo.odb)?;
     let tree_oid = write_tree_from_index(&repo.odb, &merge_result.index, "")?;
     let cache_tree = build_cache_tree_from_index(&repo.odb, &merge_result.index)?;
     merge_result.index.set_cache_tree(cache_tree);
