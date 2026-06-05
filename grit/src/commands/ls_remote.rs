@@ -65,6 +65,13 @@ pub fn run(args: Args) -> Result<()> {
     let effective_path = resolve_remote_or_path(&args.repository);
     let repo_path_str = effective_path.to_string_lossy().to_string();
     let remote_name = maybe_remote_name(&args.repository);
+
+    // When operating on a configured remote, Git loads the remote definition,
+    // which parses every configured fetch and push refspec.  An invalid
+    // refspec makes the whole command die.  Mirror that here.
+    if let Some(name) = remote_name.as_deref() {
+        validate_remote_refspecs(name)?;
+    }
     let server_options = effective_server_options(&args, remote_name.as_deref());
     if !server_options.is_empty() && crate::protocol_wire::effective_client_protocol_version() < 2 {
         bail!(
@@ -311,6 +318,36 @@ fn maybe_remote_name(path: &Path) -> Option<String> {
     let config_path = repo.git_dir.join("config");
     let content = std::fs::read_to_string(config_path).ok()?;
     parse_remote_url(&content, &name).map(|_| name)
+}
+
+/// Validate the fetch and push refspecs configured for `remote_name`.
+///
+/// Git loads a remote's definition before any operation, parsing each
+/// configured `remote.<name>.fetch` and `remote.<name>.push` refspec; an
+/// invalid refspec aborts the command.  This reproduces that early failure so
+/// commands like `ls-remote <remote>` reject malformed refspecs.
+fn validate_remote_refspecs(remote_name: &str) -> Result<()> {
+    let set = if let Ok(repo) = Repository::discover(None) {
+        ConfigSet::load(Some(repo.git_dir.as_path()), true).unwrap_or_default()
+    } else {
+        ConfigSet::load(None, true).unwrap_or_default()
+    };
+
+    let fetch_key = format!("remote.{remote_name}.fetch");
+    for spec in set.get_all(&fetch_key) {
+        if !grit_lib::refspec::valid_fetch_refspec(&spec) {
+            bail!("invalid refspec '{spec}'");
+        }
+    }
+
+    let push_key = format!("remote.{remote_name}.push");
+    for spec in set.get_all(&push_key) {
+        if !grit_lib::refspec::valid_push_refspec(&spec) {
+            bail!("invalid refspec '{spec}'");
+        }
+    }
+
+    Ok(())
 }
 
 fn effective_server_options(args: &Args, remote_name: Option<&str>) -> Vec<String> {
