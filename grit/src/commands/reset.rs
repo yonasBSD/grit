@@ -1151,7 +1151,7 @@ fn emit_index_trace_region(label: &str) {
 }
 
 fn reset_paths_require_sparse_index_expansion(index_path: &Path, paths: &[String]) -> bool {
-    if paths.len() != 1 || !paths[0].contains('/') {
+    if paths.len() != 1 || !paths[0].contains('/') || paths[0].ends_with('/') {
         return false;
     }
     let Ok(index) = Index::load(index_path) else {

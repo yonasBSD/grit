@@ -91,3 +91,9 @@
   now detects sparse-index-on-disk from actual placeholder entries too. Direct `--run=1,57,58,59`
   passes subtests 57 and 58, then fails at the pre-existing subtest 59 block; full harness remains
   `88/106`.
+- Subtest 59 then failed at `restore -s rename-out-to-out -- deep/deeper1` because restore treated a
+  literal source-tree directory as a single blob path. Tree-source restore now expands literal
+  directory pathspecs to contained file paths. The reset trace detector also no longer reports
+  expansion for trailing-slash directory pathspecs like `folder1/`.
+- Direct `--run=1,59` passes, and canonical harness:
+  `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh` -> `89/106`.

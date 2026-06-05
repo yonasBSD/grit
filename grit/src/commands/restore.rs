@@ -723,6 +723,25 @@ fn expand_pathspecs(
                     }
                 }
             } else {
+                if let Some(tree_oid) = source_tree {
+                    if let Some((oid, mode)) = find_in_tree(repo, *tree_oid, &rel)? {
+                        if mode == 0o040000 {
+                            let mut tree_paths = Vec::new();
+                            collect_tree_paths(
+                                repo,
+                                oid,
+                                rel.trim_end_matches('/'),
+                                &mut tree_paths,
+                            )?;
+                            for path in tree_paths {
+                                if !result.contains(&path) {
+                                    result.push(path);
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
                 result.push(rel);
             }
         }
