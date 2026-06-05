@@ -321,13 +321,22 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
     // If too many prefixes (>= 65536), ignore them all (list everything).
     let use_prefixes = prefixes.len() < 65536;
 
+    // `transfer.hideRefs` / `uploadpack.hideRefs`: hidden refs are not advertised. Patterns prefixed
+    // `^` match the full storage name, otherwise the namespace-stripped advertised name.
+    let cfg = ConfigSet::load(Some(git_dir), false).unwrap_or_default();
+    let hide = grit_lib::hide_refs::hide_ref_patterns_uploadpack(&cfg);
+
     // Collect all refs.
     let mut entries: Vec<RefInfo> = Vec::new();
 
-    // HEAD
+    // HEAD (resolved relative to the active namespace). Its symref-target is the namespace-stripped
+    // logical ref so a clone under `GIT_NAMESPACE` selects the namespaced HEAD branch (t5509).
     if let Ok(head_oid) = refs::resolve_ref(git_dir, "HEAD") {
         let symref_target = if symrefs {
-            refs::read_symbolic_ref(git_dir, "HEAD").ok().flatten()
+            refs::read_symbolic_ref(git_dir, "HEAD")
+                .ok()
+                .flatten()
+                .map(|t| grit_lib::ref_namespace::strip_namespace_prefix(&t).into_owned())
         } else {
             None
         };
@@ -339,10 +348,14 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
         });
     }
 
-    // All refs under refs/
+    // All refs under refs/ (logical/stripped names when a namespace is active).
     for prefix in &["refs/heads/", "refs/tags/", "refs/remotes/", "refs/notes/"] {
         if let Ok(ref_list) = refs::list_refs(git_dir, prefix) {
             for (name, oid) in ref_list {
+                let full = grit_lib::ref_namespace::storage_ref_name(&name);
+                if grit_lib::hide_refs::ref_is_hidden(&name, &full, &hide) {
+                    continue;
+                }
                 let mut info = RefInfo {
                     name: name.clone(),
                     oid,
@@ -350,7 +363,10 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
                     peeled: None,
                 };
                 if symrefs {
-                    info.symref_target = refs::read_symbolic_ref(git_dir, &name).ok().flatten();
+                    info.symref_target = refs::read_symbolic_ref(git_dir, &name)
+                        .ok()
+                        .flatten()
+                        .map(|t| grit_lib::ref_namespace::strip_namespace_prefix(&t).into_owned());
                 }
                 if peel && name.starts_with("refs/tags/") {
                     info.peeled = peel_to_commit(git_dir, &oid);

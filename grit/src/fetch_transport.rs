@@ -365,6 +365,11 @@ pub(crate) fn read_advertisement(
                         }
                     }
                 }
+                // `0{40} capabilities^{}` is the no-refs capability carrier (an empty repo or empty
+                // namespace), not an advertised ref — never record it (t5509 empty namespace).
+                if refname == "capabilities^{}" {
+                    continue;
+                }
                 out.push((refname, oid));
             }
             _ => {}

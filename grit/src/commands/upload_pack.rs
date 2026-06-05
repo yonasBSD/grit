@@ -9,6 +9,7 @@ use clap::Args as ClapArgs;
 use grit_lib::config::ConfigSet;
 use grit_lib::merge_base;
 use grit_lib::objects::{parse_commit, ObjectId, ObjectKind};
+use grit_lib::ref_namespace;
 use grit_lib::refs;
 use grit_lib::repo::Repository;
 use grit_lib::state::resolve_head;
@@ -633,16 +634,31 @@ fn write_ref_advertisement(w: &mut impl Write, git_dir: &Path) -> Result<()> {
         .map(|s| s.to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "sha1".to_owned());
+
+    // `transfer.hideRefs` / `uploadpack.hideRefs`: refs matching these patterns are not advertised
+    // (and not made wantable). Patterns prefixed `^` match the full storage name; otherwise the
+    // namespace-stripped (advertised) name (matches Git `ref_is_hidden`).
+    let hide = grit_lib::hide_refs::hide_ref_patterns_uploadpack(&set);
+
+    // Resolve HEAD relative to the active namespace. Under `GIT_NAMESPACE`, only the namespaced
+    // `refs/namespaces/<ns>/HEAD` is consulted (Git's `head_ref_namespaced`); a missing namespaced
+    // HEAD means no `HEAD` line (and no `symref=HEAD:` capability) is advertised.
+    let head_symref_logical = refs::read_symbolic_ref(git_dir, "HEAD")
+        .ok()
+        .flatten()
+        .map(|t| ref_namespace::strip_namespace_prefix(&t).into_owned());
+    let head_oid = refs::resolve_ref(git_dir, "HEAD").ok();
+
+    let symref_cap = match (&head_symref_logical, head_oid) {
+        (Some(target), Some(_)) => format!(" symref=HEAD:{target}"),
+        _ => String::new(),
+    };
+
     let mut caps = format!(
         "multi_ack thin-pack side-band side-band-64k ofs-delta shallow deepen-since deepen-not \
          deepen-relative no-progress include-tag multi_ack_detailed allow-tip-sha1-in-want \
-         allow-reachable-sha1-in-want no-done symref=HEAD:{} filter object-format={object_format} \
-         agent=git/{} ref-in-want",
-        refs::read_symbolic_ref(git_dir, "HEAD")
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| "refs/heads/main".to_owned()),
-        version,
+         allow-reachable-sha1-in-want no-done{symref_cap} filter object-format={object_format} \
+         agent=git/{version} ref-in-want",
     );
     if trace2_transfer::transfer_advertise_sid_enabled(git_dir) {
         let sid = trace2_transfer::trace2_session_id_wire_once();
@@ -651,67 +667,91 @@ fn write_ref_advertisement(w: &mut impl Write, git_dir: &Path) -> Result<()> {
     }
 
     let mut first = true;
-    if let Ok(head_oid) = refs::resolve_ref(git_dir, "HEAD") {
-        let line = format!("{} HEAD\0{}\n", head_oid.to_hex(), caps);
+    let emit = |w: &mut dyn Write, oid: &ObjectId, name: &str, first: &mut bool| -> Result<()> {
+        let line = if *first {
+            *first = false;
+            format!("{} {name}\0{caps}\n", oid.to_hex())
+        } else {
+            format!("{} {name}\n", oid.to_hex())
+        };
         let len = 4 + line.len();
         write!(w, "{:04x}{}", len, line)?;
-        first = false;
-    } else {
-        // Unborn or dangling `HEAD` symref: Git omits a `HEAD` advertisement and may use the
-        // first non-branch/non-tag ref as the capability carrier (see `t5700` branchless remote).
-        let under_refs = refs::list_refs(git_dir, "refs/")?;
-        let non_standard: Vec<(String, ObjectId)> = under_refs
-            .into_iter()
-            .filter(|(n, _)| !n.starts_with("refs/heads/") && !n.starts_with("refs/tags/"))
-            .collect();
-        if !non_standard.is_empty() {
-            for (i, (refname, oid)) in non_standard.iter().enumerate() {
-                let line = if i == 0 {
-                    format!("{} {}\0{}\n", oid.to_hex(), refname, caps)
-                } else {
-                    format!("{} {}\n", oid.to_hex(), refname)
-                };
+        Ok(())
+    };
+
+    // HEAD (namespace-resolved). `head_ref_namespaced` advertises HEAD only when it resolves; it is
+    // never subject to hideRefs filtering (the HEAD pseudo-ref is always offered when present).
+    if let Some(oid) = head_oid {
+        emit(w, &oid, "HEAD", &mut first)?;
+    }
+
+    // All refs under the active namespace, advertised under their logical (stripped) names.
+    // `refs::list_refs` already maps `GIT_NAMESPACE` onto `refs/namespaces/<ns>/...` and returns the
+    // logical names, so we filter only with hideRefs here.
+    let all_refs = refs::list_refs(git_dir, "refs/")?;
+    for (refname, oid) in &all_refs {
+        let full = ref_namespace::storage_ref_name(refname);
+        if grit_lib::hide_refs::ref_is_hidden(refname, &full, &hide) {
+            continue;
+        }
+        emit(w, oid, refname, &mut first)?;
+        // Annotated tags advertise the peeled target as `<name>^{}`.
+        if refname.starts_with("refs/tags/") {
+            if let Some(peeled) = peel_to_target(git_dir, oid) {
+                let line = format!("{} {refname}^{{}}\n", peeled.to_hex());
                 let len = 4 + line.len();
                 write!(w, "{:04x}{}", len, line)?;
             }
-            first = false;
-        } else if let Ok(HeadState::Detached { oid }) = resolve_head(git_dir) {
-            let line = format!("{} HEAD\0{}\n", oid.to_hex(), caps);
-            let len = 4 + line.len();
-            write!(w, "{:04x}{}", len, line)?;
-            first = false;
-        } else if let Ok(HeadState::Branch { oid: Some(oid), .. }) = resolve_head(git_dir) {
-            let line = format!("{} HEAD\0{}\n", oid.to_hex(), caps);
-            let len = 4 + line.len();
-            write!(w, "{:04x}{}", len, line)?;
-            first = false;
-        } else if let Ok(HeadState::Branch { oid: None, .. }) = resolve_head(git_dir) {
-            // An unborn HEAD advertises the null OID. The OID width must match the repository's
-            // object format (64 hex zeros for SHA-256, 40 for SHA-1) so a hash-aware client can
-            // detect the format from an empty repository (`t5551` empty SHA-256 clone, proto v0).
-            let z = zero_oid_hex_for_format(&object_format);
-            let line = format!("{z} HEAD\0{caps}\n");
-            let len = 4 + line.len();
-            write!(w, "{:04x}{}", len, line)?;
-            first = false;
         }
     }
 
-    let all_refs = list_all_refs(git_dir)?;
-    for (refname, oid) in &all_refs {
-        if first {
-            let line = format!("{} {}\0{}\n", oid.to_hex(), refname, caps);
+    // Nothing advertised yet (no namespaced HEAD and no refs under the namespace). When a namespace
+    // is active, an empty namespace advertises only the `capabilities^{}` carrier (Git's
+    // `send_ref`/no-ref path) so `ls-remote` reports an empty result (t5509 garbage namespace).
+    // Without an active namespace, fall back to the unborn/detached HEAD advertisement so a
+    // hash-aware client can still detect the object format (t5551 empty SHA-256 clone, proto v0).
+    if first {
+        if ref_namespace::ref_storage_prefix().is_some() {
+            let z = zero_oid_hex_for_format(&object_format);
+            let line = format!("{z} capabilities^{{}}\0{caps}\n");
             let len = 4 + line.len();
             write!(w, "{:04x}{}", len, line)?;
-            first = false;
         } else {
-            let line = format!("{} {}\n", oid.to_hex(), refname);
-            let len = 4 + line.len();
-            write!(w, "{:04x}{}", len, line)?;
+            match resolve_head(git_dir) {
+                Ok(HeadState::Detached { oid }) | Ok(HeadState::Branch { oid: Some(oid), .. }) => {
+                    let line = format!("{} HEAD\0{caps}\n", oid.to_hex());
+                    let len = 4 + line.len();
+                    write!(w, "{:04x}{}", len, line)?;
+                }
+                Ok(HeadState::Branch { oid: None, .. }) => {
+                    let z = zero_oid_hex_for_format(&object_format);
+                    let line = format!("{z} HEAD\0{caps}\n");
+                    let len = 4 + line.len();
+                    write!(w, "{:04x}{}", len, line)?;
+                }
+                _ => {}
+            }
         }
     }
 
     Ok(())
+}
+
+/// Peel an annotated tag to its ultimate non-tag target. Returns `None` for lightweight tags
+/// (refs pointing directly at a commit/tree/blob).
+fn peel_to_target(git_dir: &Path, oid: &ObjectId) -> Option<ObjectId> {
+    let repo = Repository::open(git_dir, None).ok()?;
+    let mut cur = *oid;
+    let mut peeled_any = false;
+    loop {
+        let obj = repo.odb.read(&cur).ok()?;
+        if obj.kind != ObjectKind::Tag {
+            return if peeled_any { Some(cur) } else { None };
+        }
+        let tag = grit_lib::objects::parse_tag(&obj.data).ok()?;
+        cur = tag.object;
+        peeled_any = true;
+    }
 }
 
 fn advertise_refs_with_caps(repo: &Repository, server_proto: u8) -> Result<()> {
@@ -724,16 +764,6 @@ fn advertise_refs_with_caps(repo: &Repository, server_proto: u8) -> Result<()> {
     write!(out, "0000")?;
     out.flush()?;
     Ok(())
-}
-
-fn list_all_refs(git_dir: &Path) -> Result<Vec<(String, ObjectId)>> {
-    let mut result = Vec::new();
-    for prefix in &["refs/heads/", "refs/tags/", "refs/remotes/"] {
-        if let Ok(entries) = refs::list_refs(git_dir, prefix) {
-            result.extend(entries);
-        }
-    }
-    Ok(result)
 }
 
 /// Open a repository (bare or non-bare).

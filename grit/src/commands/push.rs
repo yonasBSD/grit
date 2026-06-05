@@ -1410,6 +1410,8 @@ fn push_to_url(
             }
             i += 1;
         }
+    } else if args.tags || args.follow_tags {
+        // `git push --tags` (no refspec) pushes only tags, handled by the tags block below.
     } else {
         // Default push mode (simple/current/upstream/matching/nothing).
         let branch = current_branch.context("not on a branch; specify a refspec to push")?;
@@ -4143,6 +4145,9 @@ fn push_over_receive_pack_child(
             args.refspecs.clone()
         } else if !push_refspecs_from_config.is_empty() {
             push_refspecs_from_config.to_vec()
+        } else if args.tags || args.follow_tags {
+            // `git push --tags` (with no refspec) pushes only tags, not the current branch.
+            Vec::new()
         } else if let Some(branch) = current_branch {
             let (src, dst, auto_setup) =
                 default_push_ref_for_current_branch(config, remote_name, branch)?;
@@ -4254,6 +4259,77 @@ fn push_over_receive_pack_child(
                     None
                 },
             });
+        }
+    }
+
+    // `--tags`: also push every local tag (unless mirroring, which already covers refs/*). The
+    // remote's current value comes from the advertisement, so this works for namespaced/`ext::`
+    // remotes where the tag is stored under `refs/namespaces/<ns>/refs/tags/...`.
+    if args.tags && !effective_mirror {
+        let local_tags = refs::list_refs(&repo.git_dir, "refs/tags/")?;
+        for (refname, local_oid) in &local_tags {
+            if updates.iter().any(|u| u.remote_ref == *refname) {
+                continue;
+            }
+            let old_oid = remote_ref_map.get(refname).copied();
+            if old_oid.as_ref() == Some(local_oid) {
+                continue;
+            }
+            if let Some(old) = old_oid {
+                remote_have.insert(old);
+            }
+            updates.push(RefUpdate {
+                local_ref: Some(refname.clone()),
+                remote_ref: refname.clone(),
+                old_oid,
+                new_oid: Some(*local_oid),
+                expected_oid: None,
+                refspec_force: false,
+                pre_push_local_name: None,
+            });
+        }
+    }
+
+    // `--follow-tags` (or `push.followTags`): push annotated tags that point at commits already
+    // being pushed and do not yet exist on the remote.
+    let follow_tags = args.follow_tags
+        || (!args.no_follow_tags
+            && config
+                .get("push.followTags")
+                .map(|v| matches!(v.to_lowercase().as_str(), "true" | "yes" | "1"))
+                .unwrap_or(false));
+    if follow_tags && !effective_mirror {
+        let pushed_oids: std::collections::HashSet<ObjectId> =
+            updates.iter().filter_map(|u| u.new_oid).collect();
+        if !pushed_oids.is_empty() {
+            if let Ok(local_tags) = refs::list_refs(&repo.git_dir, "refs/tags/") {
+                for (tag_name, tag_oid) in &local_tags {
+                    if updates.iter().any(|u| u.remote_ref == *tag_name) {
+                        continue;
+                    }
+                    if remote_ref_map.contains_key(tag_name) {
+                        continue;
+                    }
+                    // Only annotated tags whose pointed-at object is being pushed.
+                    if let Ok(obj) = repo.odb.read(tag_oid) {
+                        if obj.kind == grit_lib::objects::ObjectKind::Tag {
+                            if let Ok(tag) = grit_lib::objects::parse_tag(&obj.data) {
+                                if pushed_oids.contains(&tag.object) {
+                                    updates.push(RefUpdate {
+                                        local_ref: Some(tag_name.clone()),
+                                        remote_ref: tag_name.clone(),
+                                        old_oid: None,
+                                        new_oid: Some(*tag_oid),
+                                        expected_oid: None,
+                                        refspec_force: false,
+                                        pre_push_local_name: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
