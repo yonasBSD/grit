@@ -384,6 +384,9 @@ impl Parser {
         } else {
             // Bare key (boolean true)
             let raw_name = strip_inline_comment(trimmed);
+            if raw_name.split_whitespace().count() > 1 {
+                return None;
+            }
             let key = self.make_key(raw_name.trim());
             Some((key, None))
         }
