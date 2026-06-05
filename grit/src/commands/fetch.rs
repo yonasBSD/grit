@@ -390,6 +390,8 @@ struct FetchDisplay {
     from_url: String,
     records: Vec<FetchDisplayRecord>,
     shown_url: bool,
+    /// Set once any emitted record targeted `FETCH_HEAD` (a FETCH_HEAD-only update).
+    emitted_fetch_head: bool,
 }
 
 impl FetchDisplay {
@@ -399,6 +401,7 @@ impl FetchDisplay {
             from_url,
             records: Vec::new(),
             shown_url: false,
+            emitted_fetch_head: false,
         }
     }
 
@@ -466,6 +469,13 @@ impl FetchDisplay {
         if self.records.is_empty() {
             return;
         }
+        if self.records.iter().any(|r| r.local_full == "FETCH_HEAD") {
+            self.emitted_fetch_head = true;
+        }
+        // Git reports pruned deletions before any ref updates (prune_refs runs before the fetch
+        // updates). Our accumulator collects updates first and prune deletes later, so reorder
+        // deletes to the front with a stable sort that otherwise preserves insertion order.
+        self.records.sort_by_key(|r| r.code != '-');
         match self.format {
             FetchOutputFormat::Porcelain => {
                 let stdout = std::io::stdout();
@@ -2146,7 +2156,10 @@ fn fetch_remote(
     let mut tag_clobber_failures: Vec<String> = Vec::new();
     let mut pending_atomic_ref_ops: Vec<PendingRefOp> = Vec::new();
     let mut pending_atomic_noop_head_hook: Option<(String, String, String)> = None;
-    let mut has_updates = false;
+    // Set when a non-force destination rejects a non-fast-forward update. The fetch still updates
+    // the other refs (or, with `--atomic`, aborts the transaction) but exits non-zero, without an
+    // extra stderr hint — the reject is reported via its `!` display line.
+    let mut had_rejected_updates = false;
 
     let remote_symbolic_head_branch =
         remote_head_symbolic_branch_from_transport
@@ -2361,25 +2374,42 @@ fn fetch_remote(
                             continue;
                         }
 
-                        // Check fast-forward for wildcard updates; `--atomic` expects any
-                        // non-fast-forward to abort the entire fetch.
+                        // Check fast-forward for wildcard updates. A non-fast-forward update to a
+                        // non-force destination is *rejected* (reported with `!`). With `--atomic`
+                        // the whole transaction is aborted (no refs written); without it, the other
+                        // refs still update. Either way the command exits non-zero at the end and
+                        // the reject is reported only via the `!` line (t5574 porcelain output).
+                        let mut rejected_non_ff = false;
                         if let Some(ref old) = old_oid {
                             if old != remote_oid && !(force || args.force) {
                                 let is_ff = merge_base::is_ancestor(&ff_repo, *old, *remote_oid)
                                     .unwrap_or(true);
                                 if !is_ff {
-                                    eprintln!(
-                                        " ! [rejected]        {src} -> {local_ref} (non-fast-forward)"
-                                    );
-                                    bail!("cannot fast-forward ref '{local_ref}'");
+                                    rejected_non_ff = true;
                                 }
                             }
                         }
 
-                        if !has_updates && !args.quiet {
-                            eprintln!("From {from_display_url}");
-                            has_updates = true;
+                        if rejected_non_ff {
+                            // A rejected non-ff update makes the fetch exit non-zero, but it is
+                            // reported via the `!` display line only — no extra "could not be
+                            // updated" hint (t5574 expects empty stderr in porcelain mode).
+                            had_rejected_updates = true;
+                            if !args.quiet {
+                                display.push(
+                                    '!',
+                                    "[rejected]",
+                                    refname,
+                                    &local_ref,
+                                    &local_ref,
+                                    old_oid.unwrap_or_else(ObjectId::zero),
+                                    *remote_oid,
+                                    Some("non-fast-forward"),
+                                );
+                            }
+                            continue;
                         }
+
                         apply_single_ref_update(
                             args,
                             git_dir,
@@ -2391,18 +2421,23 @@ fn fetch_remote(
                         )?;
 
                         if !args.quiet {
-                            let short = local_ref
-                                .strip_prefix("refs/heads/")
-                                .or_else(|| local_ref.strip_prefix("refs/tags/"))
-                                .unwrap_or(&local_ref);
-                            match old_oid {
-                                None => eprintln!(" * [new branch]      {branch:<17} -> {short}"),
-                                Some(old) => eprintln!(
-                                    "   {}..{}  {branch:<17} -> {short}",
-                                    &old.to_string()[..7],
-                                    &remote_oid.to_string()[..7],
-                                ),
-                            }
+                            let (code, summary, error) = classify_ref_update(
+                                &ff_repo,
+                                refname,
+                                old_oid.as_ref(),
+                                remote_oid,
+                                show_forced_updates,
+                            );
+                            display.push(
+                                code,
+                                &summary,
+                                refname,
+                                &local_ref,
+                                &local_ref,
+                                old_oid.unwrap_or_else(ObjectId::zero),
+                                *remote_oid,
+                                error,
+                            );
                         }
                     }
                 }
@@ -2615,6 +2650,95 @@ fn fetch_remote(
                         ObjectId::zero(),
                         remote_oid,
                         None,
+                    );
+                }
+            }
+        }
+
+        // Opportunistic remote-tracking updates: when explicit *wildcard* CLI refspecs are used,
+        // Git also applies the configured `remote.<name>.fetch` refspecs to the advertised refs,
+        // updating (e.g.) `refs/remotes/origin/*` alongside the CLI destinations (t5574). Restrict
+        // this to wildcard CLI fetches so a single-ref fetch (`origin HEAD`, `origin <oid>:x`)
+        // doesn't sprout spurious tracking updates.
+        let cli_has_wildcard = cli_refspecs.iter().any(|s| {
+            let clean = s.strip_prefix('^').unwrap_or(s);
+            let clean = clean.strip_prefix('+').unwrap_or(clean);
+            let src = clean.split(':').next().unwrap_or(clean);
+            src.contains('*')
+        });
+        for spec in cli_tracking_refspecs.iter().filter(|_| cli_has_wildcard) {
+            if spec.negative || spec.dst.is_empty() || !spec.src.contains('*') {
+                continue;
+            }
+            for (refname, remote_oid) in &remote_all_refs {
+                if is_excluded(refname) {
+                    continue;
+                }
+                let Some(matched) = match_glob_pattern(&spec.src, refname) else {
+                    continue;
+                };
+                let local_ref = spec.dst.replacen('*', matched, 1);
+                if updated_refs.contains(&local_ref) {
+                    continue;
+                }
+                updated_refs.push(local_ref.clone());
+                let old_oid = read_ref_oid(git_dir, &local_ref);
+                if old_oid.as_ref() == Some(remote_oid) {
+                    continue;
+                }
+                let forced = spec.force || args.force;
+                let mut rejected_non_ff = false;
+                if let Some(ref old) = old_oid {
+                    if old != remote_oid && !forced {
+                        let is_ff =
+                            merge_base::is_ancestor(&ff_repo, *old, *remote_oid).unwrap_or(true);
+                        if !is_ff {
+                            rejected_non_ff = true;
+                        }
+                    }
+                }
+                if rejected_non_ff {
+                    had_rejected_updates = true;
+                    if !args.quiet {
+                        display.push(
+                            '!',
+                            "[rejected]",
+                            refname,
+                            &local_ref,
+                            &local_ref,
+                            old_oid.unwrap_or_else(ObjectId::zero),
+                            *remote_oid,
+                            Some("non-fast-forward"),
+                        );
+                    }
+                    continue;
+                }
+                apply_single_ref_update(
+                    args,
+                    git_dir,
+                    &mut pending_atomic_ref_ops,
+                    &local_ref,
+                    old_oid,
+                    *remote_oid,
+                    &mut ref_update_failures,
+                )?;
+                if !args.quiet {
+                    let (code, summary, error) = classify_ref_update(
+                        &ff_repo,
+                        refname,
+                        old_oid.as_ref(),
+                        remote_oid,
+                        show_forced_updates,
+                    );
+                    display.push(
+                        code,
+                        &summary,
+                        refname,
+                        &local_ref,
+                        &local_ref,
+                        old_oid.unwrap_or_else(ObjectId::zero),
+                        *remote_oid,
+                        error,
                     );
                 }
             }
@@ -3195,6 +3319,13 @@ fn fetch_remote(
         }
     }
 
+    // With `--atomic`, a single rejected ref aborts the whole transaction: no refs (and no
+    // FETCH_HEAD) are written. The reject was already reported via its `!` display line.
+    let atomic_aborted = args.atomic && had_rejected_updates;
+    if atomic_aborted {
+        fetch_head_entries.clear();
+    }
+
     if !fetch_head_entries.is_empty() {
         sort_fetch_head_lines(&mut fetch_head_entries, &fetch_head_refspecs);
         if args.atomic {
@@ -3237,6 +3368,18 @@ fn fetch_remote(
             } else {
                 fs::write(&fetch_head_path, content).context("writing FETCH_HEAD")?;
             }
+        } else if args.dry_run
+            && !args.no_write_fetch_head
+            && !display.emitted_fetch_head
+            && url_override.is_some()
+            && cli_refspecs.is_empty()
+        {
+            // For an anonymous-path fetch (`git fetch .`), grit maps refs to tracking destinations
+            // rather than reporting them as FETCH_HEAD-only the way upstream Git does. To keep
+            // `git fetch --dry-run .` mentioning FETCH_HEAD (t5510) without adding a spurious note
+            // to a named-remote dry run (t5574), restrict this to anonymous fetches whose report
+            // did not already include an explicit `-> FETCH_HEAD` line.
+            eprintln!("would write to .git/FETCH_HEAD");
         }
     }
     if !tag_clobber_failures.is_empty() {
@@ -3246,6 +3389,13 @@ fn fetch_remote(
         eprintln!("error: some local refs could not be updated; try running");
         eprintln!(" 'git remote prune {remote_name}' to remove any old, conflicting branches");
         bail!("some local refs could not be updated");
+    }
+    if had_rejected_updates {
+        // A non-fast-forward reject already produced its `!` report line; exit non-zero quietly.
+        return Err(anyhow::Error::new(ExitCodeError {
+            code: 1,
+            message: String::new(),
+        }));
     }
 
     if effective_filter.as_deref() == Some("blob:none") && remote_repo.is_none() {
