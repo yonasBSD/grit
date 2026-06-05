@@ -1001,6 +1001,18 @@ fn cmd_set(
     } else if set_args.all {
         config.replace_all_with_comment(&set_args.key, &value, value_pattern, comment)?;
     } else if let Some(pattern) = value_pattern {
+        let canon = grit_lib::config::canonical_key(&set_args.key)?;
+        let mut matches: Vec<String> = config
+            .entries
+            .iter()
+            .filter(|entry| entry.key == canon)
+            .map(|entry| entry.value.clone().unwrap_or_else(|| "true".to_owned()))
+            .collect();
+        filter_values_by_pattern(&mut matches, pattern, args.fixed_value)?;
+        if matches.len() > 1 {
+            eprintln!("warning: {} has multiple values", set_args.key);
+            std::process::exit(5);
+        }
         config.replace_all_with_comment(&set_args.key, &value, Some(pattern), comment)?;
     } else {
         config.set_with_comment(&set_args.key, &value, comment)?;

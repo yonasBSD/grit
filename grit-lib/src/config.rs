@@ -1038,45 +1038,31 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
 
         let raw_var = raw_variable_name(key);
 
-        if matching_indices.len() == 1 {
-            // Single match: update in-place (preserves position)
-            let match_idx = matching_indices[0];
-            let line_idx = self.entries[match_idx].line - 1;
-            let raw_line = &self.raw_lines[line_idx];
-            if is_section_header_with_inline_entry(raw_line) {
-                let header = extract_section_header(raw_line);
-                self.raw_lines[line_idx] = header;
-                let new_line = format!("\t{} = {}{}", raw_var, escape_value(value), comment_suffix);
-                self.raw_lines.insert(line_idx + 1, new_line);
-            } else {
-                self.raw_lines[line_idx] =
-                    format!("\t{} = {}{}", raw_var, escape_value(value), comment_suffix);
-            }
+        let target_idx = if value_pattern.is_some() {
+            matching_indices[0]
         } else {
-            // Multiple matches: remove ALL, then add one new entry at end of section
-            for &idx in matching_indices.iter().rev() {
-                let line_idx = self.entries[idx].line - 1;
-                self.remove_entry_line(line_idx);
-            }
-
-            // Re-parse after removals
-            let content = self.raw_lines.join("\n");
-            let reparsed = Self::parse(&self.path, &content, self.scope)?;
-            self.entries = reparsed.entries;
-            self.raw_lines = reparsed.raw_lines;
-
-            // Add the new entry at the end of the section
-            let (section, subsection, _var) = split_key(&canon)?;
-            let (raw_sec, raw_sub) = raw_section_parts(key);
-            let section_line = self.find_or_create_section_preserving_case(
-                &section,
-                subsection.as_deref(),
-                &raw_sec,
-                raw_sub.as_deref(),
-            );
+            *matching_indices
+                .last()
+                .ok_or_else(|| Error::ConfigError("missing config match".to_owned()))?
+        };
+        let target_line_idx = self.entries[target_idx].line - 1;
+        let raw_line = &self.raw_lines[target_line_idx];
+        if is_section_header_with_inline_entry(raw_line) {
+            let header = extract_section_header(raw_line);
+            self.raw_lines[target_line_idx] = header;
             let new_line = format!("\t{} = {}{}", raw_var, escape_value(value), comment_suffix);
-            let insert_at = self.last_line_in_section(section_line) + 1;
-            self.raw_lines.insert(insert_at, new_line);
+            self.raw_lines.insert(target_line_idx + 1, new_line);
+        } else {
+            self.raw_lines[target_line_idx] =
+                format!("\t{} = {}{}", raw_var, escape_value(value), comment_suffix);
+        }
+
+        for &idx in matching_indices.iter().rev() {
+            if idx == target_idx {
+                continue;
+            }
+            let line_idx = self.entries[idx].line - 1;
+            self.remove_entry_line(line_idx);
         }
 
         // Re-parse
