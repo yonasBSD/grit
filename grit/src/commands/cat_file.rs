@@ -1518,6 +1518,7 @@ fn print_batch_entry(
     out: &mut impl Write,
 ) -> Result<()> {
     let (obj_str, rest) = parse_batch_input(object_spec, format);
+    maybe_emit_index_path_sparse_expansion_trace(repo, obj_str);
     let eol: &[u8] = if nul_output { b"\0" } else { b"\n" };
     let batch_transform = opts.batch_textconv || opts.batch_filters;
 

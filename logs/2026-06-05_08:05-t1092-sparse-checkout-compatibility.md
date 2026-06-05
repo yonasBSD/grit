@@ -164,3 +164,9 @@
 - Direct `--run=1,103` passes. Canonical harness:
   `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh --verbose --timeout 180` ->
   `103/106`.
+- 2026-06-05 15:52 CEST: Subtest 104 now passes. `cat-file --batch` reuses the same index-path
+  sparse expansion trace check for each parsed batch entry, including multi-line input containing
+  both in-cone and sparse-directory placeholder paths.
+- Direct `--run=1,104` passes. Canonical harness:
+  `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh --verbose --timeout 180` ->
+  `104/106`.
