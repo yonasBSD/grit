@@ -1299,21 +1299,29 @@ fn cmd_set_url(rest: &[String]) -> Result<()> {
 }
 
 fn cmd_set_branches(rest: &[String]) -> Result<()> {
+    // Git uses `parse_options` (permuting), so `--add` may appear anywhere among the positional
+    // arguments, e.g. `set-branches scratch --add other`. Collect it wherever it lands; `--` ends
+    // option parsing.
     let mut add_mode = false;
-    let mut i = 0usize;
-    if rest.first().map(|s| s.as_str()) == Some("--add") {
-        add_mode = true;
-        i = 1;
+    let mut positionals: Vec<String> = Vec::new();
+    let mut saw_dashdash = false;
+    for a in rest {
+        if !saw_dashdash && a == "--" {
+            saw_dashdash = true;
+        } else if !saw_dashdash && a == "--add" {
+            add_mode = true;
+        } else {
+            positionals.push(a.clone());
+        }
     }
-    let rest = &rest[i..];
-    if rest.is_empty() {
+    if positionals.is_empty() {
         return Err(anyhow::Error::new(ExplicitExit {
             code: 129,
             message: "error: no remote specified".to_owned(),
         }));
     }
-    let name = rest[0].clone();
-    let branches: Vec<String> = rest[1..].to_vec();
+    let name = positionals[0].clone();
+    let branches: Vec<String> = positionals[1..].to_vec();
     let git_dir = resolve_git_dir()?;
     let config = load_local_config(&git_dir)?;
     if !remote_section_exists(&config, &name) {
@@ -2223,6 +2231,17 @@ fn prune_one(git_dir: &Path, config: &ConfigSet, name: &str, dry: bool) -> Resul
     }
     println!("Pruning {name}");
     println!("URL: {url}");
+    // Capture symref targets before deletion so we can warn about any that become dangling.
+    let symrefs: Vec<(String, String)> = refs::list_refs(git_dir, "refs/remotes/")?
+        .into_iter()
+        .filter_map(|(rn, _)| {
+            grit_lib::refs::read_symbolic_ref(git_dir, &rn)
+                .ok()
+                .flatten()
+                .map(|target| (rn, target))
+        })
+        .collect();
+    let deleted: HashSet<&String> = stale.iter().collect();
     for r in &stale {
         let short = abbrev_branch(r);
         if dry {
@@ -2230,6 +2249,16 @@ fn prune_one(git_dir: &Path, config: &ConfigSet, name: &str, dry: bool) -> Resul
         } else {
             refs::delete_ref(git_dir, r).with_context(|| format!("pruning {r}"))?;
             println!(" * [pruned] {short}");
+        }
+    }
+    // Git's `refs_warn_dangling_symrefs`: any symref pointing at a (now) deleted ref is reported.
+    for (sym_name, target) in &symrefs {
+        if deleted.contains(target) {
+            if dry {
+                eprintln!("{sym_name} will become dangling after {target} is deleted");
+            } else {
+                eprintln!("{sym_name} has become dangling after {target} was deleted");
+            }
         }
     }
     Ok(())
