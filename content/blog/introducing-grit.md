@@ -1,34 +1,25 @@
 ---
-title: Introducing the Grit project blog
+title: Introducing Grit
 slug: introducing-grit
 date: 2026-06-05
 author: schacon
-summary: Notes from the effort to rebuild Git as an idiomatic Rust library.
+summary: A short note on rebuilding Git in Rust, as a library, with compatibility as the benchmark.
 ---
 
-Welcome to the Grit project blog. This is where we will publish short notes about implementation details, compatibility work, and the strange corners of Git that become clearer when you rebuild them from scratch.
+Grit is a from-scratch reimplementation of Git in Rust. The goal is not to make a Git-like tool with a nicer surface area, but to build a compatible Git engine that can eventually pass the upstream Git test suite.
 
-## Why a blog?
+## Why rebuild Git?
 
-Grit is both a command-line tool and a library-oriented reimplementation of Git. The test suite tells us what works, but it does not always explain why a behavior exists or how the Rust API should expose it.
+Git is everywhere, but much of its behavior is encoded in a large C codebase that grew around a command-line program. That history is part of what makes Git powerful, but it also makes Git hard to embed, hard to experiment with, and hard to reason about as a set of reusable library components.
 
-These posts are a place for that connective tissue:
+Grit started from a simple question: what would Git look like if it were designed today as an idiomatic Rust library first, with the CLI as a thin wrapper around that library?
 
-- design notes for library boundaries,
-- writeups for tricky upstream tests,
-- explanations of Git file formats, and
-- progress updates that need more room than a dashboard card.
+## What we want from it
 
-## How posts are built
+The project is focused on compatibility before novelty. Passing Git's own tests gives us a concrete target and keeps the work honest. If Grit behaves differently, that difference should be intentional and understood.
 
-Posts live as Markdown files under `content/blog/`. Running:
+At the same time, Rust gives us a chance to expose Git internals through typed APIs: objects, refs, the index, trees, revisions, diffs, merges, and transport protocols as library surfaces instead of command output that callers have to parse.
 
-```
-python3 scripts/blog.py
-```
+## Why now?
 
-renders the blog index, each post page, and a content-encoded `feed.xml` into `docs/blog/` for static hosting.
-
-## What comes next
-
-Expect focused posts about object storage, refs, the index, merges, and the long tail of porcelain behavior needed to pass the upstream Git test suite.
+A library-oriented Git implementation opens the door to better developer tools, servers, agents, and experiments that need Git semantics without shelling out to `git`. Grit is an attempt to make that foundation small, explicit, testable, and embeddable.

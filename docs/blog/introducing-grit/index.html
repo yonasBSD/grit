@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Introducing the Grit project blog - the Grit project</title>
-<meta name="description" content="Notes from the effort to rebuild Git as an idiomatic Rust library." />
+<title>Introducing Grit - the Grit project</title>
+<meta name="description" content="A short note on rebuilding Git in Rust, as a library, with compatibility as the benchmark." />
 <link rel="alternate" type="application/rss+xml" title="Grit blog feed" href="../feed.xml" />
 <script async src="https://u.gitbutler.com/script.js" data-website-id="2c6f680c-eaf5-4cd7-a419-1032ffab6bbc"></script>
 <link rel="canonical" href="./" />
-<meta property="og:title" content="Introducing the Grit project blog" />
+<meta property="og:title" content="Introducing Grit" />
 <style>
 :root{--bg:#f8f2e8;--ink:#211711;--muted:#736961;--line:#e2d6c7;--accent:#b64729;--paper:#fff9f1;--code:#f3e8de}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16px;line-height:1.65}.site-header{height:4.8rem;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 2.4rem}.brand{display:flex;align-items:center;gap:.65rem;color:var(--ink);font-size:1rem;font-weight:720;text-decoration:none}.brand img{width:2.25rem;height:2.25rem}.brand span span{color:#645a52;font-weight:650}.brand strong{color:var(--ink)}nav{display:flex;gap:1.55rem;font-size:.95rem}nav a,.content a,.breadcrumb a{color:var(--accent);text-decoration:none}.blog-index{max-width:72rem;margin:0 auto;padding:3.4rem 2rem}.hero{text-align:center;max-width:none;margin:0 auto 2.4rem}.eyebrow,.toc h2{text-transform:uppercase;letter-spacing:.24em;color:var(--accent);font:700 .72rem/1 ui-monospace,SFMono-Regular,Menlo,monospace}.hero h1{font:800 clamp(2rem,4.8vw,3.6rem)/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.05em;margin:.75rem 0;color:var(--ink);white-space:nowrap}.hero p:not(.eyebrow){font-size:1.08rem;color:#534941;white-space:nowrap}.post-list{list-style:none;margin:0 auto;padding:0;max-width:50rem;border-top:1px solid var(--line)}.post-list li{display:flex;gap:1.2rem;border-bottom:1px solid var(--line);padding:.78rem 0;font:700 .88rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}.post-list time{color:#837a72;min-width:8.8rem}.post-list a{color:var(--accent);text-decoration:none}.post-layout{display:grid;grid-template-columns:minmax(0,1fr) 14rem;gap:3rem;max-width:76rem;margin:0 auto;padding:3.2rem 3rem}.post{max-width:48rem}.breadcrumb{font:700 .86rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#837a72;margin:0 0 1.25rem}.post>h1{font:850 clamp(2rem,3.8vw,3.25rem)/1.04 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.055em;margin:0 0 1.6rem}.dek{font-size:1.08rem;color:#584d45}.content h2{font-size:1.35rem;line-height:1.25;margin:2.7rem 0 .8rem}.content h3{font-size:1.08rem;margin:2rem 0 .6rem}.content p{margin:0 0 1.25rem;color:#51473f}.content ul,.content ol{color:#51473f;margin:0 0 1.25rem 1.1rem}.content code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);border:1px solid #ded0c4;border-radius:.35rem;padding:.04rem .28rem}.content pre{background:#fff6ee;border:1px solid #ded0c4;border-radius:.7rem;padding:1rem;margin:1.4rem 0;overflow:auto}.content pre code{background:transparent;border:0;padding:0}.content blockquote{border-left:3px solid var(--accent);margin:1.4rem 0;padding:.2rem 0 .2rem 1rem;color:#5c5148}.toc{position:sticky;top:1.5rem;align-self:start;border-left:1px solid var(--line);padding-left:1.1rem;font:700 .82rem/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:#81776f}.toc h2{color:#81776f;margin:0 0 1rem}.toc ol{list-style:none;margin:0;padding:0}.toc li{margin:0 0 .75rem}.toc a{color:#81776f;text-decoration:none}.toc-level-3{padding-left:.8rem}@media(max-width:900px){.site-header{padding:0 1.2rem}.post-layout{display:block;padding:2rem 1.25rem}.toc{position:static;border-left:0;border-top:1px solid var(--line);margin-top:2.2rem;padding:1.25rem 0 0}.blog-index{padding:2.6rem 1.25rem}.post-list li{display:block}.post-list time{display:block;margin-bottom:.25rem}.post>h1{font-size:2.15rem}}
 </style>
@@ -21,28 +21,21 @@
 <main class="post-layout">
   <article class="post">
     <p class="breadcrumb"><a href="../">blog</a> / <time datetime="2026-06-05">2026-06-05</time> / schacon</p>
-    <h1>Introducing the Grit project blog</h1>
-    <p class="dek">Notes from the effort to rebuild Git as an idiomatic Rust library.</p>
-    <div class="content"><p>Welcome to the Grit project blog. This is where we will publish short notes about implementation details, compatibility work, and the strange corners of Git that become clearer when you rebuild them from scratch.</p>
-<h2 id="why-a-blog">Why a blog?</h2>
-<p>Grit is both a command-line tool and a library-oriented reimplementation of Git. The test suite tells us what works, but it does not always explain why a behavior exists or how the Rust API should expose it.</p>
-<p>These posts are a place for that connective tissue:</p>
-<ul>
-<li>design notes for library boundaries,</li>
-<li>writeups for tricky upstream tests,</li>
-<li>explanations of Git file formats, and</li>
-<li>progress updates that need more room than a dashboard card.</li>
-</ul>
-<h2 id="how-posts-are-built">How posts are built</h2>
-<p>Posts live as Markdown files under <code>content/blog/</code>. Running:</p>
-<pre><code>python3 scripts/blog.py</code></pre>
-<p>renders the blog index, each post page, and a content-encoded <code>feed.xml</code> into <code>docs/blog/</code> for static hosting.</p>
-<h2 id="what-comes-next">What comes next</h2>
-<p>Expect focused posts about object storage, refs, the index, merges, and the long tail of porcelain behavior needed to pass the upstream Git test suite.</p></div>
+    <h1>Introducing Grit</h1>
+    <p class="dek">A short note on rebuilding Git in Rust, as a library, with compatibility as the benchmark.</p>
+    <div class="content"><p>Grit is a from-scratch reimplementation of Git in Rust. The goal is not to make a Git-like tool with a nicer surface area, but to build a compatible Git engine that can eventually pass the upstream Git test suite.</p>
+<h2 id="why-rebuild-git">Why rebuild Git?</h2>
+<p>Git is everywhere, but much of its behavior is encoded in a large C codebase that grew around a command-line program. That history is part of what makes Git powerful, but it also makes Git hard to embed, hard to experiment with, and hard to reason about as a set of reusable library components.</p>
+<p>Grit started from a simple question: what would Git look like if it were designed today as an idiomatic Rust library first, with the CLI as a thin wrapper around that library?</p>
+<h2 id="what-we-want-from-it">What we want from it</h2>
+<p>The project is focused on compatibility before novelty. Passing Git&#x27;s own tests gives us a concrete target and keeps the work honest. If Grit behaves differently, that difference should be intentional and understood.</p>
+<p>At the same time, Rust gives us a chance to expose Git internals through typed APIs: objects, refs, the index, trees, revisions, diffs, merges, and transport protocols as library surfaces instead of command output that callers have to parse.</p>
+<h2 id="why-now">Why now?</h2>
+<p>A library-oriented Git implementation opens the door to better developer tools, servers, agents, and experiments that need Git semantics without shelling out to <code>git</code>. Grit is an attempt to make that foundation small, explicit, testable, and embeddable.</p></div>
   </article>
-  <aside class="toc" aria-label="On this page"><h2>On this page</h2><ol><li class="toc-level-2"><a href="#why-a-blog">Why a blog?</a></li>
-<li class="toc-level-2"><a href="#how-posts-are-built">How posts are built</a></li>
-<li class="toc-level-2"><a href="#what-comes-next">What comes next</a></li></ol></aside>
+  <aside class="toc" aria-label="On this page"><h2>On this page</h2><ol><li class="toc-level-2"><a href="#why-rebuild-git">Why rebuild Git?</a></li>
+<li class="toc-level-2"><a href="#what-we-want-from-it">What we want from it</a></li>
+<li class="toc-level-2"><a href="#why-now">Why now?</a></li></ol></aside>
 </main>
 </body>
 </html>
