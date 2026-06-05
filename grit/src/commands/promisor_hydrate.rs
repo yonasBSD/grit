@@ -202,14 +202,15 @@ pub(crate) fn list_promisor_remotes(
     let mut out: Vec<(String, PromisorSource)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    if let Some(pc) = config.get("extensions.partialclone") {
-        let name = pc.trim();
-        if !name.is_empty() && seen.insert(name.to_string()) {
-            if let Some(src) = open_promisor_remote_named(config, git_dir, name)? {
-                out.push((name.to_string(), src));
-            }
-        }
-    }
+    // Git's `promisor_remote_init` orders promisor remotes by config appearance but then MOVES the
+    // `extensions.partialClone` remote to the TAIL, so other promisor remotes (e.g. an accepted
+    // LOP) are tried first and the clone's own remote is the fallback. Mirror that here: collect
+    // `remote.*.promisor=true` in config order, deferring the partial-clone remote to the end
+    // (`t5710`: an accepted LOP must be lazily fetched from before falling back to origin).
+    let partial_clone_remote = config
+        .get("extensions.partialclone")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     for e in config.entries() {
         if !e.key.ends_with(".promisor") {
@@ -224,11 +225,23 @@ pub(crate) fn list_promisor_remotes(
         let Some((name, _)) = rest.split_once('.') else {
             continue;
         };
+        // Defer the partial-clone remote to the tail.
+        if partial_clone_remote.as_deref() == Some(name) {
+            continue;
+        }
         if !seen.insert(name.to_string()) {
             continue;
         }
         if let Some(src) = open_promisor_remote_named(config, git_dir, name)? {
             out.push((name.to_string(), src));
+        }
+    }
+
+    if let Some(name) = partial_clone_remote {
+        if seen.insert(name.clone()) {
+            if let Some(src) = open_promisor_remote_named(config, git_dir, &name)? {
+                out.push((name, src));
+            }
         }
     }
 
