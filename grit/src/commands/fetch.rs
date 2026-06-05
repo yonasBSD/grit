@@ -1270,7 +1270,10 @@ fn fetch_remote(
             apply_prefetch_to_refspecs(&mut specs);
             cli_refspecs_owned = specs.iter().map(fetch_refspec_to_cli_string).collect();
         } else {
-            apply_prefetch_to_refspecs(&mut configured_refspecs);
+            // Rebuild from the raw config so an unqualified destination (`bogus/*`) lands at
+            // `refs/prefetch/bogus/*` instead of `refs/prefetch/heads/bogus/*` (t5582). Building
+            // on the already-normalized `configured_refspecs` would inject a spurious `heads/`.
+            configured_refspecs = collect_refspecs_for_prefetch(config, &fetch_key);
         }
         // The remote-tracking destination mapping uses `cli_tracking_refspecs`
         // (the configured/refmap refspecs); rewrite it too so fetched refs land
@@ -2020,6 +2023,21 @@ fn fetch_remote(
                         let local_ref = dst.replacen('*', matched, 1);
                         updated_refs.push(local_ref.clone());
                         let old_oid = read_ref_oid(git_dir, &local_ref);
+                        let branch = refname.strip_prefix("refs/heads/").unwrap_or(refname);
+
+                        // Every ref matched by a (non-excluded) refspec contributes a FETCH_HEAD
+                        // line, even when the local tracking ref is already up to date. Git records
+                        // the fetched tip regardless of whether the ref pointer changed; only the
+                        // ref update and the progress message are skipped for no-op updates. Emit
+                        // this before the up-to-date early continue so an unchanged ref still lands
+                        // in FETCH_HEAD (t5582: negative pattern refspec FETCH_HEAD contents).
+                        fetch_head_entries.push(fetch_head_branch_line(
+                            remote_oid,
+                            branch,
+                            &display_url,
+                            false,
+                        ));
+
                         if local_ref.starts_with("refs/heads/")
                             && !args.update_head_ok
                             && !is_bare_repo
@@ -2055,7 +2073,6 @@ fn fetch_remote(
                             eprintln!("From {from_display_url}");
                             has_updates = true;
                         }
-                        let branch = refname.strip_prefix("refs/heads/").unwrap_or(refname);
                         apply_single_ref_update(
                             args,
                             git_dir,
@@ -2080,14 +2097,6 @@ fn fetch_remote(
                                 ),
                             }
                         }
-
-                        // Build FETCH_HEAD entry
-                        fetch_head_entries.push(fetch_head_branch_line(
-                            remote_oid,
-                            branch,
-                            &display_url,
-                            false,
-                        ));
                     }
                 }
                 // Also copy symbolic refs for the matched pattern
@@ -2313,8 +2322,19 @@ fn fetch_remote(
         // `origin`'s URL would incorrectly resolve to `refs/remotes/origin/*` (t5505).
         let mut union_refspecs: Vec<FetchRefspec> = Vec::new();
         let primary_key = format!("remote.{remote_name}.fetch");
-        let mut primary = collect_refspecs(config, &primary_key);
-        if primary.is_empty() {
+        // `git fetch --prefetch` redirects every positive destination under `refs/prefetch/`
+        // (and drops tag refspecs). Build prefetch refspecs from the **raw** config dst so an
+        // unqualified destination like `bogus/*` becomes `refs/prefetch/bogus/*` rather than
+        // `refs/prefetch/heads/bogus/*` (t5582). For normal fetches keep the standard collection.
+        let collect = |key: &str| -> Vec<FetchRefspec> {
+            if args.prefetch {
+                collect_refspecs_for_prefetch(config, key)
+            } else {
+                collect_refspecs(config, key)
+            }
+        };
+        let mut primary = collect(&primary_key);
+        if primary.is_empty() && !args.prefetch {
             primary = default_fetch_refspecs(remote_name);
         }
         union_refspecs.extend(primary);
@@ -2323,17 +2343,11 @@ fn fetch_remote(
                 continue;
             }
             let key = format!("remote.{rn}.fetch");
-            let mut rs = collect_refspecs(config, &key);
-            if rs.is_empty() {
+            let mut rs = collect(&key);
+            if rs.is_empty() && !args.prefetch {
                 rs = default_fetch_refspecs(rn);
             }
             union_refspecs.extend(rs);
-        }
-        // `git fetch --prefetch` redirects every positive destination under
-        // `refs/prefetch/` (and drops tag refspecs). This union is rebuilt from
-        // config here, so re-apply the rewrite (matches apply_prefetch_to_refspecs).
-        if args.prefetch {
-            apply_prefetch_to_refspecs(&mut union_refspecs);
         }
 
         let refs_for_mapping: Vec<(String, ObjectId)> =
@@ -2698,6 +2712,22 @@ fn fetch_remote(
             prune_prefixes_from_fetch_refspecs(&refspecs)
         };
 
+        // Refspecs (positive + negative) that govern prune protection. A local ref whose remote
+        // source is excluded by a negative refspec must survive a `--prune` (t5582).
+        let prune_protection_refspecs: Vec<FetchRefspec> = if user_passed_cli_refspecs {
+            let mut specs = parse_cli_fetch_refspecs(cli_refspecs);
+            for spec in &mut specs {
+                if !spec.negative && !spec.dst.is_empty() {
+                    spec.dst = normalize_fetch_refspec_dst(&spec.dst);
+                }
+            }
+            specs
+        } else if explicit_refmap {
+            cli_tracking_refspecs.clone()
+        } else {
+            refspecs.clone()
+        };
+
         let has_tracking_prune_scope = refspecs.iter().any(|s| {
             !s.negative
                 && !s.dst.is_empty()
@@ -2708,11 +2738,15 @@ fn fetch_remote(
 
         if !skip_remote_tracking_prune && !has_updates && !args.quiet {
             let mut will_prune = false;
+            let is_stale = |r: &String| {
+                !updated_refs.contains(r)
+                    && !local_ref_protected_by_negative(r, &prune_protection_refspecs)
+            };
             if prune_prefixes.is_empty() {
                 for rn in &coalesced_remotes {
                     let prefix = format!("refs/remotes/{rn}/");
                     let existing = refs::list_refs(git_dir, &prefix)?;
-                    if existing.iter().any(|(r, _)| !updated_refs.contains(r)) {
+                    if existing.iter().any(|(r, _)| is_stale(r)) {
                         will_prune = true;
                         break;
                     }
@@ -2720,7 +2754,7 @@ fn fetch_remote(
             } else {
                 for prefix in &prune_prefixes {
                     let existing = refs::list_refs(git_dir, prefix)?;
-                    if existing.iter().any(|(r, _)| !updated_refs.contains(r)) {
+                    if existing.iter().any(|(r, _)| is_stale(r)) {
                         will_prune = true;
                         break;
                     }
@@ -2744,6 +2778,7 @@ fn fetch_remote(
                         rn,
                         args.quiet,
                         &mut ref_update_failures,
+                        &prune_protection_refspecs,
                     )?;
                 }
             } else {
@@ -2761,6 +2796,7 @@ fn fetch_remote(
                         remote_hint,
                         args.quiet,
                         &mut ref_update_failures,
+                        &prune_protection_refspecs,
                     )?;
                 }
             }
@@ -4529,6 +4565,7 @@ fn has_hide_refs_for_fetch_connectivity(git_dir: &Path) -> bool {
 }
 
 /// Remove remote-tracking refs that no longer exist on the remote.
+#[allow(clippy::too_many_arguments)]
 fn prune_stale_refs(
     args: &Args,
     git_dir: &Path,
@@ -4538,10 +4575,16 @@ fn prune_stale_refs(
     remote_name: &str,
     quiet: bool,
     ref_update_failures: &mut Vec<String>,
+    prune_refspecs: &[FetchRefspec],
 ) -> Result<()> {
     let existing = refs::list_refs(git_dir, prefix)?;
     for (refname, oid) in &existing {
         if refname == &format!("refs/remotes/{remote_name}/HEAD") {
+            continue;
+        }
+        // A local ref whose remote source is excluded by a negative refspec must not be pruned
+        // (Git's `refspec_find_negative_match` makes such a ref "not match" the refspec set).
+        if local_ref_protected_by_negative(refname, prune_refspecs) {
             continue;
         }
         if !current_refs.contains(refname) {
@@ -5343,6 +5386,60 @@ pub fn collect_refspecs(config: &ConfigSet, key: &str) -> Vec<FetchRefspec> {
     result
 }
 
+/// Collect `remote.<name>.fetch` refspecs with Git's `--prefetch` rewrite applied to the **raw**
+/// (un-normalized) destination.
+///
+/// Git's `filter_prefetch_refspec` runs before any dst normalization: an unqualified destination
+/// like `bogus/*` becomes `refs/prefetch/bogus/*` (not `refs/prefetch/heads/bogus/*`). Since
+/// [`collect_refspecs`] eagerly normalizes `bogus/*` to `refs/heads/bogus/*`, prefetch must build
+/// its refspecs from the raw config value instead (t5582 `--prefetch correctly modifies refspecs`).
+///
+/// Negative refspecs are preserved unchanged; positive refspecs with an empty dst or a
+/// `refs/tags/*` source are dropped, mirroring `filter_prefetch_refspec`.
+fn collect_refspecs_for_prefetch(config: &ConfigSet, key: &str) -> Vec<FetchRefspec> {
+    const PREFETCH_NS: &str = "refs/prefetch/";
+    let mut result = Vec::new();
+    for entry in config.entries() {
+        if entry.key != key {
+            continue;
+        }
+        let Some(ref val) = entry.value else { continue };
+        let val = val.trim();
+        if let Some(pattern) = val.strip_prefix('^') {
+            result.push(FetchRefspec {
+                src: pattern.to_owned(),
+                dst: String::new(),
+                force: false,
+                negative: true,
+            });
+            continue;
+        }
+        let val = val.strip_prefix('+').unwrap_or(val);
+        let Some(colon) = val.find(':') else {
+            // A source-only positive refspec has an empty dst; prefetch drops it.
+            continue;
+        };
+        let dst_raw = val[colon + 1..].trim();
+        let mut src = val[..colon].trim().to_owned();
+        if dst_raw.is_empty() || src.starts_with("refs/tags/") {
+            continue;
+        }
+        if !src.contains('*') && !src.starts_with("refs/") {
+            src = format!("refs/heads/{src}");
+        }
+        // Rewrite the raw dst under refs/prefetch/, stripping a leading `refs/` only.
+        let mut new_dst = String::from(PREFETCH_NS);
+        new_dst.push_str(dst_raw.strip_prefix("refs/").unwrap_or(dst_raw));
+        result.push(FetchRefspec {
+            src,
+            dst: new_dst,
+            force: true,
+            negative: false,
+        });
+    }
+    result
+}
+
 /// Map a remote ref through fetch refspecs, returning the local ref and the index of the first
 /// matching positive refspec (config order). Used to order FETCH_HEAD like Git (t5515).
 fn map_ref_through_refspecs_ex(
@@ -5389,6 +5486,48 @@ pub fn remote_fetch_refspecs(config: &ConfigSet, remote_name: &str) -> Vec<Fetch
         out.extend(specs);
         out
     }
+}
+
+/// Returns true if a local (destination) ref is shielded from pruning by a negative refspec.
+///
+/// Mirrors Git's `refspec_find_negative_match` (`refspec.c`): the prune query is keyed by the
+/// local ref (`dst`), but negative refspecs always match the remote ref (`src`). To bridge that,
+/// every positive refspec is applied **in reverse** (dst pattern → src) to recover the candidate
+/// remote source name(s) for `local_ref`; if any of those candidates matches a negative refspec,
+/// the local ref is treated as not matching the refspec set at all and must not be pruned.
+///
+/// Without this, `git fetch --prune <pattern> ^<src>` would delete the remote-tracking ref whose
+/// source is excluded by the negative refspec (t5582 "fetch --prune with negative refspec").
+fn local_ref_protected_by_negative(local_ref: &str, refspecs: &[FetchRefspec]) -> bool {
+    let negatives: Vec<&FetchRefspec> = refspecs.iter().filter(|rs| rs.negative).collect();
+    if negatives.is_empty() {
+        return false;
+    }
+    // Reverse-map the local dst back to every candidate remote src via positive refspecs.
+    let mut candidates: Vec<String> = Vec::new();
+    for rs in refspecs {
+        if rs.negative || rs.dst.is_empty() {
+            continue;
+        }
+        if let Some(star_pos) = rs.dst.find('*') {
+            let prefix = &rs.dst[..star_pos];
+            let suffix = &rs.dst[star_pos + 1..];
+            if local_ref.starts_with(prefix)
+                && local_ref.ends_with(suffix)
+                && local_ref.len() >= prefix.len() + suffix.len()
+            {
+                let matched = &local_ref[prefix.len()..local_ref.len() - suffix.len()];
+                candidates.push(rs.src.replacen('*', matched, 1));
+            }
+        } else if rs.dst == local_ref {
+            candidates.push(rs.src.clone());
+        }
+    }
+    candidates.iter().any(|src| {
+        negatives
+            .iter()
+            .any(|neg| match_glob_pattern(&neg.src, src).is_some() || neg.src == *src)
+    })
 }
 
 /// Reverse-map a local ref through configured refspecs to find

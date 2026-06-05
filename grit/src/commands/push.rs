@@ -2775,16 +2775,19 @@ fn collect_matching_push_updates(
     let mut matched = 0usize;
     let local_branches = refs::list_refs(&repo.git_dir, "refs/heads/")?;
     for (refname, local_oid) in &local_branches {
+        let Some(old_oid) = refs::resolve_ref(&remote_repo.git_dir, refname).ok() else {
+            continue;
+        };
+        // A branch present on both sides is a candidate for the matching (`:`) refspec. Count it
+        // even when a negative refspec later excludes it: Git treats an all-excluded matching push
+        // as a successful no-op, not as "No refs in common" (t5582 push with matching `:` + `^`).
+        matched += 1;
         if negative_patterns
             .iter()
             .any(|p| ref_excluded_by_negative_push_pattern(p, refname))
         {
             continue;
         }
-        let Some(old_oid) = refs::resolve_ref(&remote_repo.git_dir, refname).ok() else {
-            continue;
-        };
-        matched += 1;
         if &old_oid == local_oid {
             submodule_tips.push(*local_oid);
             continue;
