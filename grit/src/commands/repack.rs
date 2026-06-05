@@ -311,9 +311,19 @@ pub fn run(args: Args) -> Result<()> {
     ensure_no_orphan_pack_indexes(&pack_dir_abs)?;
 
     let full_repack = args.all || args.repack_all_unpack || args.cruft;
-    if full_repack {
+    // Git only drops the existing MIDX when it is about to rewrite it (`--write-midx`) or when
+    // a pack the MIDX references is removed as redundant (git/repack.c
+    // `repack_remove_redundant_pack` -> `clear_midx_file` gated on `midx_contains_pack`).
+    // A plain `repack -ad` over `.keep` packs the MIDX was built from must leave the MIDX
+    // untouched (t5319 "repack preserves multi-pack-index when creating packs"). Snapshot the
+    // packs the MIDX names so we can clear it later iff one of them gets deleted.
+    let midx_referenced_packs: Vec<String> = if args.write_midx {
+        // The `--write-midx` path rewrites the MIDX from scratch below; clear stale state now.
         clear_pack_midx_state(&pack_dir_abs).map_err(|e| anyhow::anyhow!("{e}"))?;
-    }
+        Vec::new()
+    } else {
+        grit_lib::midx::read_midx_pack_idx_names(repo.odb.objects_dir()).unwrap_or_default()
+    };
     let loosen_unreachable = args.repack_all_unpack && !args.cruft;
 
     let pack_line_hex_len = if cfg
@@ -825,6 +835,19 @@ pub fn run(args: Args) -> Result<()> {
                 prune_packed_objects(&repo.git_dir.join("objects"), PrunePackedOptions::default())
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
+        }
+    }
+
+    // Mirror git/repack.c `repack_remove_redundant_pack`: an existing MIDX is dropped only when
+    // a pack it references was just removed as redundant. If every MIDX-referenced pack survived
+    // (e.g. they were `.keep` packs), the MIDX stays byte-for-byte intact.
+    if !args.write_midx && !midx_referenced_packs.is_empty() {
+        let any_referenced_pack_gone = midx_referenced_packs.iter().any(|idx_name| {
+            let stem = idx_name.strip_suffix(".idx").unwrap_or(idx_name);
+            !pack_dir_abs.join(format!("{stem}.pack")).exists()
+        });
+        if any_referenced_pack_gone {
+            clear_pack_midx_state(&pack_dir_abs).map_err(|e| anyhow::anyhow!("{e}"))?;
         }
     }
 
