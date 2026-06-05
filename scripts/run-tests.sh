@@ -361,6 +361,7 @@ run_one() {
       # harness `git` wrapper and breaks once a test `cd`s into trash (./grit missing).
       unset -f git grit 2>/dev/null || true &&
       env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE -u GIT_SEQUENCE_EDITOR \
+        -u GIT_EDITOR \
         -u GIT_AUTHOR_DATE -u GIT_COMMITTER_DATE -u test_tick \
         -u GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME \
         -u TRASH_DIRECTORY -u BIN_DIRECTORY -u TEST_OUTPUT_DIRECTORY_OVERRIDE \
