@@ -284,6 +284,10 @@ fn merge_reflog_action(args: &Args) -> String {
     buf
 }
 
+fn show_merge_commit_summary() -> bool {
+    !matches!(std::env::var("GIT_MERGE_VERBOSITY").as_deref(), Ok("0"))
+}
+
 /// Arguments for `grit merge`.
 #[derive(Debug, Clone, ClapArgs)]
 #[command(about = "Join two or more development histories together")]
@@ -457,7 +461,7 @@ fn primary_merge_strategy(args: &Args) -> Option<&str> {
 fn is_builtin_merge_strategy(name: &str) -> bool {
     matches!(
         name,
-        "recursive" | "ort" | "resolve" | "octopus" | "ours" | "theirs" | "subtree"
+        "recursive" | "ort" | "resolve" | "octopus" | "ours" | "subtree"
     )
 }
 
@@ -843,7 +847,7 @@ pub fn run(mut args: Args) -> Result<()> {
     // Handle -s help early (before commit check)
     if args.strategy.iter().any(|s| s == "help") {
         eprintln!("Could not find merge strategy 'help'.");
-        eprintln!("Available strategies are: octopus ours recursive resolve subtree theirs.");
+        eprintln!("Available strategies are: octopus ours recursive resolve subtree.");
         std::process::exit(1);
     }
 
@@ -2215,10 +2219,12 @@ Aborting"
     merge_update_head_with_reflog(repo, head, Some(head_oid), commit_oid, Some(&reflog))?;
 
     if !args.quiet {
-        let short = &commit_oid.to_hex()[..7];
-        let branch = head.branch_name().unwrap_or("HEAD");
-        let first_line = commit_data.message.lines().next().unwrap_or("");
-        println!("[{branch} {short}] {first_line}");
+        if show_merge_commit_summary() {
+            let short = &commit_oid.to_hex()[..7];
+            let branch = head.branch_name().unwrap_or("HEAD");
+            let first_line = commit_data.message.lines().next().unwrap_or("");
+            println!("[{branch} {short}] {first_line}");
+        }
         println!("Merge made by the '{strategy_name}' strategy.");
         let show_stat = args.stat || args.summary || !args.no_stat;
         if show_stat {
@@ -2290,15 +2296,70 @@ fn attempt_trivial_in_index_merge(
         format!("{}\n", head_oid.to_hex()),
     )?;
 
+    let config = ConfigSet::load(Some(&repo.git_dir), true)?;
     let mut new_index = result;
     new_index.sort();
-    let tree_oid = write_tree_from_index(&repo.odb, &new_index, "")?;
+    run_pre_merge_commit_hook(
+        repo,
+        args.no_verify,
+        args.edit && !args.no_edit,
+        &mut new_index,
+    )?;
+    repo.write_index(&mut new_index)?;
 
-    let config = ConfigSet::load(Some(&repo.git_dir), true)?;
+    let effective_custom_msg = if let Some(ref file_path) = args.file {
+        Some(read_merge_message_from_file(Path::new(file_path), &config)?)
+    } else {
+        args.message.clone()
+    };
+    let mut msg = build_merge_message(
+        head,
+        &args.commits[0],
+        effective_custom_msg.as_deref(),
+        repo,
+    );
+    if let Some(max_log) = args.log {
+        let log_entries = build_merge_log(repo, head_oid, merge_oid, &args.commits[0], max_log)?;
+        if !log_entries.is_empty() {
+            if !msg.ends_with('\n') {
+                msg.push('\n');
+            }
+            msg.push('\n');
+            msg.push_str(&log_entries);
+        }
+    }
+    if args.signoff && !args.no_signoff {
+        let sob_name = std::env::var("GIT_COMMITTER_NAME")
+            .ok()
+            .or_else(|| config.get("user.name"))
+            .unwrap_or_else(|| "Unknown".to_owned());
+        let sob_email = std::env::var("GIT_COMMITTER_EMAIL")
+            .ok()
+            .or_else(|| config.get("user.email"))
+            .unwrap_or_default();
+        msg = append_signoff(&msg, &sob_name, &sob_email);
+    }
+    if let Some(ref mode) = args.cleanup {
+        msg = cleanup_message(&msg, mode);
+    }
+    let will_edit = args.edit && !args.no_edit;
+    let hook_cleanup = args.cleanup.as_deref().unwrap_or("whitespace");
+    msg = run_merge_commit_msg_hooks(
+        repo,
+        args.no_verify,
+        will_edit,
+        msg,
+        &mut new_index,
+        hook_cleanup,
+    )?;
+    if will_edit && msg.trim().is_empty() {
+        bail!("Empty commit message.");
+    }
+
+    let tree_oid = write_tree_from_index(&repo.odb, &new_index, "")?;
     let now = OffsetDateTime::now_utc();
     let author = resolve_ident(&config, "author", now)?;
     let committer = resolve_ident(&config, "committer", now)?;
-    let msg = build_merge_message(head, &args.commits[0], args.message.as_deref(), repo);
     let finalized = finalize_merge_commit_message(msg, &config);
     let commit_data = CommitData {
         tree: tree_oid,
@@ -2356,10 +2417,12 @@ fn attempt_trivial_in_index_merge(
     )?;
 
     if !args.quiet {
-        let short = &commit_oid.to_hex()[..7];
-        let branch = head.branch_name().unwrap_or("HEAD");
-        let first_line = commit_data.message.lines().next().unwrap_or("");
-        println!("[{branch} {short}] {first_line}");
+        if show_merge_commit_summary() {
+            let short = &commit_oid.to_hex()[..7];
+            let branch = head.branch_name().unwrap_or("HEAD");
+            let first_line = commit_data.message.lines().next().unwrap_or("");
+            println!("[{branch} {short}] {first_line}");
+        }
     }
     run_post_merge_hook(repo, false);
     Ok(true)
@@ -2901,10 +2964,12 @@ Aborting"
     }
 
     if !args.quiet {
-        let short = &commit_oid.to_hex()[..7];
-        let branch = head.branch_name().unwrap_or("HEAD");
-        let first_line = commit_data.message.lines().next().unwrap_or("");
-        println!("[{branch} {short}] {first_line}");
+        if show_merge_commit_summary() {
+            let short = &commit_oid.to_hex()[..7];
+            let branch = head.branch_name().unwrap_or("HEAD");
+            let first_line = commit_data.message.lines().next().unwrap_or("");
+            println!("[{branch} {short}] {first_line}");
+        }
 
         print_merge_warnings(&merge_result.conflict_descriptions);
 
@@ -4150,6 +4215,7 @@ fn do_octopus_merge(
         tree_to_index_entries(repo, &ours_tree, "")?
     };
     let mut merge_current_oid = head_oid;
+    let mut non_ff_merge = false;
 
     for (i, merge_oid) in merge_oids.iter().enumerate() {
         let bases = grit_lib::merge_base::merge_bases_first_vs_rest(
@@ -4167,6 +4233,20 @@ fn do_octopus_merge(
         };
         let base_tree = commit_tree(repo, base_oid)?;
         let theirs_tree = commit_tree(repo, *merge_oid)?;
+
+        if bases.len() == 1 && bases[0] == merge_current_oid && !non_ff_merge {
+            if !args.quiet {
+                println!("Fast-forwarding to: {}", merge_names[i]);
+            }
+            current_tree_entries = tree_to_index_entries(repo, &theirs_tree, "")?;
+            merge_current_oid = *merge_oid;
+            continue;
+        }
+
+        non_ff_merge = true;
+        if !args.quiet {
+            println!("Trying simple merge with {}", merge_names[i]);
+        }
 
         let base_entries =
             tree_to_map_for_merge(repo, tree_to_index_entries(repo, &base_tree, "")?);
@@ -4342,10 +4422,15 @@ fn do_octopus_merge(
     }
 
     if !args.quiet {
-        let short = &commit_oid.to_hex()[..7];
-        let branch = head.branch_name().unwrap_or("HEAD");
-        let first_line = commit_data.message.lines().next().unwrap_or("");
-        println!("[{branch} {short}] {first_line}");
+        println!("Merge made by the '{strategy_name}' strategy.");
+        let show_stat = args.stat || args.summary || !args.no_stat;
+        if show_stat {
+            let old_tree = commit_tree(repo, head_oid)?;
+            let new_tree = commit_tree(repo, commit_oid)?;
+            if let Ok(diff_entries) = diff_trees(&repo.odb, Some(&old_tree), Some(&new_tree), "") {
+                print_diffstat(repo, &diff_entries, args.compact_summary);
+            }
+        }
     }
 
     run_post_merge_hook(repo, false);
@@ -4563,10 +4648,12 @@ fn do_strategy_ours(
     merge_update_head(repo, head, Some(head_oid), commit_oid)?;
 
     if !args.quiet {
-        let short = &commit_oid.to_hex()[..7];
-        let branch = head.branch_name().unwrap_or("HEAD");
-        let first_line = commit_data.message.lines().next().unwrap_or("");
-        println!("[{branch} {short}] {first_line}");
+        if show_merge_commit_summary() {
+            let short = &commit_oid.to_hex()[..7];
+            let branch = head.branch_name().unwrap_or("HEAD");
+            let first_line = commit_data.message.lines().next().unwrap_or("");
+            println!("[{branch} {short}] {first_line}");
+        }
     }
 
     run_post_merge_hook(repo, false);
@@ -4658,10 +4745,12 @@ fn do_strategy_theirs(
     repo.write_index(&mut new_index)?;
 
     if !args.quiet {
-        let short = &commit_oid.to_hex()[..7];
-        let branch = head.branch_name().unwrap_or("HEAD");
-        let first_line = commit_data.message.lines().next().unwrap_or("");
-        println!("[{branch} {short}] {first_line}");
+        if show_merge_commit_summary() {
+            let short = &commit_oid.to_hex()[..7];
+            let branch = head.branch_name().unwrap_or("HEAD");
+            let first_line = commit_data.message.lines().next().unwrap_or("");
+            println!("[{branch} {short}] {first_line}");
+        }
     }
 
     run_post_merge_hook(repo, false);
@@ -4736,8 +4825,7 @@ fn build_squash_msg(
 
     // The `git log` body follows a single blank line (git's `squash_message` joins
     // `"Squashed commit of the following:\n\n"` with the log output). Each commit renders
-    // exactly as `git log` (medium format) does — no extra blank line between commits —
-    // so a byte-for-byte `test_cmp` against `git log --no-merges` output succeeds.
+    // exactly as `git log` (medium format) does, including the blank separator between commits.
     for (i, (oid, commit)) in commits_to_show.iter().enumerate() {
         if i == 0 {
             msg.push('\n');
@@ -4754,6 +4842,9 @@ fn build_squash_msg(
         msg.push('\n');
         for line in commit.message.trim_end().lines() {
             msg.push_str(&format!("    {}\n", line));
+        }
+        if i + 1 < commits_to_show.len() {
+            msg.push('\n');
         }
     }
 
@@ -5105,9 +5196,11 @@ fn merge_continue(message: Option<String>) -> Result<()> {
     // A merge concluded via `merge --continue` re-applies any pending MERGE_AUTOSTASH.
     apply_merge_autostash(&repo)?;
 
-    let branch = head.branch_name().unwrap_or("HEAD");
-    let short = &commit_oid.to_hex()[..7];
-    println!("[{branch} {short}] {first_line}");
+    if show_merge_commit_summary() {
+        let branch = head.branch_name().unwrap_or("HEAD");
+        let short = &commit_oid.to_hex()[..7];
+        println!("[{branch} {short}] {first_line}");
+    }
 
     Ok(())
 }

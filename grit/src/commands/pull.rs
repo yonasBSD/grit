@@ -1468,6 +1468,8 @@ fn do_merge_or_rebase_after_fetch(
             no_ff: false,
             gpg_sign: None,
             no_gpg_sign: false,
+            signoff: false,
+            no_signoff: false,
             keep_base: 0,
             fork_point: false,
             no_fork_point: false,
