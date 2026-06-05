@@ -2879,7 +2879,10 @@ fn run_add(args: &AddArgs) -> Result<()> {
         ConfigFile::parse(&local_config_path, "", ConfigScope::Local)?
     };
 
-    if !args.force && config_last_value(&local_config, &format!("submodule.{name}.url")).is_some() {
+    if !args.force
+        && config_last_value(&local_config, &format!("submodule.{name}.url")).is_some()
+        && !is_nonbare_repository_dir(&sub_path)
+    {
         bail!("submodule name '{name}' already used");
     }
 

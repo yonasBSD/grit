@@ -176,3 +176,12 @@
 - Direct `--run=1,105` passes. Canonical harness:
   `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh --verbose --timeout 180` ->
   `105/106`.
+- 2026-06-05 16:10 CEST: The final canonical failure was subtest 85 under
+  `GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main`: repeated `init_repos_as_submodules` calls left
+  stale `submodule.<name>.url` entries in local config after `reset --hard`, and `submodule add`
+  rejected re-adding the existing checkout repositories. `submodule add` now allows the stale local
+  URL when the target path is already a non-bare repository, while keeping missing-path name reuse
+  rejection intact.
+- Direct canonical-env `--run=1,84,85` passes. Canonical harness:
+  `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh --verbose --timeout 180` ->
+  `106/106`.
