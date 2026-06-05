@@ -911,7 +911,22 @@ fn push_to_url(
     cli_force_enabled: bool,
 ) -> Result<()> {
     if url.starts_with("ext::") {
-        bail!("ext transport is not supported for push");
+        crate::protocol::check_protocol_allowed("ext", Some(&repo.git_dir))?;
+        let child = crate::ext_transport::spawn_ext_receive_pack(url)?;
+        return push_over_receive_pack_child(
+            child,
+            "ext",
+            repo,
+            config,
+            args,
+            url,
+            remote_name,
+            current_branch,
+            push_all,
+            effective_mirror,
+            push_refspecs_from_config,
+            cli_force_enabled,
+        );
     }
     if protocol_wire::effective_client_protocol_version() == 1 {
         wire_trace::trace_packet_push('<', "version 1");
@@ -3944,21 +3959,61 @@ fn push_to_ssh_url(
         .receive_pack
         .as_deref()
         .filter(|s| !s.trim().is_empty());
-    let mut child = crate::ssh_transport::spawn_git_ssh_receive_pack(&spec, receive_pack)?;
-    let mut stdout = child.stdout.take().context("ssh receive-pack stdout")?;
-    let stdin = child.stdin.take().context("ssh receive-pack stdin")?;
+    let child = crate::ssh_transport::spawn_git_ssh_receive_pack(&spec, receive_pack)?;
+    push_over_receive_pack_child(
+        child,
+        "ssh",
+        repo,
+        config,
+        args,
+        url,
+        remote_name,
+        current_branch,
+        push_all,
+        effective_mirror,
+        push_refspecs_from_config,
+        cli_force_enabled,
+    )
+}
+
+/// Push to a remote whose `receive-pack` runs as a spawned child process (SSH or `ext::` helper),
+/// driving the protocol-v1 receive-pack advertisement, send-pack stream, and ref-status reporting
+/// over the child's stdin/stdout. `transport` labels the transport in error messages.
+#[allow(clippy::too_many_arguments)]
+fn push_over_receive_pack_child(
+    mut child: std::process::Child,
+    transport: &str,
+    repo: &Repository,
+    config: &ConfigSet,
+    args: &Args,
+    url: &str,
+    remote_name: &str,
+    current_branch: Option<&str>,
+    push_all: bool,
+    effective_mirror: bool,
+    push_refspecs_from_config: &[String],
+    cli_force_enabled: bool,
+) -> Result<()> {
+    let mut stdout = child
+        .stdout
+        .take()
+        .with_context(|| format!("{transport} receive-pack stdout"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .with_context(|| format!("{transport} receive-pack stdin"))?;
     let advertised = crate::http_push_smart::read_receive_pack_advertisement(
         &mut stdout,
         scrub_push_url_credentials(url),
     )?;
     if advertised.object_format != "sha1" {
         bail!(
-            "unsupported remote object format '{}' for push over SSH",
+            "unsupported remote object format '{}' for push over {transport}",
             advertised.object_format
         );
     }
     if advertised.protocol_version == 2 {
-        bail!("SSH push over protocol v2 is not implemented yet");
+        bail!("{transport} push over protocol v2 is not implemented yet");
     }
 
     let mut remote_ref_map: std::collections::BTreeMap<String, ObjectId> =
@@ -4231,9 +4286,9 @@ fn push_to_ssh_url(
         stdin,
         stdout,
     )?;
-    let ssh_status = child.wait()?;
-    if !ssh_status.success() {
-        bail!("ssh receive-pack failed with status {ssh_status}");
+    let child_status = child.wait()?;
+    if !child_status.success() {
+        bail!("{transport} receive-pack failed with status {child_status}");
     }
     if !status.sideband_stderr.is_empty() {
         io::stderr().write_all(&status.sideband_stderr)?;

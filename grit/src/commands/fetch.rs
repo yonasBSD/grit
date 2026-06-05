@@ -838,6 +838,23 @@ fn parse_git_bool(value: &str) -> Option<bool> {
     parse_bool(value.trim()).ok()
 }
 
+/// The repository default branch name (Git `repo_default_branch_name`): `init.defaultBranch`
+/// config when set and valid, otherwise `master`. Used to pick the branch a `#frag`-less
+/// `.git/branches/<name>` remote fetches.
+fn repo_default_branch_name(config: &ConfigSet) -> String {
+    if let Ok(env) = std::env::var("GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME") {
+        let env = env.trim();
+        if !env.is_empty() {
+            return env.to_owned();
+        }
+    }
+    config
+        .get("init.defaultBranch")
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "master".to_owned())
+}
+
 /// Whether `abbrev` (a possibly-abbreviated ref name) matches `full_name` using Git's
 /// `ref_rev_parse_rules` (`refs.c` `refname_match`). Used to match `branch.<name>.merge` entries
 /// like `two` against the advertised full ref `refs/heads/two`.
@@ -883,19 +900,25 @@ fn fetch_head_is_for_merge_with_branch(
         .any(|merge_ref| refname_match(merge_ref.trim(), remote_refname))
 }
 
-/// When there is no `branch.*.merge` for HEAD, Git marks only the first ref from the first
-/// non-pattern remote fetch refspec as for-merge (`get_ref_map` in fetch.c).
-fn fetch_head_is_for_merge_first_refspec_only(
+/// When there is no `branch.*.merge` for HEAD, Git marks at most one FETCH_HEAD entry as
+/// for-merge: the first ref produced by the *first* configured fetch refspec, and only when that
+/// refspec is non-pattern (`get_ref_map` in fetch.c, lines `!i && !has_merge && ... !pattern`).
+///
+/// `ordered_refs` must be the advertised refs in the order Git would build the fetch map (the same
+/// order they are iterated for ref updates). Returns the full refname to mark for-merge, if any.
+fn fetch_head_first_refspec_merge_ref(
     refspecs: &[FetchRefspec],
-    is_first_remote_head: bool,
-) -> bool {
-    if !is_first_remote_head {
-        return false;
+    ordered_refs: &[(String, ObjectId)],
+) -> Option<String> {
+    let first = refspecs.iter().find(|r| !r.negative && !r.src.is_empty())?;
+    if first.src.contains('*') {
+        return None;
     }
-    let Some(first) = refspecs.iter().find(|r| !r.negative && !r.src.is_empty()) else {
-        return false;
-    };
-    !first.src.contains('*')
+    ordered_refs
+        .iter()
+        .map(|(refname, _)| refname)
+        .find(|refname| first.src == **refname || refname_match(&first.src, refname))
+        .cloned()
 }
 
 /// True when `HEAD` names `refs/heads/<b>`, `branch.<b>.remote` matches `remote_name`, and
@@ -944,8 +967,14 @@ fn default_fetch_remote_name(git_dir: &Path, config: &ConfigSet) -> String {
     if remote.is_empty() {
         return pick_default_remote_name(&remotes);
     }
+    // The branch's configured remote may be defined by `remote.<name>.url` config or by a legacy
+    // `.git/remotes/<name>` / `.git/branches/<name>` file (t5515 `remote-explicit`,
+    // `branches-default`). Honor any of these before falling back to the default remote.
     let url_key = format!("remote.{remote}.url");
-    if config.get(&url_key).is_some() {
+    let remote_is_defined = config.get(&url_key).is_some()
+        || git_dir.join("remotes").join(remote).is_file()
+        || git_dir.join("branches").join(remote).is_file();
+    if remote_is_defined {
         remote.to_owned()
     } else {
         pick_default_remote_name(&remotes)
@@ -1685,21 +1714,19 @@ fn fetch_remote(
     } else if let Some(leg) = &legacy_remote {
         parse_legacy_pull_lines(&leg.pull_lines)?
     } else if let Some(br) = &branches_remote {
-        if let Some(ref b) = br.default_branch {
-            vec![FetchRefspec {
-                src: format!("refs/heads/{b}"),
-                dst: format!("refs/remotes/origin/{b}"),
-                force: false,
-                negative: false,
-            }]
-        } else {
-            vec![FetchRefspec {
-                src: "refs/heads/*".to_owned(),
-                dst: "refs/remotes/origin/*".to_owned(),
-                force: false,
-                negative: false,
-            }]
-        }
+        // `.git/branches/<name>` (Git `read_branches_file`): the URL's optional `#frag` (or the
+        // repository default branch when absent) is fetched into the *local branch* matching the
+        // remote/file name, i.e. `refs/heads/<frag>:refs/heads/<name>`.
+        let frag = br
+            .default_branch
+            .clone()
+            .unwrap_or_else(|| repo_default_branch_name(config));
+        vec![FetchRefspec {
+            src: format!("refs/heads/{frag}"),
+            dst: format!("refs/heads/{remote_name}"),
+            force: false,
+            negative: false,
+        }]
     } else {
         configured_refspecs.clone()
     };
@@ -1768,11 +1795,21 @@ fn fetch_remote(
     let fetch_head_refspecs = refspecs.clone();
 
     let tagopt_remote = effective_tracking_remote.as_deref().unwrap_or(remote_name);
+    // Git auto-follows tags (`TAGS_DEFAULT`) only when at least one refspec being fetched has a
+    // destination (`autotags` in `get_ref_map`). Explicit CLI refspecs without a colon/dst
+    // (`git fetch ../.git one`) set no autotags, so no tags are auto-followed (t5515 `main ../.git
+    // one`). `--tags` always follows; `--no-tags` / tagopt overrides still apply.
+    let cli_refspecs_have_dst = cli_refspecs.iter().any(|spec| {
+        let spec = spec.strip_prefix('+').unwrap_or(spec);
+        spec.split_once(':').is_some_and(|(_, dst)| !dst.is_empty())
+    });
     let should_fetch_tags = if args.tags {
         true
     } else if args.no_tags {
         false
     } else if implicit_path_fetch {
+        false
+    } else if user_passed_cli_refspecs && !cli_refspecs_have_dst {
         false
     } else {
         let tagopt_key = format!("remote.{tagopt_remote}.tagopt");
@@ -2560,12 +2597,19 @@ fn fetch_remote(
             } else {
                 src.as_str()
             };
-            fetch_head_entries.push(fetch_head_branch_line(
-                &remote_oid,
-                branch_label,
-                &display_url,
-                dst.is_empty(),
-            ));
+            // A `tag <name>` CLI argument (`refs/tags/<name>:refs/tags/<name>`) is rendered as a
+            // `tag '<name>'` FETCH_HEAD line, not a branch line. The dedicated CLI-tag block below
+            // owns those lines, so skip emitting the branch-style line here to avoid a mislabeled
+            // duplicate (t5515 `... tag tag-one tag tag-three`). Other CLI refspecs emit a branch
+            // line as before.
+            if !src.starts_with("refs/tags/") {
+                fetch_head_entries.push(fetch_head_branch_line(
+                    &remote_oid,
+                    branch_label,
+                    &display_url,
+                    dst.is_empty(),
+                ));
+            }
             if args.set_upstream {
                 if let Some(remote_ref_name) = resolved_remote_ref.as_deref() {
                     if remote_ref_name.starts_with("refs/heads/") {
@@ -2880,7 +2924,21 @@ fn fetch_remote(
         };
         let mut primary = collect(&primary_key);
         if primary.is_empty() && !args.prefetch {
-            primary = default_fetch_refspecs(remote_name);
+            // Legacy `.git/remotes/<name>` (Pull:) and `.git/branches/<name>` remotes have no
+            // `remote.<name>.fetch` config; their tracking refspecs live in `refspecs`. Use those
+            // instead of the synthetic `refs/remotes/<name>/*` default (t5515 remote-explicit /
+            // branches-default), otherwise fetched branches land under the wrong namespace.
+            primary =
+                if (legacy_remote.is_some() || branches_remote.is_some()) && !refspecs.is_empty() {
+                    refspecs.clone()
+                } else if url_override.is_some() {
+                    // Anonymous URL/path fetch (`git fetch ../.git`) with no refspec: Git performs no
+                    // opportunistic remote-tracking updates. Never synthesize `refs/remotes/<url>/*`,
+                    // which would write malformed refs from the URL path (t5515 `main ../.git`).
+                    Vec::new()
+                } else {
+                    default_fetch_refspecs(remote_name)
+                };
         }
         union_refspecs.extend(primary);
         for rn in &coalesced_remotes {
@@ -2929,6 +2987,13 @@ fn fetch_remote(
 
         // Standard path: update refs according to configured fetch refspecs.
         let has_merge_cfg = branch_has_merge_config_for_remote(git_dir, config, remote_name);
+        // Without `branch.*.merge`, Git marks only the first ref of the first non-pattern refspec
+        // as for-merge, regardless of where it lands in advertised order.
+        let first_refspec_merge_ref = if !has_merge_cfg && !refspecs.is_empty() {
+            fetch_head_first_refspec_merge_ref(&refspecs, &refs_for_mapping)
+        } else {
+            None
+        };
 
         for (idx, (refname, advertised_oid)) in refs_for_mapping.iter().enumerate() {
             let branch = refname.strip_prefix("refs/heads/").unwrap_or(refname);
@@ -2958,7 +3023,7 @@ fn fetch_remote(
                         None => idx == 0,
                     }
                 } else {
-                    fetch_head_is_for_merge_first_refspec_only(&refspecs, idx == 0)
+                    first_refspec_merge_ref.as_deref() == Some(refname.as_str())
                 };
                 fetch_head_entries.push(fetch_head_branch_line(
                     &remote_oid,
@@ -3067,6 +3132,47 @@ fn fetch_remote(
                 );
             }
         }
+
+        // Git `add_merge_config`: for the default fetch, any `branch.<b>.merge` entry that was not
+        // already fetched into FETCH_HEAD via the configured refspec is additionally fetched
+        // FETCH-HEAD-only (no tracking ref) and marked for-merge. These entries are emitted in
+        // merge-config order ahead of the refspec branch lines (t5515 branches-default-merge /
+        // -octopus, where the merge refs `three` / `one`,`two` are not in the branches refspec).
+        if has_merge_cfg {
+            if let Some(branch) = current_branch_from_head(git_dir) {
+                let merge_key = format!("branch.{branch}.merge");
+                let mut merge_lines: Vec<String> = Vec::new();
+                for merge_ref in config.get_all(&merge_key) {
+                    let merge_ref = merge_ref.trim();
+                    if merge_ref.is_empty() {
+                        continue;
+                    }
+                    // Already represented by a configured-refspec FETCH_HEAD line?
+                    let already = refs_for_mapping.iter().any(|(refname, _)| {
+                        (refname.starts_with("refs/heads/")
+                            && map_ref_through_refspecs(refname, &union_refspecs).is_some())
+                            && refname_match(merge_ref, refname)
+                    });
+                    if already {
+                        continue;
+                    }
+                    let Some((refname, oid)) = refs_for_mapping
+                        .iter()
+                        .find(|(refname, _)| refname_match(merge_ref, refname))
+                    else {
+                        continue;
+                    };
+                    let branch_name = refname.strip_prefix("refs/heads/").unwrap_or(refname);
+                    merge_lines.push(fetch_head_branch_line(oid, branch_name, &display_url, true));
+                }
+                // Prepend so for-merge merge-config lines precede the not-for-merge refspec lines.
+                if !merge_lines.is_empty() {
+                    merge_lines.extend(fetch_head_entries.drain(..));
+                    fetch_head_entries = merge_lines;
+                }
+            }
+        }
+
         if user_passed_cli_refspecs {
             updated_refs = prune_updated_refs;
         }
@@ -3160,6 +3266,8 @@ fn fetch_remote(
         // replace those with Git-shaped `tag 'name'` lines.
         fetch_head_entries.retain(|line| !line.contains("refs/tags/"));
         let remote_repo_for_tags = ext_resolved_remote.as_ref().or(remote_repo.as_ref());
+        let mut explicit_tag_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for spec in cli_refspecs {
             if spec.starts_with('^') {
                 continue;
@@ -3185,12 +3293,30 @@ fn fetch_remote(
             } else {
                 bail!("CLI refspec fetch requires a local remote repository");
             };
+            explicit_tag_names.insert(tag_name.to_owned());
             fetch_head_entries.push(fetch_head_tag_line(
                 &remote_oid,
                 tag_name,
                 &display_url,
                 true,
             ));
+        }
+        // When a CLI tag refspec (which has a destination) triggers tag auto-following, the
+        // remaining auto-followed tags appear as not-for-merge FETCH_HEAD lines (t5515
+        // `... tag tag-one tag tag-three`).
+        if should_fetch_tags {
+            for (refname, remote_oid) in &remote_tags {
+                let tag_name = refname.strip_prefix("refs/tags/").unwrap_or(refname);
+                if explicit_tag_names.contains(tag_name) {
+                    continue;
+                }
+                fetch_head_entries.push(fetch_head_tag_line(
+                    remote_oid,
+                    tag_name,
+                    &display_url,
+                    false,
+                ));
+            }
         }
     } else if should_fetch_tags && (!implicit_path_fetch || args.tags) {
         for (refname, remote_oid) in &remote_tags {
@@ -3408,6 +3534,9 @@ fn fetch_remote(
     }
 
     if !fetch_head_entries.is_empty() {
+        if let Ok(local_repo) = Repository::open(git_dir, None) {
+            downgrade_non_commit_for_merge_lines(&mut fetch_head_entries, &local_repo);
+        }
         sort_fetch_head_lines(&mut fetch_head_entries, &fetch_head_refspecs);
         if args.atomic {
             if let Err(err) = apply_pending_ref_ops_atomic(git_dir, &pending_atomic_ref_ops) {
@@ -6985,6 +7114,33 @@ fn fetch_head_line_has_not_for_merge(line: &str) -> bool {
     line.contains("not-for-merge")
 }
 
+/// Downgrade for-merge FETCH_HEAD lines whose object does not resolve to a commit to
+/// `not-for-merge`, mirroring Git's `write_fetch_head` classification (`builtin/fetch.c`:
+/// `lookup_commit_reference_gently` failure -> `FETCH_HEAD_NOT_FOR_MERGE`). This keeps tags that
+/// point at trees/blobs (t5515 `tag-one-tree`, `tag-three-file`) out of the merge set.
+fn downgrade_non_commit_for_merge_lines(lines: &mut [String], repo: &Repository) {
+    for line in lines.iter_mut() {
+        // For-merge lines have an empty middle field, i.e. `<oid>\t\t<desc>`.
+        let Some((oid_hex, after)) = line.split_once('\t') else {
+            continue;
+        };
+        if !after.starts_with('\t') {
+            // Already `not-for-merge` (non-empty middle field) or a bare-URL line.
+            continue;
+        }
+        let Ok(oid) = ObjectId::from_hex(oid_hex) else {
+            continue;
+        };
+        let is_commit = grit_lib::rev_parse::try_peel_to_commit_for_merge_base(repo, oid)
+            .ok()
+            .flatten()
+            .is_some();
+        if !is_commit {
+            *line = format!("{oid_hex}\tnot-for-merge\t{}", &after[1..]);
+        }
+    }
+}
+
 fn fetch_head_parse_name(line: &str) -> Option<(bool, String)> {
     if let Some(idx) = line.find("branch '") {
         let rest = &line[idx + "branch '".len()..];
@@ -7034,7 +7190,11 @@ fn sort_fetch_head_lines(lines: &mut [String], refspecs: &[FetchRefspec]) {
                             let ib = branch_refspec_index(&nb, refspecs);
                             ia.cmp(&ib).then_with(|| na.cmp(&nb))
                         } else {
-                            na.cmp(&nb)
+                            // Tags keep their emission order (explicitly-requested CLI tags first,
+                            // then auto-followed tags), matching Git's fetch-map order. `sort_by` is
+                            // stable, so returning Equal preserves insertion order (t5515 `... tag
+                            // tag-one-tree tag tag-three-file`).
+                            std::cmp::Ordering::Equal
                         }
                     })
                 }

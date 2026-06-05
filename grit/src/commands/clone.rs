@@ -749,9 +749,15 @@ pub fn run(mut args: Args) -> Result<()> {
         filter_spec.as_deref(),
         Some("blob:limit=0") | Some("blob:size=0")
     );
+    // The source's own promisor filter is only inherited when the client did NOT pass an explicit
+    // `--filter`; an explicit filter (e.g. `--filter=blob:limit=5k`) takes precedence and must not
+    // be silently downgraded to the source's `blob:none` (`t5710`: a `blob:limit` clone of a server
+    // whose LOP remote is recorded as `blob:none` must still keep small blobs).
+    let inherited_blob_none = args.filter.is_empty()
+        && inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
     let partial_blob_none = matches!(filter_spec.as_deref(), Some("blob:none"))
         || (partial_blob_limit_zero && uploadpack_filter_allowed(&source.git_dir))
-        || inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
+        || inherited_blob_none;
     let pack_filter_active = clone_pack_filter_active(&args, Some(&source.git_dir));
 
     let remote_name = resolve_remote_name(&args)?;
@@ -1403,6 +1409,15 @@ pub fn run(mut args: Args) -> Result<()> {
             .context("materializing tree:0 partial-clone object layout")?;
         initialize_partial_clone_state_from_missing(&dest, &remote_name, filter_spec, omitted)
             .context("initializing tree:0 partial-clone promisor state")?;
+    } else if let Some(spec) = filter_spec.as_deref().filter(|s| !s.trim().is_empty()) {
+        // Any other `--filter` clone (e.g. `blob:limit=<n>`): the server already omitted the
+        // filtered objects from the pack, so we don't materialize anything — we just register the
+        // clone remote as a promisor with this filter (Git's `partial_clone_register`), so a later
+        // checkout / `git diff` can lazily fetch the omitted blobs from the clone remote when the
+        // accepted LOP cannot serve them (`t5710` KnownName-missing-URL / KnownUrl-reject cases).
+        let omitted = collect_reachable_missing_oids_in_dest(&dest)?;
+        initialize_partial_clone_state_from_missing(&dest, &remote_name, spec, omitted)
+            .context("initializing filtered partial-clone promisor state")?;
     }
 
     // `materialize_blob_none_partial_layout` removes `objects/info/alternates`, so blobs
@@ -2625,9 +2640,15 @@ fn run_ssh_clone(args: Args) -> Result<()> {
         filter_spec.as_deref(),
         Some("blob:limit=0") | Some("blob:size=0")
     );
+    // The source's own promisor filter is only inherited when the client did NOT pass an explicit
+    // `--filter`; an explicit filter (e.g. `--filter=blob:limit=5k`) takes precedence and must not
+    // be silently downgraded to the source's `blob:none` (`t5710`: a `blob:limit` clone of a server
+    // whose LOP remote is recorded as `blob:none` must still keep small blobs).
+    let inherited_blob_none = args.filter.is_empty()
+        && inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
     let partial_blob_none = matches!(filter_spec.as_deref(), Some("blob:none"))
         || (partial_blob_limit_zero && uploadpack_filter_allowed(&source.git_dir))
-        || inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
+        || inherited_blob_none;
     let pack_filter_active = clone_pack_filter_active(&args, Some(&source.git_dir));
 
     if effective_reject_shallow(&args) && source_repo_is_shallow(&source.git_dir) {
@@ -5902,6 +5923,72 @@ fn collect_reachable_blob_oids_from_dest_refs(
     }
 
     Ok(blobs)
+}
+
+/// Walk `HEAD`'s commit/tree graph in `dest` and collect blob OIDs reachable but **not present**
+/// in the destination ODB — i.e. the objects the server omitted for a `--filter` clone. Used to
+/// seed the promisor "missing" marker so a later checkout / diff lazily fetches them (`t5710`).
+fn collect_reachable_missing_oids_in_dest(dest: &Repository) -> Result<HashSet<ObjectId>> {
+    let mut missing = HashSet::new();
+    let mut seen_commits = HashSet::new();
+    let mut seen_trees = HashSet::new();
+    let mut seen_tags = HashSet::new();
+    let mut queue = VecDeque::new();
+
+    for refname in ["HEAD"] {
+        if let Ok(oid) = grit_lib::refs::resolve_ref(&dest.git_dir, refname) {
+            queue.push_back(oid);
+        }
+    }
+
+    while let Some(oid) = queue.pop_front() {
+        let obj = match dest.odb.read(&oid) {
+            Ok(obj) => obj,
+            Err(_) => {
+                // A reachable object we don't have locally: record it as missing.
+                missing.insert(oid);
+                continue;
+            }
+        };
+        match obj.kind {
+            ObjectKind::Commit => {
+                if !seen_commits.insert(oid) {
+                    continue;
+                }
+                let commit = parse_commit(&obj.data)?;
+                for p in &commit.parents {
+                    queue.push_back(*p);
+                }
+                queue.push_back(commit.tree);
+            }
+            ObjectKind::Tree => {
+                if !seen_trees.insert(oid) {
+                    continue;
+                }
+                for entry in parse_tree(&obj.data)? {
+                    if entry.mode == 0o160000 {
+                        continue;
+                    }
+                    if (entry.mode & 0o170000) == 0o040000 {
+                        queue.push_back(entry.oid);
+                    } else if !dest.odb.exists(&entry.oid) {
+                        missing.insert(entry.oid);
+                    }
+                }
+            }
+            ObjectKind::Tag => {
+                if !seen_tags.insert(oid) {
+                    continue;
+                }
+                if let Ok(tag) = parse_tag(&obj.data) {
+                    queue.push_back(tag.object);
+                }
+            }
+            ObjectKind::Blob => {}
+        }
+    }
+
+    Ok(missing)
 }
 
 /// Run `post-checkout` after clone: null old OID, new HEAD commit, branch flag `1`.

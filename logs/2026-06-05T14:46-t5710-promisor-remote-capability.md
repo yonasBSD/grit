@@ -30,5 +30,30 @@ advertisement) and fix clone packfile storage so the test suite passes.
 
 ## Status
 
-14/22 -> (see below). Remaining work: storeFields/sendFields/checkFields/filter=auto trace
-expectations (15/16/17/18), KnownName missing-URL + KnownUrl server-side lazy fetch (10/11/19/22).
+18/22 passing (was 10/22). Additional fixes:
+- `config_info_list` treats a remote as promisor if `.promisor=true` OR `.partialCloneFilter` set
+  (matches `promisor_remote_config`), in config order — needed otherLop advertisement (15/16).
+- Lazy fetch from a promisor remote now registers `remote.<lop>.partialCloneFilter=blob:none`
+  (Git `partial_clone_register`); makes the server advertise `partialCloneFilter=blob:none` for lop.
+- Clone no longer inherits the source's `blob:none` promisor filter when an explicit `--filter`
+  was given (`args.filter` non-empty) — was downgrading a `blob:limit=5k` clone to `blob:none`,
+  stripping small blobs (15/16/17/19).
+
+20/22 after two more fixes:
+- A non-blob:none / non-tree:0 `--filter` clone (e.g. `blob:limit=5k`) now registers the clone
+  remote as `extensions.partialClone=origin` + `remote.origin.partialCloneFilter=<spec>` and seeds
+  the promisor "missing" marker with reachable-but-absent OIDs (`collect_reachable_missing_oids_in_dest`),
+  so checkout can lazily fetch the omitted blobs (10, 11).
+- `list_promisor_remotes` now defers the `extensions.partialClone` remote to the TAIL (Git's
+  `promisor_remote_move_to_tail`), so an accepted LOP is tried before origin — keeps tests 4/8/19
+  green while letting 10/11 fall back to origin when the LOP has no usable URL.
+
+Remaining (18, 22):
+- 18 `--filter=auto`: the wire filter is resolved to the combined advertised filter, but the test
+  also requires the literal `auto` to be persisted in `remote.origin.partialCloneFilter` and a
+  subsequent `git fetch` (no `--filter`) to re-resolve `auto` against the advertisement. grit
+  currently persists the resolved spec, not `auto`.
+- 22 advertise=false subsequent fetch: needs Git's per-fetch `accepted` semantics — after a fetch
+  where the LOP was NOT accepted, the client must lazily fetch the new commit's blob from ORIGIN
+  (so the server back-fills it: 1 missing), not from the still-configured LOP (which would leave 2
+  missing). grit uses the configured LOP regardless of accept status.

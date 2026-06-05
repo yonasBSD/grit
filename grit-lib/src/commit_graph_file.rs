@@ -24,6 +24,19 @@ fn warn_once_for_disabled_bloom_layer(id: &str) -> bool {
     }
 }
 
+/// Emit the "base graphs chunk is too small" warning at most once per layer id
+/// (grit re-reads the chain several times within one command; Git loads it once).
+fn warn_once_for_base_chunk_too_small(id: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let set = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    match set.lock() {
+        Ok(mut guard) => guard.insert(id.to_string()),
+        Err(_) => true,
+    }
+}
+
 const SIGNATURE: &[u8; 4] = b"CGPH";
 const GRAPH_VERSION: u8 = 1;
 const HASH_VERSION_SHA1: u8 = 1;
@@ -37,6 +50,7 @@ const CHUNK_GENERATION_DATA_OVERFLOW: u32 = 0x4744_4f32; // GDO2
 const CHUNK_EXTRA_EDGES: u32 = 0x4544_4745; // EDGE
 const CHUNK_BLOOM_INDEXES: u32 = 0x4249_4458; // BIDX
 const CHUNK_BLOOM_DATA: u32 = 0x4244_4154; // BDAT
+const CHUNK_BASE_GRAPHS: u32 = 0x4241_5345; // BASE
 
 const BLOOM_HEADER: usize = crate::bloom::BLOOMDATA_HEADER_LEN;
 
@@ -67,6 +81,11 @@ pub struct CommitGraphLayer {
     chunk_bloom_data: Option<(usize, usize)>,
     bloom_settings: Option<BloomFilterSettings>,
     bloom_disabled: bool,
+    /// Number of base graphs this layer declares in its header (`body[7]`).
+    base_layers_declared: u32,
+    /// Size in bytes of the BASE chunk (0 if absent). Used to bounds-check the
+    /// base-graph list against `base_layers_declared` (Git `add_graph_to_chain`).
+    base_chunk_size: usize,
 }
 
 impl CommitGraphLayer {
@@ -105,6 +124,7 @@ impl CommitGraphLayer {
         let mut generation_overflow_off = None;
         let mut bloom_idx_off = None;
         let mut bloom_data_range = None;
+        let mut base_graphs_off = None;
         let mut chunk_offsets: Vec<usize> = Vec::new();
         let mut toc_entries: Vec<(u32, usize)> = Vec::with_capacity(num_chunks);
 
@@ -129,6 +149,7 @@ impl CommitGraphLayer {
                 CHUNK_GENERATION_DATA => generation_off = Some(off),
                 CHUNK_GENERATION_DATA_OVERFLOW => generation_overflow_off = Some(off),
                 CHUNK_BLOOM_INDEXES => bloom_idx_off = Some(off),
+                CHUNK_BASE_GRAPHS => base_graphs_off = Some(off),
                 CHUNK_BLOOM_DATA => {
                     let end = if i + 1 < num_chunks {
                         let e2 = toc_start + (i + 1) * 12;
@@ -318,6 +339,15 @@ impl CommitGraphLayer {
             None
         };
 
+        let base_layers_declared = body[7] as u32;
+        let base_chunk_size = match base_graphs_off {
+            Some(off) => {
+                let end = chunk_byte_range(off, &toc_entries, file_end)?;
+                end.saturating_sub(off)
+            }
+            None => 0,
+        };
+
         Ok(Self {
             path,
             body,
@@ -330,6 +360,8 @@ impl CommitGraphLayer {
             chunk_bloom_data,
             bloom_settings,
             bloom_disabled: false,
+            base_layers_declared,
+            base_chunk_size,
         })
     }
 
@@ -613,6 +645,19 @@ impl CommitGraphChain {
                 let graph_path = info.join("commit-graphs").join(format!("graph-{h}.graph"));
                 let raw = std::fs::read(&graph_path).map_err(Error::from)?;
                 let layer = CommitGraphLayer::try_parse(graph_path, raw)?;
+                // `add_graph_to_chain`: a layer that declares N base graphs must
+                // carry a BASE chunk large enough to hold N hashes. If it is too
+                // small, Git warns and refuses to add this layer (and anything
+                // above it) to the chain, falling back to the object database for
+                // those commits. `layers.len()` here is the number of base layers
+                // already loaded below this one.
+                let n = layers.len();
+                if n > 0 && layer.base_chunk_size / HASH_LEN < n {
+                    if warn_once_for_base_chunk_too_small(&layer.layer_display_id()) {
+                        eprintln!("warning: commit-graph base graphs chunk is too small");
+                    }
+                    break;
+                }
                 layers.push(layer);
             }
             if layers.is_empty() {
@@ -948,23 +993,29 @@ pub fn parse_graph_file(path: &Path) -> Option<ParsedGraphDump> {
     }
     let header_word = u32::from_be_bytes(body[0..4].try_into().ok()?);
     let num_chunks = body[6] as usize;
-    let mut chunk_names = Vec::new();
     let toc_start = 8;
+    let mut present: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for i in 0..num_chunks {
         let e = toc_start + i * 12;
         let id = u32::from_be_bytes(body[e..e + 4].try_into().ok()?);
-        let name = match id {
-            CHUNK_OID_FANOUT => "oid_fanout",
-            CHUNK_OID_LOOKUP => "oid_lookup",
-            CHUNK_COMMIT_DATA => "commit_metadata",
-            CHUNK_GENERATION_DATA => "generation_data",
-            CHUNK_GENERATION_DATA_OVERFLOW => "generation_data_overflow",
-            CHUNK_EXTRA_EDGES => "extra_edges",
-            CHUNK_BLOOM_INDEXES => "bloom_indexes",
-            CHUNK_BLOOM_DATA => "bloom_data",
-            _ => "unknown",
-        };
-        chunk_names.push(name.to_string());
+        present.insert(id);
+    }
+    // `git/t/helper/test-read-graph.c` prints a fixed set of recognized chunks in
+    // a fixed order, omitting the BASE chunk and any unknown chunk.
+    let mut chunk_names: Vec<String> = Vec::new();
+    for (id, label) in [
+        (CHUNK_OID_FANOUT, "oid_fanout"),
+        (CHUNK_OID_LOOKUP, "oid_lookup"),
+        (CHUNK_COMMIT_DATA, "commit_metadata"),
+        (CHUNK_GENERATION_DATA, "generation_data"),
+        (CHUNK_GENERATION_DATA_OVERFLOW, "generation_data_overflow"),
+        (CHUNK_EXTRA_EDGES, "extra_edges"),
+        (CHUNK_BLOOM_INDEXES, "bloom_indexes"),
+        (CHUNK_BLOOM_DATA, "bloom_data"),
+    ] {
+        if present.contains(&id) {
+            chunk_names.push(label.to_string());
+        }
     }
     let layer = CommitGraphLayer::parse(path.to_path_buf(), raw.clone())?;
     let bloom_opt = layer.bloom_settings.map(|s| {
