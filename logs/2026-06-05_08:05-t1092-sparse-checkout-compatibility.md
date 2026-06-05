@@ -52,3 +52,10 @@
   while keeping unchanged out-of-cone entries sparse.
 - Canonical harness: `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh` -> `80/106`.
   Direct execution now passes subtest 42 and exposes later conflict-resolution failures.
+- Subtest 43 (`merge with conflict outside cone`) left `folder2/a` unmerged after
+  `mv folder2/a folder2/z && git add --sparse folder2`; directory adds now remove absent
+  unmerged entries under the added directory, resolving the renamed conflict path.
+- `merge --continue` also needed sparse placeholder expansion for the commit tree after its index
+  write collapsed sparse directories. Focused subtest 43 reproduction now matches full, sparse, and
+  sparse-index repositories through status and tree checks.
+- Canonical harness: `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh` -> `82/106`.

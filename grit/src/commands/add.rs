@@ -2652,6 +2652,36 @@ fn add_path(
                 eprintln!("remove '{path_str}'");
             }
         }
+
+        let removed_unmerged: HashSet<Vec<u8>> = index
+            .entries
+            .iter()
+            .filter(|ie| {
+                if ie.stage() == 0 {
+                    return false;
+                }
+                let Ok(p) = std::str::from_utf8(&ie.path) else {
+                    return false;
+                };
+                if !(dir_prefix.is_empty() || p.starts_with(&dir_prefix)) {
+                    return false;
+                }
+                if worktree_paths.contains(p) {
+                    return false;
+                }
+                fs::symlink_metadata(work_tree.join(p)).is_err()
+            })
+            .map(|ie| ie.path.clone())
+            .collect();
+        for p in removed_unmerged {
+            if !args.dry_run {
+                index.remove(&p);
+            }
+            if args.verbose {
+                let path_str = String::from_utf8_lossy(&p);
+                eprintln!("remove '{path_str}'");
+            }
+        }
     } else {
         // Allow adding ignored files when resolving merge conflicts (unmerged entries).
         let path_bytes = path.as_bytes();
