@@ -6040,32 +6040,21 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
                             print!("{s}");
                         }
                         "--bitmap" => {
+                            use grit_lib::midx::format_midx_bitmapped_packs;
                             let dir = rest
                                 .get(2)
                                 .map(Path::new)
                                 .context("usage: test-tool read-midx --bitmap <object-dir>")?;
-                            let pack_dir = dir.join("pack");
-                            let midx_d = pack_dir.join("multi-pack-index.d");
-                            let has_root = std::fs::read_dir(&pack_dir)
-                                .ok()
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|e| e.ok())
-                                .any(|e| {
-                                    let n = e.file_name().to_string_lossy().to_string();
-                                    n.starts_with("multi-pack-index-") && n.ends_with(".bitmap")
-                                });
-                            let has_split = std::fs::read_dir(&midx_d)
-                                .ok()
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|e| e.ok())
-                                .any(|e| {
-                                    let n = e.file_name().to_string_lossy().to_string();
-                                    n.starts_with("multi-pack-index-") && n.ends_with(".bitmap")
-                                });
-                            if !has_root && !has_split {
-                                bail!("no multi-pack bitmap in {}", pack_dir.display());
+                            match format_midx_bitmapped_packs(dir) {
+                                Ok(s) => print!("{s}"),
+                                Err(e) => {
+                                    // Print the bare message (the `Error::CorruptObject`
+                                    // Display adds a `corrupt object: ` prefix we don't want).
+                                    let msg = e.to_string();
+                                    let msg = msg.strip_prefix("corrupt object: ").unwrap_or(&msg);
+                                    eprintln!("error: {msg}");
+                                    std::process::exit(1);
+                                }
                             }
                         }
                         "" => bail!("usage: test-tool read-midx <object-dir>"),

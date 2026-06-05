@@ -523,15 +523,33 @@ fn build_midx_bytes(
         None
     };
     let chunk_btmp: Vec<u8> = if write_bitmap_placeholders {
+        // Per-pack `(bitmap_pos, bitmap_nr)`: position of the pack's first object in
+        // the MIDX pack-order traversal and the number of (deduplicated) MIDX objects
+        // selected from that pack — matching `write_midx_bitmapped_packs` in
+        // git/midx-write.c (counts MIDX entries per pack, not raw idx entry counts).
+        let num_packs_usize = indexes.len();
+        let mut bitmap_pos = vec![u32::MAX; num_packs_usize];
+        let mut bitmap_nr = vec![0u32; num_packs_usize];
+        for (rank, &oid_idx) in order.iter().enumerate() {
+            let pack = entries[oid_idx as usize].pack_id as usize;
+            if let Some(p) = bitmap_pos.get_mut(pack) {
+                if *p == u32::MAX {
+                    *p = rank as u32;
+                }
+            }
+            if let Some(n) = bitmap_nr.get_mut(pack) {
+                *n += 1;
+            }
+        }
         let mut v = Vec::new();
-        let mut cumulative = 0u32;
-        for idx in indexes {
-            let n = u32::try_from(idx.entries.len()).map_err(|_| {
-                Error::CorruptObject("too many objects in pack for MIDX BTMP".to_owned())
-            })?;
-            v.extend_from_slice(&cumulative.to_be_bytes());
-            v.extend_from_slice(&n.to_be_bytes());
-            cumulative = cumulative.saturating_add(n);
+        for pack in 0..num_packs_usize {
+            let pos = if bitmap_pos[pack] == u32::MAX {
+                0
+            } else {
+                bitmap_pos[pack]
+            };
+            v.extend_from_slice(&pos.to_be_bytes());
+            v.extend_from_slice(&bitmap_nr[pack].to_be_bytes());
         }
         let pad = (MIDX_CHUNK_ALIGNMENT - (v.len() % MIDX_CHUNK_ALIGNMENT)) % MIDX_CHUNK_ALIGNMENT;
         v.extend(std::iter::repeat_n(0u8, pad));
@@ -1385,6 +1403,40 @@ pub fn read_midx_btmp_ranges(objects_dir: &Path) -> Result<Vec<MidxBtmpPackRange
             bitmap_pos,
             bitmap_nr,
         });
+    }
+    Ok(out)
+}
+
+/// Format `test-tool read-midx --bitmap` output for the active MIDX: per pack, a
+/// line with `<pack>.pack`, then `  bitmap_pos:` and `  bitmap_nr:`. Returns an
+/// error whose message is `MIDX does not contain the BTMP chunk` when the MIDX has
+/// no `BTMP` chunk (mirrors `nth_bitmapped_pack` in git/midx.c).
+pub fn format_midx_bitmapped_packs(objects_dir: &Path) -> Result<String> {
+    let pack_dir = objects_dir.join("pack");
+    let path = resolve_tip_midx_path(&pack_dir)
+        .ok_or_else(|| Error::CorruptObject("no multi-pack-index found".to_owned()))?;
+    let data = fs::read(&path).map_err(Error::Io)?;
+    let (_, hdr_end, _) = parse_midx_header(&data)?;
+    let (pn_off, pn_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_PACKNAMES)?;
+    let names = parse_pack_names_blob(&data[pn_off..pn_off + pn_len])?;
+    let Ok((btmp_off, btmp_len)) = find_chunk(&data, hdr_end, MIDX_CHUNKID_BITMAPPED_PACKS) else {
+        return Err(Error::CorruptObject(
+            "MIDX does not contain the BTMP chunk".to_owned(),
+        ));
+    };
+    let n_entries = btmp_len / 8;
+    let mut out = String::new();
+    for i in 0..n_entries {
+        let base = btmp_off + i * 8;
+        let bitmap_pos = read_be_u32(&data, base)?;
+        let bitmap_nr = read_be_u32(&data, base + 4)?;
+        let idx_name = names.get(i).ok_or_else(|| {
+            Error::CorruptObject("BTMP entry has no corresponding pack name".to_owned())
+        })?;
+        let stem = idx_name.strip_suffix(".idx").unwrap_or(idx_name);
+        out.push_str(&format!("{stem}.pack\n"));
+        out.push_str(&format!("  bitmap_pos: {bitmap_pos}\n"));
+        out.push_str(&format!("  bitmap_nr: {bitmap_nr}\n"));
     }
     Ok(out)
 }
