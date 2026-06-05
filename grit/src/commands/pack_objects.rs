@@ -4648,3 +4648,44 @@ pub(crate) fn write_partial_clone_promisor_pack(
     std::fs::write(&idx_path, &idx_bytes)?;
     Ok(pack_path)
 }
+
+/// Write a pack containing full object records and its matching index under `objects/pack`.
+pub(crate) fn write_full_object_pack(
+    repo: &Repository,
+    objects: &[(ObjectId, ObjectKind, Vec<u8>)],
+) -> Result<Option<PathBuf>> {
+    if objects.is_empty() {
+        return Ok(None);
+    }
+
+    let pack_dir = repo.git_dir.join("objects/pack");
+    std::fs::create_dir_all(&pack_dir)?;
+    let pack_hash_bytes = pack_trailer_bytes_for_repo(&repo.git_dir);
+    let mut write_entries = Vec::with_capacity(objects.len());
+    for (oid, kind, data) in objects {
+        let pack_id =
+            hash_object_bytes(*kind, data, pack_hash_bytes).map_err(|e| anyhow::anyhow!("{e}"))?;
+        write_entries.push(PackWriteEntry::Full(PackEntry {
+            oid: *oid,
+            pack_id,
+            kind: *kind,
+            data: data.clone(),
+        }));
+    }
+
+    let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let pack_zlib_level = config
+        .pack_objects_zlib_level()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let zlib_compression = Compression::new(pack_zlib_level as u32);
+
+    let pack_bytes = build_pack(&write_entries, false, pack_hash_bytes, zlib_compression)?;
+    let pack_hash = hex::encode(&pack_bytes[pack_bytes.len() - pack_hash_bytes..]);
+    let pack_path = pack_dir.join(format!("pack-{pack_hash}.pack"));
+    let idx_path = pack_dir.join(format!("pack-{pack_hash}.idx"));
+
+    std::fs::write(&pack_path, &pack_bytes)?;
+    let (idx_bytes, _) = build_idx_for_pack(&pack_bytes, &write_entries, pack_hash_bytes, None)?;
+    std::fs::write(&idx_path, &idx_bytes)?;
+    Ok(Some(pack_path))
+}

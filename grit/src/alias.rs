@@ -257,7 +257,7 @@ pub(crate) fn run_command_with_aliases(
                 .ok()
                 .map(|r| r.git_dir)
         });
-    let config = match grit_lib::config::ConfigSet::load(git_dir.as_deref(), true) {
+    let mut config = match grit_lib::config::ConfigSet::load(git_dir.as_deref(), true) {
         Ok(c) => c,
         Err(e) => {
             let s = e.to_string();
@@ -283,6 +283,19 @@ pub(crate) fn run_command_with_aliases(
 
     loop {
         let cmd = args[0].clone();
+
+        if cmd.starts_with('-') {
+            let mut argv = vec!["git".to_owned()];
+            argv.extend(args.iter().cloned());
+            let (alias_opts, Some(alias_cmd), alias_rest) = crate::extract_globals(&argv)? else {
+                return crate::dispatch(&cmd, &args[1..], opts);
+            };
+            crate::apply_globals(&alias_opts)?;
+            config = grit_lib::config::ConfigSet::load(git_dir.as_deref(), true)?;
+            args = vec![alias_cmd];
+            args.extend(alias_rest);
+            continue;
+        }
 
         if is_deprecated_command(&cmd) {
             if let Some(new_argv) = try_expand_alias(

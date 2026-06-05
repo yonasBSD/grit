@@ -71,7 +71,7 @@ Read **TESTING.md** for the full strategy. The short version:
 4. Rebuild (`cargo build --release -p grit-cli`)
 5. Re-run until fully passing
 6. Refresh results: `./scripts/run-tests.sh <file>.sh` (updates that test's `data/tests/` TOML; add `--dashboard` to regenerate docs)
-7. Commit with a message like `fix: make t1234-foo fully pass`
+7. Commit with GitButler (see **Committing** below) with a message like `fix: make t1234-foo fully pass`
 
 ### Priority Order
 
@@ -99,18 +99,20 @@ Find work with `ti list --tag test` (add `--tag t3 --tag-mode all` to scope to a
 
 On each iteration:
 
-1. Read this file, then pick a ticket: `ti next --markdown` or `ti list --tag test --markdown`.
-2. Claim exactly one highest-value ticket (`ti checkout <id>`, `ti claim`).
-3. Search the codebase before assuming functionality is missing.
-4. Read the tests in `git/t/` and determine which are related.
-5. Read the documentation for the command in `git/Documentation`.
-6. Implement the functionality the ticket's failing subtests cover.
-7. Keep the ticket current: `ti comment` for findings/progress, `ti state blocked` with a reason if stuck, `ti close` when the file fully passes. Treat the ticket system as the planning source of truth.
-8. After meaningful test runs, comment the resulting pass counts on the ticket (e.g. `ti comment "t3404: 92/132 after reword fix"`).
-9. Update this file only if you discover durable run/build/test knowledge.
-10. Update the log for this task as you go.
-11. Commit if the increment is coherent and validated.
-12. Immediately continue to the next item unless the repo is truly complete, blocked, unsafe, or user-stopped.
+1. Read this file, then set the local Git identity for this checkout to an agent-specific email-like id: `git config --local user.email "<email-like-id>"` (examples: `schacon+cursor@gmail.com`, `schacon+codex-5.5@gmail.com`). Use a stable id for your agent/runtime so commits remain attributable.
+2. Pick a ticket: `ti next --markdown` or `ti list --tag test --markdown`.
+3. Claim exactly one highest-value ticket (`ti checkout <id>`, `ti claim`).
+4. Search the codebase before assuming functionality is missing.
+5. Read the tests in `git/t/` and determine which are related.
+6. Read the documentation for the command in `git/Documentation`.
+7. Implement the functionality the ticket's failing subtests cover.
+8. Keep the ticket current: `ti comment` for findings/progress, `ti state blocked` with a reason if stuck. Treat the ticket system as the planning source of truth.
+9. After meaningful test runs, comment the resulting pass counts on the ticket (e.g. `ti comment "t3404: 92/132 after reword fix"`).
+10. Update this file only if you discover durable run/build/test knowledge.
+11. Update the log for this task as you go.
+12. Commit whenever an increment is coherent and validated, using **GitButler** (`but` — see **Committing** below), staging only the files you changed onto the existing workspace branch (never a new branch).
+13. Close the ticket **only after the work is committed**: `but commit` first, then `ti comment` with the commit SHA and final pass count, then `ti close <id>`. A closed ticket with uncommitted work is lost work — never close without a commit.
+14. Immediately continue to the next item unless the repo is truly complete, blocked, unsafe, or user-stopped.
 
 Do not stop just because you reached a nice milestone.
 
@@ -209,11 +211,36 @@ The Git-compatible engine should live in a **library crate** (`grit-lib`); the *
 - Create stub/partial test files (use full upstream tests)
 - Skip tests by adding `SKIP` prereqs (fix the code instead)
 - Run `cargo build` in worktrees (build in main repo, copy binary)
+- Use plain `git commit` / `git checkout -b` / `git reset` in this checkout — it is a GitButler workspace; use `but` (see **Committing**). `git config --local user.email ...` is allowed only to set the per-agent local author email.
+- Close a ticket (`ti close`) before its work is committed with `but commit`
 
-## Committing 
+## Committing
 
-- Before committing, always run `cargo fmt` and `cargo clippy --fix --allow-dirty` and ensure no warnings remain.
-- After running passing harness tests, dashboards are updated by `run-tests.sh` (or run `python3 scripts/generate-dashboard-from-test-files.py`)
+This repository runs in **GitButler workspace mode** (the checked-out branch is `gitbutler/workspace`). Commit with the **`but` CLI**, not plain `git commit` — plain git commands that move HEAD will fight the workspace. `but` is a drop-in replacement for the git write workflows; read-only git (log, diff, blame) is fine.
+
+Before committing, always run `cargo fmt` and `cargo clippy --fix --allow-dirty` and ensure no warnings remain (`cargo test -p grit-lib --lib` must pass).
+
+**Use the single existing workspace branch — do NOT create a branch per ticket or per commit.** Run `but status` first: if a branch is already applied in the workspace, that is the branch you commit to. Only if the workspace has no branch at all, create one with `but branch new` (once), and keep using it for all subsequent commits.
+
+**Commit flow — commit BEFORE you `ti close`:**
+
+```bash
+but status                            # find the existing workspace branch; see your modified files
+but stage <file> <branch>             # repeat for EACH file YOU changed, incl. the data/tests/ TOML
+but commit <branch> --only -m "fix: make t6436-merge-overwrite fully pass"
+ti comment -t <id> "committed <sha>; 18/18 passing"
+ti close <id>
+```
+
+Rules:
+
+- **Always `--only`.** Several agents share this working copy; a bare `but commit` sweeps every unassigned change in the workspace — including other agents' in-flight work. Stage exactly the files you touched and commit only those.
+- **One shared branch, many commits.** Every ticket's work is its own commit (or a few) on the existing branch — never a new branch. Stage your `data/tests/<group>/<stem>.toml` update and your `logs/` work log along with the code.
+- Follow-up fixes for the same ticket: stage to the same branch and `but commit <branch> --only` again (or `but absorb`/`but rub` to amend into your earlier commit).
+- Partial progress is still worth committing — commit coherent increments as you go; do not wait for fully-passing to make your first commit.
+- If `but status` shows changes you do not recognize, leave them alone — they belong to another agent.
+
+After running passing harness tests, regenerate dashboards only when needed: pass `--dashboard` to `run-tests.sh` or run `python3 scripts/generate-dashboard-from-test-files.py`.
 
 ## Cursor Cloud Specific Instructions
 

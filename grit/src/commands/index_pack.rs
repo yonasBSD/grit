@@ -32,6 +32,16 @@ pub fn preprocess_argv(rest: &mut Vec<String>) {
     while i < rest.len() {
         if rest[i] == "--strict" || rest[i] == "--fsck-objects" {
             if let Some(next) = rest.get(i + 1) {
+                if next.starts_with('-') {
+                    let flag = if rest[i] == "--strict" {
+                        "--strict"
+                    } else {
+                        "--fsck-objects"
+                    };
+                    rest[i] = format!("{flag}=");
+                    i += 1;
+                    continue;
+                }
                 if !next.starts_with('-') && next.to_ascii_lowercase().ends_with(".pack") {
                     // Git: `index-pack --strict foo.pack` — `foo.pack` is the pack file, not fsck rules.
                     let flag = if rest[i] == "--strict" {
@@ -43,6 +53,15 @@ pub fn preprocess_argv(rest: &mut Vec<String>) {
                     i += 1;
                     continue;
                 }
+            } else {
+                let flag = if rest[i] == "--strict" {
+                    "--strict"
+                } else {
+                    "--fsck-objects"
+                };
+                rest[i] = format!("{flag}=");
+                i += 1;
+                continue;
             }
         }
         if i + 1 < rest.len() {
@@ -79,6 +98,123 @@ pub fn normalize_argv_for_positional_pack(rest: &mut Vec<String>) {
     rest.push(pack);
 }
 
+/// Parse `git index-pack` arguments without the generic clap flattening wrapper.
+pub fn parse_argv(mut argv: Vec<String>) -> Result<Args> {
+    preprocess_argv(&mut argv);
+    normalize_argv_for_positional_pack(&mut argv);
+    let mut args = Args {
+        stdin: false,
+        fix_thin: false,
+        pack_file: None,
+        extra_pack_files: Vec::new(),
+        verify: false,
+        verify_stat: false,
+        verify_stat_only: false,
+        verbose: false,
+        object_format: None,
+        index_version: None,
+        strict: None,
+        fsck_objects: None,
+        output: None,
+        keep: None,
+        threads: None,
+        max_input_size: None,
+        rev_index: false,
+        no_rev_index: false,
+    };
+
+    let mut i = 0usize;
+    while i < argv.len() {
+        let arg = &argv[i];
+        match arg.as_str() {
+            "--stdin" => args.stdin = true,
+            "--fix-thin" => args.fix_thin = true,
+            "--verify" => args.verify = true,
+            "--verify-stat" => args.verify_stat = true,
+            "--verify-stat-only" => args.verify_stat_only = true,
+            "-v" | "--verbose" => args.verbose = true,
+            "--rev-index" => args.rev_index = true,
+            "--no-rev-index" => args.no_rev_index = true,
+            "--strict" | "--strict=" => args.strict = Some(String::new()),
+            "--fsck-objects" | "--fsck-objects=" => args.fsck_objects = Some(String::new()),
+            "-o" | "--output" => {
+                i += 1;
+                let Some(value) = argv.get(i) else {
+                    bail!("{arg} requires a value");
+                };
+                args.output = Some(PathBuf::from(value));
+            }
+            "--object-format" => {
+                i += 1;
+                let Some(value) = argv.get(i) else {
+                    bail!("--object-format requires a value");
+                };
+                args.object_format = Some(value.clone());
+            }
+            "--index-version" => {
+                i += 1;
+                let Some(value) = argv.get(i) else {
+                    bail!("--index-version requires a value");
+                };
+                args.index_version = Some(value.clone());
+            }
+            "--keep" => args.keep = Some(String::new()),
+            "--threads" => {
+                i += 1;
+                let Some(value) = argv.get(i) else {
+                    bail!("--threads requires a value");
+                };
+                args.threads = Some(value.parse().context("invalid --threads value")?);
+            }
+            "--max-input-size" => {
+                i += 1;
+                let Some(value) = argv.get(i) else {
+                    bail!("--max-input-size requires a value");
+                };
+                args.max_input_size = Some(value.clone());
+            }
+            _ if arg.starts_with("--object-format=") => {
+                args.object_format = Some(arg["--object-format=".len()..].to_owned());
+            }
+            _ if arg.starts_with("--index-version=") => {
+                args.index_version = Some(arg["--index-version=".len()..].to_owned());
+            }
+            _ if arg.starts_with("--strict=") => {
+                args.strict = Some(arg["--strict=".len()..].to_owned());
+            }
+            _ if arg.starts_with("--fsck-objects=") => {
+                args.fsck_objects = Some(arg["--fsck-objects=".len()..].to_owned());
+            }
+            _ if arg.starts_with("--output=") => {
+                args.output = Some(PathBuf::from(&arg["--output=".len()..]));
+            }
+            _ if arg.starts_with("--keep=") => {
+                args.keep = Some(arg["--keep=".len()..].to_owned());
+            }
+            _ if arg.starts_with("--threads=") => {
+                args.threads = Some(
+                    arg["--threads=".len()..]
+                        .parse()
+                        .context("invalid --threads value")?,
+                );
+            }
+            _ if arg.starts_with("--max-input-size=") => {
+                args.max_input_size = Some(arg["--max-input-size=".len()..].to_owned());
+            }
+            _ if arg.starts_with('-') => bail!("unsupported option: {arg}"),
+            _ => {
+                if args.pack_file.is_some() {
+                    args.extra_pack_files.push(arg.clone());
+                } else {
+                    args.pack_file = Some(arg.clone());
+                }
+            }
+        }
+        i += 1;
+    }
+    Ok(args)
+}
+
 /// Arguments for `grit index-pack`.
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -93,6 +229,10 @@ pub struct Args {
     /// Pack file to index.
     #[arg(value_name = "PACK-FILE")]
     pub pack_file: Option<String>,
+
+    /// Additional pack files supplied by shell globs in verify mode.
+    #[arg(skip)]
+    pub extra_pack_files: Vec<String>,
 
     /// Verify the pack file integrity (check all objects).
     #[arg(long = "verify")]
@@ -1254,7 +1394,14 @@ fn run_verify(args: &Args) -> Result<()> {
         .pack_file
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("usage: grit index-pack --verify <pack-file>"))?;
+    run_verify_one(args, pack_path)?;
+    for pack_path in &args.extra_pack_files {
+        run_verify_one(args, pack_path)?;
+    }
+    Ok(())
+}
 
+fn run_verify_one(args: &Args, pack_path: &str) -> Result<()> {
     let stat_only = args.verify_stat_only;
     let show_stat = stat_only || args.verify_stat;
 

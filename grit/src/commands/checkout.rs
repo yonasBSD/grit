@@ -630,6 +630,8 @@ pub fn run(mut args: Args) -> Result<()> {
     // inside `merge_branch_working_tree`, skipping the three-way merge (`checkout -m`, t7102-reset).
     let switch_force = args.force;
 
+    let raw_has_separator = raw_args.iter().any(|a| a == "--");
+
     // `git switch -C branch -q` / `checkout -b x -q` pass `-q` as a trailing (or middle) positional.
     // Remove every `-q` / `--quiet` from `rest` so they are never parsed as a start-point or path.
     {
@@ -638,6 +640,20 @@ pub fn run(mut args: Args) -> Result<()> {
             if s == "-q" || s == "--quiet" {
                 args.quiet = true;
                 QUIET.with(|q| q.set(true));
+                continue;
+            }
+            filtered.push(s);
+        }
+        args.rest = filtered;
+    }
+
+    // `checkout HEAD --patch` accepts `--patch` after the tree-ish, but clap's trailing var-arg
+    // captures it as a pathspec. Keep tokens after an explicit `--` as paths.
+    if !raw_has_separator {
+        let mut filtered: Vec<String> = Vec::with_capacity(args.rest.len());
+        for s in std::mem::take(&mut args.rest) {
+            if s == "-p" || s == "--patch" {
+                args.patch = true;
                 continue;
             }
             filtered.push(s);
@@ -673,7 +689,7 @@ pub fn run(mut args: Args) -> Result<()> {
 
     // Detect if `--` was used in the original command line. Clap strips a
     // leading `--` from trailing_var_arg, so we check the raw args.
-    let has_separator = raw_args.iter().any(|a| a == "--");
+    let has_separator = raw_has_separator;
     // Determine if `--` is at the end of raw_args (after all positional args).
     let separator_at_end = has_separator && raw_args.last().map(|s| s.as_str()) == Some("--");
 
@@ -3123,6 +3139,9 @@ fn switch_to_tree(
 
     refuse_checkout_removing_cwd(&old_index, &new_index, &work_tree)?;
 
+    // Check for sparse paths that already exist before the checkout writes any in-cone files.
+    warn_sparse_paths_already_present(repo, &old_index, &new_index, &work_tree);
+
     // Perform the actual working tree update.
     // When force, write all entries even if OID matches (to restore dirty files).
     checkout_index_to_worktree(
@@ -3134,8 +3153,6 @@ fn switch_to_tree(
         true,
         !recurse_submodules,
     )?;
-
-    warn_sparse_paths_already_present(repo, &old_index, &new_index, &work_tree);
 
     // Update cached stat in the new index. Entries that checkout skipped because the same path
     // already existed keep their old stat tuple; entries that checkout wrote adopt the new

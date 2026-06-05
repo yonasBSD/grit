@@ -906,6 +906,16 @@ fn cmd_add(args: AddArgs) -> Result<()> {
         let ref_path = common.join(&branch_ref);
         if !ref_path.exists() {
             refs::write_ref(&common, &branch_ref, &commit_oid)?;
+            let identity = crate::commands::update_ref::resolve_reflog_identity(&repo);
+            let _ = refs::append_reflog(
+                &common,
+                &branch_ref,
+                &ObjectId::zero(),
+                &commit_oid,
+                &identity,
+                "branch: Created from HEAD",
+                true,
+            );
         } else if args.force == 0 {
             // Branch already exists — check if it's checked out in another worktree
             // (For simplicity, allow it; git also warns but --force overrides)

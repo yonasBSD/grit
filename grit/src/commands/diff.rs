@@ -3014,7 +3014,7 @@ pub fn run(mut args: Args) -> Result<()> {
     };
 
     // Filter by pathspecs
-    let entries = filter_by_paths(entries, &raw_path_args);
+    let entries = filter_by_paths(entries, &paths);
 
     // Build whitespace mode from flags
     let ws_mode = WhitespaceMode {
@@ -3117,22 +3117,19 @@ pub fn run(mut args: Args) -> Result<()> {
             // to "only found copies from modified paths", so the unmodified preimage must not
             // be added as copy sources (t4001 "many rename source candidates").
             let rename_limited = args.rename_limit.is_some_and(|n| n > 0);
-            let source_tree_entries: Vec<(String, String, ObjectId)> = if args.find_copies_harder
-                && !rename_limited
-            {
-                source_tree_oid_for_find_copies_harder(&repo, &args, &revs, head_tree.as_ref())
-                    .and_then(|t| grit_lib::diff::head_path_states(&repo.odb, Some(&t)).ok())
-                    .map(|m| {
-                        m.into_iter()
-                            .map(|(p, (mode, oid))| {
-                                (p, grit_lib::diff::format_mode(mode), oid)
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+            let source_tree_entries: Vec<(String, String, ObjectId)> =
+                if args.find_copies_harder && !rename_limited {
+                    source_tree_oid_for_find_copies_harder(&repo, &args, &revs, head_tree.as_ref())
+                        .and_then(|t| grit_lib::diff::head_path_states(&repo.odb, Some(&t)).ok())
+                        .map(|m| {
+                            m.into_iter()
+                                .map(|(p, (mode, oid))| (p, grit_lib::diff::format_mode(mode), oid))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
             detect_copies(
                 &repo.odb,
                 None,
@@ -3796,17 +3793,13 @@ pub fn run(mut args: Args) -> Result<()> {
     // ran. Git still invokes it (with stdout discarded) to learn `found_changes`
     // from the exit code when an external diff is configured (t4020 #56-#64).
     if quiet_suppresses_stdout && (args.exit_code || args.quiet) && !args.no_ext_diff {
-        let diff_config = grit_lib::config::ConfigSet::load(Some(&repo.git_dir), true)
-            .unwrap_or_default();
+        let diff_config =
+            grit_lib::config::ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
         let env_cfg_ext = resolve_env_config_external_diff(&diff_config);
         // Run when env/config OR any attribute driver could apply.
         let any_attr_driver = entries.iter().any(|e| {
-            grit_lib::merge_diff::diff_attr_external_driver(
-                &repo.git_dir,
-                &diff_config,
-                e.path(),
-            )
-            .is_some()
+            grit_lib::merge_diff::diff_attr_external_driver(&repo.git_dir, &diff_config, e.path())
+                .is_some()
         });
         if env_cfg_ext.is_some() || any_attr_driver {
             let mut sink = io::sink();
@@ -3863,7 +3856,11 @@ pub fn run(mut args: Args) -> Result<()> {
     if args.exit_code || args.quiet {
         // With an external driver, Git's `found_changes` (driven by the driver's
         // exit code under trustExitCode) overrides the entry-derived `has_diff`.
-        let changed = if ext_diff_ran { ext_found_changes } else { has_diff };
+        let changed = if ext_diff_ran {
+            ext_found_changes
+        } else {
+            has_diff
+        };
         if changed {
             std::process::exit(1);
         }
@@ -6583,6 +6580,29 @@ fn is_binary(data: &[u8]) -> bool {
     data[..check_len].contains(&0)
 }
 
+fn is_large_for_diff(data: &[u8], config: &ConfigSet) -> bool {
+    let Some(limit) = config_big_file_threshold(config) else {
+        return false;
+    };
+    data.len() as u64 > limit
+}
+
+fn is_binary_or_large_for_diff(data: &[u8], git_dir: &Path) -> bool {
+    if is_binary(data) {
+        return true;
+    }
+    let config = ConfigSet::load(Some(git_dir), true).unwrap_or_else(|_| ConfigSet::new());
+    is_large_for_diff(data, &config)
+}
+
+fn config_big_file_threshold(config: &ConfigSet) -> Option<u64> {
+    config
+        .get_i64("core.bigFileThreshold")
+        .or_else(|| config.get_i64("core.bigfilethreshold"))
+        .and_then(|value| value.ok())
+        .and_then(|value| u64::try_from(value).ok())
+}
+
 /// Insertion/deletion counts for `--stat` / `--shortstat` / `--numstat`.
 ///
 /// When `--break-rewrites` is set and Git would treat the pair as a complete rewrite,
@@ -7047,8 +7067,22 @@ fn run_external_diff_for_patch(
     // Temp-file basenames follow each side's path: the old side uses `name`,
     // the new side uses the rename destination (`other`) when present.
     let new_path = other_path.unwrap_or(display_path);
-    let old_side = ext_diff_side(old_raw, old_oid, old_mode, display_path, old_borrow, old_zero_hex)?;
-    let new_side = ext_diff_side(new_raw, new_oid, new_mode, new_path, new_borrow, new_zero_hex)?;
+    let old_side = ext_diff_side(
+        old_raw,
+        old_oid,
+        old_mode,
+        display_path,
+        old_borrow,
+        old_zero_hex,
+    )?;
+    let new_side = ext_diff_side(
+        new_raw,
+        new_oid,
+        new_mode,
+        new_path,
+        new_borrow,
+        new_zero_hex,
+    )?;
 
     const SHELL_META: &[char] = &[
         '|', '&', ';', '<', '>', '(', ')', '$', '`', '\\', '"', '\'', ' ', '\t', '\n', '*', '?',
@@ -7127,7 +7161,9 @@ fn run_external_diff_for_patch(
 /// Resolve the `GIT_EXTERNAL_DIFF` (env) / `diff.external` (config) driver and
 /// its trust-exit-code flag. Env takes precedence over config; env trust comes
 /// from `GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE`, config trust from `diff.trustExitCode`.
-fn resolve_env_config_external_diff(config: &grit_lib::config::ConfigSet) -> Option<(String, bool)> {
+fn resolve_env_config_external_diff(
+    config: &grit_lib::config::ConfigSet,
+) -> Option<(String, bool)> {
     if let Ok(cmd) = std::env::var("GIT_EXTERNAL_DIFF") {
         if !cmd.trim().is_empty() {
             let trust = std::env::var("GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE")
@@ -7137,7 +7173,9 @@ fn resolve_env_config_external_diff(config: &grit_lib::config::ConfigSet) -> Opt
             return Some((cmd, trust));
         }
     }
-    let cmd = config.get("diff.external").filter(|s| !s.trim().is_empty())?;
+    let cmd = config
+        .get("diff.external")
+        .filter(|s| !s.trim().is_empty())?;
     let trust = config
         .get("diff.trustExitCode")
         .and_then(|v| grit_lib::config::parse_bool(v.as_str()).ok())
@@ -7708,10 +7746,9 @@ fn write_patch_with_prefix(
                 // `other` = the destination path for renames/copies (Git's `two->path`).
                 let display = entry.path();
                 let other = match entry.status {
-                    DiffStatus::Renamed | DiffStatus::Copied => entry
-                        .new_path
-                        .as_deref()
-                        .filter(|n| *n != display),
+                    DiffStatus::Renamed | DiffStatus::Copied => {
+                        entry.new_path.as_deref().filter(|n| *n != display)
+                    }
                     _ => None,
                 };
                 // Git's `reuse_worktree_file`: the unstaged worktree side of a
@@ -7724,17 +7761,16 @@ fn write_patch_with_prefix(
                     && entry.new_mode != "000000"
                     && entry.new_mode != "160000";
                 let new_zero_hex = new_is_worktree;
-                let new_borrow: Option<String> = if new_is_worktree
-                    && mode_is_regular_blob_mode_str(&entry.new_mode)
-                {
-                    let p = repo_path_for_diff_side(new_path, relative_prefix);
-                    work_tree.and_then(|wt| {
-                        let full = wt.join(&p);
-                        full.symlink_metadata().ok().map(|_| p.clone())
-                    })
-                } else {
-                    None
-                };
+                let new_borrow: Option<String> =
+                    if new_is_worktree && mode_is_regular_blob_mode_str(&entry.new_mode) {
+                        let p = repo_path_for_diff_side(new_path, relative_prefix);
+                        work_tree.and_then(|wt| {
+                            let full = wt.join(&p);
+                            full.symlink_metadata().ok().map(|_| p.clone())
+                        })
+                    } else {
+                        None
+                    };
                 // Git's `prep_temp_blob` runs `convert_to_working_tree` on each
                 // blob temp file, so e.g. `core.autocrlf` LF→CRLF applies to the
                 // bytes the driver sees (t4020 #69). Borrowed worktree files are
@@ -8002,6 +8038,8 @@ fn write_patch_with_prefix(
             && !attr_force_text
             && (forced_binary
                 || attr_unset_binary
+                || is_large_for_diff(&old_content_raw, config)
+                || is_large_for_diff(&new_content_raw, config)
                 || is_binary(&old_content_raw)
                 || is_binary(&new_content_raw))
         {
@@ -9864,7 +9902,8 @@ fn write_compact_summary(
         }
         let old_raw = read_content_raw(odb, &entry.old_oid);
         let new_raw = read_content_raw_or_worktree(odb, &entry.new_oid, work_tree, entry.path());
-        let binary = is_binary(&old_raw) || is_binary(&new_raw);
+        let binary = is_binary_or_large_for_diff(&old_raw, git_dir)
+            || is_binary_or_large_for_diff(&new_raw, git_dir);
         let mode_only = entry.status == DiffStatus::Modified
             && entry.old_mode != entry.new_mode
             && old_raw == new_raw;
@@ -10069,7 +10108,8 @@ fn write_stat(
         }
         let old_raw = read_content_raw(odb, &entry.old_oid);
         let new_raw = read_content_raw_or_worktree(odb, &entry.new_oid, work_tree, entry.path());
-        let binary = is_binary(&old_raw) || is_binary(&new_raw);
+        let binary = is_binary_or_large_for_diff(&old_raw, git_dir)
+            || is_binary_or_large_for_diff(&new_raw, git_dir);
         let mode_only = entry.status == DiffStatus::Modified
             && entry.old_mode != entry.new_mode
             && old_raw == new_raw;

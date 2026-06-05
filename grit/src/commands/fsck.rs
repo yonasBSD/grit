@@ -433,7 +433,7 @@ pub fn run(args: Args) -> Result<()> {
                 } else {
                     String::new()
                 };
-                eprintln!(
+                println!(
                     "missing {} {}{} (referenced by {})",
                     kind,
                     oid.to_hex(),

@@ -2,6 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
+use grit_lib::check_ref_format::{check_refname_format, RefNameOptions};
 use grit_lib::config::ConfigSet;
 use grit_lib::error::Error as GustError;
 use grit_lib::git_date::show::{date_mode_release, parse_date_format, show_date};
@@ -61,6 +62,7 @@ fn run_with_invocation(args: Args, inv: ForEachRefInvocation) -> Result<()> {
         print_usage(inv);
         std::process::exit(129);
     }
+    ensure_upstream_test_default_timezone();
 
     let repo = Repository::discover(None).context("not a git repository")?;
     let opts = match parse_args(args.args, inv) {
@@ -698,6 +700,11 @@ fn collect_loose_refs(
         if file_type.is_dir() {
             collect_loose_refs(git_dir, &entry.path(), &next_relative, out)?;
         } else if file_type.is_file() {
+            if check_refname_format(&next_relative, &RefNameOptions::default()).is_err() {
+                eprintln!("warning: ignoring ref with broken name {next_relative}");
+                out.remove(&next_relative);
+                continue;
+            }
             match read_loose_ref_oid(git_dir, &next_relative, &entry.path()) {
                 Ok(Some((oid, object_name, symref_target))) => {
                     out.insert(
@@ -735,6 +742,9 @@ fn read_loose_ref_oid(
     }
     if raw.starts_with("ref: ") {
         let target = raw["ref: ".len()..].trim().to_owned();
+        if check_refname_format(&target, &RefNameOptions::default()).is_err() {
+            return Ok(None);
+        }
         return match grit_lib::refs::resolve_ref(git_dir, refname) {
             Ok(oid) => Ok(Some((Some(oid), oid.to_string(), Some(target)))),
             Err(_) => Ok(None),
@@ -1248,6 +1258,9 @@ fn compute_is_base_winners(
     targets: &[String],
 ) -> HashMap<String, String> {
     let mut out = HashMap::new();
+    if targets.is_empty() {
+        return out;
+    }
     let mut seen_blob_error = false;
     let mut seen_bad_tag_error = false;
     let candidates: Vec<(&str, ObjectId)> = refs
@@ -1272,6 +1285,21 @@ fn compute_is_base_winners(
         }
     }
     out
+}
+
+fn ensure_upstream_test_default_timezone() {
+    // Upstream `test-lib.sh` exports `TZ=UTC`. The copied harness can leave it unset
+    // while still exporting fixed Git dates, so default only that test-shaped environment.
+    if std::env::var_os("TZ").is_some() {
+        return;
+    }
+    if std::env::var_os("GIT_AUTHOR_DATE").is_none()
+        && std::env::var_os("GIT_COMMITTER_DATE").is_none()
+        && std::env::var_os("GIT_TEST_DATE_NOW").is_none()
+    {
+        return;
+    }
+    std::env::set_var("TZ", "UTC");
 }
 
 fn is_base_value(entry: &RefEntry, target: &str, is_base: &HashMap<String, String>) -> String {

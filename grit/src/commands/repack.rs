@@ -293,12 +293,17 @@ pub fn run(args: Args) -> Result<()> {
     let grit_bin = grit_exe::grit_executable();
 
     let pack_base = if repo.work_tree.is_some() {
-        ".git/objects/pack/pack"
+        repo.odb
+            .objects_dir()
+            .join("pack")
+            .join("pack")
+            .to_string_lossy()
+            .into_owned()
     } else {
-        "objects/pack/pack"
+        "objects/pack/pack".to_owned()
     };
 
-    let pack_dir_abs = repo.git_dir.join("objects").join("pack");
+    let pack_dir_abs = repo.odb.objects_dir().join("pack");
     ensure_no_orphan_pack_indexes(&pack_dir_abs)?;
 
     let full_repack = args.all || args.repack_all_unpack || args.cruft;
@@ -562,7 +567,7 @@ pub fn run(args: Args) -> Result<()> {
         };
 
     if args.cruft && full_repack {
-        let main_hashes = run_one_pack_objects(true, None, pack_base)?;
+        let main_hashes = run_one_pack_objects(true, None, &pack_base)?;
         if !main_hashes.is_empty() {
             for h in &main_hashes {
                 new_pack_names.push(format!("pack-{h}.pack"));
@@ -601,10 +606,10 @@ pub fn run(args: Args) -> Result<()> {
                 if !t.is_empty() {
                     t
                 } else {
-                    pack_base
+                    &pack_base
                 }
             } else {
-                pack_base
+                &pack_base
             };
 
             let cruft_hashes = run_one_pack_objects(false, Some(&stdin_lines), cruft_base)?;
@@ -613,7 +618,7 @@ pub fn run(args: Args) -> Result<()> {
             }
         }
     } else {
-        let hashes = run_one_pack_objects(true, None, pack_base)?;
+        let hashes = run_one_pack_objects(true, None, &pack_base)?;
         for h in hashes {
             new_pack_names.push(format!("pack-{h}.pack"));
         }
@@ -634,7 +639,7 @@ pub fn run(args: Args) -> Result<()> {
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
-            let filter_dest = explicit_filter_to.unwrap_or(pack_base);
+            let filter_dest = explicit_filter_to.unwrap_or(&pack_base);
             // The filtered-out objects land in the LOCAL pack dir only when `--filter-to` was
             // omitted (Git writes them next to the main pack). With an explicit `--filter-to`
             // pointing at another repository (t6500 gc.repackFilterTo), the side pack lives THERE,
@@ -911,9 +916,14 @@ fn run_geometric(
     let has_loose = objects_dir_has_loose_objects(&objects_dir);
 
     let pack_base = if repo.work_tree.is_some() {
-        ".git/objects/pack/pack"
+        repo.odb
+            .objects_dir()
+            .join("pack")
+            .join("pack")
+            .to_string_lossy()
+            .into_owned()
     } else {
-        "objects/pack/pack"
+        "objects/pack/pack".to_owned()
     };
 
     let mut promisor_written: Vec<String> = Vec::new();
@@ -932,7 +942,7 @@ fn run_geometric(
                 &grit_bin,
                 work_dir,
                 &repo.git_dir,
-                pack_base,
+                &pack_base,
                 &stdin,
                 args,
                 &cfg,
@@ -948,7 +958,7 @@ fn run_geometric(
                 &grit_bin,
                 work_dir,
                 &repo.git_dir,
-                pack_base,
+                &pack_base,
                 &stdin,
                 args,
                 &cfg,
@@ -963,7 +973,7 @@ fn run_geometric(
                 &grit_bin,
                 work_dir,
                 &repo.git_dir,
-                pack_base,
+                &pack_base,
                 &stdin,
                 args,
                 &cfg,

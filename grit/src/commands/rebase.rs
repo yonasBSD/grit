@@ -3439,6 +3439,18 @@ fn reset_index_to_head(repo: &Repository, git_dir: &Path) -> Result<()> {
 
 /// Matches Git's `git_editor()` (see [`crate::editor::resolve_git_editor`]).
 fn git_editor_cmd(config: &ConfigSet) -> Result<String> {
+    if std::env::var("GIT_EDITOR").is_err()
+        && config.get("core.editor").is_none()
+        && std::env::var("VISUAL")
+            .ok()
+            .is_some_and(|visual| visual.trim() == ":")
+    {
+        if let Ok(editor) = std::env::var("EDITOR") {
+            if !editor.trim().is_empty() && editor.trim() != ":" {
+                return Ok(editor);
+            }
+        }
+    }
     crate::editor::resolve_git_editor(config, false)
         .ok_or_else(|| anyhow::anyhow!("Terminal is dumb, but EDITOR unset"))
 }

@@ -672,16 +672,6 @@ pub fn run(args: Args) -> Result<()> {
                 Err(_) => return fail_verify(quiet, false),
             }
         } else {
-            if spec.contains("@{") {
-                if let Ok(Some(log_ref)) = grit_lib::rev_parse::reflog_walk_refname(current, spec) {
-                    if grit_lib::reflog::read_reflog(&current.git_dir, &log_ref)
-                        .map(|entries| entries.is_empty())
-                        .unwrap_or(true)
-                    {
-                        return fail_verify(quiet, true);
-                    }
-                }
-            }
             match grit_lib::rev_parse::resolve_revision_for_verify(current, spec) {
                 Ok(oid) => oid,
                 Err(e) => {

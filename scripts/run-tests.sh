@@ -364,7 +364,7 @@ run_one() {
         -u GIT_AUTHOR_DATE -u GIT_COMMITTER_DATE -u test_tick \
         -u GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME \
         -u TRASH_DIRECTORY -u BIN_DIRECTORY -u TEST_OUTPUT_DIRECTORY_OVERRIDE \
-        EDITOR=: VISUAL=: LC_ALL=C LANG=C _prereq_DEFAULT_REPO_FORMAT=set \
+        EDITOR=: VISUAL=: LC_ALL=C LANG=C TZ=UTC _prereq_DEFAULT_REPO_FORMAT=set \
         GRIT_TEST_LIB_SUMMARY=1 \
         ${utf8_nfd_to_nfc:+GIT_TEST_UTF8_NFD_TO_NFC=$utf8_nfd_to_nfc} \
         ${git_test_allow_sudo:+GIT_TEST_ALLOW_SUDO=$git_test_allow_sudo} \

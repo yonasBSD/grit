@@ -9,7 +9,7 @@ use grit_lib::config::ConfigSet;
 use grit_lib::diff::zero_oid;
 use grit_lib::objects::{parse_commit, parse_tag, serialize_tag, ObjectId, ObjectKind, TagData};
 use grit_lib::reflog::reflog_path;
-use grit_lib::refs::append_reflog;
+use grit_lib::refs::{append_reflog, should_autocreate_reflog_for_mode};
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse::resolve_revision;
 
@@ -249,7 +249,7 @@ fn create_lightweight_tag(
         grit_lib::refs::resolve_ref(&repo.git_dir, &refname).unwrap_or_else(|_| zero_oid());
     grit_lib::refs::write_ref(&repo.git_dir, &refname, &target_oid)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    if args.create_reflog {
+    if should_create_tag_reflog(repo, args, &refname) {
         let config = ConfigSet::load(Some(&repo.git_dir), true)?;
         let ident = resolve_tagger(&config, OffsetDateTime::now_utc())?;
         let msg = format!("tag: {name}");
@@ -260,7 +260,7 @@ fn create_lightweight_tag(
             &target_oid,
             &ident,
             &msg,
-            args.create_reflog,
+            true,
         );
     }
     Ok(())
@@ -325,7 +325,7 @@ fn create_annotated_tag(
         grit_lib::refs::resolve_ref(&repo.git_dir, &refname).unwrap_or_else(|_| zero_oid());
     grit_lib::refs::write_ref(&repo.git_dir, &refname, &tag_oid)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    if args.create_reflog {
+    if should_create_tag_reflog(repo, args, &refname) {
         let msg = format!("tag: {name}");
         let _ = append_reflog(
             &repo.git_dir,
@@ -334,10 +334,20 @@ fn create_annotated_tag(
             &tag_oid,
             &tagger,
             &msg,
-            args.create_reflog,
+            true,
         );
     }
     Ok(())
+}
+
+fn should_create_tag_reflog(repo: &Repository, args: &Args, refname: &str) -> bool {
+    if args.create_reflog || grit_lib::reflog::reflog_exists(&repo.git_dir, refname) {
+        return true;
+    }
+    ConfigSet::load(Some(&repo.git_dir), true)
+        .ok()
+        .map(|config| config.effective_log_refs_config(&repo.git_dir))
+        .is_some_and(|mode| should_autocreate_reflog_for_mode(refname, mode))
 }
 
 /// Delete a tag by name.
@@ -345,8 +355,15 @@ fn delete_tag(repo: &Repository, name: &str) -> Result<()> {
     let refname = format!("refs/tags/{name}");
     let oid = grit_lib::refs::resolve_ref(&repo.git_dir, &refname)
         .map_err(|_| anyhow::anyhow!("tag '{name}' not found."))?;
+    let log_path = reflog_path(&repo.git_dir, &refname);
+    let saved_log = fs::read(&log_path).ok();
     grit_lib::refs::delete_ref(&repo.git_dir, &refname).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let _ = fs::remove_file(reflog_path(&repo.git_dir, &refname));
+    if let Some(content) = saved_log {
+        if let Some(parent) = log_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(&log_path, content);
+    }
     let hex = oid.to_hex();
     let short = &hex[..7.min(hex.len())];
     eprintln!("Deleted tag '{name}' (was {short})");

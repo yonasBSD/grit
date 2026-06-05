@@ -8,6 +8,7 @@ use crate::git_column::{
 };
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
+use grit_lib::check_ref_format::{check_refname_format, RefNameOptions};
 use grit_lib::config::{ConfigFile, ConfigScope, ConfigSet};
 use grit_lib::diff::zero_oid;
 use grit_lib::index::MODE_GITLINK;
@@ -27,7 +28,7 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Component, Path};
 use std::process::Command;
 
 /// Arguments for `grit branch`.
@@ -557,6 +558,55 @@ fn push_branch_row(
     });
 }
 
+fn warn_broken_loose_refnames(
+    git_dir: &Path,
+    prefix: &str,
+    seen: &mut HashSet<String>,
+) -> Result<()> {
+    warn_broken_loose_refnames_in_store(git_dir, prefix, seen)?;
+    if let Some(common) = refs::common_dir(git_dir) {
+        if common != git_dir {
+            warn_broken_loose_refnames_in_store(&common, prefix, seen)?;
+        }
+    }
+    Ok(())
+}
+
+fn warn_broken_loose_refnames_in_store(
+    store: &Path,
+    prefix: &str,
+    seen: &mut HashSet<String>,
+) -> Result<()> {
+    let dir = store.join(prefix);
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err)
+            if err.kind() == io::ErrorKind::NotFound
+                || err.kind() == io::ErrorKind::NotADirectory =>
+        {
+            return Ok(());
+        }
+        Err(err) => return Err(err.into()),
+    };
+
+    let opts = RefNameOptions::default();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let refname = format!("{prefix}{name}");
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            warn_broken_loose_refnames_in_store(store, &format!("{refname}/"), seen)?;
+        } else if ft.is_file()
+            && check_refname_format(&refname, &opts).is_err()
+            && seen.insert(refname.clone())
+        {
+            eprintln!("warning: ignoring ref with broken name {refname}");
+        }
+    }
+    Ok(())
+}
+
 fn is_glob_branch_pattern(s: &str) -> bool {
     s.contains('*') || s.contains('?') || s.contains('[')
 }
@@ -663,8 +713,12 @@ fn list_branches(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
     let occupied = worktree_refs::occupied_branch_refs(repo);
 
     let mut branches: Vec<BranchInfo> = Vec::new();
+    let mut warned_broken_names = HashSet::new();
 
     if !args.remotes {
+        if !grit_lib::reftable::is_reftable_repo(&repo.git_dir) {
+            warn_broken_loose_refnames(&repo.git_dir, "refs/heads/", &mut warned_broken_names)?;
+        }
         let local: Vec<(String, ObjectId)> = if grit_lib::reftable::is_reftable_repo(&repo.git_dir)
         {
             grit_lib::reftable::reftable_list_refs(&repo.git_dir, "refs/heads/")
@@ -673,12 +727,18 @@ fn list_branches(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
             refs::list_refs(&repo.git_dir, "refs/heads/").map_err(|e| anyhow::anyhow!("{e}"))?
         };
         for (full, oid) in local {
+            if check_refname_format(&full, &RefNameOptions::default()).is_err() {
+                continue;
+            }
             let short = full.strip_prefix("refs/heads/").unwrap_or(&full).to_owned();
             push_branch_row(repo, &mut branches, full, oid, false, short);
         }
     }
 
     if args.remotes || args.all {
+        if !grit_lib::reftable::is_reftable_repo(&repo.git_dir) {
+            warn_broken_loose_refnames(&repo.git_dir, "refs/remotes/", &mut warned_broken_names)?;
+        }
         let remote: Vec<(String, ObjectId)> = if grit_lib::reftable::is_reftable_repo(&repo.git_dir)
         {
             grit_lib::reftable::reftable_list_refs(&repo.git_dir, "refs/remotes/")
@@ -687,6 +747,9 @@ fn list_branches(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
             refs::list_refs(&repo.git_dir, "refs/remotes/").map_err(|e| anyhow::anyhow!("{e}"))?
         };
         for (full, oid) in remote {
+            if check_refname_format(&full, &RefNameOptions::default()).is_err() {
+                continue;
+            }
             let short = full
                 .strip_prefix("refs/remotes/")
                 .unwrap_or(&full)
@@ -2825,6 +2888,10 @@ fn delete_branches(repo: &Repository, head: &HeadState, args: &Args) -> Result<(
 
 /// Delete a branch.
 fn delete_branch(repo: &Repository, head: &HeadState, args: &Args, name_input: &str) -> Result<()> {
+    if branch_delete_name_escapes_ref_store(name_input) {
+        bail!("error: branch '{name_input}' not found.");
+    }
+
     if args.remotes {
         let refname = if name_input.starts_with("refs/remotes/") {
             name_input.to_owned()
@@ -2930,12 +2997,31 @@ fn delete_branch(repo: &Repository, head: &HeadState, args: &Args, name_input: &
     remove_branch_config_section(repo, &name);
 
     if !args.quiet {
-        let hex = branch_oid.to_hex();
-        let short = &hex[..7.min(hex.len())];
+        let hex;
+        let short = if check_refname_format(&refname, &RefNameOptions::default()).is_err() {
+            "broken"
+        } else {
+            hex = branch_oid.to_hex();
+            &hex[..7.min(hex.len())]
+        };
         println!("Deleted branch {name} (was {short}).");
     }
 
     Ok(())
+}
+
+fn branch_delete_name_escapes_ref_store(name: &str) -> bool {
+    let path = Path::new(name);
+    path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::Prefix(_)
+                    | Component::RootDir
+                    | Component::CurDir
+                    | Component::ParentDir
+            )
+        })
 }
 
 fn branch_delete_base_oid(
@@ -3016,6 +3102,7 @@ fn rename_branch(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
     if old_name == new_name {
         return Ok(());
     }
+    validate_new_branch_name_or_die(repo, new_name);
 
     let force = args.force_rename || args.force;
     let old_ref = format!("refs/heads/{old_name}");

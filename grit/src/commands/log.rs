@@ -33,7 +33,7 @@ use grit_lib::merge_diff::{
     blob_text_for_diff, blob_text_for_diff_with_oid, diff_textconv_active,
     format_combined_textconv_patch, is_binary_for_diff,
 };
-use grit_lib::objects::{parse_commit, parse_tag, ObjectId, ObjectKind};
+use grit_lib::objects::{parse_commit, parse_tag, CommitData, ObjectId, ObjectKind};
 use grit_lib::odb::Odb;
 use grit_lib::reflog::{read_reflog_dwim, ReflogEntry};
 use grit_lib::refs;
@@ -2450,6 +2450,7 @@ fn run_rev_list_log(
     let mut combined_pathspecs = pathspecs_after_dashdash(&merged_argv, &args.pathspecs);
     combined_pathspecs.extend(implied_pathspecs);
     combined_pathspecs.extend(stdin_paths);
+    validate_pathspec_scope(repo, &combined_pathspecs)?;
     combined_pathspecs = resolve_effective_pathspecs(repo, &combined_pathspecs)?;
 
     let (core_commit_graph, cg_read_paths, cg_changed_ver) = load_bloom_walk_config(&repo.git_dir);
@@ -2781,6 +2782,7 @@ fn run_graph_log(
     let mut combined_pathspecs = pathspecs_after_dashdash(&merged_argv, &args.pathspecs);
     combined_pathspecs.extend(implied_pathspecs);
     combined_pathspecs.extend(stdin_paths);
+    validate_pathspec_scope(repo, &combined_pathspecs)?;
     combined_pathspecs = resolve_effective_pathspecs(repo, &combined_pathspecs)?;
 
     let mut options = RevListOptions {
@@ -4978,7 +4980,8 @@ pub fn run(mut args: Args) -> Result<()> {
                     }
                 }
                 // Plain positive spec (skip `^neg` and `A..B` exclusion forms).
-                if !spec.starts_with('^') && grit_lib::rev_parse::split_double_dot_range(spec).is_none()
+                if !spec.starts_with('^')
+                    && grit_lib::rev_parse::split_double_dot_range(spec).is_none()
                 {
                     named_specs.push(spec.clone());
                 }
@@ -4992,8 +4995,7 @@ pub fn run(mut args: Args) -> Result<()> {
                     tips.push((commit_oid, spec.clone()));
                 }
             }
-            percent_s_source_map =
-                build_named_source_map(&repo.odb, &tips, args.first_parent);
+            percent_s_source_map = build_named_source_map(&repo.odb, &tips, args.first_parent);
         }
 
         if args.all {
@@ -5002,10 +5004,9 @@ pub fn run(mut args: Args) -> Result<()> {
         if args.reflog {
             // `--reflog` adds every reflog entry's old/new OID as a pending tip
             // (Git's `add_reflogs_to_pending`); rev-list then dedupes and sorts.
-            let mut reflog_oids: Vec<ObjectId> =
-                grit_lib::reflog::all_reflog_oids(&repo.git_dir)?
-                    .into_iter()
-                    .collect();
+            let mut reflog_oids: Vec<ObjectId> = grit_lib::reflog::all_reflog_oids(&repo.git_dir)?
+                .into_iter()
+                .collect();
             // Stable order so dedupe/tie-breaks are deterministic.
             reflog_oids.sort_by(|a, b| a.to_hex().cmp(&b.to_hex()));
             start_oids.extend(reflog_oids);
@@ -5143,6 +5144,7 @@ pub fn run(mut args: Args) -> Result<()> {
     // Walk commits
     let mut combined_pathspecs = pathspecs_after_dashdash(&merged_argv, &args.pathspecs);
     combined_pathspecs.extend(implied_pathspecs.iter().cloned());
+    validate_pathspec_scope(&repo, &combined_pathspecs)?;
     combined_pathspecs = resolve_effective_pathspecs(&repo, &combined_pathspecs)?;
 
     let effective_pathspecs = if args.follow {
@@ -6309,7 +6311,16 @@ fn run_reflog_walk(
     mailmap: &MailmapTable,
 ) -> Result<()> {
     let rev_specs: Vec<String> = if args.revisions.is_empty() {
-        if args.all {
+        if let Some(glob) = args.branches.as_deref() {
+            let mut refs = Vec::new();
+            for (name, _) in grit_lib::refs::list_refs(&repo.git_dir, "refs/heads/")? {
+                let short = name.strip_prefix("refs/heads/").unwrap_or(&name);
+                if branches_glob_matches(glob, short) {
+                    refs.push(short.to_owned());
+                }
+            }
+            refs
+        } else if args.all {
             let mut refs = grit_lib::reflog::list_reflog_refs(&repo.git_dir).unwrap_or_default();
             if refs.is_empty() {
                 refs.push("HEAD".to_string());
@@ -6478,7 +6489,17 @@ fn run_reflog_walk(
         let commit_data = match repo.odb.read(&entry.new_oid) {
             Ok(obj) => match parse_commit(&obj.data) {
                 Ok(c) => c,
-                Err(_) => continue,
+                Err(_) => CommitData {
+                    tree: zero_oid(),
+                    parents: Vec::new(),
+                    author: String::new(),
+                    committer: String::new(),
+                    author_raw: Vec::new(),
+                    committer_raw: Vec::new(),
+                    encoding: None,
+                    message: String::new(),
+                    raw_message: None,
+                },
             },
             Err(_) => continue,
         };
@@ -6875,6 +6896,8 @@ fn run_reflog_walk(
             // `write_commit_diff` re-checks per-commit, so non-merges still print nothing.
             || merges_force_diff(args);
         if show_diff {
+            let diff_leading_blank =
+                !args.oneline && matches!(args.format.as_deref(), None | Some("short"));
             write_commit_diff(
                 &mut out,
                 repo,
@@ -6891,7 +6914,7 @@ fn run_reflog_walk(
                 &head_state,
                 &mut notes_cache,
                 patch_context,
-                false,
+                diff_leading_blank,
             )?;
             if j > 0 {
                 writeln!(out)?;
@@ -8986,13 +9009,12 @@ fn format_commit(
     };
     // The `commit <hash>` header (and `tree`/`parent` in raw) is abbreviated under
     // `--abbrev-commit` (or the builtin `--oneline`), otherwise it is the full hash.
-    let commit_hex: String = if (args.abbrev_commit || log_uses_builtin_oneline(args))
-        && !args.no_abbrev
-    {
-        hex[..abbrev_len.min(hex.len())].to_string()
-    } else {
-        hex.clone()
-    };
+    let commit_hex: String =
+        if (args.abbrev_commit || log_uses_builtin_oneline(args)) && !args.no_abbrev {
+            hex[..abbrev_len.min(hex.len())].to_string()
+        } else {
+            hex.clone()
+        };
     let display_parents = parent_line_override.unwrap_or(info.parents.as_slice());
     // The `(from <parent>)` marker uses the same abbreviation as the commit hash itself:
     // full hex for the multi-line formats (which print the full `commit <hex>`), abbreviated
@@ -11040,7 +11062,11 @@ fn decoration_pattern_matches(pattern: &str, refname: &str) -> bool {
 /// config.
 fn build_decoration_filter(args: &Args, git_dir: &Path) -> DecorationFilter {
     let mut filter = DecorationFilter {
-        include: args.decorate_refs.iter().map(|p| normalize_glob_ref(p)).collect(),
+        include: args
+            .decorate_refs
+            .iter()
+            .map(|p| normalize_glob_ref(p))
+            .collect(),
         exclude: args
             .decorate_refs_exclude
             .iter()
@@ -12989,7 +13015,11 @@ fn build_named_source_map(
         if let Ok(obj) = odb.read(&oid) {
             if let Ok(commit) = parse_commit(&obj.data) {
                 let parents: &[ObjectId] = if first_parent {
-                    commit.parents.first().map(std::slice::from_ref).unwrap_or(&[])
+                    commit
+                        .parents
+                        .first()
+                        .map(std::slice::from_ref)
+                        .unwrap_or(&[])
                 } else {
                     &commit.parents
                 };

@@ -4,7 +4,7 @@
 //! and the new subcommand interface (`git config get`, `git config set`).
 
 use anyhow::{bail, Context, Result};
-use clap::{Args as ClapArgs, Subcommand};
+use clap::{ArgAction, Args as ClapArgs, Subcommand};
 use grit_lib::config::{
     parse_bool, parse_color, parse_i64, ConfigFile, ConfigIncludeOrigin, ConfigScope, ConfigSet,
     IncludeContext, LoadConfigOptions,
@@ -16,12 +16,33 @@ use grit_lib::rev_parse::resolve_revision;
 use grit_lib::worktree::registered_worktree_count;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigValueType {
+    Bool,
+    Int,
+    BoolOrInt,
+    Path,
+    ExpiryDate,
+    Color,
+}
+
+impl ConfigValueType {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "bool" => Some(Self::Bool),
+            "int" => Some(Self::Int),
+            "bool-or-int" => Some(Self::BoolOrInt),
+            "path" => Some(Self::Path),
+            "expiry-date" => Some(Self::ExpiryDate),
+            "color" => Some(Self::Color),
+            _ => None,
+        }
+    }
+}
+
 /// True when `--bool`, `--bool-or-int`, or `--type=bool|bool-or-int` requests explicit boolean output.
 fn regexp_type_requests_bool_output(args: &Args) -> bool {
-    args.type_bool
-        || args.type_bool_or_int
-        || args.type_name.as_deref() == Some("bool")
-        || args.type_name.as_deref() == Some("bool-or-int")
+    type_is(args, ConfigValueType::Bool) || type_is(args, ConfigValueType::BoolOrInt)
 }
 
 /// Arguments for `grit config`.
@@ -79,6 +100,10 @@ pub struct Args {
     #[arg(long = "get-all", value_name = "KEY", num_args = 0..=1, default_missing_value = "")]
     pub get_all_key: Option<String>,
 
+    /// Unsupported negated legacy get mode.
+    #[arg(long = "no-get", hide = true)]
+    pub no_get: bool,
+
     /// Get values matching a regex (legacy).
     #[arg(long = "get-regexp", value_name = "PATTERN", num_args = 0..=1, default_missing_value = "")]
     pub get_regexp: Option<String>,
@@ -128,44 +153,48 @@ pub struct Args {
 
     // ── Type flags ──
     /// Ensure the value is a valid boolean and canonicalize.
-    #[arg(long = "bool", global = true)]
-    pub type_bool: bool,
+    #[arg(long = "bool", global = true, action = ArgAction::Count)]
+    pub type_bool: u8,
 
     /// Ensure the value is a valid integer and canonicalize.
-    #[arg(long = "int", global = true)]
-    pub type_int: bool,
+    #[arg(long = "int", global = true, action = ArgAction::Count)]
+    pub type_int: u8,
 
     /// Ensure the value is a valid bool-or-int and canonicalize.
-    #[arg(long = "bool-or-int", global = true)]
-    pub type_bool_or_int: bool,
+    #[arg(long = "bool-or-int", global = true, action = ArgAction::Count)]
+    pub type_bool_or_int: u8,
 
     /// Expand `~/` in the value.
-    #[arg(long = "path", global = true)]
-    pub type_path: bool,
+    #[arg(long = "path", global = true, action = ArgAction::Count)]
+    pub type_path: u8,
 
     /// Interpret the value as an expiry date and print its timestamp.
-    #[arg(long = "expiry-date", global = true)]
-    pub type_expiry_date: bool,
+    #[arg(long = "expiry-date", global = true, action = ArgAction::Count)]
+    pub type_expiry_date: u8,
 
     /// Type selector (alternative to individual flags).
-    #[arg(long = "type", value_name = "TYPE", global = true)]
-    pub type_name: Option<String>,
+    #[arg(long = "type", value_name = "TYPE", global = true, action = ArgAction::Append)]
+    pub type_name: Vec<String>,
+
+    /// Clear any previously selected type.
+    #[arg(long = "no-type", global = true, action = ArgAction::Count)]
+    pub no_type: u8,
 
     // ── Display flags ──
     /// Show origin file and scope for each entry.
-    #[arg(long = "show-origin")]
+    #[arg(long = "show-origin", global = true)]
     pub show_origin: bool,
 
     /// Show scope for each entry.
-    #[arg(long = "show-scope")]
+    #[arg(long = "show-scope", global = true)]
     pub show_scope: bool,
 
     /// Use NUL as delimiter.
-    #[arg(short = 'z', long = "null")]
+    #[arg(short = 'z', long = "null", global = true)]
     pub null_terminated: bool,
 
     /// Show key names for --get-regexp.
-    #[arg(long = "name-only")]
+    #[arg(long = "name-only", global = true)]
     pub name_only: bool,
 
     /// Includes support.
@@ -200,6 +229,96 @@ pub struct Args {
     /// a default color (Git synonym for `normal`), not as a clap flag.
     #[arg(trailing_var_arg = true, allow_negative_numbers = true)]
     pub positional: Vec<String>,
+}
+
+fn legacy_type_specs(args: &Args) -> Vec<ConfigValueType> {
+    let mut specs = Vec::new();
+    if args.type_bool > 0 {
+        specs.push(ConfigValueType::Bool);
+    }
+    if args.type_int > 0 {
+        specs.push(ConfigValueType::Int);
+    }
+    if args.type_bool_or_int > 0 {
+        specs.push(ConfigValueType::BoolOrInt);
+    }
+    if args.type_path > 0 {
+        specs.push(ConfigValueType::Path);
+    }
+    if args.type_expiry_date > 0 {
+        specs.push(ConfigValueType::ExpiryDate);
+    }
+    specs
+}
+
+fn type_name_specs(args: &Args) -> Result<Vec<ConfigValueType>> {
+    args.type_name
+        .iter()
+        .map(|name| {
+            ConfigValueType::parse(name).ok_or_else(|| {
+                fatal_config_parse(format!("fatal: unrecognized --type argument, {name}"))
+            })
+        })
+        .collect()
+}
+
+fn validate_type_specifiers(args: &Args) -> Result<()> {
+    let mut specs = legacy_type_specs(args);
+    specs.extend(type_name_specs(args)?);
+    specs.dedup();
+    if args.no_type == 0 && specs.len() > 1 {
+        return Err(fatal_config_parse("fatal: only one type at a time"));
+    }
+    Ok(())
+}
+
+fn effective_type(args: &Args) -> Option<ConfigValueType> {
+    if args.no_type > 0 {
+        if args.type_name.len() > 1 {
+            return args
+                .type_name
+                .last()
+                .and_then(|name| ConfigValueType::parse(name));
+        }
+        return None;
+    }
+
+    type_name_specs(args)
+        .ok()
+        .and_then(|specs| specs.last().copied())
+        .or_else(|| legacy_type_specs(args).last().copied())
+}
+
+fn type_is(args: &Args, expected: ConfigValueType) -> bool {
+    effective_type(args) == Some(expected)
+}
+
+fn has_type(args: &Args) -> bool {
+    effective_type(args).is_some()
+}
+
+fn reject_fixed_value(args: &Args) -> Result<()> {
+    if args.fixed_value {
+        bail!("error: --fixed-value only applies with a value-pattern");
+    }
+    Ok(())
+}
+
+fn require_fixed_value_pattern(args: &Args, value_pattern: Option<&str>) -> Result<()> {
+    if args.fixed_value && value_pattern.is_none() {
+        bail!("error: --fixed-value only applies with a value-pattern");
+    }
+    Ok(())
+}
+
+fn regex_api_value_pattern(args: &Args, value_pattern: Option<&str>) -> Option<String> {
+    value_pattern.map(|pattern| {
+        if args.fixed_value {
+            regex::escape(pattern)
+        } else {
+            pattern.to_owned()
+        }
+    })
 }
 
 /// Modern subcommand interface for `grit config`.
@@ -249,6 +368,10 @@ pub struct GetArgs {
     #[arg(long = "url")]
     pub url: Option<String>,
 
+    /// Only return values matching this pattern.
+    #[arg(long = "value")]
+    pub value: Option<String>,
+
     /// Show origin file and scope for each entry.
     #[arg(long = "show-origin")]
     pub show_origin: bool,
@@ -264,6 +387,7 @@ pub struct SetArgs {
     /// The configuration key.
     pub key: String,
     /// The value to set.
+    #[arg(allow_hyphen_values = true)]
     pub value: String,
 
     /// Replace all matching values.
@@ -284,6 +408,10 @@ pub struct UnsetArgs {
     /// Remove all occurrences.
     #[arg(long)]
     pub all: bool,
+
+    /// Only unset values matching this pattern.
+    #[arg(long = "value")]
+    pub value: Option<String>,
 }
 
 /// Arguments for `grit config list`.
@@ -326,6 +454,14 @@ pub struct EditArgs {}
 
 /// Run the `config` command.
 pub fn run(args: Args) -> Result<()> {
+    validate_type_specifiers(&args)?;
+    if args.no_get {
+        bail!("unknown option `no-get'");
+    }
+    if args.get_key.is_some() && args.get_all_key.is_some() {
+        bail!("options '--get-all' and '--get' cannot be used together");
+    }
+
     for dir in &args.change_dir {
         std::env::set_current_dir(dir)
             .with_context(|| format!("cannot change to '{}'", dir.display()))?;
@@ -355,26 +491,30 @@ pub fn run(args: Args) -> Result<()> {
 
     // Resolve which file to operate on
     let git_dir = resolve_git_dir();
-    // Validate repository format if we found a git dir
-    if let Some(ref dir) = git_dir {
-        if let Err(e) = grit_lib::repo::validate_repo_format(dir) {
-            bail!("{}", e);
-        }
-    }
     let (scope, file_path) = resolve_config_file(&args, git_dir.as_deref())?;
 
     // Handle subcommands first
     if let Some(ref sub) = args.subcommand {
         return match sub {
-            ConfigSubcommand::Get(get_args) => cmd_get(&args, get_args, git_dir.as_deref(), None),
+            ConfigSubcommand::Get(get_args) => cmd_get(
+                &args,
+                get_args,
+                git_dir.as_deref(),
+                get_args.value.as_deref(),
+            ),
             ConfigSubcommand::Set(set_args) => cmd_set(&args, set_args, scope, &file_path, None),
             ConfigSubcommand::Unset(unset_args) => {
                 cmd_unset(
-                    &args, unset_args, scope, &file_path, None,
-                    /* preserve_empty_section_header_on_unset_all */ true,
+                    &args,
+                    unset_args,
+                    scope,
+                    &file_path,
+                    unset_args.value.as_deref(),
+                    /* preserve_empty_section_header_on_unset_all */ false,
                 )
             }
             ConfigSubcommand::List(list_args) => {
+                reject_fixed_value(&args)?;
                 // Merge list-level flags into top-level args
                 let mut merged = Args {
                     name_only: args.name_only || list_args.name_only,
@@ -386,19 +526,28 @@ pub fn run(args: Args) -> Result<()> {
                 cmd_list(&merged, git_dir.as_deref())
             }
             ConfigSubcommand::RenameSection(rs) => {
+                reject_fixed_value(&args)?;
                 cmd_rename_section(scope, &file_path, &rs.old_name, &rs.new_name)
             }
-            ConfigSubcommand::RemoveSection(rs) => cmd_remove_section(scope, &file_path, &rs.name),
-            ConfigSubcommand::Edit(_) => cmd_edit(&file_path),
+            ConfigSubcommand::RemoveSection(rs) => {
+                reject_fixed_value(&args)?;
+                cmd_remove_section(scope, &file_path, &rs.name)
+            }
+            ConfigSubcommand::Edit(_) => {
+                reject_fixed_value(&args)?;
+                cmd_edit(&file_path)
+            }
         };
     }
 
     // Legacy interface
     if args.edit {
+        reject_fixed_value(&args)?;
         return cmd_edit(&file_path);
     }
 
     if args.list {
+        reject_fixed_value(&args)?;
         return cmd_list(&args, git_dir.as_deref());
     }
 
@@ -422,6 +571,7 @@ pub fn run(args: Args) -> Result<()> {
             show_names: false,
             default: args.default_value.clone(),
             url: None,
+            value: None,
             show_origin: false,
             show_scope: false,
         };
@@ -446,6 +596,7 @@ pub fn run(args: Args) -> Result<()> {
             show_names: false,
             default: args.default_value.clone(),
             url: None,
+            value: None,
             show_origin: false,
             show_scope: false,
         };
@@ -453,10 +604,23 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     if let Some(ref pattern_raw) = args.get_regexp {
-        let pattern = if pattern_raw.is_empty() {
-            args.positional.first().cloned().unwrap_or_default()
+        let mut show_origin = args.show_origin;
+        let (pattern, value_pattern) = if pattern_raw == "--show-origin" {
+            show_origin = true;
+            (
+                args.positional.first().cloned().unwrap_or_default(),
+                args.positional.get(1).map(|s| s.as_str()),
+            )
+        } else if pattern_raw.is_empty() {
+            (
+                args.positional.first().cloned().unwrap_or_default(),
+                args.positional.get(1).map(|s| s.as_str()),
+            )
         } else {
-            pattern_raw.clone()
+            (
+                pattern_raw.clone(),
+                args.positional.first().map(|s| s.as_str()),
+            )
         };
         if pattern.is_empty() {
             bail!("usage: git config --get-regexp <pattern>");
@@ -468,13 +632,15 @@ pub fn run(args: Args) -> Result<()> {
             show_names: true,
             default: args.default_value.clone(),
             url: None,
-            show_origin: false,
+            value: None,
+            show_origin,
             show_scope: false,
         };
-        return cmd_get(&args, &get_args, git_dir.as_deref(), None);
+        return cmd_get(&args, &get_args, git_dir.as_deref(), value_pattern);
     }
 
     if let Some(ref key_raw) = args.get_urlmatch_key {
+        reject_fixed_value(&args)?;
         let (key, url) = if key_raw.is_empty() {
             if args.positional.len() < 2 {
                 bail!("usage: git config --get-urlmatch <key> <URL>");
@@ -490,6 +656,7 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     if let Some(ref key) = args.get_color_key {
+        reject_fixed_value(&args)?;
         let default_color = args.positional.first().map(|s| s.as_str()).unwrap_or("");
         return cmd_get_color(key, default_color, git_dir.as_deref());
     }
@@ -526,7 +693,11 @@ pub fn run(args: Args) -> Result<()> {
         if key.is_empty() {
             bail!("usage: git config --unset <key>");
         }
-        let unset_args = UnsetArgs { key, all: false };
+        let unset_args = UnsetArgs {
+            key,
+            all: false,
+            value: None,
+        };
         return cmd_unset(&args, &unset_args, scope, &file_path, value_pattern, false);
     }
 
@@ -541,11 +712,16 @@ pub fn run(args: Args) -> Result<()> {
         if key.is_empty() {
             bail!("usage: git config --unset-all <key>");
         }
-        let unset_args = UnsetArgs { key, all: true };
+        let unset_args = UnsetArgs {
+            key,
+            all: true,
+            value: None,
+        };
         return cmd_unset(&args, &unset_args, scope, &file_path, value_pattern, false);
     }
 
     if let Some(ref key_raw) = args.add_key {
+        reject_fixed_value(&args)?;
         let (key, value) = if key_raw.is_empty() {
             if args.positional.len() < 2 {
                 bail!("usage: git config --add <key> <value>");
@@ -561,6 +737,7 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     if args.remove_section {
+        reject_fixed_value(&args)?;
         if args.positional.is_empty() {
             bail!("missing section name");
         }
@@ -568,6 +745,7 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     if args.rename_section {
+        reject_fixed_value(&args)?;
         if args.positional.len() < 2 {
             bail!("missing old-name and/or new-name");
         }
@@ -592,6 +770,7 @@ pub fn run(args: Args) -> Result<()> {
                 show_names: false,
                 default: args.default_value.clone(),
                 url: None,
+                value: None,
                 show_origin: false,
                 show_scope: false,
             };
@@ -669,6 +848,7 @@ fn cmd_get(
     git_dir: Option<&Path>,
     value_pattern: Option<&str>,
 ) -> Result<()> {
+    require_fixed_value_pattern(args, value_pattern)?;
     let config = load_config(args, git_dir, ConfigReadIncludeMode::Lookup)?;
     let terminator = if args.null_terminated { '\0' } else { '\n' };
     let cwd = std::env::current_dir().ok();
@@ -710,9 +890,19 @@ fn cmd_get(
     }
 
     if get_args.regexp {
-        let matches = config
+        let mut matches = config
             .get_regexp(&get_args.key)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
+        if let Some(pattern) = value_pattern {
+            let mut filtered = Vec::new();
+            for entry in matches {
+                let value = entry.value.as_deref().unwrap_or("true");
+                if value_matches_pattern(value, pattern, args.fixed_value)? {
+                    filtered.push(entry);
+                }
+            }
+            matches = filtered;
+        }
         if matches.is_empty() {
             std::process::exit(1);
         }
@@ -731,9 +921,9 @@ fn cmd_get(
                     let val = entry.value.as_deref().unwrap_or("true");
                     let val = format_typed_value(args, Some(&entry.key), val)?;
                     if args.null_terminated {
-                        print!("{}\n{}{}", entry.key, val, terminator);
+                        print!("{}{}\n{}{}", prefix, entry.key, val, terminator);
                     } else {
-                        print!("{} {}{}", entry.key, val, terminator);
+                        print!("{}{} {}{}", prefix, entry.key, val, terminator);
                     }
                 }
             } else {
@@ -784,7 +974,7 @@ fn cmd_get(
 
     // For --path with :(optional) values, we need to check all values
     // and find the last non-optional-missing one.
-    let has_path_type = args.type_path || args.type_name.as_deref() == Some("path");
+    let has_path_type = type_is(args, ConfigValueType::Path);
     if has_path_type {
         if let Ok(canon) = grit_lib::config::canonical_key(&get_args.key) {
             if let Some(entry) = config
@@ -870,6 +1060,11 @@ fn cmd_set(
     file_path: &Path,
     value_pattern: Option<&str>,
 ) -> Result<()> {
+    if set_args.append {
+        reject_fixed_value(args)?;
+    } else {
+        require_fixed_value_pattern(args, value_pattern)?;
+    }
     reject_stdin_write(file_path)?;
     // Validate --comment: must not contain LF
     if let Some(ref c) = args.comment {
@@ -904,12 +1099,36 @@ fn cmd_set(
         None => ConfigFile::parse(file_path, "", scope)?,
     };
 
+    let regex_value_pattern = regex_api_value_pattern(args, value_pattern);
+
     if set_args.append {
         config.add_value(&set_args.key, &value)?;
     } else if set_args.all {
-        config.replace_all_with_comment(&set_args.key, &value, value_pattern, comment)?;
+        config.replace_all_with_comment(
+            &set_args.key,
+            &value,
+            regex_value_pattern.as_deref(),
+            comment,
+        )?;
     } else if let Some(pattern) = value_pattern {
-        config.replace_all_with_comment(&set_args.key, &value, Some(pattern), comment)?;
+        let canon = grit_lib::config::canonical_key(&set_args.key)?;
+        let mut matches: Vec<String> = config
+            .entries
+            .iter()
+            .filter(|entry| entry.key == canon)
+            .map(|entry| entry.value.clone().unwrap_or_else(|| "true".to_owned()))
+            .collect();
+        filter_values_by_pattern(&mut matches, pattern, args.fixed_value)?;
+        if matches.len() > 1 {
+            eprintln!("warning: {} has multiple values", set_args.key);
+            std::process::exit(5);
+        }
+        config.replace_all_with_comment(
+            &set_args.key,
+            &value,
+            regex_value_pattern.as_deref(),
+            comment,
+        )?;
     } else {
         config.set_with_comment(&set_args.key, &value, comment)?;
     }
@@ -918,27 +1137,31 @@ fn cmd_set(
 }
 
 fn cmd_unset(
-    _args: &Args,
+    args: &Args,
     unset_args: &UnsetArgs,
     scope: ConfigScope,
     file_path: &Path,
     value_pattern: Option<&str>,
     preserve_empty_section_header_on_unset_all: bool,
 ) -> Result<()> {
+    require_fixed_value_pattern(args, value_pattern)?;
     reject_stdin_write(file_path)?;
     let mut config = ConfigFile::from_path(file_path, scope).context("reading config file")?;
+    let regex_value_pattern = regex_api_value_pattern(args, value_pattern);
 
     match config {
         Some(ref mut cfg) => {
             if unset_args.all {
                 let preserve = preserve_empty_section_header_on_unset_all;
-                let removed = cfg.unset_matching(&unset_args.key, value_pattern, preserve)?;
+                let removed =
+                    cfg.unset_matching(&unset_args.key, regex_value_pattern.as_deref(), preserve)?;
                 if removed == 0 {
                     std::process::exit(5);
                 }
-            } else if let Some(pattern) = value_pattern {
+            } else if value_pattern.is_some() {
                 // --unset with value-pattern: remove only matching values
-                let removed = cfg.unset_matching(&unset_args.key, Some(pattern), false)?;
+                let removed =
+                    cfg.unset_matching(&unset_args.key, regex_value_pattern.as_deref(), false)?;
                 if removed == 0 {
                     std::process::exit(5);
                 }
@@ -964,33 +1187,46 @@ fn cmd_unset(
     Ok(())
 }
 
-fn config_origin_prefix(entry: &grit_lib::config::ConfigEntry, cwd: Option<&Path>) -> String {
+fn config_origin_prefix_with_separator(
+    entry: &grit_lib::config::ConfigEntry,
+    cwd: Option<&Path>,
+    separator: char,
+) -> String {
     if entry.scope == ConfigScope::Command {
-        return "command line:\t".to_owned();
+        return format!("command line:{separator}");
     }
     let Some(file) = entry.file.as_deref() else {
         return if entry.scope == ConfigScope::Command {
-            "command line:\t".to_owned()
+            format!("command line:{separator}")
         } else {
             String::new()
         };
     };
     if file == Path::new("-") {
-        return "standard input:\t".to_owned();
+        return format!("standard input:{separator}");
     }
     if file.to_string_lossy().starts_with(':') {
-        return "command line:\t".to_owned();
+        return format!("command line:{separator}");
     }
-    let display_path = if entry.scope == ConfigScope::Global {
+    let display_path = if entry.scope == ConfigScope::Global || file.is_relative() {
         file.display().to_string()
     } else if let Some(cwd) = cwd {
-        file.strip_prefix(cwd)
-            .map(|rel| rel.display().to_string())
-            .unwrap_or_else(|_| file.display().to_string())
+        let git_dir = cwd.join(".git");
+        if file.starts_with(&git_dir) {
+            file.strip_prefix(cwd)
+                .map(|rel| rel.display().to_string())
+                .unwrap_or_else(|_| file.display().to_string())
+        } else {
+            file.display().to_string()
+        }
     } else {
         file.display().to_string()
     };
-    format!("file:{}\t", quote_origin_path(&display_path))
+    format!("file:{}{}", quote_origin_path(&display_path), separator)
+}
+
+fn config_origin_prefix(entry: &grit_lib::config::ConfigEntry, cwd: Option<&Path>) -> String {
+    config_origin_prefix_with_separator(entry, cwd, '\t')
 }
 
 fn quote_origin_path(path: &str) -> String {
@@ -1017,6 +1253,22 @@ fn config_entry_prefix(
     prefix
 }
 
+fn config_entry_prefix_for_list(
+    args: &Args,
+    entry: &grit_lib::config::ConfigEntry,
+    cwd: Option<&Path>,
+) -> String {
+    let mut prefix = String::new();
+    if args.show_scope {
+        prefix.push_str(&format!("{}\t", entry.scope));
+    }
+    if args.show_origin {
+        let separator = if args.null_terminated { '\0' } else { '\t' };
+        prefix.push_str(&config_origin_prefix_with_separator(entry, cwd, separator));
+    }
+    prefix
+}
+
 fn config_entry_prefix_for_get(
     args: &Args,
     get_args: &GetArgs,
@@ -1039,23 +1291,14 @@ fn cmd_list(args: &Args, git_dir: Option<&Path>) -> Result<()> {
     let cwd = std::env::current_dir().ok();
 
     for entry in config.entries() {
-        let prefix = config_entry_prefix(args, entry, cwd.as_deref());
+        let prefix = config_entry_prefix_for_list(args, entry, cwd.as_deref());
         let raw_val = entry.value.as_deref().unwrap_or("true");
-        let formatted = if args.type_int
-            || args.type_bool
-            || args.type_bool_or_int
-            || args.type_path
-            || args.type_expiry_date
-            || args.type_name.is_some()
-        {
+        let formatted = if has_type(args) {
             if is_optional_missing_path(args, raw_val) {
                 continue;
             }
             match format_typed_value(args, Some(&entry.key), raw_val) {
-                Ok(v)
-                    if (args.type_path || args.type_name.as_deref() == Some("path"))
-                        && v.is_empty() =>
-                {
+                Ok(v) if type_is(args, ConfigValueType::Path) && v.is_empty() => {
                     continue;
                 }
                 Ok(v) => v,
@@ -1106,6 +1349,7 @@ fn cmd_rename_section(
     new_name: &str,
 ) -> Result<()> {
     reject_stdin_write(file_path)?;
+    reject_overlong_config_lines(file_path)?;
     let mut config = ConfigFile::from_path(file_path, scope).context("reading config file")?;
 
     match config {
@@ -1116,6 +1360,23 @@ fn cmd_rename_section(
             cfg.write().context("writing config file")?;
         }
         None => bail!("config file not found: {}", file_path.display()),
+    }
+    Ok(())
+}
+
+fn reject_overlong_config_lines(file_path: &Path) -> Result<()> {
+    const MAX_CONFIG_LINE_LEN: usize = 512 * 1024;
+    let Ok(content) = std::fs::read_to_string(file_path) else {
+        return Ok(());
+    };
+    for (idx, line) in content.lines().enumerate() {
+        if line.len() > MAX_CONFIG_LINE_LEN {
+            return Err(anyhow::anyhow!(
+                "refusing to work with overly long line in '{}' on line {}",
+                file_path.display(),
+                idx + 1
+            ));
+        }
     }
     Ok(())
 }
@@ -1206,9 +1467,9 @@ fn cmd_get_urlmatch(args: &Args, key: &str, url: &str, git_dir: Option<&Path>) -
                 String::new()
             };
             if val.is_empty()
-                && !args.type_bool
-                && !args.type_bool_or_int
-                && args.type_name.is_none()
+                && !type_is(args, ConfigValueType::Bool)
+                && !type_is(args, ConfigValueType::BoolOrInt)
+                && !has_type(args)
             {
                 print!("{prefix}{var_key}{terminator}");
             } else {
@@ -1465,26 +1726,30 @@ fn filter_values_by_pattern(
     pattern: &str,
     fixed_value: bool,
 ) -> Result<()> {
-    if fixed_value {
-        values.retain(|v| v == pattern);
-    } else {
-        let (negated, pat) = if let Some(rest) = pattern.strip_prefix('!') {
-            (true, rest)
-        } else {
-            (false, pattern)
-        };
-        let re = regex::Regex::new(pat)
-            .with_context(|| format!("invalid value-pattern regex: {pat}"))?;
-        values.retain(|v| {
-            let matched = re.is_match(v);
-            if negated {
-                !matched
-            } else {
-                matched
-            }
-        });
+    let mut filtered = Vec::new();
+    for value in values.drain(..) {
+        if value_matches_pattern(&value, pattern, fixed_value)? {
+            filtered.push(value);
+        }
     }
+    *values = filtered;
     Ok(())
+}
+
+fn value_matches_pattern(value: &str, pattern: &str, fixed_value: bool) -> Result<bool> {
+    if fixed_value {
+        return Ok(value == pattern);
+    }
+
+    let (negated, pat) = if let Some(rest) = pattern.strip_prefix('!') {
+        (true, rest)
+    } else {
+        (false, pattern)
+    };
+    let re =
+        regex::Regex::new(pat).with_context(|| format!("invalid value-pattern regex: {pat}"))?;
+    let matched = re.is_match(value);
+    Ok(if negated { !matched } else { matched })
 }
 
 /// Resolve the git directory (best-effort; returns None outside a repo).
@@ -1528,6 +1793,11 @@ fn resolve_git_dir() -> Option<PathBuf> {
     grit_lib::repo::Repository::discover(None)
         .ok()
         .map(|r| r.git_dir)
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .and_then(grit_lib::precompose_config::locate_git_dir_from_cwd)
+        })
 }
 
 /// Target file for `git config --worktree` (matches Git `builtin/config.c`).
@@ -1812,7 +2082,7 @@ fn default_supported(args: &Args) -> bool {
 /// Formats a default value and adds Git-compatible context on failure.
 fn format_default_value(args: &Args, val: &str) -> Result<String> {
     format_typed_value(args, None, val).map_err(|err| {
-        if args.type_int || args.type_name.as_deref() == Some("int") {
+        if type_is(args, ConfigValueType::Int) {
             fatal_config_parse(format!("fatal: bad numeric config value '{val}'"))
         } else {
             err.context("failed to format default config value")
@@ -1821,7 +2091,7 @@ fn format_default_value(args: &Args, val: &str) -> Result<String> {
 }
 
 fn print_default_value(args: &Args, val: &str, terminator: char) {
-    if args.type_name.as_deref() == Some("color") {
+    if type_is(args, ConfigValueType::Color) {
         print!("{val}");
     } else {
         print!("{val}{terminator}");
@@ -1839,8 +2109,6 @@ fn is_pack_allow_pack_reuse_key(config_key: &str) -> bool {
 }
 
 fn canonicalize_value_for_set(args: &Args, config_key: &str, val: &str) -> Result<String> {
-    let type_name = args.type_name.as_deref();
-
     if is_pack_allow_pack_reuse_key(config_key) {
         let t = val.trim();
         let lower = t.to_ascii_lowercase();
@@ -1857,7 +2125,7 @@ fn canonicalize_value_for_set(args: &Args, config_key: &str, val: &str) -> Resul
         }
     }
 
-    if !is_pack_allow_pack_reuse_key(config_key) && (args.type_bool || type_name == Some("bool")) {
+    if !is_pack_allow_pack_reuse_key(config_key) && type_is(args, ConfigValueType::Bool) {
         match parse_bool(val) {
             Ok(b) => return Ok(if b { "true" } else { "false" }.to_owned()),
             Err(_) => {
@@ -1868,7 +2136,7 @@ fn canonicalize_value_for_set(args: &Args, config_key: &str, val: &str) -> Resul
         }
     }
 
-    if args.type_int || type_name == Some("int") {
+    if type_is(args, ConfigValueType::Int) {
         match parse_i64(val) {
             Ok(n) => return Ok(n.to_string()),
             Err(_) => {
@@ -1879,7 +2147,7 @@ fn canonicalize_value_for_set(args: &Args, config_key: &str, val: &str) -> Resul
         }
     }
 
-    if args.type_bool_or_int || type_name == Some("bool-or-int") {
+    if type_is(args, ConfigValueType::BoolOrInt) {
         // Try named booleans first (not numbers — those go to int)
         match val.to_lowercase().as_str() {
             "true" | "yes" | "on" => return Ok("true".to_owned()),
@@ -1895,7 +2163,7 @@ fn canonicalize_value_for_set(args: &Args, config_key: &str, val: &str) -> Resul
         )));
     }
 
-    if type_name == Some("color") {
+    if type_is(args, ConfigValueType::Color) {
         match parse_color(val) {
             Ok(_) => return Ok(val.to_owned()),
             Err(e) => bail!("cannot parse color: {}", e),
@@ -1908,23 +2176,20 @@ fn canonicalize_value_for_set(args: &Args, config_key: &str, val: &str) -> Resul
 /// Check if a value with --path type is an optional path that doesn't exist.
 /// Returns true if the value should be skipped.
 fn is_optional_missing_path(args: &Args, val: &str) -> bool {
-    let type_name = args.type_name.as_deref();
-    if (args.type_path || type_name == Some("path")) && val.starts_with(":(optional)") {
+    if type_is(args, ConfigValueType::Path) && val.starts_with(":(optional)") {
         return grit_lib::config::parse_path_optional(val).is_none();
     }
     false
 }
 
 fn format_typed_value(args: &Args, config_key: Option<&str>, val: &str) -> Result<String> {
-    let type_name = args.type_name.as_deref();
-
     if let Some(key) = config_key {
         if is_pack_allow_pack_reuse_key(key) {
             return Ok(val.trim().to_string());
         }
     }
 
-    if args.type_bool || type_name == Some("bool") {
+    if type_is(args, ConfigValueType::Bool) {
         match parse_bool(val) {
             Ok(b) => {
                 return Ok(if b {
@@ -1944,7 +2209,7 @@ fn format_typed_value(args: &Args, config_key: Option<&str>, val: &str) -> Resul
         }
     }
 
-    if args.type_int || type_name == Some("int") {
+    if type_is(args, ConfigValueType::Int) {
         match parse_i64(val) {
             Ok(n) => return Ok(n.to_string()),
             Err(err) => {
@@ -1958,7 +2223,7 @@ fn format_typed_value(args: &Args, config_key: Option<&str>, val: &str) -> Resul
         }
     }
 
-    if args.type_path || type_name == Some("path") {
+    if type_is(args, ConfigValueType::Path) {
         if val.starts_with("~/") && std::env::var_os("HOME").is_none() {
             return Err(fatal_config_parse(format!(
                 "fatal: failed to expand user dir in: {val}"
@@ -1970,7 +2235,7 @@ fn format_typed_value(args: &Args, config_key: Option<&str>, val: &str) -> Resul
         };
     }
 
-    if args.type_bool_or_int || type_name == Some("bool-or-int") {
+    if type_is(args, ConfigValueType::BoolOrInt) {
         // Try as named bool first
         match val.to_lowercase().as_str() {
             "true" | "yes" | "on" => return Ok("true".to_owned()),
@@ -1992,14 +2257,14 @@ fn format_typed_value(args: &Args, config_key: Option<&str>, val: &str) -> Resul
         }
     }
 
-    if type_name == Some("color") {
+    if type_is(args, ConfigValueType::Color) {
         match parse_color(val) {
             Ok(ansi) => return Ok(ansi),
             Err(e) => bail!("{}", e),
         }
     }
 
-    if args.type_expiry_date || type_name == Some("expiry-date") {
+    if type_is(args, ConfigValueType::ExpiryDate) {
         return format_expiry_date(val);
     }
 

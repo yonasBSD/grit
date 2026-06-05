@@ -24,7 +24,8 @@
 //! # Include directives
 //!
 //! `[include] path = <path>` and `[includeIf "<condition>"] path = <path>`
-//! are supported. Conditions: `gitdir:`, `gitdir/i:`, `onbranch:`.
+//! are supported. Conditions: `gitdir:`, `gitdir/i:`, `onbranch:`,
+//! and `hasconfig:remote.*.url:`.
 
 use std::fmt;
 use std::fs;
@@ -116,7 +117,7 @@ pub struct ConfigSet {
     entries: Vec<ConfigEntry>,
 }
 
-/// Context for evaluating `[includeIf]` conditions (`gitdir:`, `onbranch:`).
+/// Context for evaluating `[includeIf]` conditions (`gitdir:`, `onbranch:`, `hasconfig:`).
 #[derive(Debug, Clone, Default)]
 pub struct IncludeContext {
     /// Git directory path used for `gitdir:` matching (may contain unresolved symlinks).
@@ -128,7 +129,7 @@ pub struct IncludeContext {
 /// Options controlling how [`ConfigSet::load_with_options`] merges files and includes.
 #[derive(Debug, Clone)]
 pub struct LoadConfigOptions {
-    /// Load `/etc/gitconfig` (unless `GIT_CONFIG_NOSYSTEM` is set).
+    /// Load `/etc/gitconfig` (unless `GIT_CONFIG_NOSYSTEM` is enabled).
     pub include_system: bool,
     /// Expand `[include]` / `[includeIf]` while reading file-backed layers.
     pub process_includes: bool,
@@ -232,6 +233,9 @@ pub fn config_file_display_for_error(path: &Path) -> String {
 }
 
 fn config_error_path_display(path: &Path) -> String {
+    if path == Path::new("-") {
+        return "standard input".to_owned();
+    }
     if path.file_name().and_then(|s| s.to_str()) == Some("config")
         && path
             .parent()
@@ -381,6 +385,9 @@ impl Parser {
         } else {
             // Bare key (boolean true)
             let raw_name = strip_inline_comment(trimmed);
+            if raw_name.split_whitespace().count() > 1 {
+                return None;
+            }
             let key = self.make_key(raw_name.trim());
             Some((key, None))
         }
@@ -503,6 +510,7 @@ fn unescape_value(s: &str) -> String {
             '"' => { /* strip quotes */ }
             '\\' => match chars.next() {
                 Some('n') => result.push('\n'),
+                Some('r') => result.push('\r'),
                 Some('t') => result.push('\t'),
                 Some('\\') => result.push('\\'),
                 Some('"') => result.push('"'),
@@ -538,8 +546,9 @@ fn escape_subsection(s: &str) -> String {
 
 fn escape_value(s: &str) -> String {
     // Quote leading `-` so values are not mistaken for config options (Git does this for
-    // submodule paths like `-sub` in `.gitmodules`).
-    let needs_quoting = s.starts_with('-')
+    // submodule paths like `-sub` in `.gitmodules`), but leave signed numeric values bare.
+    let leading_dash_needs_quoting = s.starts_with('-') && parse_i64(s).is_err();
+    let needs_quoting = leading_dash_needs_quoting
         || s.starts_with(' ')
         || s.starts_with('\t')
         || s.ends_with(' ')
@@ -547,6 +556,7 @@ fn escape_value(s: &str) -> String {
         || s.contains('"')
         || s.contains('\\')
         || s.contains('\n')
+        || s.contains('\r')
         || s.contains('#')
         || s.contains(';');
 
@@ -561,6 +571,7 @@ fn escape_value(s: &str) -> String {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             other => out.push(other),
         }
@@ -697,8 +708,13 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
                 continue;
             } else {
                 let file_disp = config_error_path_display(path);
+                let location = if path == Path::new("-") {
+                    file_disp
+                } else {
+                    format!("file {file_disp}")
+                };
                 return Err(Error::Message(format!(
-                    "fatal: bad config line {} in file {file_disp}",
+                    "fatal: bad config line {} in {location}",
                     start_idx + 1
                 )));
             }
@@ -820,25 +836,39 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
     pub fn from_git_config_parameters(path: &Path, raw: &str) -> Result<Self> {
         let mut entries = Vec::new();
         let pseudo_path = path.to_path_buf();
-        for entry in parse_config_parameters(raw) {
-            if let Some((key, val)) = entry.split_once('\u{1}').or_else(|| entry.split_once('=')) {
-                let canon = canonical_key(key.trim())?;
-                entries.push(ConfigEntry {
-                    key: canon,
-                    value: Some(val.to_owned()),
-                    scope: ConfigScope::Command,
-                    file: Some(pseudo_path.clone()),
-                    line: 0,
-                });
-            } else {
-                let canon = canonical_key(entry.trim())?;
-                entries.push(ConfigEntry {
-                    key: canon,
-                    value: None,
-                    scope: ConfigScope::Command,
-                    file: Some(pseudo_path.clone()),
-                    line: 0,
-                });
+        for entry in parse_config_parameters_strict(raw)? {
+            match entry {
+                ConfigParameter::Pair { key, value } => {
+                    let canon = canonical_key(key.trim())?;
+                    entries.push(ConfigEntry {
+                        key: canon,
+                        value,
+                        scope: ConfigScope::Command,
+                        file: Some(pseudo_path.clone()),
+                        line: 0,
+                    });
+                }
+                ConfigParameter::OldStyle(entry) => {
+                    if let Some((key, val)) = entry.split_once('=') {
+                        let canon = canonical_key(key.trim())?;
+                        entries.push(ConfigEntry {
+                            key: canon,
+                            value: Some(val.to_owned()),
+                            scope: ConfigScope::Command,
+                            file: Some(pseudo_path.clone()),
+                            line: 0,
+                        });
+                    } else {
+                        let canon = canonical_key(entry.trim())?;
+                        entries.push(ConfigEntry {
+                            key: canon,
+                            value: None,
+                            scope: ConfigScope::Command,
+                            file: Some(pseudo_path.clone()),
+                            line: 0,
+                        });
+                    }
+                }
             }
         }
         Ok(Self {
@@ -1012,45 +1042,31 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
 
         let raw_var = raw_variable_name(key);
 
-        if matching_indices.len() == 1 {
-            // Single match: update in-place (preserves position)
-            let match_idx = matching_indices[0];
-            let line_idx = self.entries[match_idx].line - 1;
-            let raw_line = &self.raw_lines[line_idx];
-            if is_section_header_with_inline_entry(raw_line) {
-                let header = extract_section_header(raw_line);
-                self.raw_lines[line_idx] = header;
-                let new_line = format!("\t{} = {}{}", raw_var, escape_value(value), comment_suffix);
-                self.raw_lines.insert(line_idx + 1, new_line);
-            } else {
-                self.raw_lines[line_idx] =
-                    format!("\t{} = {}{}", raw_var, escape_value(value), comment_suffix);
-            }
+        let target_idx = if value_pattern.is_some() {
+            matching_indices[0]
         } else {
-            // Multiple matches: remove ALL, then add one new entry at end of section
-            for &idx in matching_indices.iter().rev() {
-                let line_idx = self.entries[idx].line - 1;
-                self.remove_entry_line(line_idx);
-            }
-
-            // Re-parse after removals
-            let content = self.raw_lines.join("\n");
-            let reparsed = Self::parse(&self.path, &content, self.scope)?;
-            self.entries = reparsed.entries;
-            self.raw_lines = reparsed.raw_lines;
-
-            // Add the new entry at the end of the section
-            let (section, subsection, _var) = split_key(&canon)?;
-            let (raw_sec, raw_sub) = raw_section_parts(key);
-            let section_line = self.find_or_create_section_preserving_case(
-                &section,
-                subsection.as_deref(),
-                &raw_sec,
-                raw_sub.as_deref(),
-            );
+            *matching_indices
+                .last()
+                .ok_or_else(|| Error::ConfigError("missing config match".to_owned()))?
+        };
+        let target_line_idx = self.entries[target_idx].line - 1;
+        let raw_line = &self.raw_lines[target_line_idx];
+        if is_section_header_with_inline_entry(raw_line) {
+            let header = extract_section_header(raw_line);
+            self.raw_lines[target_line_idx] = header;
             let new_line = format!("\t{} = {}{}", raw_var, escape_value(value), comment_suffix);
-            let insert_at = self.last_line_in_section(section_line) + 1;
-            self.raw_lines.insert(insert_at, new_line);
+            self.raw_lines.insert(target_line_idx + 1, new_line);
+        } else {
+            self.raw_lines[target_line_idx] =
+                format!("\t{} = {}{}", raw_var, escape_value(value), comment_suffix);
+        }
+
+        for &idx in matching_indices.iter().rev() {
+            if idx == target_idx {
+                continue;
+            }
+            let line_idx = self.entries[idx].line - 1;
+            self.remove_entry_line(line_idx);
         }
 
         // Re-parse
@@ -1200,8 +1216,8 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
 
         if count > 0 {
             if !preserve_empty_section_header {
-                // Remove empty section headers (sections with no remaining entries and no comments)
-                self.remove_empty_section_headers();
+                let (section, subsection, _) = split_key(&canon)?;
+                self.remove_empty_section_headers_matching(&section, subsection.as_deref());
             }
 
             let content = self.raw_lines.join("\n");
@@ -1222,28 +1238,28 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
         let (sec_name, sub_name) = parse_section_name(section);
         let sec_lower = sec_name.to_lowercase();
 
-        // Find section header line and all lines that belong to it
-        let mut start = None;
-        let mut end = 0;
+        let mut remove = vec![false; self.raw_lines.len()];
+        let mut removing = false;
+        let mut found = false;
         let mut parser = Parser::new();
 
         for (idx, line) in self.raw_lines.iter().enumerate() {
             if parser.try_parse_section(line) {
-                if parser.section.to_lowercase() == sec_lower
-                    && parser.subsection.as_deref() == sub_name
-                {
-                    start = Some(idx);
-                    end = idx;
-                } else if start.is_some() {
-                    break;
-                }
-            } else if start.is_some() {
-                end = idx;
+                removing = section_matches(&parser, &sec_lower, sub_name);
+                found |= removing;
+            }
+            if removing {
+                remove[idx] = true;
             }
         }
 
-        if let Some(s) = start {
-            self.raw_lines.drain(s..=end);
+        if found {
+            self.raw_lines = self
+                .raw_lines
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, line)| (!remove[idx]).then_some(line.clone()))
+                .collect();
             let content = self.raw_lines.join("\n");
             let reparsed = Self::parse(&self.path, &content, self.scope)?;
             self.entries = reparsed.entries;
@@ -1263,16 +1279,18 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
     pub fn rename_section(&mut self, old_name: &str, new_name: &str) -> Result<bool> {
         let (old_sec, old_sub) = parse_section_name(old_name);
         let (new_sec, new_sub) = parse_section_name(new_name);
+        validate_section_name(new_sec, new_sub)?;
         let old_lower = old_sec.to_lowercase();
 
         let mut found = false;
         let mut parser = Parser::new();
 
-        for idx in 0..self.raw_lines.len() {
-            let line = &self.raw_lines[idx];
-            if parser.try_parse_section(line)
-                && parser.section.to_lowercase() == old_lower
-                && parser.subsection.as_deref() == old_sub
+        let mut idx = 0usize;
+        while idx < self.raw_lines.len() {
+            let line = self.raw_lines[idx].clone();
+            let mut inline_remainder = None;
+            if parser.try_parse_section_with_remainder(&line, &mut inline_remainder)
+                && section_matches(&parser, &old_lower, old_sub)
             {
                 // Rewrite the section header
                 let header = match new_sub {
@@ -1280,8 +1298,14 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
                     None => format!("[{}]", new_sec),
                 };
                 self.raw_lines[idx] = header;
+                if let Some(remainder) = inline_remainder {
+                    self.raw_lines
+                        .insert(idx + 1, format!("\t{}", remainder.trim()));
+                    idx += 1;
+                }
                 found = true;
             }
+            idx += 1;
         }
 
         if found {
@@ -1336,7 +1360,7 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
 
     /// Write the (possibly modified) config back to disk.
     /// Remove section headers that have no remaining entries or comments.
-    fn remove_empty_section_headers(&mut self) {
+    fn remove_empty_section_headers_matching(&mut self, section: &str, subsection: Option<&str>) {
         let (Ok(section_re), Ok(comment_re)) = (
             regex::Regex::new(r"^\s*\["),
             regex::Regex::new(r"^\s*(#|;)"),
@@ -1347,14 +1371,35 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
 
         let mut to_remove: Vec<usize> = Vec::new();
         let len = self.raw_lines.len();
+        let section_lower = section.to_lowercase();
+        let mut parser = Parser::new();
 
         for i in 0..len {
             let line = &self.raw_lines[i];
             if !section_re.is_match(line) {
                 continue;
             }
+            if !parser.try_parse_section(line)
+                || !section_matches(&parser, &section_lower, subsection)
+            {
+                continue;
+            }
             // Don't remove section headers that have inline key=value entries
             if is_section_header_with_inline_entry(line) {
+                continue;
+            }
+            let has_attached_leading_comment = self.raw_lines[..i]
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, line)| !line.trim().is_empty())
+                .is_some_and(|(idx, line)| {
+                    comment_re.is_match(line)
+                        && idx
+                            .checked_sub(1)
+                            .is_none_or(|prev| !value_line_continues(&self.raw_lines[prev]))
+                });
+            if has_attached_leading_comment {
                 continue;
             }
             // Check if this section header is followed only by blank lines,
@@ -1422,10 +1467,7 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
         let mut parser = Parser::new();
 
         for (idx, line) in self.raw_lines.iter().enumerate() {
-            if parser.try_parse_section(line)
-                && parser.section.to_lowercase() == sec_lower
-                && parser.subsection.as_deref() == subsection
-            {
+            if parser.try_parse_section(line) && section_matches(&parser, &sec_lower, subsection) {
                 return idx;
             }
         }
@@ -1455,10 +1497,7 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
         let mut parser = Parser::new();
 
         for (idx, line) in self.raw_lines.iter().enumerate() {
-            if parser.try_parse_section(line)
-                && parser.section.to_lowercase() == sec_lower
-                && parser.subsection.as_deref() == subsection
-            {
+            if parser.try_parse_section(line) && section_matches(&parser, &sec_lower, subsection) {
                 return idx;
             }
         }
@@ -1788,7 +1827,7 @@ impl ConfigSet {
         let ctx = opts.include_ctx.clone();
 
         // System config
-        if opts.include_system && std::env::var("GIT_CONFIG_NOSYSTEM").is_err() {
+        if opts.include_system && !git_config_nosystem_enabled() {
             let system_path = std::env::var("GIT_CONFIG_SYSTEM")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::path::PathBuf::from("/etc/gitconfig"));
@@ -1845,18 +1884,7 @@ impl ConfigSet {
             }
         }
 
-        // GIT_CONFIG_COUNT / GIT_CONFIG_KEY_N / GIT_CONFIG_VALUE_N
-        if let Ok(count_str) = std::env::var("GIT_CONFIG_COUNT") {
-            if let Ok(count) = count_str.parse::<usize>() {
-                for i in 0..count {
-                    let key_var = format!("GIT_CONFIG_KEY_{i}");
-                    let val_var = format!("GIT_CONFIG_VALUE_{i}");
-                    if let (Ok(key), Ok(val)) = (std::env::var(&key_var), std::env::var(&val_var)) {
-                        let _ = set.add_command_override(&key, &val);
-                    }
-                }
-            }
-        }
+        add_environment_config_pairs(&mut set)?;
 
         // GIT_CONFIG_PARAMETERS — used by `git -c key=value`.
         if let Ok(params) = std::env::var("GIT_CONFIG_PARAMETERS") {
@@ -1899,7 +1927,7 @@ impl ConfigSet {
         };
 
         // System
-        if std::env::var("GIT_CONFIG_NOSYSTEM").is_err() {
+        if !git_config_nosystem_enabled() {
             let system_path = std::env::var("GIT_CONFIG_SYSTEM")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::path::PathBuf::from("/etc/gitconfig"));
@@ -1994,7 +2022,7 @@ impl ConfigSet {
             command_line_relative_include_is_error: false,
         };
 
-        if include_system && std::env::var("GIT_CONFIG_NOSYSTEM").is_err() {
+        if include_system && !git_config_nosystem_enabled() {
             let system_path = std::env::var("GIT_CONFIG_SYSTEM")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::path::PathBuf::from("/etc/gitconfig"));
@@ -2025,17 +2053,7 @@ impl ConfigSet {
             }
         }
 
-        if let Ok(count_str) = std::env::var("GIT_CONFIG_COUNT") {
-            if let Ok(count) = count_str.parse::<usize>() {
-                for i in 0..count {
-                    let key_var = format!("GIT_CONFIG_KEY_{i}");
-                    let val_var = format!("GIT_CONFIG_VALUE_{i}");
-                    if let (Ok(key), Ok(val)) = (std::env::var(&key_var), std::env::var(&val_var)) {
-                        let _ = set.add_command_override(&key, &val);
-                    }
-                }
-            }
-        }
+        add_environment_config_pairs(&mut set)?;
 
         if let Ok(params) = std::env::var("GIT_CONFIG_PARAMETERS") {
             for entry in parse_config_parameters(&params) {
@@ -2068,51 +2086,99 @@ impl ConfigSet {
                 "exceeded maximum include depth".to_owned(),
             ));
         }
-        // First pass: find include paths
-        let mut includes: Vec<(String, Option<String>)> = Vec::new();
-
-        for entry in &file.entries {
-            if entry.key == "include.path" {
-                if let Some(ref val) = entry.value {
-                    includes.push((val.clone(), None));
-                }
-            } else if entry.key.starts_with("includeif.") && entry.key.ends_with(".path") {
-                // Extract condition from key: includeif.<condition>.path
-                let mid = &entry.key["includeif.".len()..entry.key.len() - ".path".len()];
-                if let Some(ref val) = entry.value {
-                    includes.push((val.clone(), Some(mid.to_owned())));
-                }
-            }
+        if !process_includes {
+            set.merge(file);
+            return Ok(());
         }
 
-        // Merge the file's own entries
-        set.merge(file);
+        for entry in &file.entries {
+            set.entries.push(entry.clone());
 
-        // Process includes
-        if process_includes {
-            for (inc_path, condition) in includes {
-                if let Some(ref cond) = condition {
-                    if !evaluate_include_condition(cond, file, ctx) {
-                        continue;
-                    }
-                }
-
-                let resolved = match resolve_include_file_path(&inc_path, file, ctx) {
-                    Ok(p) => p,
-                    Err(Error::ConfigError(msg)) if msg.is_empty() => continue,
-                    Err(e) => return Err(e),
-                };
-                // Git's `git_config_from_file` surfaces parse errors in an included file as a
-                // fatal error (t0001 #102 `re-init reads matching includeIf.onbranch`). A missing
-                // include target is silently skipped (`from_path` -> `Ok(None)`).
-                if let Some(inc_file) = ConfigFile::from_path(&resolved, file.scope)? {
-                    Self::merge_with_includes(set, &inc_file, process_includes, depth + 1, ctx)?;
+            let Some((inc_path, condition)) = include_directive_for_entry(entry) else {
+                continue;
+            };
+            let included_by_hasconfig = condition.as_deref().is_some_and(is_hasconfig_remote_url);
+            if condition.is_some() && !included_by_hasconfig {
+                let cond = condition.as_deref().unwrap_or_default();
+                if !evaluate_include_condition(cond, set, file, ctx) {
+                    continue;
                 }
             }
+
+            let resolved = match resolve_include_file_path(&inc_path, file, ctx) {
+                Ok(p) => p,
+                Err(Error::ConfigError(msg)) if msg.is_empty() => continue,
+                Err(e) => return Err(e),
+            };
+            // Git's `git_config_from_file` surfaces parse errors in an included file as a
+            // fatal error (t0001 #102 `re-init reads matching includeIf.onbranch`). A missing
+            // include target is silently skipped (`from_path` -> `Ok(None)`).
+            let Some(inc_file) = ConfigFile::from_path(&resolved, file.scope)? else {
+                continue;
+            };
+
+            if included_by_hasconfig {
+                validate_hasconfig_remote_url_include(&inc_file, process_includes, depth + 1, ctx)?;
+                let cond = condition.as_deref().unwrap_or_default();
+                if !evaluate_include_condition(cond, set, file, ctx) {
+                    continue;
+                }
+            }
+
+            Self::merge_with_includes(set, &inc_file, process_includes, depth + 1, ctx)?;
         }
 
         Ok(())
     }
+}
+
+fn include_directive_for_entry(entry: &ConfigEntry) -> Option<(String, Option<String>)> {
+    let val = entry.value.as_ref()?;
+    if entry.key == "include.path" {
+        return Some((val.clone(), None));
+    }
+    if entry.key.starts_with("includeif.") && entry.key.ends_with(".path") {
+        let mid = &entry.key["includeif.".len()..entry.key.len() - ".path".len()];
+        return Some((val.clone(), Some(mid.to_owned())));
+    }
+    None
+}
+
+fn git_config_nosystem_enabled() -> bool {
+    std::env::var("GIT_CONFIG_NOSYSTEM")
+        .ok()
+        .map(|value| parse_bool(&value).unwrap_or(true))
+        .unwrap_or(false)
+}
+
+fn add_environment_config_pairs(set: &mut ConfigSet) -> Result<()> {
+    let Ok(count_str) = std::env::var("GIT_CONFIG_COUNT") else {
+        return Ok(());
+    };
+    if count_str.is_empty() {
+        return Ok(());
+    }
+
+    let count = count_str
+        .parse::<usize>()
+        .map_err(|_| Error::ConfigError("bogus count in GIT_CONFIG_COUNT".to_owned()))?;
+    if count > i32::MAX as usize {
+        return Err(Error::ConfigError(
+            "too many entries in GIT_CONFIG_COUNT".to_owned(),
+        ));
+    }
+
+    for i in 0..count {
+        let key_var = format!("GIT_CONFIG_KEY_{i}");
+        let value_var = format!("GIT_CONFIG_VALUE_{i}");
+        let key = std::env::var(&key_var)
+            .map_err(|_| Error::ConfigError(format!("missing config key {key_var}")))?;
+        let value = std::env::var(&value_var)
+            .map_err(|_| Error::ConfigError(format!("missing config value {value_var}")))?;
+        set.add_command_override(&key, &value)?;
+    }
+
+    Ok(())
 }
 
 // ── Type coercion helpers ───────────────────────────────────────────
@@ -2125,16 +2191,16 @@ impl ConfigSet {
 /// Note: bare config keys are represented as `None` in [`ConfigEntry`] and
 /// are normalized to `"true"` by higher-level readers (`ConfigSet::get`).
 /// An explicit empty assignment (`key =` with no value) is stored as `""` and
-/// is treated as true for `--bool` / [`parse_bool`], consistent with bare keys
-/// (implicit true) and the harness expectations for `config --bool`.
+/// is treated as false for `--bool` / [`parse_bool`]. Bare keys are represented
+/// as `None` and normalized to `"true"` by callers before reaching this parser.
 pub fn parse_bool(s: &str) -> std::result::Result<bool, String> {
     match s.to_lowercase().as_str() {
         "true" | "yes" | "on" => Ok(true),
-        "" => Ok(true),
+        "" => Ok(false),
         "false" | "no" | "off" => Ok(false),
         _ => {
-            // Try parsing as integer: 0 → false, non-zero → true
-            if let Ok(n) = s.parse::<i64>() {
+            // Try parsing as Git's config integer syntax: 0 -> false, non-zero -> true.
+            if let Ok(n) = parse_i64(s) {
                 return Ok(n != 0);
             }
             Err(format!("bad boolean config value '{s}'"))
@@ -2576,18 +2642,102 @@ pub fn parse_color(s: &str) -> std::result::Result<String, String> {
     Ok(out)
 }
 
+#[derive(Debug, Clone)]
+struct UrlParts {
+    scheme: String,
+    user: Option<String>,
+    host: String,
+    port: Option<String>,
+    path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct UrlMatchScore {
+    host_len: usize,
+    path_len: usize,
+    user_matched: bool,
+}
+
+fn parse_config_url(url: &str) -> Option<UrlParts> {
+    let (scheme, rest) = url.split_once("://")?;
+    let (authority, path) = match rest.find('/') {
+        Some(idx) => (&rest[..idx], &rest[idx..]),
+        None => (rest, "/"),
+    };
+    let (user, host_port) = match authority.rsplit_once('@') {
+        Some((user, host)) => (Some(user.to_owned()), host),
+        None => (None, authority),
+    };
+    let (host, port) = match host_port.rsplit_once(':') {
+        Some((host, port)) if !host.contains(']') => (host, Some(port.to_owned())),
+        _ => (host_port, None),
+    };
+    Some(UrlParts {
+        scheme: scheme.to_lowercase(),
+        user,
+        host: host.to_lowercase(),
+        port,
+        path: if path.is_empty() {
+            "/".to_owned()
+        } else {
+            path.trim_end_matches('/').to_owned()
+        },
+    })
+}
+
+fn host_matches(pattern: &str, target: &str) -> bool {
+    let pattern_parts: Vec<&str> = pattern.split('.').collect();
+    let target_parts: Vec<&str> = target.split('.').collect();
+    pattern_parts.len() == target_parts.len()
+        && pattern_parts
+            .iter()
+            .zip(target_parts)
+            .all(|(pattern, target)| *pattern == "*" || *pattern == target)
+}
+
+fn path_match_len(pattern: &str, target: &str) -> Option<usize> {
+    let pattern = if pattern.is_empty() { "/" } else { pattern };
+    let target = if target.is_empty() { "/" } else { target };
+    if pattern == "/" {
+        return Some(1);
+    }
+    let pattern = pattern.trim_end_matches('/');
+    if target == pattern
+        || target
+            .strip_prefix(pattern)
+            .is_some_and(|rest| rest.starts_with('/'))
+    {
+        Some(pattern.len() + 1)
+    } else {
+        None
+    }
+}
+
+fn url_match_score(pattern_url: &str, target_url: &str) -> Option<UrlMatchScore> {
+    let pattern = parse_config_url(pattern_url)?;
+    let target = parse_config_url(target_url)?;
+    if pattern.scheme != target.scheme {
+        return None;
+    }
+    let user_matched = match pattern.user.as_deref() {
+        Some(user) if target.user.as_deref() == Some(user) => true,
+        Some(_) => return None,
+        None => false,
+    };
+    if !host_matches(&pattern.host, &target.host) || pattern.port != target.port {
+        return None;
+    }
+    let path_len = path_match_len(&pattern.path, &target.path)?;
+    Some(UrlMatchScore {
+        host_len: pattern.host.len(),
+        path_len,
+        user_matched,
+    })
+}
+
 /// Match a URL against a URL pattern from config.
 pub fn url_matches(pattern_url: &str, target_url: &str) -> bool {
-    let pattern = pattern_url.trim_end_matches('/');
-    let target = target_url.trim_end_matches('/');
-    if target == pattern {
-        return true;
-    }
-    if let Some(rest) = target.strip_prefix(pattern) {
-        return rest.starts_with('/') || rest.is_empty();
-    }
-    let pattern_slash = format!("{}/", pattern);
-    target.starts_with(&pattern_slash)
+    url_match_score(pattern_url, target_url).is_some()
 }
 
 /// Get the best URL match for a specific key.
@@ -2599,7 +2749,7 @@ pub fn get_urlmatch_entries<'a>(
 ) -> Vec<&'a ConfigEntry> {
     let section_lower = section.to_lowercase();
     let variable_lower = variable.to_lowercase();
-    let mut matches: Vec<(usize, &'a ConfigEntry)> = Vec::new();
+    let mut matches: Vec<(UrlMatchScore, &'a ConfigEntry)> = Vec::new();
 
     for entry in entries {
         let key = &entry.key;
@@ -2619,11 +2769,18 @@ pub fn get_urlmatch_entries<'a>(
             continue;
         }
         if first_dot == last_dot {
-            matches.push((0, entry));
+            matches.push((
+                UrlMatchScore {
+                    host_len: 0,
+                    path_len: 0,
+                    user_matched: false,
+                },
+                entry,
+            ));
         } else {
             let subsection = &key[first_dot + 1..last_dot];
-            if url_matches(subsection, url) {
-                matches.push((subsection.len(), entry));
+            if let Some(score) = url_match_score(subsection, url) {
+                matches.push((score, entry));
             }
         }
     }
@@ -2638,7 +2795,7 @@ pub fn get_urlmatch_all_in_section(
     url: &str,
 ) -> Vec<(String, String, ConfigScope)> {
     let section_lower = section.to_lowercase();
-    let mut matches: Vec<(String, usize, String, String, ConfigScope)> = Vec::new();
+    let mut matches: Vec<(String, UrlMatchScore, String, String, ConfigScope)> = Vec::new();
 
     for entry in entries {
         let key = &entry.key;
@@ -2655,23 +2812,27 @@ pub fn get_urlmatch_all_in_section(
             continue;
         }
         let entry_variable = &key[last_dot + 1..];
-        let val = entry.value.as_deref().unwrap_or("true");
+        let val = entry.value.as_deref().unwrap_or("");
         if first_dot == last_dot {
             let canonical = format!("{}.{}", section_lower, entry_variable);
             matches.push((
                 entry_variable.to_lowercase(),
-                0,
+                UrlMatchScore {
+                    host_len: 0,
+                    path_len: 0,
+                    user_matched: false,
+                },
                 val.to_owned(),
                 canonical,
                 entry.scope,
             ));
         } else {
             let subsection = &key[first_dot + 1..last_dot];
-            if url_matches(subsection, url) {
+            if let Some(score) = url_match_score(subsection, url) {
                 let canonical = format!("{}.{}", section_lower, entry_variable);
                 matches.push((
                     entry_variable.to_lowercase(),
-                    subsection.len(),
+                    score,
                     val.to_owned(),
                     canonical,
                     entry.scope,
@@ -2680,12 +2841,19 @@ pub fn get_urlmatch_all_in_section(
         }
     }
 
-    let mut best: std::collections::BTreeMap<String, (usize, String, String, ConfigScope)> =
+    let mut best: std::collections::BTreeMap<String, (UrlMatchScore, String, String, ConfigScope)> =
         std::collections::BTreeMap::new();
     for (var, specificity, val, canonical, scope) in matches {
-        let entry = best
-            .entry(var)
-            .or_insert((0, String::new(), String::new(), scope));
+        let entry = best.entry(var).or_insert((
+            UrlMatchScore {
+                host_len: 0,
+                path_len: 0,
+                user_matched: false,
+            },
+            String::new(),
+            String::new(),
+            scope,
+        ));
         if specificity >= entry.0 {
             *entry = (specificity, val, canonical, scope);
         }
@@ -2745,81 +2913,157 @@ pub fn git_config_parameters_last_value(raw: &str, key: &str) -> Option<String> 
         return None;
     };
     let mut last: Option<String> = None;
-    for entry in parse_config_parameters(raw) {
-        if let Some((k, v)) = entry.split_once('\u{1}').or_else(|| entry.split_once('=')) {
-            if canonical_key(k.trim()).ok().as_ref() == Some(&canon) {
-                last = Some(v.to_owned());
+    for entry in parse_config_parameters_strict(raw).ok()? {
+        match entry {
+            ConfigParameter::Pair { key, value } => {
+                if canonical_key(key.trim()).ok().as_ref() == Some(&canon) {
+                    last = Some(value.unwrap_or_else(|| "true".to_owned()));
+                }
             }
-        } else if canonical_key(entry.trim()).ok().as_ref() == Some(&canon) {
-            last = Some("true".to_owned());
+            ConfigParameter::OldStyle(entry) => {
+                if let Some((k, v)) = entry.split_once('=') {
+                    if canonical_key(k.trim()).ok().as_ref() == Some(&canon) {
+                        last = Some(v.to_owned());
+                    }
+                } else if canonical_key(entry.trim()).ok().as_ref() == Some(&canon) {
+                    last = Some("true".to_owned());
+                }
+            }
         }
     }
     last
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConfigParameter {
+    OldStyle(String),
+    Pair { key: String, value: Option<String> },
+}
+
 pub fn parse_config_parameters(raw: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut buf = String::new();
-    let mut in_single = false;
-    let mut in_double = false;
+    parse_config_parameters_strict(raw)
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|entry| match entry {
+                    ConfigParameter::OldStyle(entry) => entry,
+                    ConfigParameter::Pair {
+                        key,
+                        value: Some(value),
+                    } => format!("{key}\u{1}{value}"),
+                    ConfigParameter::Pair { key, value: None } => format!("{key}\u{1}"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
-    let mut chars = raw.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if in_single {
-            if ch == '\'' {
-                in_single = false;
-            } else {
-                buf.push(ch);
-            }
+fn parse_config_parameters_strict(raw: &str) -> Result<Vec<ConfigParameter>> {
+    let mut out: Vec<ConfigParameter> = Vec::new();
+    let chars: Vec<char> = raw.chars().collect();
+    let mut idx = skip_config_parameter_spaces(&chars, 0);
+
+    while idx < chars.len() {
+        let (key, next) = sq_dequote_step_chars(&chars, idx)?;
+        let Some(next_idx) = next else {
+            out.push(ConfigParameter::OldStyle(key));
+            break;
+        };
+
+        if chars[next_idx].is_whitespace() {
+            out.push(ConfigParameter::OldStyle(key));
+            idx = skip_config_parameter_spaces(&chars, next_idx);
             continue;
         }
-        if in_double {
-            if ch == '"' {
-                in_double = false;
-                continue;
+
+        if chars[next_idx] != '=' {
+            return Err(Error::ConfigError(
+                "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+            ));
+        }
+
+        let value_start = next_idx + 1;
+        if value_start >= chars.len() || chars[value_start].is_whitespace() {
+            out.push(ConfigParameter::Pair { key, value: None });
+            idx = skip_config_parameter_spaces(&chars, value_start);
+            continue;
+        }
+
+        if chars[value_start] != '\'' {
+            return Err(Error::ConfigError(
+                "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+            ));
+        }
+        let (value, value_next) = sq_dequote_step_chars(&chars, value_start)?;
+        if let Some(value_next) = value_next {
+            if !chars[value_next].is_whitespace() {
+                return Err(Error::ConfigError(
+                    "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+                ));
             }
-            if ch == '\\' {
-                if let Some(next) = chars.next() {
-                    let mapped = match next {
-                        'n' => '\n',
-                        't' => '\t',
-                        'r' => '\r',
-                        '"' => '"',
-                        '\\' => '\\',
-                        other => other,
-                    };
-                    buf.push(mapped);
+            idx = skip_config_parameter_spaces(&chars, value_next);
+        } else {
+            idx = chars.len();
+        }
+        out.push(ConfigParameter::Pair {
+            key,
+            value: Some(value),
+        });
+    }
+
+    Ok(out)
+}
+
+fn skip_config_parameter_spaces(chars: &[char], mut idx: usize) -> usize {
+    while idx < chars.len() && chars[idx].is_whitespace() {
+        idx += 1;
+    }
+    idx
+}
+
+fn sq_dequote_step_chars(chars: &[char], start: usize) -> Result<(String, Option<usize>)> {
+    if chars.get(start) != Some(&'\'') {
+        return Err(Error::ConfigError(
+            "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+        ));
+    }
+
+    let mut out = String::new();
+    let mut idx = start + 1;
+    loop {
+        let Some(&ch) = chars.get(idx) else {
+            return Err(Error::ConfigError(
+                "bogus format in GIT_CONFIG_PARAMETERS".to_owned(),
+            ));
+        };
+        if ch != '\'' {
+            out.push(ch);
+            idx += 1;
+            continue;
+        }
+
+        idx += 1;
+        match chars.get(idx).copied() {
+            None => return Ok((out, None)),
+            Some('\\')
+                if chars
+                    .get(idx + 1)
+                    .copied()
+                    .is_some_and(needs_sq_backslash_quote)
+                    && chars.get(idx + 2) == Some(&'\'') =>
+            {
+                if let Some(escaped) = chars.get(idx + 1) {
+                    out.push(*escaped);
                 }
-                continue;
+                idx += 3;
             }
-            buf.push(ch);
-            continue;
+            _ => return Ok((out, Some(idx))),
         }
-
-        if ch == '\'' {
-            in_single = true;
-            continue;
-        }
-        if ch == '"' {
-            in_double = true;
-            continue;
-        }
-
-        if ch.is_whitespace() {
-            if !buf.is_empty() {
-                out.push(std::mem::take(&mut buf));
-            }
-            continue;
-        }
-
-        buf.push(ch);
     }
+}
 
-    if !buf.is_empty() {
-        out.push(buf);
-    }
-
-    out
+fn needs_sq_backslash_quote(ch: char) -> bool {
+    ch == '\'' || ch == '!'
 }
 
 /// Return candidate paths for the global config file, in priority order.
@@ -3031,10 +3275,83 @@ fn include_by_onbranch(condition: &str, ctx: &IncludeContext) -> bool {
     wildmatch(pattern.as_bytes(), short.as_bytes(), WM_PATHNAME)
 }
 
+fn is_remote_url_entry(entry: &ConfigEntry) -> bool {
+    let Ok((section, subsection, variable)) = split_key(&entry.key) else {
+        return false;
+    };
+    section == "remote" && subsection.is_some() && variable == "url"
+}
+
+fn is_hasconfig_remote_url(condition: &str) -> bool {
+    condition
+        .strip_prefix("hasconfig:")
+        .is_some_and(|rest| rest.starts_with("remote.*.url:"))
+}
+
+fn include_by_hasconfig_remote_url(condition: &str, set: &ConfigSet, file: &ConfigFile) -> bool {
+    let Some(pattern) = condition.strip_prefix("remote.*.url:") else {
+        return false;
+    };
+    set.entries
+        .iter()
+        .chain(file.entries.iter())
+        .filter(|entry| is_remote_url_entry(entry))
+        .filter_map(|entry| entry.value.as_deref())
+        .any(|value| wildmatch(pattern.as_bytes(), value.as_bytes(), WM_PATHNAME))
+}
+
+fn validate_hasconfig_remote_url_include(
+    file: &ConfigFile,
+    process_includes: bool,
+    depth: usize,
+    ctx: &IncludeContext,
+) -> Result<()> {
+    const MAX_INCLUDE_DEPTH: usize = 10;
+    if depth > MAX_INCLUDE_DEPTH {
+        return Err(Error::ConfigError(
+            "exceeded maximum include depth".to_owned(),
+        ));
+    }
+    if file.entries.iter().any(is_remote_url_entry) {
+        return Err(Error::Message(
+            "fatal: remote URLs cannot be configured in file directly or indirectly included by includeIf.hasconfig:remote.*.url"
+                .to_owned(),
+        ));
+    }
+    if !process_includes {
+        return Ok(());
+    }
+    for entry in &file.entries {
+        let Some((inc_path, condition)) = include_directive_for_entry(entry) else {
+            continue;
+        };
+        if let Some(ref cond) = condition {
+            if !evaluate_include_condition(cond, &ConfigSet::new(), file, ctx) {
+                continue;
+            }
+        }
+        let resolved = match resolve_include_file_path(&inc_path, file, ctx) {
+            Ok(p) => p,
+            Err(Error::ConfigError(msg)) if msg.is_empty() => continue,
+            Err(e) => return Err(e),
+        };
+        if let Some(inc_file) = ConfigFile::from_path(&resolved, file.scope)? {
+            validate_hasconfig_remote_url_include(&inc_file, process_includes, depth + 1, ctx)?;
+        }
+    }
+    Ok(())
+}
+
 /// Evaluate an `[includeIf]` condition.
 ///
-/// Supports `gitdir:`, `gitdir/i:`, and `onbranch:` like Git. Unknown prefixes are false.
-fn evaluate_include_condition(condition: &str, file: &ConfigFile, ctx: &IncludeContext) -> bool {
+/// Supports `gitdir:`, `gitdir/i:`, `onbranch:`, and `hasconfig:remote.*.url:` like Git.
+/// Unknown prefixes are false.
+fn evaluate_include_condition(
+    condition: &str,
+    set: &ConfigSet,
+    file: &ConfigFile,
+    ctx: &IncludeContext,
+) -> bool {
     if let Some(rest) = condition.strip_prefix("gitdir/i:") {
         return include_by_gitdir(rest, file, ctx, true);
     }
@@ -3043,6 +3360,9 @@ fn evaluate_include_condition(condition: &str, file: &ConfigFile, ctx: &IncludeC
     }
     if let Some(rest) = condition.strip_prefix("onbranch:") {
         return include_by_onbranch(rest, ctx);
+    }
+    if let Some(rest) = condition.strip_prefix("hasconfig:") {
+        return include_by_hasconfig_remote_url(rest, set, file);
     }
     false
 }
@@ -3085,6 +3405,32 @@ fn parse_section_name(name: &str) -> (&str, Option<&str>) {
         Some(i) => (&name[..i], Some(&name[i + 1..])),
         None => (name, None),
     }
+}
+
+fn section_matches(parser: &Parser, section_lower: &str, subsection: Option<&str>) -> bool {
+    if parser.section.to_lowercase() == section_lower && parser.subsection.as_deref() == subsection
+    {
+        return true;
+    }
+    let Some(subsection) = subsection else {
+        return false;
+    };
+    parser.subsection.is_none()
+        && parser.section.to_lowercase() == format!("{section_lower}.{}", subsection.to_lowercase())
+}
+
+fn validate_section_name(section: &str, subsection: Option<&str>) -> Result<()> {
+    if section.is_empty()
+        || !section
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        || subsection.is_some_and(str::is_empty)
+    {
+        return Err(Error::ConfigError(format!(
+            "invalid section name: {section}"
+        )));
+    }
+    Ok(())
 }
 
 /// Extract the original-case variable name from a raw (user-typed) key.

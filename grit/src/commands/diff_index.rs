@@ -1902,32 +1902,6 @@ fn raw_change_to_diff_entry(change: &RawChange) -> DiffEntry {
     }
 }
 
-/// For uncached `diff-index`, added paths may record `new_oid` as zero while the index holds the
-/// real blob. Git still prints the worktree blob hash on the new side of raw output (`t4008` #8).
-fn uncached_added_worktree_blob_oid(repo: &Repository, entry: &DiffEntry) -> Option<ObjectId> {
-    let wt = repo.work_tree.as_deref()?;
-    let path = entry.new_path.as_deref()?;
-    let abs = wt.join(path);
-    let meta = fs::symlink_metadata(&abs).ok()?;
-    if meta.file_type().is_symlink() {
-        let target = fs::read_link(&abs).ok()?;
-        Some(Odb::hash_object_data(
-            ObjectKind::Blob,
-            target.as_os_str().as_bytes(),
-        ))
-    } else if meta.file_type().is_file() {
-        let data = fs::read(&abs).ok()?;
-        let oid = Odb::hash_object_data(ObjectKind::Blob, &data);
-        // Uncached raw adds of the empty blob still print all-zero new OIDs (`t1501-work-tree`).
-        if oid == empty_blob_oid() {
-            return None;
-        }
-        Some(oid)
-    } else {
-        None
-    }
-}
-
 pub(crate) fn write_diff_index_name_status(
     out: &mut impl std::io::Write,
     entries: &[DiffEntry],
@@ -2008,14 +1982,6 @@ pub(crate) fn write_diff_index_name_status(
 /// The colon-prefixed status line ends with a NUL byte (no tab before paths).
 /// For renames/copies, old and new paths are each NUL-terminated. For other
 /// statuses, a single path is NUL-terminated.
-/// True when raw `diff-index` should show real index OIDs for an added path instead of the
-/// uncached all-zero placeholder (skip-worktree / assume-unchanged; t7011).
-fn raw_diff_index_show_index_oid_for_added(index: &Index, entry: &DiffEntry) -> bool {
-    index
-        .get(entry.path().as_bytes(), 0)
-        .is_some_and(|e| e.skip_worktree() || e.assume_unchanged())
-}
-
 /// True when a gitlink raw entry's new side must print the all-zero OID.
 ///
 /// For uncached `diff-index --raw`, Git reports a worktree-side submodule change (the recorded
@@ -2042,6 +2008,28 @@ fn raw_gitlink_new_is_worktree_zero(
     !index_carries_new_gitlink
 }
 
+/// True when an uncached raw added entry's new side came from the work tree, not the index.
+///
+/// `diff_tree_vs_worktree` may refresh staged additions from the work tree so rename detection and
+/// patch rendering can use the live mode/content. Raw `git diff-index` still prints an all-zero
+/// object ID for that live worktree side; it prints the real OID only when the index carries it.
+fn raw_added_new_is_worktree_zero(
+    index: &Index,
+    entry: &DiffEntry,
+    diff_index_uncached: bool,
+) -> bool {
+    if !diff_index_uncached || entry.status != DiffStatus::Added || entry.new_oid == zero_oid() {
+        return false;
+    }
+    index
+        .get(entry.path().as_bytes(), 0)
+        .is_some_and(|index_entry| {
+            !index_entry.skip_worktree()
+                && !index_entry.assume_unchanged()
+                && index_entry.oid != entry.new_oid
+        })
+}
+
 fn write_raw_diff_entry_z(
     out: &mut impl Write,
     entry: &DiffEntry,
@@ -2052,25 +2040,7 @@ fn write_raw_diff_entry_z(
 ) -> Result<()> {
     let width = abbrev.unwrap_or(40).clamp(4, 40);
 
-    // Uncached `diff-index` additions: old side is absent in the tree (zeros). When the in-memory
-    // entry still uses a zero placeholder, resolve the worktree blob for raw output (t4008 #8)
-    // while skip-worktree / assume-unchanged keep index OIDs (t7011). See t1501-work-tree.
-    let (old_oid_disp, new_oid_disp) = if diff_index_uncached
-        && entry.status == DiffStatus::Added
-        && !raw_diff_index_show_index_oid_for_added(index, entry)
-        && entry.new_oid == zero_oid()
-    {
-        let new_id = uncached_added_worktree_blob_oid(repo, entry).unwrap_or_else(zero_oid);
-        let new_disp = if new_id == zero_oid() {
-            "0".repeat(width)
-        } else {
-            match abbrev {
-                Some(min_len) => abbreviate_object_id(repo, new_id, min_len)?,
-                None => new_id.to_hex(),
-            }
-        };
-        ("0".repeat(width), new_disp)
-    } else {
+    let (old_oid_disp, new_oid_disp) = {
         let old_oid = if entry.old_oid == zero_oid() {
             "0".repeat(width)
         } else {
@@ -2081,6 +2051,7 @@ fn write_raw_diff_entry_z(
         };
         let new_oid = if entry.new_oid == zero_oid()
             || raw_gitlink_new_is_worktree_zero(index, entry, diff_index_uncached)
+            || raw_added_new_is_worktree_zero(index, entry, diff_index_uncached)
         {
             "0".repeat(width)
         } else {
@@ -2132,24 +2103,7 @@ fn render_raw_diff_entry(
 ) -> Result<String> {
     let width = abbrev.unwrap_or(40).clamp(4, 40);
 
-    // Uncached `diff-index`: when the new side is still a zero placeholder, prefer hashing the
-    // worktree for display (t4008) unless skip-worktree/assume-unchanged (t7011).
-    let (old_oid_disp, new_oid_disp) = if diff_index_uncached
-        && entry.status == DiffStatus::Added
-        && !raw_diff_index_show_index_oid_for_added(index, entry)
-        && entry.new_oid == zero_oid()
-    {
-        let new_id = uncached_added_worktree_blob_oid(repo, entry).unwrap_or_else(zero_oid);
-        let new_disp = if new_id == zero_oid() {
-            "0".repeat(width)
-        } else {
-            match abbrev {
-                Some(min_len) => abbreviate_object_id(repo, new_id, min_len)?,
-                None => new_id.to_hex(),
-            }
-        };
-        ("0".repeat(width), new_disp)
-    } else {
+    let (old_oid_disp, new_oid_disp) = {
         let old_oid = if entry.old_oid == zero_oid() {
             "0".repeat(width)
         } else {
@@ -2160,6 +2114,7 @@ fn render_raw_diff_entry(
         };
         let new_oid = if entry.new_oid == zero_oid()
             || raw_gitlink_new_is_worktree_zero(index, entry, diff_index_uncached)
+            || raw_added_new_is_worktree_zero(index, entry, diff_index_uncached)
         {
             "0".repeat(width)
         } else {
@@ -2361,9 +2316,9 @@ fn absorbed_submodule_gitdir(super_repo: &Repository, sub_path: &str) -> Option<
         Some(&super_repo.odb),
     );
     // Fall back to the path itself as the name (the common case where name == path).
-    let name = grit_lib::submodule_config::submodule_name_for_path(&regs, sub_path).unwrap_or(sub_path);
-    let gitdir =
-        grit_lib::submodule_gitdir::submodule_modules_git_dir(&super_repo.git_dir, name);
+    let name =
+        grit_lib::submodule_config::submodule_name_for_path(&regs, sub_path).unwrap_or(sub_path);
+    let gitdir = grit_lib::submodule_gitdir::submodule_modules_git_dir(&super_repo.git_dir, name);
     if grit_lib::submodule_gitdir::is_git_directory(&gitdir) {
         Some(gitdir)
     } else {
@@ -2570,7 +2525,8 @@ pub(crate) fn write_submodule_diff_recursive(
     // header annotation. `log`/`short` stop at the header. When the submodule repo is gone
     // (e.g. `rm -rf sm`), both trees are None and the inner diff is empty, so only the header
     // prints — matching Git.
-    let new_or_deleted = message == Some("(new submodule)") || message == Some("(submodule deleted)");
+    let new_or_deleted =
+        message == Some("(new submodule)") || message == Some("(submodule deleted)");
     if message.is_some() && !(new_or_deleted && submodule_format == SubmodulePatchFormat::Diff) {
         return Ok(());
     }

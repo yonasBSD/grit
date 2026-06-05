@@ -678,6 +678,7 @@ pub fn run(mut args: Args) -> Result<()> {
             config,
             sparse: sparse_state,
             include_sparse: false,
+            large_blobs: None,
         };
         Some(crate::commands::add::stage_pathspecs_for_commit(
             &repo,
@@ -2781,6 +2782,7 @@ fn auto_stage_tracked(repo: &Repository, work_tree: &Path) -> Result<()> {
             continue;
         };
         let idx_mode = idx_e.mode;
+        let idx_skip_worktree = idx_e.skip_worktree();
 
         // Use `symlink_metadata`, not `exists()`: `Path::exists` follows symlinks, so
         // dangling symlinks look "missing" and would be dropped from the index (t1006).
@@ -2880,6 +2882,8 @@ fn auto_stage_tracked(repo: &Repository, work_tree: &Path) -> Result<()> {
             // re-stages the resolved worktree file (t4038 merge conflict resolution).
             index.stage_file(entry);
             changed = true;
+        } else if idx_skip_worktree {
+            continue;
         } else {
             index.remove(&raw_path);
             changed = true;

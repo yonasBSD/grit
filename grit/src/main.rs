@@ -928,6 +928,8 @@ fn run_test_tool_ref_store(rest: &[String]) -> Result<()> {
             if skip_oid_verification || skip_refname_verification {
                 let oid = grit_lib::objects::ObjectId::from_hex(new_oid)
                     .with_context(|| format!("invalid object id '{new_oid}'"))?;
+                let old = grit_lib::objects::ObjectId::from_hex(old_oid)
+                    .with_context(|| format!("invalid object id '{old_oid}'"))?;
                 if grit_lib::reftable::is_reftable_repo(&git_dir) {
                     grit_lib::reftable::reftable_write_ref(&git_dir, refname, &oid, None, None)
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -938,6 +940,10 @@ fn run_test_tool_ref_store(rest: &[String]) -> Result<()> {
                     }
                     std::fs::write(ref_path, format!("{new_oid}\n"))?;
                 }
+                let identity = commands::update_ref::resolve_reflog_identity(&repo);
+                let _ = grit_lib::refs::append_reflog(
+                    &git_dir, refname, &old, &oid, &identity, msg, true,
+                );
                 return Ok(());
             }
             dispatch("update-ref", &args, &GlobalOpts::default())
@@ -2883,6 +2889,36 @@ fn resolve_config_env(spec: &str) -> Result<String> {
     }
 }
 
+fn sq_quote_config_parameter_part(raw: &str) -> String {
+    let mut quoted = String::with_capacity(raw.len() + 2);
+    quoted.push('\'');
+    for ch in raw.chars() {
+        if ch == '\'' || ch == '!' {
+            quoted.push('\'');
+            quoted.push('\\');
+            quoted.push(ch);
+            quoted.push('\'');
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+fn format_config_parameter_for_env(kv: &str) -> String {
+    let (key, value) = kv
+        .split_once('\u{1}')
+        .or_else(|| kv.split_once('='))
+        .map_or((kv, None), |(key, value)| (key, Some(value)));
+    let mut out = sq_quote_config_parameter_part(key);
+    out.push('=');
+    if let Some(value) = value {
+        out.push_str(&sq_quote_config_parameter_part(value));
+    }
+    out
+}
+
 /// Apply global options (env vars, chdir).
 fn apply_globals(opts: &GlobalOpts) -> Result<()> {
     if let Some(dir) = &opts.change_dir {
@@ -2902,6 +2938,18 @@ fn apply_globals(opts: &GlobalOpts) -> Result<()> {
         std::env::set_var("GIT_NAMESPACE", ns);
     }
     if !opts.config_overrides.is_empty() {
+        for kv in &opts.config_overrides {
+            let (key, value) = kv
+                .split_once('\u{1}')
+                .or_else(|| kv.split_once('='))
+                .map_or((kv.as_str(), "true"), |(key, value)| (key, value));
+            let canon = grit_lib::config::canonical_key(key.trim())?;
+            if canon == "core.bare" {
+                grit_lib::config::parse_bool(value).map_err(|_| {
+                    anyhow::anyhow!("fatal: bad boolean config value '{value}' for 'core.bare'")
+                })?;
+            }
+        }
         if opts.config_overrides.iter().any(|kv| {
             let lower = kv.to_ascii_lowercase();
             kv.contains('\n') || lower.contains("%0a")
@@ -2911,7 +2959,7 @@ fn apply_globals(opts: &GlobalOpts) -> Result<()> {
         let extra: String = opts
             .config_overrides
             .iter()
-            .map(|kv| format!("'{}'", kv))
+            .map(|kv| format_config_parameter_for_env(kv))
             .collect::<Vec<_>>()
             .join(" ");
         // Git's config reader applies the last occurrence of a key. Inherited
@@ -3441,14 +3489,19 @@ fn preprocess_commit_argv(rest: &[String]) -> Vec<String> {
     }
 
     let before = &rest[..i];
-    let msg_block = &rest[i..i + 2];
+    let mut msg_block = Vec::with_capacity(2);
+    if rest[i + 1].starts_with('-') {
+        msg_block.push(format!("--message={}", rest[i + 1]));
+    } else {
+        msg_block.extend_from_slice(&rest[i..i + 2]);
+    }
     let after = &rest[i + 2..];
 
     let before_is_pathspec_prefix =
         !before.is_empty() && before.iter().all(|a| !a.starts_with('-'));
 
     let mut out = Vec::with_capacity(rest.len() + 2);
-    out.extend_from_slice(msg_block);
+    out.extend_from_slice(&msg_block);
 
     if before_is_pathspec_prefix {
         out.push("--".to_owned());
@@ -3908,7 +3961,7 @@ fn postprocess_completion_options(subcmd: &str, options: Vec<String>) -> Vec<Str
 
     let mut head: Vec<String> = head
         .into_iter()
-        .filter(|s| s != "--overwrite-ignore")
+        .filter(|s| s != "--overwrite-ignore" && s != "--no-progress")
         .map(|s| {
             if s == "--track=" {
                 "--track".to_string()
@@ -4802,9 +4855,10 @@ fn preprocess_log_args(rest: &[String]) -> Vec<String> {
         if arg.starts_with('-') && arg.len() > 1 && arg[1..].chars().all(|c| c.is_ascii_digit()) {
             result.push("-n".to_string());
             result.push(arg[1..].to_string());
-        } else if let Some(num) = arg.strip_prefix("-n").filter(|rest| {
-            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
-        }) {
+        } else if let Some(num) = arg
+            .strip_prefix("-n")
+            .filter(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+        {
             // Normalize `-n6` to `-n 6` so clap parses it as the max-count option
             // instead of letting the `allow_hyphen_values` revisions positional
             // swallow it (and every option that follows).
@@ -5518,10 +5572,8 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
             commands::imap_send::run_from_argv(rest)
         }
         "index-pack" => {
-            let mut argv = rest.to_vec();
-            commands::index_pack::preprocess_argv(&mut argv);
-            commands::index_pack::normalize_argv_for_positional_pack(&mut argv);
-            commands::index_pack::run(parse_cmd_args(subcmd, &argv))
+            let args = commands::index_pack::parse_argv(rest.to_vec())?;
+            commands::index_pack::run(args)
         }
         "init" | "init-db" => commands::init::run(parse_cmd_args("init", rest), opts.bare),
         "interpret-trailers" => {

@@ -13,7 +13,7 @@ use grit_lib::error::Error as GritError;
 use grit_lib::objects::ObjectId;
 use grit_lib::refs::{
     append_reflog, delete_ref, read_head, read_ref_file, read_symbolic_ref, resolve_ref,
-    should_autocreate_reflog, verify_refname_available_for_create, write_ref,
+    should_autocreate_reflog_for_mode, verify_refname_available_for_create, write_ref,
 };
 use grit_lib::repo::Repository;
 use std::collections::{BTreeSet, HashSet};
@@ -126,7 +126,7 @@ pub fn run(mut args: Args) -> Result<()> {
                 &zero_oid(),
                 &resolve_reflog_identity(&repo),
                 msg,
-                args.create_reflog,
+                update_reflog_force_create(&repo, &args, &target_refname, msg),
             );
         }
         return Ok(());
@@ -166,7 +166,7 @@ pub fn run(mut args: Args) -> Result<()> {
                 &zero_oid(),
                 &resolve_reflog_identity(&repo),
                 msg,
-                args.create_reflog,
+                update_reflog_force_create(&repo, &args, &target_refname, msg),
             );
         }
         return Ok(());
@@ -213,7 +213,7 @@ pub fn run(mut args: Args) -> Result<()> {
                 &new_oid,
                 &identity,
                 msg,
-                args.create_reflog,
+                update_reflog_force_create(&repo, &args, &target_refname, msg),
             );
         }
         run_ref_transaction_committed(&repo, &[hook_update]);
@@ -249,7 +249,32 @@ fn should_write_update_reflog(
     if args.create_reflog || !msg.is_empty() {
         return true;
     }
-    should_autocreate_reflog(&repo.git_dir, reflog_refname)
+    if grit_lib::reflog::reflog_exists(&repo.git_dir, reflog_refname) {
+        return true;
+    }
+    should_autocreate_reflog_for_mode(
+        reflog_refname,
+        update_log_refs_mode(repo)
+            .unwrap_or_else(|| grit_lib::refs::effective_log_refs_config(&repo.git_dir)),
+    )
+}
+
+fn update_reflog_force_create(
+    repo: &Repository,
+    args: &Args,
+    reflog_refname: &str,
+    msg: &str,
+) -> bool {
+    args.create_reflog
+        || !msg.is_empty()
+        || update_log_refs_mode(repo)
+            .is_some_and(|mode| should_autocreate_reflog_for_mode(reflog_refname, mode))
+}
+
+fn update_log_refs_mode(repo: &Repository) -> Option<grit_lib::refs::LogRefsConfig> {
+    ConfigSet::load(Some(&repo.git_dir), true)
+        .ok()
+        .map(|config| config.effective_log_refs_config(&repo.git_dir))
 }
 
 fn reflog_ref_for_delete(git_dir: &std::path::Path, user_arg: &str, leaf_ref: &str) -> String {
@@ -1067,7 +1092,7 @@ fn apply_batch_op(repo: &Repository, args: &Args, no_deref: bool, op: BatchOp) -
                     &new_oid,
                     &resolve_reflog_identity(repo),
                     msg,
-                    args.create_reflog,
+                    update_reflog_force_create(repo, args, &target_refname, msg),
                 );
             }
         }
