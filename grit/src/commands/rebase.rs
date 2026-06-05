@@ -4127,6 +4127,9 @@ Use '--' to separate paths from revisions, like this:\n\
     if filter_cherry_equivalents && upstream_tip_oid != upstream_oid {
         commits = filter_redundant_patch_commits(&repo, upstream_tip_oid, &commits)?;
     }
+    if !args.root && !rebase_merges_on {
+        commits = filter_merge_commits(&repo, &commits)?;
+    }
 
     // `--reset-author-date` / `--ignore-date` must still replay empty commits so author timestamps
     // are rewritten (t3436). Merge-replay scripts may reference empty merge commits.
@@ -4250,6 +4253,7 @@ Use '--' to separate paths from revisions, like this:\n\
             && args.onto.is_none()
             && args.exec.is_none()
             && !rebase_merges_on
+            && commits.is_empty()
             && is_ancestor(&repo, upstream_oid, head_oid)?
         {
             print_branch_up_to_date(&head);
@@ -4740,36 +4744,24 @@ fn collect_rebase_todo_commits(
     Ok(commits)
 }
 
-/// Collect commits to replay: ancestors of `head` that are not ancestors of the merge-base
-/// of `upstream` and `head`. Stops at the merge base only (not at `upstream`), matching Git.
+/// Collect commits to replay: ancestors of `head` that are not ancestors of `upstream`.
 /// Returns them oldest-first.
 fn collect_commits_to_replay(
     repo: &Repository,
     head: ObjectId,
     upstream: ObjectId,
 ) -> Result<Vec<ObjectId>> {
-    let bases = merge_bases_first_vs_rest(repo, upstream, &[head])?;
-    let stop_set: HashSet<ObjectId> = bases.into_iter().collect();
-
-    let mut commits = Vec::new();
-    let mut current = head;
-
-    loop {
-        if stop_set.contains(&current) {
-            break;
-        }
-        let obj = repo.odb.read(&current)?;
-        if obj.kind != ObjectKind::Commit {
-            break;
-        }
-        let commit = parse_commit(&obj.data)?;
-        commits.push(current);
-        if commit.parents.is_empty() {
-            break;
-        }
-        current = commit.parents[0];
-    }
-
+    let result = rev_list(
+        repo,
+        &[head.to_hex()],
+        &[upstream.to_hex()],
+        &RevListOptions {
+            ordering: OrderingMode::Topo,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut commits = result.commits;
     commits.reverse();
     Ok(commits)
 }
@@ -4849,6 +4841,21 @@ fn filter_redundant_patch_commits(
         }
         seen_patch_ids.insert(pid);
         out.push(oid);
+    }
+    Ok(out)
+}
+
+fn filter_merge_commits(repo: &Repository, ordered: &[ObjectId]) -> Result<Vec<ObjectId>> {
+    let mut out = Vec::new();
+    for &oid in ordered {
+        let obj = repo.odb.read(&oid)?;
+        if obj.kind != ObjectKind::Commit {
+            continue;
+        }
+        let commit = parse_commit(&obj.data)?;
+        if commit.parents.len() <= 1 {
+            out.push(oid);
+        }
     }
     Ok(out)
 }
