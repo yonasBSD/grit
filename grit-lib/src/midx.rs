@@ -1766,7 +1766,19 @@ pub fn read_midx_preferred_idx_name(objects_dir: &Path) -> Result<String> {
     let (pn_off, pn_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_PACKNAMES)?;
     let names = parse_pack_names_blob(&data[pn_off..pn_off + pn_len])?;
     let (ooff_off, ooff_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_OBJECTOFFSETS)?;
-    let (ridx_off, ridx_len) = find_chunk(&data, hdr_end, MIDX_CHUNKID_REVINDEX)?;
+    // The preferred pack is recorded in the MIDX reverse index, which is only
+    // present when the MIDX has a bitmap. Without it, the preferred pack is
+    // unknowable (git/midx.c `midx_preferred_pack` returns -1). Prefer the
+    // embedded RIDX chunk; otherwise fall back to a `multi-pack-index*.rev`
+    // sidecar, matching `load_midx_revindex`.
+    let (ridx_off, ridx_len) = match find_chunk(&data, hdr_end, MIDX_CHUNKID_REVINDEX) {
+        Ok(r) => r,
+        Err(_) => {
+            return Err(Error::CorruptObject(
+                "could not determine MIDX preferred pack".to_owned(),
+            ));
+        }
+    };
 
     if ridx_len < 4 || ooff_len < 8 {
         return Err(Error::CorruptObject("truncated MIDX RIDX/OOFF".to_owned()));

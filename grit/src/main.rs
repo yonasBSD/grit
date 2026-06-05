@@ -6006,9 +6006,22 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
                             let dir = rest.get(2).map(Path::new).context(
                                 "usage: test-tool read-midx --preferred-pack <object-dir>",
                             )?;
-                            let name = read_midx_preferred_idx_name(dir)
-                                .map_err(|e| anyhow::anyhow!("{e}"))?;
-                            println!("{name}");
+                            match read_midx_preferred_idx_name(dir) {
+                                Ok(name) => println!("{name}"),
+                                Err(e) => {
+                                    // Match `test-read-midx.c`: a missing reverse index
+                                    // yields a warning and a non-zero exit.
+                                    let msg = e.to_string();
+                                    if msg.contains("could not determine MIDX preferred pack") {
+                                        eprintln!(
+                                            "warning: could not determine MIDX preferred pack"
+                                        );
+                                    } else {
+                                        eprintln!("error: {msg}");
+                                    }
+                                    std::process::exit(1);
+                                }
+                            }
                         }
                         "--checksum" => {
                             let dir = rest
