@@ -8,8 +8,11 @@ use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
 use std::io::{self, Read};
 
+use std::collections::HashSet;
+use std::path::Path;
+
 use grit_lib::config::{parse_i64, ConfigSet};
-use grit_lib::objects::ObjectKind;
+use grit_lib::objects::{ObjectId, ObjectKind};
 use grit_lib::repo::Repository;
 use grit_lib::unpack_objects::{unpack_objects, UnpackOptions};
 
@@ -32,6 +35,11 @@ pub struct Args {
     /// Maximum pack input size in bytes (`k`/`m`/`g` suffixes; `0` = unlimited).
     #[arg(long = "max-input-size", value_name = "SIZE")]
     pub max_input_size: Option<String>,
+
+    /// File listing shallow boundary commits (grafts) whose parents must not be required during the
+    /// `--strict` connectivity walk. Mirrors `unpack-objects --shallow-file` in `receive-pack`.
+    #[arg(long = "shallow-file", value_name = "FILE")]
+    pub shallow_file: Option<std::path::PathBuf>,
 
     /// Pack header supplied by receive-pack after it has already parsed the stream header.
     #[arg(long = "pack_header", value_name = "HEADER", hide = true)]
@@ -58,11 +66,17 @@ pub fn run(args: Args) -> Result<()> {
 
     enforce_alloc_limit_for_non_streaming_large_objects(&repo, args.dry_run)?;
 
+    let shallow_boundaries = match args.shallow_file.as_deref() {
+        Some(path) => read_shallow_file_oids(path),
+        None => Default::default(),
+    };
+
     let opts = UnpackOptions {
         dry_run: args.dry_run,
         quiet: args.quiet,
         strict: args.strict,
         max_input_bytes,
+        shallow_boundaries,
     };
 
     let count = if let Some(raw_header) = args.pack_header.as_deref() {
@@ -148,6 +162,24 @@ fn enforce_alloc_limit_for_non_streaming_large_objects(
         bail!("fatal: attempting to allocate");
     }
     Ok(())
+}
+
+/// Read commit OIDs (one per line) from a shallow boundary file, ignoring blank/unparsable lines.
+fn read_shallow_file_oids(path: &Path) -> HashSet<ObjectId> {
+    let mut set = HashSet::new();
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return set;
+    };
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(oid) = line.parse::<ObjectId>() {
+            set.insert(oid);
+        }
+    }
+    set
 }
 
 fn parse_pack_header_arg(raw: &str) -> Result<(u32, u32)> {

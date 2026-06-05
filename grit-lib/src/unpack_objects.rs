@@ -10,7 +10,7 @@
 //! in RAM (streaming read + bounded retention).
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Read};
 
 use flate2::read::ZlibDecoder;
@@ -37,6 +37,12 @@ pub struct UnpackOptions {
     /// Matches Git's `unpack-objects --max-input-size` / `receive.maxInputSize`: counts every
     /// byte read from the pack stream after crossing the limit. `None` means no limit.
     pub max_input_bytes: Option<u64>,
+    /// Commit OIDs that are shallow boundaries (grafts): their parents are intentionally absent and
+    /// must not be required during the `--strict` connectivity walk.
+    ///
+    /// Mirrors `unpack-objects --shallow-file <file>` in upstream `receive-pack`, where the shallow
+    /// file lists the commits whose parent objects were deliberately not transferred.
+    pub shallow_boundaries: HashSet<ObjectId>,
 }
 
 /// A delta that could not yet be resolved because its base was not yet known.
@@ -226,7 +232,7 @@ pub fn unpack_objects(reader: &mut dyn Read, odb: &Odb, opts: &UnpackOptions) ->
             dot_fsck_map.insert(*oid, (kind, data));
         }
         gitmodules::verify_packed_dot_special(&dot_fsck_map)?;
-        strict_verify_packed_references_map(Some(odb), &by_oid)?;
+        strict_verify_packed_references_map(Some(odb), &by_oid, &opts.shallow_boundaries)?;
     }
 
     Ok(count)
@@ -273,8 +279,9 @@ fn entry_object_bytes<'a>(entry: &'a PackedObjectEntry, odb: &Odb) -> Result<Cow
 fn strict_verify_packed_references_map(
     odb: Option<&Odb>,
     pack: &HashMap<ObjectId, PackedObjectEntry>,
+    shallow_boundaries: &HashSet<ObjectId>,
 ) -> Result<()> {
-    for entry in pack.values() {
+    for (oid, entry) in pack {
         match entry {
             PackedObjectEntry::BlobOnDisk { .. } => {}
             PackedObjectEntry::InMemory { kind, data } => match kind {
@@ -302,6 +309,12 @@ fn strict_verify_packed_references_map(
                             "strict: missing tree {} referenced by commit",
                             c.tree.to_hex()
                         )));
+                    }
+                    // A commit recorded as a shallow boundary (graft) has its parents intentionally
+                    // absent — skip parent connectivity for it, matching unpack-objects run with a
+                    // `--shallow-file` listing this commit.
+                    if shallow_boundaries.contains(oid) {
+                        continue;
                     }
                     for p in &c.parents {
                         if !strict_ref_resolves_map(p, pack, odb) {
@@ -1373,6 +1386,7 @@ mod tests {
             quiet: true,
             strict: false,
             max_input_bytes: None,
+            ..Default::default()
         };
         let count = unpack_objects(&mut pack.as_slice(), &odb, &opts).unwrap();
         assert_eq!(count, 1);

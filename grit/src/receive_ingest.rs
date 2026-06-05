@@ -5,9 +5,11 @@
 
 use anyhow::{bail, Context, Result};
 use grit_lib::config::ConfigSet;
+use grit_lib::objects::ObjectId;
 use grit_lib::receive_pack::{max_input_size_from_config, should_use_unpack_objects};
+use std::collections::HashSet;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::grit_exe;
@@ -22,13 +24,50 @@ pub fn ingest_received_pack(
     remote_cfg: &ConfigSet,
     strict: bool,
 ) -> Result<()> {
+    ingest_received_pack_with_shallow(git_dir, pack, remote_cfg, strict, &HashSet::new())
+}
+
+/// Like [`ingest_received_pack`], but treats `shallow_boundaries` as grafts during the `--strict`
+/// connectivity walk (their parents are not required). Mirrors `receive-pack` running
+/// `unpack-objects --shallow-file <tmp>` for a shallow push.
+pub fn ingest_received_pack_with_shallow(
+    git_dir: &Path,
+    pack: &[u8],
+    remote_cfg: &ConfigSet,
+    strict: bool,
+    shallow_boundaries: &HashSet<ObjectId>,
+) -> Result<()> {
     let max_input_bytes = max_input_size_from_config(remote_cfg);
 
     if should_use_unpack_objects(pack, remote_cfg) {
-        ingest_via_unpack_objects_subprocess(git_dir, pack, max_input_bytes, strict)
+        ingest_via_unpack_objects_subprocess(
+            git_dir,
+            pack,
+            max_input_bytes,
+            strict,
+            shallow_boundaries,
+        )
     } else {
         ingest_via_index_pack_subprocess(git_dir, pack, max_input_bytes)
     }
+}
+
+/// Write shallow boundary OIDs to a temporary file under `git_dir` for `--shallow-file`.
+///
+/// Returns `None` when the set is empty (no file is needed). The caller removes the file after the
+/// subprocess completes.
+fn write_temp_shallow_file(git_dir: &Path, boundaries: &HashSet<ObjectId>) -> Option<PathBuf> {
+    if boundaries.is_empty() {
+        return None;
+    }
+    let path = git_dir.join(format!("shallow_unpack_{}", std::process::id()));
+    let mut body = String::new();
+    for oid in boundaries {
+        body.push_str(&oid.to_hex());
+        body.push('\n');
+    }
+    std::fs::write(&path, body).ok()?;
+    Some(path)
 }
 
 fn ingest_via_unpack_objects_subprocess(
@@ -36,7 +75,9 @@ fn ingest_via_unpack_objects_subprocess(
     pack: &[u8],
     max_input: Option<u64>,
     strict: bool,
+    shallow_boundaries: &HashSet<ObjectId>,
 ) -> Result<()> {
+    let shallow_file = write_temp_shallow_file(git_dir, shallow_boundaries);
     let mut cmd = Command::new(grit_exe::grit_executable());
     grit_exe::strip_trace2_env(&mut cmd);
     cmd.arg(format!("--git-dir={}", git_dir.display()));
@@ -44,6 +85,9 @@ fn ingest_via_unpack_objects_subprocess(
         cmd.args(["unpack-objects", "-q", "--strict"]);
     } else {
         cmd.args(["unpack-objects", "-q"]);
+    }
+    if let Some(ref sf) = shallow_file {
+        cmd.arg("--shallow-file").arg(sf);
     }
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -61,6 +105,9 @@ fn ingest_via_unpack_objects_subprocess(
     let out = child
         .wait_with_output()
         .context("wait for unpack-objects")?;
+    if let Some(ref sf) = shallow_file {
+        let _ = std::fs::remove_file(sf);
+    }
     if out.status.success() {
         return Ok(());
     }

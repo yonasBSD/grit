@@ -1813,6 +1813,48 @@ fn push_to_url(
         }
     }
 
+    // Shallow push handling (matches receive-pack). When the pushing repo is shallow, its grafts
+    // are advertised so the receiver can detect pushes that would introduce a *new* shallow root.
+    // Such pushes are rejected ("shallow update not allowed") unless `receive.shallowupdate` is set
+    // on the receiver, in which case the new grafts are recorded in the receiver's `.git/shallow`
+    // and excluded from the strict connectivity walk.
+    let source_shallow = grit_lib::shallow::load_shallow_boundaries(&repo.git_dir);
+    let receive_shallow_update = receive_remote_config
+        .get_bool("receive.shallowupdate")
+        .and_then(|r| r.ok())
+        .unwrap_or(false);
+    // New shallow roots that must be written into the receiver's `.git/shallow` (only when accepted).
+    let mut push_new_shallow_roots: HashSet<ObjectId> = HashSet::new();
+    if !source_shallow.is_empty() {
+        // Receiver's current commit tips (what it already "has"), used as the reachability cut.
+        let mut have_tips: Vec<ObjectId> = Vec::new();
+        if let Ok(remote_refs) = refs::list_refs(&remote_repo.git_dir, "refs/") {
+            have_tips.extend(remote_refs.into_iter().map(|(_, oid)| oid));
+        }
+        for (i, update) in updates.iter().enumerate() {
+            if pre_reject[i].is_some() {
+                continue;
+            }
+            let Some(new_oid) = update.new_oid else {
+                continue;
+            };
+            let new_roots = grit_lib::shallow::new_shallow_roots_for_push(
+                &repo.odb,
+                new_oid,
+                &source_shallow,
+                &have_tips,
+            );
+            if new_roots.is_empty() {
+                continue;
+            }
+            if receive_shallow_update {
+                push_new_shallow_roots.extend(new_roots);
+            } else {
+                pre_reject[i] = Some("shallow update not allowed".to_string());
+            }
+        }
+    }
+
     let mut atomic_cascade: Vec<Option<(String, &'static str)>> = vec![None; updates.len()];
     if args.atomic {
         let mut first_pre_fail: Option<usize> = None;
@@ -1930,11 +1972,12 @@ fn push_to_url(
 
         if !thin_pack.is_empty() {
             let pre_ingest = list_remote_object_files(&remote_repo.git_dir);
-            crate::receive_ingest::ingest_received_pack(
+            crate::receive_ingest::ingest_received_pack_with_shallow(
                 &remote_repo.git_dir,
                 &thin_pack,
                 &receive_remote_config,
                 true,
+                &source_shallow,
             )
             .context("remote unpack failed")?;
             let post_ingest = list_remote_object_files(&remote_repo.git_dir);
@@ -1947,6 +1990,14 @@ fn push_to_url(
                 &remote_repo.git_dir,
                 &mut copied_objects,
             );
+            // Record the new shallow roots in the receiver's `.git/shallow` (receive.shallowupdate).
+            // The objects are now present, so subsequent fsck/reachability stops at these grafts.
+            if !push_new_shallow_roots.is_empty() {
+                let _ = grit_lib::shallow::add_shallow_boundaries(
+                    &remote_repo.git_dir,
+                    &push_new_shallow_roots,
+                );
+            }
         }
 
         copied_objects.extend(
@@ -2209,6 +2260,13 @@ fn push_to_url(
 
     for (i, update) in updates.iter().enumerate() {
         if let Some(msg) = &pre_reject[i] {
+            // The shallow-update rejection is reported by receive-pack only via the per-ref
+            // `! [remote rejected] ... (shallow update not allowed)` line, with no extra prose line.
+            if msg == "shallow update not allowed" {
+                report_ref_rejection(update, "remote rejected", msg, args);
+                rejected.push((update, msg.clone()));
+                continue;
+            }
             eprintln!("{msg}");
             let paren = if msg.contains("tag already exists") {
                 "failed"
