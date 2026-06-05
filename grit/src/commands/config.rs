@@ -984,12 +984,17 @@ fn config_origin_prefix_with_separator(
     if file.to_string_lossy().starts_with(':') {
         return format!("command line:{separator}");
     }
-    let display_path = if entry.scope == ConfigScope::Global {
+    let display_path = if entry.scope == ConfigScope::Global || file.is_relative() {
         file.display().to_string()
     } else if let Some(cwd) = cwd {
-        file.strip_prefix(cwd)
-            .map(|rel| rel.display().to_string())
-            .unwrap_or_else(|_| file.display().to_string())
+        let git_dir = cwd.join(".git");
+        if file.starts_with(&git_dir) {
+            file.strip_prefix(cwd)
+                .map(|rel| rel.display().to_string())
+                .unwrap_or_else(|_| file.display().to_string())
+        } else {
+            file.display().to_string()
+        }
     } else {
         file.display().to_string()
     };
