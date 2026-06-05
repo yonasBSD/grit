@@ -1,7 +1,7 @@
 //! Skipping fetch negotiator — mirrors `git/negotiator/skipping.c`.
 
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use crate::error::{Error, Result};
 use crate::objects::{parse_commit, ObjectId};
@@ -33,6 +33,25 @@ fn commit_date(repo: &Repository, oid: ObjectId) -> Result<i64> {
 fn read_parents(repo: &Repository, oid: ObjectId) -> Result<Vec<ObjectId>> {
     let obj = repo.odb.read(&oid)?;
     Ok(parse_commit(&obj.data)?.parents)
+}
+
+/// Read the shallow boundary commits recorded in `$GIT_DIR/shallow`.
+///
+/// These commits have their real parents grafted away locally — the objects beyond the boundary
+/// are simply not present. The negotiator must treat them as parentless, matching how Git's
+/// `register_shallow()` rewrites the commit graph during `rev-list` so negotiation never tries to
+/// load (and fails on) objects past the shallow cut (t5539 shallow http fetch/deepen).
+fn read_shallow_boundary(repo: &Repository) -> HashSet<ObjectId> {
+    let shallow_path = repo.git_dir.join("shallow");
+    let mut set = HashSet::new();
+    if let Ok(contents) = std::fs::read_to_string(&shallow_path) {
+        for line in contents.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            if let Ok(oid) = ObjectId::from_hex(line) {
+                set.insert(oid);
+            }
+        }
+    }
+    set
 }
 
 #[derive(Clone, Copy)]
@@ -74,23 +93,38 @@ pub struct SkippingNegotiator {
     entries: HashMap<ObjectId, Entry>,
     flags: HashMap<ObjectId, u8>,
     non_common_revs: usize,
+    shallow: HashSet<ObjectId>,
 }
 
 impl SkippingNegotiator {
     /// New negotiator bound to `repo`.
     pub fn new(repo: Repository) -> Self {
+        let shallow = read_shallow_boundary(&repo);
         Self {
             repo,
             heap: BinaryHeap::new(),
             entries: HashMap::new(),
             flags: HashMap::new(),
             non_common_revs: 0,
+            shallow,
         }
     }
 
     /// Repository handle used for reading commits.
     pub fn repo(&self) -> &Repository {
         &self.repo
+    }
+
+    /// Parents of `oid`, with shallow-boundary commits reported as parentless.
+    ///
+    /// A commit listed in `$GIT_DIR/shallow` has had its parents grafted away locally, so the
+    /// objects beyond it are absent. Returning no parents prevents the negotiation walk from
+    /// dereferencing those missing objects and erroring with "object not found".
+    fn parents_of(&self, oid: ObjectId) -> Result<Vec<ObjectId>> {
+        if self.shallow.contains(&oid) {
+            return Ok(Vec::new());
+        }
+        read_parents(&self.repo, oid)
     }
 
     fn f(&self, oid: ObjectId) -> u8 {
@@ -149,7 +183,7 @@ impl SkippingNegotiator {
                 self.non_common_revs = self.non_common_revs.saturating_sub(1);
             }
 
-            for p in read_parents(&self.repo, c)? {
+            for p in self.parents_of(c)? {
                 if self.f(p) & SEEN == 0 || self.f(p) & COMMON != 0 {
                     continue;
                 }
@@ -242,7 +276,7 @@ impl SkippingNegotiator {
                 to_send = Some(commit_oid);
             }
 
-            let pars = read_parents(&self.repo, commit_oid)?;
+            let pars = self.parents_of(commit_oid)?;
             let mut parent_pushed = false;
             for p in pars {
                 parent_pushed |= self.push_parent(commit_oid, p)?;

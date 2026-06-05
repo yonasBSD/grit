@@ -445,7 +445,10 @@ pub(crate) fn write_v2_fetch_request(
         pkt_line::write_line(stdin, &line)?;
     }
     if let Some(since) = shallow_since {
-        let line = format!("deepen-since {since}");
+        // Send the Unix timestamp `approxidate` produces, not the raw date: `upload-pack` parses
+        // `deepen-since` with `parse_timestamp` and rejects trailing text (t5539 fetch shallow since).
+        let value = grit_lib::git_date::approx::approxidate_careful(since.trim(), None).to_string();
+        let line = format!("deepen-since {value}");
         trace_packet_git('>', &line);
         pkt_line::write_line(stdin, &line)?;
     }

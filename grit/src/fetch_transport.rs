@@ -1533,7 +1533,11 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
             pkt_line::write_line_to_vec(&mut req, &line)?;
         }
         if let Some(since) = opts.shallow_since.as_deref() {
-            let line = format!("deepen-since {since}");
+            // `upload-pack` parses `deepen-since` with `parse_timestamp`; send the integer
+            // `approxidate` yields rather than the raw date string (t5539 fetch shallow since).
+            let value =
+                grit_lib::git_date::approx::approxidate_careful(since.trim(), None).to_string();
+            let line = format!("deepen-since {value}");
             trace_packet_fetch('>', line.as_str());
             pkt_line::write_line_to_vec(&mut req, &line)?;
         }

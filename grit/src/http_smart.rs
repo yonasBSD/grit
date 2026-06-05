@@ -297,6 +297,13 @@ fn parse_v0_v1_advertisement(
                     crate::trace_packet::trace_packet_git('<', line);
                     continue;
                 }
+                // A shallow server's v0/v1 ref advertisement appends `shallow <oid>` trailer lines
+                // after the refs (upstream `upload-pack` `advertise_shallow_grafts`). They are not
+                // refs and carry no capabilities, so skip them rather than feeding `shallow` to the
+                // OID parser (t5539 fetch from a shallow clone over http, protocol v0).
+                if line.starts_with("shallow ") || line.starts_with("unshallow ") {
+                    continue;
+                }
                 let (payload, cap_part) = match line.split_once('\0') {
                     Some((p, c)) => (p.trim(), Some(c)),
                     None => (line.trim(), None),
@@ -447,6 +454,18 @@ fn requested_depth(opts: &HttpFetchOptions) -> Option<usize> {
     opts.depth.or(opts.deepen).filter(|d| *d > 0)
 }
 
+/// Convert a `--shallow-since`/`--deepen-since` date argument to the wire `deepen-since` value.
+///
+/// Git's `fetch-pack` runs `approxidate()` on the user-supplied date and sends the resulting Unix
+/// timestamp as a bare integer (`upload-pack` parses it with `parse_timestamp` and rejects trailing
+/// garbage). Sending the raw string (e.g. `"200000000 +0700"`) makes a real `upload-pack` die with
+/// no output, so the shallow-since fetch silently transfers nothing (t5539 "fetch shallow since").
+fn deepen_since_wire_value(since: &str) -> String {
+    let since = since.trim();
+    let ts = grit_lib::git_date::approx::approxidate_careful(since, None);
+    ts.to_string()
+}
+
 fn append_fetch_request_extensions_v0_v1(
     req: &mut Vec<u8>,
     caps: &std::collections::HashSet<String>,
@@ -461,7 +480,8 @@ fn append_fetch_request_extensions_v0_v1(
     }
     if let Some(since) = options.shallow_since.as_deref() {
         if caps.contains("deepen-since") {
-            pkt_line::write_line_to_vec(req, &format!("deepen-since {since}"))?;
+            let value = deepen_since_wire_value(since);
+            pkt_line::write_line_to_vec(req, &format!("deepen-since {value}"))?;
         }
     }
     if caps.contains("deepen-not") {
@@ -513,7 +533,8 @@ fn append_fetch_request_extensions_v2(
     }
     if let Some(since) = options.shallow_since.as_deref() {
         if features.contains("deepen-since") || features.contains("shallow") {
-            pkt_line::write_line_to_vec(req, &format!("deepen-since {since}"))?;
+            let value = deepen_since_wire_value(since);
+            pkt_line::write_line_to_vec(req, &format!("deepen-since {value}"))?;
         }
     }
     if features.contains("deepen-not") || features.contains("shallow") {
