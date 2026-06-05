@@ -464,7 +464,10 @@ pub fn diff_textconv_active(git_dir: &Path, config: &ConfigSet, path: &str) -> b
 /// which forces Git to emit `Binary files ... differ` regardless of content.
 #[must_use]
 pub fn diff_attr_forces_binary(git_dir: &Path, path: &str) -> bool {
-    matches!(attrs_for_repo_path(git_dir, path).diff_attr, DiffAttr::Unset)
+    matches!(
+        attrs_for_repo_path(git_dir, path).diff_attr,
+        DiffAttr::Unset
+    )
 }
 
 /// True when a path carries a bare `diff` (set) attribute, which forces Git to

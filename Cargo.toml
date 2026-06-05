@@ -1,5 +1,5 @@
 [workspace]
-members = ["grit", "grit-lib", "grit-protocol", "grit-http-server"]
+members = ["grit", "grit-lib", "grit-protocol", "grit-http-server", "grit-simple"]
 resolver = "2"
 
 [workspace.package]

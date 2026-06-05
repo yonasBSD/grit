@@ -945,10 +945,9 @@ pub fn run(args: Args) -> Result<()> {
     // walk below dedupes and date-sorts them (Git's `add_reflogs_to_pending`).
     if add_reflog_tips {
         saw_pseudo_ref = true;
-        let mut reflog_oids: Vec<ObjectId> =
-            grit_lib::reflog::all_reflog_oids(&repo.git_dir)?
-                .into_iter()
-                .collect();
+        let mut reflog_oids: Vec<ObjectId> = grit_lib::reflog::all_reflog_oids(&repo.git_dir)?
+            .into_iter()
+            .collect();
         reflog_oids.sort_by(|a, b| a.to_hex().cmp(&b.to_hex()));
         for oid in reflog_oids {
             revision_specs.push(oid.to_hex());

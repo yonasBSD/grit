@@ -526,6 +526,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "grit-simple"
+version = "0.3.94"
+dependencies = [
+ "anyhow",
+ "clap",
+ "grit-lib",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
