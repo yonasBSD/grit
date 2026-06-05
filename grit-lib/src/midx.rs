@@ -1947,7 +1947,9 @@ pub fn write_multi_pack_index_with_options(
     let mut indexes: Vec<PackIndex> = Vec::with_capacity(work_names.len());
     for name in work_names {
         let path = pack_dir.join(name);
-        indexes.push(read_pack_index(&path)?);
+        // Do not re-verify the idx trailer here; Git reads the offset table
+        // directly (t5319 forces a deliberately corrupt-but-valid 64-bit idx).
+        indexes.push(crate::pack::read_pack_index_no_verify(&path)?);
     }
 
     // Git refuses an explicitly preferred pack that has no objects.

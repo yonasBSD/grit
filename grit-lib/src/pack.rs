@@ -879,9 +879,12 @@ pub fn read_pack_index(idx_path: &Path) -> Result<PackIndex> {
     parse_pack_index_bytes(idx_path, &bytes, true)
 }
 
-/// Parse a pack index file without verifying the SHA-1 trailer checksum. Used by
-/// the cached lookup path (`read_pack_index_cached`); not part of the public API.
-fn read_pack_index_no_verify(idx_path: &Path) -> Result<PackIndex> {
+/// Parse a pack index file without verifying the SHA-1 trailer checksum.
+///
+/// Git reads the `.idx` offset table without re-checking its trailer in the MIDX
+/// write path (`midx-write.c`/`packfile.c` `open_pack_index`), so a deliberately
+/// corrupted-but-structurally-valid idx (t5319 64-bit offset tests) still loads.
+pub fn read_pack_index_no_verify(idx_path: &Path) -> Result<PackIndex> {
     let bytes = fs::read(idx_path).map_err(Error::Io)?;
     parse_pack_index_bytes(idx_path, &bytes, false)
 }
