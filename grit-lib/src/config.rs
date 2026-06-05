@@ -1226,8 +1226,8 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
 
         if count > 0 {
             if !preserve_empty_section_header {
-                // Remove empty section headers (sections with no remaining entries and no comments)
-                self.remove_empty_section_headers();
+                let (section, subsection, _) = split_key(&canon)?;
+                self.remove_empty_section_headers_matching(&section, subsection.as_deref());
             }
 
             let content = self.raw_lines.join("\n");
@@ -1370,7 +1370,7 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
 
     /// Write the (possibly modified) config back to disk.
     /// Remove section headers that have no remaining entries or comments.
-    fn remove_empty_section_headers(&mut self) {
+    fn remove_empty_section_headers_matching(&mut self, section: &str, subsection: Option<&str>) {
         let (Ok(section_re), Ok(comment_re)) = (
             regex::Regex::new(r"^\s*\["),
             regex::Regex::new(r"^\s*(#|;)"),
@@ -1381,14 +1381,29 @@ fatal: bad config variable 'fetch.negotiationalgorithm' in file '{file_disp}' at
 
         let mut to_remove: Vec<usize> = Vec::new();
         let len = self.raw_lines.len();
+        let section_lower = section.to_lowercase();
+        let mut parser = Parser::new();
 
         for i in 0..len {
             let line = &self.raw_lines[i];
             if !section_re.is_match(line) {
                 continue;
             }
+            if !parser.try_parse_section(line)
+                || !section_matches(&parser, &section_lower, subsection)
+            {
+                continue;
+            }
             // Don't remove section headers that have inline key=value entries
             if is_section_header_with_inline_entry(line) {
+                continue;
+            }
+            let has_attached_leading_comment = self.raw_lines[..i]
+                .iter()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .is_some_and(|line| comment_re.is_match(line));
+            if has_attached_leading_comment {
                 continue;
             }
             // Check if this section header is followed only by blank lines,

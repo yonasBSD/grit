@@ -366,7 +366,7 @@ pub fn run(args: Args) -> Result<()> {
             ConfigSubcommand::Unset(unset_args) => {
                 cmd_unset(
                     &args, unset_args, scope, &file_path, None,
-                    /* preserve_empty_section_header_on_unset_all */ true,
+                    /* preserve_empty_section_header_on_unset_all */ false,
                 )
             }
             ConfigSubcommand::List(list_args) => {
