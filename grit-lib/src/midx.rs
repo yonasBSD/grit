@@ -900,6 +900,16 @@ impl MidxReuseTables {
         let oid_idx = self.oids.binary_search(oid).ok()?;
         Some(self.oid_idx_to_rank[oid_idx])
     }
+
+    /// MIDX-canonical pack id for `oid` (the single copy the MIDX selected after deduplication),
+    /// or [`None`] if the object is not in this MIDX. Used to reject cross-pack delta reuse: a
+    /// delta is only reusable verbatim when its base resolves to the *same* pack the delta lives
+    /// in, mirroring Git's `midx_pair_to_pack_pos` check in `try_partial_reuse`.
+    #[must_use]
+    pub fn canonical_pack(&self, oid: &ObjectId) -> Option<u32> {
+        let oid_idx = self.oids.binary_search(oid).ok()?;
+        Some(self.pack_and_offset[oid_idx].0)
+    }
 }
 
 /// One pack's slice of the MIDX pseudo-bitmap namespace (`BTMP` chunk).

@@ -495,8 +495,13 @@ fn compute_midx_reused_entries(
                             if base_entry.oid.len() != 20 {
                                 false
                             } else if let Ok(b_oid) = ObjectId::from_bytes(&base_entry.oid) {
-                                global_bitmap_bit_for_oid(&tables, &b_oid)
-                                    .is_some_and(|bb| reuse_bits.contains(&bb))
+                                // Cross-pack delta rejection (Git `try_partial_reuse`): the base must
+                                // be the MIDX's canonical copy in *this* pack. If the MIDX deduped
+                                // the base to a different pack, reuse would emit a delta whose base
+                                // is not in our reuse chunk, so punt to the normal path.
+                                tables.canonical_pack(&b_oid) == Some(pack_id)
+                                    && global_bitmap_bit_for_oid(&tables, &b_oid)
+                                        .is_some_and(|bb| reuse_bits.contains(&bb))
                             } else {
                                 false
                             }
@@ -518,7 +523,10 @@ fn compute_midx_reused_entries(
                                     Err(_) => false,
                                 }
                             } else {
-                                reuse_bits.contains(&bb)
+                                // Cross-pack delta rejection (see OFS case): the REF_DELTA base must
+                                // resolve to the MIDX's canonical copy in this same pack.
+                                tables.canonical_pack(&base_oid) == Some(pack_id)
+                                    && reuse_bits.contains(&bb)
                             }
                         }
                         None => false,
@@ -817,6 +825,10 @@ pub fn run(mut args: Args) -> Result<()> {
         });
         non_blobs.extend(blobs);
         entries = non_blobs;
+        // Git's `compute_write_order` writes commits newest-tip-first (recency order), not in OID
+        // order. The OID-based collection above loses that ordering, so re-derive it from the
+        // first-parent chain. t5332 "middle gap" asserts F precedes E precedes D in the pack.
+        order_all_commits_first_parent_chain(&repo, &mut entries)?;
     }
 
     let max_delta_depth = pack_delta_depth_limit(&args);
@@ -3533,6 +3545,61 @@ fn collect_all_loose_in_dir(objects_dir: &Path, oids: &mut HashSet<ObjectId>) ->
     Ok(())
 }
 
+/// Order commits to the front of `entries` in `rev-list --all` recency order (newest tip first),
+/// preserving the relative order of trees and blobs after them. This mirrors Git's
+/// `compute_write_order`, which writes commits before trees/blobs and visits commits in the
+/// reverse-chronological order produced by the revision walk. Without this, the OID-sorted `--all`
+/// collection writes commits in hash order and fails t5332's "middle gap" position assertions.
+fn order_all_commits_first_parent_chain(
+    repo: &Repository,
+    entries: &mut Vec<PackEntry>,
+) -> Result<()> {
+    let commit_count = entries
+        .iter()
+        .filter(|e| e.kind == ObjectKind::Commit)
+        .count();
+    if commit_count < 2 {
+        return Ok(());
+    }
+
+    // Recency rank from the revision walk: index 0 is the newest tip.
+    let opts = RevListOptions {
+        all_refs: true,
+        missing_action: MissingAction::Allow,
+        ..Default::default()
+    };
+    let walk = match rev_list(repo, &[] as &[String], &[] as &[String], &opts) {
+        Ok(r) => r,
+        Err(_) => return Ok(()),
+    };
+    let mut rank: HashMap<ObjectId, usize> = HashMap::new();
+    for (i, c) in walk.commits.iter().enumerate() {
+        rank.entry(*c).or_insert(i);
+    }
+
+    let mut commits: Vec<PackEntry> = Vec::with_capacity(commit_count);
+    let mut others: Vec<PackEntry> = Vec::with_capacity(entries.len() - commit_count);
+    for e in entries.drain(..) {
+        if e.kind == ObjectKind::Commit {
+            commits.push(e);
+        } else {
+            others.push(e);
+        }
+    }
+    // Any commit missing from the walk (should not happen for a `--all` pack) sorts last but keeps
+    // a stable order via the OID tiebreak.
+    let missing_rank = walk.commits.len();
+    commits.sort_by(|a, b| {
+        let ra = rank.get(&a.oid).copied().unwrap_or(missing_rank);
+        let rb = rank.get(&b.oid).copied().unwrap_or(missing_rank);
+        ra.cmp(&rb).then_with(|| a.oid.cmp(&b.oid))
+    });
+
+    commits.extend(others);
+    *entries = commits;
+    Ok(())
+}
+
 /// For incremental `pack-objects --all --unpacked` with `--window=0`, order commit objects so the
 /// newest tip appears first and the first-parent chain follows (t5332 pack index order).
 fn order_incremental_commits_first_parent_chain(
@@ -3983,12 +4050,16 @@ fn optimize_blob_deltas(
                         continue;
                     }
                     if blobs.len() > 3
-                        && t.data.starts_with(&b.data)
-                        && t.data.len() > b.data.len()
-                        && best_base.is_none_or(|bb| b.data.len() > bb.data.len())
+                        && b.data.starts_with(&t.data)
+                        && b.data.len() > t.data.len()
+                        && best_base.is_none_or(|bb| b.data.len() < bb.data.len())
                     {
+                        // Match Git's `type_size_sort` + `find_deltas` direction: the smaller
+                        // blob deltas against a larger blob that has it as a prefix (the target
+                        // is the delta, the base is larger). Pick the smallest qualifying base
+                        // (closest in size) for the smallest delta, mirroring window proximity.
                         best_base = Some(b);
-                        best_common = b.data.len();
+                        best_common = t.data.len();
                         continue;
                     }
                     if blobs.len() <= 3 {
