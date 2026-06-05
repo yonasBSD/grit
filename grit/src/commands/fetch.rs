@@ -841,7 +841,7 @@ fn parse_git_bool(value: &str) -> Option<bool> {
 /// The repository default branch name (Git `repo_default_branch_name`): `init.defaultBranch`
 /// config when set and valid, otherwise `master`. Used to pick the branch a `#frag`-less
 /// `.git/branches/<name>` remote fetches.
-fn repo_default_branch_name(config: &ConfigSet) -> String {
+pub fn repo_default_branch_name(config: &ConfigSet) -> String {
     if let Ok(env) = std::env::var("GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME") {
         let env = env.trim();
         if !env.is_empty() {

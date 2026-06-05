@@ -546,6 +546,9 @@ fn cmd_remove(rest: &[String]) -> Result<()> {
     let config_path = git_dir.join("config");
     let mut config_file = load_or_create_config_file(&config_path)?;
     unset_branch_remote_for(&mut config_file, name)?;
+    // Git's `rm` calls `handle_push_default(name, NULL)`: a *local* `remote.pushDefault` that names
+    // the removed remote is unset (global/system pushDefault is left untouched).
+    unset_local_push_default_if(&mut config_file, name)?;
     let section = format!("remote.{name}");
     if !config_file.remove_section(&section)? {
         return Err(anyhow::Error::new(ExplicitExit {
@@ -704,6 +707,69 @@ fn reverse_map_src(dst_pat: &str, src_pat: &str, local_ref: &str) -> Option<Stri
     None
 }
 
+/// Migrate a legacy `$GIT_DIR/remotes/<name>` or `$GIT_DIR/branches/<name>` remote into config
+/// (Git's `migrate_file`): write `remote.<name>.{url,push,fetch}` then unlink the source file.
+fn migrate_remote_file(git_dir: &Path, name: &str) -> Result<()> {
+    let remotes_file = git_dir.join("remotes").join(name);
+    let branches_file = git_dir.join("branches").join(name);
+
+    let (url, push, fetch): (Vec<String>, Vec<String>, Vec<String>) = if remotes_file.is_file() {
+        // `$GIT_DIR/remotes/<name>`: `URL:`, `Push:`, `Pull:` lines.
+        let content = std::fs::read_to_string(&remotes_file).context("reading remotes file")?;
+        let mut url = Vec::new();
+        let mut push = Vec::new();
+        let mut fetch = Vec::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("URL:") {
+                url.push(rest.trim().to_owned());
+            } else if let Some(rest) = line.strip_prefix("Push:") {
+                push.push(rest.trim().to_owned());
+            } else if let Some(rest) = line.strip_prefix("Pull:") {
+                fetch.push(rest.trim().to_owned());
+            }
+        }
+        (url, push, fetch)
+    } else {
+        // `$GIT_DIR/branches/<name>`: a single `url` or `url#branch` line.
+        let raw = std::fs::read_to_string(&branches_file).context("reading branches file")?;
+        let line = raw.lines().next().unwrap_or("").trim().to_owned();
+        let (url_part, frag) = match line.split_once('#') {
+            Some((u, b)) => (u.trim().to_owned(), b.trim().to_owned()),
+            None => {
+                let cfg = load_local_config(git_dir)?;
+                (
+                    line.clone(),
+                    crate::commands::fetch::repo_default_branch_name(&cfg),
+                )
+            }
+        };
+        let fetch = vec![format!("refs/heads/{frag}:refs/heads/{name}")];
+        let push = vec![format!("HEAD:refs/heads/{frag}")];
+        (vec![url_part], push, fetch)
+    };
+
+    let config_path = git_dir.join("config");
+    let mut config_file = load_or_create_config_file(&config_path)?;
+    for u in &url {
+        config_file.add_value(&format!("remote.{name}.url"), u)?;
+    }
+    for p in &push {
+        config_file.add_value(&format!("remote.{name}.push"), p)?;
+    }
+    for f in &fetch {
+        config_file.add_value(&format!("remote.{name}.fetch"), f)?;
+    }
+    config_file.write().context("writing config")?;
+
+    if remotes_file.is_file() {
+        let _ = std::fs::remove_file(&remotes_file);
+    } else {
+        let _ = std::fs::remove_file(&branches_file);
+    }
+    Ok(())
+}
+
 fn cmd_rename(rest: &[String], _from_add: bool) -> Result<()> {
     let mut i = 0usize;
     let mut show_progress = false;
@@ -721,11 +787,22 @@ fn cmd_rename(rest: &[String], _from_add: bool) -> Result<()> {
     let new = rest[1].clone();
     let git_dir = resolve_git_dir()?;
     let config = load_local_config(&git_dir)?;
-    if !remote_section_exists(&config, &old) {
+
+    // A remote may be configured via `remote.<name>.*` config OR a legacy `$GIT_DIR/remotes/<name>`
+    // / `$GIT_DIR/branches/<name>` file. Renaming a file-based remote to its own name migrates it
+    // into config (Git's `migrate_file`).
+    let in_config = remote_section_exists(&config, &old);
+    let remotes_file = git_dir.join("remotes").join(&old);
+    let branches_file = git_dir.join("branches").join(&old);
+    let from_file = remotes_file.is_file() || branches_file.is_file();
+    if !in_config && !from_file {
         return Err(anyhow::Error::new(ExplicitExit {
             code: 2,
             message: format!("error: No such remote: '{old}'"),
         }));
+    }
+    if old == new && !in_config && from_file {
+        return migrate_remote_file(&git_dir, &old);
     }
     // Git's collision check uses `remote_is_configured(..., in_repo=1)`: a remote that exists only
     // via global/system config (e.g. a stray `remote.<new>.prune`) does not block the rename.
@@ -1030,6 +1107,23 @@ fn update_push_default_if_local(config_file: &mut ConfigFile, old: &str, new: &s
     {
         // Preserve Git's camelCase variable name `pushDefault` (t5505 greps for it).
         config_file.set("remote.pushDefault", new)?;
+    }
+    Ok(())
+}
+
+/// Unset the repository-local `remote.pushDefault` when it names `remote` (Git's
+/// `handle_push_default(remote, NULL)` for `git remote remove`).
+fn unset_local_push_default_if(config_file: &mut ConfigFile, remote: &str) -> Result<()> {
+    let key = "remote.pushdefault";
+    let matches = config_file
+        .entries
+        .iter()
+        .rev()
+        .find(|e| e.key == key)
+        .and_then(|e| e.value.as_deref())
+        == Some(remote);
+    if matches {
+        let _ = config_file.unset(key);
     }
     Ok(())
 }
