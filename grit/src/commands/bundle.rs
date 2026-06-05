@@ -989,8 +989,12 @@ fn print_bundle_verify_info(header: &BundleHeader) {
         1 => println!("The bundle requires this ref:"),
         n => println!("The bundle requires these {n} refs:"),
     }
-    for (oid, comment) in &header.prerequisites {
-        println!("{} {comment}", oid.to_hex());
+    for (oid, _comment) in &header.prerequisites {
+        // Git stores prerequisites with an empty display name (the subject after
+        // the oid is kept only for connectivity diagnostics, not listing), so
+        // `bundle verify` prints "<oid> " with a trailing space (bundle.c
+        // `list_refs`). Match that exactly.
+        println!("{} ", oid.to_hex());
     }
     let display_hash = std::env::var("GIT_DEFAULT_HASH").unwrap_or_default();
     println!("The bundle uses this hash algorithm: {display_hash}");
