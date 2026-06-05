@@ -27,7 +27,7 @@ Posts live as Markdown files under `content/blog/`. Running:
 python3 scripts/blog.py
 ```
 
-renders the blog index, each post page, and RSS plus Atom feeds into `docs/blog/` for static hosting.
+renders the blog index, each post page, and a content-encoded `feed.xml` into `docs/blog/` for static hosting.
 
 ## What comes next
 

@@ -193,7 +193,7 @@ def load_posts() -> list[Post]:
     return sorted(posts, key=lambda p: (p.published, p.slug), reverse=True)
 
 
-def page_shell(title: str, description: str, body: str, base: str, blog_href: str, rss_href: str, atom_href: str, extra_head: str = "") -> str:
+def page_shell(title: str, description: str, body: str, base: str, blog_href: str, feed_href: str, extra_head: str = "") -> str:
     home_href = f"{base}/" if base != "." else "./"
     logo_href = f"{base}/grit-logo.svg"
     return f"""<!doctype html>
@@ -203,15 +203,15 @@ def page_shell(title: str, description: str, body: str, base: str, blog_href: st
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
 <title>{html.escape(title)}</title>
 <meta name=\"description\" content=\"{html.escape(description, quote=True)}\" />
-<link rel=\"alternate\" type=\"application/rss+xml\" title=\"Grit blog RSS\" href=\"{rss_href}\" />
-<link rel=\"alternate\" type=\"application/atom+xml\" title=\"Grit blog Atom\" href=\"{atom_href}\" />
+<link rel=\"alternate\" type=\"application/rss+xml\" title=\"Grit blog feed\" href=\"{feed_href}\" />
+<script async src=\"https://u.gitbutler.com/script.js\" data-website-id=\"2c6f680c-eaf5-4cd7-a419-1032ffab6bbc\"></script>
 {extra_head}
 <style>{CSS}</style>
 </head>
 <body>
 <header class=\"site-header\">
   <a class=\"brand\" href=\"{home_href}\"><img src=\"{logo_href}\" alt=\"\" /> <span><span>the</span> <strong>Grit</strong> <span>project</span></span></a>
-  <nav aria-label=\"Primary\"><a href=\"{blog_href}\">Blog</a><a href=\"{rss_href}\">RSS</a></nav>
+  <nav aria-label=\"Primary\"><a href=\"{blog_href}\">Blog</a><a href=\"{feed_href}\">RSS</a></nav>
 </header>
 {body}
 </body>
@@ -232,7 +232,7 @@ def render_index(posts: list[Post]) -> str:
   </section>
   <ol class=\"post-list\">{rows}</ol>
 </main>"""
-    return page_shell(f"Blog - {SITE_TITLE}", BLOG_DESCRIPTION, body, "..", "./", "rss.xml", "atom.xml", '<link rel="canonical" href="./" />')
+    return page_shell(f"Blog - {SITE_TITLE}", BLOG_DESCRIPTION, body, "..", "./", "feed.xml", '<link rel="canonical" href="./" />')
 
 
 def render_post(post: Post) -> str:
@@ -249,54 +249,34 @@ def render_post(post: Post) -> str:
   <aside class=\"toc\" aria-label=\"On this page\"><h2>On this page</h2><ol>{toc}</ol></aside>
 </main>"""
     extra = f'<link rel="canonical" href="./" />\n<meta property="og:title" content="{html.escape(post.title, quote=True)}" />'
-    return page_shell(f"{post.title} - {SITE_TITLE}", post.summary or BLOG_DESCRIPTION, body, "../..", "../", "../rss.xml", "../atom.xml", extra)
+    return page_shell(f"{post.title} - {SITE_TITLE}", post.summary or BLOG_DESCRIPTION, body, "../..", "../", "../feed.xml", extra)
 
 
-def render_rss(posts: list[Post]) -> str:
+def render_feed(posts: list[Post]) -> str:
     items = "\n".join(f"""  <item>
     <title>{xml_escape(post.title)}</title>
     <link>{SITE_URL}/{post.url}</link>
-    <guid>{SITE_URL}/{post.url}</guid>
+    <guid isPermaLink=\"true\">{SITE_URL}/{post.url}</guid>
     <pubDate>{post.rfc822_date}</pubDate>
     <description>{xml_escape(post.summary)}</description>
+    <content:encoded><![CDATA[{post.body_html}]]></content:encoded>
   </item>""" for post in posts)
     latest = posts[0].rfc822_date if posts else email.utils.format_datetime(datetime.now(timezone.utc))
     return f"""<?xml version=\"1.0\" encoding=\"utf-8\"?>
-<rss version=\"2.0\"><channel>
+<rss version=\"2.0\" xmlns:content=\"http://purl.org/rss/1.0/modules/content/\">
+<channel>
   <title>{xml_escape(BLOG_TITLE)}</title>
   <link>{SITE_URL}/blog/</link>
   <description>{xml_escape(BLOG_DESCRIPTION)}</description>
   <lastBuildDate>{latest}</lastBuildDate>
 {items}
-</channel></rss>
-"""
-
-
-def render_atom(posts: list[Post]) -> str:
-    updated = posts[0].iso_datetime if posts else datetime.now(timezone.utc).isoformat()
-    entries = "\n".join(f"""  <entry>
-    <title>{xml_escape(post.title)}</title>
-    <link href=\"{SITE_URL}/{post.url}\" />
-    <id>{SITE_URL}/{post.url}</id>
-    <updated>{post.iso_datetime}</updated>
-    <published>{post.iso_datetime}</published>
-    <author><name>{xml_escape(post.author)}</name></author>
-    <summary>{xml_escape(post.summary)}</summary>
-  </entry>""" for post in posts)
-    return f"""<?xml version=\"1.0\" encoding=\"utf-8\"?>
-<feed xmlns=\"http://www.w3.org/2005/Atom\">
-  <title>{xml_escape(BLOG_TITLE)}</title>
-  <link href=\"{SITE_URL}/blog/\" />
-  <link rel=\"self\" href=\"{SITE_URL}/blog/atom.xml\" />
-  <id>{SITE_URL}/blog/</id>
-  <updated>{updated}</updated>
-{entries}
-</feed>
+</channel>
+</rss>
 """
 
 
 CSS = r'''
-:root{--bg:#f8f2e8;--ink:#211711;--muted:#736961;--line:#e2d6c7;--accent:#b64729;--paper:#fff9f1;--code:#f3e8de}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16px;line-height:1.65}.site-header{height:4.8rem;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 2.4rem}.brand{display:flex;align-items:center;gap:.65rem;color:var(--ink);font-size:1rem;font-weight:720;text-decoration:none}.brand img{width:2.25rem;height:2.25rem}.brand span span{color:#645a52;font-weight:650}.brand strong{color:var(--ink)}nav{display:flex;gap:1.55rem;font-size:.95rem}nav a,.content a,.breadcrumb a{color:var(--accent);text-decoration:none}.blog-index{max-width:58rem;margin:0 auto;padding:3.4rem 2rem}.hero{text-align:center;max-width:40rem;margin:0 auto 2.4rem}.eyebrow,.toc h2{text-transform:uppercase;letter-spacing:.24em;color:var(--accent);font:700 .72rem/1 ui-monospace,SFMono-Regular,Menlo,monospace}.hero h1{font:800 clamp(2rem,4.2vw,3.35rem)/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.05em;margin:.75rem 0;color:var(--ink)}.hero p:not(.eyebrow){font-size:1.08rem;color:#534941}.post-list{list-style:none;margin:0 auto;padding:0;max-width:50rem;border-top:1px solid var(--line)}.post-list li{display:flex;gap:1.2rem;border-bottom:1px solid var(--line);padding:.78rem 0;font:700 .88rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}.post-list time{color:#837a72;min-width:8.8rem}.post-list a{color:var(--accent);text-decoration:none}.post-layout{display:grid;grid-template-columns:minmax(0,1fr) 14rem;gap:3rem;max-width:76rem;margin:0 auto;padding:3.2rem 3rem}.post{max-width:48rem}.breadcrumb{font:700 .86rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#837a72;margin:0 0 1.25rem}.post>h1{font:850 clamp(2rem,3.8vw,3.25rem)/1.04 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.055em;margin:0 0 1.6rem}.dek{font-size:1.08rem;color:#584d45}.content h2{font-size:1.35rem;line-height:1.25;margin:2.7rem 0 .8rem}.content h3{font-size:1.08rem;margin:2rem 0 .6rem}.content p{margin:0 0 1.25rem;color:#51473f}.content ul,.content ol{color:#51473f;margin:0 0 1.25rem 1.1rem}.content code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);border:1px solid #ded0c4;border-radius:.35rem;padding:.04rem .28rem}.content pre{background:#fff6ee;border:1px solid #ded0c4;border-radius:.7rem;padding:1rem;margin:1.4rem 0;overflow:auto}.content pre code{background:transparent;border:0;padding:0}.content blockquote{border-left:3px solid var(--accent);margin:1.4rem 0;padding:.2rem 0 .2rem 1rem;color:#5c5148}.toc{position:sticky;top:1.5rem;align-self:start;border-left:1px solid var(--line);padding-left:1.1rem;font:700 .82rem/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:#81776f}.toc h2{color:#81776f;margin:0 0 1rem}.toc ol{list-style:none;margin:0;padding:0}.toc li{margin:0 0 .75rem}.toc a{color:#81776f;text-decoration:none}.toc-level-3{padding-left:.8rem}@media(max-width:900px){.site-header{padding:0 1.2rem}.post-layout{display:block;padding:2rem 1.25rem}.toc{position:static;border-left:0;border-top:1px solid var(--line);margin-top:2.2rem;padding:1.25rem 0 0}.blog-index{padding:2.6rem 1.25rem}.post-list li{display:block}.post-list time{display:block;margin-bottom:.25rem}.post>h1{font-size:2.15rem}}
+:root{--bg:#f8f2e8;--ink:#211711;--muted:#736961;--line:#e2d6c7;--accent:#b64729;--paper:#fff9f1;--code:#f3e8de}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16px;line-height:1.65}.site-header{height:4.8rem;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 2.4rem}.brand{display:flex;align-items:center;gap:.65rem;color:var(--ink);font-size:1rem;font-weight:720;text-decoration:none}.brand img{width:2.25rem;height:2.25rem}.brand span span{color:#645a52;font-weight:650}.brand strong{color:var(--ink)}nav{display:flex;gap:1.55rem;font-size:.95rem}nav a,.content a,.breadcrumb a{color:var(--accent);text-decoration:none}.blog-index{max-width:72rem;margin:0 auto;padding:3.4rem 2rem}.hero{text-align:center;max-width:none;margin:0 auto 2.4rem}.eyebrow,.toc h2{text-transform:uppercase;letter-spacing:.24em;color:var(--accent);font:700 .72rem/1 ui-monospace,SFMono-Regular,Menlo,monospace}.hero h1{font:800 clamp(2rem,4.8vw,3.6rem)/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.05em;margin:.75rem 0;color:var(--ink);white-space:nowrap}.hero p:not(.eyebrow){font-size:1.08rem;color:#534941;white-space:nowrap}.post-list{list-style:none;margin:0 auto;padding:0;max-width:50rem;border-top:1px solid var(--line)}.post-list li{display:flex;gap:1.2rem;border-bottom:1px solid var(--line);padding:.78rem 0;font:700 .88rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}.post-list time{color:#837a72;min-width:8.8rem}.post-list a{color:var(--accent);text-decoration:none}.post-layout{display:grid;grid-template-columns:minmax(0,1fr) 14rem;gap:3rem;max-width:76rem;margin:0 auto;padding:3.2rem 3rem}.post{max-width:48rem}.breadcrumb{font:700 .86rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#837a72;margin:0 0 1.25rem}.post>h1{font:850 clamp(2rem,3.8vw,3.25rem)/1.04 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.055em;margin:0 0 1.6rem}.dek{font-size:1.08rem;color:#584d45}.content h2{font-size:1.35rem;line-height:1.25;margin:2.7rem 0 .8rem}.content h3{font-size:1.08rem;margin:2rem 0 .6rem}.content p{margin:0 0 1.25rem;color:#51473f}.content ul,.content ol{color:#51473f;margin:0 0 1.25rem 1.1rem}.content code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);border:1px solid #ded0c4;border-radius:.35rem;padding:.04rem .28rem}.content pre{background:#fff6ee;border:1px solid #ded0c4;border-radius:.7rem;padding:1rem;margin:1.4rem 0;overflow:auto}.content pre code{background:transparent;border:0;padding:0}.content blockquote{border-left:3px solid var(--accent);margin:1.4rem 0;padding:.2rem 0 .2rem 1rem;color:#5c5148}.toc{position:sticky;top:1.5rem;align-self:start;border-left:1px solid var(--line);padding-left:1.1rem;font:700 .82rem/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:#81776f}.toc h2{color:#81776f;margin:0 0 1rem}.toc ol{list-style:none;margin:0;padding:0}.toc li{margin:0 0 .75rem}.toc a{color:#81776f;text-decoration:none}.toc-level-3{padding-left:.8rem}@media(max-width:900px){.site-header{padding:0 1.2rem}.post-layout{display:block;padding:2rem 1.25rem}.toc{position:static;border-left:0;border-top:1px solid var(--line);margin-top:2.2rem;padding:1.25rem 0 0}.blog-index{padding:2.6rem 1.25rem}.post-list li{display:block}.post-list time{display:block;margin-bottom:.25rem}.post>h1{font-size:2.15rem}}
 '''
 
 
@@ -306,8 +286,7 @@ def main() -> None:
         shutil.rmtree(OUT_DIR)
     OUT_DIR.mkdir(parents=True)
     (OUT_DIR / "index.html").write_text(render_index(posts), encoding="utf-8")
-    (OUT_DIR / "rss.xml").write_text(render_rss(posts), encoding="utf-8")
-    (OUT_DIR / "atom.xml").write_text(render_atom(posts), encoding="utf-8")
+    (OUT_DIR / "feed.xml").write_text(render_feed(posts), encoding="utf-8")
     for post in posts:
         post_dir = OUT_DIR / post.slug
         post_dir.mkdir(parents=True)

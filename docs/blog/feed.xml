@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+<channel>
+  <title>project notes from Grit</title>
+  <link>https://grit-scm.com/blog/</link>
+  <description>Short deep dives into building a Git-compatible, library-oriented Rust implementation.</description>
+  <lastBuildDate>Fri, 05 Jun 2026 00:00:00 +0000</lastBuildDate>
+  <item>
+    <title>Introducing the Grit project blog</title>
+    <link>https://grit-scm.com/blog/introducing-grit/</link>
+    <guid isPermaLink="true">https://grit-scm.com/blog/introducing-grit/</guid>
+    <pubDate>Fri, 05 Jun 2026 00:00:00 +0000</pubDate>
+    <description>Notes from the effort to rebuild Git as an idiomatic Rust library.</description>
+    <content:encoded><![CDATA[<p>Welcome to the Grit project blog. This is where we will publish short notes about implementation details, compatibility work, and the strange corners of Git that become clearer when you rebuild them from scratch.</p>
+<h2 id="why-a-blog">Why a blog?</h2>
+<p>Grit is both a command-line tool and a library-oriented reimplementation of Git. The test suite tells us what works, but it does not always explain why a behavior exists or how the Rust API should expose it.</p>
+<p>These posts are a place for that connective tissue:</p>
+<ul>
+<li>design notes for library boundaries,</li>
+<li>writeups for tricky upstream tests,</li>
+<li>explanations of Git file formats, and</li>
+<li>progress updates that need more room than a dashboard card.</li>
+</ul>
+<h2 id="how-posts-are-built">How posts are built</h2>
+<p>Posts live as Markdown files under <code>content/blog/</code>. Running:</p>
+<pre><code>python3 scripts/blog.py</code></pre>
+<p>renders the blog index, each post page, and a content-encoded <code>feed.xml</code> into <code>docs/blog/</code> for static hosting.</p>
+<h2 id="what-comes-next">What comes next</h2>
+<p>Expect focused posts about object storage, refs, the index, merges, and the long tail of porcelain behavior needed to pass the upstream Git test suite.</p>]]></content:encoded>
+  </item>
+</channel>
+</rss>
