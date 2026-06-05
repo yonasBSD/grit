@@ -65,3 +65,29 @@ and the CLI `../.git` url cases (main/br-unconfig + tag args). Investigating.
 
 Progress 43/65 -> 51/65. Remaining 14: all CLI `../.git` url cases (main/br-unconfig with
 positional refspec / --tags / tag args). Investigating.
+
+## Round 4 — FULLY PASSING 65/65
+
+10. **Anonymous URL fetch with no refspec**: `git fetch ../.git` synthesized a default tracking
+    refspec `refs/remotes/<url>/*` (writing broken `refs/.git/*` refs). Now no opportunistic
+    tracking refspec is synthesized for URL fetches; only HEAD lands in FETCH_HEAD (bare-URL line).
+
+11. **Tag auto-follow with dst-less CLI refspecs**: `git fetch ../.git one` auto-followed tags it
+    shouldn't. Git only auto-follows tags when a fetched refspec has a destination (`autotags`).
+    Added `cli_refspecs_have_dst` gating to `should_fetch_tags`.
+
+12. **`tag <name>` CLI refspecs**: emitted a mislabeled `branch '<name>'` duplicate. Now skip the
+    branch-style line for `refs/tags/*` srcs (the dedicated CLI-tag block emits `tag '<name>'`),
+    and auto-followed (non-requested) tags are emitted as not-for-merge alongside.
+
+13. **Non-commit for-merge downgrade**: tags pointing at trees/blobs (`tag-one-tree`,
+    `tag-three-file`) must be not-for-merge (Git `write_fetch_head` downgrades when the object is
+    not a commit). Added `downgrade_non_commit_for_merge_lines`.
+
+14. **Tag FETCH_HEAD ordering**: tags now keep emission order (explicit CLI tags first, then
+    auto-followed) instead of being name-sorted, via a stable Equal compare in
+    `sort_fetch_head_lines`.
+
+FINAL: 65/65 passing. No regressions in t5510/t5514/t5503/t5582/t5511/t5536 (all still fully pass);
+t5505 went 67->68. The only failing grit-lib unit tests (ignore::gitignore_glob_tests x2) are
+pre-existing and unrelated to fetch.

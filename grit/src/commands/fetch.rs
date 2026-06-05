@@ -1795,11 +1795,21 @@ fn fetch_remote(
     let fetch_head_refspecs = refspecs.clone();
 
     let tagopt_remote = effective_tracking_remote.as_deref().unwrap_or(remote_name);
+    // Git auto-follows tags (`TAGS_DEFAULT`) only when at least one refspec being fetched has a
+    // destination (`autotags` in `get_ref_map`). Explicit CLI refspecs without a colon/dst
+    // (`git fetch ../.git one`) set no autotags, so no tags are auto-followed (t5515 `main ../.git
+    // one`). `--tags` always follows; `--no-tags` / tagopt overrides still apply.
+    let cli_refspecs_have_dst = cli_refspecs.iter().any(|spec| {
+        let spec = spec.strip_prefix('+').unwrap_or(spec);
+        spec.split_once(':').is_some_and(|(_, dst)| !dst.is_empty())
+    });
     let should_fetch_tags = if args.tags {
         true
     } else if args.no_tags {
         false
     } else if implicit_path_fetch {
+        false
+    } else if user_passed_cli_refspecs && !cli_refspecs_have_dst {
         false
     } else {
         let tagopt_key = format!("remote.{tagopt_remote}.tagopt");
@@ -2587,12 +2597,19 @@ fn fetch_remote(
             } else {
                 src.as_str()
             };
-            fetch_head_entries.push(fetch_head_branch_line(
-                &remote_oid,
-                branch_label,
-                &display_url,
-                dst.is_empty(),
-            ));
+            // A `tag <name>` CLI argument (`refs/tags/<name>:refs/tags/<name>`) is rendered as a
+            // `tag '<name>'` FETCH_HEAD line, not a branch line. The dedicated CLI-tag block below
+            // owns those lines, so skip emitting the branch-style line here to avoid a mislabeled
+            // duplicate (t5515 `... tag tag-one tag tag-three`). Other CLI refspecs emit a branch
+            // line as before.
+            if !src.starts_with("refs/tags/") {
+                fetch_head_entries.push(fetch_head_branch_line(
+                    &remote_oid,
+                    branch_label,
+                    &display_url,
+                    dst.is_empty(),
+                ));
+            }
             if args.set_upstream {
                 if let Some(remote_ref_name) = resolved_remote_ref.as_deref() {
                     if remote_ref_name.starts_with("refs/heads/") {
@@ -2914,6 +2931,11 @@ fn fetch_remote(
             primary =
                 if (legacy_remote.is_some() || branches_remote.is_some()) && !refspecs.is_empty() {
                     refspecs.clone()
+                } else if url_override.is_some() {
+                    // Anonymous URL/path fetch (`git fetch ../.git`) with no refspec: Git performs no
+                    // opportunistic remote-tracking updates. Never synthesize `refs/remotes/<url>/*`,
+                    // which would write malformed refs from the URL path (t5515 `main ../.git`).
+                    Vec::new()
                 } else {
                     default_fetch_refspecs(remote_name)
                 };
@@ -3244,6 +3266,8 @@ fn fetch_remote(
         // replace those with Git-shaped `tag 'name'` lines.
         fetch_head_entries.retain(|line| !line.contains("refs/tags/"));
         let remote_repo_for_tags = ext_resolved_remote.as_ref().or(remote_repo.as_ref());
+        let mut explicit_tag_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for spec in cli_refspecs {
             if spec.starts_with('^') {
                 continue;
@@ -3269,12 +3293,30 @@ fn fetch_remote(
             } else {
                 bail!("CLI refspec fetch requires a local remote repository");
             };
+            explicit_tag_names.insert(tag_name.to_owned());
             fetch_head_entries.push(fetch_head_tag_line(
                 &remote_oid,
                 tag_name,
                 &display_url,
                 true,
             ));
+        }
+        // When a CLI tag refspec (which has a destination) triggers tag auto-following, the
+        // remaining auto-followed tags appear as not-for-merge FETCH_HEAD lines (t5515
+        // `... tag tag-one tag tag-three`).
+        if should_fetch_tags {
+            for (refname, remote_oid) in &remote_tags {
+                let tag_name = refname.strip_prefix("refs/tags/").unwrap_or(refname);
+                if explicit_tag_names.contains(tag_name) {
+                    continue;
+                }
+                fetch_head_entries.push(fetch_head_tag_line(
+                    remote_oid,
+                    tag_name,
+                    &display_url,
+                    false,
+                ));
+            }
         }
     } else if should_fetch_tags && (!implicit_path_fetch || args.tags) {
         for (refname, remote_oid) in &remote_tags {
@@ -3492,6 +3534,9 @@ fn fetch_remote(
     }
 
     if !fetch_head_entries.is_empty() {
+        if let Ok(local_repo) = Repository::open(git_dir, None) {
+            downgrade_non_commit_for_merge_lines(&mut fetch_head_entries, &local_repo);
+        }
         sort_fetch_head_lines(&mut fetch_head_entries, &fetch_head_refspecs);
         if args.atomic {
             if let Err(err) = apply_pending_ref_ops_atomic(git_dir, &pending_atomic_ref_ops) {
@@ -7069,6 +7114,33 @@ fn fetch_head_line_has_not_for_merge(line: &str) -> bool {
     line.contains("not-for-merge")
 }
 
+/// Downgrade for-merge FETCH_HEAD lines whose object does not resolve to a commit to
+/// `not-for-merge`, mirroring Git's `write_fetch_head` classification (`builtin/fetch.c`:
+/// `lookup_commit_reference_gently` failure -> `FETCH_HEAD_NOT_FOR_MERGE`). This keeps tags that
+/// point at trees/blobs (t5515 `tag-one-tree`, `tag-three-file`) out of the merge set.
+fn downgrade_non_commit_for_merge_lines(lines: &mut [String], repo: &Repository) {
+    for line in lines.iter_mut() {
+        // For-merge lines have an empty middle field, i.e. `<oid>\t\t<desc>`.
+        let Some((oid_hex, after)) = line.split_once('\t') else {
+            continue;
+        };
+        if !after.starts_with('\t') {
+            // Already `not-for-merge` (non-empty middle field) or a bare-URL line.
+            continue;
+        }
+        let Ok(oid) = ObjectId::from_hex(oid_hex) else {
+            continue;
+        };
+        let is_commit = grit_lib::rev_parse::try_peel_to_commit_for_merge_base(repo, oid)
+            .ok()
+            .flatten()
+            .is_some();
+        if !is_commit {
+            *line = format!("{oid_hex}\tnot-for-merge\t{}", &after[1..]);
+        }
+    }
+}
+
 fn fetch_head_parse_name(line: &str) -> Option<(bool, String)> {
     if let Some(idx) = line.find("branch '") {
         let rest = &line[idx + "branch '".len()..];
@@ -7118,7 +7190,11 @@ fn sort_fetch_head_lines(lines: &mut [String], refspecs: &[FetchRefspec]) {
                             let ib = branch_refspec_index(&nb, refspecs);
                             ia.cmp(&ib).then_with(|| na.cmp(&nb))
                         } else {
-                            na.cmp(&nb)
+                            // Tags keep their emission order (explicitly-requested CLI tags first,
+                            // then auto-followed tags), matching Git's fetch-map order. `sort_by` is
+                            // stable, so returning Equal preserves insertion order (t5515 `... tag
+                            // tag-one-tree tag tag-three-file`).
+                            std::cmp::Ordering::Equal
                         }
                     })
                 }
