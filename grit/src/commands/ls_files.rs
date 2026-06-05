@@ -416,6 +416,16 @@ pub fn run(args: Args) -> Result<()> {
             && !args.unmerged
             && !args.killed
             && !args.resolve_undo);
+    if args.sparse && (args.deleted || args.modified) && !show_cached {
+        index
+            .expand_sparse_directory_placeholders(&repo.odb)
+            .context("expanding sparse index for working-tree comparison")?;
+        grit_lib::sparse_checkout::clear_skip_worktree_from_present_files(
+            &repo.git_dir,
+            work_tree,
+            &mut index,
+        );
+    }
     let show_stage = args.stage || args.unmerged;
     // Match git ls-files.c: --deduplicate is ignored with -t/-s/-u (show_tag/show_stage).
     let dedup_paths = args.deduplicate && !args.show_tag && !show_stage;

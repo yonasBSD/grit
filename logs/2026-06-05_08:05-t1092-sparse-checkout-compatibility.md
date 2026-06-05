@@ -104,3 +104,9 @@
   no expanded sparse path became present/non-skip-worktree.
 - Direct `--run=1,15` passes, and canonical harness:
   `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh` -> `90/106`.
+- Subtest 71 (`ls-files`) failed for `ls-files --sparse --modified` after materializing and editing
+  `folder1/a` outside the sparse cone. Sparse ls-files now expands placeholders only for the
+  working-tree comparison modes (`--modified`/`--deleted`) and clears skip-worktree for present
+  files before comparing stats, while plain `ls-files --sparse` still preserves placeholders.
+- Direct `--run=1,71` passes, and canonical harness:
+  `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh` -> `91/106`.
