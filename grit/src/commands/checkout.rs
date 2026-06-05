@@ -24,6 +24,7 @@ use grit_lib::diff::{read_submodule_head_oid, stat_matches};
 use grit_lib::error::Error as LibError;
 use grit_lib::filter_process::{self, DelayedCheckoutError, DelayedProcessCheckout};
 use grit_lib::hooks::{run_hook, run_reference_transaction_committed_for_head_update, HookResult};
+use grit_lib::ignore::path_in_sparse_checkout as path_in_sparse_checkout_lines;
 use grit_lib::index::{
     entry_from_stat, normalize_mode, Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_SYMLINK,
 };
@@ -41,7 +42,10 @@ use grit_lib::rev_parse::{
     abbreviate_object_id, peel_to_tree, resolve_revision, resolve_revision_without_index_dwim,
     resolve_upstream_symbolic_name, upstream_suffix_info,
 };
-use grit_lib::sparse_checkout::apply_sparse_checkout_skip_worktree;
+use grit_lib::sparse_checkout::{
+    apply_sparse_checkout_skip_worktree, effective_cone_mode_for_sparse_file,
+    parse_sparse_checkout_file, path_in_sparse_checkout_patterns,
+};
 use grit_lib::state::{resolve_head, HeadState};
 use grit_lib::submodule_gitdir::{submodule_modules_git_dir, validate_submodule_path};
 use grit_lib::write_tree::{build_cache_tree_from_index, write_tree_from_index};
@@ -5310,6 +5314,7 @@ fn checkout_patch_inner(
 
     let cwd = std::env::current_dir().context("resolving cwd")?;
     let index_path = repo.index_path();
+    let raw_index = Index::load(&index_path).unwrap_or_else(|_| Index::new());
     let mut index = repo.load_index_at(&index_path).context("loading index")?;
 
     let filter_paths: Vec<String> = paths
@@ -5435,6 +5440,19 @@ fn checkout_patch_inner(
 
     if file_diffs.is_empty() {
         return Ok(());
+    }
+
+    if !worktree_only
+        && matches!(patch_mode, PatchMode::HeadTree | PatchMode::OtherTree)
+        && file_diffs
+            .iter()
+            .any(|(path, source_data, staged_data, _, _)| {
+                staged_data != source_data
+                    && (path_under_sparse_index_dir(&raw_index, path)
+                        || path_outside_sparse_definition_for_patch(repo, path))
+            })
+    {
+        emit_index_trace_region_for_patch("ensure_full_index");
     }
 
     file_diffs.sort_by(|a, b| a.0.cmp(&b.0));
@@ -7513,6 +7531,57 @@ fn glob_matches_inner(pattern: &[u8], path: &[u8]) -> bool {
     }
 
     pi == pattern.len()
+}
+
+fn emit_index_trace_region_for_patch(label: &str) {
+    if let Ok(trace2_event) = std::env::var("GIT_TRACE2_EVENT") {
+        if !trace2_event.trim().is_empty() {
+            let _ = crate::trace2_region_json(&trace2_event, "index", label);
+        }
+    }
+}
+
+fn path_under_sparse_index_dir(index: &Index, path: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    index
+        .entries
+        .iter()
+        .filter(|entry| entry.stage() == 0 && entry.is_sparse_directory_placeholder())
+        .filter_map(|entry| std::str::from_utf8(&entry.path).ok())
+        .map(|prefix| prefix.trim_end_matches('/'))
+        .any(|prefix| {
+            let prefix_slash = format!("{prefix}/");
+            path == prefix || path.starts_with(&prefix_slash)
+        })
+}
+
+fn path_outside_sparse_definition_for_patch(repo: &Repository, path: &str) -> bool {
+    let Ok(config) = ConfigSet::load(Some(&repo.git_dir), true) else {
+        return false;
+    };
+    let sparse_enabled = config
+        .get("core.sparseCheckout")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !sparse_enabled {
+        return false;
+    }
+    let patterns = std::fs::read_to_string(repo.git_dir.join("info").join("sparse-checkout"))
+        .map(|content| parse_sparse_checkout_file(&content))
+        .unwrap_or_default();
+    if patterns.is_empty() {
+        return false;
+    }
+    let cone_cfg = config
+        .get("core.sparseCheckoutCone")
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(true);
+    let in_sparse = if effective_cone_mode_for_sparse_file(cone_cfg, &patterns) {
+        path_in_sparse_checkout_patterns(path, &patterns, true)
+    } else {
+        path_in_sparse_checkout_lines(path, &patterns, repo.work_tree.as_deref())
+    };
+    !in_sparse
 }
 
 /// True when `path_str` matches any of the `filter_paths` from interactive patch commands.

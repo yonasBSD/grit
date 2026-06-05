@@ -1958,6 +1958,7 @@ fn add_all(
     };
 
     let mut skipped_outside_sparse = false;
+    let mut matched_any = false;
     let mut paths: Vec<(String, PathBuf)> = Vec::new();
     walk_directory(
         &scan_root,
@@ -2002,19 +2003,13 @@ fn add_all(
                 } else {
                     return Err(e);
                 }
+            } else {
+                matched_any = true;
             }
         }
         if add_cfg.ignore_errors && ignored_some {
             return Ok((true, chmod_err));
         }
-    }
-
-    if args.pathspec.iter().any(|s| s == ".")
-        && prefix.map(|p| p.is_empty()).unwrap_or(true)
-        && skipped_outside_sparse
-        && !add_cfg.include_sparse
-    {
-        sparse_advice_paths.push(".".to_string());
     }
 
     // Build a set of worktree paths for fast deletion detection
@@ -2048,6 +2043,7 @@ fn add_all(
         .collect();
 
     for path in removed {
+        matched_any = true;
         if args.verbose {
             let path_str = String::from_utf8_lossy(&path);
             eprintln!("remove '{path_str}'");
@@ -2055,6 +2051,15 @@ fn add_all(
         if !args.dry_run {
             index.remove(&path);
         }
+    }
+
+    if !matched_any
+        && args.pathspec.iter().any(|s| s == ".")
+        && prefix.map(|p| p.is_empty()).unwrap_or(true)
+        && skipped_outside_sparse
+        && !add_cfg.include_sparse
+    {
+        sparse_advice_paths.push(".".to_string());
     }
 
     if args.dry_run {

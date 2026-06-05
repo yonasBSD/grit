@@ -145,3 +145,10 @@
   trace assertions. Canonical harness:
   `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh --verbose --timeout 180` ->
   `99/106`.
+- 2026-06-05 15:28 CEST: Subtest 101 now passes. `git add .` no longer emits sparse-path advice
+  when it staged an in-cone match and only skipped outside-cone materialized paths. `reset --patch`
+  and `checkout --patch` now emit `index/ensure_full_index` only for sparse patch candidates that
+  require index expansion, including partially expanded outside-cone paths.
+- Direct `--run=1,101` passes. Canonical harness:
+  `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh --verbose --timeout 180` ->
+  `101/106`.

@@ -18,6 +18,7 @@ use std::path::Path;
 use std::process::Command;
 
 use grit_lib::config::ConfigSet;
+use grit_lib::ignore::path_in_sparse_checkout as path_in_sparse_checkout_lines;
 use grit_lib::ignore::IgnoreMatcher;
 use grit_lib::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_SYMLINK};
 use grit_lib::objects::{parse_commit, parse_tree, ObjectId, ObjectKind};
@@ -28,6 +29,10 @@ use grit_lib::rev_parse::{
     abbreviate_object_id, resolve_revision, resolve_revision_as_commit,
     resolve_revision_as_commit_without_index_dwim, revision_spec_contains_ancestry_navigation,
     split_treeish_colon,
+};
+use grit_lib::sparse_checkout::{
+    effective_cone_mode_for_sparse_file, parse_sparse_checkout_file,
+    path_in_sparse_checkout_patterns,
 };
 use grit_lib::state::{resolve_head, HeadState};
 use grit_lib::submodule_gitdir::submodule_modules_git_dir;
@@ -882,6 +887,7 @@ fn reset_patch(repo: &Repository, rest: &[String]) -> Result<()> {
         .collect();
 
     let index_path = repo.index_path();
+    let raw_index = Index::load(&index_path).unwrap_or_else(|_| Index::new());
     let mut index = repo.load_index_at(&index_path).context("loading index")?;
 
     let mut staged_paths: Vec<Vec<u8>> = Vec::new();
@@ -918,6 +924,14 @@ fn reset_patch(repo: &Repository, rest: &[String]) -> Result<()> {
 
     if staged_paths.is_empty() {
         return Ok(());
+    }
+
+    if staged_paths.iter().any(|path| {
+        let path_str = String::from_utf8_lossy(path);
+        path_under_sparse_index_dir_bytes(&raw_index, path)
+            || path_outside_sparse_definition(repo, path_str.as_ref())
+    }) {
+        emit_index_trace_region("ensure_full_index");
     }
 
     staged_paths.sort();
@@ -1169,6 +1183,50 @@ fn emit_index_trace_region(label: &str) {
             let _ = crate::trace2_region_json(&trace2_event, "index", label);
         }
     }
+}
+
+fn path_under_sparse_index_dir_bytes(index: &Index, path: &[u8]) -> bool {
+    let path = String::from_utf8_lossy(path);
+    let path = path.trim_end_matches('/');
+    index
+        .entries
+        .iter()
+        .filter(|entry| entry.stage() == 0 && entry.is_sparse_directory_placeholder())
+        .filter_map(|entry| std::str::from_utf8(&entry.path).ok())
+        .map(|prefix| prefix.trim_end_matches('/'))
+        .any(|prefix| {
+            let prefix_slash = format!("{prefix}/");
+            path == prefix || path.starts_with(&prefix_slash)
+        })
+}
+
+fn path_outside_sparse_definition(repo: &Repository, path: &str) -> bool {
+    let Ok(config) = ConfigSet::load(Some(&repo.git_dir), true) else {
+        return false;
+    };
+    let sparse_enabled = config
+        .get("core.sparseCheckout")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !sparse_enabled {
+        return false;
+    }
+    let patterns = std::fs::read_to_string(repo.git_dir.join("info").join("sparse-checkout"))
+        .map(|content| parse_sparse_checkout_file(&content))
+        .unwrap_or_default();
+    if patterns.is_empty() {
+        return false;
+    }
+    let cone_cfg = config
+        .get("core.sparseCheckoutCone")
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(true);
+    let in_sparse = if effective_cone_mode_for_sparse_file(cone_cfg, &patterns) {
+        path_in_sparse_checkout_patterns(path, &patterns, true)
+    } else {
+        path_in_sparse_checkout_lines(path, &patterns, repo.work_tree.as_deref())
+    };
+    !in_sparse
 }
 
 fn reset_paths_require_sparse_index_expansion(index_path: &Path, paths: &[String]) -> bool {
