@@ -128,7 +128,7 @@ pub struct IncludeContext {
 /// Options controlling how [`ConfigSet::load_with_options`] merges files and includes.
 #[derive(Debug, Clone)]
 pub struct LoadConfigOptions {
-    /// Load `/etc/gitconfig` (unless `GIT_CONFIG_NOSYSTEM` is set).
+    /// Load `/etc/gitconfig` (unless `GIT_CONFIG_NOSYSTEM` is enabled).
     pub include_system: bool,
     /// Expand `[include]` / `[includeIf]` while reading file-backed layers.
     pub process_includes: bool,
@@ -1831,7 +1831,7 @@ impl ConfigSet {
         let ctx = opts.include_ctx.clone();
 
         // System config
-        if opts.include_system && std::env::var("GIT_CONFIG_NOSYSTEM").is_err() {
+        if opts.include_system && !git_config_nosystem_enabled() {
             let system_path = std::env::var("GIT_CONFIG_SYSTEM")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::path::PathBuf::from("/etc/gitconfig"));
@@ -1931,7 +1931,7 @@ impl ConfigSet {
         };
 
         // System
-        if std::env::var("GIT_CONFIG_NOSYSTEM").is_err() {
+        if !git_config_nosystem_enabled() {
             let system_path = std::env::var("GIT_CONFIG_SYSTEM")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::path::PathBuf::from("/etc/gitconfig"));
@@ -2026,7 +2026,7 @@ impl ConfigSet {
             command_line_relative_include_is_error: false,
         };
 
-        if include_system && std::env::var("GIT_CONFIG_NOSYSTEM").is_err() {
+        if include_system && !git_config_nosystem_enabled() {
             let system_path = std::env::var("GIT_CONFIG_SYSTEM")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::path::PathBuf::from("/etc/gitconfig"));
@@ -2134,6 +2134,13 @@ fn include_directive_for_entry(entry: &ConfigEntry) -> Option<(String, Option<St
         return Some((val.clone(), Some(mid.to_owned())));
     }
     None
+}
+
+fn git_config_nosystem_enabled() -> bool {
+    std::env::var("GIT_CONFIG_NOSYSTEM")
+        .ok()
+        .map(|value| parse_bool(&value).unwrap_or(true))
+        .unwrap_or(false)
 }
 
 fn add_environment_config_pairs(set: &mut ConfigSet) -> Result<()> {
