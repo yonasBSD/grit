@@ -2738,19 +2738,25 @@ fn pack_objects_locality_excludes(
 }
 
 /// Apply `--local` / `--honor-pack-keep` / `--incremental` exclusions to a `--revs` pack object
-/// list, dropping any OID that one of the locality flags says we must omit.
+/// list, dropping any OID that one of the locality flags says we must omit. Both the walked object
+/// list and any explicitly force-included OIDs (raw OID args, e.g. `for-each-ref | pack-objects
+/// --revs`) are filtered, since a kept/non-local/already-packed object must be omitted even when it
+/// was named directly.
 fn apply_locality_excludes(
     repo: &Repository,
     args: &Args,
     ordered: &mut Vec<ObjectId>,
+    force_include: &mut Vec<ObjectId>,
 ) -> Result<()> {
     if !args.local && !args.honor_pack_keep && !args.incremental {
         return Ok(());
     }
-    let candidates: BTreeSet<ObjectId> = ordered.iter().copied().collect();
+    let mut candidates: BTreeSet<ObjectId> = ordered.iter().copied().collect();
+    candidates.extend(force_include.iter().copied());
     let excludes = pack_objects_locality_excludes(repo, args, &candidates)?;
     if !excludes.is_empty() {
         ordered.retain(|o| !excludes.contains(o));
+        force_include.retain(|o| !excludes.contains(o));
     }
     Ok(())
 }
@@ -2914,11 +2920,12 @@ fn collect_pack_objects_from_rev_stdin_lines(
             Vec::new()
         };
 
-        apply_locality_excludes(repo, args, &mut ordered)?;
+        let mut force_include = force_include.clone();
+        apply_locality_excludes(repo, args, &mut ordered, &mut force_include)?;
 
         return Ok(PackObjectList {
             oids: ordered,
-            force_include: force_include.clone(),
+            force_include,
             thin_blob_deltas,
             rev_list_stdin: true,
         });
@@ -2978,7 +2985,8 @@ fn collect_pack_objects_from_rev_stdin_lines(
         Vec::new()
     };
 
-    apply_locality_excludes(repo, args, &mut ordered)?;
+    let mut force_include = force_include;
+    apply_locality_excludes(repo, args, &mut ordered, &mut force_include)?;
 
     Ok(PackObjectList {
         oids: ordered,

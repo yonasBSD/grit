@@ -786,7 +786,7 @@ pub fn rev_list(
 ) -> Result<RevListResult> {
     let mut graph = CommitGraph::new(repo, options.first_parent);
 
-    let (mut include, object_roots, tip_annotated_tag_by_commit) = if options.objects {
+    let (mut include, mut object_roots, tip_annotated_tag_by_commit) = if options.objects {
         resolve_specs_for_objects_with_options(
             repo,
             positive_specs,
@@ -817,6 +817,13 @@ pub fn rev_list(
 
     if options.all_refs {
         include.extend(all_ref_tips(repo, &RefExclusions::default())?);
+        // In `--objects` mode a ref may point at (or peel to) a blob or tree. Those refs do not
+        // appear among the commit tips above (`peel_ref_oids_to_unique_commits` drops them), but
+        // `git rev-list --all --objects` still lists the named object. Add them as object roots so
+        // that e.g. a lightweight tag pointing at a blob keeps that blob reachable (t5310).
+        if options.objects {
+            object_roots.extend(all_ref_non_commit_object_roots(repo)?);
+        }
     }
 
     if options.objects && options.include_reflog_entries {
@@ -4901,6 +4908,59 @@ fn all_ref_tips(repo: &Repository, exclusions: &RefExclusions) -> Result<Vec<Obj
     }
     pairs.extend(refs::list_refs(&repo.git_dir, "refs/")?);
     commit_tips_from_ref_pairs(repo, &pairs, exclusions)
+}
+
+/// Collect `--all` refs whose target is (or peels to) a non-commit object — a blob or tree — as
+/// object roots for `--objects` traversal.
+///
+/// Commit-pointing refs are already covered by [`all_ref_tips`]; only refs naming a blob/tree
+/// directly, or annotated tags that peel to a blob/tree, are returned here. This mirrors
+/// `git rev-list --all --objects`, which lists objects directly referenced by any ref.
+fn all_ref_non_commit_object_roots(repo: &Repository) -> Result<Vec<RootObject>> {
+    let mut roots = Vec::new();
+    let mut seen: HashSet<ObjectId> = HashSet::new();
+    for (refname, oid) in refs::list_refs(&repo.git_dir, "refs/")? {
+        let Ok(object) = repo.odb.read(&oid) else {
+            continue;
+        };
+        match object.kind {
+            ObjectKind::Commit => continue,
+            ObjectKind::Tree | ObjectKind::Blob => {
+                if seen.insert(oid) {
+                    roots.push(RootObject {
+                        oid,
+                        input: refname,
+                        expected_kind: None,
+                        root_path: None,
+                        wrap_with_tag: None,
+                    });
+                }
+            }
+            ObjectKind::Tag => {
+                let Ok(tag) = parse_tag(&object.data) else {
+                    continue;
+                };
+                let Some(expected_kind) = ExpectedObjectKind::from_tag_type(&tag.object_type)
+                else {
+                    continue;
+                };
+                // Annotated tags peeling to a commit are handled by the commit-tip walk.
+                if expected_kind == ExpectedObjectKind::Commit {
+                    continue;
+                }
+                if seen.insert(tag.object) {
+                    roots.push(RootObject {
+                        oid: tag.object,
+                        input: refname,
+                        expected_kind: Some(expected_kind),
+                        root_path: None,
+                        wrap_with_tag: Some(oid),
+                    });
+                }
+            }
+        }
+    }
+    Ok(roots)
 }
 
 /// Expand named refs to peeled unique commit tips, applying `--exclude` / `--exclude-hidden` rules.
