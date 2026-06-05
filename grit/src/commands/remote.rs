@@ -446,11 +446,12 @@ fn cmd_add(rest: &[String]) -> Result<()> {
         config_file.set(&format!("remote.{name}.mirror"), "true")?;
     }
     match tags {
+        // Git writes the camelCase `tagOpt` variable name (t5505 greps for `tagOpt`).
         TagsMode::All => {
-            config_file.set(&format!("remote.{name}.tagopt"), "--tags")?;
+            config_file.set(&format!("remote.{name}.tagOpt"), "--tags")?;
         }
         TagsMode::None => {
-            config_file.set(&format!("remote.{name}.tagopt"), "--no-tags")?;
+            config_file.set(&format!("remote.{name}.tagOpt"), "--no-tags")?;
         }
         _ => {}
     }
@@ -2314,8 +2315,7 @@ fn cmd_update(rest: &[String], verbose: bool) -> Result<()> {
         if has_default {
             rest.push("default".to_owned());
         } else {
-            let names = collect_remote_names_from_config(&config);
-            for n in names {
+            for n in default_update_remotes(&config) {
                 run_fetch_for_update(&n, verbose, prune)?;
             }
             return Ok(());
@@ -2323,8 +2323,7 @@ fn cmd_update(rest: &[String], verbose: bool) -> Result<()> {
     }
     for g in rest {
         if g == "default" && !has_default {
-            let names = collect_remote_names_from_config(&config);
-            for n in names {
+            for n in default_update_remotes(&config) {
                 run_fetch_for_update(&n, verbose, prune)?;
             }
             continue;
@@ -2345,6 +2344,29 @@ fn cmd_update(rest: &[String], verbose: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Remotes fetched by the implicit `default` update group: all configured remotes minus any with
+/// `remote.<name>.skipDefaultUpdate` or `remote.<name>.skipFetchAll` set to a true value
+/// (Git's `default` pseudo-group). Returned sorted to match `git remote update`'s ordering.
+fn default_update_remotes(config: &ConfigSet) -> Vec<String> {
+    let mut names = collect_remote_names_from_config(config);
+    names.sort();
+    names
+        .into_iter()
+        .filter(|n| {
+            let skip = |key: &str| {
+                config
+                    .get(&format!("remote.{n}.{key}"))
+                    .map(|v| {
+                        let v = v.trim().to_ascii_lowercase();
+                        v == "true" || v == "yes" || v == "1" || v == "on"
+                    })
+                    .unwrap_or(false)
+            };
+            !(skip("skipdefaultupdate") || skip("skipfetchall"))
+        })
+        .collect()
 }
 
 fn run_fetch_for_update(remote: &str, verbose: bool, prune: Option<bool>) -> Result<()> {
