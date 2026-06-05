@@ -853,6 +853,17 @@
         padding: 1.35rem;
         background: linear-gradient(180deg, #ffffff, #fbfff7);
         box-shadow: 0 18px 50px rgba(36, 89, 52, 0.1);
+        transition:
+          background 0.18s ease,
+          border-color 0.18s ease,
+          box-shadow 0.18s ease,
+          transform 0.18s ease;
+      }
+      .progress-card:hover {
+        border-color: rgba(36, 122, 69, 0.42);
+        background: linear-gradient(180deg, #f4fbea, #eaf7df);
+        box-shadow: 0 22px 56px rgba(36, 89, 52, 0.16);
+        transform: translateY(-1px);
       }
       .progress-card p {
         margin: 0;
@@ -908,6 +919,16 @@
             )
             0 0 / var(--pct) 100% no-repeat,
           rgba(247, 252, 241, 0.55);
+      }
+      .suite-stat:hover {
+        background:
+          linear-gradient(
+              90deg,
+              rgba(149, 197, 110, 0.34),
+              rgba(36, 122, 69, 0.34)
+            )
+            0 0 / var(--pct) 100% no-repeat,
+          rgba(226, 244, 211, 0.92);
       }
       .suite-stat strong {
         color: var(--ink);
