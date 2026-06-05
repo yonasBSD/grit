@@ -1789,8 +1789,9 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
     if let Some(tips) = negotiation_tip_oids {
         let mut set = HashSet::new();
         for tip in tips {
-            let peeled = peel_commit_oid_for_negotiation(negotiator.repo(), *tip)?;
-            set.insert(peeled);
+            if let Some(peeled) = peel_commit_oid_for_negotiation(negotiator.repo(), *tip)? {
+                set.insert(peeled);
+            }
         }
         tip_filter = Some(set);
     }
@@ -1807,7 +1808,10 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
                     if negotiator.repo().odb.read(&tip).is_err() {
                         continue;
                     }
-                    let peeled = peel_commit_oid_for_negotiation(negotiator.repo(), tip)?;
+                    let Some(peeled) = peel_commit_oid_for_negotiation(negotiator.repo(), tip)?
+                    else {
+                        continue;
+                    };
                     if tip_filter
                         .as_ref()
                         .is_some_and(|filter| !filter.contains(&peeled))
@@ -1820,19 +1824,23 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
         }
         if let Ok(h) = refs::resolve_ref(local_git_dir, "HEAD") {
             if negotiator.repo().odb.read(&h).is_ok() {
-                let peeled = peel_commit_oid_for_negotiation(negotiator.repo(), h)?;
-                if !tip_filter
-                    .as_ref()
-                    .is_some_and(|filter| !filter.contains(&peeled))
-                {
-                    tips.push(peeled);
+                if let Some(peeled) = peel_commit_oid_for_negotiation(negotiator.repo(), h)? {
+                    if !tip_filter
+                        .as_ref()
+                        .is_some_and(|filter| !filter.contains(&peeled))
+                    {
+                        tips.push(peeled);
+                    }
                 }
             }
         }
         for sym in ["HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
             if let Ok(oid) = resolve_revision(negotiator.repo(), sym) {
                 if negotiator.repo().odb.read(&oid).is_ok() {
-                    let peeled = peel_commit_oid_for_negotiation(negotiator.repo(), oid)?;
+                    let Some(peeled) = peel_commit_oid_for_negotiation(negotiator.repo(), oid)?
+                    else {
+                        continue;
+                    };
                     if tip_filter
                         .as_ref()
                         .is_some_and(|filter| !filter.contains(&peeled))
@@ -1864,8 +1872,9 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
                 continue;
             }
             if negotiator.repo().odb.read(oid).is_ok() {
-                let c = peel_commit_oid_for_negotiation(negotiator.repo(), *oid)?;
-                negotiator.known_common(c)?;
+                if let Some(c) = peel_commit_oid_for_negotiation(negotiator.repo(), *oid)? {
+                    negotiator.known_common(c)?;
+                }
             }
         }
     }

@@ -838,8 +838,28 @@ fn parse_git_bool(value: &str) -> Option<bool> {
     parse_bool(value.trim()).ok()
 }
 
+/// Whether `abbrev` (a possibly-abbreviated ref name) matches `full_name` using Git's
+/// `ref_rev_parse_rules` (`refs.c` `refname_match`). Used to match `branch.<name>.merge` entries
+/// like `two` against the advertised full ref `refs/heads/two`.
+fn refname_match(abbrev: &str, full_name: &str) -> bool {
+    const REV_PARSE_RULES: &[&str] = &[
+        "{}",
+        "refs/{}",
+        "refs/tags/{}",
+        "refs/heads/{}",
+        "refs/remotes/{}",
+        "refs/remotes/{}/HEAD",
+    ];
+    REV_PARSE_RULES
+        .iter()
+        .any(|rule| rule.replace("{}", abbrev) == full_name)
+}
+
 /// FETCH_HEAD "for merge" when the current branch tracks this remote and the remote ref
-/// matches `branch.<name>.merge` (Git `branch_merge_matches` / `add_merge_config`).
+/// matches any `branch.<name>.merge` entry (Git `branch_merge_matches` / `add_merge_config`).
+///
+/// Octopus branches configure several `branch.<name>.merge` values, so every value is checked,
+/// and matching uses `ref_rev_parse_rules` (so `two` matches `refs/heads/two`).
 fn fetch_head_is_for_merge_with_branch(
     git_dir: &Path,
     config: &ConfigSet,
@@ -857,10 +877,10 @@ fn fetch_head_is_for_merge_with_branch(
         return false;
     }
     let merge_key = format!("branch.{branch}.merge");
-    let Some(merge_ref) = config.get(&merge_key) else {
-        return false;
-    };
-    merge_ref.trim() == remote_refname
+    config
+        .get_all(&merge_key)
+        .iter()
+        .any(|merge_ref| refname_match(merge_ref.trim(), remote_refname))
 }
 
 /// When there is no `branch.*.merge` for HEAD, Git marks only the first ref from the first
@@ -1629,6 +1649,14 @@ fn fetch_remote(
             spec.dst = normalize_fetch_refspec_dst(&spec.dst);
         }
         parsed
+    } else if url_override.is_some() {
+        // Anonymous URL/path remotes (`git fetch ../repo refs/heads/*:...`) have no configured
+        // `remote.<url>.fetch`, so Git performs no opportunistic remote-tracking updates for them.
+        // Only honor an explicitly configured fetch refspec; never synthesize the default
+        // `refs/remotes/<url>/*` tracking spec, which would write malformed refs from the URL path
+        // (e.g. `refs/remotes/../shallow/.git/*`).
+        let key = format!("remote.{remote_name}.fetch");
+        collect_refspecs(config, &key)
     } else {
         remote_fetch_refspecs(config, remote_name)
     };
@@ -3300,12 +3328,13 @@ fn fetch_remote(
             trace_ls_refs_head_prefix();
         }
         if let Some(default_branch) = remote_symbolic_head_branch.as_deref() {
-            let head_source = format!("refs/heads/{default_branch}");
-            let mapped_default = if refspecs.is_empty() {
-                Some(format!("refs/remotes/{remote_name}/{default_branch}"))
-            } else {
-                map_ref_through_refspecs(&head_source, &refspecs)
-            };
+            // Git's `set_head` always targets `refs/remotes/<remote>/<head_name>` (using the
+            // implicit `refs/heads/*:refs/heads/*` guess), independent of the configured fetch
+            // refspec, and requires that ref to already exist. If the configured refspec maps
+            // branches somewhere other than `refs/remotes/<remote>/*` (e.g. t5515's
+            // `config-explicit` mapping to `refs/remotes/rem/*`), that target does not exist and
+            // no `refs/remotes/<remote>/HEAD` is written.
+            let mapped_default = Some(format!("refs/remotes/{remote_name}/{default_branch}"));
             if let Some(mapped_default_ref) = mapped_default {
                 let mapped_ref_available = refs::resolve_ref(git_dir, &mapped_default_ref).is_ok()
                     || pending_writes_ref(&pending_atomic_ref_ops, &mapped_default_ref);
@@ -6714,10 +6743,18 @@ fn expand_fetch_cli_tag_args(specs: &[String]) -> Result<Vec<String>> {
 fn normalize_fetch_url_display(s: &str) -> String {
     let t = s.trim_end_matches('/');
     if t.is_empty() {
-        "/".to_owned()
-    } else {
-        t.to_owned()
+        return "/".to_owned();
     }
+    // Match Git's `display_state` URL truncation (builtin/fetch.c): after trimming trailing
+    // slashes, drop a trailing `.git` when the last non-slash index `i` satisfies `4 < i`
+    // (i.e. there is more than just `X.git` before it). `../.git` -> `../`, but `.git` and
+    // `x.git` are left untouched.
+    let bytes = t.as_bytes();
+    let last = bytes.len() - 1;
+    if last > 4 && t.ends_with(".git") {
+        return t[..t.len() - 4].to_owned();
+    }
+    t.to_owned()
 }
 
 fn canonical_repo_path(p: &Path) -> Result<PathBuf> {
