@@ -2026,7 +2026,16 @@ fn build_thin_push_pack_from_have_set(
         .unwrap_or(&local_repo.git_dir);
     let mut cmd = Command::new(grit_exe::grit_executable());
     crate::grit_exe::strip_trace2_env(&mut cmd);
+    // Pin pack generation to the pushing repository's object store. Without an explicit GIT_DIR
+    // the spawned pack-objects re-discovers a repository from `work_dir`/the environment, which
+    // can resolve to the wrong repo when a stray GIT_DIR is inherited (t5400 .have de-dup push,
+    // where the negotiating push runs alongside `git -C fork`/`git -C shared` invocations).
+    let git_dir_abs = local_repo
+        .git_dir
+        .canonicalize()
+        .unwrap_or_else(|_| local_repo.git_dir.clone());
     cmd.current_dir(work_dir)
+        .env("GIT_DIR", &git_dir_abs)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

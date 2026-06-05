@@ -74,7 +74,10 @@ pub struct Args {
 struct RefUpdate {
     remote_ref: String,
     old_oid: Option<ObjectId>,
-    new_oid: ObjectId,
+    /// New value for the remote ref. `None` represents a deletion (the null OID on the wire).
+    new_oid: Option<ObjectId>,
+    /// This update was requested with a forcing refspec (`+`) or the global `--force`.
+    force: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -120,7 +123,8 @@ pub fn run(args: Args) -> Result<()> {
             updates.push(RefUpdate {
                 remote_ref: refname.clone(),
                 old_oid,
-                new_oid: *local_oid,
+                new_oid: Some(*local_oid),
+                force: args.force,
             });
         }
     } else {
@@ -128,40 +132,30 @@ pub fn run(args: Args) -> Result<()> {
             bail!("no refs specified; nothing to push");
         }
 
-        let mut seen_remote: HashSet<String> = HashSet::new();
         for spec in &refspecs {
-            let (_, dst) = parse_refspec(spec);
-            let remote_ref = normalize_ref(&dst);
-            if !seen_remote.insert(remote_ref.clone()) {
-                bail!("multiple updates for ref '{remote_ref}' not allowed");
-            }
+            expand_refspec_into_updates(&repo, &remote_repo, spec, args.force, &mut updates)?;
         }
 
-        for spec in &refspecs {
-            let (src, dst) = parse_refspec(spec);
-            let local_ref = resolve_push_src_refname(&src);
-            let remote_ref = normalize_ref(&dst);
-
-            let local_oid = refs::resolve_ref(&repo.git_dir, &local_ref)
-                .with_context(|| format!("src ref '{}' does not match any", src))?;
-            let old_oid = refs::resolve_ref(&remote_repo.git_dir, &remote_ref).ok();
-
-            updates.push(RefUpdate {
-                remote_ref,
-                old_oid,
-                new_oid: local_oid,
-            });
+        let mut seen_remote: HashSet<String> = HashSet::new();
+        for update in &updates {
+            if !seen_remote.insert(update.remote_ref.clone()) {
+                bail!(
+                    "multiple updates for ref '{}' not allowed",
+                    update.remote_ref
+                );
+            }
         }
     }
 
     for update in &updates {
-        if let Some(old) = &update.old_oid {
-            if *old != update.new_oid && !args.force && !is_ancestor(&repo, *old, update.new_oid)? {
-                bail!(
-                    "non-fast-forward update to '{}' rejected (use --force to override)",
-                    update.remote_ref
-                );
-            }
+        let (Some(old), Some(new)) = (&update.old_oid, &update.new_oid) else {
+            continue;
+        };
+        if *old != *new && !update.force && !is_ancestor(&repo, *old, *new)? {
+            bail!(
+                "non-fast-forward update to '{}' rejected (use --force to override)",
+                update.remote_ref
+            );
         }
     }
 
@@ -176,10 +170,15 @@ pub fn run(args: Args) -> Result<()> {
                 .as_ref()
                 .map(|o| o.to_hex())
                 .unwrap_or_else(|| "0".repeat(40));
+            let new_hex = update
+                .new_oid
+                .as_ref()
+                .map(|o| o.to_hex())
+                .unwrap_or_else(|| "0".repeat(40));
             println!(
                 "{}..{}\t{} (dry run)",
                 &old_hex[..7],
-                &update.new_oid.to_hex()[..7],
+                &new_hex[..7],
                 update.remote_ref,
             );
         }
@@ -213,14 +212,19 @@ pub fn run(args: Args) -> Result<()> {
         caps.push_str(" session-id=");
         caps.push_str(&sid);
     }
+    let zero_hex = "0".repeat(40);
     let mut first_cmd = true;
     for update in &updates {
         let old_hex = update
             .old_oid
             .as_ref()
             .map(|o| o.to_hex())
-            .unwrap_or_else(|| "0".repeat(40));
-        let new_hex = update.new_oid.to_hex();
+            .unwrap_or_else(|| zero_hex.clone());
+        let new_hex = update
+            .new_oid
+            .as_ref()
+            .map(|o| o.to_hex())
+            .unwrap_or_else(|| zero_hex.clone());
         let pkt = if first_cmd {
             first_cmd = false;
             format!("{old_hex} {new_hex} {}\0{caps}\n", update.remote_ref)
@@ -232,75 +236,90 @@ pub fn run(args: Args) -> Result<()> {
     write_flush(&mut child_stdin)?;
     child_stdin.flush()?;
 
-    // Use the real Git binary for pack generation when available: the harness aliases `git`
-    // to grit, and grit's pack-objects is not yet a full send-pack peer (thin packs, etc.).
-    let pack_bin = std::path::Path::new("/usr/bin/git");
-    let pack_cwd = repo
-        .work_tree
-        .clone()
-        .unwrap_or_else(|| repo.git_dir.clone());
-    let pack_args = [
-        "pack-objects",
-        "--stdout",
-        "--revs",
-        "--thin",
-        "--delta-base-offset",
-        "-q",
-    ];
-    let mut pack_cmd = if pack_bin.is_file() {
-        let mut c = Command::new(pack_bin);
-        c.current_dir(&pack_cwd)
-            .env("GIT_DIR", &repo.git_dir)
-            .args(pack_args);
-        // Tests prepend a `git` shim ahead of `/usr/bin`; helpers invoked by git must not recurse.
-        c.env("PATH", "/usr/bin:/bin");
-        c
-    } else {
-        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("grit"));
-        let mut c = Command::new(exe);
-        c.current_dir(&pack_cwd)
-            .env("GIT_DIR", &repo.git_dir)
-            .args(pack_args);
-        c
-    };
-    let mut pack_child = pack_cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("spawn pack-objects")?;
+    // Deletion-only pushes carry no new objects: send an empty pack so the server reads a
+    // well-formed (if trivial) packfile. `git send-pack` does the same via pack-objects with no
+    // positive tips, which emits the 12-byte empty-pack header plus its trailing sha1.
+    let has_new_objects = updates.iter().any(|u| u.new_oid.is_some());
+    if !has_new_objects {
+        child_stdin.write_all(&empty_pack_bytes())?;
+        child_stdin.flush()?;
+        drop(child_stdin);
+        let mut output = Vec::new();
+        child_stdout.read_to_end(&mut output)?;
+        let status = child.wait()?;
+        let report = if use_sideband {
+            demux_report_and_remote_messages(&output)?
+        } else {
+            output
+        };
+        let rejected = report_has_rejections(&report);
+        if !status.success() || rejected {
+            return Err(anyhow::Error::new(ExplicitExit {
+                code: 1,
+                message: String::new(),
+            }));
+        }
+        return Ok(());
+    }
+
+    // Build the rev-list input fed to pack-objects (`--revs`): negative tips for everything the
+    // server already has, positive tips for the new ref values.
+    let mut rev_input = String::new();
     {
-        let mut stdin = pack_child.stdin.take().context("pack-objects stdin")?;
         let mut fed: HashSet<ObjectId> = HashSet::new();
-        let new_tips: HashSet<ObjectId> = updates.iter().map(|u| u.new_oid).collect();
+        let new_tips: HashSet<ObjectId> = updates.iter().filter_map(|u| u.new_oid).collect();
+        // Only feed `^<oid>` boundaries for objects the *source* repository actually has: the
+        // server advertises refs and `.have` lines (e.g. an alternate's objects via `clone -s`)
+        // that the pushing repo may not possess. Passing a missing object to pack-objects as a
+        // negative tip aborts the traversal ("bad tree object"); git silently ignores such haves
+        // (t5400 receive-pack .have de-dup push).
+        let feed_negative = |fed: &mut HashSet<ObjectId>, rev_input: &mut String, oid: ObjectId| {
+            if fed.insert(oid) && repo.odb.read(&oid).is_ok() {
+                rev_input.push_str(&format!("^{}\n", oid.to_hex()));
+            }
+        };
         for oid in peel_advertised_commits(&repo, &advertised_oids) {
             if new_tips.contains(&oid) {
                 continue;
             }
-            if fed.insert(oid) {
-                writeln!(stdin, "^{}", oid.to_hex())?;
-            }
+            feed_negative(&mut fed, &mut rev_input, oid);
         }
         for h in &extra_have {
-            if fed.insert(*h) {
-                writeln!(stdin, "^{}", h.to_hex())?;
-            }
+            feed_negative(&mut fed, &mut rev_input, *h);
         }
         for update in &updates {
+            let Some(new) = update.new_oid else {
+                continue;
+            };
             if let Some(old) = &update.old_oid {
-                if fed.insert(*old) {
-                    writeln!(stdin, "^{}", old.to_hex())?;
-                }
+                feed_negative(&mut fed, &mut rev_input, *old);
             }
-            writeln!(stdin, "{}", update.new_oid.to_hex())?;
+            rev_input.push_str(&format!("{}\n", new.to_hex()));
         }
-        stdin.flush().context("flush pack-objects stdin")?;
     }
 
-    let pack_output = pack_child
-        .wait_with_output()
-        .context("wait for pack-objects")?;
+    let pack_cwd = repo
+        .work_tree
+        .clone()
+        .unwrap_or_else(|| repo.git_dir.clone());
+
+    // Prefer the system Git binary for pack generation (the harness aliases `git` to grit, and
+    // grit's pack-objects is not yet a full send-pack peer for thin packs). Fall back to grit's
+    // own pack-objects when the system git is unavailable or fails — notably when the source
+    // object store has a grit-written v2 multi-pack-index that older system git cannot parse
+    // ("multi-pack-index version 2 not recognized"; t5400 receive-pack auto-gc).
+    let pack_bin = std::path::Path::new("/usr/bin/git");
+    let pack_output = if pack_bin.is_file() {
+        match run_pack_objects(Some(pack_bin), &pack_cwd, &repo.git_dir, &rev_input)? {
+            output if output.status.success() => output,
+            _ => run_pack_objects(None, &pack_cwd, &repo.git_dir, &rev_input)?,
+        }
+    } else {
+        run_pack_objects(None, &pack_cwd, &repo.git_dir, &rev_input)?
+    };
     if !pack_output.status.success() {
+        // Surface the (final) pack-objects diagnostics now that no further fallback will run.
+        let _ = io::stderr().write_all(&pack_output.stderr);
         bail!("pack-objects failed with status {}", pack_output.status);
     }
     child_stdin.write_all(&pack_output.stdout)?;
@@ -389,6 +408,59 @@ fn demux_report_and_remote_messages(input: &[u8]) -> Result<Vec<u8>> {
     Ok(report)
 }
 
+/// Run `pack-objects --stdout --revs --thin --delta-base-offset -q`, feeding `rev_input` on stdin.
+///
+/// `pack_bin` selects the executable: `Some(path)` runs the system Git (with a sanitized `PATH`
+/// so the harness `git` shim is not re-entered), `None` runs grit's own `pack-objects`. Stderr is
+/// captured (not inherited) so a failed system-git attempt — e.g. tripping over a grit-written v2
+/// multi-pack-index — does not leak diagnostics before the grit fallback runs.
+fn run_pack_objects(
+    pack_bin: Option<&Path>,
+    pack_cwd: &Path,
+    git_dir: &Path,
+    rev_input: &str,
+) -> Result<std::process::Output> {
+    let pack_args = [
+        "pack-objects",
+        "--stdout",
+        "--revs",
+        "--thin",
+        "--delta-base-offset",
+        "-q",
+    ];
+    let mut cmd = match pack_bin {
+        Some(bin) => {
+            let mut c = Command::new(bin);
+            c.current_dir(pack_cwd)
+                .env("GIT_DIR", git_dir)
+                .args(pack_args);
+            // Tests prepend a `git` shim ahead of `/usr/bin`; helpers invoked by git must not recurse.
+            c.env("PATH", "/usr/bin:/bin");
+            c
+        }
+        None => {
+            let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("grit"));
+            let mut c = Command::new(exe);
+            c.current_dir(pack_cwd)
+                .env("GIT_DIR", git_dir)
+                .args(pack_args);
+            c
+        }
+    };
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawn pack-objects")?;
+    {
+        let mut stdin = child.stdin.take().context("pack-objects stdin")?;
+        stdin.write_all(rev_input.as_bytes())?;
+        stdin.flush().context("flush pack-objects stdin")?;
+    }
+    child.wait_with_output().context("wait for pack-objects")
+}
+
 /// True when the report-status stream contains any `ng <ref> ...` (rejected) command line.
 fn report_has_rejections(report: &[u8]) -> bool {
     let mut cursor = io::Cursor::new(report);
@@ -428,6 +500,11 @@ fn spawn_receive_pack(receive_cmd: &str, remote_path: &Path) -> Result<Child> {
         } else {
             protocol_wire::merge_git_protocol_env_for_child(c, client_proto);
         }
+        // `git -c key=value send-pack` sets GIT_CONFIG_PARAMETERS in this process for the *client*
+        // side only; it must not leak to the remote receive-pack (t5400 "cannot override
+        // denyDeletes with git -c send-pack"). A custom `--receive-pack="git -c ... receive-pack"`
+        // re-establishes its own parameters when the spawned git re-parses its `-c`.
+        c.env_remove("GIT_CONFIG_PARAMETERS");
     };
     if receive_cmd.contains('|')
         || receive_cmd.contains('>')
@@ -591,15 +668,6 @@ fn parse_dot_have_line(line: &str) -> Option<ObjectId> {
     }
 }
 
-fn parse_refspec(spec: &str) -> (String, String) {
-    let spec = spec.strip_prefix('+').unwrap_or(spec);
-    if let Some((src, dst)) = spec.split_once(':') {
-        (src.to_owned(), dst.to_owned())
-    } else {
-        (spec.to_owned(), spec.to_owned())
-    }
-}
-
 fn normalize_ref(name: &str) -> String {
     if name.starts_with("refs/") {
         name.to_owned()
@@ -608,13 +676,123 @@ fn normalize_ref(name: &str) -> String {
     }
 }
 
-/// Map a refspec source to the ref name passed to [`refs::resolve_ref`] (`HEAD` stays `HEAD`).
-fn resolve_push_src_refname(src: &str) -> String {
-    if src == "HEAD" || src.starts_with("refs/") {
-        src.to_owned()
-    } else {
-        normalize_ref(src)
+/// The bytes of an empty packfile (`PACK`, version 2, zero objects) with its trailing SHA-1.
+///
+/// `git send-pack` always streams a packfile after the ref-update commands, even for
+/// deletion-only pushes; the receiving side reads the trailer to know the pack ended.
+fn empty_pack_bytes() -> Vec<u8> {
+    use sha1::{Digest, Sha1};
+    let mut pack = Vec::with_capacity(32);
+    pack.extend_from_slice(b"PACK");
+    pack.extend_from_slice(&2u32.to_be_bytes());
+    pack.extend_from_slice(&0u32.to_be_bytes());
+    let digest = Sha1::digest(&pack);
+    pack.extend_from_slice(&digest);
+    pack
+}
+
+/// Expand one push refspec `[+]<src>[:<dst>]` into one or more [`RefUpdate`]s.
+///
+/// Handles deletions (empty `<src>`), per-refspec forcing (`+`), wildcard patterns
+/// (`refs/heads/*:refs/heads/*`), and revision expressions on the source side (`main^`).
+fn expand_refspec_into_updates(
+    repo: &Repository,
+    remote_repo: &Repository,
+    spec: &str,
+    global_force: bool,
+    out: &mut Vec<RefUpdate>,
+) -> Result<()> {
+    use grit_lib::refspec::parse_push_refspec;
+
+    let item = parse_push_refspec(spec).with_context(|| format!("invalid refspec '{spec}'"))?;
+    let force = global_force || item.force;
+    let src = item.src.as_deref().unwrap_or("");
+    let dst_opt = item.dst.as_deref();
+
+    // Deletion: empty source side with an explicit destination removes the remote ref.
+    if src.is_empty() {
+        let Some(dst) = dst_opt else {
+            bail!("refspec '{spec}' has no destination to delete");
+        };
+        let remote_ref = normalize_ref(dst);
+        let old_oid = refs::resolve_ref(&remote_repo.git_dir, &remote_ref).ok();
+        out.push(RefUpdate {
+            remote_ref,
+            old_oid,
+            new_oid: None,
+            force,
+        });
+        return Ok(());
     }
+
+    // Wildcard refspec: map each local ref matching the source pattern to the destination.
+    if item.pattern {
+        let dst = dst_opt
+            .ok_or_else(|| anyhow::anyhow!("wildcard refspec '{spec}' requires a destination"))?;
+        expand_wildcard_refspec(repo, remote_repo, src, dst, force, out)?;
+        return Ok(());
+    }
+
+    // Concrete refspec: resolve the source revision, default the destination to the source ref.
+    let new_oid = grit_lib::rev_parse::resolve_revision(repo, src)
+        .with_context(|| format!("src ref '{src}' does not match any"))?;
+    let dst = dst_opt.unwrap_or(src);
+    let remote_ref = normalize_ref(dst);
+    let old_oid = refs::resolve_ref(&remote_repo.git_dir, &remote_ref).ok();
+    out.push(RefUpdate {
+        remote_ref,
+        old_oid,
+        new_oid: Some(new_oid),
+        force,
+    });
+    Ok(())
+}
+
+/// Expand a single `*`-bearing source/destination refspec pair against the local refs.
+///
+/// The source and destination each contain exactly one `*` (validated by the refspec parser);
+/// the text matched by the source `*` is substituted into the destination `*`.
+fn expand_wildcard_refspec(
+    repo: &Repository,
+    remote_repo: &Repository,
+    src: &str,
+    dst: &str,
+    force: bool,
+    out: &mut Vec<RefUpdate>,
+) -> Result<()> {
+    let (src_prefix, src_suffix) = src
+        .split_once('*')
+        .ok_or_else(|| anyhow::anyhow!("source pattern '{src}' has no '*'"))?;
+    let (dst_prefix, dst_suffix) = dst
+        .split_once('*')
+        .ok_or_else(|| anyhow::anyhow!("destination pattern '{dst}' has no '*'"))?;
+
+    let list_prefix = if src_prefix.starts_with("refs/") {
+        src_prefix
+    } else {
+        "refs/"
+    };
+    for (refname, local_oid) in refs::list_refs(&repo.git_dir, list_prefix)? {
+        let Some(rest) = refname.strip_prefix(src_prefix) else {
+            continue;
+        };
+        let Some(matched) = rest.strip_suffix(src_suffix) else {
+            continue;
+        };
+        // Avoid matching when the suffix overlaps the prefix on too-short names.
+        if rest.len() < src_suffix.len() {
+            continue;
+        }
+        let remote_ref = format!("{dst_prefix}{matched}{dst_suffix}");
+        let old_oid = refs::resolve_ref(&remote_repo.git_dir, &remote_ref).ok();
+        out.push(RefUpdate {
+            remote_ref,
+            old_oid,
+            new_oid: Some(local_oid),
+            force,
+        });
+    }
+    Ok(())
 }
 
 fn open_repo(path: &Path) -> Result<Repository> {
