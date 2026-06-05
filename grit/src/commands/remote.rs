@@ -17,7 +17,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::commands::fetch::{
-    map_ref_through_refspecs, ref_excluded_by_fetch_refspecs, remote_fetch_refspecs, FetchRefspec,
+    map_ref_through_refspecs, ref_excluded_by_fetch_refspecs, FetchRefspec,
 };
 use crate::explicit_exit::ExplicitExit;
 
@@ -610,8 +610,10 @@ struct RemoteStub {
 }
 
 fn build_remote_stub(config: &ConfigSet, name: &str) -> RemoteStub {
+    // Git's `remote->fetch` is populated purely from `remote.<name>.fetch` config lines; the
+    // implicit default refspec is only applied by `git fetch`, not by `remote show`/`remote rm`.
     RemoteStub {
-        fetch: remote_fetch_refspecs(config, name),
+        fetch: crate::commands::fetch::collect_refspecs(config, &format!("remote.{name}.fetch")),
     }
 }
 
@@ -1102,27 +1104,52 @@ fn cmd_set_head(rest: &[String]) -> Result<()> {
             .unwrap_or_default();
         let heads = if let Some(p) = url_to_local_repo_path(&url) {
             let rgd = find_git_dir(&p)?;
-            query_remote_head_branches_remote_repo(&rgd)?
+            guess_remote_head_names(&rgd, &config)?
         } else {
             Vec::new()
         };
         if heads.is_empty() {
-            bail!("error: Cannot determine remote HEAD");
+            return Err(anyhow::Error::new(ExplicitExit {
+                code: 1,
+                message: "error: Cannot determine remote HEAD".to_owned(),
+            }));
         }
         if heads.len() > 1 {
-            eprintln!("error: Multiple remote HEAD branches. Please choose one explicitly with:");
+            let mut msg = String::from(
+                "error: Multiple remote HEAD branches. Please choose one explicitly with:",
+            );
             for h in &heads {
-                eprintln!("  git remote set-head {remote_name} {h}");
+                msg.push_str(&format!("\n  git remote set-head {remote_name} {h}"));
             }
-            return Ok(());
+            return Err(anyhow::Error::new(ExplicitExit {
+                code: 1,
+                message: msg,
+            }));
         }
         let head_name = heads[0].clone();
         let target = format!("refs/remotes/{remote_name}/{head_name}");
         let prev = read_remote_head_previous(&git_dir, &remote_name);
-        refs::resolve_ref(&git_dir, &target)
-            .with_context(|| format!("Not a valid ref: {target}"))?;
-        refs::write_symbolic_ref(&git_dir, &head_ref, &target)
-            .with_context(|| format!("error: Could not set up {}", head_ref))?;
+        if refs::resolve_ref(&git_dir, &target).is_err() {
+            return Err(anyhow::Error::new(ExplicitExit {
+                code: 1,
+                message: format!("error: Not a valid ref: {target}"),
+            }));
+        }
+        // Match Git's `refs_update_symref_extended`: a pre-existing `<ref>.lock` means the ref is
+        // already locked and updating fails with "Could not set up <ref>".
+        let head_lock = git_dir.join(format!("{head_ref}.lock"));
+        if head_lock.exists() {
+            return Err(anyhow::Error::new(ExplicitExit {
+                code: 1,
+                message: format!("error: Could not set up {head_ref}"),
+            }));
+        }
+        refs::write_symbolic_ref(&git_dir, &head_ref, &target).map_err(|_| {
+            anyhow::Error::new(ExplicitExit {
+                code: 1,
+                message: format!("error: Could not set up {head_ref}"),
+            })
+        })?;
         report_set_head_auto(&remote_name, &head_name, &prev);
         maybe_downgrade_follow_remote_head(&git_dir, &remote_name)?;
         return Ok(());
@@ -1215,23 +1242,52 @@ fn maybe_downgrade_follow_remote_head(git_dir: &Path, remote: &str) -> Result<()
     Ok(())
 }
 
-fn query_remote_head_branches_remote_repo(remote_git: &Path) -> Result<Vec<String>> {
+/// Determine the candidate HEAD branch names for `set-head --auto`, mirroring Git's
+/// `guess_remote_head` with `REMOTE_GUESS_HEAD_ALL` (via `get_head_names`).
+///
+/// If the remote advertises HEAD as a symbolic ref, its target branch is used directly.
+/// Otherwise every `refs/heads/*` whose OID equals HEAD's OID is returned (the caller errors
+/// when more than one matches).
+///
+/// # Parameters
+/// - `remote_git` — git directory of the remote repository.
+/// - `config` — local config, used to resolve the repository default branch name.
+fn guess_remote_head_names(remote_git: &Path, config: &ConfigSet) -> Result<Vec<String>> {
     let odb = Odb::new(&remote_git.join("objects"));
     let entries = ls_remote(
         remote_git,
         &odb,
         &LsRemoteOpts {
-            heads: true,
+            heads: false,
             tags: false,
-            refs_only: true,
-            symref: false,
+            refs_only: false,
+            symref: true,
             patterns: Vec::new(),
         },
     )?;
-    Ok(entries
-        .into_iter()
-        .filter_map(|e| e.name.strip_prefix("refs/heads/").map(|s| s.to_owned()))
-        .collect())
+    let head = entries.iter().find(|e| e.name == "HEAD");
+    let Some(head) = head else {
+        return Ok(Vec::new());
+    };
+    // Fast path: the transport told us exactly where HEAD points.
+    if let Some(target) = &head.symref_target {
+        if let Some(b) = target.strip_prefix("refs/heads/") {
+            return Ok(vec![b.to_owned()]);
+        }
+    }
+    let head_oid = head.oid;
+    let _ = config;
+    // REMOTE_GUESS_HEAD_ALL: collect every head pointing at the same OID as HEAD.
+    let mut out: Vec<String> = entries
+        .iter()
+        .filter_map(|e| {
+            let b = e.name.strip_prefix("refs/heads/")?;
+            (e.oid == head_oid).then(|| b.to_owned())
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    Ok(out)
 }
 
 fn url_to_local_repo_path(url: &str) -> Option<PathBuf> {
@@ -1262,10 +1318,10 @@ fn cmd_show(rest: &[String], global_verbose: bool) -> Result<()> {
             break;
         }
     }
-    let _ = global_verbose;
     let names: Vec<String> = rest[i..].to_vec();
     if names.is_empty() {
-        bail!("usage: git remote show [-n] <name>...");
+        // Git's `show` with no remote name falls back to `show_all()` (== `git remote`).
+        return cmd_list(global_verbose);
     }
     let git_dir = resolve_git_dir()?;
     let config = load_local_config(&git_dir)?;
@@ -1364,29 +1420,36 @@ fn show_one_remote(
 
     let mut listed: Vec<(String, String)> = Vec::new();
     if !no_query {
-        for (r, _) in &advertised {
-            if let Some(branch) = r.strip_prefix("refs/heads/") {
-                if ref_excluded_by_fetch_refspecs(r, &remote_stub.fetch) {
-                    listed.push((branch.to_owned(), "skipped".to_owned()));
-                    continue;
-                }
-                let mapped = map_ref_through_refspecs(r, &remote_stub.fetch);
-                let local_ref = mapped.unwrap_or_else(|| format!("refs/remotes/{name}/{branch}"));
-                let exists = refs::resolve_ref(git_dir, &local_ref).is_ok();
-                if exists {
-                    listed.push((branch.to_owned(), "tracked".to_owned()));
-                } else {
-                    listed.push((
-                        branch.to_owned(),
-                        format!("new (next fetch will store in remotes/{name})"),
-                    ));
-                }
+        // Build the fetch map exactly like Git's `get_ref_states`: only advertised refs that match
+        // a positive fetch refspec source participate. Each such ref is classified new/tracked/
+        // skipped; stale local tracking refs (no longer present on the remote) are appended.
+        let mut mapped_dsts: HashSet<String> = HashSet::new();
+        for r in advertised.keys() {
+            let Some(branch) = r.strip_prefix("refs/heads/") else {
+                continue;
+            };
+            if ref_excluded_by_fetch_refspecs(r, &remote_stub.fetch) {
+                listed.push((branch.to_owned(), "skipped".to_owned()));
+                continue;
+            }
+            let Some(local_ref) = map_ref_through_refspecs(r, &remote_stub.fetch) else {
+                continue;
+            };
+            mapped_dsts.insert(local_ref.clone());
+            if refs::resolve_ref(git_dir, &local_ref).is_ok() {
+                listed.push((branch.to_owned(), "tracked".to_owned()));
+            } else {
+                listed.push((
+                    branch.to_owned(),
+                    format!("new (next fetch will store in remotes/{name})"),
+                ));
             }
         }
+        // Stale: local tracking refs that are a destination of a fetch refspec but whose source is
+        // no longer advertised by the remote.
         let prefix = format!("refs/remotes/{name}/");
-        let local_tracked = refs::list_refs(git_dir, &prefix)?;
-        for (lr, _) in local_tracked {
-            if lr.ends_with("/HEAD") {
+        for (lr, _) in refs::list_refs(git_dir, &prefix)? {
+            if lr.ends_with("/HEAD") || mapped_dsts.contains(&lr) {
                 continue;
             }
             if let Ok(Some(_)) = grit_lib::refs::read_symbolic_ref(git_dir, &lr) {
@@ -1394,8 +1457,9 @@ fn show_one_remote(
             }
             let branch = lr.strip_prefix(&prefix).unwrap_or(&lr);
             let remote_full = format!("refs/heads/{branch}");
-            if !advertised.contains_key(&remote_full)
-                && !ref_excluded_by_fetch_refspecs(&remote_full, &remote_stub.fetch)
+            // Only a destination that the refspec set actually maps to can become stale.
+            if map_ref_through_refspecs(&remote_full, &remote_stub.fetch).as_deref() == Some(&lr)
+                && !advertised.contains_key(&remote_full)
             {
                 listed.push((
                     branch.to_owned(),
@@ -1454,26 +1518,20 @@ fn show_one_remote(
         let any_rebase = pull_lines.iter().any(|(_, reb, _)| *reb);
         for (bn, rebase, merges) in pull_lines {
             print!("    {bn:width$} ", width = width);
+            // Merge names are already abbreviated by `local_branches_for_pull`.
+            let m0 = merges.first().cloned().unwrap_or_default();
+            // Continuation lines are indented by `width + 4`, plus one more when any branch rebases
+            // (matching the extra leading space Git prints before "merges with remote").
+            let cont_width = if any_rebase { width + 5 } else { width + 4 };
             if rebase {
-                let m0 = merges.first().cloned().unwrap_or_default();
-                let m0s = shorten_remote_branch_display(&m0);
-                println!("rebases onto remote {m0s}");
+                println!("rebases onto remote {m0}");
             } else if any_rebase {
-                let m0 = merges.first().cloned().unwrap_or_default();
-                let m0s = shorten_remote_branch_display(&m0);
-                println!(" merges with remote {m0s}");
+                println!(" merges with remote {m0}");
             } else {
-                let m0 = merges.first().cloned().unwrap_or_default();
-                let m0s = shorten_remote_branch_display(&m0);
-                println!("merges with remote {m0s}");
+                println!("merges with remote {m0}");
             }
             for m in merges.iter().skip(1) {
-                println!(
-                    "{:width$}    and with remote {}",
-                    "",
-                    shorten_remote_branch_display(m),
-                    width = width + 4
-                );
+                println!("{:cont_width$}    and with remote {m}", "");
             }
         }
     }
@@ -1585,6 +1643,14 @@ fn shorten_remote_branch_display(full: &str) -> String {
         .unwrap_or_else(|| full.to_owned())
 }
 
+/// Abbreviate a ref name like Git's `abbrev_branch`: strip a leading `refs/heads/` or
+/// `refs/remotes/` prefix, leaving other names untouched.
+fn abbrev_branch(name: &str) -> &str {
+    name.strip_prefix("refs/heads/")
+        .or_else(|| name.strip_prefix("refs/remotes/"))
+        .unwrap_or(name)
+}
+
 fn local_branches_for_pull(config: &ConfigSet, remote: &str) -> Vec<(String, bool, Vec<String>)> {
     let mut out: Vec<(String, bool, Vec<String>)> = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -1603,15 +1669,22 @@ fn local_branches_for_pull(config: &ConfigSet, remote: &str) -> Vec<(String, boo
         if r != remote {
             continue;
         }
-        let merges = config.get_all(&format!("branch.{branch}.merge"));
-        if merges.is_empty() {
+        let raw_merges = config.get_all(&format!("branch.{branch}.merge"));
+        if raw_merges.is_empty() {
             continue;
         }
+        // Git splits each `branch.<n>.merge` value on spaces and abbreviates every token
+        // (see `config_read_branches`), so "topic-a topic-b topic-c" becomes three entries.
+        let merges: Vec<String> = raw_merges
+            .iter()
+            .flat_map(|v| v.split(' ').filter(|s| !s.is_empty()))
+            .map(|s| abbrev_branch(s).to_owned())
+            .collect();
         let rebase = config
             .get(&format!("branch.{branch}.rebase"))
             .map(|v| {
                 let l = v.to_ascii_lowercase();
-                l == "true" || l == "1" || l == "yes"
+                l == "true" || l == "1" || l == "yes" || l == "interactive" || l == "merges"
             })
             .unwrap_or(false);
         out.push((branch, rebase, merges));
@@ -1658,10 +1731,15 @@ fn compute_push_status_lines(
             (false, spec.as_str())
         };
         if s == ":" {
+            // The matching (":") refspec only pushes local branches that already exist on the
+            // remote (Git's `match_push_refs` with MATCH_REFS_NONE). Branches absent on the remote
+            // are not advertised here.
             for (local_ref, local_oid) in refs::list_refs(&repo.git_dir, "refs/heads/")? {
                 let dest_ref = local_ref.clone();
-                let old = remote_by_ref.get(&dest_ref).copied();
-                let st = classify_push(old, local_oid, repo)?;
+                let Some(old) = remote_by_ref.get(&dest_ref).copied() else {
+                    continue;
+                };
+                let st = classify_push(Some(old), local_oid, repo)?;
                 let st = if forced {
                     match st {
                         PushDisplay::Plain => PushDisplay::ForcedPlain,
@@ -1727,6 +1805,11 @@ fn abbrev_branch_display(full: &str) -> String {
         .to_owned()
 }
 
+/// Classify the push state of one ref, mirroring Git's `get_push_ref_states`.
+///
+/// `old` is the OID the *remote* ref currently points to; `new` is the local OID that would be
+/// pushed. Following Git, when the local object store does not contain `old`, the remote is ahead
+/// and the status is "local out of date" rather than an error (the ancestry check is skipped).
 fn classify_push(old: Option<ObjectId>, new: ObjectId, repo: &Repository) -> Result<PushDisplay> {
     if new == ObjectId::zero() {
         return Ok(PushDisplay::WithStatus("delete"));
@@ -1737,13 +1820,12 @@ fn classify_push(old: Option<ObjectId>, new: ObjectId, repo: &Repository) -> Res
     if o == new {
         return Ok(PushDisplay::WithStatus("up to date"));
     }
-    if is_ancestor(repo, o, new)? {
+    // Git only treats this as fast-forwardable when the local repo *has* the remote's old object
+    // and `new` is strictly newer; otherwise the remote ref is ahead -> "local out of date".
+    if repo.odb.exists(&o) && is_ancestor(repo, o, new)? {
         return Ok(PushDisplay::WithStatus("fast-forwardable"));
     }
-    if is_ancestor(repo, new, o)? {
-        return Ok(PushDisplay::WithStatus("local out of date"));
-    }
-    Ok(PushDisplay::Plain)
+    Ok(PushDisplay::WithStatus("local out of date"))
 }
 
 fn cmd_prune(rest: &[String]) -> Result<()> {
