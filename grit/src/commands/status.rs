@@ -205,7 +205,6 @@ pub struct Args {
     pub no_renames: bool,
 
     /// Pathspec arguments.
-    #[arg(last = true)]
     pub pathspec: Vec<String>,
 }
 
@@ -945,6 +944,7 @@ directory contents. Running 'git clean' may assist in this cleanup."
             cwd_rel_short,
             &relativize,
             quote_path_cfg,
+            &pathspecs,
         )?;
         if show_stash {
             let n = count_stash_reflog_entries(&repo.git_dir);
@@ -2078,6 +2078,7 @@ fn format_short(
     cwd_relative_short: bool,
     relativize: &dyn Fn(&str) -> String,
     quote_path_cfg: bool,
+    pathspecs: &[String],
 ) -> Result<()> {
     let disp = |p: &str| -> String {
         if cwd_relative_short {
@@ -2164,6 +2165,9 @@ fn format_short(
     }
 
     for (path, mask) in &unmerged {
+        if !status_path_matches(path, pathspecs) {
+            continue;
+        }
         let key = unmerged_v2_key(*mask);
         let mut chars = key.chars();
         staged_map.insert(path.clone(), chars.next().unwrap_or('U'));
@@ -2176,6 +2180,9 @@ fn format_short(
             continue;
         }
         let path = String::from_utf8_lossy(&ie.path).into_owned();
+        if !status_path_matches(&path, pathspecs) {
+            continue;
+        }
         if submodule_suppressed(&path, ie.oid) {
             continue;
         }

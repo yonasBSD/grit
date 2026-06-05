@@ -6738,6 +6738,7 @@ fn checkout_index_to_worktree_inner(
                     }
                     let abs = work_tree.join(&rel);
                     if submodule_dir_has_non_dotgit_content(&abs) {
+                        remove_gitlink_dir_or_warn(&abs, &rel);
                         continue;
                     }
                 }
@@ -6779,7 +6780,10 @@ fn checkout_index_to_worktree_inner(
                     e.mode == MODE_GITLINK && submodule_dir_has_non_dotgit_content(&abs)
                 });
             if skip_populated_submodule {
-                // keep populated submodule dirs when checkout preserves dropped gitlinks
+                // Keep populated submodule dirs when checkout preserves dropped gitlinks, but
+                // still mirror Git's `remove_or_warn` behavior so callers know manual cleanup is
+                // needed after moving a submodule.
+                remove_gitlink_dir_or_warn(&abs, &rel);
             } else if !preserve_dropped_gitlink_dirs
                 && old_map
                     .get(old_path.as_slice())
@@ -6801,13 +6805,7 @@ fn checkout_index_to_worktree_inner(
                 e.mode == MODE_GITLINK && !git_dir_is_nested_modules_repo(&repo.git_dir)
             }) {
                 // Git `remove_or_warn` for gitlinks: `rmdir` only; warn if non-empty (t7001-mv).
-                match std::fs::remove_dir(&abs) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => {
-                        eprintln!("warning: unable to rmdir '{rel}': {e}");
-                    }
-                }
+                remove_gitlink_dir_or_warn(&abs, &rel);
             } else {
                 let is_populated_submodule = old_map
                     .get(old_path.as_slice())
@@ -6958,7 +6956,7 @@ fn checkout_index_to_worktree_inner(
                     && abs_path.is_dir()
                     && abs_path.join(".git").exists()
                     && !submodule_dir_has_non_dotgit_content(&abs_path);
-                if !existing_gitlink || recurse_requested || empty_populated_gitlink {
+                if recurse_requested || empty_populated_gitlink {
                     let force_populate = match old_entry {
                         None => true,
                         Some(old) => {
@@ -7033,6 +7031,16 @@ fn submodule_dir_has_non_dotgit_content(path: &Path) -> bool {
         return false;
     };
     entries.flatten().any(|entry| entry.file_name() != ".git")
+}
+
+fn remove_gitlink_dir_or_warn(path: &Path, rel: &str) {
+    match std::fs::remove_dir(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            eprintln!("warning: unable to rmdir '{rel}': {e}");
+        }
+    }
 }
 
 fn unset_nested_submodule_core_worktrees(modules_git: &Path) -> Result<()> {

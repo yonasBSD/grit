@@ -1180,12 +1180,19 @@ pub fn refresh_submodule_gitfiles(repo: &Repository) -> Result<()> {
         if !sm_dir.is_dir() {
             continue;
         }
+        let gitfile = sm_dir.join(".git");
+        if !gitfile.exists()
+            && fs::read_dir(&sm_dir)
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(false)
+        {
+            continue;
+        }
         let modules_git = submodule_separate_git_dir(repo, wt, &m.name, &m.path)?;
         if !modules_git.exists() {
             continue;
         }
         if let Ok(rel) = relativize_submodule_gitfile(&sm_dir, &modules_git) {
-            let gitfile = sm_dir.join(".git");
             let line = format!("gitdir: {}\n", rel.to_string_lossy().replace('\\', "/"));
             fs::write(&gitfile, line).with_context(|| {
                 format!("failed to write submodule gitfile at {}", gitfile.display())

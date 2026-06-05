@@ -667,22 +667,18 @@ pub fn run(args: Args) -> Result<()> {
             continue;
         }
 
-        if !row.index_only {
-            if let Some(e) = index.get(row.src.as_bytes(), 0) {
-                if e.mode == MODE_GITLINK {
-                    let gm = work_tree.join(".gitmodules");
-                    let old_name = if gm.is_file() {
-                        let c = fs::read_to_string(&gm)?;
-                        submodule_logical_name_for_path_in_gitmodules(&c, &row.src)?
-                    } else {
-                        None
-                    };
-                    update_gitmodules_submodule_path(
-                        &repo, work_tree, &mut index, &row.src, &row.dst,
-                    )?;
-                    if old_name.is_none() {
-                        rename_submodule_modules_dir(&repo.git_dir, &index, &row.src, &row.dst)?;
-                    }
+        if let Some(e) = index.get(row.src.as_bytes(), 0) {
+            if e.mode == MODE_GITLINK {
+                let gm = work_tree.join(".gitmodules");
+                let old_name = if gm.is_file() {
+                    let c = fs::read_to_string(&gm)?;
+                    submodule_logical_name_for_path_in_gitmodules(&c, &row.src)?
+                } else {
+                    None
+                };
+                update_gitmodules_submodule_path(&repo, work_tree, &mut index, &row.src, &row.dst)?;
+                if old_name.is_none() {
+                    rename_submodule_modules_dir(&repo.git_dir, &index, &row.src, &row.dst)?;
                 }
             }
         }
@@ -753,6 +749,26 @@ pub fn run(args: Args) -> Result<()> {
 
         index.remove(row.src.as_bytes());
         index.add_or_replace(new_entry);
+
+        if row_is_gitlink && row.index_only {
+            let gm = work_tree.join(".gitmodules");
+            let name_opt = if gm.is_file() {
+                let c = fs::read_to_string(&gm)?;
+                submodule_logical_name_for_path_in_gitmodules(&c, &row.dst)?
+            } else {
+                None
+            };
+            if let Some(name) = name_opt {
+                rewrite_submodule_worktree_gitfile_for_name(
+                    &repo.git_dir,
+                    work_tree,
+                    &row.dst,
+                    &name,
+                )?;
+            } else {
+                rewrite_submodule_worktree_gitfile(&repo.git_dir, work_tree, &row.dst)?;
+            }
+        }
 
         if args.sparse && sparse_enabled && cone_cfg {
             let dst_in = path_in_sparse_checkout_patterns(&row.dst, &sparse_patterns, cone_cfg);
