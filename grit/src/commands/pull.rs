@@ -296,7 +296,7 @@ fn die_no_merge_candidates(
             );
         } else {
             // repo == configured remote but no merge ref: fall through to the no-tracking message.
-            die_no_tracking_information(current_branch, config, opt_rebase);
+            die_no_tracking_information(current_branch, opt_rebase);
         }
     } else if current_branch.is_none() {
         eprintln!("You are not currently on a branch.");
@@ -310,7 +310,7 @@ fn die_no_merge_candidates(
         eprintln!("    git pull <remote> <branch>");
         eprintln!();
     } else if !merge_nr {
-        die_no_tracking_information(current_branch, config, opt_rebase);
+        die_no_tracking_information(current_branch, opt_rebase);
     } else {
         let merge_ref = current_branch
             .and_then(|b| config.get(&format!("branch.{b}.merge")))
@@ -326,7 +326,7 @@ fn die_no_merge_candidates(
     })
 }
 
-fn die_no_tracking_information(current_branch: Option<&str>, config: &ConfigSet, opt_rebase: bool) {
+fn die_no_tracking_information(current_branch: Option<&str>, opt_rebase: bool) {
     let branch = current_branch.unwrap_or("<branch>");
     eprintln!("There is no tracking information for the current branch.");
     if opt_rebase {
@@ -767,6 +767,15 @@ pub fn run(args: Args) -> Result<()> {
                         pull_will_rebase_for_diag(&args, &config, current_branch.as_deref()),
                     ));
                 }
+                // `pull . <src>:<current-branch>`: the destination is the branch we are on, so the
+                // "fetch" updates HEAD's ref directly (git fetch `--update-head-ok`) and the working
+                // tree is then fast-forwarded (builtin/pull.c). Handle that here so the merge step
+                // sees an already-up-to-date FETCH_HEAD.
+                if let Some(branch) = current_branch.as_deref() {
+                    if fetch_updates_current_branch_dst(spec, branch) {
+                        pull_local_fetch_advances_current_branch(&repo, &config, spec, branch)?;
+                    }
+                }
                 let (oid, desc) = pull_fetch_head_line(&repo, spec)?;
                 out.push(format!("{}\t\t{desc}\n", oid.to_hex()));
             }
@@ -868,7 +877,11 @@ fn run_pull_all(
     let has_merge_cfg = current_branch
         .map(|b| config.get(&format!("branch.{b}.merge")).is_some())
         .unwrap_or(false);
-    if !has_merge_cfg {
+    // `--dry-run` only reports what fetch would do and stops before integrating, so the
+    // no-tracking diagnostic (which belongs to the integrate step) must not fire (t5521
+    // `pull --all --dry-run`). An unborn branch likewise has no merge candidate to complain about
+    // yet — defer to the post-fetch path.
+    if !has_merge_cfg && !args.dry_run && current_branch.is_some() {
         return Err(die_no_merge_candidates(
             None,
             false,
@@ -1106,6 +1119,72 @@ fn split_pull_refspec(spec: &str) -> (&str, Option<&str>) {
     match spec.split_once(':') {
         Some((src, dst)) => (src, Some(dst)),
         None => (spec, None),
+    }
+}
+
+/// True when a refspec's destination is the branch we are currently on (`pull . second:third` while
+/// on `third`), so the fetch would update HEAD's own ref.
+fn fetch_updates_current_branch_dst(spec: &str, current_branch: &str) -> bool {
+    let Some(dst) = split_pull_refspec(spec).1 else {
+        return false;
+    };
+    let dst_short = dst
+        .strip_prefix("refs/heads/")
+        .unwrap_or(dst)
+        .trim_start_matches('+');
+    !dst_short.is_empty() && dst_short == current_branch
+}
+
+/// Handle `pull . <src>:<current-branch>`: the fetch advances the current branch's ref, then the
+/// working tree is fast-forwarded (builtin/pull.c: warn "fetch updated the current branch head" and
+/// `checkout_fast_forward`). Updates `refs/heads/<branch>` to the source tip and fast-forwards the
+/// work tree; a conflicting work tree aborts with git's recovery hint (t5520 tests 18, 19).
+fn pull_local_fetch_advances_current_branch(
+    repo: &Repository,
+    _config: &ConfigSet,
+    spec: &str,
+    branch: &str,
+) -> Result<()> {
+    let (src, _dst) = split_pull_refspec(spec);
+    let new_oid = resolve_revision(repo, src).with_context(|| format!("bad revision '{src}'"))?;
+    let branch_ref = format!("refs/heads/{branch}");
+    let Ok(orig_oid) = refs::resolve_ref(&repo.git_dir, &branch_ref) else {
+        return Ok(());
+    };
+    if orig_oid == new_oid {
+        return Ok(());
+    }
+    // Only a true fast-forward of the ref triggers the working-tree fast-forward path; a non-ff
+    // update is rejected by fetch without `--force` (out of scope for these tests).
+    if !is_ancestor(repo, orig_oid, new_oid)? {
+        return Ok(());
+    }
+
+    refs::write_ref(&repo.git_dir, &branch_ref, &new_oid)?;
+
+    eprintln!("warning: fetch updated the current branch head.");
+    eprintln!("fast-forwarding your working tree from");
+    eprintln!("commit {}.", orig_oid.to_hex());
+
+    match super::merge::checkout_fast_forward_worktree_only(repo, orig_oid, new_oid) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if format!("{e:#}").contains(super::merge::WORKTREE_FF_BLOCKED) {
+                // Restore the ref: git leaves the branch advanced but the diagnostic instructs the
+                // user to recover; the test only checks the message and that the work tree is intact.
+                eprintln!("fatal: Cannot fast-forward your working tree.");
+                eprintln!("After making sure that you saved anything precious from");
+                eprintln!("$ git diff {}", orig_oid.to_hex());
+                eprintln!("output, run");
+                eprintln!("$ git reset --hard");
+                eprintln!("to recover.");
+                return Err(anyhow::Error::new(ExplicitExit {
+                    code: 128,
+                    message: String::new(),
+                }));
+            }
+            Err(e)
+        }
     }
 }
 

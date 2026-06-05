@@ -1522,6 +1522,63 @@ fn do_fast_forward_inner(
     Ok(())
 }
 
+/// Fast-forward only the working tree and index from `old_oid` to `new_oid`, leaving HEAD/refs
+/// untouched (the caller already moved the branch ref — git's `checkout_fast_forward` after a fetch
+/// that advanced the current branch, builtin/pull.c). Returns `Err` with a `WorktreeFfBlocked`
+/// marker when local changes would be overwritten, so the caller can print git's
+/// "Cannot fast-forward your working tree" diagnostic.
+pub(crate) fn checkout_fast_forward_worktree_only(
+    repo: &Repository,
+    old_oid: ObjectId,
+    new_oid: ObjectId,
+) -> Result<()> {
+    let commit_obj = repo.odb.read(&new_oid)?;
+    let commit = parse_commit(&commit_obj.data)?;
+    let current_index = repo.load_index()?;
+    let old_tree = commit_tree(repo, old_oid)?;
+    let mut new_index = compose_fast_forward_index(repo, commit.tree, old_tree, &current_index)?;
+    apply_sparse_checkout_skip_worktree(
+        &repo.git_dir,
+        repo.work_tree.as_deref(),
+        &mut new_index,
+        false,
+    );
+    let old_entries = tree_to_map(tree_to_index_entries(repo, &old_tree, "")?);
+    if !index_matches_commit_tree(repo, new_oid)? {
+        if let Err(e) =
+            bail_if_merge_would_overwrite_local_changes(repo, &old_entries, &new_index, &[], false)
+        {
+            return Err(e.context(WORKTREE_FF_BLOCKED));
+        }
+    }
+
+    if let Some(ref wt) = repo.work_tree {
+        remove_deleted_files(
+            wt,
+            &old_entries,
+            &new_index,
+            sparse_checkout_enabled(&repo.git_dir),
+        )?;
+        lazy_fetch_missing_index_blobs(repo, &new_index);
+        checkout_entries_with_treeish(
+            repo,
+            wt,
+            &new_index,
+            None,
+            sparse_checkout_enabled(&repo.git_dir),
+            Some(&new_oid),
+        )?;
+    }
+    refresh_index_stat_cache_from_worktree(repo, &mut new_index)?;
+    set_merge_cache_tree(repo, &mut new_index)?;
+    repo.write_index(&mut new_index)?;
+    Ok(())
+}
+
+/// Marker attached to a [`checkout_fast_forward_worktree_only`] error when the working tree could
+/// not be fast-forwarded; the pull caller matches on it to emit git's recovery hint.
+pub(crate) const WORKTREE_FF_BLOCKED: &str = "worktree-fast-forward-blocked";
+
 /// Perform a real three-way merge.
 /// Create a virtual merge base by recursively merging multiple merge bases.
 /// This handles criss-cross merge situations where there are multiple LCA commits.
