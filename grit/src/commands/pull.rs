@@ -121,13 +121,60 @@ pub struct Args {
     /// Run the pre-merge-commit and commit-msg hooks when merging (cancels `--no-verify`).
     #[arg(long = "verify", overrides_with = "no_verify")]
     pub verify: bool,
+
+    /// Before starting, stash local modifications and re-apply them afterwards.
+    #[arg(long = "autostash", overrides_with = "no_autostash")]
+    pub autostash: bool,
+
+    /// Do not stash local modifications before integrating (overrides config).
+    #[arg(long = "no-autostash", overrides_with = "autostash")]
+    pub no_autostash: bool,
+
+    /// Verify the tip commit's GPG signature (passed through to merge).
+    #[arg(long = "verify-signatures")]
+    pub verify_signatures: bool,
+
+    /// Do not verify GPG signatures (passed through to merge).
+    #[arg(long = "no-verify-signatures")]
+    pub no_verify_signatures: bool,
 }
 
 fn rebase_cli_value_is_valid(s: &str) -> bool {
     matches!(
         s.to_ascii_lowercase().as_str(),
-        "false" | "no" | "off" | "0" | "true" | "yes" | "on" | "1" | "merges" | "interactive"
+        "false"
+            | "no"
+            | "off"
+            | "0"
+            | "true"
+            | "yes"
+            | "on"
+            | "1"
+            | "merges"
+            | "m"
+            | "interactive"
+            | "i"
     )
+}
+
+/// The flavor of rebase requested via `--rebase=<value>` / `pull.rebase` (git's `rebase_type`),
+/// distinguishing plain rebase from `--rebase-merges` and `--interactive`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum PullRebaseKind {
+    #[default]
+    Plain,
+    Merges,
+    Interactive,
+}
+
+/// Map a rebase config/CLI value to its flavor; `true`/`yes`/`1`/`on` are plain rebase, while
+/// `merges`/`m` and `interactive`/`i` select the corresponding rebase mode (git `rebase_parse_value`).
+fn rebase_kind_from_value(value: &str) -> PullRebaseKind {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "merges" | "m" => PullRebaseKind::Merges,
+        "interactive" | "i" => PullRebaseKind::Interactive,
+        _ => PullRebaseKind::Plain,
+    }
 }
 
 /// If clap consumed the repository token as `--rebase`'s optional value (`pull --rebase . c1` →
@@ -689,12 +736,38 @@ enum RebaseTri {
     Unset,
 }
 
+/// Tri-state autostash decision (git pull's `opt_autostash`: -1 unset, 0 off, 1 on).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AutostashTri {
+    Off,
+    On,
+    Unset,
+}
+
+/// Resolve pull's `opt_autostash` from CLI flags then `pull.autostash` config, matching
+/// git builtin/pull.c (`opt_autostash == -1 ? config_pull_autostash`). The result is `Unset`
+/// when neither the CLI nor `pull.autostash` decides — the rebase path then falls back to
+/// `rebase.autostash` and the merge path to `merge.autostash` (handled by the callee).
+fn resolve_pull_autostash(args: &Args, config: &ConfigSet) -> AutostashTri {
+    if args.no_autostash {
+        return AutostashTri::Off;
+    }
+    if args.autostash {
+        return AutostashTri::On;
+    }
+    match config.get_bool("pull.autostash") {
+        Some(Ok(true)) => AutostashTri::On,
+        Some(Ok(false)) => AutostashTri::Off,
+        _ => AutostashTri::Unset,
+    }
+}
+
 fn parse_rebase_value(key: &str, value: &str) -> Result<RebaseTri> {
     let v = value.trim();
     let lower = v.to_ascii_lowercase();
     match lower.as_str() {
         "false" | "no" | "off" | "0" => Ok(RebaseTri::False),
-        "true" | "yes" | "on" | "1" | "merges" | "interactive" => Ok(RebaseTri::True),
+        "true" | "yes" | "on" | "1" | "merges" | "m" | "interactive" | "i" => Ok(RebaseTri::True),
         _ => bail!("invalid value for '{key}': '{value}'"),
     }
 }
@@ -753,19 +826,27 @@ fn pull_fetch_head_line(remote: &Repository, spec: &str) -> Result<(ObjectId, St
 fn config_pull_rebase(
     config: &ConfigSet,
     current_branch: Option<&str>,
-) -> Result<(RebaseTri, bool)> {
+) -> Result<(RebaseTri, bool, PullRebaseKind)> {
     if let Some(b) = current_branch {
         let key = format!("branch.{b}.rebase");
         if let Some(v) = config.get(&key) {
-            return Ok((parse_rebase_value(&key, &v)?, false));
+            return Ok((
+                parse_rebase_value(&key, &v)?,
+                false,
+                rebase_kind_from_value(&v),
+            ));
         }
     }
     if let Some(v) = config.get("pull.rebase") {
-        return Ok((parse_rebase_value("pull.rebase", &v)?, false));
+        return Ok((
+            parse_rebase_value("pull.rebase", &v)?,
+            false,
+            rebase_kind_from_value(&v),
+        ));
     }
     // When `pull.rebase` is not configured, refuse to pick merge vs rebase on divergent
     // branches until the user sets `pull.rebase` or passes `--rebase` / `--no-rebase` (t7601).
-    Ok((RebaseTri::False, true))
+    Ok((RebaseTri::False, true, PullRebaseKind::Plain))
 }
 
 fn pull_ff_from_config(config: &ConfigSet) -> Result<Option<(bool, bool, bool)>> {
@@ -918,20 +999,32 @@ fn do_merge_or_rebase_after_fetch(
     repo: &Repository,
     head: &grit_lib::state::HeadState,
 ) -> Result<PullIntegrateKind> {
+    // Resolve `--autostash`/`--no-autostash`/`pull.autostash` once (git pull's `opt_autostash`).
+    let pull_autostash = resolve_pull_autostash(args, config);
     if head.oid().is_none() {
         if merge_heads_from_fetch_head(repo)?.len() > 1 {
             bail!("Cannot merge multiple branches into empty head.");
         }
-        let merge_args =
-            build_pull_merge_args(args, true, false, false, vec!["FETCH_HEAD".to_owned()])?;
+        let merge_args = build_pull_merge_args(
+            args,
+            true,
+            false,
+            false,
+            pull_autostash,
+            vec!["FETCH_HEAD".to_owned()],
+        )?;
         super::merge::run(merge_args)?;
         return Ok(PullIntegrateKind::Merge);
     }
 
-    let (mut opt_rebase, rebase_unspecified) = if args.no_rebase {
-        (RebaseTri::False, false)
+    let (mut opt_rebase, rebase_unspecified, rebase_kind) = if args.no_rebase {
+        (RebaseTri::False, false, PullRebaseKind::Plain)
     } else if let Some(ref s) = args.rebase {
-        (parse_rebase_value("--rebase", s)?, false)
+        (
+            parse_rebase_value("--rebase", s)?,
+            false,
+            rebase_kind_from_value(s),
+        )
     } else {
         config_pull_rebase(config, head.branch_name())?
     };
@@ -1009,8 +1102,14 @@ fn do_merge_or_rebase_after_fetch(
 
     if opt_rebase == RebaseTri::True {
         if can_ff {
-            let merge_args =
-                build_pull_merge_args(args, false, false, true, vec!["FETCH_HEAD".to_owned()])?;
+            let merge_args = build_pull_merge_args(
+                args,
+                false,
+                false,
+                true,
+                pull_autostash,
+                vec!["FETCH_HEAD".to_owned()],
+            )?;
             super::merge::run(merge_args)?;
             return Ok(PullIntegrateKind::MergeFfOnlyForRebase);
         }
@@ -1026,19 +1125,30 @@ fn do_merge_or_rebase_after_fetch(
         {
             bail!("cannot rebase with locally recorded submodule modifications");
         }
+        // git pull.c run_rebase(): `--verify-signatures` is meaningless for rebase, so warn and
+        // drop it (a bare `--no-verify-signatures` is silently ignored).
+        if args.verify_signatures {
+            eprintln!("warning: ignoring --verify-signatures for rebase");
+        }
+        // git pull.c run_rebase(): `--rebase=merges` -> `--rebase-merges`, `--rebase=interactive`
+        // -> `--interactive`; a plain rebase passes neither.
         let rebase_args = super::rebase::Args {
             upstream_explicit: true,
             upstream: Some(upstream_hex),
             onto: None,
             root: false,
-            interactive: false,
+            interactive: rebase_kind == PullRebaseKind::Interactive,
             r#continue: false,
             abort: false,
             skip: false,
             exec: None,
             merge: false,
             apply: false,
-            rebase_merges: None,
+            rebase_merges: if rebase_kind == PullRebaseKind::Merges {
+                Some("true".to_owned())
+            } else {
+                None
+            },
             no_rebase_merges: false,
             no_ff: false,
             gpg_sign: None,
@@ -1060,8 +1170,9 @@ fn do_merge_or_rebase_after_fetch(
             no_stat: false,
             context_lines: None,
             whitespace: None,
-            autostash: false,
-            no_autostash: false,
+            // Pull's resolved autostash decision wins; when Unset, rebase reads `rebase.autostash`.
+            autostash: pull_autostash == AutostashTri::On,
+            no_autostash: pull_autostash == AutostashTri::Off,
             quit: false,
             autosquash: false,
             no_autosquash: false,
@@ -1091,7 +1202,8 @@ fn do_merge_or_rebase_after_fetch(
     } else {
         vec!["FETCH_HEAD".to_owned()]
     };
-    let merge_args = build_pull_merge_args(args, ff, no_ff, ff_only, merge_commits)?;
+    let merge_args =
+        build_pull_merge_args(args, ff, no_ff, ff_only, pull_autostash, merge_commits)?;
     super::merge::run(merge_args)?;
     Ok(PullIntegrateKind::Merge)
 }
@@ -1101,6 +1213,7 @@ fn build_pull_merge_args(
     ff: bool,
     no_ff: bool,
     ff_only: bool,
+    autostash: AutostashTri,
     commits: Vec<String>,
 ) -> Result<super::merge::Args> {
     Ok(super::merge::Args {
@@ -1141,7 +1254,10 @@ fn build_pull_merge_args(
         commit: false,
         no_squash: false,
         quit: false,
-        autostash: false,
+        // Pull resolves `--autostash`/`--no-autostash`/`pull.autostash` and forwards an explicit
+        // decision; when Unset, merge itself reads `merge.autostash`.
+        autostash: autostash == AutostashTri::On,
+        no_autostash: autostash == AutostashTri::Off,
         allow_unrelated_histories: args.allow_unrelated_histories,
         cleanup: None,
         file: None,

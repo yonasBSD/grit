@@ -5687,7 +5687,21 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         "patch-id" => commands::patch_id::run(parse_cmd_args(subcmd, rest)),
         "prune" => commands::prune::run_from_argv(rest),
         "prune-packed" => commands::prune_packed::run(parse_cmd_args(subcmd, rest)),
-        "pull" => commands::pull::run(parse_cmd_args(subcmd, rest)),
+        "pull" => {
+            // git pull sets GIT_REFLOG_ACTION to "pull <args...>" (builtin/pull.c
+            // set_reflog_message), but does not override an action inherited from a
+            // parent process. The fetch/merge/rebase it drives then record e.g.
+            // "pull --rebase . ff: Fast-forward" in the reflog.
+            if std::env::var_os("GIT_REFLOG_ACTION").is_none() {
+                let mut action = String::from("pull");
+                for a in rest {
+                    action.push(' ');
+                    action.push_str(a);
+                }
+                std::env::set_var("GIT_REFLOG_ACTION", action);
+            }
+            commands::pull::run(parse_cmd_args(subcmd, rest))
+        }
         "push" => commands::push::run(parse_cmd_args(subcmd, rest)),
         "range-diff" => commands::range_diff::run_with_rest(rest),
         "read-tree" => commands::read_tree::run(parse_cmd_args(subcmd, rest)),

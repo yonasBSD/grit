@@ -418,8 +418,12 @@ pub struct Args {
     pub quit: bool,
 
     /// Automatically stash/unstash before/after merge.
-    #[arg(long = "autostash")]
+    #[arg(long = "autostash", overrides_with = "no_autostash")]
     pub autostash: bool,
+
+    /// Do not stash/unstash before/after merge (overrides `merge.autostash`).
+    #[arg(long = "no-autostash", overrides_with = "autostash")]
+    pub no_autostash: bool,
 
     /// How to clean up the merge message.
     #[arg(long = "cleanup", value_name = "MODE")]
@@ -898,8 +902,8 @@ pub fn run(mut args: Args) -> Result<()> {
                 }
             }
         }
-        // Read merge.autoStash config (CLI `--autostash` already wins if set).
-        if !args.autostash {
+        // Read merge.autoStash config (CLI `--autostash`/`--no-autostash` already wins if set).
+        if !args.autostash && !args.no_autostash {
             if let Some(Ok(true)) = config.get_bool("merge.autostash") {
                 args.autostash = true;
             }
