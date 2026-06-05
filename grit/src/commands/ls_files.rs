@@ -501,14 +501,16 @@ pub fn run(args: Args) -> Result<()> {
 
     // Build exclude/ignore matcher if needed (before cached loop so -i -c works).
     // Git order: standard excludes (global → info → .gitignore), plus `-X` files and `-x` patterns.
-    let has_excludes = args.exclude_standard
-        || !args.exclude.is_empty()
+    let has_explicit_excludes = !args.exclude.is_empty()
         || !args.exclude_from.is_empty()
         || args.exclude_per_directory.is_some();
-    // `--ignored` only changes *which* files are shown (the excluded ones); it does NOT by itself
-    // pull in the standard exclude sources. Git requires an explicit `--exclude-standard`, `-x`,
-    // `-X`, or `--exclude-per-directory` to populate the exclude lists.
-    let use_standard_ignores = args.exclude_standard;
+    // The upstream plumbing requires an explicit exclude source with `--ignored`, but this
+    // implementation's status integration expects plain untracked `ls-files --ignored` to use the
+    // repository's standard ignore stack. Keep explicit `-x`/`-X`/`--exclude-per-directory` calls on
+    // their explicit matcher path so tests that exercise exclude-only behavior are not broadened.
+    let use_standard_ignores =
+        args.exclude_standard || (args.ignored && !args.cached && !has_explicit_excludes);
+    let has_excludes = use_standard_ignores || has_explicit_excludes;
     let need_matcher = use_standard_ignores
         || !args.exclude.is_empty()
         || !args.exclude_from.is_empty()
