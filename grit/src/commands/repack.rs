@@ -76,6 +76,10 @@ pub struct Args {
     #[arg(short = 'f')]
     pub force: bool,
 
+    /// Pass `--delta-islands` to pack-objects (Git `repack -i` / `repack.useDeltaIslands`).
+    #[arg(short = 'i', long = "delta-islands")]
+    pub delta_islands: bool,
+
     /// Use deeper delta compression (same as `git gc --aggressive`).
     #[arg(long)]
     pub aggressive: bool,
@@ -520,6 +524,19 @@ pub fn run(args: Args) -> Result<()> {
             }
             if args.no_write_bitmap_index {
                 cmd.arg("--no-write-bitmap-index");
+            }
+
+            // `git repack -i` / `repack.useDeltaIslands` forwards `--delta-islands` to pack-objects.
+            let use_delta_islands = args.delta_islands
+                || cfg
+                    .get("repack.usedeltaislands")
+                    .or_else(|| cfg.get("repack.useDeltaIslands"))
+                    .is_some_and(|v| {
+                        let v = v.trim();
+                        v == "true" || v == "1" || v.eq_ignore_ascii_case("yes")
+                    });
+            if use_delta_islands {
+                cmd.arg("--delta-islands");
             }
 
             // Emit a trace2 subcommand line for the spawned `pack-objects` child so trace-based

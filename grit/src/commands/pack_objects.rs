@@ -106,6 +106,10 @@ pub struct Args {
     #[arg(long = "no-reuse-delta")]
     pub no_reuse_delta: bool,
 
+    /// Restrict cross-island deltas (Git `--delta-islands`; driven by `pack.island` config).
+    #[arg(long = "delta-islands")]
+    pub delta_islands: bool,
+
     /// Suppress progress output (accepted for compat).
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
@@ -769,6 +773,17 @@ pub fn run(mut args: Args) -> Result<()> {
         return Ok(());
     }
 
+    // Delta islands (`--delta-islands`): compute island marks for the objects being packed so
+    // delta selection can restrict cross-island deltas and bias base preference. Inactive unless
+    // `pack.island` config matched at least one ref.
+    let delta_islands = if args.delta_islands {
+        let packed_oids: HashSet<ObjectId> = entries.iter().map(|e| e.oid).collect();
+        let icfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        grit_lib::delta_islands::load_delta_islands(&repo, &icfg, &packed_oids)
+    } else {
+        grit_lib::delta_islands::DeltaIslands::default()
+    };
+
     // OID-sorted `--all` order breaks REF_DELTA chains (base must appear earlier in the pack).
     // Order blobs by increasing size so strict-prefix chains (t5316) serialize correctly.
     // Incremental repack (`--unpacked --incremental`) uses the rev-list object order as-is.
@@ -782,7 +797,19 @@ pub fn run(mut args: Args) -> Result<()> {
                 non_blobs.push(e);
             }
         }
+        // `pack.islandcore` layering: core-island objects are written first (layer 0). We keep the
+        // existing size order within each layer, matching Git's per-layer `type_size_sort`.
+        let core_active = delta_islands.has_core();
         blobs.sort_by(|a, b| {
+            if core_active {
+                let a_core = delta_islands.is_core_object(&a.oid);
+                let b_core = delta_islands.is_core_object(&b.oid);
+                // Core objects first (true sorts before false).
+                match b_core.cmp(&a_core) {
+                    std::cmp::Ordering::Equal => {}
+                    ord => return ord,
+                }
+            }
             a.data
                 .len()
                 .cmp(&b.data.len())
@@ -850,6 +877,7 @@ pub fn run(mut args: Args) -> Result<()> {
         window_reuse_only,
         &pack_list.thin_blob_deltas,
         pack_hash_bytes,
+        &delta_islands,
     )?;
     let cruft_mtimes = if args.cruft && !args.incremental {
         Some(collect_cruft_mtime_map(&repo, &pack_list.oids)?)
@@ -3882,6 +3910,7 @@ fn optimize_blob_deltas(
     window_reuse_only: bool,
     thin_blob_deltas: &[(ObjectId, ObjectId)],
     pack_hash_bytes: usize,
+    islands: &grit_lib::delta_islands::DeltaIslands,
 ) -> Result<(Vec<PackWriteEntry>, usize, usize)> {
     if pack_hash_bytes == 32 {
         let out = entries.into_iter().map(PackWriteEntry::Full).collect();
@@ -3912,7 +3941,10 @@ fn optimize_blob_deltas(
     if max_delta_depth != Some(0) {
         if window_reuse_only {
             for (oid, (base, _)) in &reuse_candidates {
-                delta_target_to_base.insert(*oid, *base);
+                // Island rules forbid basing a delta on an object in a non-superset island.
+                if islands.in_same_island(oid, base) {
+                    delta_target_to_base.insert(*oid, *base);
+                }
             }
         }
         // t5316: successive `file` blobs are not strict prefixes (`…\\n8` vs `…\\n9`); the long
@@ -3923,7 +3955,10 @@ fn optimize_blob_deltas(
                 continue;
             }
             if let Ok(Some(base)) = grit_lib::pack::packed_delta_base_oid(objects_dir, &t.oid) {
-                if packed_set.contains(&base) && base != t.oid {
+                if packed_set.contains(&base)
+                    && base != t.oid
+                    && islands.in_same_island(&t.oid, &base)
+                {
                     delta_target_to_base.insert(t.oid, base);
                 }
             }
@@ -3940,6 +3975,11 @@ fn optimize_blob_deltas(
                         continue;
                     }
                     if b.data.is_empty() {
+                        continue;
+                    }
+                    // Delta islands: never base `t` on `b` if `t`'s island set is not a subset of
+                    // `b`'s (matches `in_same_island` in Git's `try_delta`).
+                    if islands.is_active() && !islands.in_same_island(&t.oid, &b.oid) {
                         continue;
                     }
                     if blobs.len() > 3
@@ -3959,6 +3999,19 @@ fn optimize_blob_deltas(
                             && (common > best_common
                                 || (common == best_common
                                     && best_base.is_none_or(|bb| b.data.len() < bb.data.len())))
+                        {
+                            best_base = Some(b);
+                            best_common = common;
+                        } else if islands.is_active()
+                            && common > 64
+                            && common.saturating_mul(2) >= t.data.len()
+                            && islands.delta_cmp(&b.oid, &t.oid) < 0
+                            && best_base.is_none_or(|bb| {
+                                // Prefer a base whose island set strictly dominates the current
+                                // pick (superset islands win regardless of size), matching Git's
+                                // `island_delta_cmp` bias in `type_size_sort`.
+                                islands.delta_cmp(&b.oid, &bb.oid) < 0 || common > best_common
+                            })
                         {
                             best_base = Some(b);
                             best_common = common;
