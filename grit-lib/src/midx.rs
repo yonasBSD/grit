@@ -1139,10 +1139,26 @@ pub fn format_midx_show_objects(objects_dir: &Path) -> Result<String> {
         let base = ooff_off + i * 8;
         let pack_id = read_be_u32(&data, base)? as usize;
         let offset = u64::from(read_be_u32(&data, base + 4)?);
-        let pack_name = names
+        let idx_name = names
             .get(pack_id)
             .ok_or_else(|| Error::CorruptObject("pack id out of range in MIDX".to_owned()))?;
-        out.push_str(&format!("{} {}\t{}\n", oid.to_hex(), offset, pack_name));
+        // Match `test-read-midx.c`, which prints `e.p->pack_name`: the full pack
+        // path `<object-dir>/pack/<stem>.pack`. A relative object dir gets a `./`
+        // prefix (Git `relative_path`).
+        let stem = idx_name.strip_suffix(".idx").unwrap_or(idx_name);
+        let dir_disp = objects_dir.display().to_string();
+        let dir_disp = if objects_dir.is_absolute() || dir_disp.starts_with("./") {
+            dir_disp
+        } else {
+            format!("./{dir_disp}")
+        };
+        out.push_str(&format!(
+            "{} {}\t{}/pack/{}.pack\n",
+            oid.to_hex(),
+            offset,
+            dir_disp,
+            stem
+        ));
     }
     Ok(out)
 }
