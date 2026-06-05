@@ -401,6 +401,7 @@ pub fn run(args: Args) -> Result<()> {
             filter_spec.as_deref(),
             !shallow_commits.is_empty(),
             !no_progress,
+            false,
         )?;
         {
             let mut pin = child.stdin.take().context("pack-objects stdin")?;

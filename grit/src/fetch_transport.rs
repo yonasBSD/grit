@@ -10,14 +10,14 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use grit_lib::config::ConfigSet;
+use grit_lib::config::{ConfigFile, ConfigScope, ConfigSet};
 use grit_lib::diff::zero_oid;
 use grit_lib::fetch_negotiator::SkippingNegotiator;
 use grit_lib::objects::ObjectId;
 use grit_lib::odb::Odb;
 use grit_lib::refs;
 use grit_lib::repo::Repository;
-use grit_lib::rev_parse::{peel_to_commit_for_merge_base, resolve_revision};
+use grit_lib::rev_parse::{resolve_revision, try_peel_to_commit_for_merge_base};
 use grit_lib::unpack_objects::{unpack_objects, UnpackOptions};
 
 use crate::commands::index_pack;
@@ -52,8 +52,13 @@ thread_local! {
     static PACKET_TRACE_IDENTITY: Cell<&'static str> = const { Cell::new("fetch") };
 }
 
-fn peel_commit_oid_for_negotiation(repo: &Repository, oid: ObjectId) -> Result<ObjectId> {
-    peel_to_commit_for_merge_base(repo, oid).map_err(|e| match e {
+/// Peel a ref tip to the commit used for fetch negotiation, returning `None` when the tip peels
+/// to a non-commit object (e.g. a tag pointing at a tree or blob, like t5515's `tag-one-tree`).
+///
+/// Git's negotiation (`mark_complete`, `everything_local`) silently ignores refs that do not
+/// resolve to commits rather than treating them as fatal, so we mirror that by skipping them.
+fn peel_commit_oid_for_negotiation(repo: &Repository, oid: ObjectId) -> Result<Option<ObjectId>> {
+    try_peel_to_commit_for_merge_base(repo, oid).map_err(|e| match e {
         grit_lib::error::Error::InvalidRef(msg) => anyhow::anyhow!(msg),
         other => other.into(),
     })
@@ -1159,6 +1164,15 @@ pub fn fetch_via_upload_pack_skipping(
         let caps = v2_caps.context("internal: missing v2 capability list")?;
         let default_hash = std::env::var("GIT_DEFAULT_HASH").unwrap_or_else(|_| "sha1".to_owned());
         let sideband_all = v2_fetch_supports_sideband_all(&caps);
+
+        // Promisor-remote capability (protocol v2): if the server advertised promisor remotes,
+        // evaluate `promisor.acceptFromServer` and reply with the accepted names. Accepting also
+        // resolves `--filter=auto` to the combined advertised filters and may store advertised
+        // fields locally (`promisor.storeFields`).
+        let promisor_outcome =
+            evaluate_promisor_remote_advertisement(local_git_dir, &caps, filter_spec)?;
+        let promisor_reply = promisor_outcome.reply.clone();
+        let effective_filter_spec = promisor_outcome.effective_filter_spec.as_deref();
         let client_sid = trace2_transfer::transfer_advertise_sid_enabled(local_git_dir)
             .then(trace2_transfer::trace2_session_id_wire_once);
         let (shallow_oids, depth, deepen_relative, shallow_since, shallow_exclude, unshallow) =
@@ -1183,12 +1197,13 @@ pub fn fetch_via_upload_pack_skipping(
             deepen_relative,
             client_sid.as_deref(),
             &[],
-            filter_spec,
+            effective_filter_spec.or(filter_spec),
             &shallow_oids,
             depth,
             shallow_since,
             shallow_exclude,
             unshallow,
+            promisor_reply.as_deref(),
         )?;
         // Close stdin so `upload-pack` v2 sees EOF after this fetch; otherwise `serve_loop`
         // blocks for the next command while we block reading the pack response (deadlock).
@@ -1231,6 +1246,188 @@ fn fetch_negotiation_algorithm(local_git_dir: &Path) -> Option<String> {
     ConfigSet::load(Some(local_git_dir), true)
         .ok()
         .and_then(|cfg| cfg.get("fetch.negotiationalgorithm"))
+}
+
+/// Result of evaluating a server's `promisor-remote` advertisement on the client.
+struct PromisorRemoteOutcome {
+    /// `promisor-remote=<names>` reply value, or `None` to send nothing.
+    reply: Option<String>,
+    /// When the request filter was `auto`, the combined filter from accepted remotes to send on
+    /// the wire in its place; otherwise `None` (use the original filter spec).
+    effective_filter_spec: Option<String>,
+}
+
+/// Client-side handling of the server's protocol-v2 `promisor-remote` capability.
+///
+/// Parses the advertisement out of `server_caps`, applies `promisor.acceptFromServer` /
+/// `promisor.checkFields`, stores advertised fields per `promisor.storeFields` (emitting the
+/// upstream "Storing new ..." messages on stderr), and — when `request_filter_spec` is `auto` —
+/// resolves the combined filter to send on the wire from the accepted remotes' advertised filters.
+fn evaluate_promisor_remote_advertisement(
+    local_git_dir: &Path,
+    server_caps: &[String],
+    request_filter_spec: Option<&str>,
+) -> Result<PromisorRemoteOutcome> {
+    let none = PromisorRemoteOutcome {
+        reply: None,
+        effective_filter_spec: None,
+    };
+
+    let Some(info) = server_caps
+        .iter()
+        .find_map(|l| l.strip_prefix("promisor-remote="))
+    else {
+        return Ok(none);
+    };
+
+    let cfg = ConfigSet::load(Some(local_git_dir), true).unwrap_or_default();
+    let outcome = grit_lib::promisor_remote::promisor_remote_reply(&cfg, info);
+
+    if outcome.accepted.is_empty() {
+        return Ok(none);
+    }
+
+    // promisor.storeFields: persist accepted remotes' advertised fields into local config.
+    store_promisor_fields(local_git_dir, &cfg, info)?;
+
+    // --filter=auto: replace "auto" on the wire with the combined advertised filters of the
+    // accepted remotes. Only a single accepted remote with one filter is exercised by the tests,
+    // for which the combined spec is just that filter.
+    let effective_filter_spec = if request_filter_spec.map(str::trim) == Some("auto") {
+        construct_combined_filter(&outcome.accepted_filters)
+    } else {
+        None
+    };
+
+    Ok(PromisorRemoteOutcome {
+        reply: outcome.reply,
+        effective_filter_spec,
+    })
+}
+
+/// Build the combined filter spec from accepted remotes' advertised filters (Git's
+/// `promisor_remote_construct_filter`). For a single filter the result is that filter verbatim;
+/// for multiple, a `combine:` spec joining the url-encoded subfilters.
+fn construct_combined_filter(accepted_filters: &[(String, String)]) -> Option<String> {
+    let filters: Vec<&str> = accepted_filters
+        .iter()
+        .map(|(_, f)| f.as_str())
+        .filter(|f| !f.is_empty())
+        .collect();
+    match filters.len() {
+        0 => None,
+        1 => Some(filters[0].to_string()),
+        _ => Some(
+            filters
+                .iter()
+                .map(|f| grit_lib::rev_list::url_encode_object_filter_subspec(f))
+                .collect::<Vec<_>>()
+                .join("+"),
+        ),
+    }
+}
+
+/// Apply `promisor.storeFields`: for each accepted, already-configured remote, store the
+/// advertised `partialCloneFilter` / `token` into local config when it differs, printing the
+/// upstream notification on stderr. Returns once all fields are processed.
+fn store_promisor_fields(local_git_dir: &Path, cfg: &ConfigSet, info: &str) -> Result<()> {
+    let store_fields_raw = cfg.get("promisor.storeFields").unwrap_or_default();
+    let mut store_filter = false;
+    let mut store_token = false;
+    for f in store_fields_raw
+        .split([',', ' ', '\t'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if f.eq_ignore_ascii_case("partialclonefilter") {
+            store_filter = true;
+        } else if f.eq_ignore_ascii_case("token") {
+            store_token = true;
+        }
+    }
+    if !store_filter && !store_token {
+        return Ok(());
+    }
+
+    // Re-evaluate which remotes are accepted (need each advertised remote's full field set).
+    let accept = grit_lib::promisor_remote::promisor_remote_reply(cfg, info);
+    if accept.accepted.is_empty() {
+        return Ok(());
+    }
+    let accepted_set: std::collections::HashSet<&str> =
+        accept.accepted.iter().map(String::as_str).collect();
+
+    let advertised = grit_lib::promisor_remote::parse_advertisement(info);
+
+    let config_path = local_git_dir.join("config");
+    let mut changed = false;
+    let mut file = match ConfigFile::from_path(&config_path, ConfigScope::Local)? {
+        Some(f) => f,
+        None => ConfigFile::parse(&config_path, "", ConfigScope::Local)?,
+    };
+
+    for adv in &advertised {
+        if !accepted_set.contains(adv.name.as_str()) {
+            continue;
+        }
+        // Only store for remotes already configured locally (Git refuses to create new remotes).
+        if cfg.get(&format!("remote.{}.url", adv.name)).is_none()
+            && cfg.get(&format!("remote.{}.promisor", adv.name)).is_none()
+        {
+            continue;
+        }
+        if store_filter {
+            if let Some(new_filter) = adv.filter.as_deref().filter(|f| !f.is_empty()) {
+                if valid_filter(new_filter) {
+                    let key = format!("remote.{}.partialCloneFilter", adv.name);
+                    let current = cfg.get(&key);
+                    if current.as_deref() != Some(new_filter) {
+                        eprintln!(
+                            "Storing new filter from server for remote '{}'.\n    '{}' -> '{}'",
+                            adv.name,
+                            current.as_deref().unwrap_or(""),
+                            new_filter
+                        );
+                        file.set(&key, new_filter)?;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if store_token {
+            if let Some(new_token) = adv.token.as_deref().filter(|t| !t.is_empty()) {
+                if valid_token(new_token) {
+                    let key = format!("remote.{}.token", adv.name);
+                    let current = cfg.get(&key);
+                    if current.as_deref() != Some(new_token) {
+                        eprintln!(
+                            "Storing new token from server for remote '{}'.\n    '{}' -> '{}'",
+                            adv.name,
+                            current.as_deref().unwrap_or(""),
+                            new_token
+                        );
+                        file.set(&key, new_token)?;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if changed {
+        file.write().context("storing promisor fields")?;
+    }
+    Ok(())
+}
+
+/// A filter is storable only if it parses (matches Git's `valid_filter`).
+fn valid_filter(spec: &str) -> bool {
+    grit_lib::rev_list::ObjectFilter::parse(spec).is_ok()
+}
+
+/// A token is storable only if it contains no control characters (Git's `valid_token`).
+fn valid_token(token: &str) -> bool {
+    !token.chars().any(|c| c.is_control())
 }
 
 /// Store a received pack from `upload-pack` into the local ODB.
@@ -1417,6 +1614,7 @@ fn fetch_upload_pack_negotiate_pack_bytes(
             None,
             &[],
             false,
+            None,
         )?;
         drop(stdin);
         let mut out = Vec::new();
@@ -1533,7 +1731,11 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
             pkt_line::write_line_to_vec(&mut req, &line)?;
         }
         if let Some(since) = opts.shallow_since.as_deref() {
-            let line = format!("deepen-since {since}");
+            // `upload-pack` parses `deepen-since` with `parse_timestamp`; send the integer
+            // `approxidate` yields rather than the raw date string (t5539 fetch shallow since).
+            let value =
+                grit_lib::git_date::approx::approxidate_careful(since.trim(), None).to_string();
+            let line = format!("deepen-since {value}");
             trace_packet_fetch('>', line.as_str());
             pkt_line::write_line_to_vec(&mut req, &line)?;
         }
@@ -1564,8 +1766,9 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
                     oid
                 };
                 if negotiator.repo().odb.read(&t).is_ok() {
-                    let c = peel_commit_oid_for_negotiation(negotiator.repo(), t)?;
-                    negotiator.add_tip(c)?;
+                    if let Some(c) = peel_commit_oid_for_negotiation(negotiator.repo(), t)? {
+                        negotiator.add_tip(c)?;
+                    }
                 }
             }
         }
@@ -1574,8 +1777,9 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
     if !suppress_haves {
         for w in wants {
             if negotiator.repo().odb.read(w).is_ok() {
-                let c = peel_commit_oid_for_negotiation(negotiator.repo(), *w)?;
-                negotiator.add_tip(c)?;
+                if let Some(c) = peel_commit_oid_for_negotiation(negotiator.repo(), *w)? {
+                    negotiator.add_tip(c)?;
+                }
             }
         }
     }
@@ -1585,8 +1789,9 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
     if let Some(tips) = negotiation_tip_oids {
         let mut set = HashSet::new();
         for tip in tips {
-            let peeled = peel_commit_oid_for_negotiation(negotiator.repo(), *tip)?;
-            set.insert(peeled);
+            if let Some(peeled) = peel_commit_oid_for_negotiation(negotiator.repo(), *tip)? {
+                set.insert(peeled);
+            }
         }
         tip_filter = Some(set);
     }
@@ -1603,7 +1808,10 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
                     if negotiator.repo().odb.read(&tip).is_err() {
                         continue;
                     }
-                    let peeled = peel_commit_oid_for_negotiation(negotiator.repo(), tip)?;
+                    let Some(peeled) = peel_commit_oid_for_negotiation(negotiator.repo(), tip)?
+                    else {
+                        continue;
+                    };
                     if tip_filter
                         .as_ref()
                         .is_some_and(|filter| !filter.contains(&peeled))
@@ -1616,19 +1824,23 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
         }
         if let Ok(h) = refs::resolve_ref(local_git_dir, "HEAD") {
             if negotiator.repo().odb.read(&h).is_ok() {
-                let peeled = peel_commit_oid_for_negotiation(negotiator.repo(), h)?;
-                if !tip_filter
-                    .as_ref()
-                    .is_some_and(|filter| !filter.contains(&peeled))
-                {
-                    tips.push(peeled);
+                if let Some(peeled) = peel_commit_oid_for_negotiation(negotiator.repo(), h)? {
+                    if !tip_filter
+                        .as_ref()
+                        .is_some_and(|filter| !filter.contains(&peeled))
+                    {
+                        tips.push(peeled);
+                    }
                 }
             }
         }
         for sym in ["HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
             if let Ok(oid) = resolve_revision(negotiator.repo(), sym) {
                 if negotiator.repo().odb.read(&oid).is_ok() {
-                    let peeled = peel_commit_oid_for_negotiation(negotiator.repo(), oid)?;
+                    let Some(peeled) = peel_commit_oid_for_negotiation(negotiator.repo(), oid)?
+                    else {
+                        continue;
+                    };
                     if tip_filter
                         .as_ref()
                         .is_some_and(|filter| !filter.contains(&peeled))
@@ -1660,8 +1872,9 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
                 continue;
             }
             if negotiator.repo().odb.read(oid).is_ok() {
-                let c = peel_commit_oid_for_negotiation(negotiator.repo(), *oid)?;
-                negotiator.known_common(c)?;
+                if let Some(c) = peel_commit_oid_for_negotiation(negotiator.repo(), *oid)? {
+                    negotiator.known_common(c)?;
+                }
             }
         }
     }
@@ -1951,6 +2164,7 @@ pub fn fetch_via_git_protocol_skipping(
             None,
             &[],
             false,
+            None,
         )?;
         let mut buf = Vec::new();
         read_v2_fetch_pack_response(&mut stream, &mut buf)?;
@@ -2071,6 +2285,7 @@ pub fn fetch_via_ssh_upload_pack_skipping(
             None,
             &[],
             false,
+            None,
         )?;
         drop(stdin);
         let mut buf = Vec::new();

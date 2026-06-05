@@ -981,6 +981,26 @@ fn push_to_url(
         )
     })?;
 
+    // When the caller specifies an explicit `--receive-pack` program for a local-file push, run
+    // the real push protocol through that program via `send-pack` instead of the in-process fast
+    // path. This is what Git does (it always spawns receive-pack), and it lets the receiving
+    // program emit its own trace2 session-id / negotiated-version events (`t5705`).
+    if args.receive_pack.as_ref().is_some_and(|s| !s.is_empty())
+        && !is_default_receive_pack_program(args.receive_pack.as_deref())
+        && !effective_mirror
+        && !push_all
+        && !args.delete
+        && !args.tags
+        && !args.follow_tags
+        && !args.set_upstream
+        && !args.atomic
+        && !args.dry_run
+        && args.force_with_lease.is_none()
+        && !args.refspecs.is_empty()
+    {
+        return delegate_local_push_to_send_pack(&remote_path, &args.refspecs, args, url);
+    }
+
     if crate::ssh_transport::is_configured_ssh_url(url) {
         if let Ok(spec) = crate::ssh_transport::parse_ssh_url(url) {
             let _ = crate::ssh_transport::record_resolved_git_ssh_receive_pack_for_tests(
@@ -2455,11 +2475,57 @@ fn push_to_url(
         }
     }
 
-    if args.receive_pack.as_ref().is_some_and(|s| !s.is_empty()) {
-        bail!("failed to push some refs to '{url}'");
-    }
-
     Ok(())
+}
+
+/// Whether the `--receive-pack` value names the default receive-pack program (so the in-process
+/// fast path is fine and no real subprocess handshake is needed).
+fn is_default_receive_pack_program(receive_pack: Option<&str>) -> bool {
+    match receive_pack {
+        None => true,
+        Some(value) => {
+            let trimmed = value.trim();
+            trimmed.is_empty()
+                || trimmed == "git receive-pack"
+                || trimmed == "git-receive-pack"
+                || trimmed == "grit receive-pack"
+                || trimmed == "grit-receive-pack"
+        }
+    }
+}
+
+/// Push to a local-file remote by running the real push protocol through the caller's explicit
+/// `--receive-pack` program (via `send-pack`). This spawns the receiving program just like Git,
+/// so it can emit its own trace2 events (`client-sid`, `negotiated-version`) and we emit the
+/// matching client-side `server-sid` / `negotiated-version` (`t5705`).
+fn delegate_local_push_to_send_pack(
+    remote_path: &Path,
+    refspecs: &[String],
+    args: &Args,
+    url: &str,
+) -> Result<()> {
+    let send_args = crate::commands::send_pack::Args {
+        remote: remote_path.to_string_lossy().into_owned(),
+        stdin: false,
+        mirror: false,
+        refs: refspecs.to_vec(),
+        all: false,
+        force: args.force && !args.no_force,
+        dry_run: args.dry_run,
+        receive_pack: args.receive_pack.clone(),
+        exec: None,
+    };
+    crate::commands::send_pack::run(send_args).map_err(|e| {
+        // `send-pack` signals ref rejections / remote failure via a quiet non-zero exit; surface
+        // the same "failed to push some refs" wording `git push` uses for the user.
+        if e.downcast_ref::<crate::explicit_exit::ExplicitExit>()
+            .is_some()
+        {
+            anyhow::anyhow!("failed to push some refs to '{url}'")
+        } else {
+            e
+        }
+    })
 }
 
 /// Git `receive.denyCurrentBranch` / `receive.denyDeleteCurrent` policy (subset).

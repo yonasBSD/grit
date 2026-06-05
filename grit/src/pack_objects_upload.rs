@@ -29,7 +29,7 @@ pub fn spawn_pack_objects_upload(
     thin: bool,
     filter_spec: Option<&str>,
 ) -> Result<Child> {
-    spawn_pack_objects_upload_shallow(git_dir, thin, filter_spec, false, true)
+    spawn_pack_objects_upload_shallow(git_dir, thin, filter_spec, false, true, false)
 }
 
 /// Like [`spawn_pack_objects_upload`], but passes `--shallow` so `--shallow <oid>` stdin lines cut
@@ -45,6 +45,7 @@ pub fn spawn_pack_objects_upload_shallow(
     filter_spec: Option<&str>,
     shallow: bool,
     progress: bool,
+    omit_missing_promisor: bool,
 ) -> Result<Child> {
     let protected = ConfigSet::load_protected(true).unwrap_or_default();
     let hook_raw = protected.get("uploadpack.packobjectshook");
@@ -89,6 +90,13 @@ pub fn spawn_pack_objects_upload_shallow(
             .arg("--delta-base-offset");
         c
     };
+
+    if omit_missing_promisor {
+        // Tells the spawned `pack-objects` to omit (rather than lazily fetch) objects missing from
+        // the local promisor-enabled ODB when applying `--filter` — used when the fetching client
+        // accepted an advertised promisor remote (`t5710`).
+        cmd.env("GRIT_OMIT_MISSING_PROMISOR", "1");
+    }
 
     cmd.current_dir(git_dir)
         .stdin(Stdio::piped())
@@ -393,10 +401,11 @@ pub fn drain_pack_objects_child(
         let _ = io::stderr().write_all(&err_bytes);
     }
     if !status.success() {
-        bail!(
-            "pack-objects failed with exit code {}",
-            status.code().unwrap_or(-1)
-        );
+        // Mirror `upload-pack.c`: `error("git upload-pack: git-pack-objects died with error.")`.
+        // The child's own diagnostic (e.g. "unable to read <oid>" or "bad tree object <oid>") has
+        // already been forwarded to our stderr above; this adds the "pack-objects died" line the
+        // client/test greps for (t5530 packing and enumeration errors).
+        bail!("git upload-pack: git-pack-objects died with error.");
     }
     Ok(())
 }

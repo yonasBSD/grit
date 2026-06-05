@@ -360,6 +360,7 @@ pub(crate) fn v2_fetch_supports_sideband_all(caps: &[String]) -> bool {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_v2_fetch_request(
     stdin: &mut impl Write,
     object_format: &str,
@@ -375,6 +376,7 @@ pub(crate) fn write_v2_fetch_request(
     shallow_since: Option<&str>,
     shallow_exclude: &[String],
     unshallow: bool,
+    promisor_remote_reply: Option<&str>,
 ) -> Result<()> {
     trace_packet_git('>', "command=fetch");
     pkt_line::write_line(stdin, "command=fetch")?;
@@ -384,8 +386,24 @@ pub(crate) fn write_v2_fetch_request(
     let of = format!("object-format={object_format}");
     trace_packet_git('>', &of);
     pkt_line::write_line(stdin, &of)?;
+    // `session-id` is a v2 capability (serve.c lists it with a `.receive` handler), so it belongs
+    // in the request's capability list — before the `0001` delimiter — alongside agent and
+    // object-format, not among the per-command fetch arguments (`t5705`).
+    if let Some(sid) = session_id_on_wire {
+        let esc = crate::trace2_transfer::json_escape_trace_value(sid);
+        let line = format!("session-id={esc}");
+        trace_packet_git('>', &line);
+        pkt_line::write_line(stdin, &line)?;
+    }
     for opt in server_options {
         let line = format!("server-option={opt}");
+        trace_packet_git('>', &line);
+        pkt_line::write_line(stdin, &line)?;
+    }
+    // `promisor-remote` is a v2 capability (connect.c `send_capabilities`): the client's accepted
+    // reply belongs in the request capability list, before the `0001` delimiter (`t5710`).
+    if let Some(reply) = promisor_remote_reply.filter(|r| !r.is_empty()) {
+        let line = format!("promisor-remote={reply}");
         trace_packet_git('>', &line);
         pkt_line::write_line(stdin, &line)?;
     }
@@ -407,12 +425,6 @@ pub(crate) fn write_v2_fetch_request(
         pkt_line::write_line(stdin, "include-tag")?;
     }
 
-    if let Some(sid) = session_id_on_wire {
-        let esc = crate::trace2_transfer::json_escape_trace_value(sid);
-        let line = format!("session-id={esc}");
-        trace_packet_git('>', &line);
-        pkt_line::write_line(stdin, &line)?;
-    }
     for w in wants {
         let line = format!("want {}", w.to_hex());
         trace_packet_git('>', line.trim_end());
@@ -442,7 +454,10 @@ pub(crate) fn write_v2_fetch_request(
         pkt_line::write_line(stdin, &line)?;
     }
     if let Some(since) = shallow_since {
-        let line = format!("deepen-since {since}");
+        // Send the Unix timestamp `approxidate` produces, not the raw date: `upload-pack` parses
+        // `deepen-since` with `parse_timestamp` and rejects trailing text (t5539 fetch shallow since).
+        let value = grit_lib::git_date::approx::approxidate_careful(since.trim(), None).to_string();
+        let line = format!("deepen-since {value}");
         trace_packet_git('>', &line);
         pkt_line::write_line(stdin, &line)?;
     }
@@ -682,6 +697,7 @@ pub(crate) fn clone_preflight_file_v2_if_needed(
         None,
         &[],
         false,
+        None,
     )?;
     drop(stdin);
     drain_v2_fetch_response(&mut stdout, fetch_supports_sideband_all)?;

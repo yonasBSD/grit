@@ -43,6 +43,8 @@ pub struct ServerCaps {
     advertise_bundle_uri: bool,
     advertise_session_id: bool,
     session_id_value: String,
+    /// Value of the `promisor-remote=<info>` capability to advertise, if any (`promisor.advertise`).
+    promisor_remote_info: Option<String>,
 }
 
 impl ServerCaps {
@@ -51,6 +53,10 @@ impl ServerCaps {
         let agent = serve_agent_capability();
 
         let object_format = read_object_format(git_dir);
+
+        let promisor_remote_info = grit_lib::config::ConfigSet::load(Some(git_dir), true)
+            .ok()
+            .and_then(|cfg| grit_lib::promisor_remote::promisor_remote_info(&cfg));
 
         let advertise_object_info = read_config_bool(git_dir, "transfer.advertiseObjectInfo");
         let advertise_bundle_uri = read_config_bool(git_dir, "uploadpack.advertiseBundleURIs");
@@ -76,6 +82,7 @@ impl ServerCaps {
             advertise_bundle_uri,
             advertise_session_id,
             session_id_value,
+            promisor_remote_info,
         }
     }
 
@@ -105,6 +112,9 @@ impl ServerCaps {
         }
         if self.advertise_session_id {
             pkt_line::write_line(w, &format!("session-id={}", self.session_id_value))?;
+        }
+        if let Some(info) = &self.promisor_remote_info {
+            pkt_line::write_line(w, &format!("promisor-remote={info}"))?;
         }
         pkt_line::write_flush(w)?;
         w.flush()
@@ -206,6 +216,7 @@ pub fn process_one_v2_request(
     let mut command: Option<String> = None;
     let mut client_object_format: Option<String> = None;
     let mut client_session_id: Option<String> = None;
+    let mut accepted_promisor_remotes: Option<String> = None;
 
     for line in &header_lines {
         if let Some(cmd) = line.strip_prefix("command=") {
@@ -217,6 +228,10 @@ pub fn process_one_v2_request(
             client_object_format = Some(fmt.to_owned());
         } else if let Some(sid) = line.strip_prefix("session-id=") {
             client_session_id = Some(sid.to_owned());
+        } else if let Some(remotes) = line.strip_prefix("promisor-remote=") {
+            // The client accepted these advertised promisor remotes; it will lazily fetch the
+            // omitted objects from them, so the server must NOT back-fill and serve them.
+            accepted_promisor_remotes = Some(remotes.to_owned());
         } else if caps.is_valid_capability(line) {
         } else {
             bail!("unknown capability '{line}'");
@@ -267,7 +282,13 @@ pub fn process_one_v2_request(
 
     match cmd.as_str() {
         "ls-refs" => cmd_ls_refs(git_dir, &args, &mut out)?,
-        "fetch" => cmd_fetch(git_dir, &args, &mut out, caps)?,
+        "fetch" => cmd_fetch(
+            git_dir,
+            &args,
+            &mut out,
+            caps,
+            accepted_promisor_remotes.as_deref(),
+        )?,
         "object-info" => cmd_object_info(git_dir, &args, &mut out)?,
         "bundle-uri" => cmd_bundle_uri(git_dir, &args, &mut out)?,
         _ => bail!("invalid command '{cmd}'"),
@@ -390,6 +411,7 @@ fn cmd_fetch(
     args: &[String],
     out: &mut impl Write,
     caps: &ServerCaps,
+    accepted_promisor_remotes: Option<&str>,
 ) -> Result<()> {
     let repo = Repository::open(git_dir, None)
         .with_context(|| format!("could not open repository at '{}'", git_dir.display()))?;
@@ -633,12 +655,20 @@ fn cmd_fetch(
     } else {
         Vec::new()
     };
+    // The client accepted one or more advertised promisor remotes: it will lazily fetch any
+    // omitted objects from them, so the server may omit locally-missing promisor objects from the
+    // filtered pack instead of back-filling its ODB to serve them.
+    let omit_missing_promisor = accepted_promisor_remotes
+        .map(|r| !r.trim().is_empty())
+        .unwrap_or(false)
+        && filter_spec.is_some();
     let mut child = crate::pack_objects_upload::spawn_pack_objects_upload_shallow(
         git_dir,
         thin,
         filter_spec.as_deref(),
         !shallow_commits.is_empty(),
         !no_progress,
+        omit_missing_promisor,
     )?;
     {
         let mut pin = child

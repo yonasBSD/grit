@@ -554,6 +554,12 @@ fn checkout_index_into_clone_worktree(repo: &Repository) -> Result<()> {
 }
 
 pub fn run(mut args: Args) -> Result<()> {
+    // `git clone` always sets `TRANS_OPT_KEEP` (builtin/clone.c), so fetch-pack keeps the
+    // received pack as a real `.pack` file instead of unpacking it into loose objects — the
+    // `transfer.unpackLimit` heuristic only applies to plain `git fetch`. Mirror this so a
+    // `--no-local` clone leaves objects under `objects/pack/` (`t5710` moves `pack-*` around).
+    std::env::set_var("GRIT_FETCH_KEEP_PACK", "1");
+
     // `git clone --mirror` is a bare clone into `<name>.git` with a full ref mirror;
     // the object store must live at `<repo>/objects/...`, not `<repo>/.git/objects/...`.
     if args.mirror {
@@ -943,6 +949,16 @@ pub fn run(mut args: Args) -> Result<()> {
         unshallow: false,
     };
     let pack_filter_spec = filter_spec.as_deref().filter(|s| !s.trim().is_empty());
+
+    // Apply clone `-c key=value` overrides to the new repo's config *before* fetching. Git writes
+    // these into the destination config early so the fetch sees them; in particular the
+    // `promisor-remote` protocol capability needs `promisor.acceptFromServer` and the
+    // `remote.<lop>.{promisor,url,...}` entries already present when negotiating (`t5710`).
+    let mut clone_config_applied = false;
+    if !args.config.is_empty() {
+        apply_clone_config(&dest.git_dir, &args.config).context("applying -c config")?;
+        clone_config_applied = true;
+    }
 
     if let Some(ref bu) = args.bundle_uri {
         crate::bundle_uri::apply_bundle_uri(&dest.git_dir, bu, &target_name, true)?;
@@ -1339,7 +1355,9 @@ pub fn run(mut args: Args) -> Result<()> {
 
     apply_default_submodule_path_config_from_global(&dest.git_dir)?;
     // Apply -c config values (overrides global defaults such as submodulePathConfig).
-    if !args.config.is_empty() {
+    // These were already applied before the fetch (see `clone_config_applied`); re-applying would
+    // duplicate multi-valued entries (e.g. fetch refspecs), so only apply here if not done yet.
+    if !args.config.is_empty() && !clone_config_applied {
         apply_clone_config(&dest.git_dir, &args.config).context("applying -c config")?;
     }
     copy_configured_remote_fetch_refspecs(&source.git_dir, &dest.git_dir, &remote_name)
@@ -4620,9 +4638,33 @@ fn copy_objects(src_git_dir: &Path, dst_git_dir: &Path, try_hardlink: bool) -> R
         fs::create_dir_all(&dst_info)?;
         for entry in fs::read_dir(&src_info)? {
             let entry = entry?;
-            if entry.path().is_file() {
+            let path = entry.path();
+            if path.is_file() {
                 let dst_file = dst_info.join(entry.file_name());
-                copy_skip_vanished_source(&entry.path(), &dst_file)?;
+                copy_skip_vanished_source(&path, &dst_file)?;
+            } else if path.is_dir() && entry.file_name().to_string_lossy() == "commit-graphs" {
+                // A local clone copies the split commit-graph chain (Git's
+                // local-clone copies the whole objects tree). Recurse into
+                // `info/commit-graphs/` so the cloned repo keeps the chain file
+                // and its graph-*.graph layers.
+                let dst_cg = dst_info.join(entry.file_name());
+                fs::create_dir_all(&dst_cg)?;
+                for inner in fs::read_dir(&path)? {
+                    let inner = inner?;
+                    if inner.path().is_file() {
+                        let dst_file = dst_cg.join(inner.file_name());
+                        copy_skip_vanished_source(&inner.path(), &dst_file)?;
+                        // Git's local clone copies content but the destination
+                        // takes the umask-default mode, not the source's read-only
+                        // 0444. Tests rely on being able to corrupt these files.
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ =
+                                fs::set_permissions(&dst_file, fs::Permissions::from_mode(0o644));
+                        }
+                    }
+                }
             }
         }
     }

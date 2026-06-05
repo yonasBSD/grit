@@ -511,6 +511,90 @@ impl CommitGraphChain {
         self.layers.iter().rev().map(|l| l.path.clone()).collect()
     }
 
+    /// Number of layers in the chain.
+    #[must_use]
+    pub fn num_layers(&self) -> usize {
+        self.layers.len()
+    }
+
+    /// Commit counts per layer, tip-first (layer 0 is the newest tip).
+    #[must_use]
+    pub fn layer_commit_counts_tip_first(&self) -> Vec<u32> {
+        self.layers.iter().map(|l| l.num_commits).collect()
+    }
+
+    /// Whether each layer carries a generation-data (GDA2) chunk, tip-first.
+    #[must_use]
+    pub fn layer_has_generation_data_tip_first(&self) -> Vec<bool> {
+        self.layers
+            .iter()
+            .map(|l| l.chunk_generation_data.is_some())
+            .collect()
+    }
+
+    /// Layer hex hashes (from `graph-<hash>.graph` file stem), tip-first.
+    #[must_use]
+    pub fn layer_hashes_tip_first(&self) -> Vec<String> {
+        self.layers.iter().map(|l| l.layer_display_id()).collect()
+    }
+
+    /// Source object directory each layer was loaded from (its `.git/objects`),
+    /// tip-first. Derived from the layer path: `<objdir>/info/commit-graphs/graph-*.graph`
+    /// or `<objdir>/info/commit-graph`.
+    #[must_use]
+    pub fn layer_object_dirs_tip_first(&self) -> Vec<PathBuf> {
+        self.layers
+            .iter()
+            .map(|l| {
+                // .../objects/info/commit-graphs/graph-X.graph  -> .../objects
+                // .../objects/info/commit-graph                 -> .../objects
+                let p = l.path.as_path();
+                let info = if p
+                    .parent()
+                    .and_then(|d| d.file_name())
+                    .map(|n| n == "commit-graphs")
+                    .unwrap_or(false)
+                {
+                    p.parent().and_then(|d| d.parent())
+                } else {
+                    p.parent()
+                };
+                info.and_then(|d| d.parent())
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("."))
+            })
+            .collect()
+    }
+
+    /// A sub-chain made of the layers at tip-first indices `start..end`
+    /// (so `start` becomes the new tip). Used by the writer when only some base
+    /// layers are kept after a split merge.
+    #[must_use]
+    pub fn sub_chain_tip_first(&self, start: usize, end: usize) -> Option<Self> {
+        let end = end.min(self.layers.len());
+        if start >= end {
+            return None;
+        }
+        Some(Self {
+            layers: self.layers[start..end].to_vec(),
+        })
+    }
+
+    /// All commit OIDs in one layer (by tip-first index), in lexicographic order.
+    #[must_use]
+    pub fn layer_oids(&self, tip_first_idx: usize) -> Vec<ObjectId> {
+        let Some(layer) = self.layers.get(tip_first_idx) else {
+            return Vec::new();
+        };
+        let mut out = Vec::with_capacity(layer.num_commits as usize);
+        for i in 0..layer.num_commits {
+            if let Some(oid) = layer.oid_at_lex(i) {
+                out.push(oid);
+            }
+        }
+        out
+    }
+
     /// Load from `objects/info/commit-graph` or `objects/info/commit-graphs/commit-graph-chain`.
     ///
     /// Returns `Ok(None)` when no commit-graph exists. Corrupt graphs (including invalid GDO2)

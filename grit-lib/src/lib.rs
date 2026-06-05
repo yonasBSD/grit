@@ -86,6 +86,7 @@ pub mod pathspec;
 pub mod pkt_line;
 pub mod precompose_config;
 pub mod promisor;
+pub mod promisor_remote;
 pub mod protocol;
 pub mod prune_packed;
 pub mod push_cert;

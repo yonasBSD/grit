@@ -6091,12 +6091,21 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
                     let graph_path = if chain_path.is_file() {
                         let content = std::fs::read_to_string(&chain_path)
                             .map_err(|e| anyhow::anyhow!("read-graph: {e}"))?;
-                        let first = content.lines().next().unwrap_or("").trim();
-                        if first.len() != 40 {
+                        // The chain file lists layers base-first (line 1 is the base,
+                        // the last line is the tip). `git/t/helper/test-read-graph.c`
+                        // reports on the *tip* layer (the one with the most base
+                        // graphs), so read the last non-empty line.
+                        let last = content
+                            .lines()
+                            .map(str::trim)
+                            .filter(|l| !l.is_empty())
+                            .next_back()
+                            .unwrap_or("");
+                        if last.len() != 40 {
                             bail!("read-graph: invalid commit-graph chain");
                         }
                         info.join("commit-graphs")
-                            .join(format!("graph-{first}.graph"))
+                            .join(format!("graph-{last}.graph"))
                     } else {
                         info.join("commit-graph")
                     };

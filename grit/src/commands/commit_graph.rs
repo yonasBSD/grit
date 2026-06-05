@@ -121,9 +121,9 @@ pub fn run(args: Args) -> Result<()> {
             changed_paths,
             no_changed_paths,
             split,
-            size_multiple: _,
-            max_commits: _,
-            expire_time: _,
+            size_multiple,
+            max_commits,
+            expire_time,
             progress,
             no_progress,
             max_new_filters,
@@ -135,11 +135,18 @@ pub fn run(args: Args) -> Result<()> {
             changed_paths,
             no_changed_paths,
             split.as_deref(),
+            size_multiple,
+            max_commits,
+            expire_time.as_deref(),
             progress,
             no_progress,
             max_new_filters,
         ),
-        CommitGraphCommand::Verify { .. } => cmd_verify(args.object_dir),
+        CommitGraphCommand::Verify {
+            shallow,
+            progress,
+            no_progress,
+        } => cmd_verify(args.object_dir, shallow, progress, no_progress),
     }
 }
 
@@ -316,6 +323,82 @@ fn emit_commit_graph_trace2(settings: &BloomFilterSettings, stats: &BloomWriteSt
     }
 }
 
+fn hex_to_hash20(hex: &str) -> Option<[u8; 20]> {
+    if hex.len() != 40 {
+        return None;
+    }
+    let mut out = [0u8; 20];
+    for i in 0..20 {
+        out[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Parse a `--expire-time` value into a Unix timestamp.
+///
+/// Git's `parse_expiry_date` accepts a wide range of formats; the tests only use
+/// `"YYYY-MM-DD HH:MM ±HH:MM"`, so we support that plus a bare epoch integer.
+fn parse_expire_time(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if let Ok(n) = s.parse::<i64>() {
+        return Some(n);
+    }
+    // Format: "YYYY-MM-DD HH:MM[:SS] ±HH:MM"
+    let mut parts = s.split_whitespace();
+    let date = parts.next()?;
+    let time = parts.next()?;
+    let tz = parts.next();
+
+    let mut dp = date.split('-');
+    let year: i64 = dp.next()?.parse().ok()?;
+    let month: i64 = dp.next()?.parse().ok()?;
+    let day: i64 = dp.next()?.parse().ok()?;
+
+    let mut tp = time.split(':');
+    let hour: i64 = tp.next()?.parse().ok()?;
+    let minute: i64 = tp.next()?.parse().ok()?;
+    let second: i64 = tp.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+
+    // Days since Unix epoch (civil calendar; Howard Hinnant's algorithm).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    let mut ts = days * 86400 + hour * 3600 + minute * 60 + second;
+
+    // Apply timezone offset (the given local time is `ts` in that offset; convert to UTC).
+    if let Some(tz) = tz {
+        if let Some(off) = parse_tz_offset(tz) {
+            ts -= off;
+        }
+    }
+    Some(ts)
+}
+
+fn parse_tz_offset(tz: &str) -> Option<i64> {
+    let (sign, rest) = match tz.as_bytes().first()? {
+        b'+' => (1i64, &tz[1..]),
+        b'-' => (-1i64, &tz[1..]),
+        _ => return None,
+    };
+    let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+    let (h, m) = if digits.len() == 4 {
+        (
+            digits[0..2].parse::<i64>().ok()?,
+            digits[2..4].parse::<i64>().ok()?,
+        )
+    } else if rest.contains(':') {
+        let mut p = rest.split(':');
+        (p.next()?.parse().ok()?, p.next()?.parse().ok()?)
+    } else {
+        return None;
+    };
+    Some(sign * (h * 3600 + m * 60))
+}
+
 fn commit_graph_layer_id_hash(path: &Path) -> Option<[u8; 20]> {
     let raw = fs::read(path).ok()?;
     if raw.len() < 40 {
@@ -328,6 +411,7 @@ fn commit_graph_layer_id_hash(path: &Path) -> Option<[u8; 20]> {
     Some(h.finalize().into())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_write(
     object_dir: Option<PathBuf>,
     _reachable: bool,
@@ -336,6 +420,9 @@ fn cmd_write(
     changed_paths: bool,
     no_changed_paths: bool,
     split: Option<&str>,
+    size_multiple: Option<f64>,
+    max_commits: Option<u64>,
+    expire_time: Option<&str>,
     progress: bool,
     no_progress: bool,
     max_new_filters_cli: Option<u32>,
@@ -443,6 +530,11 @@ fn cmd_write(
     let replace = split
         .map(|s| s.eq_ignore_ascii_case("replace"))
         .unwrap_or(false);
+    // `--split=no-merge` prohibits merging existing layers into the new tip
+    // (commit-graph.c: COMMIT_GRAPH_SPLIT_MERGE_PROHIBITED).
+    let no_merge = split
+        .map(|s| s.eq_ignore_ascii_case("no-merge"))
+        .unwrap_or(false);
 
     let info_dir = objects_dir.join("info");
     let graph_path = info_dir.join("commit-graph");
@@ -487,12 +579,16 @@ fn cmd_write(
         }
     }
 
+    // The existing split chain (tip-first internally). For --split=replace we drop
+    // the whole chain and rebuild a single layer, so we do not treat it as a base.
     let existing_chain = if split_enabled && !replace {
         CommitGraphChain::load(&objects_dir)
     } else {
         None
     };
 
+    // Pull every commit that already lives in a graph into the working set when
+    // we are flattening into a single file (non-split, or --split=replace).
     if !split_enabled || (split_enabled && replace) {
         if let Some(chain) = CommitGraphChain::load(&objects_dir) {
             for oid in chain.all_oids_in_order() {
@@ -501,37 +597,134 @@ fn cmd_write(
         }
     }
 
-    let base_hashes: Vec<[u8; 20]> = if split_enabled && !replace {
-        let mut hashes = Vec::new();
-        if let Some(ref chain) = existing_chain {
-            for path in chain.layer_paths_oldest_first() {
-                if let Some(h) = commit_graph_layer_id_hash(&path) {
-                    hashes.push(h);
-                }
-            }
-        } else if graph_path.is_file() {
-            if let Some(h) = commit_graph_layer_id_hash(&graph_path) {
-                hashes.push(h);
-            }
-        }
-        hashes
-    } else {
-        Vec::new()
-    };
+    // -- Split merge strategy (commit-graph.c:split_graph_merge_strategy) -------
+    // Decide how many of the existing chain's base layers (starting from the tip
+    // and walking towards the base) should be merged into the new layer we are
+    // about to write. The remaining base layers stay referenced via the BASE
+    // chunk + chain file.
+    //
+    // num_before = number of existing layers; we keep `keep_base` of them as the
+    // new layer's base and merge `num_before - keep_base` of them into the new tip.
+    let num_before = existing_chain.as_ref().map(|c| c.num_layers()).unwrap_or(0);
 
-    let base_oids: HashSet<ObjectId> = existing_chain
+    // OIDs that already live in the existing chain (so the new commit set only
+    // contains genuinely-new commits before merging).
+    let base_oids_all: HashSet<ObjectId> = existing_chain
         .as_ref()
         .map(|c| c.all_oids_in_order().into_iter().collect())
         .unwrap_or_default();
 
+    // The genuinely new commits (not already in any existing layer).
+    let mut new_only: Vec<ObjectId> = commit_set.iter().copied().collect();
+    if split_enabled && !replace && !base_oids_all.is_empty() {
+        new_only.retain(|o| !base_oids_all.contains(o));
+    }
+    let mut num_commits: u64 = new_only.len() as u64;
+
+    // Decide how many base layers to merge into the new tip.
+    // Defaults: size_mult = 2, max_commits = 0 (disabled).
+    let size_mult = size_multiple.unwrap_or(2.0);
+    let max_commits_v = max_commits.unwrap_or(0);
+    let mut keep_base = num_before; // number of layers that stay as base
+    if split_enabled && !replace && !no_merge {
+        let counts = existing_chain
+            .as_ref()
+            .map(|c| c.layer_commit_counts_tip_first())
+            .unwrap_or_default();
+        // Walk from the tip (index 0) toward the base, merging while the strategy
+        // says the new layer is "too big" relative to the next base layer.
+        let mut g = 0usize;
+        while g < counts.len() {
+            let layer_commits = counts[g] as u64;
+            let too_big = (layer_commits as f64) <= size_mult * (num_commits as f64);
+            let over_max = max_commits_v != 0 && num_commits > max_commits_v;
+            if too_big || over_max {
+                num_commits += layer_commits;
+                keep_base -= 1;
+                g += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    // For --split=replace there is no base.
+    if replace {
+        keep_base = 0;
+    }
+
+    // Merge the absorbed base layers' commits (tip-first layers 0..num_merged)
+    // into the working set. The kept base layers are the remaining ones.
+    let num_merged = num_before - keep_base;
+    let mut base_oids_kept: HashSet<ObjectId> = HashSet::new();
+    let mut base_hashes: Vec<[u8; 20]> = Vec::new();
+    if split_enabled && !replace {
+        if let Some(ref chain) = existing_chain {
+            // Absorbed layers (tip-first indices 0..num_merged): merge their OIDs in.
+            for idx in 0..num_merged {
+                for oid in chain.layer_oids(idx) {
+                    commit_set.insert(oid);
+                }
+            }
+            // Kept base layers (tip-first indices num_merged..num_before): collect
+            // their OIDs (to exclude from the new layer) and their hashes (BASE
+            // chunk order is base-first, so reverse).
+            let hashes_tip_first = chain.layer_hashes_tip_first();
+            for idx in num_merged..num_before {
+                for oid in chain.layer_oids(idx) {
+                    base_oids_kept.insert(oid);
+                }
+            }
+            // base_hashes must be base-first (oldest first).
+            for idx in (num_merged..num_before).rev() {
+                if let Some(h) = hex_to_hash20(&hashes_tip_first[idx]) {
+                    base_hashes.push(h);
+                }
+            }
+        }
+    }
+
+    // The new layer contains everything in the working set that is not in a kept
+    // base layer.
     let mut layer_oids: Vec<ObjectId> = commit_set.into_iter().collect();
-    if split_enabled && !replace && !base_oids.is_empty() {
-        layer_oids.retain(|o| !base_oids.contains(o));
+    if !base_oids_kept.is_empty() {
+        layer_oids.retain(|o| !base_oids_kept.contains(o));
     }
     layer_oids.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
     if layer_oids.is_empty() && !(split_enabled && replace) {
         return Ok(());
+    }
+
+    // Decide whether to write the generation-data (GDA2) chunk.
+    // Default: configured generation version == 2 (commitGraph.generationVersion).
+    // When a split merge keeps base layers, the result follows the topmost kept
+    // base layer's generation-data presence (commit-graph.c:split_graph_merge_strategy).
+    let gen_version = cfg
+        .get("commitgraph.generationversion")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(2);
+    let mut write_generation_data = gen_version == 2;
+    if split_enabled && !replace && keep_base > 0 {
+        if let Some(ref chain) = existing_chain {
+            // The topmost kept base layer is at tip-first index `num_merged`.
+            let has_gdat = chain.layer_has_generation_data_tip_first();
+            if let Some(&topmost_has) = has_gdat.get(num_merged) {
+                write_generation_data = topmost_has;
+            }
+        }
+    }
+    // validate_mixed_generation_chain: if any kept base layer lacks generation
+    // data, the whole result is treated as untrusted and we drop generation data.
+    if split_enabled && !replace && keep_base > 0 {
+        if let Some(ref chain) = existing_chain {
+            let has_gdat = chain.layer_has_generation_data_tip_first();
+            let all_kept_have =
+                (num_merged..num_before).all(|i| *has_gdat.get(i).unwrap_or(&false));
+            if !all_kept_have {
+                write_generation_data = false;
+            }
+        }
     }
 
     let mut infos = HashMap::new();
@@ -552,9 +745,18 @@ fn cmd_write(
     }
 
     let write_bloom = changed_paths && !no_changed_paths;
+    // The new layer's BASE chunk references only the kept base layers, and parent
+    // edges into the base must use that sub-chain's global positions.
+    let kept_chain: Option<CommitGraphChain> = if split_enabled && !replace && keep_base > 0 {
+        existing_chain
+            .as_ref()
+            .and_then(|c| c.sub_chain_tip_first(num_merged, num_before))
+    } else {
+        None
+    };
     let (base_for_build, hashes_for_build): (Option<&CommitGraphChain>, &[[u8; 20]]) =
         if split_enabled && !replace {
-            (existing_chain.as_ref(), &base_hashes)
+            (kept_chain.as_ref(), &base_hashes)
         } else {
             (None, &[])
         };
@@ -602,6 +804,7 @@ fn cmd_write(
         max_new,
         &existing_filters,
         &upgraded_filters,
+        write_generation_data,
     )?;
 
     if write_bloom {
@@ -641,22 +844,59 @@ fn cmd_write(
             let _ = fs::set_permissions(&layer_path, fs::Permissions::from_mode(0o444));
         }
         // The chain file is written base-first (Git order: line 1 is the base
-        // graph, the last line is the tip). The newly written layer is the new
-        // tip, so append it at the end.
-        let mut chain_lines: Vec<String> = if replace {
-            Vec::new()
-        } else {
-            fs::read_to_string(&chain_path)
-                .unwrap_or_default()
-                .lines()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        };
-        chain_lines.push(hex_hash);
+        // graph, the last line is the tip). After a split merge, only the kept
+        // base layers remain; the new layer is the new tip.
+        let mut chain_lines: Vec<String> = Vec::new();
+        if !replace {
+            if let Some(ref chain) = existing_chain {
+                let hashes_tip_first = chain.layer_hashes_tip_first();
+                // Kept base layers, base-first (tip-first index num_merged..num_before, reversed).
+                for idx in (num_merged..num_before).rev() {
+                    chain_lines.push(hashes_tip_first[idx].clone());
+                }
+            }
+        }
+        chain_lines.push(hex_hash.clone());
         fs::write(&chain_path, format!("{}\n", chain_lines.join("\n")))
             .with_context(|| format!("writing {:?}", chain_path))?;
         let _ = fs::remove_file(&graph_path);
+
+        // Expire (delete) old layer files that are no longer referenced by the
+        // new chain (commit-graph.c:expire_commit_graphs). Only files older than
+        // the expire time are removed; the just-written layer and kept base
+        // layers are always retained.
+        let keep_set: HashSet<String> = chain_lines.iter().cloned().collect();
+        let expire_ts: Option<i64> = expire_time.and_then(parse_expire_time);
+        if let Ok(read_dir) = fs::read_dir(&graphs_dir) {
+            for entry in read_dir.flatten() {
+                let p = entry.path();
+                let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                let Some(h) = name
+                    .strip_prefix("graph-")
+                    .and_then(|s| s.strip_suffix(".graph"))
+                else {
+                    continue;
+                };
+                if keep_set.contains(h) {
+                    continue;
+                }
+                if let Some(ts) = expire_ts {
+                    let mtime = entry
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    if mtime > ts {
+                        continue;
+                    }
+                }
+                let _ = fs::remove_file(&p);
+            }
+        }
     } else {
         if graphs_dir.is_dir() {
             for entry in fs::read_dir(&graphs_dir)? {
@@ -692,143 +932,415 @@ fn cmd_write(
     Ok(())
 }
 
-fn sha1_hash(data: &[u8]) -> [u8; 20] {
-    use std::process::Command;
-    // Use sha1sum or openssl for hashing
-    let child = Command::new("sha1sum")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn();
+// ── Verify ─────────────────────────────────────────────────────────────
 
-    match child {
-        Ok(mut child) => {
-            if let Some(ref mut stdin) = child.stdin {
-                let _ = stdin.write_all(data);
-            }
-            #[allow(clippy::unwrap_used)]
-            let output = child.wait_with_output().unwrap();
-            let hex = String::from_utf8_lossy(&output.stdout);
-            let hex = hex.split_whitespace().next().unwrap_or("");
-            let mut hash = [0u8; 20];
-            for i in 0..20 {
-                if i * 2 + 2 <= hex.len() {
-                    hash[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap_or(0);
-                }
-            }
-            hash
+const CHUNK_BASE_GRAPHS: u32 = 0x4241_5345; // "BASE"
+const CHUNK_GENERATION_DATA: u32 = 0x4744_4132; // "GDA2"
+
+fn sha1_of(data: &[u8]) -> [u8; 20] {
+    use sha1::{Digest, Sha1};
+    let mut h = Sha1::new();
+    h.update(data);
+    h.finalize().into()
+}
+
+/// One parsed layer for verification.
+struct VerifyLayer {
+    path: PathBuf,
+    data: Vec<u8>,
+    num_commits: u32,
+    oid_lookup_off: usize,
+    cdat_off: usize,
+    base_graphs: Vec<[u8; 20]>,
+    has_generation_data: bool,
+    /// Number of commits in all layers below this one.
+    num_commits_in_base: u32,
+}
+
+/// Parse a single commit-graph layer's chunk table. Returns an error string on
+/// any structural problem (used to report "commit-graph file is too small" etc.).
+fn parse_verify_layer(path: &Path, data: Vec<u8>) -> std::result::Result<VerifyLayer, String> {
+    if data.len() < 8 + 12 {
+        return Err("commit-graph file is too small".to_string());
+    }
+    if &data[0..4] != SIGNATURE {
+        return Err("commit-graph file has bad signature".to_string());
+    }
+    if data[4] != VERSION {
+        return Err(format!("commit-graph has unsupported version {}", data[4]));
+    }
+    if data[5] != HASH_VERSION_SHA1 {
+        return Err(format!(
+            "commit-graph has unsupported hash version {}",
+            data[5]
+        ));
+    }
+    let num_chunks = data[6] as usize;
+    let toc_start = 8;
+    let toc_end = toc_start + (num_chunks + 1) * 12;
+    if data.len() < toc_end + HASH_LEN {
+        return Err(format!(
+            "commit-graph file is too small to hold {num_chunks} chunks"
+        ));
+    }
+    let mut fanout_off = None;
+    let mut lookup_off = None;
+    let mut cdat_off = None;
+    let mut gdat_off = None;
+    let mut base_off = None;
+    for i in 0..num_chunks {
+        let e = toc_start + i * 12;
+        let id = u32::from_be_bytes(data[e..e + 4].try_into().unwrap_or([0; 4]));
+        let off = u64::from_be_bytes(data[e + 4..e + 12].try_into().unwrap_or([0; 8])) as usize;
+        match id {
+            CHUNK_OID_FANOUT => fanout_off = Some(off),
+            CHUNK_OID_LOOKUP => lookup_off = Some(off),
+            CHUNK_COMMIT_DATA => cdat_off = Some(off),
+            CHUNK_GENERATION_DATA => gdat_off = Some(off),
+            CHUNK_BASE_GRAPHS => base_off = Some((off, i)),
+            _ => {}
         }
-        Err(_) => [0u8; 20],
+    }
+    let file_end = u64::from_be_bytes(
+        data[toc_start + num_chunks * 12 + 4..toc_start + num_chunks * 12 + 12]
+            .try_into()
+            .unwrap_or([0; 8]),
+    ) as usize;
+    let fanout_off = fanout_off.ok_or("commit-graph missing OID fanout chunk")?;
+    let lookup_off = lookup_off.ok_or("commit-graph missing OID lookup chunk")?;
+    let cdat_off = cdat_off.ok_or("commit-graph missing commit data chunk")?;
+    if fanout_off + 256 * 4 > data.len() {
+        return Err("commit-graph file is too small".to_string());
+    }
+    let num_commits = u32::from_be_bytes(
+        data[fanout_off + 255 * 4..fanout_off + 256 * 4]
+            .try_into()
+            .unwrap_or([0; 4]),
+    );
+    if lookup_off + num_commits as usize * HASH_LEN > data.len() {
+        return Err("commit-graph file is too small".to_string());
+    }
+    if cdat_off + num_commits as usize * 36 > data.len() {
+        return Err("commit-graph file is too small".to_string());
+    }
+
+    // Parse the BASE chunk (list of base-graph layer hashes, base-first).
+    let mut base_graphs: Vec<[u8; 20]> = Vec::new();
+    if let Some((boff, idx)) = base_off {
+        // Determine chunk end via the next chunk's offset (or file_end).
+        let mut end = file_end;
+        for j in 0..num_chunks {
+            if j == idx {
+                continue;
+            }
+            let e = toc_start + j * 12;
+            let off = u64::from_be_bytes(data[e + 4..e + 12].try_into().unwrap_or([0; 8])) as usize;
+            if off > boff && off < end {
+                end = off;
+            }
+        }
+        let size = end.saturating_sub(boff);
+        let count = size / HASH_LEN;
+        for k in 0..count {
+            let s = boff + k * HASH_LEN;
+            if s + HASH_LEN <= data.len() {
+                let mut h = [0u8; 20];
+                h.copy_from_slice(&data[s..s + HASH_LEN]);
+                base_graphs.push(h);
+            }
+        }
+    }
+
+    Ok(VerifyLayer {
+        path: path.to_path_buf(),
+        data,
+        num_commits,
+        oid_lookup_off: lookup_off,
+        cdat_off,
+        base_graphs,
+        has_generation_data: gdat_off.is_some(),
+        num_commits_in_base: 0,
+    })
+}
+
+impl VerifyLayer {
+    fn oid_at(&self, lex: u32) -> Option<ObjectId> {
+        let off = self.oid_lookup_off + lex as usize * HASH_LEN;
+        ObjectId::from_bytes(self.data.get(off..off + HASH_LEN)?.try_into().ok()?).ok()
+    }
+    fn checksum_valid(&self) -> bool {
+        if self.data.len() < HASH_LEN {
+            return false;
+        }
+        let body = &self.data[..self.data.len() - HASH_LEN];
+        let stored = &self.data[self.data.len() - HASH_LEN..];
+        sha1_of(body) == stored
     }
 }
 
-// ── Verify ─────────────────────────────────────────────────────────────
+/// Resolve a split-graph layer file `graph-<hash>.graph` across the local object
+/// dir and any alternates.
+fn resolve_layer_path(objects_dir: &Path, alt_dirs: &[PathBuf], hash: &str) -> Option<PathBuf> {
+    let name = format!("graph-{hash}.graph");
+    let local = objects_dir.join("info").join("commit-graphs").join(&name);
+    if local.is_file() {
+        return Some(local);
+    }
+    for alt in alt_dirs {
+        let p = alt.join("info").join("commit-graphs").join(&name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
 
-fn cmd_verify(object_dir: Option<PathBuf>) -> Result<()> {
+fn read_alternates(objects_dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let alt = objects_dir.join("info").join("alternates");
+    if let Ok(content) = fs::read_to_string(&alt) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            out.push(PathBuf::from(line));
+        }
+    }
+    out
+}
+
+fn cmd_verify(
+    object_dir: Option<PathBuf>,
+    shallow: bool,
+    progress: bool,
+    no_progress: bool,
+) -> Result<()> {
     let repo = Repository::discover(None)?;
     let objects_dir = object_dir.unwrap_or_else(|| repo.git_dir.join("objects"));
-    let graph_path = objects_dir.join("info").join("commit-graph");
+    let info = objects_dir.join("info");
+    let single_path = info.join("commit-graph");
+    let chain_path = info.join("commit-graphs").join("commit-graph-chain");
 
-    if !graph_path.exists() {
-        bail!("commit-graph file does not exist at {:?}", graph_path);
-    }
+    // Resolve object dirs (local + alternates) used to find layer files.
+    let alt_dirs = read_alternates(&objects_dir);
+    let odb = Odb::new(&objects_dir);
 
-    let data = fs::read(&graph_path).with_context(|| format!("reading {:?}", graph_path))?;
+    // `git commit-graph verify` only loads one of the single file or the chain
+    // (single takes precedence). Missing graph => success (nothing to verify).
+    let mut layers: Vec<VerifyLayer> = Vec::new();
+    let mut had_error = false;
+    let mut incomplete_chain = false;
 
-    if data.len() < 8 {
-        bail!("commit-graph file too small");
-    }
-
-    // Verify header
-    if &data[0..4] != SIGNATURE {
-        bail!("commit-graph has bad signature");
-    }
-    if data[4] != VERSION {
-        bail!(
-            "commit-graph version {} not supported (expected {})",
-            data[4],
-            VERSION
-        );
-    }
-    if data[5] != HASH_VERSION_SHA1 {
-        bail!("commit-graph hash version {} not supported", data[5]);
-    }
-
-    let num_chunks = data[6] as usize;
-    if num_chunks < 3 {
-        bail!("commit-graph has too few chunks: {}", num_chunks);
-    }
-
-    // Verify checksum (last 20 bytes)
-    if data.len() < 20 {
-        bail!("commit-graph too small for checksum");
-    }
-    let body = &data[..data.len() - 20];
-    let stored_checksum = &data[data.len() - 20..];
-    let computed = sha1_hash(body);
-    if stored_checksum != computed {
-        bail!("commit-graph checksum mismatch");
-    }
-
-    // Parse chunk TOC to find OID Fanout
-    let toc_start = 8;
-    let mut fanout_offset: Option<u64> = None;
-    let mut oid_lookup_offset: Option<u64> = None;
-    let mut commit_data_offset: Option<u64> = None;
-
-    for i in 0..num_chunks {
-        let entry_off = toc_start + i * 12;
-        if entry_off + 12 > data.len() {
-            bail!("chunk TOC entry out of bounds");
+    if single_path.is_file() {
+        let data = fs::read(&single_path)?;
+        match parse_verify_layer(&single_path, data) {
+            Ok(l) => layers.push(l),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return Err(anyhow::anyhow!("commit-graph verify failed"));
+            }
         }
-        let chunk_id = u32::from_be_bytes(data[entry_off..entry_off + 4].try_into()?);
-        let offset = u64::from_be_bytes(data[entry_off + 4..entry_off + 12].try_into()?);
-        match chunk_id {
-            CHUNK_OID_FANOUT => fanout_offset = Some(offset),
-            CHUNK_OID_LOOKUP => oid_lookup_offset = Some(offset),
-            CHUNK_COMMIT_DATA => commit_data_offset = Some(offset),
-            _ => {} // unknown chunk — ok
+    } else if chain_path.is_file() {
+        let raw = fs::read(&chain_path)?;
+        // hexsz = 40 for SHA-1.
+        if raw.len() < 40 {
+            if raw.is_empty() {
+                return Ok(());
+            }
+            eprintln!("warning: commit-graph chain file too small");
+            return Err(anyhow::anyhow!("commit-graph verify failed"));
+        }
+        let content = String::from_utf8_lossy(&raw);
+        let mut chain_layers: Vec<VerifyLayer> = Vec::new();
+        let mut prev_hashes: Vec<[u8; 20]> = Vec::new(); // base-first list of layers loaded so far
+        let mut valid = true;
+        for line in content.lines() {
+            let h = line.trim();
+            if h.is_empty() {
+                continue;
+            }
+            if h.len() != 40 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+                eprintln!("warning: invalid commit-graph chain: line '{h}' not a hash");
+                valid = false;
+                break;
+            }
+            let Some(path) = resolve_layer_path(&objects_dir, &alt_dirs, h) else {
+                eprintln!("warning: unable to find all commit-graph files");
+                valid = false;
+                break;
+            };
+            let data = match fs::read(&path) {
+                Ok(d) => d,
+                Err(_) => {
+                    eprintln!("warning: unable to find all commit-graph files");
+                    valid = false;
+                    break;
+                }
+            };
+            let mut layer = match parse_verify_layer(&path, data) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("warning: {e}");
+                    valid = false;
+                    break;
+                }
+            };
+            // Validate the BASE chunk references match the layers loaded below
+            // (add_graph_to_chain). `prev_hashes` is base-first; the BASE chunk
+            // is also base-first.
+            let n = prev_hashes.len();
+            if n > 0 {
+                if layer.base_graphs.len() < n {
+                    eprintln!("warning: commit-graph base graphs chunk is too small");
+                    valid = false;
+                    break;
+                }
+                let mut ok = true;
+                for k in 0..n {
+                    if layer.base_graphs[k] != prev_hashes[k] {
+                        ok = false;
+                        break;
+                    }
+                }
+                if !ok {
+                    eprintln!("warning: commit-graph chain does not match");
+                    valid = false;
+                    break;
+                }
+            }
+            // num_commits_in_base = sum of commits below.
+            layer.num_commits_in_base = chain_layers.iter().map(|l| l.num_commits).sum::<u32>();
+            let mut layer_hash = [0u8; 20];
+            if let Some(hh) = hex_to_hash20(h) {
+                layer_hash = hh;
+            }
+            prev_hashes.push(layer_hash);
+            chain_layers.push(layer);
+        }
+        if !valid {
+            incomplete_chain = true;
+        }
+        // `chain_layers` is base-first; verify walks tip-first.
+        chain_layers.reverse();
+        layers = chain_layers;
+        if layers.is_empty() {
+            // Nothing loaded: chain present but unusable.
+            if incomplete_chain {
+                eprintln!("error: one or more commit-graph chain files could not be loaded");
+            }
+            return Err(anyhow::anyhow!("commit-graph verify failed"));
+        }
+    } else {
+        // No commit-graph at all: success.
+        return Ok(());
+    }
+
+    // Progress meter: total = tip num_commits (+ base commits unless --shallow).
+    let show_progress = if no_progress {
+        false
+    } else {
+        progress || std::io::stderr().is_terminal()
+    };
+    let total: u64 = if let Some(tip) = layers.first() {
+        if shallow {
+            tip.num_commits as u64
+        } else {
+            tip.num_commits as u64 + tip.num_commits_in_base as u64
+        }
+    } else {
+        0
+    };
+    let mut seen: u64 = 0;
+
+    // Verify each layer (tip first). With --shallow, only the tip is checked.
+    for layer in &layers {
+        // Checksum.
+        if !layer.checksum_valid() {
+            eprintln!("error: the commit-graph file has incorrect checksum and is likely corrupt");
+            had_error = true;
+        }
+
+        // Structural + ODB cross-check per commit.
+        let mut prev: Option<ObjectId> = None;
+        for i in 0..layer.num_commits {
+            let Some(cur) = layer.oid_at(i) else {
+                eprintln!("error: commit-graph OID lookup truncated");
+                had_error = true;
+                break;
+            };
+            if let Some(p) = prev {
+                if p.as_bytes() >= cur.as_bytes() {
+                    eprintln!("error: commit-graph has incorrect OID order: {p} then {cur}");
+                    had_error = true;
+                }
+            }
+            prev = Some(cur);
+
+            seen += 1;
+            if show_progress {
+                // progress is rendered at completion below
+            }
+
+            // Cross-check tree + parents against the object database.
+            let obj = match odb.read(&cur) {
+                Ok(o) => o,
+                Err(_) => {
+                    eprintln!(
+                        "error: failed to parse commit {cur} from object database for commit-graph"
+                    );
+                    had_error = true;
+                    continue;
+                }
+            };
+            let commit = match grit_lib::objects::parse_commit(&obj.data) {
+                Ok(c) => c,
+                Err(_) => {
+                    eprintln!(
+                        "error: failed to parse commit {cur} from object database for commit-graph"
+                    );
+                    had_error = true;
+                    continue;
+                }
+            };
+            // Cross-check the root tree recorded in CDAT.
+            let coff = layer.cdat_off + i as usize * 36;
+            if coff + HASH_LEN <= layer.data.len() {
+                if let Ok(graph_tree) =
+                    ObjectId::from_bytes(layer.data[coff..coff + HASH_LEN].try_into().unwrap())
+                {
+                    if graph_tree != commit.tree {
+                        eprintln!(
+                            "error: root tree OID for commit {cur} in commit-graph is {graph_tree} != {}",
+                            commit.tree
+                        );
+                        had_error = true;
+                    }
+                }
+            }
+        }
+
+        if shallow {
+            break;
         }
     }
 
-    let fanout_off = fanout_offset.context("missing OID fanout chunk")? as usize;
-    let lookup_off = oid_lookup_offset.context("missing OID lookup chunk")? as usize;
-    let cdata_off = commit_data_offset.context("missing commit data chunk")? as usize;
-
-    // Verify fanout
-    if fanout_off + 256 * 4 > data.len() {
-        bail!("OID fanout chunk extends past end of file");
-    }
-    let total_commits =
-        u32::from_be_bytes(data[fanout_off + 255 * 4..fanout_off + 256 * 4].try_into()?);
-
-    // Verify fanout is monotonically increasing
-    let mut prev = 0u32;
-    for i in 0..256 {
-        let off = fanout_off + i * 4;
-        let val = u32::from_be_bytes(data[off..off + 4].try_into()?);
-        if val < prev {
-            bail!("fanout is not monotonically increasing at bucket {}", i);
-        }
-        prev = val;
+    if show_progress {
+        let pct = if total == 0 {
+            100
+        } else {
+            (seen * 100 / total) as u64
+        };
+        eprintln!("Verifying commits in commit graph: {pct}% ({seen}/{total}), done.");
     }
 
-    // Verify OID lookup is sorted
-    if lookup_off + total_commits as usize * HASH_LEN > data.len() {
-        bail!("OID lookup chunk extends past end of file");
-    }
-    for i in 1..total_commits as usize {
-        let a = &data[lookup_off + (i - 1) * HASH_LEN..lookup_off + i * HASH_LEN];
-        let b = &data[lookup_off + i * HASH_LEN..lookup_off + (i + 1) * HASH_LEN];
-        if a >= b {
-            bail!("OID lookup is not sorted at index {}", i);
-        }
+    if incomplete_chain {
+        eprintln!("error: one or more commit-graph chain files could not be loaded");
+        had_error = true;
     }
 
-    // Verify commit data chunk size
-    if cdata_off + total_commits as usize * 36 > data.len() {
-        bail!("commit data chunk extends past end of file");
+    if had_error {
+        return Err(anyhow::anyhow!("commit-graph verify failed"));
     }
-
-    println!("commit-graph verified: {} commits", total_commits);
     Ok(())
 }

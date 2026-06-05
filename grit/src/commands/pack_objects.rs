@@ -2111,8 +2111,26 @@ fn omit_prefiltered_blobs(
         return Ok(());
     };
 
+    // On a partial-clone server (promisor packs / `remote.*.promisor=true`), some enumerated
+    // objects may be locally missing — they live only on a promisor remote. When `upload-pack`
+    // serves a `--filter` request to a client that accepted the advertised promisor remote
+    // (`promisor-remote` protocol capability), the server must NOT lazily fetch such an object
+    // just to measure it: the client will fetch it directly from the promisor remote, so the
+    // server omits it without back-filling its own ODB. `GRIT_OMIT_MISSING_PROMISOR` is set by the
+    // upload-pack fetch handler in that case (`t5710`). Without it, the legacy behavior (fetch and
+    // serve) is preserved so clients that did not accept still get a complete pack.
+    let omit_missing_promisor = std::env::var_os("GRIT_OMIT_MISSING_PROMISOR").is_some() && {
+        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        repo_treats_promisor_packs(&repo.git_dir, &cfg)
+    };
+
     let mut keep = Vec::with_capacity(oids.len());
     for oid in oids.iter().copied() {
+        if omit_missing_promisor && !repo.odb.exists(&oid) {
+            // Truly absent from the local ODB (not even in a promisor pack) and lazily fetchable
+            // by the client from its accepted promisor remote: drop it without fetching.
+            continue;
+        }
         let obj = read_object_from_repo_unverified(repo, &oid)?;
         if obj.kind != ObjectKind::Blob || !object_filter_omits_blob(&filter, obj.data.len() as u64)
         {
