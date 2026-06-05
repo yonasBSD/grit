@@ -18,6 +18,7 @@ use std::fs::OpenOptions;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
+use grit_lib::commit_trailers::{append_signoff_trailer, format_signoff_line};
 use grit_lib::config::ConfigSet;
 use grit_lib::diff::{self, count_changes, diff_index_to_tree, diff_index_to_worktree, DiffEntry};
 use grit_lib::hooks::{run_commit_hook, run_hook, CommitHookEnv, HookResult};
@@ -181,6 +182,14 @@ pub struct Args {
     /// Do not sign the replayed commits (overrides `commit.gpgsign`).
     #[arg(long = "no-gpg-sign")]
     pub no_gpg_sign: bool,
+
+    /// Add Signed-off-by trailer to rebased commits.
+    #[arg(long = "signoff", overrides_with = "no_signoff")]
+    pub signoff: bool,
+
+    /// Do not add Signed-off-by trailers (overrides an alias with --signoff).
+    #[arg(long = "no-signoff", overrides_with = "signoff")]
+    pub no_signoff: bool,
 
     /// Keep the base of the branch (rebase onto the merge-base of upstream and branch).
     /// May be passed multiple times for Git compatibility (`--keep-base --keep-base`).
@@ -4124,7 +4133,7 @@ Use '--' to separate paths from revisions, like this:\n\
         upstream_oid
     };
     let mut commits = if args.root {
-        collect_commits_for_root_rebase(&repo, head_oid, onto_oid)?
+        collect_commits_for_root_rebase(&repo, head_oid, onto_oid, args.onto.is_some())?
     } else {
         collect_rebase_todo_commits(&repo, head_oid, commits_upstream, filter_cherry_equivalents)?
     };
@@ -4384,7 +4393,7 @@ Use '--' to separate paths from revisions, like this:\n\
     if args.root {
         fs::write(rb_dir.join("root"), "")?;
     }
-    if args.no_ff {
+    if args.no_ff || args.signoff {
         fs::write(rb_dir.join("force-rewrite"), "")?;
     }
     if args.keep_empty || want_autosquash {
@@ -4398,6 +4407,9 @@ Use '--' to separate paths from revisions, like this:\n\
     // when `-S`/`--gpg-sign` was given or `commit.gpgsign` is set.
     if let Some(opt) = resolve_rebase_gpg_sign_opt(&args, &config) {
         fs::write(rb_dir.join("gpg-sign-opt"), opt)?;
+    }
+    if args.signoff && !args.no_signoff {
+        fs::write(rb_dir.join("signoff"), "")?;
     }
 
     let todo = rebase_todo_lines;
@@ -4587,7 +4599,7 @@ Use '--' to separate paths from revisions, like this:\n\
         autostash_oid,
         backend,
         had_rebase_autostash,
-        args.no_ff,
+        args.no_ff || args.signoff,
     )?;
 
     Ok(())
@@ -4781,6 +4793,7 @@ fn collect_commits_for_root_rebase(
     repo: &Repository,
     head: ObjectId,
     onto: ObjectId,
+    filter_redundant: bool,
 ) -> Result<Vec<ObjectId>> {
     let mut opts = RevListOptions::default();
     opts.first_parent = true;
@@ -4795,7 +4808,11 @@ fn collect_commits_for_root_rebase(
         let (positive, negative) = split_revision_token(&range);
         rev_list(repo, &positive, &negative, &opts).map_err(|e| anyhow::anyhow!("{e}"))?
     };
-    filter_redundant_patch_commits(repo, onto, &listed.commits)
+    if filter_redundant {
+        filter_redundant_patch_commits(repo, onto, &listed.commits)
+    } else {
+        Ok(listed.commits)
+    }
 }
 
 /// Drop commits whose patch-id already exists on `onto` or earlier in the replay list.
@@ -5676,6 +5693,38 @@ fn rebase_keep_start_empty(rb_dir: &Path) -> bool {
     !rb_dir.join("no-keep-empty").exists()
 }
 
+fn rebase_signoff(rb_dir: &Path) -> bool {
+    rb_dir.join("signoff").exists()
+}
+
+fn maybe_apply_rebase_signoff_to_commit_data(
+    commit_data: &mut CommitData,
+    rb_dir: &Path,
+    config: &ConfigSet,
+    todo_cmd: RebaseTodoCmd,
+) -> Result<()> {
+    if !rebase_signoff(rb_dir) || !matches!(todo_cmd, RebaseTodoCmd::Pick | RebaseTodoCmd::Reword) {
+        return Ok(());
+    }
+
+    let (name, email, _) = split_stored_author_line(&commit_data.committer)?;
+    let sob = format_signoff_line(&name, &email);
+    append_signoff_trailer(&mut commit_data.message, &sob, config);
+    let (message, encoding, raw_message) =
+        finalize_message_for_commit_encoding(commit_data.message.clone(), config);
+    commit_data.message = message;
+    commit_data.encoding = encoding;
+    commit_data.raw_message = raw_message;
+    let (author_raw, committer_raw) = grit_lib::commit_encoding::identity_raw_for_serialized_commit(
+        &commit_data.encoding,
+        &commit_data.author,
+        &commit_data.committer,
+    );
+    commit_data.author_raw = author_raw;
+    commit_data.committer_raw = committer_raw;
+    Ok(())
+}
+
 fn rebase_quiet(rb_dir: &Path) -> bool {
     rb_dir.join("quiet").exists()
 }
@@ -5829,11 +5878,13 @@ fn cherry_pick_for_rebase(
         && todo_cmd == RebaseTodoCmd::Pick
         && is_commit_tree_unchanged(repo, commit_oid)?
     {
-        if head_at_empty_tree {
-            bail!("internal: keep-empty pick with null HEAD during rebase");
-        }
-        let head_obj = repo.odb.read(&head_oid)?;
-        let head_commit = parse_commit(&head_obj.data)?;
+        let (tree_oid, parents) = if head_at_empty_tree {
+            (empty_tree_oid, Vec::new())
+        } else {
+            let head_obj = repo.odb.read(&head_oid)?;
+            let head_commit = parse_commit(&head_obj.data)?;
+            (head_commit.tree, vec![head_oid])
+        };
         let (message, encoding, raw_message) = transcoded_replayed_message(&commit, &config);
         let author = rebase_replayed_author_line(&commit.author, replay_opts, now)?;
         let committer = rebase_replayed_committer_line(&config, &commit.author, replay_opts, now)?;
@@ -5841,9 +5892,9 @@ fn cherry_pick_for_rebase(
             grit_lib::commit_encoding::identity_raw_for_serialized_commit(
                 &encoding, &author, &committer,
             );
-        let commit_data = CommitData {
-            tree: head_commit.tree,
-            parents: vec![head_oid],
+        let mut commit_data = CommitData {
+            tree: tree_oid,
+            parents,
             author,
             committer,
             author_raw,
@@ -5852,6 +5903,7 @@ fn cherry_pick_for_rebase(
             message,
             raw_message,
         };
+        maybe_apply_rebase_signoff_to_commit_data(&mut commit_data, rb_dir, &config, todo_cmd)?;
         let bytes = serialize_commit(&commit_data);
         let new_oid = write_replayed_commit(repo, rb_dir, &config, &commit_data.committer, bytes)?;
         fs::write(git_dir.join("HEAD"), format!("{}\n", new_oid.to_hex()))?;
@@ -5916,6 +5968,7 @@ fn cherry_pick_for_rebase(
                     _ => false,
                 };
                 let single_noop_same_tip = force_rewrite_commits
+                    && !rebase_signoff(rb_dir)
                     && ws_fix_rule.is_none()
                     && upstream_matches_onto
                     && rebase_initial_todo_count(rb_dir) == Some(1)
@@ -5945,7 +5998,7 @@ fn cherry_pick_for_rebase(
                         grit_lib::commit_encoding::identity_raw_for_serialized_commit(
                             &encoding, &author, &committer,
                         );
-                    let commit_data = CommitData {
+                    let mut commit_data = CommitData {
                         tree: tree_oid,
                         parents: vec![head_oid],
                         author,
@@ -5956,6 +6009,12 @@ fn cherry_pick_for_rebase(
                         message,
                         raw_message,
                     };
+                    maybe_apply_rebase_signoff_to_commit_data(
+                        &mut commit_data,
+                        rb_dir,
+                        &config,
+                        todo_cmd,
+                    )?;
                     let commit_bytes = serialize_commit(&commit_data);
                     let new_oid = write_replayed_commit(
                         repo,
@@ -5989,7 +6048,7 @@ fn cherry_pick_for_rebase(
                         grit_lib::commit_encoding::identity_raw_for_serialized_commit(
                             &encoding, &author, &committer,
                         );
-                    let commit_data = CommitData {
+                    let mut commit_data = CommitData {
                         tree: commit_tree_oid,
                         parents: vec![head_oid],
                         author,
@@ -6000,6 +6059,12 @@ fn cherry_pick_for_rebase(
                         message,
                         raw_message,
                     };
+                    maybe_apply_rebase_signoff_to_commit_data(
+                        &mut commit_data,
+                        rb_dir,
+                        &config,
+                        todo_cmd,
+                    )?;
                     let commit_bytes = serialize_commit(&commit_data);
                     let new_oid = write_replayed_commit(
                         repo,
@@ -6034,7 +6099,7 @@ fn cherry_pick_for_rebase(
                         grit_lib::commit_encoding::identity_raw_for_serialized_commit(
                             &encoding, &author, &committer,
                         );
-                    let commit_data = CommitData {
+                    let mut commit_data = CommitData {
                         tree: tree_oid,
                         parents: vec![head_oid],
                         author,
@@ -6045,6 +6110,12 @@ fn cherry_pick_for_rebase(
                         message,
                         raw_message,
                     };
+                    maybe_apply_rebase_signoff_to_commit_data(
+                        &mut commit_data,
+                        rb_dir,
+                        &config,
+                        todo_cmd,
+                    )?;
                     let commit_bytes = serialize_commit(&commit_data);
                     let new_oid = write_replayed_commit(
                         repo,
@@ -6126,7 +6197,7 @@ fn cherry_pick_for_rebase(
                     grit_lib::commit_encoding::identity_raw_for_serialized_commit(
                         &enc_pick, &author, &committer,
                     );
-                let pick_data = CommitData {
+                let mut pick_data = CommitData {
                     tree: commit_tree_oid,
                     parents: vec![head_oid],
                     author: author.clone(),
@@ -6137,6 +6208,12 @@ fn cherry_pick_for_rebase(
                     message: pick_message.clone(),
                     raw_message: raw_pick,
                 };
+                maybe_apply_rebase_signoff_to_commit_data(
+                    &mut pick_data,
+                    rb_dir,
+                    &config,
+                    RebaseTodoCmd::Pick,
+                )?;
                 let pick_bytes = serialize_commit(&pick_data);
                 let pick_oid =
                     write_replayed_commit(repo, rb_dir, &config, &pick_data.committer, pick_bytes)?;
@@ -6158,7 +6235,7 @@ fn cherry_pick_for_rebase(
                     grit_lib::commit_encoding::identity_raw_for_serialized_commit(
                         &encoding, &author, &committer,
                     );
-                let commit_data = CommitData {
+                let mut commit_data = CommitData {
                     tree: commit_tree_oid,
                     parents: vec![head_oid],
                     author,
@@ -6169,6 +6246,12 @@ fn cherry_pick_for_rebase(
                     message,
                     raw_message,
                 };
+                maybe_apply_rebase_signoff_to_commit_data(
+                    &mut commit_data,
+                    rb_dir,
+                    &config,
+                    todo_cmd,
+                )?;
                 let commit_bytes = serialize_commit(&commit_data);
                 let new_oid = write_replayed_commit(
                     repo,
@@ -6407,7 +6490,9 @@ fn cherry_pick_for_rebase(
             write_rebase_conflict_message(git_dir, &commit, &config)?;
             fs::write(rb_dir.join("message"), unicode)?;
         } else {
-            fs::write(git_dir.join("MERGE_MSG"), &commit.message)?;
+            let mut merge_msg = commit.message.clone();
+            append_rebase_conflicts_comment_block(&mut merge_msg, &merge_conflict_files, &config);
+            fs::write(git_dir.join("MERGE_MSG"), merge_msg)?;
         }
         eprint_submodule_merge_conflict_advice(repo, &merged_index);
         if rb_dir == rebase_merge_dir(git_dir) {
@@ -6557,6 +6642,7 @@ fn cherry_pick_for_rebase(
         let author = rebase_replayed_author_line(&commit.author, replay_opts, now)?;
         let committer = rebase_replayed_committer_line(&config, &commit.author, replay_opts, now)?;
         let fast_forward_reword = commit.parents.first().copied() == Some(head_oid)
+            && !rebase_signoff(rb_dir)
             && !replay_opts.committer_date_is_author_date
             && !replay_opts.ignore_date;
         let pick_oid = if fast_forward_reword {
@@ -6566,7 +6652,7 @@ fn cherry_pick_for_rebase(
                 grit_lib::commit_encoding::identity_raw_for_serialized_commit(
                     &enc_pick, &author, &committer,
                 );
-            let pick_data = CommitData {
+            let mut pick_data = CommitData {
                 tree: tree_oid,
                 parents: if head_at_empty_tree {
                     Vec::new()
@@ -6581,6 +6667,12 @@ fn cherry_pick_for_rebase(
                 message: pick_message.clone(),
                 raw_message: raw_pick,
             };
+            maybe_apply_rebase_signoff_to_commit_data(
+                &mut pick_data,
+                rb_dir,
+                &config,
+                RebaseTodoCmd::Pick,
+            )?;
             let pick_bytes = serialize_commit(&pick_data);
             write_replayed_commit(repo, rb_dir, &config, &pick_data.committer, pick_bytes)?
         };
@@ -6596,7 +6688,7 @@ fn cherry_pick_for_rebase(
             grit_lib::commit_encoding::identity_raw_for_serialized_commit(
                 &encoding, &author, &committer,
             );
-        let commit_data = CommitData {
+        let mut commit_data = CommitData {
             tree: tree_oid,
             parents: if head_at_empty_tree {
                 Vec::new()
@@ -6611,6 +6703,7 @@ fn cherry_pick_for_rebase(
             message,
             raw_message,
         };
+        maybe_apply_rebase_signoff_to_commit_data(&mut commit_data, rb_dir, &config, todo_cmd)?;
         let commit_bytes = serialize_commit(&commit_data);
         let new_oid =
             write_replayed_commit(repo, rb_dir, &config, &commit_data.committer, commit_bytes)?;
@@ -6639,7 +6732,7 @@ fn cherry_pick_for_rebase(
     let (author_raw, committer_raw) = grit_lib::commit_encoding::identity_raw_for_serialized_commit(
         &encoding, &author, &committer,
     );
-    let commit_data = CommitData {
+    let mut commit_data = CommitData {
         tree: tree_oid,
         parents: if head_at_empty_tree {
             Vec::new()
@@ -6654,6 +6747,7 @@ fn cherry_pick_for_rebase(
         message,
         raw_message,
     };
+    maybe_apply_rebase_signoff_to_commit_data(&mut commit_data, rb_dir, &config, todo_cmd)?;
 
     let commit_bytes = serialize_commit(&commit_data);
     let new_oid =
@@ -7047,13 +7141,10 @@ fn do_continue() -> Result<()> {
         } else {
             head_oid
         };
-        if rb_dir.join("rebase-edit-continue").exists() && head_oid != amend_old_oid {
-            if !worktree_matches_head(&repo, git_dir)? {
-                bail!(
-                    "error: cannot rebase: You have unstaged changes.\n\
-                     Please commit or stash them."
-                );
-            }
+        if rb_dir.join("rebase-edit-continue").exists()
+            && head_oid != amend_old_oid
+            && worktree_matches_head(&repo, git_dir)?
+        {
             let next_peek_amend =
                 peek_next_rebase_flush_hint(&repo, &todo_lines_continue, 0, interactive_continue);
             record_rebase_in_rewritten_pending(git_dir, &rb_dir, &amend_old_oid, next_peek_amend)?;
@@ -7083,7 +7174,7 @@ fn do_continue() -> Result<()> {
         } else {
             hc.message.clone()
         };
-        let message = if rb_dir.join("rebase-edit-continue").exists() {
+        let mut message = if rb_dir.join("rebase-edit-continue").exists() {
             let after_editor = run_commit_editor_for_reword(&repo, git_dir, msg_src.trim())?;
             message_from_reword_editor(&after_editor, rebase_commit_msg_cleanup(&config), &config)?
         } else {
@@ -7096,6 +7187,17 @@ fn do_continue() -> Result<()> {
             )?;
             apply_commit_msg_cleanup(&raw_msg, rebase_commit_msg_cleanup(&config))
         };
+        if rebase_signoff(&rb_dir) {
+            let committer = rebase_replayed_committer_line(
+                &config,
+                &source_author_amend,
+                replay_opts_continue,
+                now_continue,
+            )?;
+            let (name, email, _) = split_stored_author_line(&committer)?;
+            let sob = format_signoff_line(&name, &email);
+            append_signoff_trailer(&mut message, &sob, &config);
+        }
         let new_oid = commit_from_merged_index(
             &repo,
             git_dir,
@@ -7395,7 +7497,7 @@ fn do_continue() -> Result<()> {
             grit_lib::commit_encoding::identity_raw_for_serialized_commit(
                 &encoding, &author, &committer,
             );
-        let commit_data = CommitData {
+        let mut commit_data = CommitData {
             tree: tree_oid,
             parents: vec![head_oid],
             author,
@@ -7406,8 +7508,15 @@ fn do_continue() -> Result<()> {
             message,
             raw_message,
         };
+        maybe_apply_rebase_signoff_to_commit_data(&mut commit_data, &rb_dir, &config, todo_cmd)?;
         let commit_bytes = serialize_commit(&commit_data);
-        repo.odb.write(ObjectKind::Commit, &commit_bytes)?
+        write_replayed_commit(
+            &repo,
+            &rb_dir,
+            &config,
+            &commit_data.committer,
+            commit_bytes,
+        )?
     } else {
         let (message, _, _) = read_rebase_continue_message(git_dir, &original_commit, &config)?;
         let tree_oid = write_tree_from_index(&repo.odb, &index, "")?;
@@ -7418,13 +7527,20 @@ fn do_continue() -> Result<()> {
         };
         let raw_msg =
             commit_message_after_prepare_hook(&repo, git_dir, &message, hook_arg1, Some(":"))?;
-        let raw_msg = if stopped_oid.is_some() {
+        let edited_message = stopped_oid.is_some();
+        let raw_msg = if edited_message {
             let mut template = raw_msg.clone();
             if !template.ends_with('\n') {
                 template.push('\n');
             }
             template.push_str("\n# Changes to be committed\n");
             run_commit_editor_for_template(&repo, git_dir, &template, hook_arg1, Some(":"))?
+        } else {
+            raw_msg
+        };
+        let raw_msg = if edited_message {
+            let comment_prefix = comment_line_prefix_full(&config);
+            cleanup_edited_commit_message(&raw_msg, comment_prefix.as_ref())
         } else {
             raw_msg
         };
@@ -7458,7 +7574,7 @@ fn do_continue() -> Result<()> {
             grit_lib::commit_encoding::identity_raw_for_serialized_commit(
                 &encoding, &author, &committer,
             );
-        let commit_data = CommitData {
+        let mut commit_data = CommitData {
             tree: tree_oid,
             parents: vec![head_oid],
             author,
@@ -7469,8 +7585,15 @@ fn do_continue() -> Result<()> {
             message,
             raw_message,
         };
+        maybe_apply_rebase_signoff_to_commit_data(&mut commit_data, &rb_dir, &config, todo_cmd)?;
         let commit_bytes = serialize_commit(&commit_data);
-        repo.odb.write(ObjectKind::Commit, &commit_bytes)?
+        write_replayed_commit(
+            &repo,
+            &rb_dir,
+            &config,
+            &commit_data.committer,
+            commit_bytes,
+        )?
     };
 
     // Update HEAD (detached)
@@ -7900,6 +8023,30 @@ fn write_rebase_conflict_message(
         fs::write(rebase_merge_dir(git_dir).join("message"), bytes)?;
     }
     Ok(())
+}
+
+fn append_rebase_conflicts_comment_block(
+    msg: &mut String,
+    conflict_files: &[(Vec<u8>, Vec<u8>)],
+    config: &ConfigSet,
+) {
+    if conflict_files.is_empty() {
+        return;
+    }
+    if !msg.ends_with('\n') {
+        msg.push('\n');
+    }
+    msg.push('\n');
+    let comment_prefix = comment_line_prefix_full(config);
+    msg.push_str(comment_prefix.as_ref());
+    msg.push_str(" Conflicts:\n");
+    for (path, _) in conflict_files {
+        msg.push_str(comment_prefix.as_ref());
+        msg.push('\t');
+        msg.push_str(String::from_utf8_lossy(path).as_ref());
+        msg.push('\n');
+    }
+    msg.push('\n');
 }
 
 fn read_rebase_continue_message(
