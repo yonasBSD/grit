@@ -9446,7 +9446,7 @@ fn expand_trailer_value(raw: &str) -> String {
 /// Parse the option string of a `%(trailers...)` placeholder (the part after
 /// `trailers`, beginning with an optional `:`). Returns `None` on an invalid
 /// option so the caller can emit the placeholder literally (matching Git).
-fn parse_trailers_opts(rest: &str) -> Option<grit_lib::commit_trailers::TrailerOpts> {
+pub(crate) fn parse_trailers_opts(rest: &str) -> Option<grit_lib::commit_trailers::TrailerOpts> {
     use grit_lib::commit_trailers::TrailerOpts;
     let mut opts = TrailerOpts::default();
     let body = match rest.strip_prefix(':') {

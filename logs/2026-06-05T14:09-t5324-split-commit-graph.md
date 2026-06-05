@@ -57,7 +57,13 @@ Ticket: fba897. Subsystem: pack-storage (commit-graph machinery).
   that is not in the new chain and is older than the expire time; keep_set keyed
   by full filename. Fixed test 15 (to-delete.graph expiry).
 
-## Remaining failures (4): 13, 25, 26, 40.
+## Fifth batch (39/42)
+- Read-path BASE-chunk bounds check (add_graph_to_chain): a layer declaring N
+  base graphs must carry a BASE chunk >= N*20 bytes; otherwise warn
+  "commit-graph base graphs chunk is too small" (deduped per layer id) and drop
+  that layer + everything above it, falling back to the ODB. Fixed test 26.
+
+## Remaining failures (3): 13, 25, 40.
 - 13, 25: split chain spanning an ALTERNATE object dir. CommitGraphChain::load
   reads layer files only from the local objects dir, so a chain whose base
   layers live in the alternate doesn't load (wrong layer count on write/verify).

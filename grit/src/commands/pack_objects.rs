@@ -174,6 +174,15 @@ pub struct Args {
     #[arg(long = "no-write-bitmap-index")]
     pub no_write_bitmap_index: bool,
 
+    /// Prefer a reachability bitmap when enumerating objects (accepted for compat; grit produces
+    /// the same object set with or without bitmaps).
+    #[arg(long = "use-bitmap-index")]
+    pub use_bitmap_index: bool,
+
+    /// Do not use a reachability bitmap when enumerating objects (accepted for compat).
+    #[arg(long = "no-use-bitmap-index")]
+    pub no_use_bitmap_index: bool,
+
     /// Filter specification (accepted for compat).
     #[arg(long = "filter", action = clap::ArgAction::Append)]
     pub filter: Vec<String>,
@@ -1647,7 +1656,12 @@ fn warn_pack_threads(args: &Args) {
 }
 
 fn pack_delta_depth_limit(args: &Args) -> Option<usize> {
-    let _ = (args.path_walk, args.no_path_walk);
+    let _ = (
+        args.path_walk,
+        args.no_path_walk,
+        args.use_bitmap_index,
+        args.no_use_bitmap_index,
+    );
     let from_extra = || {
         for a in &args.extra {
             if let Some(rest) = a.strip_prefix("--depth=") {
@@ -2429,8 +2443,15 @@ fn add_children_by_path_for_sparse(
     uninteresting: &mut HashSet<ObjectId>,
     map: &mut HashMap<Vec<u8>, HashSet<ObjectId>>,
 ) -> Result<()> {
-    let obj = read_object_from_repo(repo, tree_oid)
-        .map_err(|_| anyhow::anyhow!("bad tree object {}", tree_oid.to_hex()))?;
+    // Git's `mark_tree_uninteresting` reads boundary trees gently: a missing tree on the
+    // uninteresting (boundary) side is tolerated, because its children cannot be in the
+    // interesting set anyway. A genuinely-missing interesting tree is still caught later by the
+    // positive-side walk (`walk_reachable_commits_first`). This lets `pack with missing tree`
+    // (t5310) succeed when an excluded object is absent.
+    let obj = match read_object_from_repo(repo, tree_oid) {
+        Ok(obj) => obj,
+        Err(_) => return Ok(()),
+    };
     if obj.kind != ObjectKind::Tree {
         return Ok(());
     }
@@ -2565,7 +2586,11 @@ fn collect_revs_pack_objects_sparse(
                 continue;
             }
             commit_uninteresting.insert(cid);
-            let obj = read_object_from_repo(repo, &cid)?;
+            // A missing commit on the uninteresting side is tolerated (its ancestors cannot be in
+            // the interesting set): lets `pack with missing parent` (t5310) succeed.
+            let Ok(obj) = read_object_from_repo(repo, &cid) else {
+                continue;
+            };
             if obj.kind != ObjectKind::Commit {
                 continue;
             }
@@ -2598,7 +2623,11 @@ fn collect_revs_pack_objects_sparse(
             uninteresting.insert(c.tree);
         }
         for p in &c.parents {
-            let pobj = read_object_from_repo(repo, p)?;
+            // A missing parent commit (e.g. an excluded boundary whose ancestor was pruned) is
+            // tolerated: its root tree simply does not join the edge set.
+            let Ok(pobj) = read_object_from_repo(repo, p) else {
+                continue;
+            };
             if pobj.kind != ObjectKind::Commit {
                 continue;
             }
@@ -2634,6 +2663,116 @@ fn collect_revs_pack_objects_sparse(
         }
     }
     Ok(oids)
+}
+
+/// Build the set of candidate OIDs that `pack-objects` must omit because of the locality flags
+/// `--local`, `--honor-pack-keep`, and `--incremental`, mirroring `want_found_object` /
+/// `want_object_in_pack_mtime` in `git/builtin/pack-objects.c`.
+///
+/// Semantics (only objects in `candidates` are inspected, since that is all that can be packed):
+/// - `--incremental`: omit any object already present in **any** pack (local or alternate).
+/// - `--local`: omit objects that are loose in a non-local (alternate) object dir, or that appear
+///   in a non-local pack. Objects whose only copy is local are kept.
+/// - `--honor-pack-keep`: omit objects present in a pack marked with a `.keep` file.
+///
+/// Returns the union of OIDs to exclude. When no locality flag is set, the result is empty.
+fn pack_objects_locality_excludes(
+    repo: &Repository,
+    args: &Args,
+    candidates: &BTreeSet<ObjectId>,
+) -> Result<HashSet<ObjectId>> {
+    let mut excludes: HashSet<ObjectId> = HashSet::new();
+    if !args.local && !args.honor_pack_keep && !args.incremental {
+        return Ok(excludes);
+    }
+    if candidates.is_empty() {
+        return Ok(excludes);
+    }
+
+    let local_objects_dir = repo.odb.objects_dir().to_path_buf();
+
+    // Local packs, optionally filtered to those marked with a `.keep` sidecar.
+    let local_indexes = grit_lib::pack::read_local_pack_indexes(&local_objects_dir)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    for idx in &local_indexes {
+        let keep = idx.idx_path.with_extension("keep").is_file();
+        for entry in &idx.entries {
+            if entry.oid.len() != 20 {
+                continue;
+            }
+            let Ok(oid) = ObjectId::from_bytes(&entry.oid) else {
+                continue;
+            };
+            if !candidates.contains(&oid) {
+                continue;
+            }
+            if args.incremental || (args.honor_pack_keep && keep) {
+                excludes.insert(oid);
+            }
+        }
+    }
+
+    if args.local || args.incremental || args.honor_pack_keep {
+        let alternates = grit_lib::pack::read_alternates_recursive(&local_objects_dir)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        for alt_dir in &alternates {
+            // Loose objects in a non-local source exclude under `--local`.
+            if args.local {
+                let mut alt_loose = HashSet::new();
+                collect_all_loose_in_dir(alt_dir, &mut alt_loose)?;
+                for oid in &alt_loose {
+                    if candidates.contains(oid) {
+                        excludes.insert(*oid);
+                    }
+                }
+            }
+            let alt_indexes = grit_lib::pack::read_local_pack_indexes(alt_dir)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            for idx in &alt_indexes {
+                let keep = idx.idx_path.with_extension("keep").is_file();
+                for entry in &idx.entries {
+                    if entry.oid.len() != 20 {
+                        continue;
+                    }
+                    let Ok(oid) = ObjectId::from_bytes(&entry.oid) else {
+                        continue;
+                    };
+                    if !candidates.contains(&oid) {
+                        continue;
+                    }
+                    if args.incremental || args.local || (args.honor_pack_keep && keep) {
+                        excludes.insert(oid);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(excludes)
+}
+
+/// Apply `--local` / `--honor-pack-keep` / `--incremental` exclusions to a `--revs` pack object
+/// list, dropping any OID that one of the locality flags says we must omit. Both the walked object
+/// list and any explicitly force-included OIDs (raw OID args, e.g. `for-each-ref | pack-objects
+/// --revs`) are filtered, since a kept/non-local/already-packed object must be omitted even when it
+/// was named directly.
+fn apply_locality_excludes(
+    repo: &Repository,
+    args: &Args,
+    ordered: &mut Vec<ObjectId>,
+    force_include: &mut Vec<ObjectId>,
+) -> Result<()> {
+    if !args.local && !args.honor_pack_keep && !args.incremental {
+        return Ok(());
+    }
+    let mut candidates: BTreeSet<ObjectId> = ordered.iter().copied().collect();
+    candidates.extend(force_include.iter().copied());
+    let excludes = pack_objects_locality_excludes(repo, args, &candidates)?;
+    if !excludes.is_empty() {
+        ordered.retain(|o| !excludes.contains(o));
+        force_include.retain(|o| !excludes.contains(o));
+    }
+    Ok(())
 }
 
 fn collect_pack_objects_from_rev_stdin_lines(
@@ -2769,7 +2908,7 @@ fn collect_pack_objects_from_rev_stdin_lines(
         if !skip_full_exclude_subtract {
             let mut exclude = BTreeSet::new();
             for root in &exclude_roots {
-                walk_reachable(repo, root, &mut exclude, &shallow_grafts)?;
+                walk_reachable_lenient(repo, root, &mut exclude, &shallow_grafts)?;
             }
             for oid in &exclude {
                 oids.remove(oid);
@@ -2795,9 +2934,12 @@ fn collect_pack_objects_from_rev_stdin_lines(
             Vec::new()
         };
 
+        let mut force_include = force_include.clone();
+        apply_locality_excludes(repo, args, &mut ordered, &mut force_include)?;
+
         return Ok(PackObjectList {
             oids: ordered,
-            force_include: force_include.clone(),
+            force_include,
             thin_blob_deltas,
             rev_list_stdin: true,
         });
@@ -2808,7 +2950,7 @@ fn collect_pack_objects_from_rev_stdin_lines(
     for neg in &negative {
         let oid =
             resolve_revision(repo, neg).with_context(|| format!("cannot resolve ref '{neg}'"))?;
-        walk_reachable(repo, &oid, &mut exclude, &shallow_grafts)?;
+        walk_reachable_lenient(repo, &oid, &mut exclude, &shallow_grafts)?;
     }
     for pos in &positive {
         let oid =
@@ -2856,6 +2998,9 @@ fn collect_pack_objects_from_rev_stdin_lines(
     } else {
         Vec::new()
     };
+
+    let mut force_include = force_include;
+    apply_locality_excludes(repo, args, &mut ordered, &mut force_include)?;
 
     Ok(PackObjectList {
         oids: ordered,
@@ -3761,11 +3906,41 @@ fn walk_reachable(
     oids: &mut BTreeSet<ObjectId>,
     shallow_grafts: &HashSet<ObjectId>,
 ) -> Result<()> {
+    walk_reachable_inner(repo, oid, oids, shallow_grafts, false)
+}
+
+/// Walk reachability from `oid` like [`walk_reachable`], but silently skip objects whose content
+/// cannot be read instead of failing.
+///
+/// Git's `pack-objects --revs` boundary (exclude) traversal does not require the *content* of the
+/// uninteresting closure to be present: with bitmaps the closure comes from the bitmap, and without
+/// them missing objects in the uninteresting set are simply ignored (they cannot also be in the
+/// interesting set). Using this for the negative side lets `pack with missing blob/tree/parent`
+/// (t5310) succeed when an excluded object is absent.
+fn walk_reachable_lenient(
+    repo: &Repository,
+    oid: &ObjectId,
+    oids: &mut BTreeSet<ObjectId>,
+    shallow_grafts: &HashSet<ObjectId>,
+) -> Result<()> {
+    walk_reachable_inner(repo, oid, oids, shallow_grafts, true)
+}
+
+fn walk_reachable_inner(
+    repo: &Repository,
+    oid: &ObjectId,
+    oids: &mut BTreeSet<ObjectId>,
+    shallow_grafts: &HashSet<ObjectId>,
+    lenient: bool,
+) -> Result<()> {
     if !oids.insert(*oid) {
         return Ok(()); // already visited
     }
-    let obj = read_object_from_repo(repo, oid)
-        .map_err(|_| anyhow::anyhow!("bad tree object {}", oid.to_hex()))?;
+    let obj = match read_object_from_repo(repo, oid) {
+        Ok(obj) => obj,
+        Err(_) if lenient => return Ok(()),
+        Err(_) => return Err(anyhow::anyhow!("bad tree object {}", oid.to_hex())),
+    };
     match obj.kind {
         ObjectKind::Commit => {
             // Parse tree and parent lines.
@@ -3773,12 +3948,18 @@ fn walk_reachable(
                 for line in text.lines() {
                     if let Some(tree_hex) = line.strip_prefix("tree ") {
                         if let Ok(tree_oid) = ObjectId::from_hex(tree_hex.trim()) {
-                            walk_reachable(repo, &tree_oid, oids, shallow_grafts)?;
+                            walk_reachable_inner(repo, &tree_oid, oids, shallow_grafts, lenient)?;
                         }
                     } else if let Some(parent_hex) = line.strip_prefix("parent ") {
                         if !shallow_grafts.contains(oid) {
                             if let Ok(parent_oid) = ObjectId::from_hex(parent_hex.trim()) {
-                                walk_reachable(repo, &parent_oid, oids, shallow_grafts)?;
+                                walk_reachable_inner(
+                                    repo,
+                                    &parent_oid,
+                                    oids,
+                                    shallow_grafts,
+                                    lenient,
+                                )?;
                             }
                         }
                     } else if line.is_empty() {
@@ -3795,7 +3976,7 @@ fn walk_reachable(
                 if entry.mode == MODE_GITLINK {
                     continue;
                 }
-                walk_reachable(repo, &entry.oid, oids, shallow_grafts)?;
+                walk_reachable_inner(repo, &entry.oid, oids, shallow_grafts, lenient)?;
             }
         }
         ObjectKind::Tag => {
@@ -3804,7 +3985,7 @@ fn walk_reachable(
                 if let Some(first_line) = text.lines().next() {
                     if let Some(obj_hex) = first_line.strip_prefix("object ") {
                         if let Ok(target_oid) = ObjectId::from_hex(obj_hex.trim()) {
-                            walk_reachable(repo, &target_oid, oids, shallow_grafts)?;
+                            walk_reachable_inner(repo, &target_oid, oids, shallow_grafts, lenient)?;
                         }
                     }
                 }

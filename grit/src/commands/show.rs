@@ -2502,6 +2502,37 @@ pub(crate) fn apply_format_string(
                     chars.next();
                     result.push('%');
                 }
+                Some('(') => {
+                    // Extended placeholder, e.g. `%(trailers:...)`. Capture the balanced
+                    // `(...)` payload and delegate trailer formatting to the shared engine.
+                    let mut look = chars.clone();
+                    look.next(); // consume '('
+                    let mut inner = String::new();
+                    let mut closed = false;
+                    for c in look.by_ref() {
+                        if c == ')' {
+                            closed = true;
+                            break;
+                        }
+                        inner.push(c);
+                    }
+                    if !closed {
+                        result.push('%');
+                    } else if let Some(rest) = inner.strip_prefix("trailers") {
+                        if let Some(opts) = crate::commands::log::parse_trailers_opts(rest) {
+                            chars = look;
+                            let formatted =
+                                grit_lib::commit_trailers::format_trailers(info.message, &opts);
+                            result.push_str(&formatted);
+                        } else {
+                            // Invalid option: emit the leading `%` and reparse `(...)` as text.
+                            result.push('%');
+                        }
+                    } else {
+                        // Unhandled extended placeholder: emit literally.
+                        result.push('%');
+                    }
+                }
                 _ => result.push('%'),
             }
             if magic != Magic::None {
