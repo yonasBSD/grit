@@ -341,8 +341,15 @@ fn cmd_repack(repo: &Repository, args: &RepackArgs) -> Result<()> {
         return repack_all_and_write_midx(repo);
     }
 
+    // Honor `repack.packKeptObjects` (default false): exclude `.keep`-protected packs
+    // from the candidate set, matching `fill_included_packs_*` in git/midx-write.c.
+    let keep_kept_objects = grit_lib::config::ConfigSet::load(Some(&repo.git_dir), true)
+        .ok()
+        .and_then(|c| c.get_bool("repack.packKeptObjects").and_then(|r| r.ok()))
+        .unwrap_or(false);
+
     let (names, objects) = read_midx_objects(&objects_dir).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let include = if args.batch_size > 0 {
+    let mut include = if args.batch_size > 0 {
         select_packs_for_batch(&objects_dir, &names, &objects, args.batch_size)?
     } else {
         // batch-size 0 => include every (local, non-cruft) pack referenced by the MIDX.
@@ -359,6 +366,15 @@ fn cmd_repack(repo: &Repository, args: &RepackArgs) -> Result<()> {
         });
         set
     };
+
+    if !keep_kept_objects {
+        include.retain(|&id| {
+            names
+                .get(id)
+                .map(|n| !is_kept_idx_name(&objects_dir, n))
+                .unwrap_or(false)
+        });
+    }
 
     if include.len() <= 1 {
         // Nothing meaningful to combine; leave packs untouched.
@@ -442,8 +458,12 @@ fn cmd_expire(repo: &Repository, force_progress: bool) -> Result<()> {
     let mut survivors: Vec<String> = Vec::new();
     let mut to_drop: Vec<String> = Vec::new();
     for (i, name) in names.iter().enumerate() {
-        // Never expire cruft packs.
-        let keep = count.get(i).copied().unwrap_or(0) > 0 || is_cruft_idx_name(&objects_dir, name);
+        // Keep packs that still have objects referenced by the MIDX, that are
+        // `.keep`-protected, or that are cruft packs (git/midx-write.c
+        // `expire_midx_packs`).
+        let keep = count.get(i).copied().unwrap_or(0) > 0
+            || is_kept_idx_name(&objects_dir, name)
+            || is_cruft_idx_name(&objects_dir, name);
         if keep {
             survivors.push(name.clone());
         } else {
@@ -489,6 +509,15 @@ fn is_cruft_idx_name(objects_dir: &Path, idx_name: &str) -> bool {
     objects_dir
         .join("pack")
         .join(format!("{stem}.mtimes"))
+        .exists()
+}
+
+/// A pack is `.keep`-protected when a sibling `<stem>.keep` file exists.
+fn is_kept_idx_name(objects_dir: &Path, idx_name: &str) -> bool {
+    let stem = idx_name.strip_suffix(".idx").unwrap_or(idx_name);
+    objects_dir
+        .join("pack")
+        .join(format!("{stem}.keep"))
         .exists()
 }
 

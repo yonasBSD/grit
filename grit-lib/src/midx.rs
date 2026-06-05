@@ -699,7 +699,7 @@ fn parse_midx_toc(
                 "multi-pack-index required pack-name chunk missing or corrupted".to_owned(),
             ));
         }
-        if (chunk_offset as usize) % MIDX_CHUNK_ALIGNMENT != 0 {
+        if !(chunk_offset as usize).is_multiple_of(MIDX_CHUNK_ALIGNMENT) {
             errors.push(format!(
                 "chunk id {chunk_id:x} not {MIDX_CHUNK_ALIGNMENT}-byte aligned"
             ));
