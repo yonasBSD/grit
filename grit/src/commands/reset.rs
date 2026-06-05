@@ -13,7 +13,7 @@
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
 use std::collections::{HashMap, HashSet};
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::Path;
 use std::process::Command;
 
@@ -277,6 +277,14 @@ pub struct Args {
     #[arg(short = 'p', long = "patch")]
     pub patch: bool,
 
+    /// Read pathspecs from a file, or from stdin when the value is `-`.
+    #[arg(long = "pathspec-from-file", value_name = "FILE")]
+    pub pathspec_from_file: Option<String>,
+
+    /// Treat `--pathspec-from-file` input as NUL-delimited.
+    #[arg(long = "pathspec-file-nul")]
+    pub pathspec_file_nul: bool,
+
     /// After updating the working tree, run `submodule update --init --recursive` (Git-compatible
     /// bool-ish values when `=VALUE` is given).
     #[arg(
@@ -336,10 +344,11 @@ pub fn filter_args(raw_args: &[String]) -> Vec<String> {
 }
 
 /// Pull mode / misc flags out of `rest` when they appear after the commit (Git-compatible argv).
-fn normalize_reset_trailing_args(args: &mut Args) {
+fn normalize_reset_trailing_args(args: &mut Args) -> Result<()> {
     let mut i = 0usize;
     while i < args.rest.len() {
-        match args.rest[i].as_str() {
+        let current = args.rest[i].clone();
+        match current.as_str() {
             "--soft" => {
                 args.soft = true;
                 args.rest.remove(i);
@@ -388,23 +397,66 @@ fn normalize_reset_trailing_args(args: &mut Args) {
                 }
                 args.rest.remove(i);
             }
+            "--pathspec-file-nul" => {
+                args.pathspec_file_nul = true;
+                args.rest.remove(i);
+            }
+            "--pathspec-from-file" => {
+                args.rest.remove(i);
+                if i >= args.rest.len() {
+                    bail!("option '--pathspec-from-file' requires a value");
+                }
+                args.pathspec_from_file = Some(args.rest.remove(i));
+            }
+            s if s.starts_with("--pathspec-from-file=") => {
+                args.pathspec_from_file = Some(s["--pathspec-from-file=".len()..].to_owned());
+                args.rest.remove(i);
+            }
             _ => {
                 i += 1;
             }
         }
     }
+    Ok(())
+}
+
+/// Read pathspec entries for `git reset --pathspec-from-file`.
+fn read_reset_pathspecs_from_file(source: &str, nul_terminated: bool) -> Result<Vec<String>> {
+    let data = if source == "-" {
+        let mut buf = Vec::new();
+        std::io::stdin().read_to_end(&mut buf)?;
+        buf
+    } else {
+        std::fs::read(source).with_context(|| format!("reading pathspecs from '{source}'"))?
+    };
+
+    if nul_terminated {
+        return Ok(data
+            .split(|b| *b == 0)
+            .filter(|chunk| !chunk.is_empty())
+            .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+            .collect());
+    }
+
+    grit_lib::pathspec::parse_pathspecs_from_source(&data, false).map_err(Into::into)
 }
 
 /// Run `grit reset`.
 pub fn run(mut args: Args) -> Result<()> {
     // Git accepts `reset <commit> --hard`; clap's `trailing_var_arg` collects `--hard` into
     // `rest` so it is never parsed as a flag. Strip known options from `rest` first.
-    normalize_reset_trailing_args(&mut args);
+    normalize_reset_trailing_args(&mut args)?;
 
     let mode = parse_mode(&args)?;
 
     let repo = Repository::discover(None).context("not a git repository")?;
 
+    if args.pathspec_file_nul && args.pathspec_from_file.is_none() {
+        bail!("the option '--pathspec-file-nul' requires '--pathspec-from-file'");
+    }
+    if args.pathspec_from_file.is_some() && args.patch {
+        bail!("options '--pathspec-from-file' and '--patch' cannot be used together");
+    }
     if args.recurse_submodules.is_some() && args.patch {
         bail!("options '--recurse-submodules' and '--patch' cannot be used together");
     }
@@ -418,8 +470,16 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     // Split positional args into (commit_spec, paths).
-    let (commit_spec, paths, mut paths_explicit) = split_commit_and_paths(&repo, &args.rest);
+    let (commit_spec, mut paths, mut paths_explicit) = split_commit_and_paths(&repo, &args.rest);
     paths_explicit |= args.raw_argv_had_path_separator;
+    let paths_from_file = args.pathspec_from_file.is_some();
+    if let Some(source) = args.pathspec_from_file.as_deref() {
+        if !paths.is_empty() || paths_explicit {
+            bail!("'--pathspec-from-file' and pathspec arguments cannot be used together");
+        }
+        paths = read_reset_pathspecs_from_file(source, args.pathspec_file_nul)?;
+        paths_explicit = true;
+    }
 
     // Track whether the user explicitly passed a commit-ish (e.g. `reset HEAD`)
     // vs relying on the implicit default (e.g. bare `reset`). On an unborn branch,
@@ -436,7 +496,7 @@ pub fn run(mut args: Args) -> Result<()> {
     if !paths.is_empty() {
         // Pathspec reset: only update index entries, HEAD stays put.
         if mode != ResetMode::Mixed {
-            bail!("Cannot do --{} reset with paths.", mode.name());
+            bail!("fatal: Cannot do {} reset with paths", mode.name());
         }
         if !paths_explicit
             && paths.len() == 1
@@ -451,7 +511,14 @@ Use '--' to separate paths from revisions, like this:\n\
                 paths[0]
             );
         }
-        return reset_paths(&repo, &commit_spec, &paths, args.quiet, args.intent_to_add);
+        return reset_paths(
+            &repo,
+            &commit_spec,
+            &paths,
+            args.quiet,
+            args.intent_to_add,
+            paths_from_file,
+        );
     }
 
     reset_commit(
@@ -1251,6 +1318,7 @@ fn reset_paths(
     paths: &[String],
     _quiet: bool,
     intent_to_add: bool,
+    allow_unmatched_pathspecs: bool,
 ) -> Result<()> {
     if repo.is_bare() {
         bail!("fatal: mixed reset is not allowed in a bare repository");
@@ -1352,6 +1420,9 @@ fn reset_paths(
         let mut out: Vec<String> = set.into_iter().collect();
         out.sort();
         if out.is_empty() {
+            if allow_unmatched_pathspecs {
+                return Ok(());
+            }
             if commit_spec != "HEAD" && commit_spec != "@" {
                 return Ok(());
             }
