@@ -2889,6 +2889,36 @@ fn resolve_config_env(spec: &str) -> Result<String> {
     }
 }
 
+fn sq_quote_config_parameter_part(raw: &str) -> String {
+    let mut quoted = String::with_capacity(raw.len() + 2);
+    quoted.push('\'');
+    for ch in raw.chars() {
+        if ch == '\'' || ch == '!' {
+            quoted.push('\'');
+            quoted.push('\\');
+            quoted.push(ch);
+            quoted.push('\'');
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+fn format_config_parameter_for_env(kv: &str) -> String {
+    let (key, value) = kv
+        .split_once('\u{1}')
+        .or_else(|| kv.split_once('='))
+        .map_or((kv, None), |(key, value)| (key, Some(value)));
+    let mut out = sq_quote_config_parameter_part(key);
+    out.push('=');
+    if let Some(value) = value {
+        out.push_str(&sq_quote_config_parameter_part(value));
+    }
+    out
+}
+
 /// Apply global options (env vars, chdir).
 fn apply_globals(opts: &GlobalOpts) -> Result<()> {
     if let Some(dir) = &opts.change_dir {
@@ -2929,7 +2959,7 @@ fn apply_globals(opts: &GlobalOpts) -> Result<()> {
         let extra: String = opts
             .config_overrides
             .iter()
-            .map(|kv| format!("'{}'", kv))
+            .map(|kv| format_config_parameter_for_env(kv))
             .collect::<Vec<_>>()
             .join(" ");
         // Git's config reader applies the last occurrence of a key. Inherited

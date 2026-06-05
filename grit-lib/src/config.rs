@@ -1870,18 +1870,7 @@ impl ConfigSet {
             }
         }
 
-        // GIT_CONFIG_COUNT / GIT_CONFIG_KEY_N / GIT_CONFIG_VALUE_N
-        if let Ok(count_str) = std::env::var("GIT_CONFIG_COUNT") {
-            if let Ok(count) = count_str.parse::<usize>() {
-                for i in 0..count {
-                    let key_var = format!("GIT_CONFIG_KEY_{i}");
-                    let val_var = format!("GIT_CONFIG_VALUE_{i}");
-                    if let (Ok(key), Ok(val)) = (std::env::var(&key_var), std::env::var(&val_var)) {
-                        let _ = set.add_command_override(&key, &val);
-                    }
-                }
-            }
-        }
+        add_environment_config_pairs(&mut set)?;
 
         // GIT_CONFIG_PARAMETERS — used by `git -c key=value`.
         if let Ok(params) = std::env::var("GIT_CONFIG_PARAMETERS") {
@@ -2050,17 +2039,7 @@ impl ConfigSet {
             }
         }
 
-        if let Ok(count_str) = std::env::var("GIT_CONFIG_COUNT") {
-            if let Ok(count) = count_str.parse::<usize>() {
-                for i in 0..count {
-                    let key_var = format!("GIT_CONFIG_KEY_{i}");
-                    let val_var = format!("GIT_CONFIG_VALUE_{i}");
-                    if let (Ok(key), Ok(val)) = (std::env::var(&key_var), std::env::var(&val_var)) {
-                        let _ = set.add_command_override(&key, &val);
-                    }
-                }
-            }
-        }
+        add_environment_config_pairs(&mut set)?;
 
         if let Ok(params) = std::env::var("GIT_CONFIG_PARAMETERS") {
             for entry in parse_config_parameters(&params) {
@@ -2138,6 +2117,36 @@ impl ConfigSet {
 
         Ok(())
     }
+}
+
+fn add_environment_config_pairs(set: &mut ConfigSet) -> Result<()> {
+    let Ok(count_str) = std::env::var("GIT_CONFIG_COUNT") else {
+        return Ok(());
+    };
+    if count_str.is_empty() {
+        return Ok(());
+    }
+
+    let count = count_str
+        .parse::<usize>()
+        .map_err(|_| Error::ConfigError("bogus count in GIT_CONFIG_COUNT".to_owned()))?;
+    if count > i32::MAX as usize {
+        return Err(Error::ConfigError(
+            "too many entries in GIT_CONFIG_COUNT".to_owned(),
+        ));
+    }
+
+    for i in 0..count {
+        let key_var = format!("GIT_CONFIG_KEY_{i}");
+        let value_var = format!("GIT_CONFIG_VALUE_{i}");
+        let key = std::env::var(&key_var)
+            .map_err(|_| Error::ConfigError(format!("missing config key {key_var}")))?;
+        let value = std::env::var(&value_var)
+            .map_err(|_| Error::ConfigError(format!("missing config value {value_var}")))?;
+        set.add_command_override(&key, &value)?;
+    }
+
+    Ok(())
 }
 
 // ── Type coercion helpers ───────────────────────────────────────────
