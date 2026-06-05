@@ -6459,6 +6459,18 @@ fn cherry_pick_for_rebase(
             }
         }
         if merged_tree_oid == head_tree_oid && !keep_empty {
+            // A commit whose result is empty: if it did *not* start empty (its tree differed from
+            // its parent's, so it became empty only because a prerequisite was already applied
+            // upstream — e.g. `pull --rebase` after the upstream was rebased), a non-interactive
+            // rebase silently *drops* it (git `--empty=drop`, the default outside `-i`). Only stop
+            // for interactive rebases or commits that were empty to begin with.
+            let became_empty = commit_tree_oid != parent_tree_oid;
+            let interactive = rb_dir.join("interactive").exists();
+            if became_empty && !interactive {
+                // Index/worktree already equal HEAD's tree (the merge produced no change), so the
+                // commit is dropped simply by not creating it; the replay loop advances.
+                return Ok(());
+            }
             fs::write(rb_dir.join("current"), format!("{}\n", commit_oid.to_hex()))?;
             fs::write(
                 rb_dir.join("current-cmd"),

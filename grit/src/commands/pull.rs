@@ -1535,11 +1535,18 @@ fn rebase_tracking_branch(
 ) -> Option<(String, ObjectId)> {
     // `pull <remote> <branch>`: tracking ref is `refs/remotes/<remote>/<branch>`.
     if let (Some(remote), Some(branch)) = (args.remote.as_deref(), args.refspecs.first()) {
-        if !remote_token_looks_like_path(remote)
-            && config.get(&format!("remote.{remote}.url")).is_some()
-        {
-            let (src, _dst) = split_pull_refspec(branch);
-            let short = src.strip_prefix("refs/heads/").unwrap_or(src);
+        let (src, _dst) = split_pull_refspec(branch);
+        let short = src.strip_prefix("refs/heads/").unwrap_or(src);
+        // `pull . <branch>` (or any local-path remote) fork-points against the local branch itself
+        // (git `get_tracking_branch(".", refspec)` resolves to the source ref on the same repo).
+        if remote == "." || remote_token_looks_like_path(remote) {
+            let local = format!("refs/heads/{short}");
+            if let Ok(oid) = refs::resolve_ref(&repo.git_dir, &local) {
+                return Some((local, oid));
+            }
+            return None;
+        }
+        if config.get(&format!("remote.{remote}.url")).is_some() {
             let track = format!("refs/remotes/{remote}/{short}");
             if let Ok(oid) = refs::resolve_ref(&repo.git_dir, &track) {
                 return Some((track, oid));
