@@ -897,6 +897,15 @@ pub fn run(mut args: Args) -> Result<()> {
         Vec::new()
     };
     let (rename_threshold, rename_copies) = commit_rename_settings(&config);
+    if let Some(th) = rename_threshold {
+        staged = status_apply_rename_copy_detection(
+            &repo.odb,
+            staged,
+            th,
+            rename_copies,
+            status_base_tree.as_ref(),
+        )?;
+    }
     let mut unstaged = if let Some(th) = rename_threshold {
         status_apply_rename_copy_detection(
             &repo.odb,
@@ -2967,18 +2976,18 @@ fn parse_fixup_argument(raw: &str) -> Result<FixupParsed> {
 }
 
 fn commit_rename_settings(config: &ConfigSet) -> (Option<u32>, bool) {
-    match config.get("diff.renames") {
-        Some(val) => {
-            let lowered = val.to_lowercase();
-            match lowered.as_str() {
+    for key in ["status.renames", "diff.renames"] {
+        if let Some(val) = config.get(key) {
+            let lowered = val.trim().to_ascii_lowercase();
+            return match lowered.as_str() {
                 "false" | "no" | "off" | "0" => (None, false),
                 "true" | "yes" | "on" | "1" | "" => (Some(50), false),
                 "copies" | "copy" => (Some(50), true),
                 _ => (None, false),
-            }
+            };
         }
-        None => (Some(50), false),
     }
+    (Some(50), false)
 }
 
 fn commit_uses_editor(args: &Args, fixup: Option<&FixupParsed>, git_dir: &Path) -> bool {

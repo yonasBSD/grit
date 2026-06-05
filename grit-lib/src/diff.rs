@@ -2428,8 +2428,8 @@ pub fn detect_copies(
 /// Apply Git-style rename and optional copy detection for index↔worktree diffs.
 ///
 /// When `copies` is true (Git `diff.renames` / `status.renames` set to `copy`/`copies`),
-/// runs [`detect_copies`] after rename detection so added files can match unchanged
-/// paths from `HEAD` (e.g. intent-to-add copies).
+/// runs copy detection, which also pairs deleted sources with one rename and any additional
+/// destinations as copies.
 ///
 /// # Errors
 ///
@@ -2441,9 +2441,8 @@ pub fn status_apply_rename_copy_detection(
     copies: bool,
     head_tree: Option<&ObjectId>,
 ) -> Result<Vec<DiffEntry>> {
-    let after_renames = detect_renames(odb, None, unstaged_raw, threshold);
     if !copies {
-        return Ok(after_renames);
+        return Ok(detect_renames(odb, None, unstaged_raw, threshold));
     }
     let source_tree_entries: Vec<(String, String, ObjectId)> = match head_tree {
         Some(oid) => flatten_tree(odb, oid, "")?
@@ -2455,7 +2454,7 @@ pub fn status_apply_rename_copy_detection(
     Ok(detect_copies(
         odb,
         None,
-        after_renames,
+        unstaged_raw,
         threshold,
         false,
         &source_tree_entries,

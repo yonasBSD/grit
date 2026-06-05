@@ -7,7 +7,8 @@ use clap::Args as ClapArgs;
 use grit_lib::config::ConfigSet;
 use grit_lib::diff::{
     detect_renames, diff_index_to_tree, diff_index_to_worktree_with_options, head_path_states,
-    submodule_porcelain_flags, DiffEntry, DiffIndexToWorktreeOptions, DiffStatus,
+    status_apply_rename_copy_detection, submodule_porcelain_flags, DiffEntry,
+    DiffIndexToWorktreeOptions, DiffStatus,
 };
 use grit_lib::error::Error;
 use grit_lib::ignore::IgnoreMatcher;
@@ -657,8 +658,8 @@ pub fn run(mut args: Args) -> Result<()> {
         .cloned()
         .collect();
 
-    // Resolve rename detection settings for status.
-    let status_rename_threshold = resolve_status_rename_threshold(&args, &config);
+    // Resolve rename/copy detection settings for status.
+    let status_rename_settings = resolve_status_rename_settings(&args, &config);
 
     let fsmonitor_query =
         query_status_fsmonitor_paths(work_tree, &config, index.fsmonitor_last_update.as_deref());
@@ -683,8 +684,8 @@ pub fn run(mut args: Args) -> Result<()> {
         .filter(|entry| status_path_matches(entry.path(), &user_pathspecs))
         .collect();
     // Detect renames among staged entries when enabled.
-    let staged = if let Some(threshold) = status_rename_threshold {
-        detect_renames_for_status(&repo.odb, staged_raw.clone(), threshold)
+    let staged = if let Some(settings) = status_rename_settings {
+        detect_renames_for_status(&repo.odb, staged_raw.clone(), settings, head_tree.as_ref())?
     } else {
         staged_raw.clone()
     };
@@ -709,8 +710,13 @@ pub fn run(mut args: Args) -> Result<()> {
                 .is_none_or(|(_, reported)| fsmonitor_reported_path_matches(entry.path(), reported))
         })
         .collect();
-    let unstaged = if let Some(threshold) = status_rename_threshold {
-        detect_renames_for_status(&repo.odb, unstaged_raw.clone(), threshold)
+    let unstaged = if let Some(settings) = status_rename_settings {
+        detect_renames_for_status(
+            &repo.odb,
+            unstaged_raw.clone(),
+            settings,
+            head_tree.as_ref(),
+        )?
     } else {
         unstaged_raw.clone()
     };
@@ -3694,41 +3700,84 @@ fn parse_bool_str(value: &str) -> Option<bool> {
     }
 }
 
-/// Resolve rename-detection threshold for `status`.
-///
-/// Returns `Some(threshold_percent)` when rename detection should run,
-/// or `None` when disabled.
-fn resolve_status_rename_threshold(args: &Args, config: &ConfigSet) -> Option<u32> {
+#[derive(Clone, Copy)]
+struct StatusRenameSettings {
+    threshold: u32,
+    copies: bool,
+}
+
+fn parse_rename_config_value(value: &str) -> Option<(bool, bool)> {
+    let lowered = value.trim().to_ascii_lowercase();
+    match lowered.as_str() {
+        "false" | "no" | "off" | "0" => Some((false, false)),
+        "true" | "yes" | "on" | "1" | "" => Some((true, false)),
+        "copies" | "copy" => Some((true, true)),
+        _ => None,
+    }
+}
+
+/// Resolve rename/copy detection settings for `status`.
+fn resolve_status_rename_settings(args: &Args, config: &ConfigSet) -> Option<StatusRenameSettings> {
     if args.no_renames || args.no_find_renames {
         return None;
     }
 
+    let config_copies = config
+        .get("status.renames")
+        .as_deref()
+        .and_then(|value| parse_rename_config_value(value).map(|(_, copies)| copies))
+        .or_else(|| {
+            config
+                .get("diff.renames")
+                .as_deref()
+                .and_then(|value| parse_rename_config_value(value).map(|(_, copies)| copies))
+        })
+        .unwrap_or(false);
+
     if let Some(value) = args.find_renames.as_deref() {
         let trimmed = value.trim();
         if trimmed.is_empty() {
-            return Some(50);
+            return Some(StatusRenameSettings {
+                threshold: 50,
+                copies: config_copies,
+            });
         }
         if let Some(flag) = parse_bool_str(trimmed) {
-            return if flag { Some(50) } else { None };
+            return if flag {
+                Some(StatusRenameSettings {
+                    threshold: 50,
+                    copies: config_copies,
+                })
+            } else {
+                None
+            };
         }
         if let Some(percent) = trimmed.strip_suffix('%') {
-            return percent.parse::<u32>().ok().map(|n| n.min(100));
+            return percent.parse::<u32>().ok().map(|n| StatusRenameSettings {
+                threshold: n.min(100),
+                copies: config_copies,
+            });
         }
-        return trimmed.parse::<u32>().ok().map(|n| n.min(100));
+        return trimmed.parse::<u32>().ok().map(|n| StatusRenameSettings {
+            threshold: n.min(100),
+            copies: config_copies,
+        });
     }
 
-    match config.get("diff.renames") {
-        Some(val) => {
-            let lowered = val.to_lowercase();
-            match lowered.as_str() {
-                "false" | "no" | "off" | "0" => None,
-                "true" | "yes" | "on" | "1" | "" => Some(50),
-                "copies" | "copy" => Some(50),
-                _ => None,
+    for key in ["status.renames", "diff.renames"] {
+        if let Some(value) = config.get(key) {
+            if let Some((enabled, copies)) = parse_rename_config_value(&value) {
+                return enabled.then_some(StatusRenameSettings {
+                    threshold: 50,
+                    copies,
+                });
             }
         }
-        None => Some(50),
     }
+    Some(StatusRenameSettings {
+        threshold: 50,
+        copies: false,
+    })
 }
 
 /// Rename detection for `status` with a bounded candidate matrix.
@@ -3739,8 +3788,9 @@ fn resolve_status_rename_threshold(args: &Args, config: &ConfigSet) -> Option<u3
 fn detect_renames_for_status(
     odb: &grit_lib::odb::Odb,
     entries: Vec<DiffEntry>,
-    threshold: u32,
-) -> Vec<DiffEntry> {
+    settings: StatusRenameSettings,
+    head_tree: Option<&ObjectId>,
+) -> Result<Vec<DiffEntry>> {
     const STATUS_RENAME_MATRIX_BUDGET: usize = 50_000;
     const STATUS_RENAME_CANDIDATE_LIMIT: usize = 2_000;
 
@@ -3755,16 +3805,26 @@ fn detect_renames_for_status(
     }
 
     if deleted == 0 || added == 0 {
-        return entries;
+        return Ok(entries);
     }
 
     if deleted.saturating_add(added) > STATUS_RENAME_CANDIDATE_LIMIT
         || deleted.saturating_mul(added) > STATUS_RENAME_MATRIX_BUDGET
     {
-        return entries;
+        return Ok(entries);
     }
 
-    detect_renames(odb, None, entries, threshold)
+    if settings.copies {
+        return Ok(status_apply_rename_copy_detection(
+            odb,
+            entries,
+            settings.threshold,
+            true,
+            head_tree,
+        )?);
+    }
+
+    Ok(detect_renames(odb, None, entries, settings.threshold))
 }
 
 /// Find untracked files in the working tree (raw, before ignore filtering).
