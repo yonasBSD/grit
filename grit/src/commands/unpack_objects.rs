@@ -6,7 +6,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 
 use std::collections::HashSet;
@@ -100,7 +100,7 @@ pub fn run(args: Args) -> Result<()> {
 >>>>>>> theirs
     let opts = UnpackOptions {
         dry_run: args.dry_run,
-        quiet: args.quiet,
+        quiet,
         strict: args.strict,
         allowed_missing,
         allow_promisor_missing_references,
@@ -134,7 +134,7 @@ pub fn run(args: Args) -> Result<()> {
         let _ = repo.odb.write_loose_materialize(ObjectKind::Tree, b"");
     }
 
-    if !args.quiet {
+    if !quiet {
         eprintln!("Unpacking objects: done ({count} objects)");
     }
     maybe_emit_unpack_fsync_counters();

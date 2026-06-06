@@ -1757,6 +1757,10 @@ fn fetch_upload_pack_negotiate_pack_bytes(
         drop(stdin);
         let mut out = Vec::new();
         read_v2_fetch_pack_response(&mut stdout, &mut out)?;
+        // Explicit-OID lazy fetches negotiate in a single round (a lone `want ... done`); record
+        // `total_rounds`=1 like upstream `fetch-pack.c` so partial-clone checkout traces match
+        // (t5601 #108).
+        crate::trace2_emit_data_intmax("negotiation_v2", "total_rounds", 1);
         out
     } else {
         let (advertised, _head_symref, saw_v1, saw_v2, server_sid) =
@@ -1780,6 +1784,9 @@ fn fetch_upload_pack_negotiate_pack_bytes(
             filter_spec,
         )?;
         drop(stdin);
+        // Explicit-OID lazy fetches negotiate in a single round; record `total_rounds`=1 like
+        // upstream `fetch-pack.c` (t5601 #108).
+        crate::trace2_emit_data_intmax("negotiation_v0_v1", "total_rounds", 1);
         out
     };
 

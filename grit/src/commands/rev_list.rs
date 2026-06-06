@@ -454,6 +454,13 @@ pub fn run(args: Args) -> Result<()> {
                     show_children = true;
                 }
                 "--quiet" => options.quiet = true,
+                // `--progress[=<header>]` only controls a stderr progress meter and has no effect
+                // on the emitted object/commit list. `git receive-pack` runs the connectivity
+                // check as `git rev-list --progress="Checking connectivity" ...`, so accept and
+                // ignore it rather than erroring (t5543 atomic exit-code via a git-receive-pack
+                // wrapper whose internal `git` resolves to grit).
+                "--progress" | "--no-progress" => {}
+                _ if arg.starts_with("--progress=") => {}
                 "-z" => zero_terminated = true,
                 "--stdin" => read_stdin = true,
                 "--not" => not_mode = !not_mode,

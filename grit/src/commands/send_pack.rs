@@ -512,10 +512,17 @@ pub(crate) fn spawn_receive_pack(receive_cmd: &str, remote_path: &Path) -> Resul
         // re-establishes its own parameters when the spawned git re-parses its `-c`.
         c.env_remove("GIT_CONFIG_PARAMETERS");
     };
+    // Git runs the receive-pack command through `sh -c` whenever it contains shell metacharacters,
+    // so quoting and redirection are honored exactly as a shell would. A custom `--receive-pack`
+    // whose program path is single/double quoted (e.g. `'<dir with spaces>'/wrapper`, as t5543
+    // produces via `${SQ}$(pwd)${SQ}/receive-pack-wrapper`) only resolves once the shell strips the
+    // quotes; running it directly would look for a file literally named with the quotes.
     if receive_cmd.contains('|')
         || receive_cmd.contains('>')
         || receive_cmd.contains('<')
         || receive_cmd.contains('&')
+        || receive_cmd.contains('\'')
+        || receive_cmd.contains('"')
     {
         let script = format!(
             "{} {}",

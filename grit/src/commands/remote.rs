@@ -870,6 +870,22 @@ fn cmd_rename(rest: &[String], _from_add: bool) -> Result<()> {
         bail!("No such remote: '{old}'");
     }
 
+    // Git renames the config *section* first, then prepares the ref-rename transaction. On a
+    // NAME_CONFLICT it `die(NULL)`s *before* rewriting the fetch refspec or `branch.*` /
+    // pushDefault config (builtin/remote.c). So on conflict only the section rename persists: the
+    // fetch refspec keeps pointing at the OLD `refs/remotes/<old>/` namespace, which is exactly
+    // what lets a follow-up `git remote remove <new>` clean up the stray ref that caused the
+    // conflict (t5505 "rename can unnest a remote" depends on this cleanup of test 128's leftover).
+    if has_ref_conflict {
+        config_file.write().context("writing config")?;
+        return Err(anyhow::Error::new(ExplicitExit {
+            code: 128,
+            message: "error: renaming remote references failed: The remote you are trying to rename has conflicting references in the\n\
+                 new target refspec. This is most likely caused by you trying to nest\n\
+                 one remote in another, which is not supported.".to_owned(),
+        }));
+    }
+
     // Git only rewrites refspecs (and renames refs) when at least one fetch refspec maps into the
     // old remote's tracking namespace (`:refs/remotes/<old>/`). Each such refspec has `<old>`
     // replaced with `<new>` just after `:refs/remotes/`; others are left alone with a warning.
@@ -906,16 +922,6 @@ fn cmd_rename(rest: &[String], _from_add: bool) -> Result<()> {
     update_push_default_if_local(&mut config_file, &old, &new)?;
 
     config_file.write().context("writing config")?;
-
-    // The config section is now renamed (matching Git). If the ref transaction would fail with a
-    // name conflict, stop here without moving any refs.
-    if has_ref_conflict {
-        bail!(
-            "renaming remote references failed: The remote you are trying to rename has conflicting references in the\n\
-             new target refspec. This is most likely caused by you trying to nest\n\
-             one remote in another, which is not supported."
-        );
-    }
 
     // Only rewrite refs when at least one fetch refspec maps into the old tracking namespace.
     if !refspecs_need_update {

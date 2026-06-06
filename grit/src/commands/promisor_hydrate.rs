@@ -452,7 +452,10 @@ pub(crate) fn try_lazy_fetch_promisor_objects_batch(
                         .with_context(|| format!("indexing promisor pack from {remote_name}"))?;
                 }
                 register_promisor_default_filter(&repo.git_dir, &remote_name);
-                need.retain(|o| !repo.odb.exists_local(o));
+                // After a successful fetch the wanted objects are present, even if they landed in a
+                // `.promisor`-marked pack (which `exists_local` deliberately skips). Use `exists`,
+                // which includes promisor packs, so the batch is considered satisfied.
+                need.retain(|o| !repo.odb.exists(o));
                 if need.is_empty() {
                     return Ok(());
                 }
@@ -460,7 +463,7 @@ pub(crate) fn try_lazy_fetch_promisor_objects_batch(
             PromisorSource::Http { remote } => {
                 if run_http_fetch_objects(repo, remote, &need, false).is_ok() {
                     register_promisor_default_filter(&repo.git_dir, &remote_name);
-                    need.retain(|o| !repo.odb.exists_local(o));
+                    need.retain(|o| !repo.odb.exists(o));
                     if need.is_empty() {
                         return Ok(());
                     }
@@ -862,18 +865,27 @@ pub(crate) fn flush_promisor_blob_batch(
     let count = batch.len();
     match promisor {
         PromisorSource::Local(odb) => {
-            let mut fetched = Vec::new();
-            for oid in batch.drain(..) {
-                let obj = odb.read(&oid).with_context(|| {
-                    format!("could not fetch {} from promisor remote", oid.to_hex())
-                })?;
-                repo.odb
-                    .write(obj.kind, &obj.data)
-                    .with_context(|| format!("writing {}", oid.to_hex()))?;
-                fetched.push(oid);
-            }
-            if !fetched.is_empty() {
-                write_promisor_pack_for_local_oids(repo, &fetched)?;
+            // When packet tracing is active (e.g. `GIT_TRACE_PACKET` during `checkout HEAD^` on a
+            // partial clone, t5601 #108), perform a real `upload-pack` negotiation for the whole
+            // batch so it produces a single `fetch> done` line and a `total_rounds`=1 trace2 event,
+            // matching upstream Git's single-round lazy fetch. Otherwise just copy loose objects.
+            if promisor_local_lazy_fetch_prefers_upload_pack() {
+                let oids: Vec<ObjectId> = std::mem::take(batch);
+                try_lazy_fetch_promisor_objects_batch(repo, &oids)?;
+            } else {
+                let mut fetched = Vec::new();
+                for oid in batch.drain(..) {
+                    let obj = odb.read(&oid).with_context(|| {
+                        format!("could not fetch {} from promisor remote", oid.to_hex())
+                    })?;
+                    repo.odb
+                        .write(obj.kind, &obj.data)
+                        .with_context(|| format!("writing {}", oid.to_hex()))?;
+                    fetched.push(oid);
+                }
+                if !fetched.is_empty() {
+                    write_promisor_pack_for_local_oids(repo, &fetched)?;
+                }
             }
         }
         PromisorSource::Http { remote } => {
