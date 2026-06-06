@@ -337,6 +337,15 @@ pub fn run(args: Args) -> Result<()> {
     };
 
     let mut write_bitmaps = effective_write_bitmaps_int(&args, &cfg, full_repack, bare_repo);
+    // Git (builtin/repack.c): bitmaps require a single resulting pack, so an incremental repack
+    // (`-d` without `-a`/`-A`/`--cruft`) that still wants bitmaps is rejected before any packing.
+    // The `--write-midx` path writes a multi-pack bitmap instead, so it is exempt.
+    if write_bitmaps > 0 && !full_repack && !args.write_midx {
+        anyhow::bail!(
+            "Incremental repacks are incompatible with bitmap indexes.  Use\n\
+             --no-write-bitmap-index or disable the pack.writeBitmaps configuration."
+        );
+    }
     let objects_dir_for_warn = repo.git_dir.join("objects");
     let mut quiet_pack_objects_local_alt = false;
     if args.local
