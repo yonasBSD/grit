@@ -77,6 +77,11 @@ fn local_negotiation_haves(
     wants: &[ObjectId],
     negotiation_tip_oids: Option<&[ObjectId]>,
 ) -> Vec<ObjectId> {
+    // The `noop` negotiator advertises no `have` lines at all (`git/negotiator/noop.c`), so the
+    // client never offers any common base and the server streams a full pack (t5554).
+    if fetch_negotiation_is_noop(local_git_dir) {
+        return Vec::new();
+    }
     let Ok(repo) = Repository::open(local_git_dir, None) else {
         return Vec::new();
     };
@@ -1746,6 +1751,16 @@ fn fetch_negotiation_algorithm(local_git_dir: &Path) -> Option<String> {
         .and_then(|cfg| cfg.get("fetch.negotiationalgorithm"))
 }
 
+/// True when `fetch.negotiationAlgorithm` selects the `noop` negotiator.
+///
+/// The noop negotiator (`git/negotiator/noop.c`) makes `add_tip`, `known_common`, and `next` all
+/// no-ops, so the client advertises no `have` lines at all and the server always sends a full pack.
+/// Used by both the v0/v1 and v2 fetch paths to suppress the entire have/ACK exchange (t5554).
+fn fetch_negotiation_is_noop(local_git_dir: &Path) -> bool {
+    fetch_negotiation_algorithm(local_git_dir)
+        .is_some_and(|value| value.eq_ignore_ascii_case("noop"))
+}
+
 /// Result of evaluating a server's `promisor-remote` advertisement on the client.
 struct PromisorRemoteOutcome {
     /// `promisor-remote=<names>` reply value, or `None` to send nothing.
@@ -2292,7 +2307,11 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
         }
     }
 
-    let suppress_haves = negotiation_tip_oids.is_some_and(|tips| tips.is_empty());
+    // The `noop` negotiator (`git/negotiator/noop.c`) emits no `have` lines, so skip the entire
+    // have/ACK exchange and go straight to `done` (t5554). An empty `--negotiation-tip` list
+    // likewise suppresses haves.
+    let suppress_haves = negotiation_tip_oids.is_some_and(|tips| tips.is_empty())
+        || fetch_negotiation_is_noop(local_git_dir);
     let mut negotiator = SkippingNegotiator::new(local_repo);
 
     if !suppress_haves {
