@@ -799,6 +799,15 @@ pub fn run(args: Args) -> Result<()> {
                         );
                     }
                 }
+                // Auto-follow tags (`TAGS_DEFAULT`), the way `git fetch <remote>` does: a configured
+                // remote whose fetch refspec maps into `refs/remotes/<remote>/` opportunistically
+                // downloads tags reachable from the fetched commit. The direct-copy shortcut skips
+                // `fetch::run`, so reproduce that follow here (t5516 'fetch follows tags by default').
+                // Only for a configured-remote pull with no explicit ref argument and tags not
+                // disabled — an anonymous `git pull <path> <tag>` keeps tags in FETCH_HEAD only.
+                if pull_should_follow_tags(&config, remote_name) {
+                    follow_tags_for_local_pull(&repo, &remote_repo, remote_oid)?;
+                }
                 vec![format!(
                     "{}\t\tbranch 'refs/heads/{merge_branch}' of .\n",
                     remote_oid.to_hex()
@@ -1348,6 +1357,18 @@ fn update_opportunistic_tracking_ref(
     spec: &str,
     config: &ConfigSet,
 ) -> Result<()> {
+    // An anonymous path/URL remote (e.g. `git pull ../testrepo main`) is not a configured remote,
+    // so it has no tracking refspec — git records the result only in FETCH_HEAD and never writes a
+    // `refs/<token>/<branch>` tracking ref. Skip the opportunistic update unless the remote is
+    // actually configured (t5516 'fetch follows tags by default', whose `expect` is built from a
+    // src repo that must NOT carry a stray `refs/testrepo/main`).
+    if config.get(&format!("remote.{remote_name}.url")).is_none()
+        && config
+            .get(&format!("remote.{remote_name}.pushurl"))
+            .is_none()
+    {
+        return Ok(());
+    }
     // Only plain branch sources participate; tags and full refs are left alone.
     if spec.starts_with("refs/") || spec == "HEAD" {
         return Ok(());
@@ -1461,6 +1482,63 @@ fn pull_fetch_head_line(remote: &Repository, spec: &str) -> Result<(ObjectId, St
     // not the full `refs/heads/...` ref. fmt-merge-msg reads this verbatim.
     let short = src.strip_prefix("refs/heads/").unwrap_or(src);
     Ok((oid, format!("branch '{short}' of .")))
+}
+
+/// Whether a bare `git pull <remote>` (no explicit ref) should auto-follow tags, mirroring
+/// `git fetch`'s `TAGS_DEFAULT`: on unless `remote.<remote>.tagopt = --no-tags`.
+fn pull_should_follow_tags(config: &ConfigSet, remote_name: &str) -> bool {
+    // An anonymous path token (not a configured remote) behaves like `git pull <path> <ref>`,
+    // which keeps tags only in FETCH_HEAD — skip the opportunistic ref writes.
+    if config.get(&format!("remote.{remote_name}.url")).is_none() {
+        return false;
+    }
+    config
+        .get(&format!("remote.{remote_name}.tagopt"))
+        .as_deref()
+        != Some("--no-tags")
+}
+
+/// Copy and create local `refs/tags/*` for any tag in `remote` whose target object is reachable
+/// from `fetched_tip`, the way `git fetch`'s default tag auto-following does. Existing local tags
+/// of the same name are left untouched (opportunistic, add-only).
+fn follow_tags_for_local_pull(
+    repo: &Repository,
+    remote: &Repository,
+    fetched_tip: ObjectId,
+) -> Result<()> {
+    use grit_lib::objects::{parse_tag, ObjectKind};
+
+    let tag_refs = refs::list_refs(&remote.git_dir, "refs/tags/")?;
+    for (refname, tag_ref_oid) in tag_refs {
+        // Add-only: never clobber an existing local tag during opportunistic follow.
+        if refs::resolve_ref(&repo.git_dir, &refname).is_ok() {
+            continue;
+        }
+        let Ok(tag_obj) = remote.odb.read(&tag_ref_oid) else {
+            continue;
+        };
+        if tag_obj.kind != ObjectKind::Tag {
+            continue;
+        }
+        let Ok(tag) = parse_tag(&tag_obj.data) else {
+            continue;
+        };
+        // Only follow tags whose (peeled) target is reachable from the fetched commit.
+        let reachable = tag.object == fetched_tip
+            || is_ancestor(remote, tag.object, fetched_tip).unwrap_or(false);
+        if !reachable {
+            continue;
+        }
+        // Copy the tag's object closure into the local store, then write the tag ref.
+        crate::commands::fetch::copy_reachable_objects_skipping_gitlinks(
+            &remote.git_dir,
+            &repo.git_dir,
+            &[tag_ref_oid],
+        )?;
+        refs::write_ref(&repo.git_dir, &refname, &tag_ref_oid)
+            .with_context(|| format!("writing followed tag {refname}"))?;
+    }
+    Ok(())
 }
 
 fn config_pull_rebase(
