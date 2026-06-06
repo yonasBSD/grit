@@ -713,8 +713,12 @@ fn collect_all_loose_object_ids(objects_dir: &Path, oids: &mut BTreeSet<ObjectId
 }
 
 fn collect_pack_object_ids(objects_dir: &Path, oids: &mut BTreeSet<ObjectId>) -> Result<()> {
-    for idx in pack::read_local_pack_indexes(objects_dir)? {
-        for e in idx.entries {
+    // Enumerate via the cached (non-verifying) pack-index reader, matching Git's
+    // `open_pack_index`: object enumeration does not require a valid trailing
+    // checksum. The 64-bit-offset tests deliberately corrupt a pack `.idx`
+    // (invalidating its checksum) yet still expect its objects to be listed.
+    for idx in pack::read_local_pack_indexes_cached(objects_dir)? {
+        for e in &idx.entries {
             if e.oid.len() == 20 {
                 if let Ok(oid) = ObjectId::from_bytes(&e.oid) {
                     oids.insert(oid);

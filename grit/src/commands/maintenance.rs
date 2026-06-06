@@ -1908,11 +1908,22 @@ fn cg_auto(repo: &Repository, cfg: &ConfigSet) -> Result<bool> {
 }
 
 fn graph_oids(repo: &Repository) -> Result<HashSet<[u8; 20]>> {
-    let p = repo
-        .git_dir
-        .join("objects")
-        .join("info")
-        .join("commit-graph");
+    let objects_dir = repo.git_dir.join("objects");
+
+    // A split commit-graph stores its commits across a chain of layer files rather than the
+    // single `info/commit-graph` file. The auto-maintenance threshold counts commits *not yet*
+    // in the graph, so it must see commits in the chain too — otherwise a repo with a split
+    // chain looks as if it has no graph and every commit is counted, spuriously triggering a
+    // commit-graph rewrite once the total crosses `maintenance.commit-graph.auto` (t5324 t40).
+    if let Some(chain) = grit_lib::commit_graph_file::CommitGraphChain::load(&objects_dir) {
+        let mut set = HashSet::new();
+        for oid in chain.all_oids_in_order() {
+            set.insert(*oid.as_bytes());
+        }
+        return Ok(set);
+    }
+
+    let p = objects_dir.join("info").join("commit-graph");
     if !p.exists() {
         return Ok(HashSet::new());
     }

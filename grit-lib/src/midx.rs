@@ -18,7 +18,7 @@ use sha1::{Digest, Sha1};
 
 use crate::error::{Error, Result};
 use crate::objects::ObjectId;
-use crate::pack::{read_pack_index, PackIndex};
+use crate::pack::{read_pack_index_no_verify, PackIndex};
 
 const MIDX_SIGNATURE: u32 = 0x4d49_4458;
 const MIDX_VERSION_V1: u8 = 1;
@@ -493,14 +493,14 @@ fn build_midx_bytes_filtered(
     let mut entries: Vec<MidxEntry> = best.into_values().collect();
     entries.sort_by_key(|a| a.oid);
 
-    let mut large_offsets: Vec<u64> = Vec::new();
-    for e in &entries {
-        if e.offset > u64::from(u32::MAX) {
-            return Err(Error::CorruptObject(
-                "object offset does not fit in multi-pack-index".to_owned(),
-            ));
-        }
-    }
+    // Decide how object offsets are encoded, mirroring git/midx-write.c.
+    // `large_offsets_needed` becomes true only when some offset cannot fit in a
+    // 32-bit field (> 0xffffffff); in that mode every offset that does not fit in
+    // 31 bits (> 0x7fffffff) is stored in the 64-bit large-offset (LOFF) chunk and
+    // its 32-bit slot is `MIDX_LARGE_OFFSET_NEEDED | slot`. When no offset exceeds
+    // 32 bits, offsets in [2^31, 2^32) are written directly as raw 32-bit values
+    // and no LOFF chunk is emitted.
+    let large_offsets_needed = entries.iter().any(|e| e.offset > u64::from(u32::MAX));
 
     let num_packs = indexes.len() as u32;
 
@@ -528,20 +528,21 @@ fn build_midx_bytes_filtered(
         chunk_oidl.extend_from_slice(e.oid.as_bytes());
     }
 
+    let mut large_offsets: Vec<u64> = Vec::new();
     let mut chunk_ooff = Vec::with_capacity(entries.len() * 8);
     for e in &entries {
         chunk_ooff.extend_from_slice(&e.pack_id.to_be_bytes());
-        let needs_large = e.offset >= u64::from(MIDX_LARGE_OFFSET_NEEDED);
-        let encoded = if needs_large {
+        let encoded = if large_offsets_needed && e.offset >> 31 != 0 {
             let slot = u32::try_from(large_offsets.len()).map_err(|_| {
                 Error::CorruptObject("too many large offsets in multi-pack-index".to_owned())
             })?;
             large_offsets.push(e.offset);
             MIDX_LARGE_OFFSET_NEEDED | slot
         } else {
-            u32::try_from(e.offset).map_err(|_| {
-                Error::CorruptObject("object offset overflow in multi-pack-index".to_owned())
-            })?
+            // When large offsets are not needed, an offset in [2^31, 2^32) is
+            // written verbatim (truncation via `as u32` is exact here because the
+            // value fits in 32 bits).
+            e.offset as u32
         };
         chunk_ooff.extend_from_slice(&encoded.to_be_bytes());
     }
@@ -1000,8 +1001,13 @@ pub fn verify_midx(objects_dir: &Path) -> std::result::Result<(), Vec<String>> {
     // --- load each referenced pack (failed to load pack) ---
     let mut pack_indexes: Vec<Option<PackIndex>> = Vec::with_capacity(num_packs);
     for i in 0..num_packs {
+        // Load the pack idx without verifying its trailing checksum: `git
+        // multi-pack-index verify` uses `open_pack_index`, which only parses the
+        // index header/tables. The 64-bit-offset tests deliberately corrupt a
+        // pack `.idx` (invalidating its checksum) and still expect the MIDX
+        // verify to read recorded offsets out of that idx for comparison.
         let loaded = match names.get(i) {
-            Some(name) => read_pack_index(&pack_dir.join(name)).ok(),
+            Some(name) => read_pack_index_no_verify(&pack_dir.join(name)).ok(),
             None => None,
         };
         if loaded.is_none() {
@@ -1301,6 +1307,7 @@ pub fn format_midx_dump_layer(objects_dir: &Path, checksum: Option<&str>) -> Res
             x if x == MIDX_CHUNKID_OIDFANOUT => "oid-fanout",
             x if x == MIDX_CHUNKID_OIDLOOKUP => "oid-lookup",
             x if x == MIDX_CHUNKID_OBJECTOFFSETS => "object-offsets",
+            x if x == MIDX_CHUNKID_LARGEOFFSETS => "large-offsets",
             x if x == MIDX_CHUNKID_REVINDEX => "revindex",
             x if x == 0x4254_4d50 => "bitmapped-packs",
             _ => "unknown",
@@ -1860,7 +1867,12 @@ pub fn validate_midx_referenced_packs(objects_dir: &Path) {
         if !idx_path.exists() {
             continue;
         }
-        if crate::pack::read_pack_index(&idx_path).is_err() {
+        // Match Git's `open_pack_index`, which parses the idx header/tables but does
+        // not verify the trailing checksum: a structurally valid idx with a stale
+        // checksum (the 64-bit-offset tests corrupt one offset byte in place) loads
+        // fine and must NOT be reported "unavailable". Only an unparseable idx
+        // (e.g. truncated, as in `corrupt idx reports errors`) is unavailable.
+        if crate::pack::read_pack_index_no_verify(&idx_path).is_err() {
             let mut pack_path = idx_path.clone();
             pack_path.set_extension("pack");
             midx_warn_once(&format!(
@@ -1960,8 +1972,10 @@ pub fn try_read_object_via_midx(
     // (e.g. truncated/corrupt), Git emits `error: packfile <pack> index unavailable`,
     // marks the pack invalid, and continues to other object sources. The object
     // may still be found loose or in another pack, so fall through rather than
-    // surfacing the parse error as fatal.
-    let idx = match crate::pack::read_pack_index(&idx_path) {
+    // surfacing the parse error as fatal. Use the non-verifying parse to match
+    // `open_pack_index`, which does not validate the trailing checksum (a pack
+    // `.idx` with a stale checksum but valid structure must still be usable).
+    let idx = match crate::pack::read_pack_index_no_verify(&idx_path) {
         Ok(idx) => idx,
         Err(_) => {
             let mut pack_path = idx_path.clone();

@@ -6516,6 +6516,12 @@ fn cherry_pick_for_rebase(
         .map(|(p, _)| p.clone())
         .collect();
     if let Some(wt) = &repo.work_tree {
+        // Refuse to materialize a newly-added path over an untracked working tree file. Git's
+        // sequencer applies the pick through unpack-trees, whose `verify_absent` aborts the merge
+        // when an added entry would overwrite an untracked file (`t5407` `git rebase with failed
+        // pick`: an `exec >G` creates an untracked `G`, then `pick G` must abort). The cwd/submodule
+        // preflight below does not cover this case, so mirror the standalone cherry-pick check.
+        super::reset::check_untracked_cherry_pick_obstruction(wt, &old_index, &merged_index)?;
         preflight_cherry_pick_cwd_obstruction(
             repo,
             wt,
