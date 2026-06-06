@@ -3114,21 +3114,6 @@ fn run_graph_log(
             || args.merge_diff_c
             || args.remerge_diff);
 
-    let graph_stat_prefix: Option<String> = if show_commit_body && !args.stat.is_empty() {
-        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
-        let red = if use_color {
-            cfg.get("color.diff.meta")
-                .and_then(|s| grit_lib::config::parse_color(&s).ok())
-                .unwrap_or_else(|| "\x1b[31m".to_string())
-        } else {
-            String::new()
-        };
-        let reset = if use_color { "\x1b[m" } else { "" };
-        Some(format!("{line_prefix}{red}|{reset}  "))
-    } else {
-        None
-    };
-
     let is_oneline = args.oneline || args.format.as_deref() == Some("oneline");
     // Builtin human-readable formats (short/medium/full/…) separate entries with a blank line;
     // `--format=`/`tformat:`/oneline terminate each entry instead (Git `rev->use_terminator`).
@@ -3227,11 +3212,17 @@ fn run_graph_log(
         }
 
         if show_commit_body {
-            if !args.stat.is_empty() {
-                writeln!(out)?;
-            }
+            // Render the diff/stat/name-status body into a buffer, then prefix every line with
+            // the graph's *padding* rail (Git wires the diff machinery's `output_prefix` callback
+            // to `graph_padding_line`, so each diff line carries the vertical bars for the active
+            // columns). After the commit message the graph is finished (PADDING state); calling
+            // `next_line()` then yields a padding line without advancing structural state, so the
+            // same rail applies to every body line.
+            let (pad_rail, _) = graph.next_line();
+
+            let mut diff_buf: Vec<u8> = Vec::new();
             write_commit_diff(
-                &mut out,
+                &mut diff_buf,
                 repo,
                 &node.oid,
                 &info,
@@ -3239,7 +3230,9 @@ fn run_graph_log(
                 use_mailmap,
                 mailmap,
                 &combined_pathspecs,
-                graph_stat_prefix.as_deref(),
+                // The stat block's own `| ` graph prefix is superseded by the per-line rail
+                // applied below, so render the stat unprefixed here.
+                None,
                 decorations.as_ref(),
                 use_color,
                 decoration_paint.as_ref(),
@@ -3248,6 +3241,41 @@ fn run_graph_log(
                 patch_context,
                 false,
             )?;
+
+            // Normalize the diff body: the non-graph renderer brackets it with a leading blank
+            // (name-only/stat) and a trailing inter-entry blank. In graph mode Git supplies the
+            // single message/diff separator itself (a railed `graph_show_padding` line), so strip
+            // one leading and one trailing blank line here and re-emit exactly one separator.
+            if diff_buf.first() == Some(&b'\n') {
+                diff_buf.remove(0);
+            }
+            if diff_buf.len() >= 2
+                && diff_buf[diff_buf.len() - 1] == b'\n'
+                && diff_buf[diff_buf.len() - 2] == b'\n'
+            {
+                diff_buf.pop();
+            }
+
+            // Only commits whose diff produced output get a railed body; a merge (or otherwise
+            // empty diff) emits nothing here, matching Git's `log_tree_diff` short-circuit.
+            if !diff_buf.is_empty() {
+                // Builtin multi-line formats (medium/short/full) already terminate the commit
+                // message with a railed blank line, which serves as the message/diff separator.
+                // Terminator formats (`--format=`, `tformat:`) do not, so emit the separator here
+                // (Git's post-message `graph_show_padding` when `use_terminator`).
+                if !wants_separator {
+                    writeln!(out, "{line_prefix}{pad_rail}")?;
+                }
+                // Prefix every rendered diff line with the padding rail (e.g. `| ` / `| | `). For a
+                // blank body line the rail's trailing space is stripped by the test's graph-output
+                // sanitizer, matching Git's `graph_padding_line` output.
+                for chunk in diff_buf.split_inclusive(|b| *b == b'\n') {
+                    let text = chunk.strip_suffix(b"\n").unwrap_or(chunk);
+                    write!(out, "{line_prefix}{pad_rail}")?;
+                    out.write_all(text)?;
+                    writeln!(out)?;
+                }
+            }
         }
     }
 
