@@ -2063,7 +2063,46 @@ pub fn build_thin_push_pack_excluding_hidden(
             }
         }
     }
+    // receive-pack also advertises `.have` lines for the tips of the receiver's *alternate*
+    // object stores (`for_each_alternate_ref`): when the receiver shares an alternate with the
+    // pusher (e.g. `git clone --reference`), those commits are common and a non-negotiating push
+    // must exclude them. Without this boundary every object reachable from the shared history is
+    // re-sent (t5501 'pushing into a repository with the same alternate').
+    for oid in remote_alternate_have_roots(remote_git_dir) {
+        if have_root_closure_is_local(local_repo, &oid) {
+            have_roots.insert(oid);
+        }
+    }
     build_thin_push_pack_from_have_set(local_repo, push_tips, &have_roots)
+}
+
+/// Collect the object IDs the receiver's `receive-pack` would advertise as `.have` lines for its
+/// *alternate* object stores: the ref tips of each alternate repository whose `.git` directory has a
+/// `refs/` tree (mirrors `collect_alternate_have_oids` in the receive-pack advertisement, and Git's
+/// `for_each_alternate_ref`).
+///
+/// `remote_git_dir` is the receiver's git directory. Failures (unreadable alternates, malformed
+/// `info/alternates`) yield an empty set so a push never aborts on alternate discovery.
+fn remote_alternate_have_roots(remote_git_dir: &Path) -> BTreeSet<ObjectId> {
+    let mut out: BTreeSet<ObjectId> = BTreeSet::new();
+    let remote_objects = remote_git_dir.join("objects");
+    let Ok(alternates) = grit_lib::pack::read_alternates_recursive(&remote_objects) else {
+        return out;
+    };
+    for alt_objects in alternates {
+        let Some(alt_git_dir) = alt_objects.parent() else {
+            continue;
+        };
+        if !alt_git_dir.join("refs").is_dir() {
+            continue;
+        }
+        if let Ok(alt_refs) = refs::list_refs(alt_git_dir, "refs/") {
+            for (_, oid) in alt_refs {
+                out.insert(oid);
+            }
+        }
+    }
+    out
 }
 
 /// Compute the set of object IDs the local-push receiver already has (the `--not`/negative side of
