@@ -4115,11 +4115,18 @@ fn validate_edited_interactive_todo(
         original_todo.as_bytes(),
     );
 
+    // Honour `core.commentchar`: the editor may comment lines with the configured prefix (e.g. `\`),
+    // which must be skipped rather than parsed as commands (t3404 "respects core.commentchar").
+    let comment_prefix = comment_line_prefix_full(config);
+    let is_comment = |t: &str| -> bool {
+        t.starts_with(comment_prefix.as_ref()) || rebase_todo_line_is_comment(t)
+    };
+
     // Structural validation: unknown commands, bad SHAs, and a leading fixup all abort with advice.
     let mut fixup_okay = false;
     for (idx, raw) in edited.lines().enumerate() {
         let t = raw.trim();
-        if t.is_empty() || rebase_todo_line_is_comment(t) {
+        if t.is_empty() || is_comment(t) {
             continue;
         }
         let Some(word) = todo_command_word(t) else {
@@ -6115,9 +6122,24 @@ fn replay_remaining(
     let rewind_marker = rb_dir.join("rewind-notice");
     let mut rewind_done = false;
 
+    // `core.commentchar` may differ from `#`; lines using the configured prefix must be skipped
+    // during replay too (t3404 "respects core.commentchar").
+    let replay_comment_prefix = ConfigSet::load(Some(git_dir), true)
+        .ok()
+        .map(|c| comment_line_prefix_full(&c).into_owned())
+        .unwrap_or_else(|| "#".to_string());
+
     'rebase_loop: loop {
         let todo_content = read_rebase_todo_file(repo, rb_dir)?;
-        let todo: Vec<&str> = rebase_todo_actionable_lines(&todo_content);
+        let todo: Vec<&str> = todo_content
+            .lines()
+            .map(str::trim)
+            .filter(|l| {
+                !l.is_empty()
+                    && !l.starts_with(replay_comment_prefix.as_str())
+                    && !rebase_todo_line_is_comment(l)
+            })
+            .collect();
         let total_rebase_cmds: usize = fs::read_to_string(rb_dir.join("total-cmds"))
             .ok()
             .and_then(|s| s.trim().parse().ok())
@@ -8491,21 +8513,38 @@ fn do_continue() -> Result<()> {
             head_oid
         };
         let edit_continue = rb_dir.join("rebase-edit-continue").exists();
-        if edit_continue && head_oid != amend_old_oid && worktree_matches_head(&repo, git_dir)? {
-            let next_peek_amend =
-                peek_next_rebase_flush_hint(&repo, &todo_lines_continue, 0, interactive_continue);
-            record_rebase_in_rewritten_pending(git_dir, &rb_dir, &amend_old_oid, next_peek_amend)?;
-            let _ = fs::remove_file(rb_dir.join("stopped-sha"));
-            let _ = fs::remove_file(rb_dir.join("rebase-amend-continue"));
-            let _ = fs::remove_file(rb_dir.join("rebase-edit-continue"));
-            return replay_remaining(
-                &repo,
-                &rb_dir,
-                autostash_continue,
-                backend_continue,
-                had_autostash_continue,
-                force_rewrite_continue,
-            );
+        if edit_continue && head_oid != amend_old_oid {
+            // The user already made their own commit after `edit` stopped (HEAD moved), so the edit
+            // commit must NOT be auto-amended.
+            if worktree_matches_head(&repo, git_dir)? {
+                let next_peek_amend = peek_next_rebase_flush_hint(
+                    &repo,
+                    &todo_lines_continue,
+                    0,
+                    interactive_continue,
+                );
+                record_rebase_in_rewritten_pending(
+                    git_dir,
+                    &rb_dir,
+                    &amend_old_oid,
+                    next_peek_amend,
+                )?;
+                let _ = fs::remove_file(rb_dir.join("stopped-sha"));
+                let _ = fs::remove_file(rb_dir.join("rebase-amend-continue"));
+                let _ = fs::remove_file(rb_dir.join("rebase-edit-continue"));
+                return replay_remaining(
+                    &repo,
+                    &rb_dir,
+                    autostash_continue,
+                    backend_continue,
+                    had_autostash_continue,
+                    force_rewrite_continue,
+                );
+            }
+            // HEAD already advanced past the edited commit but the index still carries staged
+            // changes: Git refuses to silently fold them into a new commit
+            // (t3404 "auto-amend only edited commits after edit").
+            bail!("error: you have staged changes in your working tree");
         }
         let amend_src_commit = repo
             .odb

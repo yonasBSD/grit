@@ -78,6 +78,23 @@ TWO-PHASE `edit_todo_list` semantics: parse the OLD/backup todo first (emitting
 for the warning — distinct from grit's single-pass model. 94-96 halt correctly now but the
 `--continue`-after-obstruction path (re-pick, "staged changes" guard) is still wrong.
 
+## Fix 4: auto-amend-after-edit staged-changes guard + core.commentchar in replay/validation
+
+- `--continue` after `edit`: when the user already committed (HEAD moved past the edited commit)
+  AND the index still has staged changes, grit now errors `error: you have staged changes in your
+  working tree` instead of silently amending (t3404 43 "auto-amend only edited commits after edit").
+- `core.commentchar`: `validate_edited_interactive_todo` and the `replay_remaining` todo filter now
+  honour the configured comment prefix (e.g. `\`), so commented-out todo lines are skipped rather
+  than parsed as bad commands (t3404 84 "respects core.commentchar"). grit-side
+  `comment_line_prefix_full` already maps `auto` -> `#`.
+
+Full run holds at 83 (the amend fix alone churned the cascade to 82; the commentchar fix recovered
+it while genuinely fixing 43 + 84).
+
+Still failing 85 (core.commentchar=auto): needs git's multi-line Git-3.0 deprecation warning
+(`Support for 'core.commentChar=auto' is deprecated...` + the scope-aware `git config unset/set`
+advice block). Niche, single test, skipped for now.
+
 ## KEY: full-run vs isolation divergence
 Many tests pass with `--run=1,N` but fail in the full sequential run because an EARLIER
 failing test leaves a rebase-in-progress / wrong branch. `/tmp/run3404.sh` replicates the
