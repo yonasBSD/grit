@@ -8240,7 +8240,38 @@ fn write_patch_with_prefix(
                     || ws_mode.ignore_all_space
                     || ws_mode.ignore_space_at_eol
                     || ws_mode.ignore_cr_at_eol);
-            let patch = if ws_aware {
+            // `--ignore-blank-lines` (alone) and `-I` regex ignoring are handled at the
+            // xdiff change-record level (Git's `xdl_mark_ignorable_lines` + `xdl_get_hunk`):
+            // the diff is computed normally, then changes that are entirely ignorable are
+            // dropped when far from substantive changes and otherwise shown, with hunk
+            // boundaries recomputed so line numbers and surviving context match Git. This
+            // only applies when no other whitespace flag and no function-context expansion
+            // is active (those need the normalising / function-context paths below).
+            let line_level_ignore = !ws_aware
+                && !function_context
+                && (ignore_blank || line_ignore.is_some_and(|i| !i.is_empty()));
+            let patch = if line_level_ignore {
+                let ign: &[Regex] = line_ignore.unwrap_or(&[]);
+                let is_ignorable = |removed: &[&str], added: &[&str]| -> bool {
+                    removed
+                        .iter()
+                        .chain(added.iter())
+                        .all(|line| changed_line_is_ignorable(line, ign, ignore_blank))
+                };
+                grit_lib::diff::unified_diff_histogram_ignore_with_prefix_and_funcname(
+                    &old_content,
+                    &new_content,
+                    display_old,
+                    display_new,
+                    context_lines,
+                    inter_hunk_context,
+                    src_prefix,
+                    dst_prefix,
+                    func_matcher.as_ref(),
+                    quote_path_fully,
+                    is_ignorable,
+                )
+            } else if ws_aware {
                 let body = no_index_unified_patch_body(
                     old_content.as_bytes(),
                     new_content.as_bytes(),
@@ -8256,16 +8287,25 @@ fn write_patch_with_prefix(
                 );
                 // `no_index_unified_patch_body` emits `--- a/<old>` / `+++ b/<new>` labels using a
                 // fixed `a/`,`b/` prefix; rewrite them to the caller's prefixes.
-                rewrite_patch_label_prefixes(
+                let body = rewrite_patch_label_prefixes(
                     &body,
                     src_prefix,
                     dst_prefix,
                     display_old,
                     display_new,
                     quote_path_fully,
-                )
+                );
+                // `-b`/`-w`/etc. combined with `--ignore-blank-lines` or `-I`: drop hunks
+                // whose surviving changes are all ignorable (old post-hoc behaviour).
+                match line_ignore {
+                    Some(ign) if !ign.is_empty() || ignore_blank => {
+                        suppress_ignored_hunks_in_patch(&body, ign, ignore_blank)
+                    }
+                    _ if ignore_blank => suppress_ignored_hunks_in_patch(&body, &[], ignore_blank),
+                    _ => body,
+                }
             } else {
-                unified_diff_with_prefix_and_funcname_and_algorithm(
+                let patch = unified_diff_with_prefix_and_funcname_and_algorithm(
                     &old_content,
                     &new_content,
                     display_old,
@@ -8280,14 +8320,16 @@ fn write_patch_with_prefix(
                     use_git_histogram,
                     indent_heuristic,
                     quote_path_fully,
-                )
-            };
-            let patch = match line_ignore {
-                Some(ign) if !ign.is_empty() || ignore_blank => {
-                    suppress_ignored_hunks_in_patch(&patch, ign, ignore_blank)
+                );
+                // function-context path: still apply the old post-hoc hunk suppression
+                // for `--ignore-blank-lines` / `-I`.
+                match line_ignore {
+                    Some(ign) if !ign.is_empty() || ignore_blank => {
+                        suppress_ignored_hunks_in_patch(&patch, ign, ignore_blank)
+                    }
+                    _ if ignore_blank => suppress_ignored_hunks_in_patch(&patch, &[], ignore_blank),
+                    _ => patch,
                 }
-                _ if ignore_blank => suppress_ignored_hunks_in_patch(&patch, &[], ignore_blank),
-                _ => patch,
             };
             let patch = if suppress_blank_empty {
                 strip_blank_context_trailing_space(&patch)
