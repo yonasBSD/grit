@@ -2934,15 +2934,22 @@ fn resolve_specs_for_objects_with_options(
                             ))
                         })?;
                     if expected_kind == ExpectedObjectKind::Commit {
+                        // A tag whose target peels to a commit becomes a normal commit walk tip
+                        // (printed as a bare OID commit line) with the tag emitted alongside it via
+                        // `tip_annotated_tag_by_commit`, matching how a tag named by ref is handled.
+                        // Routing it through a commit `RootObject` instead would print the commit with
+                        // an empty object name (`<oid> \0`) rather than as a commit line (t5305).
                         tip_annotated_tag_by_commit.insert(tag.object, raw_oid);
+                        commits.push(tag.object);
+                    } else {
+                        roots.push(RootObject {
+                            oid: tag.object,
+                            input: spec.clone(),
+                            expected_kind: Some(expected_kind),
+                            root_path: None,
+                            wrap_with_tag: Some(raw_oid),
+                        });
                     }
-                    roots.push(RootObject {
-                        oid: tag.object,
-                        input: spec.clone(),
-                        expected_kind: Some(expected_kind),
-                        root_path: None,
-                        wrap_with_tag: Some(raw_oid),
-                    });
                 }
                 ObjectKind::Tree | ObjectKind::Blob => roots.push(RootObject {
                     oid: raw_oid,
