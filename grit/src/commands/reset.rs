@@ -37,7 +37,7 @@ use grit_lib::sparse_checkout::{
 use grit_lib::state::{resolve_head, HeadState};
 use grit_lib::submodule_gitdir::submodule_modules_git_dir;
 use grit_lib::unicode_normalization::precompose_utf8_path;
-use grit_lib::write_tree::build_cache_tree_from_index;
+use grit_lib::write_tree::{build_cache_tree_from_index, build_cache_tree_from_tree};
 use similar::{Algorithm, TextDiff};
 
 use crate::commands::update_ref;
@@ -1724,6 +1724,9 @@ Use '--' to separate paths from revisions, like this:\n\
             let mut idx = Index::new();
             idx.entries = tree_entries;
             idx.sort();
+            // A duplicate-entry tree (t4058) flattens to several identical-path entries; Git's
+            // index keeps only one per path. Restore that invariant.
+            idx.dedup_paths_keep_last();
             idx
         }
     };
@@ -1904,6 +1907,13 @@ Use '--' to separate paths from revisions, like this:\n\
     new_index.clear_resolve_undo();
     if new_index.entries.iter().any(|entry| entry.oid.is_zero()) {
         new_index.clear_cache_tree();
+    } else if matches!(mode, ResetMode::Mixed | ResetMode::Hard) {
+        // Plain reset to a single commit primes the cache-tree from that commit's tree (Git's
+        // `prime_cache_tree`), so its entry counts reflect the raw tree. For a duplicate-entry tree
+        // (t4058) this exceeds the deduplicated index, which a verified write reports as corrupt.
+        let tree_oid = commit_to_tree(repo, &target_oid)?;
+        let cache_tree = build_cache_tree_from_tree(&repo.odb, &tree_oid)?;
+        new_index.set_cache_tree(cache_tree);
     } else {
         let cache_tree = build_cache_tree_from_index(&repo.odb, &new_index)?;
         new_index.set_cache_tree(cache_tree);

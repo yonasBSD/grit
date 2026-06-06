@@ -713,6 +713,9 @@ fn compose_fast_forward_index(
     let mut index = Index::new();
     index.entries = new_entries;
     index.sort();
+    // A duplicate-entry tree (t4058) flattens to several identical-path entries; Git's index keeps
+    // only one per path. Restore that invariant so status/diff against HEAD is consistent.
+    index.dedup_paths_keep_last();
     Ok(index)
 }
 
@@ -10029,7 +10032,19 @@ fn try_content_merge_add_add(
     let output = merge_file::merge(&input)?;
     let mode = ours.mode;
 
-    if output.conflicts == 0 {
+    // An add/add with no merge base has nothing to reconcile a mode clash against: if the two
+    // sides introduce the path as a regular file but with a different executable bit (100644 vs
+    // 100755) Git reports an add/add conflict and records unmerged stages 2/3, even when the
+    // *content* merges cleanly (e.g. both empty). The clean merged content is still used for the
+    // work tree (t6411: detect conflict on double mode change). This only applies to a plain
+    // file-mode clash: file/symlink/submodule type differences are conflicts handled elsewhere,
+    // and an explicit favour picks a single side so the modes never clash there.
+    let both_regular_files = matches!(ours.mode, MODE_REGULAR | MODE_EXECUTABLE)
+        && matches!(theirs.mode, MODE_REGULAR | MODE_EXECUTABLE);
+    let mode_clash =
+        both_regular_files && ours.mode != theirs.mode && matches!(favor, MergeFavor::None);
+
+    if output.conflicts == 0 && !mode_clash {
         let oid = repo.odb.write(ObjectKind::Blob, &output.content)?;
         Ok(ContentMergeResult::Clean(oid, mode))
     } else {

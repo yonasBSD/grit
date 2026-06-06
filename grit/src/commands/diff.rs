@@ -2906,6 +2906,11 @@ pub fn run(mut args: Args) -> Result<()> {
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
         Err(e) => return Err(e.into()),
     };
+    // `git diff` walks the index through unpack-trees' cache-tree fast path, which aborts on a
+    // cache-tree whose entry counts run past the index (a tree with duplicate path entries —
+    // t4058-diff-duplicates). Unlike the index-write check, this guard is not gated by
+    // GIT_TEST_CHECK_CACHE_TREE; a well-formed index always verifies cleanly.
+    grit_lib::write_tree::verify_cache_tree(&index)?;
     let merged_attrs = if args.cached {
         Arc::new(load_cached_diff_gitattributes(&repo, &index)?)
     } else {

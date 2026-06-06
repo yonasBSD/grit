@@ -3096,6 +3096,9 @@ fn switch_to_tree(
     new_index.entries = new_entries;
     new_index.clear_resolve_undo();
     new_index.sort();
+    // A duplicate-entry tree (t4058) flattens to several identical-path entries; Git's index keeps
+    // only one per path. Restore that invariant so a subsequent status is consistent.
+    new_index.dedup_paths_keep_last();
 
     let work_units = new_index
         .entries
