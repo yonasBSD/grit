@@ -10,7 +10,7 @@ use clap::Args as ClapArgs;
 use grit_lib::check_ref_format::{check_refname_format, RefNameOptions};
 use grit_lib::config::{parse_bool, parse_color, parse_i64, ConfigFile, ConfigScope, ConfigSet};
 use grit_lib::gitmodules::verify_gitmodules_for_commit;
-use grit_lib::hooks::{run_hook, run_hook_capture, HookResult};
+use grit_lib::hooks::{run_hook, HookResult};
 use grit_lib::merge_base::is_ancestor;
 use grit_lib::objects::{parse_commit, ObjectId};
 use grit_lib::push_submodules::{
@@ -199,6 +199,11 @@ struct RefUpdate {
     /// Client-side rejection (e.g. non-fast-forward without `--force`); the update
     /// is reported but not sent to receive-pack.
     client_reject: Option<grit_lib::push_report::PushRefStatus>,
+    /// A delete of a ref that does not exist on the remote. Git still feeds it to the
+    /// `pre-receive` and `update` hooks (with a zero/zero line), warns "deleting a non-existent
+    /// ref", marks the command `did_not_exist`, and then omits it from `post-receive`,
+    /// `post-update`, and the per-ref status report (t5516 hooks tests 66-68).
+    delete_nonexistent: bool,
 }
 
 impl RefUpdate {
@@ -1131,6 +1136,7 @@ fn push_to_url(
                 pre_push_local_name: None,
                 up_to_date: false,
                 client_reject: None,
+                delete_nonexistent: false,
             });
         }
         // Delete remote refs that don't exist locally
@@ -1151,6 +1157,7 @@ fn push_to_url(
                     pre_push_local_name: None,
                     up_to_date: false,
                     client_reject: None,
+                    delete_nonexistent: false,
                 });
             }
         }
@@ -1191,6 +1198,7 @@ fn push_to_url(
                 pre_push_local_name: None,
                 up_to_date: false,
                 client_reject: None,
+                delete_nonexistent: false,
             });
         }
     } else if args.delete {
@@ -1241,6 +1249,7 @@ fn push_to_url(
                 pre_push_local_name: None,
                 up_to_date: false,
                 client_reject: None,
+                delete_nonexistent: false,
             });
         }
     } else if !args.refspecs.is_empty() {
@@ -1294,10 +1303,9 @@ fn push_to_url(
             if src.is_empty() {
                 let remote_ref = normalize_ref(&dst);
                 let old_oid = refs::resolve_ref(&remote_repo.git_dir, &remote_ref).ok();
-                if old_oid.is_none() {
-                    spec_idx += consumed;
-                    continue;
-                }
+                // A delete of a ref absent on the remote is still fed to pre-receive/update
+                // hooks (Git `did_not_exist`); it is just not applied. Keep it in `updates`.
+                let delete_nonexistent = old_oid.is_none();
                 let expected_oid = resolve_force_with_lease_expect(
                     &args.force_with_lease,
                     &repo.git_dir,
@@ -1314,6 +1322,7 @@ fn push_to_url(
                     pre_push_local_name: None,
                     up_to_date: false,
                     client_reject: None,
+                    delete_nonexistent,
                 });
                 spec_idx += consumed;
                 continue;
@@ -1351,6 +1360,7 @@ fn push_to_url(
                             pre_push_local_name: None,
                             up_to_date: false,
                             client_reject: None,
+                            delete_nonexistent: false,
                         });
                     }
                 }
@@ -1411,6 +1421,7 @@ fn push_to_url(
                 pre_push_local_name,
                 up_to_date: false,
                 client_reject: None,
+                delete_nonexistent: false,
             });
             spec_idx += consumed;
         }
@@ -1482,6 +1493,7 @@ fn push_to_url(
                             pre_push_local_name: None,
                             up_to_date: false,
                             client_reject: None,
+                            delete_nonexistent: false,
                         });
                     }
                 }
@@ -1539,6 +1551,7 @@ fn push_to_url(
                         pre_push_local_name,
                         up_to_date: false,
                         client_reject: None,
+                        delete_nonexistent: false,
                     });
                 } else {
                     submodule_tips.push(local_oid);
@@ -1592,6 +1605,7 @@ fn push_to_url(
                 pre_push_local_name: None,
                 up_to_date: false,
                 client_reject: None,
+                delete_nonexistent: false,
             });
             if auto_set_upstream {
                 set_upstream_after_push = true;
@@ -1617,6 +1631,7 @@ fn push_to_url(
                 pre_push_local_name: None,
                 up_to_date: false,
                 client_reject: None,
+                delete_nonexistent: false,
             });
         }
     }
@@ -1656,6 +1671,7 @@ fn push_to_url(
                                         pre_push_local_name: None,
                                         up_to_date: false,
                                         client_reject: None,
+                                        delete_nonexistent: false,
                                     });
                                 }
                             }
@@ -1664,6 +1680,33 @@ fn push_to_url(
                 }
             }
         }
+    }
+
+    // Order ref commands the way receive-pack sees them: the remote's advertised refs (sorted by
+    // refname) that are being updated come first, then newly-created refs in refspec order. Git's
+    // send-pack walks the matched remote ref list (already sorted) and appends new refs, so a push
+    // of `main:main main:seen :next` feeds hooks in main,next,seen order regardless of the
+    // command-line order (t5516 'mixed ref updates' hooks test). Skip this when a mirror-atomic
+    // order is in force (handled below).
+    if !(effective_mirror && args.atomic) {
+        let remote_refnames: std::collections::BTreeSet<String> =
+            refs::list_refs(&remote_repo.git_dir, "refs/")
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+        // Stable partition: existing remote refs first (BTreeSet order ⇒ sorted), new refs after
+        // in their original relative order.
+        updates.sort_by(|a, b| {
+            let a_existing = remote_refnames.contains(&a.remote_ref);
+            let b_existing = remote_refnames.contains(&b.remote_ref);
+            match (a_existing, b_existing) {
+                (true, true) => a.remote_ref.cmp(&b.remote_ref),
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                (false, false) => std::cmp::Ordering::Equal,
+            }
+        });
     }
 
     let mirror_atomic_order = if effective_mirror && args.atomic {
@@ -1820,6 +1863,7 @@ fn push_to_url(
                     pre_push_local_name: None,
                     up_to_date: false,
                     client_reject: None,
+                    delete_nonexistent: false,
                 });
             }
         }
@@ -2507,7 +2551,25 @@ fn push_to_url(
         return Ok(());
     }
 
-    for (i, update) in updates.iter().enumerate() {
+    // Process ref updates deletions-first, then everything else (git/builtin/receive-pack.c
+    // `execute_commands_non_atomic` runs PHASE_DELETIONS before PHASE_OTHERS). This ordering is
+    // observable through the per-ref `update` hook, which a deletion sees before a sibling
+    // create/update. `applied_updates` is re-sorted to input order afterwards so post-receive,
+    // post-update, and reference-transaction stdin keep the order refs were pushed in.
+    let apply_order: Vec<usize> = {
+        let mut deletions: Vec<usize> = Vec::new();
+        let mut others: Vec<usize> = Vec::new();
+        for (i, u) in updates.iter().enumerate() {
+            if u.new_oid.is_none() {
+                deletions.push(i);
+            } else {
+                others.push(i);
+            }
+        }
+        deletions.into_iter().chain(others).collect()
+    };
+    for &i in &apply_order {
+        let update = &updates[i];
         if let Some(msg) = &pre_reject[i] {
             // The shallow-update rejection is reported by receive-pack only via the per-ref
             // `! [remote rejected] ... (shallow update not allowed)` line, with no extra prose line.
@@ -2567,11 +2629,16 @@ fn push_to_url(
                 .new_oid
                 .map(|o| o.to_hex())
                 .unwrap_or_else(|| zero_oid_str.clone());
-            let (hook_result, hook_output) = run_hook_capture(
+            // Run in the remote git dir (cwd = git_dir) so a hook writing to a relative path
+            // (e.g. `>>update.actual`) lands in the remote repo, matching receive-pack and the
+            // pre/post-receive hooks (t5516 update-hook output). `run_hook_capture` left cwd at
+            // the pusher's directory.
+            let (hook_result, hook_output) = grit_lib::hooks::run_hook_in_git_dir(
                 &remote_repo,
                 "update",
                 &[&update.remote_ref, &old_hex, &new_hex],
                 None,
+                &[],
             );
             // Forward hook output to stderr, optionally colorized
             if !hook_output.is_empty() {
@@ -2602,6 +2669,14 @@ fn push_to_url(
                 rejected.push((update, "hook declined".to_owned()));
                 continue;
             }
+        }
+
+        // A delete of a ref that does not exist on the remote: the pre-receive and update hooks
+        // above have already seen it, but it is not applied and contributes nothing to
+        // post-receive/post-update or the per-ref status report (Git `did_not_exist`). The push
+        // still succeeds for this ref.
+        if update.delete_nonexistent {
+            continue;
         }
 
         let result = apply_ref_update(
@@ -2673,6 +2748,16 @@ fn push_to_url(
             }
         }
     }
+
+    // Restore input order for the informational post-hooks (post-receive stdin is built
+    // separately in input order already; post-update args and reference-transaction stdin come
+    // from `applied_updates`, which the deletions-first apply loop populated out of order).
+    applied_updates.sort_by_key(|(u, _)| {
+        updates
+            .iter()
+            .position(|cand| std::ptr::eq(cand, *u))
+            .unwrap_or(usize::MAX)
+    });
 
     // Emit the machine-readable `--porcelain` report (To/<refs>/Done) for both the
     // success and rejection paths, in Git's canonical order.
@@ -2751,13 +2836,31 @@ fn push_to_url(
         }
     }
 
-    // Run post-receive hook on the remote (after successful ref updates)
+    // Run post-receive hook on the remote (after successful ref updates). Unlike pre-receive,
+    // post-receive only sees refs that were actually updated, so build its stdin from
+    // `applied_updates` (in input order) rather than the full pre-receive feed — a delete of a
+    // non-existent ref reaches pre-receive but not post-receive (t5516 test 66).
     if !args.dry_run && !applied_updates.is_empty() {
+        let post_receive_stdin = {
+            let mut lines = String::new();
+            for (update, _) in &applied_updates {
+                let old_hex = update
+                    .old_oid
+                    .map(|o| o.to_hex())
+                    .unwrap_or_else(|| zero_oid_str.clone());
+                let new_hex = update
+                    .new_oid
+                    .map(|o| o.to_hex())
+                    .unwrap_or_else(|| zero_oid_str.clone());
+                lines.push_str(&format!("{old_hex} {new_hex} {}\n", update.remote_ref));
+            }
+            lines
+        };
         let (_, hook_output) = grit_lib::hooks::run_hook_in_git_dir(
             &remote_repo,
             "post-receive",
             &[],
-            Some(hook_stdin.as_bytes()),
+            Some(post_receive_stdin.as_bytes()),
             &push_option_env_refs,
         );
         if !hook_output.is_empty() {
@@ -3236,6 +3339,7 @@ fn collect_matching_push_updates(
             pre_push_local_name: None,
             up_to_date: false,
             client_reject: None,
+            delete_nonexistent: false,
         });
     }
     Ok(matched)
@@ -3662,6 +3766,7 @@ fn push_prune_glob_refspec(
                 pre_push_local_name: None,
                 up_to_date: false,
                 client_reject: None,
+                delete_nonexistent: false,
             });
         }
     }
@@ -3853,6 +3958,7 @@ fn push_to_http_url(
                 pre_push_local_name: None,
                 up_to_date: false,
                 client_reject: None,
+                delete_nonexistent: false,
             });
         }
         for (refname, remote_oid) in &remote_ref_map {
@@ -3870,6 +3976,7 @@ fn push_to_http_url(
                     pre_push_local_name: None,
                     up_to_date: false,
                     client_reject: None,
+                    delete_nonexistent: false,
                 });
             }
         }
@@ -3891,6 +3998,7 @@ fn push_to_http_url(
                 pre_push_local_name: None,
                 up_to_date: false,
                 client_reject: None,
+                delete_nonexistent: false,
             });
         }
     } else {
@@ -3944,6 +4052,7 @@ fn push_to_http_url(
                     pre_push_local_name: None,
                     up_to_date: false,
                     client_reject: None,
+                    delete_nonexistent: false,
                 });
             }
             resolved_refspecs.clear();
@@ -3969,6 +4078,7 @@ fn push_to_http_url(
                     pre_push_local_name: None,
                     up_to_date: false,
                     client_reject: None,
+                    delete_nonexistent: false,
                 });
                 continue;
             }
@@ -4020,6 +4130,7 @@ fn push_to_http_url(
                 }),
                 up_to_date,
                 client_reject,
+                delete_nonexistent: false,
             });
         }
     }
@@ -4410,6 +4521,7 @@ fn push_over_receive_pack_child(
                 pre_push_local_name: None,
                 up_to_date: false,
                 client_reject: None,
+                delete_nonexistent: false,
             });
         }
         for (refname, remote_oid) in &remote_ref_map {
@@ -4424,6 +4536,7 @@ fn push_over_receive_pack_child(
                     pre_push_local_name: None,
                     up_to_date: false,
                     client_reject: None,
+                    delete_nonexistent: false,
                 });
             }
         }
@@ -4445,6 +4558,7 @@ fn push_over_receive_pack_child(
                 pre_push_local_name: None,
                 up_to_date: false,
                 client_reject: None,
+                delete_nonexistent: false,
             });
         }
     } else {
@@ -4494,6 +4608,7 @@ fn push_over_receive_pack_child(
                     pre_push_local_name: None,
                     up_to_date: false,
                     client_reject: None,
+                    delete_nonexistent: false,
                 });
             }
             resolved_refspecs.clear();
@@ -4521,6 +4636,7 @@ fn push_over_receive_pack_child(
                     pre_push_local_name: None,
                     up_to_date: false,
                     client_reject: None,
+                    delete_nonexistent: false,
                 });
                 continue;
             }
@@ -4571,6 +4687,7 @@ fn push_over_receive_pack_child(
                 },
                 up_to_date: false,
                 client_reject: None,
+                delete_nonexistent: false,
             });
         }
     }
@@ -4601,6 +4718,7 @@ fn push_over_receive_pack_child(
                 pre_push_local_name: None,
                 up_to_date: false,
                 client_reject: None,
+                delete_nonexistent: false,
             });
         }
     }
@@ -4640,6 +4758,7 @@ fn push_over_receive_pack_child(
                                         pre_push_local_name: None,
                                         up_to_date: false,
                                         client_reject: None,
+                                        delete_nonexistent: false,
                                     });
                                 }
                             }
