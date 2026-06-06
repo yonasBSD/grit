@@ -1003,6 +1003,32 @@ fn is_commit_tree_unchanged(repo: &Repository, oid: &ObjectId) -> Result<bool> {
     Ok(commit.tree == parent_tree)
 }
 
+/// True when the rebase halted on an *obstructed* pick that still needs to be applied.
+///
+/// A pick that aborts because materializing it would overwrite an untracked working tree file is
+/// never applied, so the worktree still equals HEAD; the `obstructed-pick` marker (written by
+/// `cherry_pick_for_rebase`) records the commit so `git rebase --continue` can re-run the pick once
+/// the obstruction is cleared, rather than mistaking the unchanged worktree for an empty conflict
+/// resolution. The marker is consumed here so a stale value from an earlier step cannot leak.
+fn rebase_obstructed_pick_needs_reapply(
+    _repo: &Repository,
+    _git_dir: &Path,
+    rb_dir: &Path,
+    current_oid: &ObjectId,
+) -> Result<bool> {
+    let marker = rb_dir.join("obstructed-pick");
+    let Ok(content) = fs::read_to_string(&marker) else {
+        return Ok(false);
+    };
+    let _ = fs::remove_file(&marker);
+    let matches = content
+        .lines()
+        .next()
+        .and_then(|line| ObjectId::from_hex(line.trim()).ok())
+        .is_some_and(|oid| &oid == current_oid);
+    Ok(matches)
+}
+
 /// Git creates a synthetic empty root commit when `rebase --root` runs without `--onto`
 /// (`commit_tree` with the empty tree and no parents).
 fn synthetic_root_onto_commit_oid(repo: &Repository, config: &ConfigSet) -> Result<ObjectId> {
@@ -4712,6 +4738,17 @@ Use '--' to separate paths from revisions, like this:\n\
     if args.no_keep_empty {
         fs::write(rb_dir.join("no-keep-empty"), "")?;
     }
+    // Persist the become-empty policy so each pick (incl. those after --continue/--skip) honours
+    // the resolved `--empty` mode (git `drop_redundant_commits` / `keep_redundant_commits`).
+    match resolve_become_empty_mode(&args) {
+        BecomeEmptyMode::Drop => {
+            fs::write(rb_dir.join("drop_redundant_commits"), "")?;
+        }
+        BecomeEmptyMode::Keep => {
+            fs::write(rb_dir.join("keep_redundant_commits"), "")?;
+        }
+        BecomeEmptyMode::Stop => {}
+    }
     // Persist the GPG/SSH signing decision so each pick (including those run from
     // a clean child process or after `--continue`) signs the replayed commit
     // when `-S`/`--gpg-sign` was given or `commit.gpgsign` is set.
@@ -6147,6 +6184,51 @@ fn rebase_keep_start_empty(rb_dir: &Path) -> bool {
     !rb_dir.join("no-keep-empty").exists()
 }
 
+/// How the rebase should treat a commit that *becomes* empty during replay (its change is already
+/// present, e.g. cherry-equivalent upstream). Mirrors git's `enum empty_type` and the
+/// `drop_redundant_commits` / `keep_redundant_commits` sequencer options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BecomeEmptyMode {
+    /// Drop the redundant commit (git `--empty=drop`, default for plain `--merge`).
+    Drop,
+    /// Keep it as an empty commit (git `--empty=keep`).
+    Keep,
+    /// Halt so the user can decide (git `--empty=stop`/`ask`).
+    Stop,
+}
+
+/// Resolve the effective `--empty` mode, applying git's default rules
+/// (`builtin/rebase.c`): explicit `--interactive` -> stop, `--exec` -> keep, otherwise drop.
+fn resolve_become_empty_mode(args: &Args) -> BecomeEmptyMode {
+    if let Some(ref e) = args.empty {
+        match e.to_ascii_lowercase().as_str() {
+            "drop" => return BecomeEmptyMode::Drop,
+            "keep" => return BecomeEmptyMode::Keep,
+            // "stop" and "ask" both halt.
+            _ => return BecomeEmptyMode::Stop,
+        }
+    }
+    if args.interactive {
+        BecomeEmptyMode::Stop
+    } else if args.exec.is_some() {
+        BecomeEmptyMode::Keep
+    } else {
+        BecomeEmptyMode::Drop
+    }
+}
+
+/// Read the persisted become-empty policy from rebase state files. Git stores
+/// `drop_redundant_commits` / `keep_redundant_commits`; neither present means "stop".
+fn rebase_become_empty_mode(rb_dir: &Path) -> BecomeEmptyMode {
+    if rb_dir.join("keep_redundant_commits").exists() {
+        BecomeEmptyMode::Keep
+    } else if rb_dir.join("drop_redundant_commits").exists() {
+        BecomeEmptyMode::Drop
+    } else {
+        BecomeEmptyMode::Stop
+    }
+}
+
 fn rebase_signoff(rb_dir: &Path) -> bool {
     rb_dir.join("signoff").exists()
 }
@@ -6387,6 +6469,7 @@ fn cherry_pick_for_rebase(
 ) -> Result<()> {
     let git_dir = &repo.git_dir;
     let keep_empty = rebase_keep_empty(rb_dir);
+    let become_empty_mode = rebase_become_empty_mode(rb_dir);
     let keep_start_empty = rebase_keep_start_empty(rb_dir);
     let replay_opts = load_rebase_replay_commit_opts(rb_dir);
     let now = time::OffsetDateTime::now_utc();
@@ -7033,15 +7116,19 @@ fn cherry_pick_for_rebase(
                 }
             }
         }
-        if merged_tree_oid == head_tree_oid && !fixup_replacement_empty && !keep_empty {
-            // A commit whose result is empty: if it did *not* start empty (its tree differed from
-            // its parent's, so it became empty only because a prerequisite was already applied
-            // upstream — e.g. `pull --rebase` after the upstream was rebased), a non-interactive
-            // rebase silently *drops* it (git `--empty=drop`, the default outside `-i`). Only stop
-            // for interactive rebases or commits that were empty to begin with.
-            let became_empty = commit_tree_oid != parent_tree_oid;
-            let interactive = rb_dir.join("interactive").exists();
-            if became_empty && !interactive {
+        // A commit whose result is empty. Its handling depends on whether it *started* empty or
+        // *became* empty during the replay (its change is now redundant). `--keep-empty` keeps
+        // commits that started empty (handled earlier); here we decide the redundant case using the
+        // resolved become-empty policy (git `allow_empty()` -> drop/keep/halt). A commit that
+        // became empty under `--empty=keep` falls through and is committed as an empty commit.
+        let became_empty = commit_tree_oid != parent_tree_oid;
+        let keep_this_empty = if became_empty {
+            become_empty_mode == BecomeEmptyMode::Keep
+        } else {
+            keep_empty
+        };
+        if merged_tree_oid == head_tree_oid && !fixup_replacement_empty && !keep_this_empty {
+            if became_empty && become_empty_mode == BecomeEmptyMode::Drop {
                 // Index/worktree already equal HEAD's tree (the merge produced no change), so the
                 // commit is dropped simply by not creating it; the replay loop advances.
                 return Ok(());
@@ -7081,14 +7168,44 @@ fn cherry_pick_for_rebase(
         // when an added entry would overwrite an untracked file (`t5407` `git rebase with failed
         // pick`: an `exec >G` creates an untracked `G`, then `pick G` must abort). The cwd/submodule
         // preflight below does not cover this case, so mirror the standalone cherry-pick check.
-        super::reset::check_untracked_cherry_pick_obstruction(wt, &old_index, &merged_index)?;
-        preflight_cherry_pick_cwd_obstruction(
-            repo,
-            wt,
-            &merged_index,
-            &BTreeMap::new(),
-            Some(&rebase_conflict_paths),
-        )?;
+        //
+        // Git records `REBASE_HEAD` (and keeps the pick in `done`) when a pick halts this way, so a
+        // later `git rebase --continue` re-applies the commit once the obstruction is cleared
+        // (t3404 "rebase -i commits that overwrite untracked files"). Set it before bailing so the
+        // continue path knows a real commit still has to be created, rather than treating the
+        // unchanged worktree as an empty resolution (t5407 "git rebase with failed pick").
+        let obstruction =
+            super::reset::check_untracked_cherry_pick_obstruction(wt, &old_index, &merged_index)
+                .and_then(|()| {
+                    preflight_cherry_pick_cwd_obstruction(
+                        repo,
+                        wt,
+                        &merged_index,
+                        &BTreeMap::new(),
+                        Some(&rebase_conflict_paths),
+                    )
+                });
+        if let Err(e) = obstruction {
+            if std::env::var("GRIT_DEBUG_OBSTRUCT").is_ok() {
+                eprintln!(
+                    "DEBUG: obstruction marker written for {} in {}",
+                    commit_oid.to_hex(),
+                    rb_dir.display()
+                );
+            }
+            let _ = fs::write(
+                git_dir.join("REBASE_HEAD"),
+                format!("{}\n", commit_oid.to_hex()),
+            );
+            // Mark this halt as an unapplied obstruction (distinct from a real conflict that the
+            // user might resolve to an empty commit) so `git rebase --continue` re-runs the pick
+            // instead of recording the unchanged worktree as a no-op resolution.
+            let _ = fs::write(
+                rb_dir.join("obstructed-pick"),
+                format!("{}\n", commit_oid.to_hex()),
+            );
+            return Err(e);
+        }
     }
     repo.write_index(&mut merged_index)?;
 
@@ -8040,6 +8157,45 @@ fn do_continue() -> Result<()> {
     }
 
     if stopped_oid.is_some() && worktree_matches_head(&repo, git_dir)? {
+        // A pick that halted on an obstruction (untracked file would be overwritten) was never
+        // applied, so the worktree still equals HEAD — but unlike a conflict resolved to nothing,
+        // the commit still has to be created. Re-running the pick now reproduces the obstructed
+        // commit and records the correct old->new mapping for the post-rewrite hook, instead of
+        // collapsing it onto the previous HEAD (t5407 "git rebase with failed pick"; t3404 "rebase
+        // -i commits that overwrite untracked files"). A pick that re-applies to an empty tree is
+        // dropped by `cherry_pick_for_rebase` itself, so a genuine no-op resolution still advances.
+        if rebase_obstructed_pick_needs_reapply(&repo, git_dir, &rb_dir, &current_oid)? {
+            let next_after_continue =
+                peek_next_rebase_flush_hint(&repo, &todo_lines_continue, 0, interactive_continue);
+            if std::env::var("GRIT_DEBUG_OBSTRUCT").is_ok() {
+                eprintln!("DEBUG: re-pick obstructed {} cmd={:?} final_fixup={} next={:?}", current_oid.to_hex(), todo_cmd, final_fixup, next_after_continue);
+            }
+            let _ = fs::remove_file(git_dir.join("REBASE_HEAD"));
+            let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
+            cherry_pick_for_rebase(
+                &repo,
+                &rb_dir,
+                &current_oid,
+                backend_continue,
+                todo_cmd,
+                final_fixup,
+                next_after_continue,
+                true,
+                force_rewrite_continue,
+                None,
+            )?;
+            let _ = fs::remove_file(rb_dir.join("current"));
+            let _ = fs::remove_file(rb_dir.join("current-cmd"));
+            let _ = fs::remove_file(rb_dir.join("current-final-fixup"));
+            return replay_remaining(
+                &repo,
+                &rb_dir,
+                autostash_continue,
+                backend_continue,
+                had_autostash_continue,
+                force_rewrite_continue,
+            );
+        }
         let oid_for_rewrite = stopped_oid.as_ref().unwrap_or(&current_oid);
         let next_after_continue =
             peek_next_rebase_flush_hint(&repo, &todo_lines_continue, 0, interactive_continue);
