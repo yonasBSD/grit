@@ -4003,6 +4003,7 @@ fn worktree_matches_head(repo: &Repository, git_dir: &Path) -> Result<bool> {
 
 /// Returns trimmed non-comment todo lines as edited (for replay), and pick/fixup/squash entries for
 /// empty-list / up-to-date checks.
+#[allow(clippy::too_many_arguments)]
 fn run_interactive_rebase(
     repo: &Repository,
     git_dir: &Path,
@@ -4011,6 +4012,7 @@ fn run_interactive_rebase(
     autostash_oid: Option<&ObjectId>,
     autosquash: bool,
     update_refs: bool,
+    revs_onto: Option<(&str, &str)>,
 ) -> Result<(Vec<String>, Vec<(ObjectId, RebaseTodoCmd)>, bool)> {
     if autosquash {
         validate_rebase_instruction_format(config)?;
@@ -4051,7 +4053,13 @@ fn run_interactive_rebase(
     fs::create_dir_all(&rb_merge)?;
     fs::write(rb_merge.join("interactive"), "")?;
     let todo_path = rb_merge.join("git-rebase-todo");
-    fs::write(&todo_path, todo.as_bytes())?;
+    // Git appends the instruction help (a comment block preceded by a blank line) to the todo
+    // before opening the editor, so the file the user/test sees ends with `<todo>\n\n# Rebase ...`.
+    // After `grep -v '^#'`, the separating blank line remains, which several t3404 `--exec` tests
+    // depend on when calibrating `sed 1,Nd`.
+    let command_count = count_rebase_todo_actionable_lines(&todo);
+    let todo_with_help = append_rebase_todo_help(&todo, command_count, revs_onto, config);
+    fs::write(&todo_path, todo_with_help.as_bytes())?;
     let editor = sequence_editor_cmd(config)?;
     let status = run_shell_editor(&editor, &todo_path)?;
     let edited = fs::read_to_string(&todo_path)?;
@@ -4762,6 +4770,18 @@ Use '--' to separate paths from revisions, like this:\n\
         // Even when the computed pick list is empty (`git rebase -i A A`), Git still runs the
         // sequence editor so the user can add `merge`/`exec` lines (t3436).
         let pre_editor_len = commits.len();
+        // Git's todo help header reads `Rebase <short-upstream>..<short-orig-head> onto <short-onto>`.
+        let short_onto =
+            abbreviate_object_id(&repo, onto_oid, 7).unwrap_or_else(|_| onto_oid.to_hex());
+        let help_revs = if args.root {
+            "(root)".to_owned()
+        } else {
+            let short_upstream = abbreviate_object_id(&repo, upstream_tip_oid, 7)
+                .unwrap_or_else(|_| upstream_tip_oid.to_hex());
+            let short_head =
+                abbreviate_object_id(&repo, head_oid, 7).unwrap_or_else(|_| head_oid.to_hex());
+            format!("{short_upstream}..{short_head}")
+        };
         let (edited_lines, _, todo_changed) = run_interactive_rebase(
             &repo,
             git_dir,
@@ -4770,6 +4790,7 @@ Use '--' to separate paths from revisions, like this:\n\
             autostash_oid.as_ref(),
             want_autosquash,
             rebase_update_refs_enabled(&args, &config),
+            Some((help_revs.as_str(), short_onto.as_str())),
         )?;
         if !todo_changed
             && !want_autosquash
