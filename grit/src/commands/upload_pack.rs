@@ -836,8 +836,15 @@ fn write_ref_advertisement(w: &mut impl Write, git_dir: &Path) -> Result<()> {
                     write!(w, "{:04x}{}", len, line)?;
                 }
                 Ok(HeadState::Branch { oid: None, .. }) => {
+                    // Empty repository (unborn HEAD, no refs). Git advertises the no-ref carrier
+                    // line `<zero-oid> capabilities^{}` here, NOT `<zero-oid> HEAD`: a client that
+                    // sees a `HEAD` ref pointing at the all-zero OID would try to `want` it and the
+                    // negotiation would fail, whereas `capabilities^{}` tells the client there are
+                    // no refs to fetch while still carrying the capability list (incl.
+                    // `object-format`) so a hash-aware client records the object format
+                    // (t5551 "clone empty SHA-256 repository", proto v0).
                     let z = zero_oid_hex_for_format(&object_format);
-                    let line = format!("{z} HEAD\0{caps}\n");
+                    let line = format!("{z} capabilities^{{}}\0{caps}\n");
                     let len = 4 + line.len();
                     write!(w, "{:04x}{}", len, line)?;
                 }
