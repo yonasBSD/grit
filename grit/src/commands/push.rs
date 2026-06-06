@@ -608,6 +608,7 @@ pub fn run(args: Args) -> Result<()> {
     let cli_force_enabled = args.force && !args.no_force;
     let repo = Repository::discover(None).context("not a git repository")?;
     let config = ConfigSet::load(Some(&repo.git_dir), true)?;
+    reject_empty_branch_subsection(&config)?;
     trace_single_promisor_prefetch_round(&config);
 
     let push_all = args.all || args.branches;
@@ -5233,6 +5234,43 @@ fn push_over_receive_pack_child(
         }
     }
 
+    Ok(())
+}
+
+/// Reject `branch.<empty>.{remote,pushremote,merge}` config (empty subsection).
+///
+/// Upstream Git's remote/branch config reader (`handle_config` in `remote.c`)
+/// returns an error for any `branch.<subsection>.X` whose subsection is empty,
+/// which the config machinery turns into a fatal `bad config variable` failure
+/// while loading remote configuration (i.e. during `git push`).
+fn reject_empty_branch_subsection(config: &ConfigSet) -> Result<()> {
+    for entry in config.entries() {
+        // Canonical keys keep the subsection verbatim, so `branch..remote`
+        // (empty subsection) appears as `branch..remote`: three components
+        // where the middle one is empty.
+        let mut parts = entry.key.splitn(3, '.');
+        let (Some(section), Some(subsection), Some(name)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if section != "branch" || !subsection.is_empty() {
+            continue;
+        }
+        if !matches!(name, "remote" | "pushremote" | "merge") {
+            continue;
+        }
+        let where_disp = match &entry.file {
+            Some(path) => format!(
+                "in file '{}' at line {}",
+                grit_lib::config::config_file_display_for_error(path),
+                entry.line
+            ),
+            None => "in command line".to_owned(),
+        };
+        eprintln!("fatal: bad config variable '{}' {where_disp}", entry.key);
+        std::process::exit(128);
+    }
     Ok(())
 }
 
