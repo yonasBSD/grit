@@ -1420,6 +1420,15 @@ pub fn fetch_via_upload_pack_skipping(
     if wants.is_empty() {
         // No pack to transfer (either already up-to-date or refspecs selected no refs), but we
         // still return advertised heads/tags so callers can perform ref/prune bookkeeping.
+        //
+        // The protocol-v2 `promisor-remote` capability is part of the handshake, not the pack
+        // round: Git applies `promisor.storeFields` (persisting advertised filter/token into local
+        // config) whenever the server advertises promisor remotes the client accepts, even when no
+        // objects are wanted. Evaluate it here so a `git fetch` against an up-to-date server whose
+        // advertised filter changed still updates the local config (t5710 storeFields).
+        if let Some(caps) = v2_caps.as_ref() {
+            evaluate_promisor_remote_advertisement(local_git_dir, caps, filter_spec)?;
+        }
         drop(stdin);
         let _ = drain_child_stdout_to_eof(&mut stdout);
         let status = child.wait()?;

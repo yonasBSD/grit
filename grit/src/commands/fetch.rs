@@ -3303,6 +3303,29 @@ fn fetch_remote(
             }
         }
 
+        // Git `builtin/fetch.c` `get_ref_map` default case: when the remote has no configured fetch
+        // refspec (and there is no matching `branch.<name>.merge`), `git fetch <remote>` fetches the
+        // remote's HEAD ref and marks it `FETCH_HEAD_MERGE`. The loop above maps refs only through
+        // configured refspecs, so with none it emits no branch line — record the remote HEAD branch
+        // here as the single for-merge FETCH_HEAD entry (t5710 `update-ref HEAD FETCH_HEAD`).
+        if refspecs.is_empty()
+            && union_refspecs.is_empty()
+            && !has_merge_cfg
+            && !args.prefetch
+            && !user_passed_cli_refspecs
+            && !implicit_path_fetch
+        {
+            if let Some(rb) = remote_symbolic_head_branch.as_deref() {
+                if let Some(oid) = refs_for_mapping
+                    .iter()
+                    .find(|(r, _)| r == &format!("refs/heads/{rb}"))
+                    .map(|(_, o)| *o)
+                {
+                    fetch_head_entries.push(fetch_head_branch_line(&oid, rb, &display_url, true));
+                }
+            }
+        }
+
         // Git `add_merge_config`: for the default fetch, any `branch.<b>.merge` entry that was not
         // already fetched into FETCH_HEAD via the configured refspec is additionally fetched
         // FETCH-HEAD-only (no tracking ref) and marked for-merge. These entries are emitted in
