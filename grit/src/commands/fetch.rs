@@ -2761,6 +2761,37 @@ fn fetch_remote(
                     }
                 }
 
+                // Tags are not fast-forwardable: an explicit `refs/tags/<t>` destination whose
+                // existing local tag points elsewhere is rejected unless the refspec is forced
+                // (or `--force`/tagOpt force is in effect), mirroring Git's `update_local_ref`
+                // "would clobber existing tag". The `+refs/tags/*:refs/tags/*` retry passes `force`.
+                if local_ref.starts_with("refs/tags/") {
+                    if let Some(ref old) = old_oid {
+                        if old != &remote_oid
+                            && !(force
+                                || args.force
+                                || should_force_tag_update(config, remote_name, args))
+                        {
+                            let tag_name =
+                                local_ref.strip_prefix("refs/tags/").unwrap_or(&local_ref);
+                            if !args.quiet {
+                                display.push(
+                                    '!',
+                                    "[rejected]",
+                                    branch_label,
+                                    &local_ref,
+                                    &local_ref,
+                                    *old,
+                                    remote_oid,
+                                    Some("would clobber existing tag"),
+                                );
+                            }
+                            tag_clobber_failures.push(tag_name.to_owned());
+                            continue;
+                        }
+                    }
+                }
+
                 // Check fast-forward: reject non-ff updates unless forced
                 if let Some(ref old) = old_oid {
                     if old != &remote_oid && !(force || args.force) {
