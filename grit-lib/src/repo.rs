@@ -2301,34 +2301,17 @@ pub fn init_repository_separate_git_dir(
         skip_hooks_info,
     )?;
 
-    // Use a relative `gitdir:` path from the work tree (matches C Git). Absolute paths break
-    // nested submodule layouts: the inner clone would keep a `.git` directory instead of a
-    // gitfile, so `.git/modules/<outer>/modules/<inner>` is never created (t1013).
+    // Write an absolute `gitdir:` path, matching C Git's `init_db` →
+    // `set_git_dir(real_git_dir, make_realpath=1)` → `separate_git_dir`, which records the
+    // realpath of the separate git directory (`t5601` "clone separate gitdir: output"). This
+    // path is only used by `git clone --separate-git-dir`; submodule layouts use a different
+    // code path and are unaffected.
     let gitfile = work_tree.join(".git");
-    let rel_git_dir = pathdiff_relative_gitfile(work_tree, git_dir);
-    fs::write(gitfile, format!("gitdir: {rel_git_dir}\n"))?;
+    let abs_git_dir = fs::canonicalize(git_dir).unwrap_or_else(|_| git_dir.to_path_buf());
+    let abs_git_dir = abs_git_dir.to_string_lossy().replace('\\', "/");
+    fs::write(gitfile, format!("gitdir: {abs_git_dir}\n"))?;
 
     Repository::open(git_dir, Some(work_tree))
-}
-
-/// Relative path from `from` to `to` using `..` segments (forward slashes), for gitfile lines.
-fn pathdiff_relative_gitfile(from: &Path, to: &Path) -> String {
-    let from_c = fs::canonicalize(from).unwrap_or_else(|_| from.to_path_buf());
-    let to_c = fs::canonicalize(to).unwrap_or_else(|_| to.to_path_buf());
-    let from_comp: Vec<Component<'_>> = from_c.components().collect();
-    let to_comp: Vec<Component<'_>> = to_c.components().collect();
-    let mut i = 0usize;
-    while i < from_comp.len() && i < to_comp.len() && from_comp[i] == to_comp[i] {
-        i += 1;
-    }
-    let mut out = PathBuf::new();
-    for _ in i..from_comp.len() {
-        out.push("..");
-    }
-    for c in &to_comp[i..] {
-        out.push(c.as_os_str());
-    }
-    out.to_string_lossy().replace('\\', "/")
 }
 
 /// Initialise a **minimal** bare repository directory layout matching `git clone --template= --bare`.

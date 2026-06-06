@@ -1354,14 +1354,31 @@ pub fn run(mut args: Args) -> Result<()> {
                 }
             }
         } else if branch_is_tag {
-            // `--branch <tag>`: detached HEAD at the tag, fetch refspec follows just that tag, and
-            // (unless --no-tags) all tags whose objects were transferred are written locally —
-            // matching upstream `git clone --single-branch --branch <tag>` of a local repository.
+            // `--branch <tag>`: HEAD is detached at the tag's target object. Per upstream
+            // `write_refspec_config`, only a `--single-branch` clone narrows the fetch
+            // refspec to `+refs/tags/<tag>:refs/tags/<tag>` and copies just the followed
+            // tags; a normal (multi-branch) clone keeps the default `+refs/heads/*` refspec
+            // and copies all branches as remote-tracking refs (`t5601` "checking out a tag").
             let tag = args.branch.as_deref().unwrap_or_default();
-            copy_followed_tags_for_tag_clone(&source.git_dir, &dest.git_dir, args.no_tags)
-                .context("copying tags")?;
+            if args.single_branch {
+                copy_followed_tags_for_tag_clone(&source.git_dir, &dest.git_dir, args.no_tags)
+                    .context("copying tags")?;
+            } else {
+                copy_refs_as_remote_filtered(
+                    &source.git_dir,
+                    &dest.git_dir,
+                    &remote_name,
+                    args.no_tags,
+                    None,
+                )
+                .context("copying refs")?;
+            }
 
-            let refspec = format!("+refs/tags/{tag}:refs/tags/{tag}");
+            let refspec = if args.single_branch {
+                format!("+refs/tags/{tag}:refs/tags/{tag}")
+            } else {
+                format!("+refs/heads/*:refs/remotes/{remote_name}/*")
+            };
             if is_file_url {
                 setup_origin_remote_url(
                     &dest.git_dir,
