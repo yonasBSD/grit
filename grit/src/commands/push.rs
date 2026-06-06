@@ -1258,7 +1258,16 @@ fn push_to_url(
                 let full = format!("refs/tags/{name}");
                 (full.clone(), full, 2)
             } else {
-                let (src, dst) = parse_refspec(spec_clean);
+                let (mut src, mut dst) = parse_refspec(spec_clean);
+                // Git `parse_refspec` (refspec.c) rewrites a literal `@` source to `HEAD`.
+                if src == "@" {
+                    src = "HEAD".to_owned();
+                    // A colon-less `@` mirrors the (now `HEAD`) source onto the dst so the
+                    // remote side is resolved from HEAD's branch, like `git push remote HEAD`.
+                    if !spec_clean.contains(':') {
+                        dst = "HEAD".to_owned();
+                    }
+                }
                 (src, dst, 1)
             };
 
@@ -1471,15 +1480,34 @@ fn push_to_url(
                     )?;
                 }
             } else {
-                let local_ref = normalize_ref(src_pat);
+                // A configured `remote.<name>.push = HEAD` (or `@`) resolves the source like a
+                // command-line refspec: `@` rewrites to `HEAD`, and HEAD/oid/short names DWIM via
+                // `resolve_push_src_for_refspec` (Git treats config and CLI refspecs identically).
+                let colon_less = !spec_clean.contains(':');
+                let src_resolved = if src_pat == "@" { "HEAD" } else { src_pat };
+                let dst_resolved = if colon_less && src_pat == "@" {
+                    "HEAD"
+                } else {
+                    dst_pat
+                };
+                let effective_dst = if dst_resolved == "HEAD" && src_resolved == "HEAD" {
+                    match resolve_head(&repo.git_dir) {
+                        Ok(HeadState::Branch { refname, .. }) => refname,
+                        Ok(HeadState::Detached { oid, .. }) => oid.to_hex(),
+                        _ => dst_resolved.to_owned(),
+                    }
+                } else {
+                    dst_resolved.to_owned()
+                };
+                let (local_ref, local_oid, pre_push_local_name) =
+                    resolve_push_src_for_refspec(repo, src_resolved, &effective_dst)
+                        .with_context(|| format!("src refspec '{}' does not match any", src_pat))?;
                 let remote_ref = resolve_destination_ref_for_push(
                     &remote_repo.git_dir,
-                    dst_pat,
+                    &effective_dst,
                     &local_ref,
-                    false,
+                    colon_less,
                 )?;
-                let local_oid = refs::resolve_ref(&repo.git_dir, &local_ref)
-                    .with_context(|| format!("src refspec '{}' does not match any", src_pat))?;
                 let old_oid = refs::resolve_ref(&remote_repo.git_dir, &remote_ref).ok();
                 if old_oid.as_ref() != Some(&local_oid) {
                     updates.push(RefUpdate {
@@ -1489,7 +1517,7 @@ fn push_to_url(
                         new_oid: Some(local_oid),
                         expected_oid: None,
                         refspec_force: force_flag,
-                        pre_push_local_name: None,
+                        pre_push_local_name,
                         up_to_date: false,
                         client_reject: None,
                     });
