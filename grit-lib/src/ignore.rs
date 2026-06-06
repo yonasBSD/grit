@@ -469,6 +469,11 @@ fn parse_gitignore_content(
 ) -> Result<Vec<IgnoreRule>> {
     let mut rules = Vec::new();
     for (idx, line) in content.lines().enumerate() {
+        let line = if idx == 0 {
+            line.strip_prefix('\u{feff}').unwrap_or(line)
+        } else {
+            line
+        };
         if let Some(rule) = parse_rule_line(line, idx + 1, source_display, base_dir) {
             rules.push(rule);
         }

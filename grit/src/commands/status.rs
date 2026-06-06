@@ -1328,7 +1328,18 @@ fn visit_untracked_directory(
         return Ok(());
     }
 
-    if ignored_mode == IgnoredMode::Traditional && !show_all {
+    if ignored_mode != IgnoredMode::No
+        && dir_is_nested_submodule_worktree(&repo.git_dir, abs)
+        && matcher.check_path(repo, Some(index), rel, true)?.0
+    {
+        ignored_out.push(format!("{rel}/"));
+        return Ok(());
+    }
+
+    if ignored_mode == IgnoredMode::Traditional
+        && !show_all
+        && directory_pathspec_matches_self(rel, pathspecs)
+    {
         if let Some(dir_line) = traditional_normal_directory_only(
             repo, index, work_tree, tracked, gitlinks, matcher, rel, abs, pathspecs,
         )? {
@@ -1363,7 +1374,11 @@ fn visit_untracked_directory(
 
     // `--untracked-files=normal`: collapse subtrees like Git's `walk_for_untracked`.
     if !sub_untracked.is_empty() && !sub_ignored.is_empty() {
-        untracked_out.append(&mut sub_untracked);
+        if !rel.is_empty() && directory_pathspec_matches_self(rel, pathspecs) {
+            untracked_out.push(format!("{rel}/"));
+        } else {
+            untracked_out.append(&mut sub_untracked);
+        }
         ignored_out.append(&mut sub_ignored);
         return Ok(());
     }
@@ -1371,7 +1386,8 @@ fn visit_untracked_directory(
     if sub_untracked.is_empty() && !sub_ignored.is_empty() {
         let dir_excluded = matcher.check_path(repo, Some(index), rel, true)?.0;
         let collapse_matching = ignored_mode == IgnoredMode::Matching && dir_excluded;
-        let collapse_traditional = ignored_mode == IgnoredMode::Traditional;
+        let collapse_traditional = ignored_mode == IgnoredMode::Traditional
+            && directory_pathspec_matches_self(rel, pathspecs);
         if collapse_matching || collapse_traditional {
             ignored_out.push(format!("{rel}/"));
         } else {
@@ -1381,7 +1397,7 @@ fn visit_untracked_directory(
     }
 
     if !sub_untracked.is_empty() && sub_ignored.is_empty() {
-        if rel.is_empty() {
+        if rel.is_empty() || !directory_pathspec_matches_self(rel, pathspecs) {
             untracked_out.append(&mut sub_untracked);
         } else {
             untracked_out.push(format!("{rel}/"));
@@ -4173,6 +4189,11 @@ fn pathspec_may_match_directory(rel_dir: &str, pathspecs: &[String]) -> bool {
             || rel_dir.starts_with(&format!("{spec_norm}/"))
             || grit_lib::pathspec::pathspec_matches(spec, rel_dir)
     })
+}
+
+fn directory_pathspec_matches_self(rel_dir: &str, pathspecs: &[String]) -> bool {
+    pathspecs.is_empty()
+        || status_path_matches(&format!("{}/", rel_dir.trim_end_matches('/')), pathspecs)
 }
 
 fn status_pathspecs_contain_glob(pathspecs: &[String]) -> bool {

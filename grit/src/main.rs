@@ -3230,6 +3230,17 @@ fn preprocess_status_argv(rest: &[String]) -> Vec<String> {
         !matches!(n, "v1" | "v2" | "1" | "2")
     }
 
+    fn next_is_status_untracked_mode(next: Option<&str>) -> bool {
+        matches!(
+            next,
+            Some("no" | "normal" | "all" | "false" | "true" | "0" | "1")
+        )
+    }
+
+    fn next_is_status_ignored_mode(next: Option<&str>) -> bool {
+        matches!(next, Some("no" | "traditional" | "matching"))
+    }
+
     let mut out = Vec::with_capacity(rest.len() + 2);
     let mut i = 0usize;
     while i < rest.len() {
@@ -3237,6 +3248,22 @@ fn preprocess_status_argv(rest: &[String]) -> Vec<String> {
         if arg == "--porcelain" {
             out.push(rest[i].clone());
             if next_is_pathspec_after_bare_porcelain(rest.get(i + 1).map(|s| s.as_str())) {
+                out.push("--".to_owned());
+            }
+        } else if arg == "-u" || arg == "--untracked-files" {
+            out.push(rest[i].clone());
+            let next = rest.get(i + 1).map(|s| s.as_str());
+            if next.is_some_and(|n| n != "--" && !n.starts_with('-'))
+                && !next_is_status_untracked_mode(next)
+            {
+                out.push("--".to_owned());
+            }
+        } else if arg == "--ignored" {
+            out.push(rest[i].clone());
+            let next = rest.get(i + 1).map(|s| s.as_str());
+            if next.is_some_and(|n| n != "--" && !n.starts_with('-'))
+                && !next_is_status_ignored_mode(next)
+            {
                 out.push("--".to_owned());
             }
         } else {
