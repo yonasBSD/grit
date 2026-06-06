@@ -797,7 +797,10 @@ fn ws_check_emit(out: &mut String, body: &str, ws_rule: u32, set: &str, reset: &
     if (ws_rule & ws::WS_BLANK_AT_EOL) != 0 {
         let mut i = len as isize - 1;
         while i >= 0 {
-            if bytes[i as usize].is_ascii_whitespace() {
+            // Git's `isspace` (sane_ctype) counts only space/tab/newline/CR — NOT
+            // form-feed (0x0c) or vertical-tab (0x0b). So a leading `\f`/`\v` is
+            // not treated as trailing whitespace (t4015 #134).
+            if matches!(bytes[i as usize], b' ' | b'\t' | b'\n' | b'\r') {
                 trailing_whitespace = i;
             } else {
                 break;
