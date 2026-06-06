@@ -8783,7 +8783,14 @@ fn write_colored_hunk_header(out: &mut impl Write, line: &str, ctx_color: &str) 
             if func.is_empty() {
                 writeln!(out, "{CYAN}{range}{RESET} ")?;
             } else {
-                writeln!(out, "{CYAN}{range}{RESET} {ctx_color}{func}{RESET}")?;
+                // Git paints the funcname with the (empty by default) context
+                // color, which still emits a leading reset: `<RESET> <RESET>name<RESET>`.
+                let func_color = if ctx_color.is_empty() {
+                    RESET
+                } else {
+                    ctx_color
+                };
+                writeln!(out, "{CYAN}{range}{RESET} {func_color}{func}{RESET}")?;
             }
         } else {
             // No funcname (rest should be empty).

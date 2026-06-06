@@ -411,10 +411,27 @@ pub fn detect_moved_lines(patch: &str, mode: ColorMovedMode, ws_flags: u32) -> V
     // an unbounded loop (rewinds re-visit lines, so bound generously).
     let max_iters = n.saturating_mul(n).saturating_add(n).saturating_add(16);
     let mut iters = 0usize;
+    // True once a barrier (a non-`+/-` line, i.e. a gap in line_index, or the
+    // very start) has been processed for the line at `nn`. Git resets
+    // `flipped_block` on every non-`+/-` symbol (`switch ... default`), which our
+    // `+/-`-only `syms` list must emulate at line_index gaps.
     while nn < n {
         iters += 1;
         if iters > max_iters {
             break;
+        }
+        // Emulate git's non-`+/-` line handling: when a context line separated
+        // this symbol from the previous one (gap in line_index), reset
+        // `flipped_block` and finalize any open block before processing.
+        let barrier = nn == 0 || syms[nn].line_index != syms[nn - 1].line_index + 1;
+        if barrier {
+            if !pmb.is_empty() {
+                adjust_last_block(&mut syms, nn, block_length);
+                pmb.clear();
+                block_length = 0;
+            }
+            flipped_block = 0;
+            moved_symbol = None;
         }
         // match for this line: a plus matches dels, a minus matches adds.
         let mut match_idx: Option<usize> = if syms[nn].is_plus {
