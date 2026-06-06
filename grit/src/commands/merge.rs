@@ -2790,6 +2790,19 @@ Aborting"
                 }
                 fs::remove_dir_all(&abs)?;
             }
+            // Avoid unnecessary update: if the work-tree file already holds the exact
+            // bytes we would write (e.g. a modify/delete conflict that leaves HEAD's
+            // version in tree, which is already checked out), leave it untouched so its
+            // mtime is preserved — matching Git's twoway_merge behavior (t6402.36).
+            if worktree_file_matches(&abs, &output) {
+                continue;
+            }
+            // A symlink at this path (e.g. a conflicted symlink kept by `remove_deleted_files`)
+            // must be unlinked first: `fs::write` would otherwise follow it and clobber the
+            // link target, leaving a spurious untracked file (t6416 symlink modify/modify).
+            if fs::symlink_metadata(&abs).is_ok_and(|m| m.file_type().is_symlink()) {
+                let _ = fs::remove_file(&abs);
+            }
             fs::write(&abs, &output)?;
         }
     }
@@ -5281,6 +5294,14 @@ fn finish_octopus_merge_on_conflict(
                     bail!("Refusing to remove the current working directory:\n{path}\n");
                 }
                 fs::remove_dir_all(&abs)?;
+            }
+            // Avoid unnecessary update (see two-head merge path above): preserve mtime when
+            // the existing file already matches the bytes we would write.
+            if worktree_file_matches(&abs, &output) {
+                continue;
+            }
+            if fs::symlink_metadata(&abs).is_ok_and(|m| m.file_type().is_symlink()) {
+                let _ = fs::remove_file(&abs);
             }
             fs::write(&abs, &output)?;
         }
@@ -11679,6 +11700,16 @@ fn remove_deleted_files(
         .filter(|e| e.stage() == 0)
         .map(|e| e.path.as_slice())
         .collect();
+    // Paths that survive the merge only as conflicted (non-zero stage) index entries — e.g. a
+    // modify/delete conflict where one side's version is left in the work tree. Git keeps those
+    // working files (twoway_merge leaves them untouched), so we must not delete them here; the
+    // conflict-file write pass below handles their contents and preserves the mtime (t6402.36).
+    let conflicted_paths: std::collections::HashSet<&[u8]> = new_index
+        .entries
+        .iter()
+        .filter(|e| e.stage() != 0)
+        .map(|e| e.path.as_slice())
+        .collect();
     for (path, old_entry) in old_entries {
         let has_nested_under = new_index.entries.iter().any(|e| {
             e.path.starts_with(path)
@@ -11693,6 +11724,14 @@ fn remove_deleted_files(
             {
                 continue;
             }
+        } else if conflicted_paths.contains(path.as_slice())
+            && old_entry.mode != MODE_TREE
+            && old_entry.mode != MODE_GITLINK
+            && !has_nested_under
+        {
+            // Conflicted file kept at this exact path (no children needing the slot): leave the
+            // existing work-tree file in place rather than deleting and recreating it.
+            continue;
         }
         if sparse_checkout {
             if let Some(ne) = new_index
@@ -11784,6 +11823,26 @@ fn worktree_path_under_nested_git(work_tree: &Path, abs_path: &Path) -> bool {
 }
 
 /// Checkout index entries to working tree.
+/// Returns true when `path` is an existing regular file whose contents are byte-identical to
+/// `expected`. Used to skip rewriting conflict-marker files that already hold the right bytes so
+/// their mtime is preserved ("avoid unnecessary update", t6402).
+fn worktree_file_matches(path: &Path, expected: &[u8]) -> bool {
+    // Symlinks must always be rewritten as regular files; do not treat them as matches.
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => {}
+        _ => return false,
+    }
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() != expected.len() as u64 {
+            return false;
+        }
+    }
+    match fs::read(path) {
+        Ok(existing) => existing == expected,
+        Err(_) => false,
+    }
+}
+
 fn checkout_entries(
     repo: &Repository,
     work_tree: &Path,
