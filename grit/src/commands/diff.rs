@@ -3730,7 +3730,11 @@ pub fn run(mut args: Args) -> Result<()> {
             // default Git behavior. Gate the extra hunks on either an explicit -p alongside a
             // stat/format, or the absence of any other format entirely.
             let submodule_fmt_requested = args.submodule.as_deref().is_some_and(|s| !s.is_empty());
-            let show_unified_after_stat = !args.no_patch
+            // We are already inside `if show_unified_patch`, which applies last-flag-wins among
+            // `-s`/`--no-patch` and the patch-enabling flags (`-p`, `--patch-with-raw`, ...).
+            // Do NOT re-gate on `args.no_patch` here: for `--no-patch --patch-with-stat` the later
+            // `--patch-with-*` re-enables the unified body even though `args.no_patch` stays set.
+            let show_unified_after_stat = show_unified_patch
                 && (diff_cli_requests_unified_patch_alongside_stat(&raw_args)
                     || submodule_fmt_requested
                     || !format_besides_unified_patch);
