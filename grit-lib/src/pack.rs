@@ -609,6 +609,31 @@ fn verify_idx_trailing_checksum(idx_path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Validate that the 256-entry pack-index fanout table is non-decreasing.
+///
+/// The fanout table maps each first OID byte to a cumulative object count, so its
+/// entries must be monotonically non-decreasing. Git's `load_idx` (`packfile.c`)
+/// rejects any index whose fanout decreases ("non-monotonic index"); without this
+/// check a corrupted fanout (e.g. an inflated interior entry) could still pass the
+/// final `fanout[255]` object-count read and let bogus indexes be enumerated.
+///
+/// # Errors
+///
+/// Returns [`Error::CorruptObject`] when any entry is smaller than its predecessor.
+fn check_fanout_monotonic(fanout: &[u32; 256], idx_path: &Path) -> Result<()> {
+    let mut prev = 0u32;
+    for &n in fanout {
+        if n < prev {
+            return Err(Error::CorruptObject(format!(
+                "non-monotonic index {}",
+                idx_path.display()
+            )));
+        }
+        prev = n;
+    }
+    Ok(())
+}
+
 fn read_pack_index_v1(idx_path: &Path, bytes: &[u8], verify: bool) -> Result<PackIndex> {
     let mut pos = 0usize;
     if bytes.len() < 256 * 4 + 20 {
@@ -621,6 +646,7 @@ fn read_pack_index_v1(idx_path: &Path, bytes: &[u8], verify: bool) -> Result<Pac
     for slot in &mut fanout {
         *slot = read_u32_be(bytes, &mut pos)?;
     }
+    check_fanout_monotonic(&fanout, idx_path)?;
     let object_count = fanout[255] as usize;
     let need = pos
         .saturating_add(object_count.saturating_mul(24))
@@ -701,6 +727,7 @@ fn read_pack_index_v2(idx_path: &Path, bytes: &[u8], verify: bool) -> Result<Pac
     for slot in &mut fanout {
         *slot = read_u32_be(bytes, &mut pos)?;
     }
+    check_fanout_monotonic(&fanout, idx_path)?;
     let object_count = fanout[255] as usize;
 
     let idx_file_len = bytes.len();
