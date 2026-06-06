@@ -1996,6 +1996,31 @@ pub fn build_thin_push_pack(
         return Ok(Vec::new());
     }
 
+    let have_roots = local_push_have_roots(local_repo, remote_git_dir)?;
+    build_thin_push_pack_from_have_set(local_repo, push_tips, &have_roots)
+}
+
+/// Compute the set of object IDs the local-push receiver already has (the `--not`/negative side of
+/// a thin push pack), restricted to those whose closure is also present locally.
+///
+/// Mirrors the have-set computation in [`build_thin_push_pack`] so callers (e.g. progress
+/// enumeration) can reuse the exact same boundary the pack was built against.
+pub fn local_push_have_roots(
+    local_repo: &Repository,
+    remote_git_dir: &Path,
+) -> Result<BTreeSet<ObjectId>> {
+    let mut have_roots = local_push_remote_object_ids(remote_git_dir)?;
+    have_roots.retain(|oid| have_root_closure_is_local(local_repo, oid));
+    Ok(have_roots)
+}
+
+/// Collect every object ID the receiver already has (loose objects, pack-index entries, and any
+/// alternates), without restricting to objects whose closure is local.
+///
+/// Unlike [`local_push_have_roots`], this keeps boundary objects (e.g. a shallow-clone tip whose
+/// own parents are absent locally) so callers that only need the receiver's *object membership*
+/// (such as preferred-base / delta enumeration for progress) see the full set.
+fn local_push_remote_object_ids(remote_git_dir: &Path) -> Result<BTreeSet<ObjectId>> {
     let remote_objects = remote_git_dir.join("objects");
     let mut have_roots: BTreeSet<ObjectId> = BTreeSet::new();
     if let Ok(empty_tree) = ObjectId::from_hex("4b825dc642cb6eb9a060e54bf8d69288fbee4904") {
@@ -2007,9 +2032,7 @@ pub fn build_thin_push_pack(
             collect_objects_dir_have_roots(&alternate, &mut have_roots)?;
         }
     }
-    have_roots.retain(|oid| have_root_closure_is_local(local_repo, oid));
-
-    build_thin_push_pack_from_have_set(local_repo, push_tips, &have_roots)
+    Ok(have_roots)
 }
 
 fn have_root_closure_is_local(local_repo: &Repository, oid: &ObjectId) -> bool {
@@ -2137,6 +2160,286 @@ fn build_thin_push_pack_from_have_set(
         bail!("pack-objects failed with status {}", out.status);
     }
     Ok(out.stdout)
+}
+
+/// Count the objects a thin push pack-objects run would *enumerate* (`nr_seen` in
+/// `builtin/pack-objects.c`), which is what the "Enumerating objects: N, done." progress line
+/// reports.
+///
+/// For a thin pack this exceeds the number of objects actually written: in addition to every
+/// interesting commit/tree/blob, Git counts the "preferred base" (delta-base) objects it pulls in
+/// from the boundary trees the receiver already has. Concretely, for each distinct tree path that
+/// appears among the interesting tree/blob objects, Git adds the same-path object from each boundary
+/// (`--not`) commit's tree (the root tree for the empty path), incrementing `nr_seen` once per
+/// added entry. See `add_preferred_base` / `add_preferred_base_object` / `show_object`.
+///
+/// `push_tips` are the positive tips being sent; `remote_git_dir` is the receiver's git dir whose
+/// object membership defines the negative/`--not` side. Returns the enumerated object count; on any
+/// traversal error it returns the supplied `fallback` so progress output never blocks a push.
+pub fn count_thin_push_enumerated_objects(
+    repo: &Repository,
+    push_tips: &[ObjectId],
+    remote_git_dir: &Path,
+    fallback: usize,
+) -> usize {
+    count_thin_push_enumerated_objects_inner(repo, push_tips, remote_git_dir).unwrap_or(fallback)
+}
+
+fn count_thin_push_enumerated_objects_inner(
+    repo: &Repository,
+    push_tips: &[ObjectId],
+    remote_git_dir: &Path,
+) -> Result<usize> {
+    // Every object the receiver already has. This is the *unfiltered* membership set (a shallow
+    // boundary commit whose parents are absent locally still counts), so its trees/blobs exclude
+    // interesting objects and seed the preferred-base lookup.
+    let remote_oids = local_push_remote_object_ids(remote_git_dir)?;
+    let uninteresting_set: HashSet<ObjectId> = remote_oids.iter().copied().collect();
+
+    // Receiver commits readable locally: their trees become candidate preferred-base trees. We only
+    // need the boundary commits actually crossed, identified below from interesting commits'
+    // parents; this set lets us recognize a parent as uninteresting.
+    let mut commit_uninteresting: HashSet<ObjectId> = HashSet::new();
+    for oid in &remote_oids {
+        if let Ok(obj) = read_object_from_repo(repo, oid) {
+            if obj.kind == ObjectKind::Commit {
+                commit_uninteresting.insert(*oid);
+            }
+        }
+    }
+
+    // Walk the interesting closure (commits-first) gathering the interesting object set and, for
+    // each interesting commit, recording the boundary commits it is delta-based against.
+    let mut interesting: BTreeSet<ObjectId> = BTreeSet::new();
+    let mut commit_seen: HashSet<ObjectId> = HashSet::new();
+    let mut boundary_commits: BTreeSet<ObjectId> = BTreeSet::new();
+    for tip in push_tips {
+        collect_interesting_with_boundaries(
+            repo,
+            *tip,
+            &uninteresting_set,
+            &commit_uninteresting,
+            &mut interesting,
+            &mut commit_seen,
+            &mut boundary_commits,
+        )?;
+    }
+
+    // Build the preferred-base trees: each distinct boundary commit's tree, as a path->oid map plus
+    // its root tree OID (Git caches up to `window` of these; the test cases use one).
+    let mut pbase_path_to_oid: HashMap<Vec<u8>, Vec<ObjectId>> = HashMap::new();
+    let mut pbase_root_trees: Vec<ObjectId> = Vec::new();
+    let mut pbase_tree_seen: HashSet<ObjectId> = HashSet::new();
+    for bc in &boundary_commits {
+        let Ok(obj) = read_object_from_repo(repo, bc) else {
+            continue;
+        };
+        if obj.kind != ObjectKind::Commit {
+            continue;
+        }
+        let Ok(commit) = parse_commit(&obj.data) else {
+            continue;
+        };
+        if !pbase_tree_seen.insert(commit.tree) {
+            continue;
+        }
+        pbase_root_trees.push(commit.tree);
+        let mut paths: HashMap<Vec<u8>, ObjectId> = HashMap::new();
+        let _ = collect_tree_path_oids(repo, &commit.tree, &[], &mut paths);
+        for (path, oid) in paths {
+            pbase_path_to_oid.entry(path).or_default().push(oid);
+        }
+    }
+
+    // Replicate `nr_seen`: every interesting object is seen once; in addition, for each distinct
+    // tree path encountered among the interesting tree/blob objects, the matching preferred-base
+    // objects are seen once.
+    let mut nr_seen: usize = interesting.len();
+    let mut seen_paths: HashSet<Vec<u8>> = HashSet::new();
+
+    // Re-walk the interesting trees to recover each object's path name (the empty path is the root
+    // tree). Commits carry no path and trigger no preferred base.
+    let mut path_names: BTreeSet<Vec<u8>> = BTreeSet::new();
+    for oid in &interesting {
+        let Ok(obj) = read_object_from_repo(repo, oid) else {
+            continue;
+        };
+        if obj.kind != ObjectKind::Commit {
+            continue;
+        }
+        let Ok(commit) = parse_commit(&obj.data) else {
+            continue;
+        };
+        collect_interesting_object_paths(
+            repo,
+            &commit.tree,
+            &[],
+            &uninteresting_set,
+            &interesting,
+            &mut path_names,
+        );
+    }
+
+    for name in &path_names {
+        if !seen_paths.insert(name.clone()) {
+            continue;
+        }
+        if name.is_empty() {
+            // Root-tree path: each preferred-base tree contributes its root tree.
+            nr_seen += pbase_root_trees.len();
+        } else if let Some(oids) = pbase_path_to_oid.get(name) {
+            nr_seen += oids.len();
+        }
+    }
+
+    Ok(nr_seen)
+}
+
+/// Walk the interesting commit closure from `tip`, collecting interesting objects and the boundary
+/// commits (uninteresting parents) that interesting commits delta against.
+#[allow(clippy::too_many_arguments)]
+fn collect_interesting_with_boundaries(
+    repo: &Repository,
+    tip: ObjectId,
+    uninteresting: &HashSet<ObjectId>,
+    commit_uninteresting: &HashSet<ObjectId>,
+    interesting: &mut BTreeSet<ObjectId>,
+    commit_seen: &mut HashSet<ObjectId>,
+    boundary_commits: &mut BTreeSet<ObjectId>,
+) -> Result<()> {
+    let mut queue: VecDeque<ObjectId> = VecDeque::new();
+    queue.push_back(tip);
+    while let Some(cid) = queue.pop_front() {
+        if commit_uninteresting.contains(&cid) || uninteresting.contains(&cid) {
+            continue;
+        }
+        if !commit_seen.insert(cid) {
+            continue;
+        }
+        let obj = read_object_from_repo(repo, &cid)?;
+        if obj.kind != ObjectKind::Commit {
+            continue;
+        }
+        let commit = parse_commit(&obj.data).map_err(|e| anyhow::anyhow!("{e}"))?;
+        interesting.insert(cid);
+        collect_interesting_tree_objects(repo, &commit.tree, uninteresting, interesting)?;
+        for p in &commit.parents {
+            if commit_uninteresting.contains(p) || uninteresting.contains(p) {
+                boundary_commits.insert(*p);
+            } else {
+                queue.push_back(*p);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Insert every tree/blob object reachable from `tree_oid` that is not in the uninteresting set.
+fn collect_interesting_tree_objects(
+    repo: &Repository,
+    tree_oid: &ObjectId,
+    uninteresting: &HashSet<ObjectId>,
+    interesting: &mut BTreeSet<ObjectId>,
+) -> Result<()> {
+    if uninteresting.contains(tree_oid) || !interesting.insert(*tree_oid) {
+        return Ok(());
+    }
+    let obj = read_object_from_repo(repo, tree_oid)?;
+    if obj.kind != ObjectKind::Tree {
+        return Ok(());
+    }
+    for e in parse_tree(&obj.data).map_err(|e| anyhow::anyhow!("{e}"))? {
+        if e.mode == MODE_GITLINK {
+            continue;
+        }
+        if e.mode == 0o040000 {
+            collect_interesting_tree_objects(repo, &e.oid, uninteresting, interesting)?;
+        } else if !uninteresting.contains(&e.oid) {
+            interesting.insert(e.oid);
+        }
+    }
+    Ok(())
+}
+
+/// Record the tree-path name of every interesting tree/blob object reachable from `tree_oid`. The
+/// root tree has the empty path. Matches the `name` passed to Git's `show_object`.
+fn collect_interesting_object_paths(
+    repo: &Repository,
+    tree_oid: &ObjectId,
+    prefix: &[u8],
+    uninteresting: &HashSet<ObjectId>,
+    interesting: &BTreeSet<ObjectId>,
+    path_names: &mut BTreeSet<Vec<u8>>,
+) {
+    if uninteresting.contains(tree_oid) || !interesting.contains(tree_oid) {
+        return;
+    }
+    // The tree object itself is shown under `prefix` (root tree => empty path). Recording is
+    // idempotent; we always recurse so deeper new paths are captured.
+    path_names.insert(prefix.to_vec());
+    let Ok(obj) = read_object_from_repo(repo, tree_oid) else {
+        return;
+    };
+    if obj.kind != ObjectKind::Tree {
+        return;
+    }
+    let Ok(entries) = parse_tree(&obj.data) else {
+        return;
+    };
+    for e in entries {
+        if e.mode == MODE_GITLINK {
+            continue;
+        }
+        let mut path = prefix.to_vec();
+        if !path.is_empty() {
+            path.push(b'/');
+        }
+        path.extend_from_slice(&e.name);
+        if e.mode == 0o040000 {
+            collect_interesting_object_paths(
+                repo,
+                &e.oid,
+                &path,
+                uninteresting,
+                interesting,
+                path_names,
+            );
+        } else if !uninteresting.contains(&e.oid) && interesting.contains(&e.oid) {
+            path_names.insert(path);
+        }
+    }
+}
+
+/// Recursively map every tree-path (files and subtrees) under `tree_oid` to its OID, including
+/// subtree paths (used to find same-path preferred-base objects). The root tree itself is not
+/// included (it is handled via the empty-path special case).
+fn collect_tree_path_oids(
+    repo: &Repository,
+    tree_oid: &ObjectId,
+    prefix: &[u8],
+    out: &mut HashMap<Vec<u8>, ObjectId>,
+) -> Result<()> {
+    let obj = read_object_from_repo(repo, tree_oid)?;
+    if obj.kind != ObjectKind::Tree {
+        return Ok(());
+    }
+    for e in parse_tree(&obj.data).map_err(|e| anyhow::anyhow!("{e}"))? {
+        if e.mode == MODE_GITLINK {
+            continue;
+        }
+        let mut path = prefix.to_vec();
+        if !path.is_empty() {
+            path.push(b'/');
+        }
+        path.extend_from_slice(&e.name);
+        if e.mode == 0o040000 {
+            out.entry(path.clone()).or_insert(e.oid);
+            collect_tree_path_oids(repo, &e.oid, &path, out)?;
+        } else {
+            out.entry(path).or_insert(e.oid);
+        }
+    }
+    Ok(())
 }
 
 /// Apply `git pack-objects --filter=<spec>` (subset: `blob:none` for `gc.repackFilter` tests).

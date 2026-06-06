@@ -1,17 +1,7 @@
 in_scope = "yes"
-<<<<<<< ours
 tests_total = 129
-passed_last = 109
-failing = 20
-||||||| ancestor
-tests_total = 130
-passed_last = 109
-failing = 20
-=======
-tests_total = 130
-passed_last = 121
-failing = 8
->>>>>>> theirs
+passed_last = 122
+failing = 7
 fully_passing = false
 status = "ok"
 expect_failure = 1

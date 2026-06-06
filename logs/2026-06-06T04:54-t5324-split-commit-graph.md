@@ -45,10 +45,23 @@ alternate's *chain file* — but never from an alternate's single non-split `com
 Care taken not to regress t6/t14/t29 (all cross-alternate variants): the local-single vs
 alternate-single distinction is the crux.
 
-## Remaining (t40 — deep multi-clone mixed gdat)
-- t40: clone chain mixed -> mixed-no-gdat -> mixed-merge-no-gdat -> mixed-merge-gdat. The 5th
-  layer split write (`--split --size-multiple 1`) should merge down to a 2-line chain with
-  num_commits 47, but grit reports num_commits 8 (only the new layer's commits). The merge
-  strategy is not absorbing the right base layers when the chain spans gdat/non-gdat layers
-  that were themselves produced across a clone boundary. Needs deeper investigation of the
-  merge-strategy commit counting vs the gdat gating.
+## t40 (mixed gdat deep clone) — FIXED
+Root cause was NOT the merge strategy. It was auto-maintenance: after every `git commit`,
+grit runs `maintenance run --auto`, whose commit-graph task triggers when the count of
+commits *not yet in the graph* reaches `maintenance.commit-graph.auto` (default 100). The
+counter helper `graph_oids` in `grit/src/commands/maintenance.rs` only read the single
+`info/commit-graph` file and ignored the split chain — so a repo with a split chain looked
+like it had NO graph, every commit was counted, and once the mixed-merge-gdat clone crossed
+111 commits during its setup `test_commit`s, a spurious `commit-graph write --split` fired
+and rewrote the chain (collapsing it to a bad 2-line [8,103] state). The later explicit
+write then produced num_commits 8 instead of 47.
+
+Fix: `graph_oids` now loads `CommitGraphChain::load(objects_dir)` (which covers both the
+single file and the split chain) and returns all its OIDs, falling back to the raw single-file
+reader only if the chain fails to load. Now only the genuinely-new commits are counted, the
+threshold is not crossed, and no spurious auto-write corrupts the chain.
+
+Verified t6500-gc (35/35) and t7900-maintenance (71/72, unchanged — the 1 failure is the
+pre-existing 'geometric repacking task', not commit-graph related) for regressions.
+
+## FINAL: 42/42 — fully passing.

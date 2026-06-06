@@ -484,7 +484,13 @@ fn shell_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn spawn_receive_pack(receive_cmd: &str, remote_path: &Path) -> Result<Child> {
+/// Spawn the receive-pack program (`receive_cmd`) against the local `remote_path`, wiring its
+/// stdin/stdout to pipes so the caller can speak the receive-pack wire protocol to it.
+///
+/// `receive_cmd` may be the default (`git receive-pack` / `git-receive-pack`, dispatched to grit's
+/// own `receive-pack`), a shell-quoted custom program, or a plain path. The remote repository path
+/// is appended as the final argument exactly as Git does when invoking the receiving side.
+pub(crate) fn spawn_receive_pack(receive_cmd: &str, remote_path: &Path) -> Result<Child> {
     let remote_path = remote_path
         .canonicalize()
         .unwrap_or_else(|_| remote_path.to_path_buf());

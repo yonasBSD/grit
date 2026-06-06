@@ -3041,9 +3041,14 @@ fn fetch_remote(
 
         for (idx, (refname, advertised_oid)) in refs_for_mapping.iter().enumerate() {
             let branch = refname.strip_prefix("refs/heads/").unwrap_or(refname);
-            let Some(local_ref) = map_ref_through_refspecs(refname, &union_refspecs) else {
+            // A source ref can be matched by more than one configured fetch refspec (e.g. the
+            // default `+refs/heads/*:refs/remotes/origin/*` plus an extra
+            // `refs/heads/main:refs/heads/upstream`). Git fetches it into *every* destination, so
+            // apply the ref update for each while emitting a single FETCH_HEAD entry per source.
+            let local_refs = map_ref_through_refspecs_all(refname, &union_refspecs);
+            if local_refs.is_empty() {
                 continue;
-            };
+            }
             let remote_oid = if let Some(rr) = ext_resolved_remote.as_ref().or(remote_repo.as_ref())
             {
                 refs::resolve_ref(&rr.git_dir, refname)
@@ -3052,7 +3057,6 @@ fn fetch_remote(
             } else {
                 *advertised_oid
             };
-            updated_refs.push(local_ref.clone());
 
             if refname.starts_with("refs/heads/") {
                 let for_merge = if has_merge_cfg {
@@ -3077,103 +3081,108 @@ fn fetch_remote(
                 ));
             }
 
-            let old_oid = read_ref_oid(git_dir, &local_ref);
-            if old_oid.as_ref() == Some(&remote_oid) {
-                continue;
-            }
+            for local_ref in &local_refs {
+                let local_ref = local_ref.as_str();
+                updated_refs.push(local_ref.to_string());
 
-            if should_prune && local_ref.starts_with("refs/remotes/") {
-                let local_ref_path = git_dir.join(&local_ref);
-                if local_ref_path.is_dir() {
-                    let conflict_prefix = format!("{local_ref}/");
-                    let stale_refs = refs::list_refs(git_dir, &conflict_prefix)?;
-                    for (stale_ref, stale_oid) in stale_refs {
-                        apply_single_ref_delete(
-                            args,
-                            git_dir,
-                            &mut pending_atomic_ref_ops,
-                            &stale_ref,
-                            Some(stale_oid),
-                            &mut ref_update_failures,
-                        )?;
-                        if !args.quiet {
-                            display.push(
-                                '-',
-                                "[deleted]",
-                                "(none)",
+                let old_oid = read_ref_oid(git_dir, local_ref);
+                if old_oid.as_ref() == Some(&remote_oid) {
+                    continue;
+                }
+
+                if should_prune && local_ref.starts_with("refs/remotes/") {
+                    let local_ref_path = git_dir.join(local_ref);
+                    if local_ref_path.is_dir() {
+                        let conflict_prefix = format!("{local_ref}/");
+                        let stale_refs = refs::list_refs(git_dir, &conflict_prefix)?;
+                        for (stale_ref, stale_oid) in stale_refs {
+                            apply_single_ref_delete(
+                                args,
+                                git_dir,
+                                &mut pending_atomic_ref_ops,
                                 &stale_ref,
-                                &stale_ref,
-                                stale_oid,
-                                ObjectId::zero(),
-                                None,
-                            );
+                                Some(stale_oid),
+                                &mut ref_update_failures,
+                            )?;
+                            if !args.quiet {
+                                display.push(
+                                    '-',
+                                    "[deleted]",
+                                    "(none)",
+                                    &stale_ref,
+                                    &stale_ref,
+                                    stale_oid,
+                                    ObjectId::zero(),
+                                    None,
+                                );
+                            }
                         }
-                    }
-                    // If we removed all child refs, clear now-empty directories so the
-                    // incoming flat ref can be created (D/F conflict during `--prune`).
-                    let mut dir = local_ref_path.clone();
-                    while dir.starts_with(git_dir) && dir.is_dir() {
-                        let is_empty = fs::read_dir(&dir)
-                            .ok()
-                            .map(|mut it| it.next().is_none())
-                            .unwrap_or(false);
-                        if !is_empty {
-                            break;
+                        // If we removed all child refs, clear now-empty directories so the
+                        // incoming flat ref can be created (D/F conflict during `--prune`).
+                        let mut dir = local_ref_path.clone();
+                        while dir.starts_with(git_dir) && dir.is_dir() {
+                            let is_empty = fs::read_dir(&dir)
+                                .ok()
+                                .map(|mut it| it.next().is_none())
+                                .unwrap_or(false);
+                            if !is_empty {
+                                break;
+                            }
+                            if fs::remove_dir(&dir).is_err() {
+                                break;
+                            }
+                            let Some(parent) = dir.parent() else {
+                                break;
+                            };
+                            dir = parent.to_path_buf();
                         }
-                        if fs::remove_dir(&dir).is_err() {
-                            break;
-                        }
-                        let Some(parent) = dir.parent() else {
-                            break;
-                        };
-                        dir = parent.to_path_buf();
                     }
                 }
-            }
 
-            apply_single_ref_update(
-                args,
-                git_dir,
-                &mut pending_atomic_ref_ops,
-                &local_ref,
-                old_oid,
-                remote_oid,
-                &mut ref_update_failures,
-            )?;
-            if !args.atomic {
-                let _ = append_fetch_reflog(
+                apply_single_ref_update(
+                    args,
                     git_dir,
-                    &local_ref,
-                    old_oid.as_ref(),
-                    &remote_oid,
-                    &url,
-                    branch,
-                );
-            }
-
-            if !args.quiet {
-                let display_repo = Repository::open(git_dir, None).ok();
-                let (code, summary, error) = match display_repo.as_ref() {
-                    Some(repo) => classify_ref_update(
-                        repo,
-                        refname,
+                    &mut pending_atomic_ref_ops,
+                    local_ref,
+                    old_oid,
+                    remote_oid,
+                    &mut ref_update_failures,
+                )?;
+                if !args.atomic {
+                    let _ = append_fetch_reflog(
+                        git_dir,
+                        local_ref,
                         old_oid.as_ref(),
                         &remote_oid,
-                        show_forced_updates,
-                    ),
-                    None => classify_new_ref_summary(refname),
-                };
-                let old_for_porcelain = old_oid.unwrap_or_else(ObjectId::zero);
-                display.push(
-                    code,
-                    &summary,
-                    refname,
-                    &local_ref,
-                    &local_ref,
-                    old_for_porcelain,
-                    remote_oid,
-                    error,
-                );
+                        &url,
+                        branch,
+                    );
+                }
+
+                if !args.quiet {
+                    let display_repo = Repository::open(git_dir, None).ok();
+                    let (code, summary, error) = match display_repo.as_ref() {
+                        Some(repo) => classify_ref_update(
+                            repo,
+                            refname,
+                            old_oid.as_ref(),
+                            &remote_oid,
+                            show_forced_updates,
+                        ),
+                        None => classify_new_ref_summary(refname),
+                    };
+                    let old_for_porcelain = old_oid.unwrap_or_else(ObjectId::zero);
+                    display.push(
+                        code,
+                        &summary,
+                        refname,
+                        local_ref,
+                        local_ref,
+                        old_for_porcelain,
+                        remote_oid,
+                        error,
+                    );
+                }
             }
         }
 
@@ -6380,6 +6389,34 @@ fn map_ref_through_refspecs_ex(
 /// Returns None if no refspec matches.
 pub fn map_ref_through_refspecs(remote_ref: &str, refspecs: &[FetchRefspec]) -> Option<String> {
     map_ref_through_refspecs_ex(remote_ref, refspecs).map(|(m, _)| m)
+}
+
+/// Map a remote ref through *all* matching fetch refspecs, returning every distinct local
+/// destination. Mirrors Git's `get_fetch_map`, which produces one ref-map entry per matching
+/// refspec — so a source ref like `refs/heads/main` covered by both
+/// `+refs/heads/*:refs/remotes/origin/*` and `refs/heads/main:refs/heads/upstream` is fetched
+/// into both destinations. A negative refspec matching `remote_ref` shields it entirely (no
+/// destinations). Destinations are de-duplicated while preserving refspec order.
+pub fn map_ref_through_refspecs_all(remote_ref: &str, refspecs: &[FetchRefspec]) -> Vec<String> {
+    for rs in refspecs {
+        if rs.negative
+            && (match_glob_pattern(&rs.src, remote_ref).is_some() || rs.src == remote_ref)
+        {
+            return Vec::new();
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    for rs in refspecs {
+        if rs.negative {
+            continue;
+        }
+        if let Some(mapped) = match_refspec_pattern(&rs.src, &rs.dst, remote_ref) {
+            if !out.contains(&mapped) {
+                out.push(mapped);
+            }
+        }
+    }
+    out
 }
 
 /// Effective fetch refspecs for `remote.<name>.fetch`, matching Git when no positive refspec is set.
