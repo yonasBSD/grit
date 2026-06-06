@@ -2984,6 +2984,12 @@ fn fetch_remote(
                     default_fetch_refspecs(remote_name)
                 };
         }
+        // The primary remote's own refspecs: a single advertised ref may match more than one of
+        // these (e.g. `+refs/heads/*:refs/remotes/origin/*` plus an explicit
+        // `refs/heads/main:refs/heads/upstream`), and Git fetches it into *every* such destination.
+        // Coalesced (other-remote) refspecs only provide a single fallback destination, so they are
+        // applied first-match — never multiplied into other remotes' tracking namespaces (t5505).
+        let primary_refspecs = primary.clone();
         union_refspecs.extend(primary);
         for rn in &coalesced_remotes {
             if rn == remote_name {
@@ -3041,13 +3047,19 @@ fn fetch_remote(
 
         for (idx, (refname, advertised_oid)) in refs_for_mapping.iter().enumerate() {
             let branch = refname.strip_prefix("refs/heads/").unwrap_or(refname);
-            // A source ref can be matched by more than one configured fetch refspec (e.g. the
-            // default `+refs/heads/*:refs/remotes/origin/*` plus an extra
-            // `refs/heads/main:refs/heads/upstream`). Git fetches it into *every* destination, so
-            // apply the ref update for each while emitting a single FETCH_HEAD entry per source.
-            let local_refs = map_ref_through_refspecs_all(refname, &union_refspecs);
+            // A source ref can be matched by more than one of the primary remote's configured
+            // fetch refspecs (e.g. the default `+refs/heads/*:refs/remotes/origin/*` plus an extra
+            // `refs/heads/main:refs/heads/upstream`). Git fetches it into *every* such destination,
+            // so apply the ref update for each while emitting a single FETCH_HEAD entry per source.
+            // When the primary's refspecs do not cover this ref, fall back to the first match across
+            // the coalesced (shared-URL) remotes — never multiplying into their namespaces.
+            let mut local_refs = map_ref_through_refspecs_all(refname, &primary_refspecs);
             if local_refs.is_empty() {
-                continue;
+                if let Some(lr) = map_ref_through_refspecs(refname, &union_refspecs) {
+                    local_refs.push(lr);
+                } else {
+                    continue;
+                }
             }
             let remote_oid = if let Some(rr) = ext_resolved_remote.as_ref().or(remote_repo.as_ref())
             {
