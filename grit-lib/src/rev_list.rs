@@ -5739,20 +5739,30 @@ fn collect_reachable_objects_segmented(
             }
         }
         let parents = graph.parents_of(commit_oid)?;
-        let parent_union = union_parent_reachable_objects(
-            repo,
-            &parents,
-            missing_action,
-            &mut missing,
-            &mut missing_seen,
-        )?;
+        // The parent_union short-circuit dedups objects already reachable from a parent commit.
+        // With an active filter this changes which trees are *visited* per commit, which breaks
+        // Git's `tree:`/`combine:` skip-tree semantics (and the matching GIT_TRACE output): Git
+        // visits every reachable tree per commit and relies on each filter's own seen state to
+        // detect re-visits. Dedup of shown/omitted objects is already handled by `emitted` and the
+        // final omitted set, so skip the union optimization whenever a filter is present.
+        let parent_union = if filter.is_some() {
+            None
+        } else {
+            Some(union_parent_reachable_objects(
+                repo,
+                &parents,
+                missing_action,
+                &mut missing,
+                &mut missing_seen,
+            )?)
+        };
         collect_tree_objects_filtered(
             repo,
             commit.tree,
             "",
             0,
             false,
-            Some(&parent_union),
+            parent_union.as_ref(),
             &mut tree_state,
             &mut emitted,
             &mut result,
@@ -6442,20 +6452,27 @@ fn collect_root_object(
                 }
             }
             let commit = parse_commit(&object.data)?;
-            let parent_union = union_parent_reachable_objects(
-                repo,
-                &commit.parents,
-                missing_action,
-                missing,
-                missing_seen,
-            )?;
+            // See the note in `collect_objects_segmented`: the parent_union short-circuit must be
+            // disabled when a filter is active so that trees are visited per commit exactly like
+            // Git, preserving `tree:`/`combine:` skip-tree semantics and trace output.
+            let parent_union = if filter.is_some() {
+                None
+            } else {
+                Some(union_parent_reachable_objects(
+                    repo,
+                    &commit.parents,
+                    missing_action,
+                    missing,
+                    missing_seen,
+                )?)
+            };
             collect_tree_objects_filtered(
                 repo,
                 commit.tree,
                 "",
                 0,
                 false,
-                Some(&parent_union),
+                parent_union.as_ref(),
                 tree_state,
                 emitted,
                 result,

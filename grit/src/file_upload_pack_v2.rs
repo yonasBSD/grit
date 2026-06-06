@@ -457,7 +457,11 @@ pub(crate) fn write_v2_fetch_request(
         pkt_line::write_line(stdin, &line)?;
     }
     if let Some(spec) = filter_spec.map(str::trim).filter(|s| !s.is_empty()) {
-        let line = format!("filter {spec}");
+        // Send the canonical/expanded filter spec on the wire, matching Git's
+        // `expand_list_objects_filter_spec` (e.g. `blob:limit=1k` -> `blob:limit=1024`).
+        let expanded = grit_lib::rev_list::expand_object_filter_for_protocol(spec)
+            .unwrap_or_else(|_| spec.to_owned());
+        let line = format!("filter {expanded}");
         trace_packet_git('>', &line);
         pkt_line::write_line(stdin, &line)?;
     }

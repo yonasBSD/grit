@@ -533,7 +533,11 @@ fn append_fetch_request_extensions_v0_v1(
         if let Some(filter_spec) = options.filter_spec.as_deref() {
             let filter_spec = filter_spec.trim();
             if !filter_spec.is_empty() {
-                pkt_line::write_line_to_vec(req, &format!("filter {filter_spec}"))?;
+                // Send the canonical/expanded filter spec (Git's
+                // `expand_list_objects_filter_spec`, e.g. `blob:limit=1k` -> `blob:limit=1024`).
+                let expanded = grit_lib::rev_list::expand_object_filter_for_protocol(filter_spec)
+                    .unwrap_or_else(|_| filter_spec.to_owned());
+                pkt_line::write_line_to_vec(req, &format!("filter {expanded}"))?;
             }
         }
     }
@@ -638,7 +642,11 @@ fn append_fetch_request_extensions_v2(
         if let Some(filter_spec) = options.filter_spec.as_deref() {
             let filter_spec = filter_spec.trim();
             if !filter_spec.is_empty() {
-                pkt_line::write_line_to_vec(req, &format!("filter {filter_spec}"))?;
+                // Send the canonical/expanded filter spec (Git's
+                // `expand_list_objects_filter_spec`, e.g. `blob:limit=1k` -> `blob:limit=1024`).
+                let expanded = grit_lib::rev_list::expand_object_filter_for_protocol(filter_spec)
+                    .unwrap_or_else(|_| filter_spec.to_owned());
+                pkt_line::write_line_to_vec(req, &format!("filter {expanded}"))?;
             }
         }
     }
