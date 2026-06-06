@@ -3345,6 +3345,43 @@ fn collect_matching_push_updates(
             delete_nonexistent: false,
         });
     }
+
+    // `--prune` with the matching (`:`) refspec deletes every remote `refs/heads/*` ref that has
+    // no local counterpart (git's `:` expands to `refs/heads/*:refs/heads/*`, which prune then
+    // mirrors). Negative refspecs exempt a ref from pruning.
+    if args.prune {
+        let local_set: std::collections::BTreeSet<String> = local_branches
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
+        let remote_branches = refs::list_refs(&remote_repo.git_dir, "refs/heads/")?;
+        for (remote_ref, old_oid) in &remote_branches {
+            if local_set.contains(remote_ref) {
+                continue;
+            }
+            if negative_patterns
+                .iter()
+                .any(|p| ref_excluded_by_negative_push_pattern(p, remote_ref))
+            {
+                continue;
+            }
+            if updates.iter().any(|u| u.remote_ref == *remote_ref) {
+                continue;
+            }
+            updates.push(RefUpdate {
+                local_ref: None,
+                remote_ref: remote_ref.clone(),
+                old_oid: Some(*old_oid),
+                new_oid: None,
+                expected_oid: None,
+                refspec_force,
+                pre_push_local_name: None,
+                up_to_date: false,
+                client_reject: None,
+                delete_nonexistent: false,
+            });
+        }
+    }
     Ok(matched)
 }
 
