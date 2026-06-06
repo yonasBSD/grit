@@ -320,13 +320,17 @@ fn collect_clone_ls_refs_metadata(
             crate::commands::ls_remote::parse_ls_refs_v2_line(&pkt)?;
         let name = name.trim().to_owned();
         if name == "HEAD" {
-            head_oid = Some(oid.to_hex());
+            // An unborn HEAD is advertised with the null OID (`unborn` token); it names no object,
+            // only a symref target, so leave `head_oid` unset and let the symref drive checkout.
+            if !oid.is_zero() {
+                head_oid = Some(oid.to_hex());
+            }
             if let Some(target) = symref_target {
                 head_symref = Some(target);
             }
             continue;
         }
-        if name.starts_with("refs/heads/") || name.starts_with("refs/tags/") {
+        if !oid.is_zero() && (name.starts_with("refs/heads/") || name.starts_with("refs/tags/")) {
             wants.push(oid);
         }
     }

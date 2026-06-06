@@ -972,8 +972,16 @@ pub fn rev_list(
         || options.ancestry_path
         || (options.simplify_merges && !options.paths.is_empty());
 
-    // Filter by parent count (--merges, --no-merges, --min-parents, --max-parents)
-    if options.min_parents.is_some() || options.max_parents.is_some() {
+    // Filter by parent count (--merges, --no-merges, --min-parents, --max-parents). The dropped
+    // commits must still be *traversable* (Git only suppresses them from output, never severs the
+    // graph), so remember the full reachable set before narrowing `included` to the survivors.
+    let parent_count_filter_active = options.min_parents.is_some() || options.max_parents.is_some();
+    let traversable = if parent_count_filter_active {
+        included.clone()
+    } else {
+        HashSet::new()
+    };
+    if parent_count_filter_active {
         let min_p = options.min_parents.unwrap_or(0);
         let max_p = options.max_parents.unwrap_or(usize::MAX);
         included.retain(|oid| {
@@ -989,29 +997,20 @@ pub fn rev_list(
     let mut ordered = match options.ordering {
         OrderingMode::Default | OrderingMode::DateOrderWalk | OrderingMode::AuthorDateWalk => {
             let author_dates = options.ordering == OrderingMode::AuthorDateWalk;
-            let parent_count_filter_active =
-                options.min_parents.is_some() || options.max_parents.is_some();
             if parent_count_filter_active {
-                // When parent-count filters (`--max-parents=1` / `--no-merges`, …) drop a user-given
-                // tip (e.g. a merge under `--no-merges`), Git still seeds the walk from that tip's
-                // parents so both sides of the merge remain reachable (`format-patch`, `rev-list`).
-                let mut tips: Vec<ObjectId> = Vec::new();
-                let mut tip_seen = HashSet::new();
-                for &tip in &include {
-                    if included.contains(&tip) {
-                        if tip_seen.insert(tip) {
-                            tips.push(tip);
-                        }
-                        continue;
-                    }
-                    let parents = graph.parents_of(tip).unwrap_or_default();
-                    for p in parents {
-                        if tip_seen.insert(p) {
-                            tips.push(p);
-                        }
-                    }
-                }
-                date_order_walk_with_tips(&mut graph, &tips, &included, author_dates)?
+                // When parent-count filters (`--max-parents=1` / `--no-merges`, …) drop a commit
+                // (e.g. a merge under `--no-merges`), Git still walks *through* it: the dropped
+                // commit is simply not emitted, but its parents stay reachable. Seed from every
+                // user-given tip and traverse the full reachable set, skipping dropped commits in
+                // the output while continuing the walk past them (`format-patch -3` across a merge,
+                // `rev-list --no-merges -N`).
+                date_order_walk_through_dropped(
+                    &mut graph,
+                    &include,
+                    &traversable,
+                    &included,
+                    author_dates,
+                )?
             } else {
                 date_order_walk(&mut graph, &included, author_dates)?
             }
@@ -3170,57 +3169,52 @@ fn walk_closure_ordered_with_missing(
     Ok((seen, order))
 }
 
-/// Like [`date_order_walk`], but the initial heap is seeded from `tips` (in order) instead of
-/// every commit with no selected children. Used when `--max-parents` / `--min-parents` filter out
-/// a user tip (e.g. a merge): parents must be explicit seeds so both sides stay reachable.
-fn date_order_walk_with_tips(
+/// Date-priority walk used when a parent-count filter (`--no-merges`, `--max-parents`, …) is
+/// active. Mirrors Git's `limit_list`: a pure committer-date priority queue seeded from the user
+/// tips that traverses the *full* reachable set (`traversable`), stepping through dropped commits
+/// (e.g. merges) without emitting them, and emits only commits in `emit`. Unlike [`date_order_walk`]
+/// this imposes no topological gating, so a tip that is also an ancestor (and has a later date than
+/// its descendants) is emitted in date order — matching `git rev-list --all --no-merges` (t6009).
+fn date_order_walk_through_dropped(
     graph: &mut CommitGraph<'_>,
     tips: &[ObjectId],
-    selected: &HashSet<ObjectId>,
+    traversable: &HashSet<ObjectId>,
+    emit: &HashSet<ObjectId>,
     author_dates: bool,
 ) -> Result<Vec<ObjectId>> {
-    let mut unfinished_children: HashMap<ObjectId, usize> =
-        selected.iter().map(|&oid| (oid, 0usize)).collect();
-    for &child in selected {
-        for parent in graph.parents_of(child)? {
-            if selected.contains(&parent) {
-                if let Some(count) = unfinished_children.get_mut(&parent) {
-                    *count += 1;
-                }
-            }
-        }
-    }
-
     let mut heap = BinaryHeap::new();
+    let mut queued: HashSet<ObjectId> = HashSet::new();
+    let mut next_seq: u64 = 0;
+    // Seed every user tip that is part of the reachable set, in their given order: an earlier tip
+    // gets a smaller seq so equal-date tips are emitted in tip order (Git's insertion-order tiebreak).
     for &tip in tips {
-        if selected.contains(&tip) {
+        if traversable.contains(&tip) && queued.insert(tip) {
             heap.push(CommitDateKey {
                 oid: tip,
                 date: graph.sort_key(tip, author_dates),
+                seq: next_seq,
             });
+            next_seq += 1;
         }
     }
 
     let mut emitted = HashSet::new();
-    let mut out = Vec::with_capacity(selected.len());
+    let mut out = Vec::with_capacity(emit.len());
     while let Some(item) = heap.pop() {
-        if !emitted.insert(item.oid) {
-            continue;
+        if emit.contains(&item.oid) && emitted.insert(item.oid) {
+            out.push(item.oid);
         }
-        out.push(item.oid);
         for parent in graph.parents_of(item.oid)? {
-            if !selected.contains(&parent) {
+            if !traversable.contains(&parent) {
                 continue;
             }
-            let Some(count) = unfinished_children.get_mut(&parent) else {
-                continue;
-            };
-            *count = count.saturating_sub(1);
-            if *count == 0 {
+            if queued.insert(parent) {
                 heap.push(CommitDateKey {
                     oid: parent,
                     date: graph.sort_key(parent, author_dates),
+                    seq: next_seq,
                 });
+                next_seq += 1;
             }
         }
     }
@@ -3257,15 +3251,21 @@ pub(crate) fn date_order_walk(
     // descendants. Seeding only `tips` is also wrong when a source commit is not a ref tip
     // (`rev-list`): start from every selected commit whose in-degree from selected is zero.
     let mut heap = BinaryHeap::new();
+    // Initial pending commits keep seq == 0 so equal-date ties among them fall through to the OID
+    // order used historically. Parents discovered during the walk get a monotonically increasing
+    // seq, so among equal-date commits the one reached *earlier* (e.g. the first parent of a merge)
+    // is emitted first, matching Git's `prio_queue` insertion-order tiebreak (`prio-queue.c`).
     for &oid in selected {
         if unfinished_children.get(&oid).copied().unwrap_or(0) == 0 {
             heap.push(CommitDateKey {
                 oid,
                 date: graph.sort_key(oid, author_dates),
+                seq: 0,
             });
         }
     }
 
+    let mut next_seq: u64 = 1;
     let mut emitted = HashSet::new();
     let mut out = Vec::with_capacity(selected.len());
     while let Some(item) = heap.pop() {
@@ -3285,7 +3285,9 @@ pub(crate) fn date_order_walk(
                 heap.push(CommitDateKey {
                     oid: parent,
                     date: graph.sort_key(parent, author_dates),
+                    seq: next_seq,
                 });
+                next_seq += 1;
             }
         }
     }
@@ -3320,6 +3322,7 @@ fn topo_sort(
             ready.push(Reverse(CommitDateKey {
                 oid,
                 date: graph.sort_key(oid, author_dates),
+                seq: 0,
             }));
         }
     }
@@ -3338,6 +3341,7 @@ fn topo_sort(
                     ready.push(Reverse(CommitDateKey {
                         oid: parent,
                         date: graph.sort_key(parent, author_dates),
+                        seq: 0,
                     }));
                 }
             }
@@ -3550,6 +3554,7 @@ fn simplify_merges_author_date_order(
             ready.push(CommitDateKey {
                 oid: *oid,
                 date: graph.sort_key(*oid, true),
+                seq: 0,
             });
         }
     }
@@ -3574,6 +3579,7 @@ fn simplify_merges_author_date_order(
                     ready.push(CommitDateKey {
                         oid: *parent,
                         date: graph.sort_key(*parent, true),
+                        seq: 0,
                     });
                 }
             }
@@ -5255,12 +5261,22 @@ pub fn shallow_grafts_for_upload_pack_rev_list(
 struct CommitDateKey {
     oid: ObjectId,
     date: i64,
+    /// Insertion-order tiebreaker for equal dates, mirroring Git's `prio_queue` `ctr`
+    /// (prio-queue.c): among commits with the same committer date, the one inserted *earlier*
+    /// is emitted first. In this max-heap that means an earlier insertion must compare *greater*,
+    /// so we order by the negated sequence. Walks that do not care about insertion order leave
+    /// this at 0, falling through to the OID tiebreak (preserving prior behavior).
+    seq: u64,
 }
 
 impl Ord for CommitDateKey {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.date.cmp(&other.date) {
-            Ordering::Equal => self.oid.cmp(&other.oid),
+            // Earlier insertion (smaller seq) should pop first => compare as "greater".
+            Ordering::Equal => match other.seq.cmp(&self.seq) {
+                Ordering::Equal => self.oid.cmp(&other.oid),
+                ord => ord,
+            },
             ord => ord,
         }
     }

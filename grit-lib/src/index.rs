@@ -1391,6 +1391,27 @@ impl Index {
             .sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.stage().cmp(&b.stage())));
     }
 
+    /// Collapse duplicate `(path, stage)` entries, keeping the **last** one in current order.
+    ///
+    /// A valid Git index never holds two entries with the same path and stage; `add_index_entry`
+    /// replaces an existing same-name entry in place. When grit builds an index by flattening a
+    /// tree that has duplicate path entries (see `t4058-diff-duplicates`), the naive flatten yields
+    /// several identical-path entries. This restores Git's invariant by keeping the last entry for
+    /// each `(path, stage)` — matching `add_index_entry`'s replace-on-collision semantics where the
+    /// final tree entry for a path wins.
+    pub fn dedup_paths_keep_last(&mut self) {
+        let mut seen: std::collections::HashSet<(Vec<u8>, u8)> = std::collections::HashSet::new();
+        let mut kept: Vec<IndexEntry> = Vec::with_capacity(self.entries.len());
+        // Walk in reverse so the *last* occurrence of each (path, stage) is the one retained.
+        for entry in self.entries.iter().rev() {
+            if seen.insert((entry.path.clone(), entry.stage())) {
+                kept.push(entry.clone());
+            }
+        }
+        kept.reverse();
+        self.entries = kept;
+    }
+
     /// OID of the shared index when this index uses split-index mode (`link` extension).
     #[must_use]
     pub fn split_index_base_oid(&self) -> Option<ObjectId> {

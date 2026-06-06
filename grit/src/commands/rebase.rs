@@ -75,6 +75,8 @@ enum RebaseBackend {
 #[derive(Clone, Copy)]
 struct RebaseConflictContext<'a> {
     backend: RebaseBackend,
+    /// Abbreviated object id of the commit being picked (for the diff3 ancestor label).
+    picked_short_oid: &'a str,
     picked_subject: &'a str,
     ignore_space_change: bool,
 }
@@ -102,7 +104,11 @@ impl<'a> RebaseConflictContext<'a> {
 
     fn label_base(self) -> String {
         match self.backend {
-            RebaseBackend::Merge => format!("parent of {}", self.picked_subject),
+            // Matches Git's sequencer: out->parent_label = "parent of <abbrev> (<subject>)".
+            RebaseBackend::Merge => format!(
+                "parent of {} ({})",
+                self.picked_short_oid, self.picked_subject
+            ),
             RebaseBackend::Apply => "constructed fake ancestor".to_string(),
         }
     }
@@ -159,9 +165,13 @@ pub struct Args {
     /// Rebase merge commits (`-r` / optional mode: `rebase-cousins`, `no-rebase-cousins`).
     /// Optional mode only as `--rebase-merges=rebase-cousins` (must use `=` so `A` in
     /// `rebase -i --rebase-merges A main` is not consumed as the mode).
+    ///
+    /// `--rebase-merges` and `--no-rebase-merges` are NOT mutually exclusive: git treats them as a
+    /// negatable option where the later flag wins, and `--no-rebase-merges` countermands an earlier
+    /// `--rebase-merges` (t3430). Precedence is resolved in `effective_rebase_merges_settings`,
+    /// which gives `--no-rebase-merges` priority, so they must not `conflicts_with` each other.
     #[arg(
         long = "rebase-merges",
-        conflicts_with = "no_rebase_merges",
         value_name = "MODE",
         num_args = 0..=1,
         default_missing_value = "true",
@@ -170,7 +180,7 @@ pub struct Args {
     pub rebase_merges: Option<String>,
 
     /// Disable rebasing merges even when `rebase.rebaseMerges` is true.
-    #[arg(long = "no-rebase-merges", conflicts_with = "rebase_merges")]
+    #[arg(long = "no-rebase-merges")]
     pub no_rebase_merges: bool,
 
     /// Force rebase even if the current branch is up to date
@@ -997,6 +1007,26 @@ fn is_commit_tree_unchanged(repo: &Repository, oid: &ObjectId) -> Result<bool> {
     Ok(commit.tree == parent_tree)
 }
 
+/// Read (without consuming) the `obstructed-pick` marker and report whether it names `current_oid`.
+///
+/// `cherry_pick_for_rebase` writes this marker when a step aborts because materializing it would
+/// overwrite an untracked working tree file: the step is never applied, so the worktree still equals
+/// HEAD and a later `--continue` would otherwise mistake it for an empty no-op. A matching marker
+/// means the step must instead be re-run so it actually produces its commit and records the real
+/// old->new mapping for the post-rewrite hook (t5407 "git rebase with failed pick"). Because only
+/// obstructions write the marker, resolved-conflict, empty-pick and submodule paths never match.
+fn rebase_pick_was_obstructed(rb_dir: &Path, current_oid: &ObjectId) -> bool {
+    fs::read_to_string(rb_dir.join("obstructed-pick"))
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .next()
+                .map(str::trim)
+                .and_then(|h| ObjectId::from_hex(h).ok())
+        })
+        .is_some_and(|oid| &oid == current_oid)
+}
+
 /// Git creates a synthetic empty root commit when `rebase --root` runs without `--onto`
 /// (`commit_tree` with the empty tree and no parents).
 fn synthetic_root_onto_commit_oid(repo: &Repository, config: &ConfigSet) -> Result<ObjectId> {
@@ -1252,6 +1282,11 @@ fn commits_for_rebase_merge_walk(
     filter_cherry_equivalents: bool,
 ) -> Result<(Vec<ObjectId>, HashSet<ObjectId>)> {
     if filter_cherry_equivalents {
+        // Use `--cherry-mark` only (not `--cherry-pick`): the walk must retain every commit so the
+        // merge-script generator can decide per-commit. Cherry-equivalent commits are dropped there
+        // only when non-empty (`generate_rebase_merge_script`); empty commits are never dropped by
+        // cherry detection (all empty commits share the empty patch-id), so `--keep-empty` keeps
+        // them even when already in upstream (t3421 --rebase-merges --keep-empty).
         let bases = merge_bases_first_vs_rest(repo, upstream_oid, &[head_oid])?;
         let negative: Vec<String> = bases.iter().map(|b| b.to_hex()).collect();
         let result = rev_list(
@@ -1260,7 +1295,6 @@ fn commits_for_rebase_merge_walk(
             &negative,
             &RevListOptions {
                 cherry_mark: true,
-                cherry_pick: true,
                 right_only: true,
                 left_right: true,
                 symmetric_left: Some(upstream_oid),
@@ -1289,6 +1323,20 @@ fn commits_for_rebase_merge_walk(
     )
     .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok((result.commits, HashSet::new()))
+}
+
+/// Subject text for a `reset <label> # <subject>` comment line. Extracts the trailing subject from
+/// the `pick <hash> # <subject>` form produced by [`format_rebase_todo_line`], so the comment shows
+/// the human-readable subject without re-encoding the abbreviated hash already implied by the label.
+fn reset_comment_subject(repo: &Repository, oid: &ObjectId, config: &ConfigSet) -> Result<String> {
+    let fmt = format_rebase_todo_line(repo, oid, RebaseTodoCmd::Pick, config, true)?;
+    if let Some(idx) = fmt.find(" # ") {
+        Ok(fmt[idx + 3..].to_owned())
+    } else {
+        let obj = repo.odb.read(oid)?;
+        let commit = parse_commit(&obj.data)?;
+        Ok(commit.message.lines().next().unwrap_or("").to_owned())
+    }
 }
 
 fn generate_rebase_merge_script(
@@ -1336,16 +1384,17 @@ fn generate_rebase_merge_script(
             continue;
         }
         let merge_c = abbreviate_object_id(repo, oid, 7)?;
-        let mut merge_line = format!("merge -C {merge_c} ");
+        let mut merge_line = format!("merge -C {merge_c}");
         for p in commit.parents.iter().skip(1) {
             // Match Git: use the merged branch's ref decoration (`refs/heads/<name>`) only.
             // Do not fall back to parsing the merge subject — that can attach the wrong label to
             // the wrong parent when multiple merges share similar subjects (t3430-rebase-merges).
             let tip_name = decorations.get(p).map(String::as_str);
             let lbl = label_oid_for_merge_script(p, tip_name, &mut label_state, repo)?;
-            merge_line.push_str(&lbl);
             merge_line.push(' ');
+            merge_line.push_str(&lbl);
         }
+        // Append ` # <subject>` exactly once (no trailing space before the comment).
         if let Some(idx) = oneline.find(" # ") {
             merge_line.push_str(&oneline[idx..]);
         } else {
@@ -1456,30 +1505,29 @@ fn generate_rebase_merge_script(
             if b == onto_oid {
                 out.push_str("reset onto\n");
             } else if !interesting.contains(&b) {
-                if b == onto_oid {
-                    out.push_str("reset onto\n");
-                } else {
-                    out.push_str(if rebase_cousins || root_with_onto {
-                        "reset onto\n"
-                    } else {
-                        "reset [new root]\n"
-                    });
-                }
+                // The first-parent walk stopped at a commit below the rebased set (an ancestor of
+                // `onto`/upstream that Git's limited symmetric walk collapses away). Git resets to
+                // `onto` here — e.g. rebasing a linear branch whose merge-base differs from `onto`
+                // (t3421 --rebase-merges --keep-empty: `reset onto`, not `reset [new root]`).
+                // A true `[new root]` only arises when the walk reaches an actual root commit
+                // (handled by `stopped_at_root` above).
+                out.push_str("reset onto\n");
             } else if let Some(lbl) = label_state.commit_to_label.get(&b) {
                 if lbl == "onto" {
                     out.push_str("reset onto\n");
                 } else {
-                    let fmt = format_rebase_todo_line(repo, &b, RebaseTodoCmd::Pick, config, true)?;
-                    let rest = fmt.strip_prefix("pick ").unwrap_or(&fmt);
-                    out.push_str(&format!("reset {lbl} # {rest}\n"));
+                    // Git's `reset <label> # <subject>` comment uses the commit subject only, not
+                    // the abbreviated hash (which is already encoded in the label). t3430 expects
+                    // `reset branch-point # C`, not `reset branch-point # <hash> # C`.
+                    let subj = reset_comment_subject(repo, &b, config)?;
+                    out.push_str(&format!("reset {lbl} # {subj}\n"));
                 }
             } else if rebase_cousins {
                 out.push_str("reset onto\n");
             } else {
                 let lbl = label_oid_for_merge_script(&b, None, &mut label_state, repo)?;
-                let fmt = format_rebase_todo_line(repo, &b, RebaseTodoCmd::Pick, config, true)?;
-                let rest = fmt.strip_prefix("pick ").unwrap_or(&fmt);
-                out.push_str(&format!("reset {lbl} # {rest}\n"));
+                let subj = reset_comment_subject(repo, &b, config)?;
+                out.push_str(&format!("reset {lbl} # {subj}\n"));
             }
         }
 
@@ -2017,7 +2065,10 @@ fn rewrite_merge_head_for_replay_opts(
     if head_commit.parents.len() < 2 {
         return Ok(());
     }
-    let template_obj = repo.odb.read(template_merge_oid)?;
+    // `merge -C <ref>` may name an annotated tag; peel to the underlying commit before parsing,
+    // otherwise `parse_commit` on a tag object dies with "commit missing author header".
+    let template_commit_oid = peel_to_commit_for_merge_base(repo, *template_merge_oid)?;
+    let template_obj = repo.odb.read(&template_commit_oid)?;
     let template = parse_commit(&template_obj.data)?;
     let config = ConfigSet::load(Some(git_dir), true)?;
     let now = time::OffsetDateTime::now_utc();
@@ -2042,6 +2093,51 @@ fn rewrite_merge_head_for_replay_opts(
     Ok(())
 }
 
+/// If a `merge -C <orig>` would reproduce the original merge commit exactly, return that original
+/// commit so the caller can fast-forward to it (git `do_merge` can_fast_forward). The conditions:
+/// current HEAD equals `orig`'s first parent, and the `merge_args` heads equal `orig`'s remaining
+/// parents in order with the same count.
+fn rebase_merge_fast_forward_target(
+    repo: &Repository,
+    git_dir: &Path,
+    merge_oid: &ObjectId,
+    merge_args: &str,
+) -> Result<Option<ObjectId>> {
+    let orig_commit_oid = peel_to_commit_for_merge_base(repo, *merge_oid)?;
+    let orig_obj = repo.odb.read(&orig_commit_oid)?;
+    let orig = parse_commit(&orig_obj.data)?;
+    if orig.parents.len() < 2 {
+        return Ok(None);
+    }
+    let head_oid = match resolve_head(git_dir)?.oid().cloned() {
+        Some(oid) => oid,
+        None => return Ok(None),
+    };
+    if orig.parents[0] != head_oid {
+        return Ok(None);
+    }
+    let (heads, _oneline) = parse_merge_todo_arg_list(merge_args);
+    if heads.len() != orig.parents.len() - 1 {
+        return Ok(None);
+    }
+    for (tok, &parent) in heads.iter().zip(orig.parents.iter().skip(1)) {
+        let head_commit = match resolve_merge_head_token(repo, tok) {
+            Ok(oid) => oid,
+            Err(_) => return Ok(None),
+        };
+        if head_commit != parent {
+            return Ok(None);
+        }
+    }
+    Ok(Some(orig_commit_oid))
+}
+
+/// Point HEAD at `target` and sync the index/worktree to its tree (a fast-forward during rebase).
+fn reset_rebase_head_to_commit(repo: &Repository, git_dir: &Path, target: &ObjectId) -> Result<()> {
+    let head_state = resolve_head(git_dir)?;
+    reset_worktree_to_commit(repo, git_dir, &head_state, *target, "merge")
+}
+
 fn rebase_merge_reuse_message(
     repo: &Repository,
     git_dir: &Path,
@@ -2050,7 +2146,21 @@ fn rebase_merge_reuse_message(
     merge_args: &str,
     edit_message: bool,
     next_after_line: Option<RebaseTodoCmd>,
+    allow_ff: bool,
 ) -> Result<RebaseMergeReuseOutcome> {
+    // Git `do_merge` fast-forward: if `allow_ff` (no `--force-rebase`/`--no-ff`) and the original
+    // merge's first parent already equals HEAD and every merge head equals the original merge's
+    // remaining parents (in order, same count), reuse the ORIGINAL merge commit instead of building
+    // a new one. This keeps unchanged merges stable (t3430 'do not rebase cousins', config tests).
+    if allow_ff && !edit_message {
+        if let Some(orig_oid) =
+            rebase_merge_fast_forward_target(repo, git_dir, merge_oid, merge_args)?
+        {
+            reset_rebase_head_to_commit(repo, git_dir, &orig_oid)?;
+            record_rebase_in_rewritten_pending(git_dir, rb_dir, merge_oid, next_after_line)?;
+            return Ok(RebaseMergeReuseOutcome::Completed);
+        }
+    }
     fs::write(
         rb_dir.join("rebase-merge-source"),
         format!("{}\n", merge_oid.to_hex()),
@@ -3032,11 +3142,16 @@ fn parse_merge_todo_arg_list(arg: &str) -> (Vec<String>, Option<String>) {
 }
 
 fn resolve_rebase_merge_label(repo: &Repository, label: &str) -> Result<ObjectId> {
+    // Mirror git `lookup_label`: try `refs/rewritten/<label>` first, then fall back to a plain
+    // ref/commit-ish resolution. On failure git reports `could not resolve '<label>'`, NOT the
+    // rev-parse "ambiguous argument" path-vs-revision hint (t3430 `reset` only looks under
+    // refs/rewritten). We still allow full revision syntax for the fallback so `A^{tree}` resolves
+    // to a tree object (t3430 `reset` rejects trees).
     let rewritten = format!("refs/rewritten/{label}");
     if let Ok(oid) = grit_lib::refs::resolve_ref(&repo.git_dir, &rewritten) {
         return Ok(oid);
     }
-    resolve_revision(repo, label).with_context(|| format!("could not resolve '{label}'"))
+    resolve_revision(repo, label).map_err(|_| anyhow::anyhow!("could not resolve '{label}'"))
 }
 
 fn commit_oid_for_rebase_label(repo: &Repository, label: &str) -> Result<ObjectId> {
@@ -3888,6 +4003,7 @@ fn worktree_matches_head(repo: &Repository, git_dir: &Path) -> Result<bool> {
 
 /// Returns trimmed non-comment todo lines as edited (for replay), and pick/fixup/squash entries for
 /// empty-list / up-to-date checks.
+#[allow(clippy::too_many_arguments)]
 fn run_interactive_rebase(
     repo: &Repository,
     git_dir: &Path,
@@ -3896,6 +4012,7 @@ fn run_interactive_rebase(
     autostash_oid: Option<&ObjectId>,
     autosquash: bool,
     update_refs: bool,
+    revs_onto: Option<(&str, &str)>,
 ) -> Result<(Vec<String>, Vec<(ObjectId, RebaseTodoCmd)>, bool)> {
     if autosquash {
         validate_rebase_instruction_format(config)?;
@@ -3936,7 +4053,13 @@ fn run_interactive_rebase(
     fs::create_dir_all(&rb_merge)?;
     fs::write(rb_merge.join("interactive"), "")?;
     let todo_path = rb_merge.join("git-rebase-todo");
-    fs::write(&todo_path, todo.as_bytes())?;
+    // Git appends the instruction help (a comment block preceded by a blank line) to the todo
+    // before opening the editor, so the file the user/test sees ends with `<todo>\n\n# Rebase ...`.
+    // After `grep -v '^#'`, the separating blank line remains, which several t3404 `--exec` tests
+    // depend on when calibrating `sed 1,Nd`.
+    let command_count = count_rebase_todo_actionable_lines(&todo);
+    let todo_with_help = append_rebase_todo_help(&todo, command_count, revs_onto, config);
+    fs::write(&todo_path, todo_with_help.as_bytes())?;
     let editor = sequence_editor_cmd(config)?;
     let status = run_shell_editor(&editor, &todo_path)?;
     let edited = fs::read_to_string(&todo_path)?;
@@ -3976,21 +4099,117 @@ fn flush_rebase_stdout() {
 }
 
 /// Interactive rebase with a pre-generated todo script (e.g. `--rebase-merges`).
+/// Append the interactive-rebase instruction help (Git's `append_todo_help`) to a todo body.
+///
+/// Mirrors `rebase-interactive.c`: a blank line, the `Rebase <revs> onto <onto> (N commands)`
+/// header (only when `revs_onto` is provided, i.e. not an `--edit-todo` re-edit), then the
+/// commands reference and a final warning, all as comment lines. The exact wording is only
+/// observable through `grep`/`sed` on `ORIGINAL-TODO` in tests; what matters everywhere is the
+/// leading blank line separating the todo body from the comments.
+fn append_rebase_todo_help(
+    body: &str,
+    command_count: usize,
+    revs_onto: Option<(&str, &str)>,
+    config: &ConfigSet,
+) -> String {
+    fn add_commented(out: &mut String, cp: &str, text: &str) {
+        for line in text.split('\n') {
+            if line.is_empty() {
+                out.push_str(cp);
+                out.push('\n');
+            } else {
+                out.push_str(cp);
+                out.push(' ');
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    let cp = comment_line_prefix_full(config);
+    let mut out = String::from(body);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if let Some((revs, onto)) = revs_onto {
+        out.push('\n');
+        let noun = if command_count == 1 {
+            "command"
+        } else {
+            "commands"
+        };
+        let header = format!("Rebase {revs} onto {onto} ({command_count} {noun})");
+        out.push_str(&cp);
+        out.push(' ');
+        out.push_str(&header);
+        out.push('\n');
+    }
+    let commands = "\nCommands:\n\
+p, pick <commit> = use commit\n\
+r, reword <commit> = use commit, but edit the commit message\n\
+e, edit <commit> = use commit, but stop for amending\n\
+s, squash <commit> = use commit, but meld into previous commit\n\
+f, fixup [-C | -c] <commit> = like \"squash\" but keep only the previous\n\
+                   commit's log message, unless -C is used, in which case\n\
+                   keep only this commit's message; -c is same as -C but\n\
+                   opens the editor\n\
+x, exec <command> = run command (the rest of the line) using shell\n\
+b, break = stop here (continue rebase later with 'git rebase --continue')\n\
+d, drop <commit> = remove commit\n\
+l, label <label> = label current HEAD with a name\n\
+t, reset <label> = reset HEAD to a label\n\
+m, merge [-C <commit> | -c <commit>] <label> [# <oneline>]\n\
+        create a merge commit using the original merge commit's\n\
+        message (or the oneline, if no original merge commit was\n\
+        specified); use -c <commit> to reword the commit message\n\
+u, update-ref <ref> = track a placeholder for the <ref> to be updated\n\
+                      to this position in the new commits. The <ref> is\n\
+                      updated at the end of the rebase\n\
+\n\
+These lines can be re-ordered; they are executed from top to bottom.\n";
+    add_commented(&mut out, &cp, commands);
+    add_commented(
+        &mut out,
+        &cp,
+        "\nIf you remove a line here THAT COMMIT WILL BE LOST.\n",
+    );
+    if revs_onto.is_some() {
+        add_commented(
+            &mut out,
+            &cp,
+            "\nHowever, if you remove everything, the rebase will be aborted.\n\n",
+        );
+    } else {
+        add_commented(
+            &mut out,
+            &cp,
+            "\nYou are editing the todo file of an ongoing interactive rebase.\n\
+To continue rebase after editing, run:\n    git rebase --continue\n\n",
+        );
+    }
+    out
+}
+
 fn run_interactive_rebase_with_initial_todo(
     repo: &Repository,
     git_dir: &Path,
     initial_script: &str,
     config: &ConfigSet,
     autostash_oid: Option<&ObjectId>,
+    help_revs_onto: Option<(&str, &str)>,
 ) -> Result<(Vec<String>, Vec<(ObjectId, RebaseTodoCmd)>)> {
     let rb_merge = rebase_merge_dir(git_dir);
     let _ = fs::remove_dir_all(&rb_merge);
     fs::create_dir_all(&rb_merge)?;
     fs::write(rb_merge.join("interactive"), "")?;
+    // Git appends the instruction help (a comment block, preceded by a blank line) to the todo
+    // before showing it. The editor file the user/test sees ends with `<todo>\n\n# Rebase ...`,
+    // so after `grep -v '^#'` a trailing blank line remains (t3430 'generate correct todo list').
+    let count = count_rebase_todo_actionable_lines(initial_script);
+    let todo_with_help = append_rebase_todo_help(initial_script, count, help_revs_onto, config);
     let todo_path = rb_merge.join("git-rebase-todo");
-    fs::write(&todo_path, initial_script.as_bytes())?;
+    fs::write(&todo_path, todo_with_help.as_bytes())?;
     let orig_path = git_dir.join("ORIGINAL-TODO");
-    fs::write(&orig_path, initial_script.as_bytes())?;
+    fs::write(&orig_path, todo_with_help.as_bytes())?;
     let editor = sequence_editor_cmd(config)?;
     let status = run_shell_editor(&editor, &todo_path)?;
     let edited = fs::read_to_string(&todo_path)?;
@@ -4398,11 +4617,11 @@ Use '--' to separate paths from revisions, like this:\n\
     } else {
         args.keep_base > 0
     };
-    // Interactive rebase normally skips this filter (todo lists all commits); `--keep-base` with
-    // `--no-reapply-cherry-picks` must still omit patch-id duplicates like the merge backend.
-    // `--rebase-merges` also needs cherry filtering for the merge-replay todo generator.
-    let filter_cherry_equivalents =
-        !reapply_cherry_picks && (!args.interactive || args.keep_base > 0 || rebase_merges_on);
+    // Git's `sequencer_make_script` always drops clean cherry-picks of upstream commits as a
+    // preliminary step unless `--reapply-cherry-picks` (or `--keep-base`) is given — this holds for
+    // every backend, including interactive (`-i`) and `--rebase-merges`. Begin-empty commits are
+    // never dropped here (see `collect_rebase_todo_commits`); only true patch-equivalents are.
+    let filter_cherry_equivalents = !reapply_cherry_picks;
     // `--keep-base` commit selection: when reapplying cherry-picks, Git uses `onto` as upstream for
     // commit collection (`options.upstream = options.onto`). Otherwise default fork-point behavior
     // still uses the upstream *tip* for the replay list (t3431.4); explicit `--fork-point
@@ -4430,10 +4649,12 @@ Use '--' to separate paths from revisions, like this:\n\
         commits = filter_merge_commits(&repo, &commits)?;
     }
 
-    // Commits that start empty are kept by default. `--reset-author-date` / `--ignore-date` must
-    // still replay them even when the historical `--no-keep-empty` opt-out is used so author
-    // timestamps are rewritten (t3436). Merge-replay scripts may reference empty merge commits.
-    if args.no_keep_empty && !args.interactive && !rebase_merges_on && !args.reset_author_date {
+    // Commits that start empty are kept by default. `--no-keep-empty` drops them as a preliminary
+    // step for every backend (Git's `sequencer_make_script`: `if (is_empty && !keep_empty)
+    // continue;`), including interactive (`-i --no-keep-empty`, t3421). `--reset-author-date` /
+    // `--ignore-date` must still replay them even with `--no-keep-empty` so author timestamps are
+    // rewritten (t3436). Merge-replay scripts handle empty filtering in the script generator.
+    if args.no_keep_empty && !rebase_merges_on && !args.reset_author_date {
         commits.retain(|oid| !is_commit_tree_unchanged(&repo, oid).unwrap_or(false));
     }
 
@@ -4484,7 +4705,10 @@ Use '--' to separate paths from revisions, like this:\n\
     let (rebase_todo_lines, rebase_interactive) = if rebase_merges_on {
         // Do not use `collect_rebase_todo_commits` emptiness here: it walks first-parent chains only
         // and misses merge topology, which would incorrectly report "up to date" for `main` over `A`.
-        if head_oid == upstream_oid {
+        // For interactive rebases we must NOT short-circuit: git still opens the sequence editor so a
+        // script can add `merge`/`exec`/`label` lines even when there is nothing to pick (t3430
+        // `rebase -ir HEAD` with a `merge -C H G` script).
+        if head_oid == upstream_oid && !args.interactive {
             print_branch_up_to_date(&head);
             if let Some(ref oid) = autostash_oid {
                 apply_autostash_after_ff(&repo, oid)?;
@@ -4505,12 +4729,20 @@ Use '--' to separate paths from revisions, like this:\n\
         generated_merge_script = Some(script.clone());
         if args.interactive {
             let pre_nonempty = count_rebase_todo_actionable_lines(&script);
+            let short_revs = if args.root {
+                "(root)".to_owned()
+            } else {
+                upstream_spec.clone()
+            };
+            let short_onto =
+                abbreviate_object_id(&repo, onto_oid, 7).unwrap_or_else(|_| onto_oid.to_hex());
             let (edited, _) = run_interactive_rebase_with_initial_todo(
                 &repo,
                 git_dir,
                 &script,
                 &config,
                 autostash_oid.as_ref(),
+                Some((short_revs.as_str(), short_onto.as_str())),
             )?;
             if edited.is_empty() {
                 if pre_nonempty > 0 {
@@ -4538,6 +4770,18 @@ Use '--' to separate paths from revisions, like this:\n\
         // Even when the computed pick list is empty (`git rebase -i A A`), Git still runs the
         // sequence editor so the user can add `merge`/`exec` lines (t3436).
         let pre_editor_len = commits.len();
+        // Git's todo help header reads `Rebase <short-upstream>..<short-orig-head> onto <short-onto>`.
+        let short_onto =
+            abbreviate_object_id(&repo, onto_oid, 7).unwrap_or_else(|_| onto_oid.to_hex());
+        let help_revs = if args.root {
+            "(root)".to_owned()
+        } else {
+            let short_upstream = abbreviate_object_id(&repo, upstream_tip_oid, 7)
+                .unwrap_or_else(|_| upstream_tip_oid.to_hex());
+            let short_head =
+                abbreviate_object_id(&repo, head_oid, 7).unwrap_or_else(|_| head_oid.to_hex());
+            format!("{short_upstream}..{short_head}")
+        };
         let (edited_lines, _, todo_changed) = run_interactive_rebase(
             &repo,
             git_dir,
@@ -4546,6 +4790,7 @@ Use '--' to separate paths from revisions, like this:\n\
             autostash_oid.as_ref(),
             want_autosquash,
             rebase_update_refs_enabled(&args, &config),
+            Some((help_revs.as_str(), short_onto.as_str())),
         )?;
         if !todo_changed
             && !want_autosquash
@@ -4570,6 +4815,19 @@ Use '--' to separate paths from revisions, like this:\n\
                     }
                 }
                 bail!("nothing to do");
+            }
+            // The pick list is empty: either the branch is behind the upstream (a linear ancestor
+            // of `onto`) or every commit was dropped as a clean cherry-pick of the upstream. In
+            // both cases Git resets the branch to `onto` and reports "Successfully rebased"
+            // (t3421 "rebase -i fast-forwards from ancestor of upstream"; t3404 "do noop when there
+            // is nothing to cherry-pick"). Only when the branch already points at `onto` is this a
+            // true "up to date" no-op.
+            if !onto_oid.is_zero() && head_oid != onto_oid {
+                rebase_reset_to_onto_noop(&repo, &head, head_oid, onto_oid)?;
+                if let Some(ref oid) = autostash_oid {
+                    apply_autostash_after_ff(&repo, oid)?;
+                }
+                return Ok(());
             }
             print_branch_up_to_date(&head);
             if let Some(ref oid) = autostash_oid {
@@ -4688,6 +4946,17 @@ Use '--' to separate paths from revisions, like this:\n\
     }
     if args.no_keep_empty {
         fs::write(rb_dir.join("no-keep-empty"), "")?;
+    }
+    // Persist the become-empty policy so each pick (incl. those after --continue/--skip) honours
+    // the resolved `--empty` mode (git `drop_redundant_commits` / `keep_redundant_commits`).
+    match resolve_become_empty_mode(&args) {
+        BecomeEmptyMode::Drop => {
+            fs::write(rb_dir.join("drop_redundant_commits"), "")?;
+        }
+        BecomeEmptyMode::Keep => {
+            fs::write(rb_dir.join("keep_redundant_commits"), "")?;
+        }
+        BecomeEmptyMode::Stop => {}
     }
     // Persist the GPG/SSH signing decision so each pick (including those run from
     // a clean child process or after `--continue`) signs the replayed commit
@@ -4979,6 +5248,91 @@ fn fast_forward_rebase(
     Ok(())
 }
 
+/// Reset HEAD (and the current branch ref) to `onto` for a rebase whose pick list is empty but
+/// where the branch is not already at `onto`. This happens when every commit was dropped as a
+/// clean cherry-pick of the upstream (and the branch diverges from `onto`), or when the branch is
+/// strictly behind `onto`. Git resets the branch to `onto` and reports "Successfully rebased and
+/// updated <ref>" in both cases (t3404 "do noop when there is nothing to cherry-pick", t3421
+/// "rebase -i fast-forwards from ancestor of upstream"). Output goes to stderr to match Git's
+/// interactive/merge backend finish message.
+fn rebase_reset_to_onto_noop(
+    repo: &Repository,
+    head: &HeadState,
+    head_oid: ObjectId,
+    onto_oid: ObjectId,
+) -> Result<()> {
+    let git_dir = &repo.git_dir;
+    let ident = reflog_identity(repo);
+    let ra = rebase_reflog_action();
+
+    let onto_obj = repo.odb.read(&onto_oid)?;
+    let onto_commit = parse_commit(&onto_obj.data)?;
+    let entries = tree_to_index_entries(repo, &onto_commit.tree, "")?;
+    let mut idx = Index::new();
+    idx.entries = entries;
+    idx.sort();
+    let old_index = load_index(repo)?;
+    if let Some(wt) = &repo.work_tree {
+        preflight_cherry_pick_cwd_obstruction(repo, wt, &idx, &BTreeMap::new(), None)?;
+        refuse_populated_submodule_tree_replacement(&old_index, &idx, wt)?;
+        checkout_merged_index(repo, wt, &old_index, &idx, true)?;
+        refresh_index_stat_cache_from_worktree(repo, &mut idx)?;
+    }
+
+    fs::write(
+        git_dir.join("ORIG_HEAD"),
+        format!("{}\n", head_oid.to_hex()),
+    )?;
+    repo.write_index(&mut idx)?;
+
+    let success_target = if let HeadState::Branch { refname, .. } = head {
+        let finish_branch = format!("{ra} (finish): {refname} onto {}", onto_oid.to_hex());
+        let finish_head = format!("{ra} (finish): returning to {refname}");
+        let _ = append_reflog(
+            git_dir,
+            refname,
+            &head_oid,
+            &onto_oid,
+            &ident,
+            &finish_branch,
+            false,
+        );
+        let _ = append_reflog(
+            git_dir,
+            "HEAD",
+            &onto_oid,
+            &onto_oid,
+            &ident,
+            &finish_head,
+            false,
+        );
+        let ref_path = git_dir.join(refname);
+        if let Some(parent) = ref_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&ref_path, format!("{}\n", onto_oid.to_hex()))?;
+        fs::write(git_dir.join("HEAD"), format!("ref: {refname}\n"))?;
+        refname.clone()
+    } else {
+        let finish_head = format!("{ra} (finish): returning to {}", onto_oid.to_hex());
+        let _ = append_reflog(
+            git_dir,
+            "HEAD",
+            &head_oid,
+            &onto_oid,
+            &ident,
+            &finish_head,
+            false,
+        );
+        fs::write(git_dir.join("HEAD"), format!("{}\n", onto_oid.to_hex()))?;
+        "HEAD".to_owned()
+    };
+
+    run_post_checkout_hook(repo, &head_oid, &onto_oid)?;
+    eprintln!("Successfully rebased and updated {success_target}.");
+    Ok(())
+}
+
 /// Resolve `A...B` in an `--onto` or synthesized `--keep-base` onto name to a single merge base.
 ///
 /// When `keep_base` is true, Git reports `'<upstream>': need exactly one merge base with branch`;
@@ -5030,6 +5384,11 @@ fn collect_rebase_todo_commits(
         return collect_commits_to_replay(repo, head, upstream);
     }
 
+    // Mirror Git's `sequencer_make_script`: walk `upstream..head` with `--cherry-mark`, then drop
+    // only commits that are patch-equivalent (`PATCHSAME`) *and not empty*. Commits that start
+    // empty must never be dropped by cherry detection — every empty commit has the same (empty)
+    // patch-id, so a plain `--cherry-pick` would wrongly drop begin-empty commits (t3421 -m/-i
+    // "keeps begin-empty commits"). Begin-empty handling is left to the keep-empty logic instead.
     let bases = merge_bases_first_vs_rest(repo, upstream, &[head])?;
     let negative: Vec<String> = bases.iter().map(|b| b.to_hex()).collect();
     let result = rev_list(
@@ -5037,7 +5396,7 @@ fn collect_rebase_todo_commits(
         &[upstream.to_hex(), head.to_hex()],
         &negative,
         &RevListOptions {
-            cherry_pick: true,
+            cherry_mark: true,
             right_only: true,
             left_right: true,
             symmetric_left: Some(upstream),
@@ -5047,7 +5406,15 @@ fn collect_rebase_todo_commits(
         },
     )?;
 
+    let cherry_equivalent = result.cherry_equivalent;
     let mut commits = result.commits;
+    commits.retain(|oid| {
+        if !cherry_equivalent.contains(oid) {
+            return true;
+        }
+        // Equivalent: drop unless the commit started empty.
+        is_commit_tree_unchanged(repo, oid).unwrap_or(false)
+    });
     commits.reverse();
     Ok(commits)
 }
@@ -5142,6 +5509,12 @@ fn filter_redundant_patch_commits(
         }
         let commit = parse_commit(&obj.data)?;
         if commit.parents.len() > 1 {
+            out.push(oid);
+            continue;
+        }
+        // Commits that start empty are never dropped by cherry-pick detection (all empty commits
+        // share the same empty patch-id); their fate is decided by keep-empty handling instead.
+        if is_commit_tree_unchanged(repo, &oid).unwrap_or(false) {
             out.push(oid);
             continue;
         }
@@ -5503,6 +5876,11 @@ fn replay_remaining(
                     std::process::exit(0);
                 }
                 RebaseReplayStep::Label(name) => {
+                    // Git consumes the todo item into `done` before executing it; mirror that so
+                    // `done` reflects `label`/`reset` lines even on later failure (t3430).
+                    if rebase_interactive {
+                        append_interactive_rebase_done_line(rb_dir, todo[i])?;
+                    }
                     let head_state = resolve_head(git_dir)?;
                     let head_oid_label = head_state
                         .oid()
@@ -5513,10 +5891,26 @@ fn replay_remaining(
                     append_ref_to_delete_list(rb_dir, &refname)?;
                 }
                 RebaseReplayStep::Reset(arg) => {
+                    // Append to `done` before the reset runs: a failed `reset` (e.g. untracked file
+                    // would be overwritten) must still leave the `reset` line in `done` (t3430).
+                    if rebase_interactive {
+                        append_interactive_rebase_done_line(rb_dir, todo[i])?;
+                    }
                     let head_state = resolve_head(git_dir)?;
                     let target = resolve_reset_target(repo, rb_dir, arg.trim())?;
                     let suffix = first_token_reset_arg(arg.trim());
-                    reset_worktree_to_commit(repo, git_dir, &head_state, target, suffix)?;
+                    if let Err(e) =
+                        reset_worktree_to_commit(repo, git_dir, &head_state, target, suffix)
+                    {
+                        // Persist the remaining todo starting at the failed reset so
+                        // `rebase --continue` re-runs it after the user fixes the worktree. Git
+                        // keeps the failed command at the head of the todo (it is re-consumed into
+                        // `done` on the retry, yielding the duplicated `reset` line in t3430).
+                        let remaining: Vec<&str> = todo[i..].to_vec();
+                        write_rebase_todo_slice(rb_dir, &remaining)?;
+                        eprintln!("{e:#}");
+                        std::process::exit(1);
+                    }
                 }
                 RebaseReplayStep::MergePlain { merge_args } => {
                     let head_before = resolve_head(git_dir)?;
@@ -5636,6 +6030,14 @@ fn replay_remaining(
                     let _ = fs::remove_file(rb_dir.join("current"));
                     let _ = fs::remove_file(rb_dir.join("current-cmd"));
                     let _ = fs::remove_file(rb_dir.join("current-final-fixup"));
+                    // Consume the merge line into `done` before running it: git records the merge
+                    // command in `done` even when it fails (untracked-file block or conflict), while
+                    // a rescheduled failure also keeps it at the head of the todo (t3430 'failed
+                    // merge -C writes patch'). The commit being replayed is exposed as REBASE_HEAD.
+                    if rebase_interactive {
+                        append_interactive_rebase_done_line(rb_dir, todo[i])?;
+                    }
+                    let merge_head_commit = peel_to_commit_for_merge_base(repo, merge_oid)?;
                     let old_head = resolve_head(git_dir)?
                         .oid()
                         .cloned()
@@ -5650,13 +6052,18 @@ fn replay_remaining(
                         merge_args.as_str(),
                         edit_message,
                         next_after,
+                        !force_rewrite_commits,
                     ) {
                         Ok(RebaseMergeReuseOutcome::Completed) => {
                             let head = resolve_head(git_dir)?;
                             let new_oid = *head
                                 .oid()
                                 .ok_or_else(|| anyhow::anyhow!("HEAD has no OID"))?;
-                            let merge_obj = repo.odb.read(&merge_oid)?;
+                            // `merge -C <ref>` may name an annotated tag (e.g. `merge -C H`); peel
+                            // to the underlying commit before parsing, else `parse_commit` on a tag
+                            // object dies with "commit missing author header".
+                            let merge_commit_oid = peel_to_commit_for_merge_base(repo, merge_oid)?;
+                            let merge_obj = repo.odb.read(&merge_commit_oid)?;
                             let mc = parse_commit(&merge_obj.data)?;
                             let subject = mc.message.lines().next().unwrap_or("");
                             if print_am_style_progress && !rebase_quiet(rb_dir) {
@@ -5677,6 +6084,9 @@ fn replay_remaining(
                             let _ = fs::remove_file(rb_dir.join("current"));
                             let _ = fs::remove_file(rb_dir.join("current-cmd"));
                             let _ = fs::remove_file(rb_dir.join("current-final-fixup"));
+                            // The conflicted merge stays at the head of the todo so the
+                            // `rebase --continue` merge path can commit it once resolved. Write a
+                            // `patch` for the conflicted merge and expose it as REBASE_HEAD (t3430).
                             let remaining_merge: Vec<&str> = todo[i..].to_vec();
                             let rem_body = remaining_merge.join("\n") + "\n";
                             let rem_n = count_rebase_todo_actionable_lines(&rem_body);
@@ -5688,7 +6098,14 @@ fn replay_remaining(
                                 rb_dir.join("stopped-sha"),
                                 format!("{}\n", merge_oid.to_hex()),
                             );
-                            let merge_obj_cf = repo.odb.read(&merge_oid)?;
+                            let merge_commit_oid_cf =
+                                peel_to_commit_for_merge_base(repo, merge_oid)?;
+                            fs::write(
+                                git_dir.join("REBASE_HEAD"),
+                                format!("{}\n", merge_commit_oid_cf.to_hex()),
+                            )?;
+                            let _ = write_rebase_patch_file(repo, rb_dir, &merge_commit_oid_cf);
+                            let merge_obj_cf = repo.odb.read(&merge_commit_oid_cf)?;
                             let mc_cf = parse_commit(&merge_obj_cf.data)?;
                             let subj_cf = mc_cf.message.lines().next().unwrap_or("");
                             eprintln!(
@@ -5703,6 +6120,9 @@ fn replay_remaining(
                             std::process::exit(1);
                         }
                         Ok(RebaseMergeReuseOutcome::Blocked) => {
+                            // Reschedule: keep the failed merge at the head of the todo so
+                            // `rebase --continue` retries it after the user fixes the worktree, and
+                            // expose the replayed merge commit as REBASE_HEAD (t3430).
                             let remaining_blk: Vec<&str> = todo[i..].to_vec();
                             let blk_body = remaining_blk.join("\n") + "\n";
                             let blk_n = count_rebase_todo_actionable_lines(&blk_body);
@@ -5710,6 +6130,10 @@ fn replay_remaining(
                             fs::write(rb_dir.join("git-rebase-todo"), &blk_body)?;
                             fs::write(rb_dir.join("msgnum"), "1")?;
                             fs::write(rb_dir.join("end"), blk_n.to_string())?;
+                            fs::write(
+                                git_dir.join("REBASE_HEAD"),
+                                format!("{}\n", merge_head_commit.to_hex()),
+                            )?;
                             std::process::exit(1);
                         }
                         Err(e) => {
@@ -6020,6 +6444,51 @@ fn rebase_keep_start_empty(rb_dir: &Path) -> bool {
     !rb_dir.join("no-keep-empty").exists()
 }
 
+/// How the rebase should treat a commit that *becomes* empty during replay (its change is already
+/// present, e.g. cherry-equivalent upstream). Mirrors git's `enum empty_type` and the
+/// `drop_redundant_commits` / `keep_redundant_commits` sequencer options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BecomeEmptyMode {
+    /// Drop the redundant commit (git `--empty=drop`, default for plain `--merge`).
+    Drop,
+    /// Keep it as an empty commit (git `--empty=keep`).
+    Keep,
+    /// Halt so the user can decide (git `--empty=stop`/`ask`).
+    Stop,
+}
+
+/// Resolve the effective `--empty` mode, applying git's default rules
+/// (`builtin/rebase.c`): explicit `--interactive` -> stop, `--exec` -> keep, otherwise drop.
+fn resolve_become_empty_mode(args: &Args) -> BecomeEmptyMode {
+    if let Some(ref e) = args.empty {
+        match e.to_ascii_lowercase().as_str() {
+            "drop" => return BecomeEmptyMode::Drop,
+            "keep" => return BecomeEmptyMode::Keep,
+            // "stop" and "ask" both halt.
+            _ => return BecomeEmptyMode::Stop,
+        }
+    }
+    if args.interactive {
+        BecomeEmptyMode::Stop
+    } else if args.exec.is_some() {
+        BecomeEmptyMode::Keep
+    } else {
+        BecomeEmptyMode::Drop
+    }
+}
+
+/// Read the persisted become-empty policy from rebase state files. Git stores
+/// `drop_redundant_commits` / `keep_redundant_commits`; neither present means "stop".
+fn rebase_become_empty_mode(rb_dir: &Path) -> BecomeEmptyMode {
+    if rb_dir.join("keep_redundant_commits").exists() {
+        BecomeEmptyMode::Keep
+    } else if rb_dir.join("drop_redundant_commits").exists() {
+        BecomeEmptyMode::Drop
+    } else {
+        BecomeEmptyMode::Stop
+    }
+}
+
 fn rebase_signoff(rb_dir: &Path) -> bool {
     rb_dir.join("signoff").exists()
 }
@@ -6260,6 +6729,7 @@ fn cherry_pick_for_rebase(
 ) -> Result<()> {
     let git_dir = &repo.git_dir;
     let keep_empty = rebase_keep_empty(rb_dir);
+    let become_empty_mode = rebase_become_empty_mode(rb_dir);
     let keep_start_empty = rebase_keep_start_empty(rb_dir);
     let replay_opts = load_rebase_replay_commit_opts(rb_dir);
     let now = time::OffsetDateTime::now_utc();
@@ -6346,6 +6816,40 @@ fn cherry_pick_for_rebase(
     };
     let root_rebase = rb_dir.join("root").exists();
     let ws_fix_rule = load_ws_fix_rule_from_rebase_state(git_dir);
+
+    // Fast-forward a root-commit pick when HEAD is unborn (`rebase --root` without `--onto`, with
+    // fast-forward allowed). Git's sequencer fast-forwards picks where `!parent && unborn`
+    // (sequencer.c `do_pick_commit`), so a linear `rebase --root` reuses the original commits
+    // instead of rewriting them with fresh committer dates (t3421 "rebase --root on linear history
+    // is a no-op"). Forced rebases (`-f`/`--no-ff`/signoff/trailers) and whitespace fixups must
+    // still rewrite the root.
+    if todo_cmd == RebaseTodoCmd::Pick
+        && commit.parents.is_empty()
+        && head_at_empty_tree
+        && !force_rewrite_commits
+        && ws_fix_rule.is_none()
+        && !rebase_signoff(rb_dir)
+        && !rebase_has_explicit_trailers(rb_dir)
+    {
+        let old_index = load_index(repo)?;
+        let mut idx = Index::new();
+        idx.entries = tree_to_index_entries(repo, &commit_tree_oid, "")?;
+        idx.sort();
+        if let Some(wt) = &repo.work_tree {
+            preflight_cherry_pick_cwd_obstruction(repo, wt, &idx, &BTreeMap::new(), None)?;
+        }
+        repo.write_index(&mut idx)?;
+        if let Some(wt) = &repo.work_tree {
+            checkout_merged_index(repo, wt, &old_index, &idx, true)?;
+            refresh_index_stat_cache_from_worktree(repo, &mut idx)?;
+            repo.write_index(&mut idx)?;
+        }
+        fs::write(git_dir.join("HEAD"), format!("{}\n", commit_oid.to_hex()))?;
+        if record_rewrite {
+            record_rebase_in_rewritten_pending(git_dir, rb_dir, commit_oid, next_after_line)?;
+        }
+        return Ok(());
+    }
 
     // Already at the picked commit's parent tip — nothing to replay (matches Git's noop pick).
     // Fixup/squash must still run merge + message folding even when parent == HEAD.
@@ -6757,20 +7261,80 @@ fn cherry_pick_for_rebase(
         bail_if_df_merge_would_remove_cwd(wt, &base_entries, &ours_entries, &theirs_entries)?;
     }
     maybe_run_rebase_merge_strategy(repo, git_dir, rb_dir, *commit_oid)?;
+    let picked_short_oid = commit_oid.to_hex()[..7].to_string();
     let conflict_ctx = RebaseConflictContext {
         backend,
+        picked_short_oid: &picked_short_oid,
         picked_subject: commit.message.lines().next().unwrap_or("replayed commit"),
         ignore_space_change: replay_opts.ignore_space_change,
     };
     let merge_favor = load_rebase_merge_favor(rb_dir);
+    // Conflict-marker base label for the ancestor block (diff3/zdiff3 style). For the merge
+    // backend this is "parent of <abbrev> (<subject>)"; for the apply backend it is
+    // "constructed fake ancestor" — matching Git's sequencer / git-am behavior (t6427).
+    let conflict_base_label = conflict_ctx.label_base();
 
-    let (mut merged_index, mut merge_conflict_files) = if ws_fix_rule.is_none() {
-        if commit.parents.is_empty() && merge_favor == MergeFavor::Theirs {
-            let mut idx = Index::new();
-            idx.entries = theirs_entries.values().cloned().collect();
-            idx.sort();
-            (idx, Vec::new())
-        } else if commit.parents.is_empty() {
+    // With `--ignore-whitespace`/`--ignore-space-change`, route the content merge through
+    // `three_way_merge_with_content`, which threads `ignore_space_change` into the per-file
+    // 3-way merge (Git's apply backend runs `git am --ignore-whitespace`; the merge backend passes
+    // `--ignore-space-change` to the merge strategy). The tree-merge cherry-pick path does not honor
+    // this flag, so a whitespace-only divergence would spuriously conflict (t3436).
+    let want_ignore_ws_merge = replay_opts.ignore_space_change;
+    let (mut merged_index, mut merge_conflict_files) =
+        if ws_fix_rule.is_none() && !want_ignore_ws_merge {
+            if commit.parents.is_empty() && merge_favor == MergeFavor::Theirs {
+                let mut idx = Index::new();
+                idx.entries = theirs_entries.values().cloned().collect();
+                idx.sort();
+                (idx, Vec::new())
+            } else if commit.parents.is_empty() {
+                let merge_result = three_way_merge_with_content(
+                    repo,
+                    &base_entries,
+                    &ours_entries,
+                    &theirs_entries,
+                    &conflict_ctx,
+                    merge_favor,
+                )?;
+                (merge_result.index, merge_result.conflict_files)
+            } else {
+                let tree_merge = merge_trees_for_single_cherry_pick(
+                    repo,
+                    base_tree_oid,
+                    head_tree_oid,
+                    commit_tree_oid,
+                    commit_oid,
+                    commit.parents.first().ok_or_else(|| {
+                        anyhow::anyhow!("cherry-pick of root commit not supported")
+                    })?,
+                    &head_oid,
+                    merge_favor,
+                    Some(conflict_base_label.as_str()),
+                )?;
+                if tree_merge.has_conflicts && merge_favor == MergeFavor::Theirs {
+                    let mut idx = Index::new();
+                    idx.entries = theirs_entries.values().cloned().collect();
+                    idx.sort();
+                    (idx, Vec::new())
+                } else {
+                    let short = commit_oid.to_hex()[..7].to_string();
+                    let subject = commit.message.lines().next().unwrap_or("");
+                    let from = format!(">>>>>>> {short}\n");
+                    let to = format!(">>>>>>> {short} ({subject})\n");
+                    let cf = tree_merge
+                        .conflict_files
+                        .into_iter()
+                        .map(|(p, c)| {
+                            let content = String::from_utf8(c)
+                                .map(|s| s.replace(&from, &to).into_bytes())
+                                .unwrap_or_else(|e| e.into_bytes());
+                            (p.into_bytes(), content)
+                        })
+                        .collect::<Vec<_>>();
+                    (tree_merge.index, cf)
+                }
+            }
+        } else {
             let merge_result = three_way_merge_with_content(
                 repo,
                 &base_entries,
@@ -6780,59 +7344,16 @@ fn cherry_pick_for_rebase(
                 merge_favor,
             )?;
             (merge_result.index, merge_result.conflict_files)
-        } else {
-            let tree_merge = merge_trees_for_single_cherry_pick(
-                repo,
-                base_tree_oid,
-                head_tree_oid,
-                commit_tree_oid,
-                commit_oid,
-                commit
-                    .parents
-                    .first()
-                    .ok_or_else(|| anyhow::anyhow!("cherry-pick of root commit not supported"))?,
-                &head_oid,
-                merge_favor,
-            )?;
-            if tree_merge.has_conflicts && merge_favor == MergeFavor::Theirs {
-                let mut idx = Index::new();
-                idx.entries = theirs_entries.values().cloned().collect();
-                idx.sort();
-                (idx, Vec::new())
-            } else {
-                let short = commit_oid.to_hex()[..7].to_string();
-                let subject = commit.message.lines().next().unwrap_or("");
-                let from = format!(">>>>>>> {short}\n");
-                let to = format!(">>>>>>> {short} ({subject})\n");
-                let cf = tree_merge
-                    .conflict_files
-                    .into_iter()
-                    .map(|(p, c)| {
-                        let content = String::from_utf8(c)
-                            .map(|s| s.replace(&from, &to).into_bytes())
-                            .unwrap_or_else(|e| e.into_bytes());
-                        (p.into_bytes(), content)
-                    })
-                    .collect::<Vec<_>>();
-                (tree_merge.index, cf)
-            }
-        }
-    } else {
-        let merge_result = three_way_merge_with_content(
-            repo,
-            &base_entries,
-            &ours_entries,
-            &theirs_entries,
-            &conflict_ctx,
-            merge_favor,
-        )?;
-        (merge_result.index, merge_result.conflict_files)
-    };
+        };
 
     if let Some(rule) = ws_fix_rule {
         apply_ws_fix_to_index(repo, &mut merged_index, rule)?;
     }
-    if merge_conflict_files.is_empty() && ws_fix_rule.is_none() && merge_favor == MergeFavor::None {
+    if merge_conflict_files.is_empty()
+        && ws_fix_rule.is_none()
+        && !want_ignore_ws_merge
+        && merge_favor == MergeFavor::None
+    {
         merge_conflict_files.extend(overlapping_content_changes(
             repo,
             &base_entries,
@@ -6865,15 +7386,19 @@ fn cherry_pick_for_rebase(
                 }
             }
         }
-        if merged_tree_oid == head_tree_oid && !fixup_replacement_empty && !keep_empty {
-            // A commit whose result is empty: if it did *not* start empty (its tree differed from
-            // its parent's, so it became empty only because a prerequisite was already applied
-            // upstream — e.g. `pull --rebase` after the upstream was rebased), a non-interactive
-            // rebase silently *drops* it (git `--empty=drop`, the default outside `-i`). Only stop
-            // for interactive rebases or commits that were empty to begin with.
-            let became_empty = commit_tree_oid != parent_tree_oid;
-            let interactive = rb_dir.join("interactive").exists();
-            if became_empty && !interactive {
+        // A commit whose result is empty. Its handling depends on whether it *started* empty or
+        // *became* empty during the replay (its change is now redundant). `--keep-empty` keeps
+        // commits that started empty (handled earlier); here we decide the redundant case using the
+        // resolved become-empty policy (git `allow_empty()` -> drop/keep/halt). A commit that
+        // became empty under `--empty=keep` falls through and is committed as an empty commit.
+        let became_empty = commit_tree_oid != parent_tree_oid;
+        let keep_this_empty = if became_empty {
+            become_empty_mode == BecomeEmptyMode::Keep
+        } else {
+            keep_empty
+        };
+        if merged_tree_oid == head_tree_oid && !fixup_replacement_empty && !keep_this_empty {
+            if became_empty && become_empty_mode == BecomeEmptyMode::Drop {
                 // Index/worktree already equal HEAD's tree (the merge produced no change), so the
                 // commit is dropped simply by not creating it; the replay loop advances.
                 return Ok(());
@@ -6913,14 +7438,30 @@ fn cherry_pick_for_rebase(
         // when an added entry would overwrite an untracked file (`t5407` `git rebase with failed
         // pick`: an `exec >G` creates an untracked `G`, then `pick G` must abort). The cwd/submodule
         // preflight below does not cover this case, so mirror the standalone cherry-pick check.
-        super::reset::check_untracked_cherry_pick_obstruction(wt, &old_index, &merged_index)?;
-        preflight_cherry_pick_cwd_obstruction(
-            repo,
-            wt,
-            &merged_index,
-            &BTreeMap::new(),
-            Some(&rebase_conflict_paths),
-        )?;
+        let obstruction =
+            super::reset::check_untracked_cherry_pick_obstruction(wt, &old_index, &merged_index)
+                .and_then(|()| {
+                    preflight_cherry_pick_cwd_obstruction(
+                        repo,
+                        wt,
+                        &merged_index,
+                        &BTreeMap::new(),
+                        Some(&rebase_conflict_paths),
+                    )
+                });
+        if let Err(e) = obstruction {
+            // The step was not applied (the worktree is untouched), so a later `--continue` would
+            // otherwise see worktree == HEAD and mistake it for an empty no-op. Record which commit
+            // was obstructed so the continue path re-runs it once the obstruction is cleared, and
+            // records the real old->new mapping for the post-rewrite hook (t5407 "git rebase with
+            // failed pick"). This does NOT alter the halt state Git leaves, so resolved-conflict and
+            // submodule paths are unaffected.
+            let _ = fs::write(
+                rb_dir.join("obstructed-pick"),
+                format!("{}\n", commit_oid.to_hex()),
+            );
+            return Err(e);
+        }
     }
     repo.write_index(&mut merged_index)?;
 
@@ -7829,9 +8370,20 @@ fn do_continue() -> Result<()> {
 
     if interactive_continue && matches!(todo_cmd, RebaseTodoCmd::Fixup | RebaseTodoCmd::Squash) {
         let head_tree = commit_tree_oid_for_rebase(&repo, head_oid)?;
-        if diff_index_to_tree(&repo.odb, &index, Some(&head_tree), false)
-            .map(|diffs| diffs.is_empty())
-            .unwrap_or(false)
+        // A fixup/squash whose worktree matches HEAD's tree usually means its change is already
+        // folded in, so it is treated as a no-op and skipped. But a fixup that *aborted* on an
+        // obstruction (its untracked file would be overwritten) was never applied and also leaves
+        // the worktree equal to HEAD — yet re-applying it still amends the commit (t5407 "git rebase
+        // with failed pick", whose trailing `fixup I` must map its old oid to the amended commit).
+        // Only the obstruction sets the `obstructed-pick` marker, so fall through to re-apply only
+        // then; genuine empty fixups (no marker) keep the no-op shortcut. Squash is left on the
+        // baseline path: its editor-driven message folding does not re-run cleanly here.
+        let obstructed_fixup =
+            todo_cmd == RebaseTodoCmd::Fixup && rebase_pick_was_obstructed(&rb_dir, &current_oid);
+        if !obstructed_fixup
+            && diff_index_to_tree(&repo.odb, &index, Some(&head_tree), false)
+                .map(|diffs| diffs.is_empty())
+                .unwrap_or(false)
         {
             let _ = drop_last_squash_message_section(&rb_dir);
             if todo_lines_continue
@@ -7872,6 +8424,50 @@ fn do_continue() -> Result<()> {
     }
 
     if stopped_oid.is_some() && worktree_matches_head(&repo, git_dir)? {
+        // The worktree equals HEAD here for two very different reasons:
+        //   * a conflict the user resolved to *nothing* (the commit's change is already present), or
+        //   * a pick/fixup/squash that aborted on an obstruction (untracked file would be
+        //     overwritten) and so was never applied at all (t5407 "git rebase with failed pick").
+        // Only the obstruction sets the `obstructed-pick` marker. When it matches, re-run the step so
+        // it actually produces its commit and records the real old->new mapping for the post-rewrite
+        // hook; otherwise the empty no-op record stands. `cherry_pick_for_rebase` reproduces picks
+        // and fixups (amending HEAD); squash keeps the baseline no-op path (its editor-driven message
+        // folding does not re-run cleanly here).
+        let needs_reapply = matches!(todo_cmd, RebaseTodoCmd::Pick | RebaseTodoCmd::Fixup)
+            && rebase_pick_was_obstructed(&rb_dir, &current_oid);
+        if needs_reapply {
+            // Consume the obstruction marker before re-running so a fresh obstruction on a later step
+            // re-arms it cleanly and a stale value can never divert an unrelated continue.
+            let _ = fs::remove_file(rb_dir.join("obstructed-pick"));
+            let next_after_continue =
+                peek_next_rebase_flush_hint(&repo, &todo_lines_continue, 0, interactive_continue);
+            let _ = fs::remove_file(git_dir.join("REBASE_HEAD"));
+            let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
+            cherry_pick_for_rebase(
+                &repo,
+                &rb_dir,
+                &current_oid,
+                backend_continue,
+                todo_cmd,
+                final_fixup,
+                next_after_continue,
+                true,
+                force_rewrite_continue,
+                None,
+            )?;
+            let _ = fs::remove_file(rb_dir.join("current"));
+            let _ = fs::remove_file(rb_dir.join("current-cmd"));
+            let _ = fs::remove_file(rb_dir.join("current-final-fixup"));
+            return replay_remaining(
+                &repo,
+                &rb_dir,
+                autostash_continue,
+                backend_continue,
+                had_autostash_continue,
+                force_rewrite_continue,
+            );
+        }
+        let _ = fs::remove_file(rb_dir.join("obstructed-pick"));
         let oid_for_rewrite = stopped_oid.as_ref().unwrap_or(&current_oid);
         let next_after_continue =
             peek_next_rebase_flush_hint(&repo, &todo_lines_continue, 0, interactive_continue);
@@ -8130,7 +8726,13 @@ fn do_continue() -> Result<()> {
         let (message, encoding, raw_message) =
             finalize_message_for_commit_encoding(cleaned, &config);
         let author_script_path = rebase_merge_dir(git_dir).join("author-script");
-        let author = if author_script_path.exists() {
+        // The author-script preserves the picked commit's original author identity and date; fall
+        // back to the picked commit's author line when it is absent. Either way, route the raw
+        // author through `rebase_replayed_author_line` so `--reset-author-date` /
+        // `--committer-date-is-author-date` still apply when committing a conflict resolution via
+        // `--continue` (t3436). The committer line derives from the same raw author so
+        // `--committer-date-is-author-date` keeps committer date == author date.
+        let raw_author_for_replay = if author_script_path.exists() {
             match read_rebase_author_script(git_dir) {
                 Ok(line) => line,
                 Err(e) => {
@@ -8140,15 +8742,16 @@ fn do_continue() -> Result<()> {
                 }
             }
         } else {
-            rebase_replayed_author_line(
-                &original_commit.author,
-                replay_opts_continue,
-                now_continue,
-            )?
+            original_commit.author.clone()
         };
+        let author = rebase_replayed_author_line(
+            &raw_author_for_replay,
+            replay_opts_continue,
+            now_continue,
+        )?;
         let committer = rebase_replayed_committer_line(
             &config,
-            &original_commit.author,
+            &raw_author_for_replay,
             replay_opts_continue,
             now_continue,
         )?;

@@ -1063,7 +1063,13 @@ fn resolve_ref_dwim_for_rev_parse(repo: &Repository, spec: &str) -> (usize, Opti
             if check_refname_format(&target, &refname_opts).is_err()
                 || refs::resolve_ref(&repo.git_dir, &target).is_err()
             {
-                eprintln!("warning: ignoring dangling symref {candidate}");
+                // Match upstream `expand_ref` (refs.c): a dangling symref is
+                // silently ignored when it is literally `HEAD` (e.g. an unborn
+                // branch in a fresh repo). The warning is only emitted for other
+                // dangling symrefs encountered while DWIM-resolving a ref.
+                if candidate != "HEAD" {
+                    eprintln!("warning: ignoring dangling symref {candidate}");
+                }
                 continue;
             }
         }

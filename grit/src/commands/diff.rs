@@ -797,7 +797,10 @@ fn ws_check_emit(out: &mut String, body: &str, ws_rule: u32, set: &str, reset: &
     if (ws_rule & ws::WS_BLANK_AT_EOL) != 0 {
         let mut i = len as isize - 1;
         while i >= 0 {
-            if bytes[i as usize].is_ascii_whitespace() {
+            // Git's `isspace` (sane_ctype) counts only space/tab/newline/CR — NOT
+            // form-feed (0x0c) or vertical-tab (0x0b). So a leading `\f`/`\v` is
+            // not treated as trailing whitespace (t4015 #134).
+            if matches!(bytes[i as usize], b' ' | b'\t' | b'\n' | b'\r') {
                 trailing_whitespace = i;
             } else {
                 break;
@@ -1475,6 +1478,10 @@ pub struct Args {
     /// Detect and color moved lines differently.
     #[arg(long = "color-moved", value_name = "MODE", default_missing_value = "default", num_args = 0..=1, require_equals = true)]
     pub color_moved: Option<String>,
+
+    /// How whitespace is ignored when performing move detection (`--color-moved-ws=<modes>`).
+    #[arg(long = "color-moved-ws", value_name = "MODES")]
+    pub color_moved_ws: Option<String>,
 
     /// Break complete rewrite into delete + add pair.
     #[arg(short = 'B', long = "break-rewrites")]
@@ -2392,8 +2399,31 @@ pub fn run(mut args: Args) -> Result<()> {
                             .to_owned(),
                     );
                 }
-                s if s.starts_with("--color-moved") => {
+                s if s.starts_with("--color-moved-ws=") => {
+                    args.color_moved_ws =
+                        Some(s.strip_prefix("--color-moved-ws=").unwrap_or("").to_owned());
+                }
+                "--no-color-moved" => {
+                    args.color_moved = Some("no".to_owned());
+                }
+                "--no-color-moved-ws" => {
+                    args.color_moved_ws = Some("no".to_owned());
+                }
+                s if s.starts_with("--color-moved=") => {
+                    args.color_moved =
+                        Some(s.strip_prefix("--color-moved=").unwrap_or("").to_owned());
+                }
+                "--color-moved" => {
                     args.color_moved = Some("default".to_owned());
+                }
+                "--color" => {
+                    args.color = Some("always".to_owned());
+                }
+                "--no-color" => {
+                    args.color = Some("never".to_owned());
+                }
+                s if s.starts_with("--color=") => {
+                    args.color = Some(s.strip_prefix("--color=").unwrap_or("").to_owned());
                 }
                 // `--ws-error-highlight=<kinds>` / `--ws-error-highlight <kinds>` is consumed
                 // separately from raw argv by `ws_error_highlight_from_argv`; just accept it here
@@ -2906,6 +2936,11 @@ pub fn run(mut args: Args) -> Result<()> {
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
         Err(e) => return Err(e.into()),
     };
+    // `git diff` walks the index through unpack-trees' cache-tree fast path, which aborts on a
+    // cache-tree whose entry counts run past the index (a tree with duplicate path entries —
+    // t4058-diff-duplicates). Unlike the index-write check, this guard is not gated by
+    // GIT_TEST_CHECK_CACHE_TREE; a well-formed index always verifies cleanly.
+    grit_lib::write_tree::verify_cache_tree(&index)?;
     let merged_attrs = if args.cached {
         Arc::new(load_cached_diff_gitattributes(&repo, &index)?)
     } else {
@@ -3750,8 +3785,14 @@ pub fn run(mut args: Args) -> Result<()> {
                 let diff_config = grit_lib::config::ConfigSet::load(Some(&repo.git_dir), true)
                     .unwrap_or_default();
                 let external_diff = resolve_env_config_external_diff(&diff_config);
+                // `--color-moved`: when active with color on, render the patch into a
+                // buffer, run move detection, then re-color moved lines before flushing.
+                let move_ctx = resolve_color_moved(&args, &diff_config, use_color_patch, &ws_mode);
+                // When move detection is active, render the patch into a buffer so we can
+                // recolor moved lines; otherwise write straight to `out`.
+                let mut move_buf: Vec<u8> = Vec::new();
                 let summary = write_patch_with_prefix(
-                    &mut out,
+                    &mut move_buf,
                     &repo,
                     &entries,
                     &repo.odb,
@@ -3789,6 +3830,13 @@ pub fn run(mut args: Args) -> Result<()> {
                     relative_prefix_for_paths.as_deref(),
                     indent_heuristic,
                 )?;
+                if let Some((mode, ws_flags, colors)) = move_ctx {
+                    let colored = String::from_utf8_lossy(&move_buf);
+                    let recolored = apply_color_moved(&colored, mode, ws_flags, &colors);
+                    out.write_all(recolored.as_bytes())?;
+                } else {
+                    out.write_all(&move_buf)?;
+                }
                 // Flush patch output before any external-diff "died" failure so the
                 // program's stdout (already written) is visible (t4020).
                 out.flush().ok();
@@ -4581,6 +4629,46 @@ fn run_no_index(args: Args) -> Result<()> {
             indent_heuristic,
             quote_path_fully,
         )
+    } else if args.function_context
+        && !ws_mode.ignore_all_space
+        && !ws_mode.ignore_space_change
+        && !ws_mode.ignore_space_at_eol
+        && !ws_mode.ignore_cr_at_eol
+    {
+        // `--function-context` (optionally with `--ignore-blank-lines`): the
+        // worktree path expands hunks to whole functions and then drops
+        // ignorable changes. Reuse the same machinery here (the no-index body
+        // generator does not support `-W`). No userdiff driver applies to a bare
+        // `--no-index` path, so the built-in funcname detection is used.
+        let func_matcher = matcher_for_path_parsed(
+            cfg_for_word_regex,
+            &diff_algo_ctx.attrs.rules,
+            &diff_algo_ctx.attrs.macros,
+            path_a_str.as_str(),
+            ignore_case_attrs,
+        )
+        .unwrap_or(None);
+        let body = unified_diff_with_prefix_and_funcname_and_algorithm(
+            &text_a,
+            &text_b,
+            paths[0].as_str(),
+            paths[1].as_str(),
+            context_lines,
+            inter_hunk_context,
+            "a/",
+            "b/",
+            func_matcher.as_ref(),
+            algo_sim,
+            true,
+            algo_hist,
+            indent_heuristic,
+            quote_path_fully,
+        );
+        if ws_mode.ignore_blank_lines {
+            suppress_ignored_hunks_in_patch(&body, &[], true)
+        } else {
+            body
+        }
     } else {
         // Diff the textconv (or UTF-8 lossy) view so hunks match what we compare for exit status
         // and stats; raw blob bytes would ignore `diff.<driver>.textconv` in the patch body (t4042).
@@ -4618,42 +4706,73 @@ fn run_no_index(args: Args) -> Result<()> {
     let git_a = format_diff_path_with_prefix("a/", paths[0].as_str(), quote_path_fully);
     let git_b = format_diff_path_with_prefix("b/", paths[1].as_str(), quote_path_fully);
     if use_color_patch {
-        writeln!(out, "{BOLD}diff --git {git_a} {git_b}{RESET}")?;
-        writeln!(
-            out,
+        let mut colored = String::new();
+        use std::fmt::Write as _;
+        let _ = writeln!(colored, "{BOLD}diff --git {git_a} {git_b}{RESET}");
+        let _ = writeln!(
+            colored,
             "{BOLD}index {old_abbrev}..{new_abbrev} {mode_str}{RESET}"
-        )?;
+        );
         if effective_word_diff_opt.is_some() {
             let mut first = true;
             for line in diff_body.lines() {
                 if first && (line.starts_with("--- ") || line.starts_with("+++ ")) {
-                    writeln!(out, "{BOLD}{line}{RESET}")?;
+                    let _ = writeln!(colored, "{BOLD}{line}{RESET}");
                     first = false;
                     continue;
                 }
                 if line.starts_with("--- ") || line.starts_with("+++ ") {
-                    writeln!(out, "{BOLD}{line}{RESET}")?;
+                    let _ = writeln!(colored, "{BOLD}{line}{RESET}");
                 } else {
-                    writeln!(out, "{line}")?;
+                    let _ = writeln!(colored, "{line}");
                 }
             }
         } else {
             for line in diff_body.lines() {
                 if line.starts_with("@@") {
-                    writeln!(out, "{CYAN}{line}{RESET}")?;
-                } else if line.starts_with('+') && !line.starts_with("+++") {
-                    writeln!(out, "{GREEN}{line}{RESET}")?;
+                    // Split a trailing funcname out of the cyan range (Git format).
+                    if let Some(close) = line.get(2..).and_then(|s| s.find("@@")).map(|i| i + 2) {
+                        let range = &line[..close + 2];
+                        let rest = &line[close + 2..];
+                        if let Some(func) = rest.strip_prefix(' ') {
+                            if func.is_empty() {
+                                let _ = writeln!(colored, "{CYAN}{range}{RESET} ");
+                            } else {
+                                let _ =
+                                    writeln!(colored, "{CYAN}{range}{RESET} {RESET}{func}{RESET}");
+                            }
+                        } else {
+                            let _ = writeln!(colored, "{CYAN}{range}{rest}{RESET}");
+                        }
+                    } else {
+                        let _ = writeln!(colored, "{CYAN}{line}{RESET}");
+                    }
+                } else if let Some(body) =
+                    line.strip_prefix('+').filter(|_| !line.starts_with("+++"))
+                {
+                    // Git emits new lines with the sign split off (`emit_line_0`
+                    // with set_sign): `<col>+<RESET><col>body<RESET>`.
+                    let _ = writeln!(colored, "{GREEN}+{RESET}{GREEN}{body}{RESET}");
                 } else if line.starts_with('-') && !line.starts_with("---") {
-                    writeln!(out, "{RED}{line}{RESET}")?;
+                    let _ = writeln!(colored, "{RED}{line}{RESET}");
                 } else if line.starts_with("diff ")
                     || line.starts_with("---")
                     || line.starts_with("+++")
                 {
-                    writeln!(out, "{BOLD}{line}{RESET}")?;
+                    let _ = writeln!(colored, "{BOLD}{line}{RESET}");
                 } else {
-                    writeln!(out, "{line}")?;
+                    // Context lines are emitted with a trailing reset by Git.
+                    let _ = writeln!(colored, "{line}{RESET}");
                 }
             }
+        }
+        // `--color-moved`: recolor moved lines (the no-index config is `config`).
+        let move_ctx = resolve_color_moved(&args, &config, use_color_patch, &ws_mode);
+        if let Some((mode, ws_flags, colors)) = move_ctx {
+            let recolored = apply_color_moved(&colored, mode, ws_flags, &colors);
+            out.write_all(recolored.as_bytes())?;
+        } else {
+            out.write_all(colored.as_bytes())?;
         }
     } else {
         writeln!(out, "diff --git {git_a} {git_b}")?;
@@ -6898,12 +7017,24 @@ fn write_diff_header_with_prefix(
                 quote_c_style(new_path, quote_path_fully)
             )?;
             if entry.old_oid != entry.new_oid {
-                writeln!(
-                    out,
-                    "{b}index {}..{}{r}",
-                    abbr(&entry.old_oid),
-                    abbr(&entry.new_oid)
-                )?;
+                // Git appends the (shared) mode to the rename's `index` line when both
+                // sides have the same mode, exactly like a modify (t4015 #99).
+                if entry.old_mode == entry.new_mode {
+                    writeln!(
+                        out,
+                        "{b}index {}..{} {}{r}",
+                        abbr(&entry.old_oid),
+                        abbr(&entry.new_oid),
+                        entry.old_mode
+                    )?;
+                } else {
+                    writeln!(
+                        out,
+                        "{b}index {}..{}{r}",
+                        abbr(&entry.old_oid),
+                        abbr(&entry.new_oid)
+                    )?;
+                }
             }
         }
         DiffStatus::Copied => {
@@ -6920,12 +7051,22 @@ fn write_diff_header_with_prefix(
                 quote_c_style(new_path, quote_path_fully)
             )?;
             if entry.old_oid != entry.new_oid {
-                writeln!(
-                    out,
-                    "{b}index {}..{}{r}",
-                    abbr(&entry.old_oid),
-                    abbr(&entry.new_oid)
-                )?;
+                if entry.old_mode == entry.new_mode {
+                    writeln!(
+                        out,
+                        "{b}index {}..{} {}{r}",
+                        abbr(&entry.old_oid),
+                        abbr(&entry.new_oid),
+                        entry.old_mode
+                    )?;
+                } else {
+                    writeln!(
+                        out,
+                        "{b}index {}..{}{r}",
+                        abbr(&entry.old_oid),
+                        abbr(&entry.new_oid)
+                    )?;
+                }
             }
         }
         DiffStatus::TypeChanged => {
@@ -8117,6 +8258,22 @@ fn write_patch_with_prefix(
         // numbers are preserved) and then ignorable hunks are dropped from the rendered patch
         // below — never by pre-deleting lines here.
 
+        // Pure rename/copy with no textual change to show: emit only the rename/copy header
+        // (similarity + rename/copy from/to + index), not the `---`/`+++`/hunk body. Git's
+        // `builtin_diff` skips the textual section when `found_changes` is false, which also
+        // covers `-w`/`-b` renames whose content is identical once whitespace is normalised
+        // (t4015 #99, #100). Added/Deleted/Modified always go through the body path.
+        if matches!(entry.status, DiffStatus::Renamed | DiffStatus::Copied) {
+            let bodies_equal = if ws_mode.any() {
+                ws_mode.normalize(&old_content) == ws_mode.normalize(&new_content)
+            } else {
+                old_content == new_content
+            };
+            if bodies_equal {
+                continue;
+            }
+        }
+
         // Intent-to-add empty file: header + `index 0000000..e69de29` only (t2203).
         if !cached
             && entry.status == DiffStatus::Added
@@ -8235,7 +8392,39 @@ fn write_patch_with_prefix(
                     || ws_mode.ignore_all_space
                     || ws_mode.ignore_space_at_eol
                     || ws_mode.ignore_cr_at_eol);
-            let patch = if ws_aware {
+            // `--ignore-blank-lines` (alone) and `-I` regex ignoring are handled at the
+            // xdiff change-record level (Git's `xdl_mark_ignorable_lines` + `xdl_get_hunk`):
+            // the diff is computed normally, then changes that are entirely ignorable are
+            // dropped when far from substantive changes and otherwise shown, with hunk
+            // boundaries recomputed so line numbers and surviving context match Git. This
+            // only applies when no other whitespace flag and no function-context expansion
+            // is active (those need the normalising / function-context paths below).
+            let line_level_ignore = !ws_aware
+                && !function_context
+                && (ignore_blank || line_ignore.is_some_and(|i| !i.is_empty()));
+            let patch = if line_level_ignore {
+                let ign: &[Regex] = line_ignore.unwrap_or(&[]);
+                let is_ignorable = |removed: &[&str], added: &[&str]| -> bool {
+                    removed
+                        .iter()
+                        .chain(added.iter())
+                        .all(|line| changed_line_is_ignorable(line, ign, ignore_blank))
+                };
+                grit_lib::diff::unified_diff_histogram_ignore_with_prefix_and_funcname(
+                    &old_content,
+                    &new_content,
+                    display_old,
+                    display_new,
+                    context_lines,
+                    inter_hunk_context,
+                    src_prefix,
+                    dst_prefix,
+                    func_matcher.as_ref(),
+                    quote_path_fully,
+                    function_context,
+                    is_ignorable,
+                )
+            } else if ws_aware {
                 let body = no_index_unified_patch_body(
                     old_content.as_bytes(),
                     new_content.as_bytes(),
@@ -8251,16 +8440,25 @@ fn write_patch_with_prefix(
                 );
                 // `no_index_unified_patch_body` emits `--- a/<old>` / `+++ b/<new>` labels using a
                 // fixed `a/`,`b/` prefix; rewrite them to the caller's prefixes.
-                rewrite_patch_label_prefixes(
+                let body = rewrite_patch_label_prefixes(
                     &body,
                     src_prefix,
                     dst_prefix,
                     display_old,
                     display_new,
                     quote_path_fully,
-                )
+                );
+                // `-b`/`-w`/etc. combined with `--ignore-blank-lines` or `-I`: drop hunks
+                // whose surviving changes are all ignorable (old post-hoc behaviour).
+                match line_ignore {
+                    Some(ign) if !ign.is_empty() || ignore_blank => {
+                        suppress_ignored_hunks_in_patch(&body, ign, ignore_blank)
+                    }
+                    _ if ignore_blank => suppress_ignored_hunks_in_patch(&body, &[], ignore_blank),
+                    _ => body,
+                }
             } else {
-                unified_diff_with_prefix_and_funcname_and_algorithm(
+                let patch = unified_diff_with_prefix_and_funcname_and_algorithm(
                     &old_content,
                     &new_content,
                     display_old,
@@ -8275,14 +8473,16 @@ fn write_patch_with_prefix(
                     use_git_histogram,
                     indent_heuristic,
                     quote_path_fully,
-                )
-            };
-            let patch = match line_ignore {
-                Some(ign) if !ign.is_empty() || ignore_blank => {
-                    suppress_ignored_hunks_in_patch(&patch, ign, ignore_blank)
+                );
+                // function-context path: still apply the old post-hoc hunk suppression
+                // for `--ignore-blank-lines` / `-I`.
+                match line_ignore {
+                    Some(ign) if !ign.is_empty() || ignore_blank => {
+                        suppress_ignored_hunks_in_patch(&patch, ign, ignore_blank)
+                    }
+                    _ if ignore_blank => suppress_ignored_hunks_in_patch(&patch, &[], ignore_blank),
+                    _ => patch,
                 }
-                _ if ignore_blank => suppress_ignored_hunks_in_patch(&patch, &[], ignore_blank),
-                _ => patch,
             };
             let patch = if suppress_blank_empty {
                 strip_blank_context_trailing_space(&patch)
@@ -8349,6 +8549,307 @@ fn strip_blank_context_trailing_space(patch: &str) -> String {
 /// When `suppress_incomplete_red_after_plus` is true, the `\ No newline at end of file` marker that
 /// follows a `+` line is not painted with the whitespace-error background (symlink post-image:
 /// `t4015-diff-whitespace`).
+/// Strip ANSI SGR escape sequences (`ESC [ ... m`) from a string, recovering the
+/// plain text of an already-colored diff line.
+fn strip_ansi(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            // skip until 'm'
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j] != b'm' {
+                j += 1;
+            }
+            i = if j < bytes.len() { j + 1 } else { j };
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Resolved color escapes for the eight `--color-moved` slots.
+struct MovedColors {
+    old_moved: String,
+    old_moved_alt: String,
+    old_moved_dim: String,
+    old_moved_alt_dim: String,
+    new_moved: String,
+    new_moved_alt: String,
+    new_moved_dim: String,
+    new_moved_alt_dim: String,
+    reset: String,
+}
+
+impl MovedColors {
+    fn load(config: &ConfigSet) -> Self {
+        // Git's default escapes for the moved slots.
+        MovedColors {
+            old_moved: resolve_diff_color(config, "oldMoved", "bold magenta"),
+            old_moved_alt: resolve_diff_color(config, "oldMovedAlternative", "bold blue"),
+            old_moved_dim: resolve_diff_color(config, "oldMovedDimmed", "dim"),
+            old_moved_alt_dim: resolve_diff_color(
+                config,
+                "oldMovedAlternativeDimmed",
+                "dim italic",
+            ),
+            new_moved: resolve_diff_color(config, "newMoved", "bold cyan"),
+            new_moved_alt: resolve_diff_color(config, "newMovedAlternative", "bold yellow"),
+            new_moved_dim: resolve_diff_color(config, "newMovedDimmed", "dim"),
+            new_moved_alt_dim: resolve_diff_color(
+                config,
+                "newMovedAlternativeDimmed",
+                "dim italic",
+            ),
+            reset: RESET.to_owned(),
+        }
+    }
+}
+
+/// Post-process an already-colored multi-file diff to color moved lines
+/// (`--color-moved`). Recovers the plain text by stripping ANSI, runs move
+/// detection, then re-emits moved `+`/`-` lines using the moved color slot for
+/// the whole `<sign><body>` (matching Git's `<MOVED>-text<RESET>` output).
+fn apply_color_moved(
+    colored: &str,
+    mode: grit_lib::diff_moved::ColorMovedMode,
+    ws_flags: u32,
+    colors: &MovedColors,
+) -> String {
+    use grit_lib::diff_moved::{detect_moved_lines, MovedClass};
+
+    let colored_lines: Vec<&str> = colored.split_inclusive('\n').collect();
+    // Reconstruct the plain patch (used only for move detection).
+    let plain: String = colored_lines.iter().map(|l| strip_ansi(l)).collect();
+    let classes = detect_moved_lines(&plain, mode, ws_flags);
+
+    let mut out = String::with_capacity(colored.len());
+    for (idx, &cline) in colored_lines.iter().enumerate() {
+        let class = classes.get(idx).copied().unwrap_or(MovedClass::None);
+        if class == MovedClass::None {
+            out.push_str(cline);
+            continue;
+        }
+        let plain_line = strip_ansi(cline);
+        let is_plus = plain_line.starts_with('+');
+        let color = match (is_plus, class) {
+            (false, MovedClass::Moved) => &colors.old_moved,
+            (false, MovedClass::MovedAlt) => &colors.old_moved_alt,
+            (false, MovedClass::MovedDim) => &colors.old_moved_dim,
+            (false, MovedClass::MovedAltDim) => &colors.old_moved_alt_dim,
+            (true, MovedClass::Moved) => &colors.new_moved,
+            (true, MovedClass::MovedAlt) => &colors.new_moved_alt,
+            (true, MovedClass::MovedDim) => &colors.new_moved_dim,
+            (true, MovedClass::MovedAltDim) => &colors.new_moved_alt_dim,
+            (_, MovedClass::None) => unreachable!(),
+        };
+        // Replace every non-reset SGR escape in the original line with the moved
+        // color, preserving the line's sign/body span structure (e.g. the
+        // whitespace-error sign split on `+` lines: `<col>+<reset><col>body<reset>`).
+        out.push_str(&recolor_sgr(cline, color, &colors.reset));
+    }
+    out
+}
+
+/// Replace every non-reset SGR escape (`ESC [ ... m`) in `line` with `color`,
+/// leaving reset escapes (`ESC [ m` / `ESC [ 0 m`) and the text untouched.
+fn recolor_sgr(line: &str, color: &str, reset: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len() + color.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j] != b'm' {
+                j += 1;
+            }
+            let end = if j < bytes.len() { j + 1 } else { j };
+            let seq = &line[i..end];
+            // Reset sequences are `\x1b[m` or `\x1b[0m`.
+            if seq == "\x1b[m" || seq == "\x1b[0m" {
+                out.push_str(reset);
+            } else if seq == BG_RED {
+                // Whitespace-error highlight (`\x1b[41m`) is layered on top of the
+                // diff color; Git keeps it on moved lines too, so preserve it.
+                out.push_str(BG_RED);
+            } else {
+                out.push_str(color);
+            }
+            i = end;
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Resolve the effective `--color-moved` rendering context, or `None` when move
+/// detection is off (not requested, mode `no`, or color disabled).
+///
+/// Validates the mode and `--color-moved-ws` value, exiting with Git's exact
+/// error messages on bad input (t4015 #132, #133). Precedence: CLI flag over
+/// `diff.colorMoved` / `diff.colorMovedWS` config.
+fn resolve_color_moved(
+    args: &Args,
+    config: &ConfigSet,
+    use_color: bool,
+    ws_mode: &WhitespaceMode,
+) -> Option<(grit_lib::diff_moved::ColorMovedMode, u32, MovedColors)> {
+    use grit_lib::diff_moved::{parse_color_moved_ws, ColorMovedMode, MOVED_WS_ERROR};
+
+    // --- mode --- (Git validates `--color-moved` / `diff.colorMoved` whenever
+    // present, independently of whether color is on.)
+    let (mode_str, mode_from_cmdline_cfg) = if let Some(m) = args.color_moved.as_deref() {
+        (Some(m.to_owned()), false)
+    } else if let Some(entry) = config.get_last_entry("diff.colormoved") {
+        (
+            Some(entry.value.clone().unwrap_or_default()),
+            entry.scope == grit_lib::config::ConfigScope::Command,
+        )
+    } else {
+        (None, false)
+    };
+
+    let mode = match &mode_str {
+        Some(s) => match ColorMovedMode::parse(s) {
+            Some(m) => m,
+            None => {
+                // Git prints the detailed `error:` line in all cases (t4015 #132).
+                eprintln!(
+                    "error: color moved setting must be one of 'no', 'default', 'blocks', 'zebra', 'dimmed-zebra', 'plain'"
+                );
+                if mode_from_cmdline_cfg {
+                    // From `git -c diff.colorMoved=...`: a fatal config-parse error (exit 128).
+                    eprintln!("fatal: unable to parse 'diff.colormoved' from command-line config");
+                    std::process::exit(128);
+                } else {
+                    // From the `--color-moved=<arg>` flag: a usage error (exit 129).
+                    eprintln!("error: bad --color-moved argument: {s}");
+                    std::process::exit(129);
+                }
+            }
+        },
+        // No mode requested → move detection is off, but `--color-moved-ws` is
+        // still validated below (Git errors on a bogus ws value regardless).
+        None => ColorMovedMode::No,
+    };
+
+    // --- ws handling --- (validated whenever present, independent of mode)
+    let (ws_str, ws_from_cmdline_cfg) = if let Some(w) = args.color_moved_ws.as_deref() {
+        (Some(w.to_owned()), false)
+    } else if let Some(entry) = config.get_last_entry("diff.colormovedws") {
+        (
+            Some(entry.value.clone().unwrap_or_default()),
+            entry.scope == grit_lib::config::ConfigScope::Command,
+        )
+    } else {
+        (None, false)
+    };
+
+    let mut ws_flags = 0u32;
+    if let Some(ws_str) = ws_str {
+        if ws_str == "no" {
+            ws_flags = 0;
+        } else {
+            ws_flags = parse_color_moved_ws(&ws_str);
+            if ws_flags & MOVED_WS_ERROR != 0 {
+                // Detailed `error:` line first (always), mirroring Git's
+                // parse_color_moved_ws: the allow-indentation-change
+                // incompatibility takes precedence over an unknown-mode token.
+                let has_allow = ws_str
+                    .split(',')
+                    .any(|t| t.trim() == "allow-indentation-change");
+                let has_other_ws = ws_str.split(',').any(|t| {
+                    matches!(
+                        t.trim(),
+                        "ignore-space-change" | "ignore-space-at-eol" | "ignore-all-space"
+                    )
+                });
+                if has_allow && has_other_ws {
+                    eprintln!(
+                        "error: color-moved-ws: allow-indentation-change cannot be combined with other whitespace modes"
+                    );
+                } else {
+                    let bad = ws_str
+                        .split(',')
+                        .map(str::trim)
+                        .find(|t| {
+                            !matches!(
+                                *t,
+                                "no" | "ignore-space-change"
+                                    | "ignore-space-at-eol"
+                                    | "ignore-all-space"
+                                    | "allow-indentation-change"
+                                    | ""
+                            )
+                        })
+                        .unwrap_or("");
+                    eprintln!(
+                        "error: unknown color-moved-ws mode '{bad}', possible values are 'ignore-space-change', 'ignore-space-at-eol', 'ignore-all-space', 'allow-indentation-change'"
+                    );
+                }
+                if ws_from_cmdline_cfg {
+                    eprintln!(
+                        "fatal: unable to parse 'diff.colormovedws' from command-line config"
+                    );
+                    std::process::exit(128);
+                } else {
+                    eprintln!("error: invalid mode '{ws_str}' in --color-moved-ws");
+                    std::process::exit(129);
+                }
+            }
+        }
+    }
+
+    if mode == ColorMovedMode::No || !use_color {
+        return None;
+    }
+
+    // `-w`/`-b`/etc. already normalise the diff content; the move-detection ws
+    // flags add on top of that. (Git applies both independently.)
+    let _ = ws_mode;
+
+    Some((mode, ws_flags, MovedColors::load(config)))
+}
+
+/// Emit a colored `@@ ... @@[ funcname]` hunk header the way Git does: the
+/// `@@ -a,b +c,d @@` range is painted with the fraginfo (cyan) color, and a
+/// trailing function-context name is painted separately with `ctx_color`
+/// (Git's context color, empty by default → `<RESET>name<RESET>`).
+fn write_colored_hunk_header(out: &mut impl Write, line: &str, ctx_color: &str) -> Result<()> {
+    // Find the closing `@@` of the range. The header is `@@ <ranges> @@`,
+    // optionally followed by ` <funcname>`.
+    if let Some(close) = line.get(2..).and_then(|s| s.find("@@")).map(|i| i + 2) {
+        let range_end = close + 2; // index just past the second `@@`
+        let range = &line[..range_end];
+        let rest = &line[range_end..]; // may be "" or " funcname"
+        if let Some(func) = rest.strip_prefix(' ') {
+            if func.is_empty() {
+                writeln!(out, "{CYAN}{range}{RESET} ")?;
+            } else {
+                // Git paints the funcname with the (empty by default) context
+                // color, which still emits a leading reset: `<RESET> <RESET>name<RESET>`.
+                let func_color = if ctx_color.is_empty() {
+                    RESET
+                } else {
+                    ctx_color
+                };
+                writeln!(out, "{CYAN}{range}{RESET} {func_color}{func}{RESET}")?;
+            }
+        } else {
+            // No funcname (rest should be empty).
+            writeln!(out, "{CYAN}{range}{rest}{RESET}")?;
+        }
+    } else {
+        writeln!(out, "{CYAN}{line}{RESET}")?;
+    }
+    Ok(())
+}
+
 fn write_colored_patch(
     out: &mut impl Write,
     patch: &str,
@@ -8403,7 +8904,10 @@ fn write_colored_patch_ws(
         } else if line.starts_with("@@") {
             last_was_plus_hunk_line = false;
             last_line_kind = 0;
-            writeln!(out, "{CYAN}{line_no_nl}{RESET}")?;
+            // Git colors only the `@@ ... @@` range with FRAGINFO (cyan); a
+            // trailing funcname is emitted separately with the (empty) context
+            // color: `<CYAN>@@ ... @@<RESET> <RESET>func<RESET>`.
+            write_colored_hunk_header(out, line_no_nl, "")?;
         } else if let Some(ctx) = ws {
             // ws-aware content line emission.
             let mut buf = String::new();

@@ -143,6 +143,287 @@ fn histogram_unified_body_raw(
     out
 }
 
+/// Build the unified-diff body (no `---`/`+++` header) using Git's histogram
+/// algorithm, but applying `--ignore-blank-lines` / `-I` semantics through a
+/// faithful port of Git's xdiff change-record machinery
+/// (`xdl_mark_ignorable_lines` + `xdl_get_hunk` + `xdl_emit_diff`).
+///
+/// `is_ignorable_change` is called with the slices of removed and added lines
+/// for one change record (each item is the line text without its trailing
+/// newline); it returns `true` when the whole change is ignorable (Git's
+/// `xch->ignore`). Ignorable changes that are far from substantive changes are
+/// dropped, and hunk boundaries are computed with Git's `max_ignorable`
+/// distance rules so the line numbers and surviving context match Git exactly.
+///
+/// Returns the body only; an empty string means no substantive change survives.
+/// Optional `--function-context` (`-W`) hunk expansion is applied *after*
+/// ignorable change-record pruning so the boundaries/funcname header match Git.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn histogram_unified_body_ignore_fc<F>(
+    old_content: &str,
+    new_content: &str,
+    context_lines: usize,
+    inter_hunk_context: usize,
+    function_context: bool,
+    funcname_matcher: Option<&FuncnameMatcher>,
+    is_ignorable_change: F,
+) -> String
+where
+    F: Fn(&[&str], &[&str]) -> bool,
+{
+    use imara_diff::{Algorithm, Diff, Hunk, InternedInput};
+    use std::fmt::Write as _;
+
+    let input = InternedInput::new(old_content, new_content);
+    let mut diff = Diff::compute(Algorithm::Histogram, &input);
+    diff.postprocess_lines(&input);
+
+    let raw_hunks: Vec<Hunk> = diff.hunks().collect();
+    if raw_hunks.is_empty() {
+        return String::new();
+    }
+
+    let before_len = input.before.len() as i64;
+    let after_len = input.after.len() as i64;
+    let ctxlen = context_lines as i64;
+    let interhunk = inter_hunk_context as i64;
+    // Git's xdl_get_hunk fuse limit: 2*ctxlen + interhunkctxlen.
+    let max_common = ctxlen.saturating_add(ctxlen).saturating_add(interhunk);
+    let max_ignorable = ctxlen;
+
+    // A change record mirrors Git's xdchange_t.
+    struct Change {
+        i1: i64,
+        chg1: i64,
+        i2: i64,
+        chg2: i64,
+        ignore: bool,
+    }
+
+    let mut changes: Vec<Change> = Vec::with_capacity(raw_hunks.len());
+    for h in &raw_hunks {
+        let i1 = h.before.start as i64;
+        let chg1 = (h.before.end - h.before.start) as i64;
+        let i2 = h.after.start as i64;
+        let chg2 = (h.after.end - h.after.start) as i64;
+        let removed: Vec<&str> = input.before[h.before.start as usize..h.before.end as usize]
+            .iter()
+            .map(|&t| input.interner[t])
+            .collect();
+        let added: Vec<&str> = input.after[h.after.start as usize..h.after.end as usize]
+            .iter()
+            .map(|&t| input.interner[t])
+            .collect();
+        let ignore = is_ignorable_change(&removed, &added);
+        changes.push(Change {
+            i1,
+            chg1,
+            i2,
+            chg2,
+            ignore,
+        });
+    }
+
+    // Helper to fetch a line of either side (token interner over lines).
+    let before_line = |idx: i64| -> &str { input.interner[input.before[idx as usize]] };
+    let after_line = |idx: i64| -> &str { input.interner[input.after[idx as usize]] };
+
+    // Port of xdl_get_hunk: starting at change index `start`, return
+    // `(new_start, last)` — the possibly-advanced first change index (leading
+    // ignorable changes dropped) and the index of the last change to include in
+    // this hunk — or `None` when the leading ignorable changes are all dropped
+    // and nothing remains.
+    let get_hunk = |start: usize| -> Option<(usize, usize)> {
+        // Remove ignorable changes that are too far before other changes.
+        // Faithful port of xdl_get_hunk's leading loop: walk every leading
+        // ignorable change; whenever its successor is absent or far enough away
+        // (>= max_ignorable), advance the hunk start past it. `scr` is the new
+        // start index, or `changes.len()` when everything is dropped.
+        let mut scr = start;
+        let mut xchp = start;
+        while xchp < changes.len() && changes[xchp].ignore {
+            let next = xchp + 1;
+            if next >= changes.len()
+                || changes[next].i1 - (changes[xchp].i1 + changes[xchp].chg1) >= max_ignorable
+            {
+                scr = next;
+            }
+            xchp = next;
+        }
+        if scr >= changes.len() {
+            return None;
+        }
+
+        let mut lxch = scr;
+        let mut ignored: i64 = 0;
+        let mut xchp = scr;
+        let mut idx = scr + 1;
+        while idx < changes.len() {
+            let xch = &changes[idx];
+            let prev = &changes[xchp];
+            let distance = xch.i1 - (prev.i1 + prev.chg1);
+            if distance > max_common {
+                break;
+            }
+            if distance < max_ignorable && (!xch.ignore || lxch == xchp) {
+                lxch = idx;
+                ignored = 0;
+            } else if distance < max_ignorable && xch.ignore {
+                ignored += xch.chg2;
+            } else if lxch != xchp
+                && xch.i1 + ignored - (changes[lxch].i1 + changes[lxch].chg1) > max_common
+            {
+                break;
+            } else if !xch.ignore {
+                lxch = idx;
+                ignored = 0;
+            } else {
+                ignored += xch.chg2;
+            }
+            xchp = idx;
+            idx += 1;
+        }
+        Some((scr, lxch))
+    };
+
+    fn push_line(out: &mut String, prefix: char, text: &str) {
+        out.push(prefix);
+        out.push_str(text);
+        if !text.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+
+    // Git hunk header range (xdl_emit_hunk_hdr): `,count` part omitted when 1.
+    fn fmt_side(start: i64, count: i64) -> String {
+        if count == 1 {
+            format!("{start}")
+        } else {
+            format!("{start},{count}")
+        }
+    }
+
+    let mut out = String::new();
+    let mut cursor = 0usize;
+    while cursor < changes.len() {
+        let Some((xch_idx, xche_idx)) = get_hunk(cursor) else {
+            break;
+        };
+        let xch = &changes[xch_idx];
+        let xche = &changes[xche_idx];
+
+        // pre-context
+        let mut s1 = (xch.i1 - ctxlen).max(0);
+        let mut s2 = (xch.i2 - ctxlen).max(0);
+        // post-context (clamped so it does not run past either side's EOF).
+        let mut lctx = ctxlen;
+        lctx = lctx.min(before_len - (xche.i1 + xche.chg1));
+        lctx = lctx.min(after_len - (xche.i2 + xche.chg2));
+        let mut e1 = xche.i1 + xche.chg1 + lctx;
+        let mut e2 = xche.i2 + xche.chg2 + lctx;
+
+        // `--function-context`: expand the hunk up to the enclosing function's
+        // header and down to the line before the next function (Git's
+        // XDL_EMIT_FUNCCONTEXT in xemit.c), using the already ignore-pruned
+        // change boundaries.
+        if function_context {
+            // Upward: find the function line at or before xch.i1, then climb to
+            // the start of that function (past non-empty non-func lines).
+            let mut fs1 = xch.i1;
+            while fs1 >= 0 && !is_func_line(before_line(fs1), funcname_matcher) {
+                fs1 -= 1;
+            }
+            while fs1 > 0
+                && before_line(fs1 - 1).trim().is_empty() == false
+                && !is_func_line(before_line(fs1 - 1), funcname_matcher)
+            {
+                fs1 -= 1;
+            }
+            if fs1 < 0 {
+                fs1 = 0;
+            }
+            if fs1 < s1 {
+                s2 = (s2 - (s1 - fs1)).max(0);
+                s1 = fs1;
+            }
+            // Downward: find the next function line after the hunk end, climb up
+            // past trailing empty lines, and extend e1/e2 to it.
+            let end1 = xche.i1 + xche.chg1;
+            let mut fe1 = end1;
+            while fe1 < before_len && !is_func_line(before_line(fe1), funcname_matcher) {
+                fe1 += 1;
+            }
+            while fe1 > 0 && before_line(fe1 - 1).trim().is_empty() {
+                fe1 -= 1;
+            }
+            if fe1 > before_len {
+                fe1 = before_len;
+            }
+            if fe1 > e1 {
+                e2 = (e2 + (fe1 - e1)).min(after_len);
+                e1 = fe1;
+            }
+        }
+
+        let _ = writeln!(
+            out,
+            "@@ -{} +{} @@",
+            fmt_side(s1 + 1, e1 - s1),
+            fmt_side(s2 + 1, e2 - s2)
+        );
+
+        // Emit pre-context from the new side.
+        let mut s2c = s2;
+        while s2c < xch.i2 {
+            push_line(&mut out, ' ', after_line(s2c));
+            s2c += 1;
+        }
+
+        // Emit each change record and the context between merged records.
+        let mut s1c = xch.i1;
+        let mut s2c = xch.i2;
+        let mut k = xch_idx;
+        loop {
+            let c = &changes[k];
+            // Context between previous and current change atom.
+            while s1c < c.i1 && s2c < c.i2 {
+                push_line(&mut out, ' ', after_line(s2c));
+                s1c += 1;
+                s2c += 1;
+            }
+            // Removed lines from old side.
+            let mut r = c.i1;
+            while r < c.i1 + c.chg1 {
+                push_line(&mut out, '-', before_line(r));
+                r += 1;
+            }
+            // Added lines from new side.
+            let mut a = c.i2;
+            while a < c.i2 + c.chg2 {
+                push_line(&mut out, '+', after_line(a));
+                a += 1;
+            }
+            if k == xche_idx {
+                break;
+            }
+            s1c = c.i1 + c.chg1;
+            s2c = c.i2 + c.chg2;
+            k += 1;
+        }
+
+        // Post-context.
+        let mut s2p = xche.i2 + xche.chg2;
+        while s2p < e2 {
+            push_line(&mut out, ' ', after_line(s2p));
+            s2p += 1;
+        }
+
+        cursor = xche_idx + 1;
+    }
+
+    out
+}
+
 /// Unified diff hunks for Git's histogram algorithm (no `---` / `+++` lines).
 ///
 /// Used by `--no-index` when whitespace normalization is off so the patch matches upstream Git.
@@ -174,6 +455,102 @@ pub fn unified_diff_histogram_with_prefix_and_funcname(
 
     let body =
         histogram_unified_body_raw(old_content, new_content, context_lines, inter_hunk_context);
+
+    let mut output = String::new();
+    if old_path == "/dev/null" {
+        output.push_str("--- /dev/null\n");
+    } else if src_prefix.is_empty() {
+        output.push_str(&format!("--- {old_path}\n"));
+    } else {
+        output.push_str("--- ");
+        output.push_str(&format_diff_path_with_prefix(
+            src_prefix,
+            old_path,
+            quote_path_fully,
+        ));
+        output.push('\n');
+    }
+    if new_path == "/dev/null" {
+        output.push_str("+++ /dev/null\n");
+    } else if dst_prefix.is_empty() {
+        output.push_str(&format!("+++ {new_path}\n"));
+    } else {
+        output.push_str("+++ ");
+        output.push_str(&format_diff_path_with_prefix(
+            dst_prefix,
+            new_path,
+            quote_path_fully,
+        ));
+        output.push('\n');
+    }
+
+    let old_lines: Vec<&str> = old_content.lines().collect();
+    for hunk_str in imara_unified_hunk_slices(&body) {
+        if hunk_str.is_empty() {
+            continue;
+        }
+        if let Some(first_newline) = hunk_str.find('\n') {
+            let header_line = &hunk_str[..first_newline];
+            let rest = &hunk_str[first_newline..];
+            if let Some(func_ctx) =
+                extract_function_context(header_line, &old_lines, funcname_matcher)
+            {
+                output.push_str(header_line);
+                output.push(' ');
+                output.push_str(&func_ctx);
+                output.push_str(rest);
+            } else {
+                output.push_str(hunk_str);
+            }
+        } else {
+            output.push_str(hunk_str);
+        }
+    }
+
+    output
+}
+
+/// Full unified diff (`---` / `+++` / hunks) using Git's histogram algorithm,
+/// applying `--ignore-blank-lines` / `-I` change-record suppression
+/// ([`histogram_unified_body_ignore`]) and then attaching function-name hunk
+/// headers exactly like [`unified_diff_histogram_with_prefix_and_funcname`].
+///
+/// `is_ignorable_change` is given the removed/added line slices (without
+/// trailing newlines) of one change record and returns whether the whole change
+/// is ignorable. Returns an empty string when no substantive change survives so
+/// the caller can hide the file entry.
+#[allow(clippy::too_many_arguments)]
+pub fn unified_diff_histogram_ignore_with_prefix_and_funcname<F>(
+    old_content: &str,
+    new_content: &str,
+    old_path: &str,
+    new_path: &str,
+    context_lines: usize,
+    inter_hunk_context: usize,
+    src_prefix: &str,
+    dst_prefix: &str,
+    funcname_matcher: Option<&FuncnameMatcher>,
+    quote_path_fully: bool,
+    function_context: bool,
+    is_ignorable_change: F,
+) -> String
+where
+    F: Fn(&[&str], &[&str]) -> bool,
+{
+    use crate::quote_path::format_diff_path_with_prefix;
+
+    let body = histogram_unified_body_ignore_fc(
+        old_content,
+        new_content,
+        context_lines,
+        inter_hunk_context,
+        function_context,
+        funcname_matcher,
+        is_ignorable_change,
+    );
+    if body.is_empty() {
+        return String::new();
+    }
 
     let mut output = String::new();
     if old_path == "/dev/null" {
@@ -3385,21 +3762,9 @@ pub fn unified_diff_with_prefix_and_funcname_and_algorithm(
     indent_heuristic: bool,
     quote_path_fully: bool,
 ) -> String {
-    if use_git_histogram {
-        return unified_diff_histogram_with_prefix_and_funcname(
-            old_content,
-            new_content,
-            old_path,
-            new_path,
-            context_lines,
-            inter_hunk_context,
-            src_prefix,
-            dst_prefix,
-            funcname_matcher,
-            quote_path_fully,
-        );
-    }
-
+    // `--function-context` (`-W`) expansion must apply regardless of the line
+    // algorithm; the histogram body printer below does not do it, so route `-W`
+    // through the function-context emitter first (t4015 #136).
     if function_context {
         return unified_diff_with_function_context(
             old_content,
@@ -3413,6 +3778,21 @@ pub fn unified_diff_with_prefix_and_funcname_and_algorithm(
             funcname_matcher,
             algorithm,
             indent_heuristic,
+            quote_path_fully,
+        );
+    }
+
+    if use_git_histogram {
+        return unified_diff_histogram_with_prefix_and_funcname(
+            old_content,
+            new_content,
+            old_path,
+            new_path,
+            context_lines,
+            inter_hunk_context,
+            src_prefix,
+            dst_prefix,
+            funcname_matcher,
             quote_path_fully,
         );
     }
@@ -3590,7 +3970,7 @@ fn unified_diff_with_function_context(
     quote_path_fully: bool,
 ) -> String {
     use crate::quote_path::format_diff_path_with_prefix;
-    use similar::{group_diff_ops, udiff::UnifiedDiffHunk, TextDiff};
+    use similar::{udiff::UnifiedDiffHunk, TextDiff};
 
     let diff = TextDiff::configure()
         .algorithm(algorithm)
@@ -3601,11 +3981,17 @@ fn unified_diff_with_function_context(
     let n_old = old_lines.len();
     let n_new = new_lines.len();
 
-    let group_radius = context_lines
+    // Group changes the way Git's xdl_get_hunk does: merge while the unchanged
+    // gap is at most `2*context + inter_hunk_context`. `similar::group_diff_ops`
+    // splits only at gap > `2*radius`, which over-merges changes in *different*
+    // functions (e.g. a leading insertion and a body change) into one hunk and
+    // then over-expands the function context (t4015 #136). Use the gap-correct
+    // grouping (same as the non-function-context path).
+    let max_common_gap = context_lines
         .saturating_mul(2)
         .saturating_add(inter_hunk_context);
     let all_ops = diff.ops().to_vec();
-    let op_groups = group_diff_ops(all_ops.clone(), group_radius);
+    let op_groups = group_diff_ops_gap(all_ops.clone(), context_lines, max_common_gap);
 
     let mut ranges: Vec<(usize, usize, usize, usize)> = Vec::new();
 
@@ -3624,7 +4010,7 @@ fn unified_diff_with_function_context(
             .next()
             .unwrap_or("")
             .trim_end_matches(['\r', '\n']);
-        let Some((base_s1, base_e1, _base_s2, _base_e2)) =
+        let Some((base_s1, _base_e1, _base_s2, _base_e2)) =
             parse_unified_hunk_header_ranges(header_line)
         else {
             continue;
@@ -3651,7 +4037,12 @@ fn unified_diff_with_function_context(
                 s2 = map_old_line_to_new(&all_ops, s1, n_new).min(n_new);
             }
 
-            let mut e1 = (base_e1 + ctx).min(n_old);
+            // `i1_end` is the exclusive end of the changed region; its post-image
+            // context is `ctx` lines (Git's `xche->i1 + xche->chg1 + lctx`). The
+            // hunk's `base_e1` already includes the group's trailing context, so
+            // use the change end + ctx directly to avoid double-counting context
+            // (which over-extended the hunk and merged separate functions — t4015 #136).
+            let mut e1 = (i1_end + ctx).min(n_old);
             let mut e2 = map_old_line_to_new(&all_ops, e1, n_new).min(n_new);
             let fe1 = expand_func_post_end(e1, i1_end, n_old, &old_lines, funcname_matcher);
             if fe1 > e1 {
@@ -3663,6 +4054,22 @@ fn unified_diff_with_function_context(
 
         ranges.push((s1, e1, s2, e2));
     }
+
+    // Merge ranges whose function-context expansion made them overlap on the old
+    // side (Git emits a single hunk in that case).
+    ranges.sort_by_key(|r| (r.0, r.2));
+    let mut merged: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(ranges.len());
+    for (s1, e1, s2, e2) in ranges {
+        if let Some(last) = merged.last_mut() {
+            if s1 < last.1 {
+                last.1 = last.1.max(e1);
+                last.3 = last.3.max(e2);
+                continue;
+            }
+        }
+        merged.push((s1, e1, s2, e2));
+    }
+    let ranges = merged;
 
     let mut output = String::new();
     if old_path == "/dev/null" {

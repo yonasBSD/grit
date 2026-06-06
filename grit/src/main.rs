@@ -115,6 +115,12 @@ fn main() {
                 exit_code = 128 + 13;
             } else if let Some(ex) = e.downcast_ref::<crate::explicit_exit::SilentNonZeroExit>() {
                 exit_code = ex.code;
+            } else if error_chain_has_corrupt_cache_tree(&e) {
+                // Match Git: `error: corrupted cache-tree has entries not present in index`.
+                // Printed verbatim (not as `fatal:`) regardless of any wrapping context, so
+                // test_grep on the bare message succeeds (t4058-diff-duplicates).
+                eprintln!("error: corrupted cache-tree has entries not present in index");
+                exit_code = 128;
             } else if let Some(msg) = path_error_fatal_message(&e) {
                 eprintln!("fatal: {msg}");
                 exit_code = 128;
@@ -186,6 +192,15 @@ fn verbatim_lib_error_message(err: &anyhow::Error) -> Option<String> {
         }
     }
     None
+}
+
+fn error_chain_has_corrupt_cache_tree(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<grit_lib::error::Error>(),
+            Some(grit_lib::error::Error::CacheTreeCorrupt)
+        )
+    })
 }
 
 fn path_error_fatal_message(err: &anyhow::Error) -> Option<String> {

@@ -608,9 +608,19 @@ pub fn run(mut args: Args) -> Result<()> {
     let mut rev_tokens: Vec<String> = positive_specs.iter().map(|s| (*s).clone()).collect();
     let max_count_flag = if args.last_one { Some(1) } else { None };
     let max_count_from_argv = strip_leading_neg_count(&mut rev_tokens);
+    // A leading `-N` count token placed after `--` (e.g. `format-patch -- -1`) is consumed by clap
+    // into the pathspec. When no revisions/count were given on the left, treat it as the commit
+    // count rather than a (non-matching) pathspec so `-N` works regardless of `--` placement.
+    let mut pathspec_tokens: Vec<String> = args.pathspec.clone();
+    let max_count_from_pathspec = if positive_specs.is_empty() && max_count_from_argv.is_none() {
+        strip_leading_neg_count(&mut pathspec_tokens)
+    } else {
+        None
+    };
     let max_count = max_count_flag
         .or(args.grit_format_patch_max_count)
-        .or(max_count_from_argv);
+        .or(max_count_from_argv)
+        .or(max_count_from_pathspec);
     let no_revs = positive_specs.is_empty() && exclude_specs.is_empty();
     // With no revision range and no count, git defaults to `@{upstream}..HEAD`. When the current
     // branch has a configured upstream, format the commits since it; otherwise there is nothing to
@@ -629,7 +639,7 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     // Pathspec after `--` limits which commits/diffs are shown.
-    let pathspec: Vec<String> = args.pathspec.clone();
+    let pathspec: Vec<String> = pathspec_tokens.clone();
 
     // Determine the list of commits to format.
     let mut commits = if default_no_upstream {
@@ -3800,14 +3810,17 @@ fn resolve_base_and_prereqs(
             .with_context(|| format!("unknown base revision '{base_spec}'"))?
     };
 
-    // Validate: base must not be in the revision list.
-    if commits.iter().any(|(o, _)| *o == base_oid) {
-        anyhow::bail!("base commit should be the ancestor of revision list but it is not");
+    // Validate the base commit the way Git does in `get_base_commit` (builtin/log.c): the base must
+    // be an ancestor of the *pairwise-reduced merge base* of every commit in the patch series, not
+    // merely of the first patch's parent. For a criss-cross history (e.g. `Z..X` across a merge)
+    // this correctly rejects an inner commit like P or Z while accepting the true fork point.
+    let rev0 = reduced_pairwise_merge_base(repo, commits)?;
+    if !is_ancestor(repo, &base_oid, &rev0)? {
+        anyhow::bail!("base commit should be the ancestor of revision list");
     }
-    // Validate: base must be an ancestor of the first patch's parent (or the patch itself).
-    let tip = first_parent.unwrap_or(*first_oid);
-    if base_oid != tip && !is_ancestor(repo, &base_oid, &tip)? {
-        anyhow::bail!("base commit should be the ancestor of revision list but it is not");
+    // Validate: base must not be one of the commits in the revision list.
+    if commits.iter().any(|(o, _)| *o == base_oid) {
+        anyhow::bail!("base commit shouldn't be in revision list");
     }
 
     // Prerequisite patch-ids: commits in base..first_parent (oldest first).
@@ -3881,6 +3894,36 @@ fn compute_auto_base(
 fn is_ancestor(repo: &Repository, ancestor: &ObjectId, descendant: &ObjectId) -> Result<bool> {
     let bases = merge_bases_first_vs_rest(repo, *ancestor, &[*descendant])?;
     Ok(bases.iter().any(|b| b == ancestor))
+}
+
+/// Reduce the patch series to a single representative commit via pairwise merge bases, matching
+/// Git's `get_base_commit` (builtin/log.c): repeatedly replace each adjacent pair with their merge
+/// base until one commit remains. Each pair must have exactly one merge base, otherwise Git errors
+/// with "failed to find exact merge base".
+fn reduced_pairwise_merge_base(
+    repo: &Repository,
+    commits: &[(ObjectId, CommitData)],
+) -> Result<ObjectId> {
+    let mut rev: Vec<ObjectId> = commits.iter().map(|(o, _)| *o).collect();
+    if rev.is_empty() {
+        anyhow::bail!("base commit should be the ancestor of revision list");
+    }
+    while rev.len() > 1 {
+        let mut next: Vec<ObjectId> = Vec::with_capacity(rev.len().div_ceil(2));
+        let half = rev.len() / 2;
+        for i in 0..half {
+            let bases = merge_bases_first_vs_rest(repo, rev[2 * i], &[rev[2 * i + 1]])?;
+            if bases.len() != 1 {
+                anyhow::bail!("failed to find exact merge base");
+            }
+            next.push(bases[0]);
+        }
+        if rev.len() % 2 == 1 {
+            next.push(rev[rev.len() - 1]);
+        }
+        rev = next;
+    }
+    Ok(rev[0])
 }
 
 /// `Interdiff against v<N-1>:` label, or `None` if reroll is not an integer >= 2.

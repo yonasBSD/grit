@@ -3290,10 +3290,21 @@ fn fetch_remote(
 
                 if should_prune && local_ref.starts_with("refs/remotes/") {
                     let local_ref_path = git_dir.join(local_ref);
-                    if local_ref_path.is_dir() {
-                        let conflict_prefix = format!("{local_ref}/");
-                        let stale_refs = refs::list_refs(git_dir, &conflict_prefix)?;
+                    // The incoming flat ref (e.g. `refs/remotes/origin/dir`) collides with an existing
+                    // ref *namespace* (`refs/remotes/origin/dir/file`). Such child refs may be stored
+                    // loose (a real directory on disk) or packed (only in `packed-refs`, with no
+                    // directory present — the common case right after `git clone`, which packs all
+                    // tracking refs). List both via `list_refs` so the packed case is also detected;
+                    // `is_dir()` alone misses it (t5510 'branchname D/F conflict resolved by --prune').
+                    let conflict_prefix = format!("{local_ref}/");
+                    let stale_refs = refs::list_refs(git_dir, &conflict_prefix)?;
+                    if !stale_refs.is_empty() {
                         for (stale_ref, stale_oid) in stale_refs {
+                            // Only prune children the remote no longer advertises into this
+                            // namespace; a child still mapped this fetch is updated separately.
+                            if updated_refs.iter().any(|r| r == &stale_ref) {
+                                continue;
+                            }
                             apply_single_ref_delete(
                                 args,
                                 git_dir,

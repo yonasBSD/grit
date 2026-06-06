@@ -1421,7 +1421,14 @@ pub fn run(mut args: Args) -> Result<()> {
     // Try as a commit (detached HEAD)
     match resolve_to_commit(&repo, &target) {
         Ok(oid) => {
-            let result = detach_head_with_label(&repo, &oid, switch_force, &target);
+            // `checkout -m <tag-or-commit>` detaches HEAD at the target but still re-applies local
+            // modifications via a three-way merge, matching Git's `merge_working_tree` (which runs
+            // the same merge for branch and detached checkouts). `-f` discards local changes.
+            let result = if branch_merge_wanted && !switch_force {
+                detach_head_with_merge(&repo, &oid, switch_force, &target)
+            } else {
+                detach_head_with_label(&repo, &oid, switch_force, &target)
+            };
             if result.is_ok() && RECURSE_SUBMODULES.with(|r| r.get()) && target == "first" {
                 let _ = crate::commands::submodule::unset_linked_worktree_submodule_core_worktrees(
                     &repo,
@@ -2996,6 +3003,96 @@ fn detach_head_inner(
     Ok(())
 }
 
+/// Detach HEAD at `oid` while carrying local changes via a three-way merge (`checkout -m <commit>`).
+///
+/// `git checkout -m <tag-or-commit>` behaves like `checkout -m <branch>` except HEAD ends up
+/// detached at the target commit instead of pointing at a branch ref. The working-tree merge is
+/// identical: local modifications relative to the current HEAD are re-applied on top of the target
+/// tree (with the merge base of the two tips as ancestor), and conflicts leave unmerged index
+/// stages. This mirrors upstream `merge_working_tree` (builtin/checkout.c), which runs the same
+/// merge for both branch and detached checkouts.
+///
+/// # Parameters
+/// - `repo`: open repository handle.
+/// - `oid`: commit object the detached HEAD should point at after the merge.
+/// - `force`: when true, discard local changes (plain reset to the target tree).
+/// - `label`: human-readable revision name used in reflog/detached-HEAD messages.
+///
+/// # Errors
+/// Returns an error if the index is unmerged, staged changes collide with the target, or any I/O
+/// during the merge/HEAD update fails.
+fn detach_head_with_merge(
+    repo: &Repository,
+    oid: &ObjectId,
+    force: bool,
+    label: &str,
+) -> Result<()> {
+    let head = resolve_head(&repo.git_dir)?;
+    let old_head_commit = head.oid().copied();
+    let already_at_target = head.oid() == Some(oid);
+
+    // Nothing to merge if we are already sitting on the target commit and the user did not force a
+    // rebuild; fall back to the plain detach so messages/reflog match.
+    if already_at_target && !force {
+        return detach_head_with_label(repo, oid, force, label);
+    }
+
+    let recurse = RECURSE_SUBMODULES.with(|r| r.get());
+    let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let style = match config
+        .get("merge.conflictstyle")
+        .as_deref()
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("diff3" | "zdiff3") => ConflictStyle::Diff3,
+        _ => ConflictStyle::Merge,
+    };
+    let old_label = match &head {
+        HeadState::Branch { short_name, .. } => short_name.clone(),
+        HeadState::Detached { oid } => {
+            abbreviate_object_id(repo, *oid, 7).unwrap_or_else(|_| oid.to_hex()[..7].to_string())
+        }
+        _ => "ancestor".to_string(),
+    };
+    let presentation = TreeMergeConflictPresentation {
+        label_ours: label,
+        label_theirs: TheirsConflictLabel::Fixed("local"),
+        label_base: old_label.as_str(),
+        style,
+        checkout_merge: true,
+    };
+
+    with_checkout_smudge_context(None, oid.to_string(), || {
+        merge_branch_working_tree(repo, &head, oid, force, presentation, recurse)
+    })?;
+
+    if let HeadState::Detached { oid: old_detached } = head {
+        print_detached_checkout_leave_message(repo, old_detached, *oid)?;
+    }
+
+    let old_oid = old_head_commit.unwrap_or_else(ObjectId::zero);
+    let from_desc = match &head {
+        HeadState::Branch { short_name, .. } => short_name.clone(),
+        HeadState::Detached { oid } => oid.to_hex()[..7].to_string(),
+        HeadState::Invalid => "unknown".to_string(),
+    };
+    let msg = format!("checkout: moving from {} to {}", from_desc, label);
+    write_checkout_reflog(repo, &head, &old_oid, oid, &msg);
+
+    std::fs::write(repo.git_dir.join("HEAD"), format!("{oid}\n"))?;
+    remove_branch_state(&repo.git_dir);
+
+    run_post_checkout_hook(repo, old_head_commit.as_ref(), oid, true)?;
+    print_detached_head_message_inner(
+        repo,
+        oid,
+        matches!(head, HeadState::Detached { .. }),
+        Some(label),
+    )?;
+    Ok(())
+}
+
 /// True if a staged path cannot coexist with the target tree's paths (D/F mismatch).
 ///
 /// Git drops the carry-over of a staged entry when it would imply both a file and a
@@ -3096,6 +3193,9 @@ fn switch_to_tree(
     new_index.entries = new_entries;
     new_index.clear_resolve_undo();
     new_index.sort();
+    // A duplicate-entry tree (t4058) flattens to several identical-path entries; Git's index keeps
+    // only one per path. Restore that invariant so a subsequent status is consistent.
+    new_index.dedup_paths_keep_last();
 
     let work_units = new_index
         .entries
@@ -3716,29 +3816,32 @@ pub(crate) fn check_untracked_overwrite(
                 continue;
             }
             let abs_path = work_tree.join(rel_path.as_ref());
-            if !abs_path.exists() && !abs_path.is_symlink() {
-                // The full target path is absent, but an untracked *ancestor* may be a file or
-                // symlink standing where the target needs a directory (e.g. target turns `a/b`
-                // back into a directory holding `a/b/c/d`, while `a/b` is an untracked file or
-                // symlink on disk). Git refuses such a checkout via check_leading_path.
-                if let Some(blocker) =
-                    untracked_leading_path_in_the_way(&work_tree, rel_str, &old_paths)
-                {
-                    let blocker_ignored = match &mut ignore_matcher {
-                        Some(m) => {
-                            let blocker_abs = work_tree.join(&blocker);
-                            let is_dir = blocker_abs.is_dir() && !blocker_abs.is_symlink();
-                            matches!(
-                                m.check_path(repo, Some(old_index), &blocker, is_dir),
-                                Ok((true, _))
-                            )
-                        }
-                        None => false,
-                    };
-                    if !blocker_ignored {
-                        untracked_conflicts.push(blocker);
+            // An untracked *ancestor* may be a file or symlink standing where the target needs a
+            // directory (e.g. target turns `a/b` back into a directory holding `a/b/c/d`, while
+            // `a/b` is an untracked file or symlink on disk). Git refuses such a checkout via
+            // check_leading_path. This must be checked even when `abs_path.exists()` reports true
+            // by resolving the full path *through* the untracked symlink ancestor (e.g. `a/b` is a
+            // symlink to `b-2`, so `a/b/c/d` resolves to the still-present `a/b-2/c/d`).
+            if let Some(blocker) =
+                untracked_leading_path_in_the_way(&work_tree, rel_str, &old_paths)
+            {
+                let blocker_ignored = match &mut ignore_matcher {
+                    Some(m) => {
+                        let blocker_abs = work_tree.join(&blocker);
+                        let is_dir = blocker_abs.is_dir() && !blocker_abs.is_symlink();
+                        matches!(
+                            m.check_path(repo, Some(old_index), &blocker, is_dir),
+                            Ok((true, _))
+                        )
                     }
+                    None => false,
+                };
+                if !blocker_ignored {
+                    untracked_conflicts.push(blocker);
                 }
+                continue;
+            }
+            if !abs_path.exists() && !abs_path.is_symlink() {
                 continue;
             }
             if abs_path.exists() || abs_path.is_symlink() {

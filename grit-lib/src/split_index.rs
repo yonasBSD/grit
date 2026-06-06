@@ -404,6 +404,28 @@ pub(crate) fn git_test_split_index_env() -> bool {
         .unwrap_or(false)
 }
 
+/// Whether cache-tree verification should run on index write.
+///
+/// Upstream's `write_locked_index` gates this on `git_env_bool("GIT_TEST_CHECK_CACHE_TREE", 0)`, but
+/// the upstream test harness (`test-lib.sh`) exports the variable as `true` by default — so in
+/// practice the check is *on* unless a test explicitly sets it to a falsy value. Grit mirrors that
+/// effective default: verification runs unless `GIT_TEST_CHECK_CACHE_TREE` is explicitly falsy
+/// (`0`/`false`/`no`/empty). This only ever rejects a genuinely corrupt cache-tree (e.g. one primed
+/// from a tree with duplicate path entries — `t4058-diff-duplicates`); well-formed trees always
+/// verify cleanly.
+pub(crate) fn git_test_check_cache_tree() -> bool {
+    match std::env::var("GIT_TEST_CHECK_CACHE_TREE") {
+        Ok(v) => {
+            let t = v.trim();
+            !(t.is_empty()
+                || t == "0"
+                || t.eq_ignore_ascii_case("false")
+                || t.eq_ignore_ascii_case("no"))
+        }
+        Err(_) => true,
+    }
+}
+
 pub(crate) fn git_test_split_index_force_reorder(base_oid: &ObjectId) -> bool {
     git_test_split_index_env() && (base_oid.as_bytes()[0] & 15) < 6
 }
@@ -561,6 +583,14 @@ pub(crate) fn write_index_file_split(
     request: WriteSplitIndexRequest,
     skip_hash: bool,
 ) -> Result<()> {
+    // Mirror upstream `write_locked_index`: under GIT_TEST_CHECK_CACHE_TREE, verify the cache-tree
+    // against the index before persisting. A duplicate-entry tree (t4058) produces a cache-tree
+    // whose entry counts exceed the deduplicated index, which must abort the write with the
+    // canonical "corrupted cache-tree" error rather than silently writing a broken index.
+    if git_test_check_cache_tree() {
+        crate::write_tree::verify_cache_tree(index)?;
+    }
+
     let want_split = request.want_write_split(cfg, index);
 
     let shared_repo = parse_shared_repository_perm(cfg.get("core.sharedRepository").as_deref());
