@@ -2739,6 +2739,22 @@ fn initialize_partial_clone_state_http(
     Ok(())
 }
 
+/// Compute the local directory name for a clone, matching Git's `git clone` behavior.
+///
+/// When `--directory` / a positional target is given, Git strips trailing slashes from it;
+/// otherwise it guesses a "humanish" name from the raw repository URL via `git_url_basename`
+/// (`git/dir.c`). The `--bare` clone appends a `.git` suffix unless `--mirror` is also set
+/// (mirror clones keep the guessed name without the suffix), so we pass `is_bare` only when
+/// `args.bare && !args.mirror`.
+fn clone_target_dir_name(args: &Args) -> Result<String> {
+    if let Some(ref d) = args.directory {
+        return Ok(d.trim_end_matches('/').to_string());
+    }
+    let is_bare = args.bare && !args.mirror;
+    grit_lib::transport_path::git_url_basename(&args.repository, false, is_bare)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 /// Check whether a URL looks like an SSH-style `host:/path` address.
 ///
 /// Returns `false` for local paths, `file://` URLs, or URLs containing `://`.
@@ -2810,26 +2826,7 @@ fn run_ssh_clone(args: Args) -> Result<()> {
     let server_options = effective_clone_server_options(&args, &remote_name)?;
     let ref_storage = resolved_clone_ref_storage(&args)?;
 
-    let path_for_basename = PathBuf::from(&spec.path);
-    let target_name = if let Some(ref d) = args.directory {
-        d.trim_end_matches('/').to_string()
-    } else {
-        let base = path_for_basename
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let base = base
-            .strip_suffix(".git")
-            .unwrap_or(&base)
-            .trim_end_matches('/')
-            .to_string();
-        if args.bare && !args.mirror {
-            format!("{base}.git")
-        } else {
-            base
-        }
-    };
+    let target_name = clone_target_dir_name(&args)?;
 
     let target_path = PathBuf::from(&target_name);
     let empty_dir_ok = path_is_empty_directory(&target_path);
@@ -3449,24 +3446,7 @@ fn run_ssh_network_clone(args: Args, spec: &crate::ssh_transport::SshUrl) -> Res
     }
 
     let remote_name = resolve_remote_name(&args)?;
-    let path_for_basename = PathBuf::from(&spec.path);
-    let target_name = args.directory.clone().unwrap_or_else(|| {
-        let base = path_for_basename
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let base = base
-            .strip_suffix(".git")
-            .unwrap_or(&base)
-            .trim_end_matches('/')
-            .to_string();
-        if args.bare && !args.mirror {
-            format!("{base}.git")
-        } else {
-            base
-        }
-    });
+    let target_name = clone_target_dir_name(&args)?;
     let target_path = PathBuf::from(&target_name);
     if target_path.exists() && !path_is_empty_directory(&target_path) {
         bail!(

@@ -232,8 +232,10 @@ fn parse_scp_style(u: &str) -> Result<SshUrl> {
 fn normalize_ssh_url_path(path_part: &str) -> Result<String> {
     let path = path_part.split('?').next().unwrap_or(path_part);
     let path = path.trim_start_matches('/');
+    // An empty path is valid for SSH URLs such as `ssh://host/` (Git passes the empty path to
+    // the remote `git-upload-pack` verbatim, and the clone directory falls back to the hostname).
     if path.is_empty() {
-        bail!("ssh: empty path");
+        return Ok(String::new());
     }
     let decoded = percent_decode_path(path)?;
     if decoded.starts_with('-') {
