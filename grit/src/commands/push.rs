@@ -3555,6 +3555,22 @@ fn apply_ref_update(
                 }
                 refs::write_ref(&remote_repo.git_dir, &update.remote_ref, new_oid)
                     .with_context(|| format!("updating remote ref {}", update.remote_ref))?;
+                // receive-pack records a `<ref>@{0} push` reflog entry when the receiving repo has
+                // reflogs enabled for the ref (core.logAllRefUpdates; a bare repo only when set to
+                // true). `append_reflog` is a no-op when auto-creation is disallowed (t5516
+                // 'push into bare respects core.logallrefupdates').
+                let zero = ObjectId::zero();
+                let old_for_log = old_oid_opt.unwrap_or(zero);
+                let identity = crate::commands::update_ref::resolve_reflog_identity(remote_repo);
+                let _ = refs::append_reflog(
+                    &remote_repo.git_dir,
+                    &update.remote_ref,
+                    &old_for_log,
+                    new_oid,
+                    &identity,
+                    "push",
+                    false,
+                );
                 update_remote_tracking_ref(repo, remote_name, &update.remote_ref, Some(*new_oid))?;
             }
 
