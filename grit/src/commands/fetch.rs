@@ -5433,12 +5433,21 @@ fn copy_reachable_objects_internal(
             continue;
         }
         // Prune at objects the destination already has (its "haves"): when the destination already
-        // holds an object, it holds that object's whole closure, so the source need not send or
-        // lazy-fetch it. This matches Git's negotiation and is essential in the promisor case so a
-        // pull that introduces only a new commit does not lazy-fetch unrelated promisor objects the
-        // destination already had (t5710 subsequent fetch, advertise=false: only the new `bar` blob
-        // is fetched, leaving the old `foo` blob missing on the server).
-        if skip_missing_promisor && dst_odb.exists_local(&oid) {
+        // holds an object, it holds that object's whole closure, so the source need not send (or
+        // lazy-fetch) it or its ancestors. This mirrors Git's negotiation, where the client's
+        // "have" lines mark its tips as uninteresting so the remote `pack-objects` never walks
+        // below them.
+        //
+        // For the promisor case it is essential so a pull that introduces only a new commit does
+        // not lazy-fetch unrelated promisor objects the destination already had (t5710 subsequent
+        // fetch, advertise=false: only the new `bar` blob is fetched, leaving the old `foo` blob
+        // missing on the server). For the ordinary local copy it lets a fetch of a new tip whose
+        // history overlaps the destination stop at the shared boundary instead of walking into the
+        // source's missing ancestors — e.g. fetching commit C (parent B) from a repository that is
+        // itself missing B's older ancestors, when the destination already has B's full closure
+        // (t5306 indirectly clone patch_clone). A later `check_connectivity` pass still verifies the
+        // destination really holds the pruned closure, so a genuinely incomplete fetch still fails.
+        if dst_odb.exists_local(&oid) {
             continue;
         }
         let obj = match src_odb.read(&oid) {
