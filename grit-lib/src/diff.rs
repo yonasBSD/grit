@@ -3762,21 +3762,9 @@ pub fn unified_diff_with_prefix_and_funcname_and_algorithm(
     indent_heuristic: bool,
     quote_path_fully: bool,
 ) -> String {
-    if use_git_histogram {
-        return unified_diff_histogram_with_prefix_and_funcname(
-            old_content,
-            new_content,
-            old_path,
-            new_path,
-            context_lines,
-            inter_hunk_context,
-            src_prefix,
-            dst_prefix,
-            funcname_matcher,
-            quote_path_fully,
-        );
-    }
-
+    // `--function-context` (`-W`) expansion must apply regardless of the line
+    // algorithm; the histogram body printer below does not do it, so route `-W`
+    // through the function-context emitter first (t4015 #136).
     if function_context {
         return unified_diff_with_function_context(
             old_content,
@@ -3790,6 +3778,21 @@ pub fn unified_diff_with_prefix_and_funcname_and_algorithm(
             funcname_matcher,
             algorithm,
             indent_heuristic,
+            quote_path_fully,
+        );
+    }
+
+    if use_git_histogram {
+        return unified_diff_histogram_with_prefix_and_funcname(
+            old_content,
+            new_content,
+            old_path,
+            new_path,
+            context_lines,
+            inter_hunk_context,
+            src_prefix,
+            dst_prefix,
+            funcname_matcher,
             quote_path_fully,
         );
     }
@@ -3967,7 +3970,7 @@ fn unified_diff_with_function_context(
     quote_path_fully: bool,
 ) -> String {
     use crate::quote_path::format_diff_path_with_prefix;
-    use similar::{group_diff_ops, udiff::UnifiedDiffHunk, TextDiff};
+    use similar::{udiff::UnifiedDiffHunk, TextDiff};
 
     let diff = TextDiff::configure()
         .algorithm(algorithm)
@@ -3978,11 +3981,17 @@ fn unified_diff_with_function_context(
     let n_old = old_lines.len();
     let n_new = new_lines.len();
 
-    let group_radius = context_lines
+    // Group changes the way Git's xdl_get_hunk does: merge while the unchanged
+    // gap is at most `2*context + inter_hunk_context`. `similar::group_diff_ops`
+    // splits only at gap > `2*radius`, which over-merges changes in *different*
+    // functions (e.g. a leading insertion and a body change) into one hunk and
+    // then over-expands the function context (t4015 #136). Use the gap-correct
+    // grouping (same as the non-function-context path).
+    let max_common_gap = context_lines
         .saturating_mul(2)
         .saturating_add(inter_hunk_context);
     let all_ops = diff.ops().to_vec();
-    let op_groups = group_diff_ops(all_ops.clone(), group_radius);
+    let op_groups = group_diff_ops_gap(all_ops.clone(), context_lines, max_common_gap);
 
     let mut ranges: Vec<(usize, usize, usize, usize)> = Vec::new();
 
@@ -4001,7 +4010,7 @@ fn unified_diff_with_function_context(
             .next()
             .unwrap_or("")
             .trim_end_matches(['\r', '\n']);
-        let Some((base_s1, base_e1, _base_s2, _base_e2)) =
+        let Some((base_s1, _base_e1, _base_s2, _base_e2)) =
             parse_unified_hunk_header_ranges(header_line)
         else {
             continue;
@@ -4028,7 +4037,12 @@ fn unified_diff_with_function_context(
                 s2 = map_old_line_to_new(&all_ops, s1, n_new).min(n_new);
             }
 
-            let mut e1 = (base_e1 + ctx).min(n_old);
+            // `i1_end` is the exclusive end of the changed region; its post-image
+            // context is `ctx` lines (Git's `xche->i1 + xche->chg1 + lctx`). The
+            // hunk's `base_e1` already includes the group's trailing context, so
+            // use the change end + ctx directly to avoid double-counting context
+            // (which over-extended the hunk and merged separate functions — t4015 #136).
+            let mut e1 = (i1_end + ctx).min(n_old);
             let mut e2 = map_old_line_to_new(&all_ops, e1, n_new).min(n_new);
             let fe1 = expand_func_post_end(e1, i1_end, n_old, &old_lines, funcname_matcher);
             if fe1 > e1 {
@@ -4040,6 +4054,22 @@ fn unified_diff_with_function_context(
 
         ranges.push((s1, e1, s2, e2));
     }
+
+    // Merge ranges whose function-context expansion made them overlap on the old
+    // side (Git emits a single hunk in that case).
+    ranges.sort_by_key(|r| (r.0, r.2));
+    let mut merged: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(ranges.len());
+    for (s1, e1, s2, e2) in ranges {
+        if let Some(last) = merged.last_mut() {
+            if s1 < last.1 {
+                last.1 = last.1.max(e1);
+                last.3 = last.3.max(e2);
+                continue;
+            }
+        }
+        merged.push((s1, e1, s2, e2));
+    }
+    let ranges = merged;
 
     let mut output = String::new();
     if old_path == "/dev/null" {
