@@ -24,8 +24,8 @@ use crate::commands::index_pack;
 use crate::file_upload_pack_v2::{
     cap_lines_for_bundle_request, drain_bundle_uri_response, read_pkt_lines_until_flush,
     read_v2_capability_block, server_advertises_bundle_uri, skip_v2_section_until_boundary,
-    transfer_bundle_uri_enabled, v2_fetch_supports_ref_in_want, v2_fetch_supports_sideband_all,
-    write_bundle_uri_command, write_v2_fetch_request,
+    transfer_bundle_uri_enabled, v2_fetch_supports_filter, v2_fetch_supports_ref_in_want,
+    v2_fetch_supports_sideband_all, write_bundle_uri_command, write_v2_fetch_request,
 };
 use crate::grit_exe::{grit_executable, strip_trace2_env};
 use crate::protocol_wire;
@@ -1516,6 +1516,21 @@ pub fn fetch_via_upload_pack_skipping(
             evaluate_promisor_remote_advertisement(local_git_dir, &caps, filter_spec)?;
         let promisor_reply = promisor_outcome.reply.clone();
         let effective_filter_spec = promisor_outcome.effective_filter_spec.as_deref();
+        // Only request object filtering when the server advertised the `filter` feature. Matches
+        // `fetch-pack.c` `send_filter`: a promisor remote without `uploadpack.allowFilter` does not
+        // advertise it, so the client warns and fetches unfiltered instead of sending a `filter`
+        // line the server rejects as "unexpected line" (t0410 "fetching from another promisor
+        // remote", where a lazily registered `partialclonefilter=blob:none` would otherwise leak
+        // into a plain `git fetch` against a non-filtering remote).
+        let requested_filter = effective_filter_spec.or(filter_spec);
+        let wire_filter_spec = if v2_fetch_supports_filter(&caps) {
+            requested_filter
+        } else {
+            if requested_filter.is_some_and(|s| !s.trim().is_empty()) {
+                eprintln!("warning: filtering not recognized by server, ignoring");
+            }
+            None
+        };
         let client_sid = trace2_transfer::transfer_advertise_sid_enabled(local_git_dir)
             .then(trace2_transfer::trace2_session_id_wire_once);
         let (shallow_oids, depth, deepen_relative, shallow_since, shallow_exclude, unshallow) =
@@ -1595,7 +1610,7 @@ pub fn fetch_via_upload_pack_skipping(
                 deepen_relative,
                 client_sid.as_deref(),
                 &[],
-                effective_filter_spec.or(filter_spec),
+                wire_filter_spec,
                 &shallow_oids,
                 depth,
                 shallow_since,
@@ -1630,7 +1645,7 @@ pub fn fetch_via_upload_pack_skipping(
                     deepen_relative,
                     client_sid.as_deref(),
                     &[],
-                    effective_filter_spec.or(filter_spec),
+                    wire_filter_spec,
                     &shallow_oids,
                     depth,
                     shallow_since,
@@ -1655,7 +1670,7 @@ pub fn fetch_via_upload_pack_skipping(
                 deepen_relative,
                 client_sid.as_deref(),
                 &[],
-                effective_filter_spec.or(filter_spec),
+                wire_filter_spec,
                 &shallow_oids,
                 depth,
                 shallow_since,
@@ -2110,6 +2125,13 @@ fn fetch_upload_pack_negotiate_pack_bytes(
         }
         let default_hash = std::env::var("GIT_DEFAULT_HASH").unwrap_or_else(|_| "sha1".to_owned());
         let sideband_all = v2_fetch_supports_sideband_all(&caps);
+        // Drop the filter line when the server does not advertise `filter` (see `send_filter` in
+        // `fetch-pack.c`): sending it to a non-filtering server is a fatal "unexpected line".
+        let wire_filter_spec = if v2_fetch_supports_filter(&caps) {
+            filter_spec
+        } else {
+            None
+        };
         let client_sid = trace2_transfer::transfer_advertise_sid_enabled(local_git_dir)
             .then(trace2_transfer::trace2_session_id_wire_once);
         write_v2_fetch_request(
@@ -2122,7 +2144,7 @@ fn fetch_upload_pack_negotiate_pack_bytes(
             false,
             client_sid.as_deref(),
             &[],
-            filter_spec,
+            wire_filter_spec,
             &[],
             None,
             None,

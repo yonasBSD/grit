@@ -373,6 +373,21 @@ pub(crate) fn v2_fetch_supports_ref_in_want(caps: &[String]) -> bool {
     })
 }
 
+/// True when the server's v2 `fetch` capability advertises `filter` (so the client may send a
+/// `filter <spec>` line).
+///
+/// Mirrors `fetch-pack.c` `send_filter`, which only writes the `filter` request line when the
+/// server advertised filtering support (`server_supports_feature("fetch", "filter", 0)`). A
+/// promisor remote without `uploadpack.allowFilter` does not advertise it, so the client must
+/// silently drop the filter and fetch unfiltered rather than send a line the server rejects with
+/// "unexpected line" (t0410 "fetching from another promisor remote").
+pub(crate) fn v2_fetch_supports_filter(caps: &[String]) -> bool {
+    caps.iter().any(|c| {
+        c.strip_prefix("fetch=")
+            .is_some_and(|rest| rest.split_whitespace().any(|w| w == "filter"))
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_v2_fetch_request(
     stdin: &mut impl Write,
