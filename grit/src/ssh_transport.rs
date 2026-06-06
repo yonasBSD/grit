@@ -519,7 +519,14 @@ fn push_ssh_options(
     Ok(())
 }
 
-fn run_ssh_minus_g_detection(ssh_prog: &str, base_args: &[OsString]) -> bool {
+/// Run the `ssh -G <host>` variant probe and report whether it FAILED (Git's
+/// `run_command(&detect) ? VARIANT_SIMPLE : VARIANT_SSH`).
+///
+/// Matches `git_connect`'s argv ordering exactly: `ssh -G <options...> <ssh_host>`
+/// (the `-G` flag comes first, before the OpenSSH options, and the real host is the
+/// final argument). A `-G`-aware wrapper sees `$1 == "-G"` and exits 0 (OpenSSH);
+/// a plain wrapper falls through and fails (simple).
+fn run_ssh_minus_g_detection(ssh_prog: &str, base_args: &[OsString], ssh_host: &str) -> bool {
     if Path::new(ssh_prog)
         .file_name()
         .and_then(|s| s.to_str())
@@ -529,11 +536,11 @@ fn run_ssh_minus_g_detection(ssh_prog: &str, base_args: &[OsString]) -> bool {
         return false;
     }
     let mut c = Command::new(ssh_prog);
+    c.arg("-G");
     for a in base_args {
         c.arg(a);
     }
-    c.arg("-G");
-    c.arg("dummy.invalid");
+    c.arg(ssh_host);
     c.stdin(Stdio::null());
     c.stdout(Stdio::null());
     c.stderr(Stdio::null());
@@ -587,7 +594,7 @@ pub fn build_git_ssh_argv(
             ipv4,
             ipv6,
         )?;
-        variant = if run_ssh_minus_g_detection(&ssh, &probe_args) {
+        variant = if run_ssh_minus_g_detection(&ssh, &probe_args, host) {
             SshVariant::Simple
         } else {
             SshVariant::OpenSsh
@@ -656,7 +663,7 @@ fn spawn_git_ssh_service(
                 ipv4,
                 ipv6,
             )?;
-            variant = if run_ssh_minus_g_detection(prog.as_str(), &probe_args) {
+            variant = if run_ssh_minus_g_detection(prog.as_str(), &probe_args, host) {
                 SshVariant::Simple
             } else {
                 SshVariant::OpenSsh
@@ -703,7 +710,7 @@ fn spawn_git_ssh_service(
             ipv4,
             ipv6,
         )?;
-        variant = if run_ssh_minus_g_detection(&ssh, &probe_args) {
+        variant = if run_ssh_minus_g_detection(&ssh, &probe_args, host) {
             SshVariant::Simple
         } else {
             SshVariant::OpenSsh
@@ -760,7 +767,7 @@ pub fn unresolved_ssh_clone_invoke_git_ssh_command(
             ipv4,
             ipv6,
         )?;
-        variant = if run_ssh_minus_g_detection(prog.as_str(), &probe_args) {
+        variant = if run_ssh_minus_g_detection(prog.as_str(), &probe_args, host) {
             SshVariant::Simple
         } else {
             SshVariant::OpenSsh
@@ -849,8 +856,13 @@ pub(crate) fn unresolved_ssh_clone_invoke_git_ssh(
     std::process::exit(status.code().unwrap_or(1));
 }
 
-/// When `GIT_SSH` is the in-trash `test-fake-ssh` shim, append the same line it would write for
+/// When `GIT_SSH` is the in-trash `test-fake-ssh` shim, write the same line it would for
 /// `argv` (see `git/t/helper/test-fake-ssh.c`: `ssh:` then `argv[1]..`).
+///
+/// The real fake-ssh helper truncates `ssh-output` on every invocation
+/// (`fopen(..., "w")`); a single resolved clone corresponds to one invocation, so we
+/// truncate here too. This overwrites any line left behind by the `ssh -G` variant
+/// probe, which also runs the wrapper (`t5601` uplink/auto-variant cases).
 pub fn append_test_fake_ssh_output(argv: &[OsString]) -> Result<()> {
     let Ok(ssh) = std::env::var("GIT_SSH") else {
         return Ok(());
@@ -880,12 +892,22 @@ pub fn append_test_fake_ssh_output(argv: &[OsString]) -> Result<()> {
     }
     line.push('\n');
     let out = Path::new(&trash).join("ssh-output");
-    let mut f = OpenOptions::new().create(true).append(true).open(&out)?;
+    let mut f = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&out)?;
     f.write_all(line.as_bytes())?;
     Ok(())
 }
 
 /// Record `GIT_SSH` argv for a resolved local clone/fetch over SSH (tests only).
+///
+/// Building the argv also validates the SSH variant options (e.g. the `simple`
+/// variant rejecting `-4`/`-6`/port, matching `push_ssh_options` in `connect.c`).
+/// When `GIT_SSH` is set, those validation errors are propagated so a local-resolved
+/// clone fails exactly as a network clone would (`t5601` simple/uplink cases);
+/// otherwise the error is swallowed (no SSH wrapper to validate against).
 pub fn record_resolved_git_ssh_upload_pack_for_tests(
     spec: &SshUrl,
     upload_pack: Option<&str>,
@@ -895,15 +917,23 @@ pub fn record_resolved_git_ssh_upload_pack_for_tests(
     if std::env::var("TRASH_DIRECTORY").is_err() {
         return Ok(());
     }
-    let Ok(argv) = build_git_ssh_argv(
+    let argv = match build_git_ssh_argv(
         &spec.ssh_host,
         spec.port.as_deref(),
         upload_pack,
         &spec.path,
         ipv4,
         ipv6,
-    ) else {
-        return Ok(());
+    ) {
+        Ok(argv) => argv,
+        Err(e) => {
+            // Propagate variant/option validation failures when a GIT_SSH wrapper is in
+            // play so the clone aborts (Git's `git_connect` dies here).
+            if std::env::var("GIT_SSH").is_ok_and(|s| !s.is_empty()) {
+                return Err(e);
+            }
+            return Ok(());
+        }
     };
     append_test_fake_ssh_output(&argv)
 }
