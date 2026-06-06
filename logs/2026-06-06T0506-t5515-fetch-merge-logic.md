@@ -34,5 +34,18 @@ skip any advertised refname ending in `^{}` (a peeled-object advertisement, not 
 
 ## Verification
 
-- `cargo build --release -p grit-cli -j 4`
-- `./scripts/run-tests.sh t5515-fetch-merge-logic.sh` — (see result below)
+- `cargo build --release -p grit-cli -j 4` — clean (no new warnings in fetch_transport.rs).
+- `./scripts/run-tests.sh t5515-fetch-merge-logic.sh` — **65/65 FULLY PASSING**.
+- No regressions: t5503-tagfollow 12/12, t5510-fetch 215/215, t5514-fetch-multiple 25/25.
+  t5601-clone 111/115, t5516-fetch-push 95/124, t5505-remote 122/130 — unchanged vs.
+  committed baseline (those files have their own open tickets; not regressed by this change).
+- `cargo test -p grit-lib --lib` — only pre-existing `ignore::gitignore_glob_tests` x2 fail
+  (unrelated to fetch).
+
+## Commit
+
+`2e217796d` on branch `grit-t5-progress`:
+  fix: skip peeled ^{} refs in v0/v1 fetch advertisement (t5515-fetch-merge-logic)
+
+The t5515 TOML (passed_last=65, fully_passing=true) was already captured into the committed
+tree by the workspace, so only the source fix + this log needed committing.
