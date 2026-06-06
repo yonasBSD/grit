@@ -1364,7 +1364,12 @@ fn show_commit(
                     grit_lib::tab_expand::indent_and_expand_tabs(line, 4, expand_tabs_in_log)
                 )?;
             }
-            writeln!(out)?;
+            // The blank line separating the message from the diff is only emitted when a diff
+            // follows (Git's `log-tree.c`). Under `-s`/`--no-patch` the entry ends at the message,
+            // matching `git log --pretty=full` (one trailing newline).
+            if root_diff_shown {
+                writeln!(out)?;
+            }
         }
         Some("fuller") => {
             writeln!(out, "commit {hex}")?;
@@ -1384,7 +1389,9 @@ fn show_commit(
                     grit_lib::tab_expand::indent_and_expand_tabs(line, 4, expand_tabs_in_log)
                 )?;
             }
-            writeln!(out)?;
+            if root_diff_shown {
+                writeln!(out)?;
+            }
         }
         Some("reference") => {
             let subject = grit_lib::commit_pretty::message_subject(&commit.message);
@@ -1471,7 +1478,9 @@ fn show_commit(
                     grit_lib::tab_expand::indent_and_expand_tabs(line, 4, expand_tabs_in_log)
                 )?;
             }
-            writeln!(out)?;
+            if root_diff_shown {
+                writeln!(out)?;
+            }
         }
         Some(other) if other.starts_with("format:") || other.starts_with("tformat:") => {
             // Already handled above — unreachable

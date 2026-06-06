@@ -950,13 +950,11 @@ pub fn run(args: Args) -> Result<()> {
 
     // `--reflog` adds every reflog entry's OID as a positive tip; the ordinary
     // walk below dedupes and date-sorts them (Git's `add_reflogs_to_pending`).
+    // Insertion order matters: equal-date commits break ties by the order tips were
+    // added (Git's `prio_queue` FIFO), so feed them in Git's reflog-scan order.
     if add_reflog_tips {
         saw_pseudo_ref = true;
-        let mut reflog_oids: Vec<ObjectId> = grit_lib::reflog::all_reflog_oids(&repo.git_dir)?
-            .into_iter()
-            .collect();
-        reflog_oids.sort_by(|a, b| a.to_hex().cmp(&b.to_hex()));
-        for oid in reflog_oids {
+        for oid in grit_lib::reflog::all_reflog_oids_ordered(&repo.git_dir)? {
             revision_specs.push(oid.to_hex());
         }
     }

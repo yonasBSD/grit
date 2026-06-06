@@ -1716,6 +1716,15 @@ fn log_uses_blank_separator(args: &Args) -> bool {
     }
 }
 
+/// Whether `-z` needs an explicit inter-entry NUL that the format's own body does not already
+/// supply. The `email`/`mboxrd` formats separate consecutive entries with their built-in trailing
+/// blank line (so [`log_uses_blank_separator`] is false for them), but under `-z` Git still joins
+/// entries with a NUL. `oneline`, `format:`/`tformat:`, and the blank-separated builtin formats are
+/// handled elsewhere, so this only covers email/mboxrd.
+fn log_z_needs_email_separator(args: &Args) -> bool {
+    matches!(args.format.as_deref(), Some("email") | Some("mboxrd"))
+}
+
 /// Whether to load ref decorations and whether to use full ref names (`refs/heads/...`).
 ///
 /// Mirrors Git's handling of `--decorate`, `--no-decorate`, and raw argv scanning for
@@ -1816,14 +1825,26 @@ fn write_graph_interleaved_commit_msg(
     line_prefix: &str,
     graph_commit_line: &str,
     graph: &mut AsciiGraph,
-    body: &str,
+    body: &[u8],
 ) -> Result<()> {
-    let newline_terminated = !body.is_empty() && body.ends_with('\n');
-    let trimmed = body.trim_end_matches('\n');
-    if !trimmed.contains('\n')
+    // Operate on raw bytes: under `i18n.logOutputEncoding` the body may be a non-UTF-8 encoding
+    // (e.g. ISO-8859-1). Line splitting only relies on the `\n` (0x0A) byte, which is identical
+    // across the encodings Git supports here, so no UTF-8 decoding is required.
+    let newline_terminated = body.last() == Some(&b'\n');
+    let trimmed: &[u8] = {
+        let mut end = body.len();
+        while end > 0 && body[end - 1] == b'\n' {
+            end -= 1;
+        }
+        &body[..end]
+    };
+    if !trimmed.contains(&b'\n')
         && trimmed.len() == 40
-        && trimmed.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+        && trimmed
+            .iter()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
     {
+        let trimmed = String::from_utf8_lossy(trimmed);
         writeln!(out, "{line_prefix}{graph_commit_line}")?;
         writeln!(out, "{line_prefix}{trimmed}")?;
         if !graph.is_commit_finished() {
@@ -1840,27 +1861,28 @@ fn write_graph_interleaved_commit_msg(
         return Ok(());
     }
 
-    let mut lines = body.split_inclusive('\n').peekable();
+    let mut lines = body.split_inclusive(|b| *b == b'\n').peekable();
     let Some(first_chunk) = lines.next() else {
         writeln!(out, "{line_prefix}{graph_commit_line}")?;
         graph_show_remainder_lines(out, line_prefix, graph)?;
         return Ok(());
     };
 
-    let first_line = first_chunk.strip_suffix('\n').unwrap_or(first_chunk);
-    write!(out, "{line_prefix}{graph_commit_line}{first_line}")?;
-    if first_chunk.ends_with('\n') {
+    let first_line = first_chunk.strip_suffix(b"\n").unwrap_or(first_chunk);
+    write!(out, "{line_prefix}{graph_commit_line}")?;
+    out.write_all(first_line)?;
+    if first_chunk.ends_with(b"\n") {
         writeln!(out)?;
     }
 
     for chunk in lines {
-        let text = chunk.strip_suffix('\n').unwrap_or(chunk);
+        let text = chunk.strip_suffix(b"\n").unwrap_or(chunk);
         if !graph.is_commit_finished() {
             let (gline, _) = graph.next_line();
             write!(out, "{line_prefix}{gline}")?;
         }
-        write!(out, "{text}")?;
-        if chunk.ends_with('\n') {
+        out.write_all(text)?;
+        if chunk.ends_with(b"\n") {
             writeln!(out)?;
         }
     }
@@ -1870,7 +1892,7 @@ fn write_graph_interleaved_commit_msg(
             writeln!(out)?;
         }
         graph_show_remainder_lines(out, line_prefix, graph)?;
-        if newline_terminated && trimmed.contains('\n') {
+        if newline_terminated && trimmed.contains(&b'\n') {
             writeln!(out)?;
         }
     } else if !newline_terminated && !body.is_empty() {
@@ -2688,7 +2710,15 @@ fn run_rev_list_log(
         }
         let blank_separator = log_uses_blank_separator(args);
         if blank_separator && shown > 0 {
-            writeln!(out)?;
+            // Under `-z` the inter-entry blank line is replaced by a NUL (Git `line_termination`).
+            if args.null_terminator {
+                write!(out, "\0")?;
+            } else {
+                writeln!(out)?;
+            }
+        }
+        if args.null_terminator && shown > 0 && log_z_needs_email_separator(args) {
+            write!(out, "\0")?;
         }
 
         let per_parent_header = log_commit_uses_per_parent_header(args, &info, &repo.git_dir)?;
@@ -3084,7 +3114,14 @@ fn run_graph_log(
                     writeln!(out, "{line_prefix}{line}{rendered}")?;
                 } else {
                     let mut body_buf = Vec::new();
-                    format_commit(
+                    // Inform absolute-column directives (`%>|`/`%<|`) of the graph prefix width on
+                    // this commit's first line (e.g. `* ` => 2), so they position relative to the
+                    // start of the whole graph line like Git's `pp->graph_width`.
+                    let graph_prefix_width = grit_lib::diffstat::display_width_minus_ansi(
+                        &format!("{line_prefix}{line}"),
+                    );
+                    GRAPH_PREFIX_WIDTH.with(|c| c.set(graph_prefix_width));
+                    let fmt_result = format_commit(
                         &mut body_buf,
                         &node.oid,
                         &info,
@@ -3103,15 +3140,15 @@ fn run_graph_log(
                         None,
                         None,
                         None,
-                    )?;
-                    let body = String::from_utf8(body_buf)
-                        .map_err(|e| anyhow::anyhow!("invalid UTF-8 in log output: {e}"))?;
+                    );
+                    GRAPH_PREFIX_WIDTH.with(|c| c.set(0));
+                    fmt_result?;
                     write_graph_interleaved_commit_msg(
                         &mut out,
                         line_prefix,
                         &line,
                         &mut graph,
-                        &body,
+                        &body_buf,
                     )?;
                 }
                 break;
@@ -5201,13 +5238,10 @@ pub fn run(mut args: Args) -> Result<()> {
         }
         if args.reflog {
             // `--reflog` adds every reflog entry's old/new OID as a pending tip
-            // (Git's `add_reflogs_to_pending`); rev-list then dedupes and sorts.
-            let mut reflog_oids: Vec<ObjectId> = grit_lib::reflog::all_reflog_oids(&repo.git_dir)?
-                .into_iter()
-                .collect();
-            // Stable order so dedupe/tie-breaks are deterministic.
-            reflog_oids.sort_by(|a, b| a.to_hex().cmp(&b.to_hex()));
-            start_oids.extend(reflog_oids);
+            // (Git's `add_reflogs_to_pending`); rev-list then dedupes and date-sorts.
+            // Feed tips in Git's reflog-scan order so equal-date commits break ties by
+            // insertion order (Git's `prio_queue` FIFO), matching `rev-list --reflog`.
+            start_oids.extend(grit_lib::reflog::all_reflog_oids_ordered(&repo.git_dir)?);
         }
         if stdin_all_refs {
             stdin_merged_all_refs = true;
@@ -5496,7 +5530,15 @@ pub fn run(mut args: Args) -> Result<()> {
             }
             let blank_separator = log_uses_blank_separator(&args);
             if blank_separator && shown > 0 {
-                writeln!(out)?;
+                // Under `-z` the inter-entry blank line is replaced by a NUL.
+                if args.null_terminator {
+                    write!(out, "\0")?;
+                } else {
+                    writeln!(out)?;
+                }
+            }
+            if args.null_terminator && shown > 0 && log_z_needs_email_separator(&args) {
+                write!(out, "\0")?;
             }
             let oneline_fmt = args.oneline || args.format.as_deref() == Some("oneline");
             if args.source && !oneline_fmt {
@@ -5705,9 +5747,18 @@ pub fn run(mut args: Args) -> Result<()> {
                 }
             }
             // Builtin pretty formats print a blank line between consecutive entries
-            // (git log-tree.c `shown_one`).
+            // (git log-tree.c `shown_one`). Under `-z` the inter-entry separator becomes a NUL
+            // instead of that blank line, matching Git's `line_termination = '\0'`: each entry's
+            // own trailing newline is kept, and entries are joined with `\0`.
             if blank_separator && i > 0 {
-                writeln!(out)?;
+                if args.null_terminator {
+                    write!(out, "\0")?;
+                } else {
+                    writeln!(out)?;
+                }
+            }
+            if args.null_terminator && i > 0 && log_z_needs_email_separator(&args) {
+                write!(out, "\0")?;
             }
             let oneline_fmt = args.oneline || args.format.as_deref() == Some("oneline");
             if args.source && !oneline_fmt {
@@ -6144,10 +6195,22 @@ pub fn run_no_walk(
     let blank_separator = log_uses_blank_separator(args);
     for (i, (oid, commit_data)) in commits.iter().enumerate() {
         if is_format_separator && i > 0 {
-            writeln!(out)?;
+            if args.null_terminator {
+                write!(out, "\0")?;
+            } else {
+                writeln!(out)?;
+            }
         }
         if blank_separator && i > 0 {
-            writeln!(out)?;
+            // Under `-z` the inter-entry blank line is replaced by a NUL.
+            if args.null_terminator {
+                write!(out, "\0")?;
+            } else {
+                writeln!(out)?;
+            }
+        }
+        if args.null_terminator && i > 0 && log_z_needs_email_separator(args) {
+            write!(out, "\0")?;
         }
         let per_parent_header =
             log_commit_uses_per_parent_header(args, commit_data, &repo.git_dir)?;
@@ -9233,10 +9296,13 @@ fn format_commit(
         };
         let enc = args.log_output_encoding.as_deref();
         let abbrev = &hex[..abbrev_len.min(hex.len())];
+        // Under `-z`, each builtin `oneline` entry is NUL-terminated (Git `line_termination`),
+        // so consecutive entries are joined (and the final one terminated) by `\0`.
+        let line_term: &[u8] = if args.null_terminator { b"\0" } else { b"\n" };
         if let Some(src) = source_for_oneline {
             let line = format!("{abbrev}\t{src} {first_line}");
             out.write_all(&encode_log_str(&line, enc))?;
-            out.write_all(b"\n")?;
+            out.write_all(line_term)?;
         } else {
             let oid_color = if use_color {
                 decoration_paint
@@ -9268,7 +9334,7 @@ fn format_commit(
                 first_line
             );
             out.write_all(&encode_log_str(&line, enc))?;
-            out.write_all(b"\n")?;
+            out.write_all(line_term)?;
         }
         return Ok(());
     }
@@ -9561,6 +9627,35 @@ fn format_commit(
             out.write_all(&bytes)?;
             out.write_all(b"\n")?;
         }
+        Some("email") | Some("mboxrd") => {
+            // `--pretty=email` / `mboxrd` emit an mbox/patch header. Mirror `git show`'s builtin
+            // email arm so `git log --pretty=email` and `git show --pretty=email` agree byte for
+            // byte (and match the `-z` NUL framing in t4205's `--reflog` tests).
+            let subject = grit_lib::commit_pretty::message_subject(&info.message);
+            let subject = if et > 0 {
+                grit_lib::tab_expand::expand_tabs_in_line(&subject, et)
+            } else {
+                subject
+            };
+            writeln!(out, "From {hex} Mon Sep 17 00:00:00 2001")?;
+            writeln!(
+                out,
+                "From: {}",
+                format_ident_for_header_mailmap(mailmap, &info.author, use_mailmap)
+            )?;
+            writeln!(out, "Date: {}", format_date_for_header(&info.author))?;
+            writeln!(out, "Subject: [PATCH] {subject}")?;
+            writeln!(out)?;
+            for line in info.message.lines() {
+                let line_out = if et > 0 {
+                    grit_lib::tab_expand::expand_tabs_in_line(line, et)
+                } else {
+                    line.to_owned()
+                };
+                writeln!(out, "{line_out}")?;
+            }
+            writeln!(out)?;
+        }
         Some(other) => {
             // Try as a format string directly
             let note_bytes = notes_cache.map().get(oid).map(Vec::as_slice);
@@ -9739,6 +9834,15 @@ fn run_describe_for_format(
 ) -> Option<String> {
     let repo = grit_lib::repo::Repository::discover(None).ok()?;
     crate::commands::describe::describe_object(&repo, *oid, opts).ok()
+}
+
+thread_local! {
+    /// Display width of the graph prefix (e.g. `* `, `| * `) on the line where the current commit's
+    /// formatted body begins. `%>|(N)` / `%<|(N)` absolute-column directives position relative to
+    /// the start of the whole output line, which under `--graph` includes this prefix (Git's
+    /// `pp->graph_width`). The graph renderer sets this before formatting each commit; it is 0 in
+    /// the non-graph path.
+    static GRAPH_PREFIX_WIDTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn apply_format_string(
@@ -10649,7 +10753,14 @@ fn apply_format_string(
                 // and credit them to the padding budget (Git pretty.c).
                 let mut effective_width = if spec.absolute {
                     let line_start = result.rfind('\n').map(|p| p + 1).unwrap_or(0);
-                    let current_col = display_width(&result[line_start..]);
+                    // Under `--graph` the line begins with a graph prefix (e.g. `* `) that the
+                    // formatted body does not yet contain; absolute columns count from there.
+                    let prefix_w = if line_start == 0 {
+                        GRAPH_PREFIX_WIDTH.with(|c| c.get())
+                    } else {
+                        0
+                    };
+                    let current_col = prefix_w + display_width(&result[line_start..]);
                     spec.width.saturating_sub(current_col)
                 } else {
                     spec.width

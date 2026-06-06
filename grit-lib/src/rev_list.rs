@@ -1012,7 +1012,7 @@ pub fn rev_list(
                     author_dates,
                 )?
             } else {
-                date_order_walk(&mut graph, &included, author_dates)?
+                date_order_walk(&mut graph, &included, &include, author_dates)?
             }
         }
         OrderingMode::Topo => graph_order_topo_sort(&mut graph, &included, &discovery_order)?,
@@ -3231,6 +3231,7 @@ fn date_order_walk_through_dropped(
 pub(crate) fn date_order_walk(
     graph: &mut CommitGraph<'_>,
     selected: &HashSet<ObjectId>,
+    tip_order: &[ObjectId],
     author_dates: bool,
 ) -> Result<Vec<ObjectId>> {
     let mut unfinished_children: HashMap<ObjectId, usize> =
@@ -3245,27 +3246,45 @@ pub(crate) fn date_order_walk(
         }
     }
 
-    // Match Git `commit_list_insert_by_date` / `get_revision_1`: only commits with no selected
-    // child are initially pending. Seeding every `tip` that happens to appear in `tips` is wrong
-    // when `tips` is the full selected set (path-walk): inner commits would be popped before
-    // descendants. Seeding only `tips` is also wrong when a source commit is not a ref tip
-    // (`rev-list`): start from every selected commit whose in-degree from selected is zero.
     let mut heap = BinaryHeap::new();
-    // Initial pending commits keep seq == 0 so equal-date ties among them fall through to the OID
-    // order used historically. Parents discovered during the walk get a monotonically increasing
-    // seq, so among equal-date commits the one reached *earlier* (e.g. the first parent of a merge)
-    // is emitted first, matching Git's `prio_queue` insertion-order tiebreak (`prio-queue.c`).
-    for &oid in selected {
-        if unfinished_children.get(&oid).copied().unwrap_or(0) == 0 {
-            heap.push(CommitDateKey {
-                oid,
-                date: graph.sort_key(oid, author_dates),
-                seq: 0,
-            });
+    // Equal-date ties break by *insertion order* to match Git's `prio_queue` FIFO tiebreak
+    // (`prio-queue.c`): the tip the user (or pseudo-ref expansion like `--reflog`) listed first pops
+    // first. `tip_order` carries that user/insertion order; each seeded tip below takes its index as
+    // its `seq`, and parents discovered during the walk take a strictly larger `seq`.
+    let ordered_tip_count = tip_order.len() as u64;
+    // Git `limit_list` seeds `revs->commits` — every *explicitly given* tip — into the priority
+    // queue up front, then pops by date and inserts unseen parents. It does NOT defer a parent until
+    // its child is shown, so when the user lists an ancestor and its descendant as equal-date tips,
+    // the one listed first is emitted first (`rev-list A B` with A an ancestor of B, same date → A,
+    // then B). Replicate that: seed explicit tips immediately. When there are no explicit tips
+    // (path-walk, where `selected` is the whole matched set and seeding everything would surface
+    // ancestors before descendants), fall back to seeding only in-degree-zero commits so descendants
+    // still precede ancestors. Parents discovered during the walk get a strictly larger seq.
+    let mut seeded: HashSet<ObjectId> = HashSet::new();
+    if tip_order.is_empty() {
+        for &oid in selected {
+            if unfinished_children.get(&oid).copied().unwrap_or(0) == 0 {
+                heap.push(CommitDateKey {
+                    oid,
+                    date: graph.sort_key(oid, author_dates),
+                    seq: 0,
+                });
+                seeded.insert(oid);
+            }
+        }
+    } else {
+        for (i, &oid) in tip_order.iter().enumerate() {
+            if selected.contains(&oid) && seeded.insert(oid) {
+                heap.push(CommitDateKey {
+                    oid,
+                    date: graph.sort_key(oid, author_dates),
+                    seq: i as u64,
+                });
+            }
         }
     }
 
-    let mut next_seq: u64 = 1;
+    let mut next_seq: u64 = ordered_tip_count + 1;
     let mut emitted = HashSet::new();
     let mut out = Vec::with_capacity(selected.len());
     while let Some(item) = heap.pop() {
@@ -3281,7 +3300,10 @@ pub(crate) fn date_order_walk(
                 continue;
             };
             *count = count.saturating_sub(1);
-            if *count == 0 {
+            // Already-seeded commits (explicit tips) are in the heap; the pop-time `emitted` guard
+            // dedups them. Only enqueue a parent once its last selected child has been processed and
+            // it has not already been seeded as a tip.
+            if *count == 0 && !seeded.contains(&parent) {
                 heap.push(CommitDateKey {
                     oid: parent,
                     date: graph.sort_key(parent, author_dates),
