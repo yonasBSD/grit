@@ -692,9 +692,9 @@ pub fn run(mut args: Args) -> Result<()> {
         .collect();
     // Detect renames among staged entries when enabled.
     let staged = if let Some(settings) = status_rename_settings {
-        detect_renames_for_status(&repo.odb, staged_raw.clone(), settings, head_tree.as_ref())?
+        detect_renames_for_status(&repo.odb, staged_raw, settings, head_tree.as_ref())?
     } else {
-        staged_raw.clone()
+        staged_raw
     };
 
     // Diff: unstaged (worktree vs index), narrowed before rename detection.
@@ -718,14 +718,9 @@ pub fn run(mut args: Args) -> Result<()> {
         })
         .collect();
     let unstaged = if let Some(settings) = status_rename_settings {
-        detect_renames_for_status(
-            &repo.odb,
-            unstaged_raw.clone(),
-            settings,
-            head_tree.as_ref(),
-        )?
+        detect_renames_for_status(&repo.odb, unstaged_raw, settings, head_tree.as_ref())?
     } else {
-        unstaged_raw.clone()
+        unstaged_raw
     };
 
     // Untracked and ignored files
