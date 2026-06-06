@@ -4743,6 +4743,15 @@ fn optimize_blob_deltas(
                 if delta_target_to_base.contains_key(&t.oid) {
                     continue;
                 }
+                // The empty blob has no content to delta. Any non-empty base trivially has it as a
+                // prefix, so the size-prefix heuristic below would pick a base and emit a degenerate
+                // delta (`src_size N`, `dst_size 0`, no ops). Git never deltifies a zero-length
+                // object, and such a delta is rejected by `git unpack-objects` ("failed to apply
+                // delta"), breaking thin pushes (t5541 push --all/--mirror/--atomic). Keep the empty
+                // blob a full object.
+                if t.data.is_empty() {
+                    continue;
+                }
                 let mut best_base: Option<&PackEntry> = None;
                 let mut best_common = 0usize;
                 for b in &blobs {
