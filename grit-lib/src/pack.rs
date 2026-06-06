@@ -1457,17 +1457,33 @@ fn verify_packed_object_hash(kind: ObjectKind, data: &[u8], expected_oid: &[u8])
 
 /// Search all pack indexes in `objects_dir` for the given OID and read it.
 ///
+/// When more than one pack contains `oid` (a redundant copy), a read failure in
+/// one pack — e.g. a corrupted delta base or zlib stream — is not fatal: Git
+/// retries the remaining sources before giving up, so an intact redundant pack
+/// still satisfies the read (t5303 pack-corruption-resilience). Only when every
+/// pack that names `oid` fails to produce it do we surface the last error.
+///
 /// # Errors
 ///
 /// Returns [`Error::ObjectNotFound`] if no pack contains the OID.
 pub fn read_object_from_packs(objects_dir: &Path, oid: &ObjectId) -> Result<Object> {
     let indexes = read_local_pack_indexes_cached(objects_dir)?;
+    let mut last_err: Option<Error> = None;
     for idx in &indexes {
-        if idx.find_offset(oid).is_some() {
-            return read_object_from_pack(idx, oid);
+        if idx.find_offset(oid).is_none() {
+            continue;
+        }
+        match read_object_from_pack(idx, oid) {
+            Ok(obj) => return Ok(obj),
+            // The object is missing from this particular pack despite the index
+            // claim — keep looking in the others.
+            Err(Error::ObjectNotFound(_)) => {}
+            // The pack copy is unreadable (corrupt delta/zlib/header). A redundant
+            // pack may still hold an intact copy, so remember the error and retry.
+            Err(err) => last_err = Some(err),
         }
     }
-    Err(Error::ObjectNotFound(oid.to_hex()))
+    Err(last_err.unwrap_or_else(|| Error::ObjectNotFound(oid.to_hex())))
 }
 
 /// When `oid` is stored as a delta in a pack, return its delta base object id.
