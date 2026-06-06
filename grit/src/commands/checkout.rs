@@ -7372,6 +7372,26 @@ fn write_blob_to_worktree(
         bail!("cannot checkout non-blob at '{rel_path}'");
     }
 
+    // Path-only checkout: if the work tree file is stat-clean against the matching index entry, it
+    // is already up to date and we skip rewriting WITHOUT running any smudge filter. Git's
+    // `checkout_entry` skips up-to-date entries via `ie_match_stat` before invoking the clean/smudge
+    // machinery, so a `git checkout <pathspec>` only smudges the paths that are missing or dirty.
+    // Running the filter just to compare bytes (the fallback below) would spuriously log a smudge
+    // for every up-to-date path under a `filter.<driver>.process` long-running filter (t0021 "required
+    // process filter should filter data").
+    if !full_smudge_meta && mode != MODE_SYMLINK {
+        if let Some(entry) = index.get(rel_path.as_bytes(), 0) {
+            if &entry.oid == oid && entry.mode == mode {
+                let abs_path = work_tree.join(rel_path);
+                if let Ok(meta) = std::fs::symlink_metadata(&abs_path) {
+                    if meta.is_file() && stat_matches(entry, &meta) {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+    }
+
     // Path-only checkout: if the work tree already matches the *smudged* blob Git would write
     // (EOL + ident + filters), skip rewriting — matches Git / t0021 filter log expectations.
     // Compare against smudge output, not clean: `core.eol=crlf` can change bytes without changing
