@@ -5543,6 +5543,28 @@ fn copy_refs_direct(src_git_dir: &Path, dst_git_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Write the default `remote.<name>.fetch` refspec without clobbering one that `clone -c`
+/// already supplied.
+///
+/// `git clone -c remote.<name>.fetch=<spec>` writes the user's refspec into the destination
+/// config *before* the clone machinery records the default tracking refspec. Upstream Git appends
+/// the default with `git_config_set_multivar_in_file_gently` (see `write_followtags`/
+/// `write_refspec_config` in `builtin/clone.c`), so the result is multi-valued: the user's spec
+/// first, then the default. Mirror that — only overwrite when no fetch entry exists yet.
+fn write_default_remote_fetch(
+    config: &mut ConfigFile,
+    remote_name: &str,
+    refspec: &str,
+) -> Result<()> {
+    let key = format!("remote.{remote_name}.fetch");
+    if config.get(&key).is_some() {
+        config.add_value(&key, refspec)?;
+    } else {
+        config.set(&key, refspec)?;
+    }
+    Ok(())
+}
+
 /// Set up the "origin" remote in the destination config (non-bare).
 fn setup_origin_remote(
     git_dir: &Path,
@@ -5559,7 +5581,7 @@ fn setup_origin_remote(
     let url = absolute_clone_source_url(source_path);
 
     config.set(&format!("remote.{remote_name}.url"), &url)?;
-    config.set(&format!("remote.{remote_name}.fetch"), refspec)?;
+    write_default_remote_fetch(&mut config, remote_name, refspec)?;
     config.write().context("writing config")?;
 
     Ok(())
@@ -5620,7 +5642,7 @@ fn setup_origin_remote_url(
         None => ConfigFile::parse(&config_path, "", ConfigScope::Local)?,
     };
     config.set(&format!("remote.{remote_name}.url"), remote_url)?;
-    config.set(&format!("remote.{remote_name}.fetch"), refspec)?;
+    write_default_remote_fetch(&mut config, remote_name, refspec)?;
     config.write().context("writing config")?;
     Ok(())
 }
