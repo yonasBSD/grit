@@ -698,6 +698,9 @@ pub fn run(mut args: Args) -> Result<()> {
         false
     };
 
+    // Set when a multi-remote path (`--all` / `--multiple`) performed submodule recursion *per
+    // remote* itself (mirroring git's per-subprocess recursion), so `run` must not recurse again.
+    let mut recursion_handled_per_remote = false;
     let result = if all_effective {
         // `--all` (or `fetch.all=true`) must not be combined with a repository
         // argument or refspecs.
@@ -723,7 +726,8 @@ pub fn run(mut args: Args) -> Result<()> {
             // "could not fetch" wrapping, normal error propagation).
             fetch_remote(&git_dir, &config, &remotes[0], None, &args)
         } else {
-            fetch_each_continuing(&git_dir, &config, &remotes, &args)
+            recursion_handled_per_remote = recurse_mode.is_some();
+            fetch_each_continuing(&git_dir, &config, &remotes, &args, recurse_mode)
         }
     } else if args.multiple && argc >= 1 {
         // `--multiple` with explicit arguments: every positional token is a
@@ -731,7 +735,8 @@ pub fn run(mut args: Args) -> Result<()> {
         // continuing past failures. (With no arguments, `--multiple` falls
         // through to the default-remote path below, matching git.)
         let names = expand_remotes_or_groups(&config, &positional)?;
-        fetch_each_continuing(&git_dir, &config, &names, &args)
+        recursion_handled_per_remote = recurse_mode.is_some();
+        fetch_each_continuing(&git_dir, &config, &names, &args, recurse_mode)
     } else {
         let remote_resolved = args
             .remote
@@ -781,13 +786,15 @@ pub fn run(mut args: Args) -> Result<()> {
 
     if result.is_ok() {
         if let Some(cmd_recurse) = recurse_mode {
-            crate::fetch_submodule_record::finish_record_tips_after(&git_dir);
-            crate::fetch_submodule_recurse::recursive_fetch_submodules_after_fetch(
-                &git_dir,
-                &config,
-                &args,
-                cmd_recurse,
-            )?;
+            if !recursion_handled_per_remote {
+                crate::fetch_submodule_record::finish_record_tips_after(&git_dir);
+                crate::fetch_submodule_recurse::recursive_fetch_submodules_after_fetch(
+                    &git_dir,
+                    &config,
+                    &args,
+                    cmd_recurse,
+                )?;
+            }
         }
         if should_fail_stale_commit_graph_promisor_fetch(&git_dir, &config, &args) {
             return Err(anyhow::Error::new(ExitCodeError {
@@ -2982,20 +2989,28 @@ fn fetch_remote(
                             );
                         }
                     }
-                } else if !args.quiet {
-                    // FETCH_HEAD-only update (e.g. `git fetch origin HEAD`).
-                    let remote_ref_name = resolved_remote_ref.as_deref().unwrap_or(src.as_str());
-                    let kind = fetch_head_ref_kind(remote_ref_name);
-                    display.push(
-                        '*',
-                        kind,
-                        branch_label,
-                        "FETCH_HEAD",
-                        "FETCH_HEAD",
-                        ObjectId::zero(),
-                        remote_oid,
-                        None,
-                    );
+                } else {
+                    // FETCH_HEAD-only update (e.g. `git fetch origin HEAD` or `origin
+                    // refs/changes/6`). The fetched commit lands only in FETCH_HEAD, not under
+                    // `refs/`, so the submodule-recursion walk (which scans `refs/` tips) would miss
+                    // any submodule change it records. Note the OID as a candidate superproject tip
+                    // so `check_for_new_submodule_commits` still recurses (t5526 #41/#42/#43/#45).
+                    crate::fetch_submodule_record::record_submodule_tip(&remote_oid);
+                    if !args.quiet {
+                        let remote_ref_name =
+                            resolved_remote_ref.as_deref().unwrap_or(src.as_str());
+                        let kind = fetch_head_ref_kind(remote_ref_name);
+                        display.push(
+                            '*',
+                            kind,
+                            branch_label,
+                            "FETCH_HEAD",
+                            "FETCH_HEAD",
+                            ObjectId::zero(),
+                            remote_oid,
+                            None,
+                        );
+                    }
                 }
             }
         }
@@ -7184,6 +7199,7 @@ fn fetch_each_continuing(
     config: &ConfigSet,
     names: &[String],
     args: &Args,
+    recurse_each: Option<FetchRecurseSubmodules>,
 ) -> Result<()> {
     let max_children = effective_max_children(args, config);
     let parallel = max_children != 1 && names.len() != 1;
@@ -7224,7 +7240,24 @@ fn fetch_each_continuing(
             println!("Fetching {name}");
         }
         match fetch_remote(git_dir, config, name, None, &inner) {
-            Ok(()) => {}
+            Ok(()) => {
+                // Git's `fetch_multiple` runs each remote as its own `git fetch
+                // --recurse-submodules <remote>` subprocess, so submodule recursion happens once
+                // *per remote* (t5526 #55: two remotes both advance the superproject, yielding two
+                // "Fetching submodule sub" lines). Mirror that by recursing after each remote and
+                // restarting the tip record for the next one, instead of a single recursion at the
+                // end of the whole `--all`/`--multiple` fetch.
+                if let Some(cmd_recurse) = recurse_each {
+                    crate::fetch_submodule_record::finish_record_tips_after(git_dir);
+                    crate::fetch_submodule_recurse::recursive_fetch_submodules_after_fetch(
+                        git_dir,
+                        config,
+                        &inner,
+                        cmd_recurse,
+                    )?;
+                    crate::fetch_submodule_record::begin_fetch_submodule_record(git_dir);
+                }
+            }
             Err(e) => {
                 // Surface the underlying transport error, then note the remote
                 // and keep going. The child's exit code is reported in the

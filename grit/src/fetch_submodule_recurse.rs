@@ -5,7 +5,6 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use grit_lib::config::ConfigFile;
-use grit_lib::diff::zero_oid;
 use grit_lib::fetch_submodules::{
     collect_changed_submodules_for_fetch, is_submodule_active_for_fetch,
     might_have_submodules_to_fetch, parse_fetch_recurse_submodules_arg,
@@ -17,11 +16,56 @@ use grit_lib::name_rev;
 use grit_lib::objects::ObjectId;
 use grit_lib::odb::Odb;
 use grit_lib::repo::Repository;
-use grit_lib::state::resolve_head;
 
 use crate::commands::fetch::Args as FetchArgs;
 use crate::commands::submodule::{get_default_remote_for_path, parse_gitmodules_with_repo};
 use crate::grit_exe;
+
+/// Resolve a changed submodule's git directory. Git addresses the submodule repo by *name*
+/// (`.git/modules/<name>`), so when the recorded path has changed (e.g. `git mv` renamed the
+/// submodule, t5526 #39) the path-based lookup misses and we fall back to the name. The work-tree
+/// path is still tried first because populated submodules carry their gitdir via a `.git` gitfile.
+fn changed_submodule_git_dir(
+    repo: &Repository,
+    path: &str,
+    name: &str,
+) -> Option<std::path::PathBuf> {
+    if let Some(gd) = submodule_git_dir_for_fetch(repo, path) {
+        return Some(gd);
+    }
+    let modules = grit_lib::submodule_gitdir::submodule_modules_git_dir(&repo.git_dir, name);
+    if modules.join("HEAD").exists() {
+        return Some(modules);
+    }
+    None
+}
+
+/// Run `git submodule--helper get-default-remote <path>` as a subprocess from the superproject and
+/// capture the remote name, matching git's `oid_fetch_tasks` pass (submodule.c). Running it as a
+/// child also produces the `trace: built-in: git submodule--helper get-default-remote <path>`
+/// GIT_TRACE line that t5526 #40/#44 assert on. Returns `None` on any failure (caller falls back).
+fn helper_get_default_remote(
+    grit_bin: &Path,
+    path: &str,
+    super_work_tree: &Path,
+) -> Option<String> {
+    let out = std::process::Command::new(grit_bin)
+        .current_dir(super_work_tree)
+        .arg("submodule--helper")
+        .arg("get-default-remote")
+        .arg(path)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
 
 fn parse_gitmodules_file(work_tree: &Path) -> Option<ConfigFile> {
     let p = work_tree.join(".gitmodules");
@@ -148,17 +192,6 @@ struct SubmoduleFetchWork {
     needed_commits: Vec<ObjectId>,
 }
 
-fn head_tree_oid(repo: &Repository) -> Option<ObjectId> {
-    let head = resolve_head(&repo.git_dir).ok()?;
-    let oid = head.oid()?;
-    let obj = repo.odb.read(oid).ok()?;
-    if obj.kind != grit_lib::objects::ObjectKind::Commit {
-        return None;
-    }
-    let c = grit_lib::objects::parse_commit(&obj.data).ok()?;
-    Some(c.tree)
-}
-
 /// After a successful top-level `fetch`, recurse into submodules like Git's `fetch_submodules`.
 pub(crate) fn recursive_fetch_submodules_after_fetch(
     super_git_dir: &Path,
@@ -200,7 +233,7 @@ pub(crate) fn recursive_fetch_submodules_after_fetch(
         if !is_submodule_active_for_fetch(&repo, config, &cs.super_oid, &cs.path, &name) {
             continue;
         }
-        let Some(gd) = submodule_git_dir_for_fetch(&repo, &cs.path) else {
+        let Some(gd) = changed_submodule_git_dir(&repo, &cs.path, &name) else {
             continue;
         };
         let odb = Odb::new(&gd.join("objects"));
@@ -215,8 +248,6 @@ pub(crate) fn recursive_fetch_submodules_after_fetch(
     let mut seen: HashSet<String> = HashSet::new();
     let mut work: Vec<SubmoduleFetchWork> = Vec::new();
 
-    let head_tree = head_tree_oid(&repo);
-
     let index_path = repo.index_path();
     let index = repo.load_index_at(&index_path).ok();
     if let Some(ref idx) = index {
@@ -225,13 +256,34 @@ pub(crate) fn recursive_fetch_submodules_after_fetch(
                 continue;
             }
             let path = String::from_utf8_lossy(&e.path).to_string();
-            let Some(sm) = modules.iter().find(|m| m.path == path) else {
-                continue;
+            // Git's `fetch_task_create` falls back to a synthetic submodule (name == path) when an
+            // index gitlink has no `.gitmodules` entry but the work tree is populated
+            // (`get_non_gitmodules_submodule` / `default_name_or_path`). This lets the *index* task
+            // handle it with a plain "Fetching submodule X" (no `at commit` annotation), matching
+            // t5526 #36 where the superproject commit removed `.gitmodules`.
+            let synthetic;
+            let sm = match modules.iter().find(|m| m.path == path) {
+                Some(m) => m,
+                None => {
+                    let abs_sm = work_tree.join(&path);
+                    if !abs_sm.join(".git").exists() {
+                        continue;
+                    }
+                    synthetic = crate::commands::submodule::SubmoduleInfo {
+                        name: path.clone(),
+                        path: path.clone(),
+                        url: String::new(),
+                        shallow: None,
+                        update: None,
+                        branch: None,
+                        ignore: None,
+                    };
+                    &synthetic
+                }
             };
-            let tree_for_active = head_tree.unwrap_or_else(zero_oid);
-            if !is_submodule_active_for_fetch(&repo, config, &tree_for_active, &path, &sm.name) {
-                continue;
-            }
+            // NOTE: Git's `get_fetch_task_from_index` does *not* gate on submodule activeness — only
+            // the changed-task path checks `is_tree_submodule_active`. So we do not filter the index
+            // entry here (t5526 #36 unsets `submodule.<n>.url` yet still fetches the populated gitlink).
             let mode = effective_submodule_fetch_recurse(
                 &sm.name,
                 cmd_recurse,
@@ -447,7 +499,17 @@ pub(crate) fn recursive_fetch_submodules_after_fetch(
                 .copied()
                 .collect();
             if !missing.is_empty() {
-                let argv = build_argv(&missing);
+                // For the by-OID pass git re-derives the remote by running
+                // `git submodule--helper get-default-remote <path>` as a subprocess from the
+                // superproject (submodule.c `get_next_submodule` oid_fetch_tasks branch). Mirror
+                // that — both to match the resolved remote and to emit the GIT_TRACE line the test
+                // checks (t5526 #40). Fall back to the precomputed remote if the helper fails.
+                let oid_remote = helper_get_default_remote(&grit_bin, &w.display_path, work_tree)
+                    .unwrap_or_else(|| w.remote.clone());
+                let mut argv = build_argv(&missing);
+                // Replace the remote token (just before the trailing OIDs) with the helper's answer.
+                let oid_pos = argv.len() - missing.len();
+                argv[oid_pos - 1] = oid_remote;
                 if !run_child(&argv)? {
                     bail!("submodule fetch failed for {}", w.display_path);
                 }

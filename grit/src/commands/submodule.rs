@@ -1055,7 +1055,20 @@ fn get_default_remote_for_path_in_super(path: &str, super_work_tree: &Path) -> R
         }
     };
     let (final_git_dir, _final_wt, super_wt, super_git_dir, sm) =
-        resolve_submodule_chain(&repo, path, &sub_rel)?;
+        match resolve_submodule_chain(&repo, path, &sub_rel) {
+            Ok(v) => v,
+            Err(e) => {
+                // Git's `get_default_remote_submodule` only needs a working repository handle for
+                // the submodule; a `.gitmodules` entry is optional. When the submodule is populated
+                // but absent from `.gitmodules` (e.g. recorded only in the index, t5526 #36), read
+                // the default remote straight from the submodule's own config — like
+                // `repo_default_remote(&subrepo)` — instead of failing.
+                if let Some(gd) = resolve_submodule_git_dir(&abs_sub) {
+                    return Ok(get_default_remote_from_git_dir(&gd));
+                }
+                return Err(e);
+            }
+        };
 
     let resolved_url = resolve_submodule_super_url(&super_wt, &super_git_dir, &sm.url)?;
     let config_path = final_git_dir.join("config");
@@ -2326,6 +2339,18 @@ fn init_in_repo(repo: &Repository, args: &InitArgs, quiet: bool) -> Result<()> {
             Some(m) => m.url.trim().is_empty() && config_submodule_url(repo, &m.name).is_none(),
         };
         if needs_url {
+            // A gitlink missing from `.gitmodules` but already populated (its work tree has `.git`)
+            // does not need init: it was cloned previously and only its HEAD will be moved. Git's
+            // `submodule update` warns-and-skips such paths (`next_submodule_warn_missing`) rather
+            // than dying, so an entry deleted from `.gitmodules` while still checked out must not
+            // abort `checkout --recurse-submodules` (t5526 #42/#45). Only paths with NO `.gitmodules`
+            // mapping qualify; a present-but-url-less mapping still errors as before.
+            if matched.is_none() {
+                let abs = work_tree.join(gl);
+                if abs.join(".git").exists() {
+                    continue;
+                }
+            }
             let display = rev_parse::to_relative_path(
                 &work_tree.join(gl),
                 &std::env::current_dir().unwrap_or_else(|_| work_tree.to_path_buf()),
