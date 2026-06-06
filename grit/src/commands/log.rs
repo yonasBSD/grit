@@ -1241,7 +1241,7 @@ fn run_line_log(
                 .strip_prefix("format:")
                 .or_else(|| fmt.strip_prefix("tformat:"))
                 .unwrap_or(fmt);
-            template.contains("%d") || template.contains("%D") || template.contains("%(decorate")
+            format_template_uses_decoration(template)
         })
         .unwrap_or(false);
     let (show_decorations, decorate_full) =
@@ -1714,6 +1714,34 @@ fn log_uses_blank_separator(args: &Args) -> bool {
         Some("medium") | Some("short") | Some("full") | Some("fuller") | Some("raw") => true,
         _ => false,
     }
+}
+
+/// Whether a `--pretty=format:` template references the decoration placeholders (`%d`, `%D`,
+/// `%(decorate...`), so the log machinery knows to load ref decorations. The `%d`/`%D` forms may be
+/// preceded by an add/space/del magic char (`%+d`, `%-d`, `% d`), which must still trigger loading
+/// — `template.contains("%d")` alone misses those (t4205 "magical wrapping" needs `%+d`).
+fn format_template_uses_decoration(template: &str) -> bool {
+    if template.contains("%(decorate") {
+        return true;
+    }
+    let bytes = template.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let mut j = i + 1;
+            if j < bytes.len() && matches!(bytes[j], b'+' | b'-' | b' ') {
+                j += 1;
+            }
+            if j < bytes.len() && matches!(bytes[j], b'd' | b'D') {
+                return true;
+            }
+            // Skip the `%` and following char so `%%` does not start a new scan mid-escape.
+            i = j.max(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+    false
 }
 
 /// Whether `-z` needs an explicit inter-entry NUL that the format's own body does not already
@@ -2589,7 +2617,7 @@ fn run_rev_list_log(
                 .strip_prefix("format:")
                 .or_else(|| fmt.strip_prefix("tformat:"))
                 .unwrap_or(fmt);
-            template.contains("%d") || template.contains("%D") || template.contains("%(decorate")
+            format_template_uses_decoration(template)
         })
         .unwrap_or(false);
     let (show_decorations, decorate_full) =
@@ -3032,7 +3060,7 @@ fn run_graph_log(
                 .strip_prefix("format:")
                 .or_else(|| fmt.strip_prefix("tformat:"))
                 .unwrap_or(fmt);
-            template.contains("%d") || template.contains("%D") || template.contains("%(decorate")
+            format_template_uses_decoration(template)
         })
         .unwrap_or(false);
     let (show_decorations_graph, decorate_full_graph) =
@@ -5355,7 +5383,7 @@ pub fn run(mut args: Args) -> Result<()> {
                 .strip_prefix("format:")
                 .or_else(|| fmt.strip_prefix("tformat:"))
                 .unwrap_or(fmt);
-            template.contains("%d") || template.contains("%D") || template.contains("%(decorate")
+            format_template_uses_decoration(template)
         })
         .unwrap_or(false);
 
@@ -6129,7 +6157,7 @@ pub fn run_no_walk(
             .strip_prefix("format:")
             .or_else(|| fmt.strip_prefix("tformat:"))
             .unwrap_or(fmt);
-        template.contains("%d") || template.contains("%D") || template.contains("%(decorate")
+        format_template_uses_decoration(template)
     });
     let decorations = if args.no_decorate {
         None
@@ -9851,6 +9879,35 @@ fn run_describe_for_format(
     crate::commands::describe::describe_object(&repo, *oid, opts).ok()
 }
 
+/// Parse the inner part of a `%w(width,indent1,indent2)` directive (the text between the
+/// parentheses, with the parens already stripped). Mirrors Git's `strtoul`-based parse: an empty
+/// string is `(0, 0, 0)`; otherwise up to three comma-separated decimal values, where any trailing
+/// non-digit / non-comma junk makes the whole directive invalid (`None` => emit literally).
+fn parse_wrap_spec(inner: &str) -> Option<(i64, i64, i64)> {
+    if inner.is_empty() {
+        return Some((0, 0, 0));
+    }
+    let mut parts = inner.split(',');
+    let mut vals = [0i64; 3];
+    for slot in &mut vals {
+        let Some(part) = parts.next() else {
+            // Fewer than 3 values is fine; remaining stay 0.
+            return Some((vals[0], vals[1], vals[2]));
+        };
+        // Git's strtoul accepts only leading digits; a segment must be entirely digits and
+        // non-empty here. Saturate to keep the FORMATTING_LIMIT guard meaningful.
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        *slot = part.parse::<i64>().unwrap_or(i64::MAX);
+    }
+    // More than three comma-separated fields => trailing junk => invalid.
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((vals[0], vals[1], vals[2]))
+}
+
 thread_local! {
     /// Display width of the graph prefix (e.g. `* `, `| * `) on the line where the current commit's
     /// formatted body begins. `%>|(N)` / `%<|(N)` absolute-column directives position relative to
@@ -10114,6 +10171,14 @@ fn apply_format_string(
     let mut result = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
 
+    // `%w(width,indent1,indent2)` rewrapping state (Git pretty.c `rewrap_message_tail`). Text
+    // appended since `wrap_start` is rewrapped with the *current* params whenever a new `%w`
+    // directive (or the end of formatting) changes them.
+    let mut wrap_width: i64 = 0;
+    let mut wrap_indent1: i64 = 0;
+    let mut wrap_indent2: i64 = 0;
+    let mut wrap_start: usize = 0;
+
     while let Some(ch) = chars.next() {
         if ch == '%' {
             // Check alignment directives. Parse against a clone so a malformed
@@ -10177,6 +10242,20 @@ fn apply_format_string(
                 }
                 _ => Magic::None,
             };
+            // `%+w()` / `%-w()` / `% w()` can never expand to a non-empty string yet would change
+            // the layout of preceding content, so Git's pretty.c refuses the combination and emits
+            // it literally (the "magical wrapping" case in t4205). Re-emit `%<magic>` and leave the
+            // `w(...)` for the loop to copy verbatim.
+            if magic != Magic::None && chars.peek() == Some(&'w') {
+                result.push('%');
+                result.push(match magic {
+                    Magic::AddLf => '+',
+                    Magic::AddSp => ' ',
+                    Magic::DelLf => '-',
+                    Magic::None => unreachable!(),
+                });
+                continue;
+            }
             let magic_start = result.len();
 
             let col_start = if pending_col.is_some() {
@@ -10574,15 +10653,61 @@ fn apply_format_string(
                     }
                 }
                 Some('w') => {
-                    // %w(...) wrapping directive — consume and ignore
-                    chars.next();
-                    if chars.peek() == Some(&'(') {
-                        chars.next();
-                        for c in chars.by_ref() {
-                            if c == ')' {
-                                break;
-                            }
+                    // `%w(width,indent1,indent2)` rewrapping directive (Git pretty.c). Parse
+                    // against a clone so a malformed or overflowing spec is emitted literally.
+                    let mut probe = chars.clone();
+                    probe.next(); // consume 'w'
+                    if probe.peek() != Some(&'(') {
+                        // Bare `%w` (no parens): Git refuses it, emit literally.
+                        result.push('%');
+                        continue;
+                    }
+                    probe.next(); // consume '('
+                    let mut inner = String::new();
+                    let mut closed = false;
+                    for c in probe.by_ref() {
+                        if c == ')' {
+                            closed = true;
+                            break;
                         }
+                        inner.push(c);
+                    }
+                    if !closed {
+                        result.push('%');
+                        continue;
+                    }
+                    // Empty `%w()` => width 0 (wrapping off). Otherwise parse up to three
+                    // comma-separated decimal values; any trailing junk => emit literally.
+                    let parsed = parse_wrap_spec(&inner);
+                    let Some((new_w, new_i1, new_i2)) = parsed else {
+                        result.push('%');
+                        continue;
+                    };
+                    const FORMATTING_LIMIT: i64 = 16 * 1024;
+                    if new_w > FORMATTING_LIMIT
+                        || new_i1 > FORMATTING_LIMIT
+                        || new_i2 > FORMATTING_LIMIT
+                    {
+                        result.push('%');
+                        continue;
+                    }
+                    chars = probe;
+                    // rewrap_message_tail: if the params actually change, rewrap the text added
+                    // since `wrap_start` with the *current* params, then adopt the new ones.
+                    if wrap_width != new_w || wrap_indent1 != new_i1 || wrap_indent2 != new_i2 {
+                        if wrap_start < result.len() {
+                            let tail = result.split_off(wrap_start);
+                            result.push_str(&grit_lib::commit_pretty::add_wrapped_text(
+                                &tail,
+                                wrap_indent1,
+                                wrap_indent2,
+                                wrap_width,
+                            ));
+                        }
+                        wrap_start = result.len();
+                        wrap_width = new_w;
+                        wrap_indent1 = new_i1;
+                        wrap_indent2 = new_i2;
                     }
                 }
                 Some('e') => {
@@ -10836,6 +10961,18 @@ fn apply_format_string(
         } else {
             result.push(ch);
         }
+    }
+
+    // Final rewrap (Git `rewrap_message_tail(sb, &context, 0, 0, 0)`): if any `%w` set non-zero
+    // params, the text since the last `%w` is wrapped with those params.
+    if (wrap_width != 0 || wrap_indent1 != 0 || wrap_indent2 != 0) && wrap_start < result.len() {
+        let tail = result.split_off(wrap_start);
+        result.push_str(&grit_lib::commit_pretty::add_wrapped_text(
+            &tail,
+            wrap_indent1,
+            wrap_indent2,
+            wrap_width,
+        ));
     }
 
     result

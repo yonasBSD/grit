@@ -43,10 +43,23 @@ become positive tips (named for `%S` via `build_named_source_map`, which already
 labels), `refs/bisect/good*` become negative excludes. Also added `args.bisect` to
 `rev_input_given`. Now matches the expected 3-commit range with correct `%S`.
 
-## Remaining
-- 116: magical wrapping directives `%w(1)%+d%+w(2)`. grit's `%w(...)` directive is parsed but
-  ignored (no actual word-wrapping implemented), and the trailing `%+w(2)` must stay literal.
-  Implementing real `%w()` wrapping is a sizable feature; deferred.
+### 116: log --pretty with magical wrapping directives
+Three fixes:
+1. Implemented `%w(width,indent1,indent2)` text wrapping. Added
+   `grit_lib::commit_pretty::add_wrapped_text` (a faithful port of Git's `strbuf_add_wrapped_text`,
+   `utf8.c`) plus `add_indented_text`, with unit tests. Wired `%w` into `apply_format_string`:
+   tracks wrap state, rewraps the tail since the last `%w` whenever params change
+   (`rewrap_message_tail`), final rewrap at end. `parse_wrap_spec` validates the spec (empty =>
+   width 0; >FORMATTING_LIMIT(16384) or junk => emit literally).
+2. `%+w()`/`%-w()`/`% w()` emitted literally (Git refuses magic+`w`).
+3. Real pre-existing bug fixed: `%+d`/`%-d`/`% d` produced nothing because the "format needs
+   decorations" detection used `template.contains("%d")`, missing magic-prefixed forms. Added
+   `format_template_uses_decoration` and used it at all FIVE detection sites in log.rs. Also fixed
+   a t4202 subtest (119 -> 120).
+
+## Final status
+t4205: 123/125 (only 16 & 125 remain, both `test_expect_failure` / TODO known breakage). All
+`test_expect_success` subtests pass. No regressions in t4201 (30/30) or t4202 (119 -> 120).
 
 ## Note (not mine)
 t6007 test 7 (`rev-list --left-right --count`) fails expecting a 3rd `0` column; the rev-list
