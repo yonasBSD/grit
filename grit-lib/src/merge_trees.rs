@@ -625,7 +625,17 @@ fn add_add_content_conflict(
 
     let result = merge(&input)?;
 
-    if result.conflicts > 0 {
+    // Git treats an add/add as a conflict whenever the two sides cannot be reconciled to a single
+    // stage-0 entry. With no merge base there is nothing to disambiguate a mode clash, so when both
+    // sides introduce the path as a regular file with a different executable bit (100644 vs 100755)
+    // the result is a conflict even if the *content* merges cleanly — Git records unmerged stages
+    // 2/3 with the diverging modes (t6411: double mode change with identical content). Type clashes
+    // (file/symlink/submodule) are handled by the gitlink branch above / elsewhere.
+    let both_regular_files =
+        matches!(ours.mode, 0o100644 | 0o100755) && matches!(theirs.mode, 0o100644 | 0o100755);
+    let mode_conflict = both_regular_files && ours.mode != theirs.mode && favor == MergeFavor::None;
+
+    if result.conflicts > 0 || mode_conflict {
         let conflict_oid = repo.odb.write(ObjectKind::Blob, &result.content)?;
         conflict_content.insert(path.to_vec(), conflict_oid);
         stage_entry(index, path, ours, 2);
