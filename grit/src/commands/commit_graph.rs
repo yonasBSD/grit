@@ -37,8 +37,9 @@ use grit_lib::repo::Repository;
     override_usage = "grit commit-graph (write | verify)"
 )]
 pub struct Args {
-    /// Optional alternate object directory.
-    #[arg(long = "object-dir")]
+    /// Optional alternate object directory. `global` so it is accepted both before and after
+    /// the `write`/`verify` subcommand, matching Git's top-level `--object-dir` option.
+    #[arg(long = "object-dir", global = true)]
     pub object_dir: Option<PathBuf>,
 
     #[command(subcommand)]
