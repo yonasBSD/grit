@@ -90,6 +90,7 @@ pub mod promisor_remote;
 pub mod protocol;
 pub mod prune_packed;
 pub mod push_cert;
+pub mod push_report;
 pub mod push_submodules;
 pub mod quote_path;
 pub mod receive_pack;
