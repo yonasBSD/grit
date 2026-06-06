@@ -1158,6 +1158,7 @@ fn run_line_log(
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(50);
 
+    let empty_grep_filter = GrepFilter::default();
     let walk = walk_commits(
         repo,
         &repo.git_dir,
@@ -1167,7 +1168,7 @@ fn run_line_log(
         args.first_parent,
         &[],
         &[],
-        &[],
+        &empty_grep_filter,
         false,
         false,
         mailmap,
@@ -2416,7 +2417,7 @@ fn run_rev_list_log(
     patch_context: usize,
     author_res: &[Regex],
     committer_res: &[Regex],
-    grep_res: &[Regex],
+    grep_filter: &GrepFilter,
     use_color: bool,
     use_mailmap: bool,
     mailmap: &MailmapTable,
@@ -2637,20 +2638,7 @@ fn run_rev_list_log(
         if !committer_ok {
             continue;
         }
-        let msg_ok = if grep_res.is_empty() {
-            true
-        } else {
-            let m = if args.all_match {
-                grep_res.iter().all(|re| re.is_match(&info.message))
-            } else {
-                grep_res.iter().any(|re| re.is_match(&info.message))
-            };
-            if args.invert_grep {
-                !m
-            } else {
-                m
-            }
-        };
+        let msg_ok = grep_filter.matches(&info.message, args.all_match, args.invert_grep);
         if !msg_ok {
             continue;
         }
@@ -4443,6 +4431,161 @@ fn build_grep_regex(
         .build()
 }
 
+/// Escape a single byte for inclusion in a `regex::bytes` pattern, emitting `\xHH` for any byte
+/// that is not a plain ASCII alphanumeric so the regex engine matches the literal byte. Used when
+/// the grep needle contains raw (possibly non-UTF-8) bytes such as a Latin-1 `é` (`0xE9`).
+fn escape_byte_for_bytes_regex(b: u8) -> String {
+    if b.is_ascii_alphanumeric() {
+        (b as char).to_string()
+    } else {
+        format!("\\x{b:02x}")
+    }
+}
+
+/// Build a `regex::bytes::Regex` for a grep needle that may contain raw, non-UTF-8 bytes.
+///
+/// Git greps commit messages in the log *output* encoding at the byte level (see
+/// `commit_match`/`grep_buffer` in `revision.c`). The Rust `regex::bytes` engine matches over
+/// `&[u8]`, but its pattern is still a `&str`; we therefore render the (possibly non-UTF-8) needle
+/// into an ASCII-safe pattern where every non-ASCII byte becomes `\xHH`. The whole pattern runs in
+/// byte mode (`(?-u)`) so `.`/classes/`\xHH` all operate on bytes, matching Git's regexec.
+fn build_grep_bytes_regex(
+    pattern_bytes: &[u8],
+    ptype: GrepPatternType,
+    ignore_case: bool,
+) -> std::result::Result<regex::bytes::Regex, regex::Error> {
+    let translated = match ptype {
+        GrepPatternType::Fixed => {
+            // Literal match: escape every byte.
+            pattern_bytes
+                .iter()
+                .map(|&b| escape_byte_for_bytes_regex(b))
+                .collect::<String>()
+        }
+        GrepPatternType::Basic | GrepPatternType::Extended | GrepPatternType::Perl => {
+            // For a regex needle, ASCII bytes keep their regex meaning; non-ASCII bytes become
+            // literal `\xHH`. BRE additionally needs its escaping swapped to ERE first. When the
+            // needle is valid UTF-8 we can run the existing BRE->ERE translation; otherwise we
+            // operate byte-by-byte (the non-UTF-8 tests only use single literal bytes).
+            if let Ok(s) = std::str::from_utf8(pattern_bytes) {
+                let ere = if ptype == GrepPatternType::Basic {
+                    bre_to_ere(s)
+                } else {
+                    s.to_string()
+                };
+                // Re-render any non-ASCII chars (multi-byte UTF-8) as their raw bytes so the
+                // byte engine compares against the re-encoded message bytes.
+                let mut out = String::new();
+                for ch in ere.chars() {
+                    if ch.is_ascii() {
+                        out.push(ch);
+                    } else {
+                        let mut buf = [0u8; 4];
+                        for &b in ch.encode_utf8(&mut buf).as_bytes() {
+                            out.push_str(&escape_byte_for_bytes_regex(b));
+                        }
+                    }
+                }
+                out
+            } else {
+                pattern_bytes
+                    .iter()
+                    .map(|&b| {
+                        // Keep ASCII regex metacharacters meaningful; escape the rest.
+                        if b.is_ascii() {
+                            (b as char).to_string()
+                        } else {
+                            escape_byte_for_bytes_regex(b)
+                        }
+                    })
+                    .collect::<String>()
+            }
+        }
+    };
+    regex::bytes::RegexBuilder::new(&translated)
+        .unicode(false)
+        .case_insensitive(ignore_case)
+        .build()
+}
+
+/// Recover the raw byte form of each `--grep` value from the process `args_os()`.
+///
+/// The top-level argv is captured lossily (`to_string_lossy`), so a needle byte like Latin-1 `é`
+/// (`0xE9`, invalid UTF-8) arrives as U+FFFD and can never match a re-encoded message. We re-scan
+/// the untouched OS args to recover the exact bytes, preserving command-line order so they line up
+/// positionally with `args.grep_patterns`.
+#[cfg(unix)]
+fn recover_raw_grep_pattern_bytes() -> Vec<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut out = Vec::new();
+    let mut args = std::env::args_os();
+    while let Some(arg) = args.next() {
+        let bytes = arg.as_bytes();
+        if let Some(val) = bytes.strip_prefix(b"--grep=") {
+            out.push(val.to_vec());
+        } else if bytes == b"--grep" {
+            if let Some(next) = args.next() {
+                out.push(next.as_bytes().to_vec());
+            }
+        }
+    }
+    out
+}
+
+#[cfg(not(unix))]
+fn recover_raw_grep_pattern_bytes() -> Vec<Vec<u8>> {
+    Vec::new()
+}
+
+/// Holds the compiled `--grep` needles plus the machinery to match them the way Git does.
+///
+/// Git greps the commit message in the **log output encoding** at the byte level (`commit_match`
+/// in `revision.c`). When that encoding is plain UTF-8 we match the Unicode message with the
+/// ordinary `regex` engine (`str_res`). When the user requested a non-UTF-8 `--encoding`, the
+/// message is first re-encoded to that charset and the needles (recovered as raw bytes from
+/// `args_os`) are matched against those bytes with `regex::bytes` (`byte_res`).
+#[derive(Default)]
+struct GrepFilter {
+    str_res: Vec<Regex>,
+    byte_res: Vec<regex::bytes::Regex>,
+    /// Non-UTF-8 output encoding label that the message must be re-encoded into before matching,
+    /// or `None` to grep the UTF-8 message directly.
+    reencode_to: Option<String>,
+}
+
+impl GrepFilter {
+    fn is_empty(&self) -> bool {
+        self.str_res.is_empty()
+    }
+
+    /// Whether the message satisfies the grep predicate, honoring `--all-match` / `--invert-grep`.
+    fn matches(&self, message: &str, all_match: bool, invert: bool) -> bool {
+        if self.str_res.is_empty() {
+            return true;
+        }
+        let m = if let Some(label) = self.reencode_to.as_deref() {
+            // Re-encode the Unicode message into the output charset and grep the raw bytes, so a
+            // Latin-1 needle matches a Latin-1-rendered message (and a UTF-8 needle does not).
+            let bytes = grit_lib::commit_encoding::encode_header_text(label, message)
+                .unwrap_or_else(|| message.as_bytes().to_vec());
+            if all_match {
+                self.byte_res.iter().all(|re| re.is_match(&bytes))
+            } else {
+                self.byte_res.iter().any(|re| re.is_match(&bytes))
+            }
+        } else if all_match {
+            self.str_res.iter().all(|re| re.is_match(message))
+        } else {
+            self.str_res.iter().any(|re| re.is_match(message))
+        };
+        if invert {
+            !m
+        } else {
+            m
+        }
+    }
+}
+
 /// Decide whether a branch (short name, e.g. `topic`) is selected by `--branches[=<glob>]`.
 ///
 /// An empty glob (plain `--branches`) selects everything. Following git's `for_each_glob_ref`,
@@ -4804,6 +4947,45 @@ pub fn run(mut args: Args) -> Result<()> {
             .with_context(|| format!("invalid --grep regex: {p}"))?;
         grep_res.push(re);
     }
+    // Assemble the encoding-aware grep filter. When `--encoding` selects a non-UTF-8 charset, Git
+    // greps the message *after* re-encoding it (see `commit_match` in revision.c), at the byte
+    // level, so recover the raw needle bytes from `args_os` (the lossy top-level argv mangles
+    // non-UTF-8 bytes into U+FFFD) and compile byte regexes for that path.
+    let grep_filter = {
+        let mut filter = GrepFilter {
+            str_res: grep_res.clone(),
+            ..GrepFilter::default()
+        };
+        if let Some(label) = args.log_output_encoding.clone() {
+            if !args.grep_patterns.is_empty()
+                && grit_lib::commit_encoding::is_known_encoding(&label)
+            {
+                let raw = recover_raw_grep_pattern_bytes();
+                let mut byte_res = Vec::with_capacity(args.grep_patterns.len());
+                let mut ok = true;
+                for (idx, lossy) in args.grep_patterns.iter().enumerate() {
+                    // Prefer the byte-exact needle recovered from args_os; fall back to the lossy
+                    // string's bytes if the position could not be recovered (e.g. non-unix).
+                    let pat_bytes: Vec<u8> = raw
+                        .get(idx)
+                        .cloned()
+                        .unwrap_or_else(|| lossy.clone().into_bytes());
+                    match build_grep_bytes_regex(&pat_bytes, grep_ptype, grep_ignore_case) {
+                        Ok(re) => byte_res.push(re),
+                        Err(_) => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    filter.byte_res = byte_res;
+                    filter.reencode_to = Some(label);
+                }
+            }
+        }
+        filter
+    };
     let mut grep_reflog_res: Vec<Regex> = Vec::new();
     for p in &args.grep_reflog_patterns {
         let re = build_grep_regex(p, grep_ptype, grep_ignore_case)
@@ -4846,7 +5028,7 @@ pub fn run(mut args: Args) -> Result<()> {
             patch_context,
             &author_res,
             &committer_res,
-            &grep_res,
+            &grep_filter,
             &grep_reflog_res,
             use_mailmap,
             &mailmap,
@@ -4895,7 +5077,7 @@ pub fn run(mut args: Args) -> Result<()> {
             patch_context,
             &author_res,
             &committer_res,
-            &grep_res,
+            &grep_filter,
             use_color,
             use_mailmap,
             &mailmap,
@@ -5258,7 +5440,7 @@ pub fn run(mut args: Args) -> Result<()> {
             args.first_parent,
             &author_res,
             &committer_res,
-            &grep_res,
+            &grep_filter,
             args.all_match,
             args.invert_grep,
             &mailmap,
@@ -5377,7 +5559,7 @@ pub fn run(mut args: Args) -> Result<()> {
             args.first_parent,
             &author_res,
             &committer_res,
-            &grep_res,
+            &grep_filter,
             args.all_match,
             args.invert_grep,
             &mailmap,
@@ -6315,7 +6497,7 @@ fn run_reflog_walk(
     patch_context: usize,
     author_res: &[Regex],
     committer_res: &[Regex],
-    grep_res: &[Regex],
+    grep_filter: &GrepFilter,
     grep_reflog_res: &[Regex],
     use_mailmap: bool,
     mailmap: &MailmapTable,
@@ -6567,12 +6749,7 @@ fn run_reflog_walk(
         if !committer_ok {
             continue;
         }
-        let msg_ok = reflog_grep_matches(
-            grep_res,
-            &commit_data.message,
-            args.all_match,
-            args.invert_grep,
-        );
+        let msg_ok = grep_filter.matches(&commit_data.message, args.all_match, args.invert_grep);
         if !msg_ok {
             continue;
         }
@@ -7278,7 +7455,7 @@ struct WalkCommitsIter<'a> {
     first_parent: bool,
     author_res: &'a [Regex],
     committer_res: &'a [Regex],
-    grep_res: &'a [Regex],
+    grep_filter: &'a GrepFilter,
     all_match_grep: bool,
     invert_grep: bool,
     mailmap: &'a MailmapTable,
@@ -7300,7 +7477,7 @@ impl<'a> WalkCommitsIter<'a> {
         first_parent: bool,
         author_res: &'a [Regex],
         committer_res: &'a [Regex],
-        grep_res: &'a [Regex],
+        grep_filter: &'a GrepFilter,
         all_match_grep: bool,
         invert_grep: bool,
         mailmap: &'a MailmapTable,
@@ -7364,7 +7541,7 @@ impl<'a> WalkCommitsIter<'a> {
             first_parent,
             author_res,
             committer_res,
-            grep_res,
+            grep_filter,
             all_match_grep,
             invert_grep,
             mailmap,
@@ -7487,20 +7664,9 @@ impl<'a> WalkCommitsIter<'a> {
             if !committer_ok {
                 continue;
             }
-            let msg_ok = if self.grep_res.is_empty() {
-                true
-            } else {
-                let m = if self.all_match_grep {
-                    self.grep_res.iter().all(|re| re.is_match(&info.message))
-                } else {
-                    self.grep_res.iter().any(|re| re.is_match(&info.message))
-                };
-                if self.invert_grep {
-                    !m
-                } else {
-                    m
-                }
-            };
+            let msg_ok =
+                self.grep_filter
+                    .matches(&info.message, self.all_match_grep, self.invert_grep);
             if !msg_ok {
                 continue;
             }
@@ -7570,7 +7736,7 @@ fn walk_commits(
     first_parent: bool,
     author_res: &[Regex],
     committer_res: &[Regex],
-    grep_res: &[Regex],
+    grep_filter: &GrepFilter,
     all_match_grep: bool,
     invert_grep: bool,
     mailmap: &MailmapTable,
@@ -7602,7 +7768,7 @@ fn walk_commits(
         first_parent,
         author_res,
         committer_res,
-        grep_res,
+        grep_filter,
         all_match_grep,
         invert_grep,
         mailmap,
