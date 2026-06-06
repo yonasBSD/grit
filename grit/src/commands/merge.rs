@@ -2639,7 +2639,7 @@ Aborting"
         format!("{}\n", head_oid.to_hex()),
     )?;
 
-    maybe_simulate_partial_clone_fetch(repo, &args.commits[0])?;
+    maybe_prefetch_partial_clone_merge_blobs(repo, &base_entries, &ours_entries, &theirs_entries)?;
 
     // Git's `resolve` strategy does not use rename detection; `recursive`/`ort` do. Without this,
     // resolve can incorrectly auto-merge renames that recursive reports as conflicts (t7601).
@@ -3902,71 +3902,369 @@ fn read_submodule_head_oid(sub_path: &Path) -> Option<ObjectId> {
     }
 }
 
-/// Simulate partial-clone lazy fetch batches for known merge scenarios.
+/// Prefetch the missing promisor blobs a partial-clone merge needs, in the same
+/// batched fashion Git's merge-ort does.
 ///
-/// This updates the internal promisor-missing marker file and emits trace2
-/// perf events (`child_start` + `fetch_count`) so tests can validate fetch
-/// accounting. The simulation is intentionally no-op outside partial-clone
-/// repos using the internal promisor marker file.
-fn maybe_simulate_partial_clone_fetch(repo: &Repository, merge_target: &str) -> Result<()> {
-    let marker = repo.git_dir.join("grit-promisor-missing");
-    if !marker.exists() {
+/// On a partial clone (`--filter=blob:none`) the blob contents required for
+/// rename detection and 3-way content merge are not present locally; Git
+/// prefetches them in a small number of batches (one per rename-detection side
+/// plus one for the content merge) before running the merge. We replicate that:
+/// compute the exact set of missing blobs each phase reads, copy them from the
+/// promisor remote into the local store so the merge can succeed, and emit the
+/// trace2 perf events (`child_start fetch.negotiationAlgorithm` + `fetch_count`)
+/// that tests (t6421) use to validate fetch accounting.
+///
+/// No-op outside promisor repositories or when nothing is missing.
+fn maybe_prefetch_partial_clone_merge_blobs(
+    repo: &Repository,
+    base: &HashMap<Vec<u8>, IndexEntry>,
+    ours: &HashMap<Vec<u8>, IndexEntry>,
+    theirs: &HashMap<Vec<u8>, IndexEntry>,
+) -> Result<()> {
+    let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    if !grit_lib::promisor::repo_treats_promisor_packs(&repo.git_dir, &cfg) {
         return Ok(());
     }
 
-    let batches: &[usize] = if merge_target.ends_with("B-single") {
-        &[2, 1]
-    } else if merge_target.ends_with("B-dir") {
-        &[6]
-    } else if merge_target.ends_with("B-many") {
-        &[12, 5, 3, 2]
-    } else {
-        &[]
-    };
+    let is_missing = |oid: &ObjectId| -> bool { !repo.odb.exists_local(oid) };
+
+    // Phase 1 + 2: rename-detection blobs for each side (ours, then theirs).
+    // Phase 3: content-merge blobs (paths modified on both sides relative to base,
+    // after accounting for renames). Each phase that fetches anything becomes one
+    // lazy-fetch batch (one `fetch.negotiationAlgorithm` child + one `fetch_count`).
+    let mut batches: Vec<Vec<ObjectId>> = Vec::new();
+    let mut already: std::collections::HashSet<ObjectId> = std::collections::HashSet::new();
+
+    for (side, other) in [(ours, theirs), (theirs, ours)] {
+        let mut batch: Vec<ObjectId> = Vec::new();
+        let mut seen: BTreeSet<ObjectId> = BTreeSet::new();
+        for oid in relevant_rename_blob_oids(base, side, other) {
+            if already.contains(&oid) || seen.contains(&oid) || !is_missing(&oid) {
+                continue;
+            }
+            seen.insert(oid);
+            batch.push(oid);
+        }
+        if !batch.is_empty() {
+            for o in &batch {
+                already.insert(*o);
+            }
+            batches.push(batch);
+        }
+    }
+
+    // Phase 3: content merge. A path whose blob differs from base on BOTH ours and
+    // theirs needs a 3-way content merge; the side blobs not already fetched are
+    // pulled here. Base blobs are already local from rename detection.
+    {
+        let mut batch: Vec<ObjectId> = Vec::new();
+        let mut seen: BTreeSet<ObjectId> = BTreeSet::new();
+        for oid in content_merge_blob_oids(base, ours, theirs) {
+            if already.contains(&oid) || seen.contains(&oid) || !is_missing(&oid) {
+                continue;
+            }
+            seen.insert(oid);
+            batch.push(oid);
+        }
+        if !batch.is_empty() {
+            for o in &batch {
+                already.insert(*o);
+            }
+            batches.push(batch);
+        }
+    }
 
     if batches.is_empty() {
         return Ok(());
     }
 
-    for requested in batches {
-        let fetched = consume_promisor_missing(&marker, *requested)?;
-        if fetched == 0 {
-            continue;
-        }
-        if let Ok(path) = std::env::var("GIT_TRACE2_PERF") {
-            if !path.is_empty() {
-                append_trace2_perf_line(&path, "child_start", "fetch.negotiationAlgorithm")?;
-                append_trace2_perf_line(&path, "data", &format!("fetch_count:{fetched}"))?;
-            }
+    let trace_path = std::env::var("GIT_TRACE2_PERF")
+        .ok()
+        .filter(|p| !p.is_empty());
+    for batch in &batches {
+        // Materialize the batch locally (copy from the promisor remote).
+        crate::commands::promisor_hydrate::try_lazy_fetch_promisor_objects_batch(repo, batch)?;
+        if let Some(path) = &trace_path {
+            append_trace2_perf_line(path, "child_start", "fetch.negotiationAlgorithm")?;
+            append_trace2_perf_line(path, "data", &format!("fetch_count:{}", batch.len()))?;
         }
     }
 
     Ok(())
 }
 
-/// Remove up to `count` OIDs from the promisor-missing marker file.
-fn consume_promisor_missing(marker: &Path, count: usize) -> Result<usize> {
-    let content = fs::read_to_string(marker).unwrap_or_default();
-    let mut lines: Vec<String> = content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.trim().to_string())
+/// Whether `path` lies inside directory `dir` (path components, not byte prefix).
+/// `dir` empty means the repository root (every path is under it).
+fn path_under_dir(path: &[u8], dir: &[u8]) -> bool {
+    if dir.is_empty() {
+        return true;
+    }
+    path.len() > dir.len() && path.starts_with(dir) && path[dir.len()] == b'/'
+}
+
+/// Given a base path and its exact-rename destination on a side, return the base
+/// directory prefix that was renamed (the leading components that changed once a
+/// shared trailing suffix is removed). `dir/subdir/a` -> `folder/subdir/a`
+/// yields `dir`; `x/y` -> `z/y` yields `x`. Returns `None` when the paths share no
+/// common trailing component (a plain file rename, not a directory rename).
+fn renamed_dir_prefix(base_path: &[u8], dest_path: &[u8]) -> Option<Vec<u8>> {
+    let bsplit: Vec<&[u8]> = base_path.split(|&b| b == b'/').collect();
+    let dsplit: Vec<&[u8]> = dest_path.split(|&b| b == b'/').collect();
+    // Count shared trailing components.
+    let mut shared = 0usize;
+    while shared < bsplit.len()
+        && shared < dsplit.len()
+        && bsplit[bsplit.len() - 1 - shared] == dsplit[dsplit.len() - 1 - shared]
+    {
+        shared += 1;
+    }
+    if shared == 0 {
+        return None; // basename differs: a file rename, not a directory rename
+    }
+    let keep = bsplit.len() - shared;
+    if keep == 0 {
+        return None;
+    }
+    Some(bsplit[..keep].join(&b'/'))
+}
+
+/// Blobs read by Git's rename detection for the `base` -> `side` diff, restricted
+/// to *relevant* renames (the merge-ort optimization).
+///
+/// A source that `side` renamed-and-modified only needs its content read when the
+/// rename can affect the merge outcome, i.e. when `other` (the opposite side of
+/// the merge) touches the same path. Concretely a basename-matched rename pair
+/// (deleted base path D, added side path with the same final component, different
+/// content) is relevant when either:
+///   * D is content-modified by `other` (a 3-way content merge of the renamed
+///     file is required), or
+///   * D lives under a directory that `side` renamed away and `other` added a new
+///     path into (directory-rename detection is needed, which reads the renamed
+///     files' content).
+///
+/// Both the source (base) and destination (side) blobs of a relevant pair are
+/// returned. Exact renames are resolved without reading content and are skipped.
+fn relevant_rename_blob_oids(
+    base: &HashMap<Vec<u8>, IndexEntry>,
+    side: &HashMap<Vec<u8>, IndexEntry>,
+    other: &HashMap<Vec<u8>, IndexEntry>,
+) -> Vec<ObjectId> {
+    fn basename(p: &[u8]) -> &[u8] {
+        match p.iter().rposition(|&b| b == b'/') {
+            Some(i) => &p[i + 1..],
+            None => p,
+        }
+    }
+    fn is_regularish(mode: u32) -> bool {
+        mode == MODE_REGULAR || mode == MODE_EXECUTABLE
+    }
+
+    let base_oids: std::collections::HashSet<ObjectId> = base.values().map(|e| e.oid).collect();
+
+    // Build the side OID -> path map for exact-rename lookup.
+    let mut side_oid_paths: HashMap<ObjectId, Vec<&Vec<u8>>> = HashMap::new();
+    for (p, e) in side {
+        side_oid_paths.entry(e.oid).or_default().push(p);
+    }
+
+    // Base directory prefixes that `side` renamed away, derived from exact renames:
+    // for each base file that moved (exact OID) to a path with a shared trailing
+    // suffix, the differing leading component is the renamed directory prefix
+    // (e.g. base `dir/subdir/a` -> side `folder/subdir/a` => renamed base dir `dir`).
+    let mut side_renamed_prefixes: BTreeSet<Vec<u8>> = BTreeSet::new();
+    for (p, e) in base {
+        if !is_regularish(e.mode) {
+            continue;
+        }
+        if side.contains_key(p) {
+            continue; // still present at same path
+        }
+        let Some(dests) = side_oid_paths.get(&e.oid) else {
+            continue;
+        };
+        for dest in dests {
+            if base.contains_key(*dest) {
+                continue;
+            }
+            if let Some(prefix) = renamed_dir_prefix(p, dest) {
+                side_renamed_prefixes.insert(prefix);
+            }
+        }
+    }
+
+    // Base directory prefixes `other` added a brand-new path under (relative to base).
+    let other_added_new_under = |prefix: &[u8]| -> bool {
+        for p in other.keys() {
+            if base.contains_key(p) {
+                continue;
+            }
+            if path_under_dir(p, prefix) {
+                return true;
+            }
+        }
+        false
+    };
+    let relevant_renamed_prefixes: BTreeSet<Vec<u8>> = side_renamed_prefixes
+        .iter()
+        .filter(|pre| other_added_new_under(pre))
+        .cloned()
         .collect();
-    if lines.is_empty() {
-        return Ok(0);
+
+    // Deleted base paths (renamed-and-modified candidates: not an exact rename).
+    let mut deleted: Vec<(&Vec<u8>, &IndexEntry)> = Vec::new();
+    for (p, e) in base {
+        if !is_regularish(e.mode) {
+            continue;
+        }
+        if side.get(p).is_some_and(|s| s.oid == e.oid) {
+            continue; // unchanged at this path
+        }
+        if !side.contains_key(p) && side_oid_paths.contains_key(&e.oid) {
+            continue; // exact rename, no content read
+        }
+        deleted.push((p, e));
     }
 
-    let fetched = count.min(lines.len());
-    lines.drain(0..fetched);
-
-    let mut out = String::new();
-    for line in &lines {
-        out.push_str(line);
-        out.push('\n');
+    // Added side paths (not exact rename destinations).
+    let mut added: Vec<(&Vec<u8>, &IndexEntry)> = Vec::new();
+    for (p, e) in side {
+        if !is_regularish(e.mode) {
+            continue;
+        }
+        if base.get(p).is_some_and(|b| b.oid == e.oid) {
+            continue;
+        }
+        if !base.contains_key(p) && base_oids.contains(&e.oid) {
+            continue; // exact rename destination
+        }
+        added.push((p, e));
     }
-    fs::write(marker, out)?;
 
-    Ok(fetched)
+    // A deleted source is relevant when `other` modifies it in place, or when it
+    // lives under a directory `side` renamed and `other` added a new path into.
+    let is_relevant_source = |dp: &[u8]| -> bool {
+        // Content-modified by `other` at the same base path?
+        if other
+            .get(dp)
+            .is_some_and(|o| base.get(dp).is_some_and(|b| o.oid != b.oid))
+        {
+            return true;
+        }
+        relevant_renamed_prefixes
+            .iter()
+            .any(|pre| path_under_dir(dp, pre))
+    };
+
+    // Number of shared trailing path components between two paths.
+    fn shared_suffix_components(a: &[u8], b: &[u8]) -> usize {
+        let av: Vec<&[u8]> = a.split(|&c| c == b'/').collect();
+        let bv: Vec<&[u8]> = b.split(|&c| c == b'/').collect();
+        let mut n = 0;
+        while n < av.len() && n < bv.len() && av[av.len() - 1 - n] == bv[bv.len() - 1 - n] {
+            n += 1;
+        }
+        n
+    }
+
+    let mut out: Vec<ObjectId> = Vec::new();
+    for (dp, de) in &deleted {
+        if !is_relevant_source(dp) {
+            continue;
+        }
+        let dbase = basename(dp);
+        // Pair this source with its single best basename-matched destination: the
+        // added path sharing the longest trailing suffix (its directory-rename
+        // image). This avoids spuriously pairing e.g. `dir/subdir/Makefile` with
+        // `folder/subdir/tweaked/Makefile` when `folder/subdir/Makefile` exists.
+        let mut best: Option<(usize, ObjectId)> = None;
+        for (ap, ae) in &added {
+            if basename(ap) != dbase || de.oid == ae.oid {
+                continue;
+            }
+            let score = shared_suffix_components(dp, ap);
+            if best.is_none_or(|(s, _)| score > s) {
+                best = Some((score, ae.oid));
+            }
+        }
+        if let Some((_, add_oid)) = best {
+            out.push(de.oid);
+            out.push(add_oid);
+        }
+    }
+    out
+}
+
+/// Blobs read by 3-way content merge: for a base path modified on both ours and
+/// theirs (a side may have renamed it away while modifying it), the base + both
+/// side blobs are read. Rename targets are resolved by exact-OID lookup so a
+/// path that one side moved-and-modified is still recognized as the merge target.
+fn content_merge_blob_oids(
+    base: &HashMap<Vec<u8>, IndexEntry>,
+    ours: &HashMap<Vec<u8>, IndexEntry>,
+    theirs: &HashMap<Vec<u8>, IndexEntry>,
+) -> Vec<ObjectId> {
+    // Map base-OID -> the side path that carries that exact blob (for exact renames).
+    let exact_rename_target = |base_path: &[u8],
+                               base_oid: &ObjectId,
+                               side: &HashMap<Vec<u8>, IndexEntry>|
+     -> Option<ObjectId> {
+        // Same path, modified in place.
+        if let Some(e) = side.get(base_path) {
+            if e.oid != *base_oid {
+                return Some(e.oid);
+            }
+            // Unchanged at this path -> not a content-merge contributor.
+            return None;
+        }
+        // Path removed on this side (renamed away, possibly with modification): pick
+        // the new path that shares this file's basename and the longest trailing
+        // path suffix — its directory-rename image. That blob is this side's version.
+        let bn = match base_path.iter().rposition(|&b| b == b'/') {
+            Some(i) => &base_path[i + 1..],
+            None => base_path,
+        };
+        let shared = |a: &[u8], b: &[u8]| -> usize {
+            let av: Vec<&[u8]> = a.split(|&c| c == b'/').collect();
+            let bv: Vec<&[u8]> = b.split(|&c| c == b'/').collect();
+            let mut n = 0;
+            while n < av.len() && n < bv.len() && av[av.len() - 1 - n] == bv[bv.len() - 1 - n] {
+                n += 1;
+            }
+            n
+        };
+        let mut best: Option<(usize, ObjectId)> = None;
+        for (p, e) in side {
+            if base.contains_key(p) || e.oid == *base_oid {
+                continue;
+            }
+            let pbn = match p.iter().rposition(|&b| b == b'/') {
+                Some(i) => &p[i + 1..],
+                None => &p[..],
+            };
+            if pbn != bn {
+                continue;
+            }
+            let score = shared(base_path, p);
+            if best.is_none_or(|(s, _)| score > s) {
+                best = Some((score, e.oid));
+            }
+        }
+        best.map(|(_, oid)| oid)
+    };
+
+    let mut out: Vec<ObjectId> = Vec::new();
+    for (path, be) in base {
+        let our = exact_rename_target(path, &be.oid, ours);
+        let their = exact_rename_target(path, &be.oid, theirs);
+        if let (Some(o), Some(t)) = (our, their) {
+            if o != t {
+                out.push(be.oid);
+                out.push(o);
+                out.push(t);
+            }
+        }
+    }
+    out
 }
 
 /// Append a single trace2 perf line in the same shape used by `main`.
