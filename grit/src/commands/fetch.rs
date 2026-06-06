@@ -222,7 +222,7 @@ pub struct Args {
     pub set_upstream: bool,
 
     /// Allow updating the current branch head (normally refused).
-    #[arg(long)]
+    #[arg(short = 'u', long)]
     pub update_head_ok: bool,
     /// Rewrite positive refspec destinations under `refs/prefetch/` (Git maintenance prefetch).
     #[arg(long)]
@@ -2594,10 +2594,7 @@ fn fetch_remote(
                             false,
                         ));
 
-                        if local_ref.starts_with("refs/heads/")
-                            && !args.update_head_ok
-                            && !is_bare_repo
-                        {
+                        if local_ref.starts_with("refs/heads/") && !args.update_head_ok {
                             if let Some(wt_path) = is_branch_in_worktree(git_dir, &local_ref) {
                                 bail!(
                                     "refusing to fetch into branch '{}' checked out at '{}'",
@@ -2747,11 +2744,11 @@ fn fetch_remote(
                 updated_refs.push(local_ref.clone());
 
                 let old_oid = read_ref_oid(git_dir, &local_ref);
-                if local_ref.starts_with("refs/heads/")
-                    && !src.is_empty()
-                    && !args.update_head_ok
-                    && !is_bare_repo
-                {
+                // Refuse fetching into a branch checked out in *any* worktree (Git
+                // `branch_checked_out`). This applies even to bare repositories, whose linked
+                // worktrees can have branches checked out (t5516 119); `is_branch_in_worktree`
+                // already excludes a bare main worktree, so no `is_bare_repo` guard is needed.
+                if local_ref.starts_with("refs/heads/") && !src.is_empty() && !args.update_head_ok {
                     if let Some(wt_path) = is_branch_in_worktree(git_dir, &local_ref) {
                         bail!(
                             "refusing to fetch into branch '{}' checked out at '{}'",
@@ -2864,10 +2861,7 @@ fn fetch_remote(
                     updated_refs.push(local_ref.clone());
                     let old_oid = read_ref_oid(git_dir, &local_ref);
                     if old_oid.as_ref() != Some(&remote_oid) {
-                        if local_ref.starts_with("refs/heads/")
-                            && !args.update_head_ok
-                            && !is_bare_repo
-                        {
+                        if local_ref.starts_with("refs/heads/") && !args.update_head_ok {
                             if let Some(wt_path) = is_branch_in_worktree(git_dir, &local_ref) {
                                 bail!(
                                     "refusing to fetch into branch '{}' checked out at '{}'",
@@ -7129,7 +7123,7 @@ fn update_refs_from_bundle_fetch(
     git_dir: &Path,
     bundle_refs: &[(String, ObjectId)],
     args: &Args,
-    is_bare_repo: bool,
+    _is_bare_repo: bool,
 ) -> Result<()> {
     if args.refspecs.is_empty() {
         return Ok(());
@@ -7149,7 +7143,7 @@ fn update_refs_from_bundle_fetch(
     for (remote_ref, oid, local_ref) in &bundle_updates {
         let remote_ref = remote_ref.as_str();
         let local_ref = normalize_fetch_refspec_dst(local_ref);
-        if local_ref.starts_with("refs/heads/") && !args.update_head_ok && !is_bare_repo {
+        if local_ref.starts_with("refs/heads/") && !args.update_head_ok {
             if let Some(wt_path) = is_branch_in_worktree(git_dir, &local_ref) {
                 bail!(
                     "refusing to fetch into branch '{}' checked out at '{}'",
