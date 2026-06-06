@@ -1072,6 +1072,37 @@ fn push_to_url(
         )
     })?;
 
+    // An explicit non-default `--receive-pack` program for a local-file push must actually run
+    // that program and speak the real receive-pack protocol to it, so its exit status governs the
+    // push outcome. When the push needs grit's full per-ref status report (e.g. `--atomic`, which
+    // a bare `send-pack` delegation cannot render), spawn the receiving program as a child and
+    // drive it through the shared receive-pack-child path. This faithfully reports a wrapper that
+    // runs `git-receive-pack` and then exits non-zero: the "To"/"[new branch]" lines are emitted
+    // from report-status and the non-zero exit still fails the push (t5543 atomic exit-code).
+    if args.receive_pack.as_ref().is_some_and(|s| !s.is_empty())
+        && !is_default_receive_pack_program(args.receive_pack.as_deref())
+        && args.atomic
+        && !args.dry_run
+        && args.force_with_lease.is_none()
+    {
+        let receive_cmd = args.receive_pack.as_deref().unwrap_or("");
+        let child = crate::commands::send_pack::spawn_receive_pack(receive_cmd, &remote_path)?;
+        return push_over_receive_pack_child(
+            child,
+            "file",
+            repo,
+            config,
+            args,
+            url,
+            remote_name,
+            current_branch,
+            push_all,
+            effective_mirror,
+            push_refspecs_from_config,
+            cli_force_enabled,
+        );
+    }
+
     // When the caller specifies an explicit `--receive-pack` program for a local-file push, run
     // the real push protocol through that program via `send-pack` instead of the in-process fast
     // path. This is what Git does (it always spawns receive-pack), and it lets the receiving
@@ -5047,15 +5078,18 @@ fn push_over_receive_pack_child(
         stdout,
     )?;
     let child_status = child.wait()?;
-    if !child_status.success() {
-        bail!("{transport} receive-pack failed with status {child_status}");
-    }
     if !status.sideband_stderr.is_empty() {
         io::stderr().write_all(&status.sideband_stderr)?;
     }
     if !status.unpack_ok {
         bail!("remote unpack failed: {}", status.unpack_message);
     }
+    // A receive-pack process that exits non-zero after a successful report-status (e.g. a wrapper
+    // that runs the real `git-receive-pack` and then `exit 1`) must not abort before the per-ref
+    // status report is rendered: Git prints the full push status from report-status and only then
+    // reports the overall failure. Defer the non-zero exit to the "failed to push some refs"
+    // verdict below so the "To"/"[new branch]" lines are still emitted (t5543 atomic exit-code).
+    let receive_pack_failed = !child_status.success();
 
     let status_by_ref: std::collections::HashMap<&str, &crate::http_push_smart::PushStatusEntry> =
         status
@@ -5107,12 +5141,18 @@ fn push_over_receive_pack_child(
             continue;
         }
 
-        update_remote_tracking_ref(repo, remote_name, &update.remote_ref, update.new_oid)?;
-        if update.remote_ref.starts_with("refs/heads/") {
-            if let Some(local_ref) = update.local_ref.as_deref() {
-                if let Some(local_branch) = local_ref.strip_prefix("refs/heads/") {
-                    successful_branch_updates
-                        .push((local_branch.to_owned(), update.remote_ref.clone()));
+        // When the receive-pack process exited non-zero the overall push has failed, so do not
+        // advance the local remote-tracking ref even though report-status accepted this ref. The
+        // status line is still rendered (the remote did write the ref) but the push is not
+        // considered successful for tracking/upstream purposes.
+        if !receive_pack_failed {
+            update_remote_tracking_ref(repo, remote_name, &update.remote_ref, update.new_oid)?;
+            if update.remote_ref.starts_with("refs/heads/") {
+                if let Some(local_ref) = update.local_ref.as_deref() {
+                    if let Some(local_branch) = local_ref.strip_prefix("refs/heads/") {
+                        successful_branch_updates
+                            .push((local_branch.to_owned(), update.remote_ref.clone()));
+                    }
                 }
             }
         }
@@ -5179,7 +5219,7 @@ fn push_over_receive_pack_child(
         }
     }
 
-    if rejected {
+    if rejected || receive_pack_failed {
         bail!("failed to push some refs to '{display_url}'");
     }
 
