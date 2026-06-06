@@ -3082,15 +3082,18 @@ fn worktree_clean_for_update_instead(
     if !df.status().map_err(|e| e.to_string())?.success() {
         return Err("Working directory has unstaged changes".to_owned());
     }
+    // Compare the index against the *old* committed tree (the value the branch had before this
+    // push). git's push_to_deploy diffs the index against `HEAD` as it was prior to the update; we
+    // must not re-resolve HEAD here because the ref has already been written to the new commit. An
+    // absent old OID means the branch was unborn (e.g. pushing into a brand-new "void" repo), so
+    // the index is compared against the empty tree.
+    const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
     let expected_hex;
     let head_tree = if let Some(oid) = expected_treeish {
         expected_hex = oid.to_hex();
         expected_hex.as_str()
     } else {
-        match resolve_head(&remote_repo.git_dir) {
-            Ok(HeadState::Branch { .. }) | Ok(HeadState::Detached { .. }) => "HEAD",
-            _ => "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
-        }
+        EMPTY_TREE
     };
     let mut di = Command::new(&grit_bin);
     di.current_dir(wt)
