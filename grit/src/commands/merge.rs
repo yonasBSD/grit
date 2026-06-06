@@ -2832,7 +2832,12 @@ Aborting"
 
     // Update working tree
     let sparse_on = sparse_checkout_enabled(&repo.git_dir);
-    if merge_result.has_conflicts && exit_on_merge_conflict && !trial_for_multi_strategy {
+    // Refuse before mutating the work tree if applying the merge would remove the process cwd
+    // (`ERROR_CWD_IN_THE_WAY`). This must run for clean merges too — a conflict-free merge that
+    // replaces a tracked directory containing the cwd with a file (e.g. `dirORfile/` -> `dirORfile`)
+    // would otherwise delete files under the cwd before discovering the cwd cannot be removed,
+    // leaving the work tree dirty (`t2501-cwd-empty` "merge fails if cwd needs to be removed").
+    if exit_on_merge_conflict && !trial_for_multi_strategy {
         if let Some(wt) = repo.work_tree.as_deref() {
             if let Err(e) = preflight_merge_worktree_for_cwd(
                 repo,
