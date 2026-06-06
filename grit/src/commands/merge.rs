@@ -2414,6 +2414,23 @@ fn attempt_trivial_in_index_merge(
         return Ok(false);
     };
 
+    let mut new_index = result;
+    new_index.sort();
+
+    // Git's trivial in-index merge runs through `unpack_trees` (read_tree_trivial), which performs
+    // the worktree `verify_uptodate` / `verify_absent` checks. A result that would overwrite a
+    // dirty tracked file, or remove a directory holding untracked content (a D/F transition such as
+    // `a/b` directory -> symlink while `a/b/c/e` is untracked or `a/b/c/d` is modified), is NOT
+    // trivially mergeable: git prints "Nope." and falls through to the real strategy. Reuse the
+    // shared worktree-loss validation; on any conflict, decline the trivial path rather than
+    // silently clobbering the working tree.
+    if bail_if_merge_would_overwrite_local_changes(repo, &ours, &new_index, &[], false).is_err() {
+        if !args.quiet {
+            println!("Nope.");
+        }
+        return Ok(false);
+    }
+
     if !args.quiet {
         println!("Wonderful.");
     }
@@ -2424,8 +2441,6 @@ fn attempt_trivial_in_index_merge(
     )?;
 
     let config = ConfigSet::load(Some(&repo.git_dir), true)?;
-    let mut new_index = result;
-    new_index.sort();
     run_pre_merge_commit_hook(
         repo,
         args.no_verify,

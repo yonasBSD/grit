@@ -3816,29 +3816,32 @@ pub(crate) fn check_untracked_overwrite(
                 continue;
             }
             let abs_path = work_tree.join(rel_path.as_ref());
-            if !abs_path.exists() && !abs_path.is_symlink() {
-                // The full target path is absent, but an untracked *ancestor* may be a file or
-                // symlink standing where the target needs a directory (e.g. target turns `a/b`
-                // back into a directory holding `a/b/c/d`, while `a/b` is an untracked file or
-                // symlink on disk). Git refuses such a checkout via check_leading_path.
-                if let Some(blocker) =
-                    untracked_leading_path_in_the_way(&work_tree, rel_str, &old_paths)
-                {
-                    let blocker_ignored = match &mut ignore_matcher {
-                        Some(m) => {
-                            let blocker_abs = work_tree.join(&blocker);
-                            let is_dir = blocker_abs.is_dir() && !blocker_abs.is_symlink();
-                            matches!(
-                                m.check_path(repo, Some(old_index), &blocker, is_dir),
-                                Ok((true, _))
-                            )
-                        }
-                        None => false,
-                    };
-                    if !blocker_ignored {
-                        untracked_conflicts.push(blocker);
+            // An untracked *ancestor* may be a file or symlink standing where the target needs a
+            // directory (e.g. target turns `a/b` back into a directory holding `a/b/c/d`, while
+            // `a/b` is an untracked file or symlink on disk). Git refuses such a checkout via
+            // check_leading_path. This must be checked even when `abs_path.exists()` reports true
+            // by resolving the full path *through* the untracked symlink ancestor (e.g. `a/b` is a
+            // symlink to `b-2`, so `a/b/c/d` resolves to the still-present `a/b-2/c/d`).
+            if let Some(blocker) =
+                untracked_leading_path_in_the_way(&work_tree, rel_str, &old_paths)
+            {
+                let blocker_ignored = match &mut ignore_matcher {
+                    Some(m) => {
+                        let blocker_abs = work_tree.join(&blocker);
+                        let is_dir = blocker_abs.is_dir() && !blocker_abs.is_symlink();
+                        matches!(
+                            m.check_path(repo, Some(old_index), &blocker, is_dir),
+                            Ok((true, _))
+                        )
                     }
+                    None => false,
+                };
+                if !blocker_ignored {
+                    untracked_conflicts.push(blocker);
                 }
+                continue;
+            }
+            if !abs_path.exists() && !abs_path.is_symlink() {
                 continue;
             }
             if abs_path.exists() || abs_path.is_symlink() {
