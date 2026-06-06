@@ -930,11 +930,19 @@ pub fn rev_list(
     // parent for the pathspec, Git follows only that parent and never walks the other sides.
     // `--full-history`, `--ancestry-path`, and `--simplify-merges` intentionally keep the full
     // parent walk and simplify later.
-    if !options.paths.is_empty()
+    //
+    // The dense closure narrows `included` to the path-matching commits, but the user tips
+    // themselves may be dropped (they did not touch the path). Keep a copy of the full reachable
+    // set so date-order emission can still traverse *through* those dropped tips to reach matching
+    // ancestors — otherwise a `log -- <path>` whose only matching commit is an ancestor of HEAD
+    // would emit nothing (Git's `limit_list` walks the full graph and only filters emission).
+    let mut dense_path_limited = false;
+    let dense_traversable: HashSet<ObjectId> = if !options.paths.is_empty()
         && !options.full_history
         && !options.ancestry_path
         && !options.simplify_merges
     {
+        let traversable = included.clone();
         included = walk_dense_path_limited_closure(
             repo,
             &mut graph,
@@ -944,7 +952,11 @@ pub fn rev_list(
             options.sparse,
             options.show_pulls,
         )?;
-    }
+        dense_path_limited = true;
+        traversable
+    } else {
+        HashSet::new()
+    };
 
     if options.simplify_by_decoration {
         let decorated = all_ref_tips(repo, &RefExclusions::default())?;
@@ -1008,6 +1020,17 @@ pub fn rev_list(
                     &mut graph,
                     &include,
                     &traversable,
+                    &included,
+                    author_dates,
+                )?
+            } else if dense_path_limited && !include.is_empty() {
+                // Path-limiting may have dropped the user tips from `included`; traverse the full
+                // reachable set (`dense_traversable`) so matching ancestors are still emitted in
+                // date order, seeding from the user tips for Git's insertion-order tiebreak.
+                date_order_walk_through_dropped(
+                    &mut graph,
+                    &include,
+                    &dense_traversable,
                     &included,
                     author_dates,
                 )?
