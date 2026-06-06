@@ -689,6 +689,103 @@ impl CommitGraphChain {
         Self::try_load(objects_dir).ok().flatten()
     }
 
+    /// Load a split commit-graph chain that may live in (and reference layers across) an
+    /// alternate object directory.
+    ///
+    /// Git's commit-graph chain is owned by exactly one object directory, but its layer
+    /// `graph-<hash>.graph` files may be split between that directory and the alternate(s) it
+    /// inherits from. This is the situation created by a local clone whose `info/alternates`
+    /// points at a source repository that already has a split chain: a new `commit-graph write
+    /// --split` produces a chain file (in the local object dir) that lists the alternate's base
+    /// layer hashes followed by the locally-written tip layer.
+    ///
+    /// The chain file itself is taken from `objects_dir` if present, otherwise from the first
+    /// `alt_dirs` entry that has one. Each referenced `graph-<hash>.graph` layer is then resolved
+    /// by searching `objects_dir` first and each alternate in turn.
+    ///
+    /// # Parameters
+    /// - `objects_dir`: the primary object directory (e.g. the local `.git/objects`).
+    /// - `alt_dirs`: alternate object directories, in search order.
+    ///
+    /// # Returns
+    /// `Ok(None)` when no chain/single graph is found in any directory; `Ok(Some(_))` on success.
+    ///
+    /// # Errors
+    /// Returns an error if a referenced layer file is missing/unreadable or fails to parse.
+    pub fn try_load_across(
+        objects_dir: &Path,
+        alt_dirs: &[PathBuf],
+    ) -> Result<Option<Self>, Error> {
+        let layer_dir = |dir: &Path| dir.join("info").join("commit-graphs");
+        let resolve_layer = |hash: &str| -> Option<PathBuf> {
+            let name = format!("graph-{hash}.graph");
+            let local = layer_dir(objects_dir).join(&name);
+            if local.is_file() {
+                return Some(local);
+            }
+            alt_dirs
+                .iter()
+                .map(|d| layer_dir(d).join(&name))
+                .find(|p| p.is_file())
+        };
+
+        // A split write only chains on an existing *split chain*. Precedence for the chain owner:
+        //   1. the local dir's chain file (its layers may live across the alternate),
+        //   2. the local dir's single (non-split) `info/commit-graph` (Git migrates it),
+        //   3. a *chain file* in an alternate.
+        // An alternate's single (non-split) graph file is never used as a base — Git refuses to
+        // base a chain on a plain commit-graph file (t5324 "fork and fail to base a chain on a
+        // commit-graph file").
+        let local_chain = layer_dir(objects_dir).join("commit-graph-chain");
+        let local_single = objects_dir.join("info").join("commit-graph");
+        let chain_path = if local_chain.is_file() {
+            local_chain
+        } else if local_single.is_file() {
+            return Self::try_load(objects_dir);
+        } else {
+            match alt_dirs
+                .iter()
+                .map(PathBuf::as_path)
+                .find(|d| layer_dir(d).join("commit-graph-chain").is_file())
+            {
+                Some(owner) => layer_dir(owner).join("commit-graph-chain"),
+                None => return Ok(None),
+            }
+        };
+
+        let content = std::fs::read_to_string(&chain_path).map_err(Error::from)?;
+        let mut layers = Vec::new();
+        for line in content.lines() {
+            let h = line.trim();
+            if h.len() != 40 {
+                continue;
+            }
+            let graph_path = resolve_layer(h).ok_or_else(|| {
+                Error::from(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("commit-graph layer graph-{h}.graph not found"),
+                ))
+            })?;
+            let raw = std::fs::read(&graph_path).map_err(Error::from)?;
+            let layer = CommitGraphLayer::try_parse(graph_path, raw)?;
+            let n = layers.len();
+            if n > 0 && layer.base_chunk_size / HASH_LEN < n {
+                if warn_once_for_base_chunk_too_small(&layer.layer_display_id()) {
+                    eprintln!("warning: commit-graph base graphs chunk is too small");
+                }
+                break;
+            }
+            layers.push(layer);
+        }
+        if layers.is_empty() {
+            return Ok(None);
+        }
+        layers.reverse();
+        let mut chain = Self { layers };
+        chain.validate_bloom_compatibility();
+        Ok(Some(chain))
+    }
+
     fn validate_bloom_compatibility(&mut self) {
         // Git walks the chain from the tip down to the base (`for (; g; g =
         // g->base_graph)` in validate_mixed_bloom_settings), so the *topmost*

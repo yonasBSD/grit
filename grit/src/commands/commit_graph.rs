@@ -615,8 +615,16 @@ fn cmd_write(
 
     // The existing split chain (tip-first internally). For --split=replace we drop
     // the whole chain and rebuild a single layer, so we do not treat it as a base.
+    //
+    // The existing chain may be owned by an alternate object directory (a local clone whose
+    // `info/alternates` points at a source repo that already has a split chain). In that case the
+    // new split layer is written locally but must reference the alternate's base layers via the
+    // BASE chunk + chain file, so load across the alternate(s).
+    let alt_dirs = read_alternates(&objects_dir);
     let existing_chain = if split_enabled && !replace {
-        CommitGraphChain::load(&objects_dir)
+        CommitGraphChain::try_load_across(&objects_dir, &alt_dirs)
+            .ok()
+            .flatten()
     } else {
         None
     };

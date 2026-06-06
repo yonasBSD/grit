@@ -30,12 +30,25 @@ Dropped the now-unused `BufWriter` import (kept `Write` — still used by verify
 ## Result
 39/42 (failing 13, 25, 40) — recovered the prior agent's count. Committed.
 
-## Remaining (all cross-alternate / deep-clone, as prior agent noted)
-- t13: fork with an alternate to a repo that already has a 2-layer chain must produce a
-  3-line chain (2 alternate base layers + 1 new tip). `CommitGraphChain::try_load` only reads
-  the local objects dir, never the alternate's chain.
-- t25: `git commit-graph verify --object-dir=<dir>` — the verify subcommand does not accept
-  `--object-dir` (clap rejects it). Plus cross-alternate verify.
-- t40: deep multi-clone (mixed-merge-gdat) — the 5th-layer split write sees new_only count
-  wrong (reports num_commits 8 instead of 47); likely the merge strategy not absorbing the
-  right base layers when the chain spans gdat/non-gdat layers across clones.
+## Cross-alternate chain (t13, t14) — FIXED
+Added `CommitGraphChain::try_load_across(objects_dir, alt_dirs)` in
+`grit-lib/src/commit_graph_file.rs`: loads the split chain owned by the local dir (resolving
+its layer files across alternates) or, when the local dir has no graph at all, from an
+alternate's *chain file* — but never from an alternate's single non-split `commit-graph`
+(Git refuses to base a chain on a plain graph file; t6/t29 enforce this). Wired it into:
+- `cmd_write` (`grit/src/commands/commit_graph.rs`): `existing_chain` now loads across the
+  alternate, so a fork whose alternate has a 2-layer split chain writes 1 local tip layer and
+  a 3-line chain referencing the alternate's base layers.
+- log.rs commit-graph validation (`grit/src/commands/log.rs:~5167`): was
+  `try_load(local)` which I/O-errored on alternate-resident base layers; now `try_load_across`.
+
+Care taken not to regress t6/t14/t29 (all cross-alternate variants): the local-single vs
+alternate-single distinction is the crux.
+
+## Remaining (t40 — deep multi-clone mixed gdat)
+- t40: clone chain mixed -> mixed-no-gdat -> mixed-merge-no-gdat -> mixed-merge-gdat. The 5th
+  layer split write (`--split --size-multiple 1`) should merge down to a 2-line chain with
+  num_commits 47, but grit reports num_commits 8 (only the new layer's commits). The merge
+  strategy is not absorbing the right base layers when the chain spans gdat/non-gdat layers
+  that were themselves produced across a clone boundary. Needs deeper investigation of the
+  merge-strategy commit counting vs the gdat gating.

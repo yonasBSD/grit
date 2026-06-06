@@ -5164,7 +5164,13 @@ pub fn run(mut args: Args) -> Result<()> {
     let bloom_read_changed_paths = cg_read_paths;
     let bloom_changed_paths_version = cg_changed_ver;
     if core_commit_graph {
-        CommitGraphChain::try_load(&repo.git_dir.join("objects"))
+        // Validate the commit-graph (Git errors on a corrupt one). Resolve across alternates so a
+        // split chain whose base layers live in an alternate object dir — created by a local clone
+        // whose `info/alternates` points at a repo with a split chain — is not mistaken for a
+        // corrupt/missing graph (t5324 'create fork and chain across alternate').
+        let objects_dir = repo.git_dir.join("objects");
+        let alt_dirs = grit_lib::pack::read_alternates_recursive(&objects_dir).unwrap_or_default();
+        CommitGraphChain::try_load_across(&objects_dir, &alt_dirs)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
     }
     let bloom_chain = if use_bloom {
