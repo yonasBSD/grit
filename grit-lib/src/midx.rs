@@ -24,6 +24,7 @@ const MIDX_SIGNATURE: u32 = 0x4d49_4458;
 const MIDX_VERSION_V1: u8 = 1;
 const MIDX_VERSION_V2: u8 = 2;
 const HASH_VERSION_SHA1: u8 = 1;
+const HASH_VERSION_SHA256: u8 = 2;
 const MIDX_HEADER_SIZE: usize = 12;
 const CHUNK_TOC_ENTRY_SIZE: usize = 12;
 const MIDX_CHUNKID_PACKNAMES: u32 = 0x504e_414d;
@@ -230,6 +231,55 @@ fn read_chain_layer_hashes(pack_dir: &Path) -> Result<Vec<String>> {
 }
 
 /// Resolve the path to the newest MIDX layer (root `multi-pack-index` or last chain entry).
+/// Return the MIDX hash-version byte expected for the repository owning `pack_dir`,
+/// mirroring git's `oid_version(r->hash_algo)` (SHA-1 → 1, SHA-256 → 2).
+///
+/// `pack_dir` is `<gitdir>/objects/pack`; the object format lives in the gitdir's
+/// `config` under `extensions.objectformat`. When the config cannot be read or the
+/// extension is absent, the default SHA-1 version (1) is returned.
+fn repo_midx_hash_version(pack_dir: &Path) -> u8 {
+    // pack_dir = <gitdir>/objects/pack -> gitdir = pack_dir/../..
+    let Some(objects_dir) = pack_dir.parent() else {
+        return HASH_VERSION_SHA1;
+    };
+    repo_midx_hash_version_for_objects_dir(objects_dir)
+}
+
+/// Like [`repo_midx_hash_version`] but starting from the `objects` directory.
+fn repo_midx_hash_version_for_objects_dir(objects_dir: &Path) -> u8 {
+    let Some(gitdir) = objects_dir.parent() else {
+        return HASH_VERSION_SHA1;
+    };
+    let config_path = gitdir.join("config");
+    let Ok(text) = fs::read_to_string(&config_path) else {
+        return HASH_VERSION_SHA1;
+    };
+    // Minimal scan for `[extensions]` ... `objectformat = sha256`. Section and key
+    // names are case-insensitive in git config; values are case-sensitive but git
+    // only accepts the literals "sha1"/"sha256".
+    let mut in_extensions = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            let section = line.trim_start_matches('[').trim_end_matches(']');
+            let name = section.split_whitespace().next().unwrap_or("");
+            in_extensions = name.eq_ignore_ascii_case("extensions");
+            continue;
+        }
+        if !in_extensions {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim().eq_ignore_ascii_case("objectformat")
+                && value.trim().eq_ignore_ascii_case("sha256")
+            {
+                return HASH_VERSION_SHA256;
+            }
+        }
+    }
+    HASH_VERSION_SHA1
+}
+
 pub fn resolve_tip_midx_path(pack_dir: &Path) -> Option<std::path::PathBuf> {
     let root = pack_dir.join("multi-pack-index");
     if root.exists() {
@@ -448,6 +498,7 @@ fn build_midx_bytes_filtered(
     write_bitmap_placeholders: bool,
     omit_embedded_ridx_chunk: bool,
     version: u8,
+    hash_version: u8,
     exclude_oids: Option<&HashSet<ObjectId>>,
 ) -> Result<(Vec<u8>, Option<Vec<u32>>)> {
     let preferred_pack_idx = preferred_idx.map(|p| p as u32);
@@ -663,7 +714,7 @@ fn build_midx_bytes_filtered(
     } else {
         MIDX_VERSION_V2
     });
-    out.push(HASH_VERSION_SHA1);
+    out.push(hash_version);
     out.push(num_chunks);
     out.push(0);
     out.extend_from_slice(&num_packs.to_be_bytes());
@@ -887,9 +938,10 @@ pub fn verify_midx(objects_dir: &Path) -> std::result::Result<(), Vec<String>> {
         )]);
     }
     let hash_version = data[5];
-    if hash_version != HASH_VERSION_SHA1 {
+    let expected_hash_version = repo_midx_hash_version_for_objects_dir(objects_dir);
+    if hash_version != expected_hash_version {
         return Err(vec![format!(
-            "multi-pack-index hash version {hash_version} does not match version {HASH_VERSION_SHA1}"
+            "multi-pack-index hash version {hash_version} does not match version {expected_hash_version}"
         )]);
     }
     let hash_len = 20usize;
@@ -1600,7 +1652,7 @@ pub fn midx_oid_listed_in_tip(objects_dir: &Path, oid: &ObjectId) -> Result<Opti
         oidl_off,
         num_objects,
         ..
-    } = match midx_load_for_read(&data) {
+    } = match midx_load_for_read(&data, repo_midx_hash_version_for_objects_dir(objects_dir)) {
         MidxLoadResult::Ok(v) => v,
         MidxLoadResult::Skip => return Ok(None),
     };
@@ -1681,7 +1733,7 @@ fn midx_die(lines: &[&str]) -> ! {
 /// Validate and load a MIDX image for object reads, mirroring `load_multi_pack_index`
 /// in git/midx.c. Fatal corruptions print `error:`/`fatal:` and exit (Git `die()`);
 /// recoverable corruptions print an `error:`/`warning:` and return [`MidxLoadResult::Skip`].
-fn midx_load_for_read(data: &[u8]) -> MidxLoadResult {
+fn midx_load_for_read(data: &[u8], expected_hash_version: u8) -> MidxLoadResult {
     if data.len() < MIDX_HEADER_SIZE + 20 {
         return MidxLoadResult::Skip;
     }
@@ -1698,11 +1750,12 @@ fn midx_load_for_read(data: &[u8]) -> MidxLoadResult {
         )]);
     }
     let hash_version = data[5];
-    if hash_version != HASH_VERSION_SHA1 {
+    if hash_version != expected_hash_version {
         // `load_multi_pack_index` error()s then `goto cleanup_fail` (returns NULL),
-        // so this is recoverable, not fatal.
+        // so this is recoverable, not fatal. The expected version is the repository's
+        // own `oid_version(hash_algo)` (SHA-1 → 1, SHA-256 → 2).
         midx_warn_once(&format!(
-            "error: multi-pack-index hash version {hash_version} does not match version {HASH_VERSION_SHA1}"
+            "error: multi-pack-index hash version {hash_version} does not match version {expected_hash_version}"
         ));
         return MidxLoadResult::Skip;
     }
@@ -1855,10 +1908,11 @@ pub fn validate_midx_referenced_packs(objects_dir: &Path) {
     let Ok(data) = fs::read(&midx_path) else {
         return;
     };
-    let MidxReadView { pack_names, .. } = match midx_load_for_read(&data) {
-        MidxLoadResult::Ok(v) => v,
-        MidxLoadResult::Skip => return,
-    };
+    let MidxReadView { pack_names, .. } =
+        match midx_load_for_read(&data, repo_midx_hash_version_for_objects_dir(objects_dir)) {
+            MidxLoadResult::Ok(v) => v,
+            MidxLoadResult::Skip => return,
+        };
     for idx_name in &pack_names {
         let idx_path = pack_dir.join(idx_name);
         // A MIDX may name a pack whose files were later deleted; Git skips the missing
@@ -1907,7 +1961,7 @@ pub fn try_read_object_via_midx(
         loff,
         num_objects,
         pack_names,
-    } = match midx_load_for_read(&data) {
+    } = match midx_load_for_read(&data, repo_midx_hash_version_for_objects_dir(objects_dir)) {
         MidxLoadResult::Ok(v) => v,
         MidxLoadResult::Skip => return Ok(None),
     };
@@ -2270,6 +2324,7 @@ pub fn write_multi_pack_index_with_options(
         bitmap_placeholders,
         omit_embedded_ridx,
         opts.version.unwrap_or(MIDX_VERSION_V2),
+        repo_midx_hash_version(pack_dir),
         exclude,
     )?;
 
@@ -2547,6 +2602,7 @@ pub fn compact_multi_pack_index(
         write_bitmaps,
         write_rev,
         version.unwrap_or(MIDX_VERSION_V2),
+        repo_midx_hash_version(pack_dir),
         exclude,
     )?;
 
