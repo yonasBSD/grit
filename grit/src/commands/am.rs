@@ -1325,6 +1325,7 @@ fn apply_am_format_patch_tree_merge(repo: &Repository, patch: &MboxPatch) -> Res
         &parent_oid,
         &head_oid,
         MergeFavor::None,
+        None,
     )?;
 
     let mut merged_index = merge_result.index;

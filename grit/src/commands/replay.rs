@@ -479,6 +479,7 @@ pub fn run(args: Args) -> Result<()> {
 ///
 /// Uses merge-ort directory-rename preprocess then [`merge_trees_for_replay`] with directory
 /// renames disabled inside the engine (t3401, t6429 part 2).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn merge_trees_for_single_cherry_pick(
     repo: &Repository,
     base_tree: ObjectId,
@@ -488,6 +489,7 @@ pub(crate) fn merge_trees_for_single_cherry_pick(
     parent_oid: &ObjectId,
     head_oid: &ObjectId,
     favor: MergeFavor,
+    base_label_override: Option<&str>,
 ) -> Result<ReplayTreeMergeResult> {
     let merge_renormalize = read_merge_renormalize(repo);
     let directory_renames = read_directory_renames(repo);
@@ -565,6 +567,7 @@ pub(crate) fn merge_trees_for_single_cherry_pick(
         MergeDirectoryRenamesMode::Disabled,
         rename_opts,
         None,
+        base_label_override,
     )?;
     resolve_same_blob_mode_only_replay_conflicts(&mut result);
     Ok(result)
@@ -717,6 +720,7 @@ pub(crate) fn replay_commits_onto(
             false,
             merge_dir_mode,
             rename_opts,
+            None,
             None,
         )?;
         if merge_result.has_conflicts {

@@ -1676,6 +1676,7 @@ pub(crate) fn create_virtual_merge_base(
             None,
             true,
             None,
+            None,
         )?;
 
         // Build a tree from the merged index:
@@ -2674,6 +2675,7 @@ Aborting"
         rename_opts,
         None,
         criss_cross_outer,
+        None,
         None,
     )?;
 
@@ -4227,6 +4229,7 @@ fn do_octopus_merge(
                 None,
                 false,
                 None,
+                None,
             )?;
 
             if merge_result.has_conflicts {
@@ -4345,6 +4348,7 @@ fn do_octopus_merge(
             MergeRenameOptions::from_config(repo),
             None,
             false,
+            None,
             None,
         )?;
 
@@ -5410,6 +5414,7 @@ fn resolve_conflict_labels(
     repo: &Repository,
     theirs_name: &str,
     base_label_prefix: &str,
+    base_label_override: Option<&str>,
 ) -> ConflictLabels<'static> {
     let ours = if theirs_name == "Temporary merge branch 2" {
         "Temporary merge branch 1"
@@ -5417,7 +5422,12 @@ fn resolve_conflict_labels(
         "HEAD"
     };
 
-    let base = if base_label_prefix == "empty tree" {
+    // When the caller supplies an explicit, human-readable base label (e.g. rebase's
+    // "parent of <abbrev> (<subject>)" or "constructed fake ancestor"), use it verbatim:
+    // these labels are not OID prefixes and must not gain the ":content" suffix.
+    let base = if let Some(label) = base_label_override {
+        label.to_string()
+    } else if base_label_prefix == "empty tree" {
         "empty tree".to_string()
     } else if theirs_name == "Temporary merge branch 2"
         && (base_label_prefix == "merged common ancestors"
@@ -6592,6 +6602,7 @@ fn merge_trees(
     forced_branch_labels: Option<(String, String)>,
     criss_cross_outer_merge: bool,
     mut auto_merge_paths: Option<&mut Vec<String>>,
+    base_label_override: Option<&str>,
 ) -> Result<MergeResult> {
     trace2_perf_region_enter("collect_merge_info");
     trace2_perf_region_enter("collect_merge_info");
@@ -6818,7 +6829,8 @@ fn merge_trees(
         }
 
         // Directory-rename-suggested notices (git merge-ort "file location" / t4301 -z records).
-        let labels_pre = resolve_conflict_labels(repo, their_name, base_label_prefix);
+        let labels_pre =
+            resolve_conflict_labels(repo, their_name, base_label_prefix, base_label_override);
         let ours_l_pre = match &forced_branch_labels {
             Some((o, _)) => o.as_str(),
             None => labels_pre.ours,
@@ -7026,7 +7038,7 @@ fn merge_trees(
     let mut submodule_merge_stdout: Vec<String> = Vec::new();
     let mut submodule_merge_advice: Vec<(String, String)> = Vec::new();
 
-    let labels = resolve_conflict_labels(repo, their_name, base_label_prefix);
+    let labels = resolve_conflict_labels(repo, their_name, base_label_prefix, base_label_override);
     let base_label = labels.base;
     let ours_label: &str = match &forced_branch_labels {
         Some((o, _)) => o.as_str(),
@@ -9338,6 +9350,7 @@ pub(crate) fn merge_tree_write_tree_core(
         forced_labels,
         criss_cross_outer,
         auto_ref,
+        None,
     )
     .map_err(|e| {
         // A missing object surfacing from the content/tree merge at this point is
@@ -9447,9 +9460,10 @@ pub(crate) fn remerge_merge_tree(
         forced,
         bases.len() > 1,
         None,
+        None,
     )?;
 
-    let labels = resolve_conflict_labels(repo, "remerge", &base_label_prefix);
+    let labels = resolve_conflict_labels(repo, "remerge", &base_label_prefix, None);
     let base_merge_label = labels.base;
 
     materialize_unmerged_entries_for_remerge_tree(
@@ -9683,6 +9697,7 @@ pub(crate) fn merge_trees_for_replay(
     merge_directory_renames_mode: MergeDirectoryRenamesMode,
     rename_options: MergeRenameOptions,
     forced_branch_labels: Option<(String, String)>,
+    base_label_override: Option<&str>,
 ) -> Result<ReplayTreeMergeResult> {
     let head = HeadState::Invalid;
     let result = merge_trees(
@@ -9707,6 +9722,7 @@ pub(crate) fn merge_trees_for_replay(
         forced_branch_labels,
         false,
         None,
+        base_label_override,
     )?;
     Ok(ReplayTreeMergeResult {
         index: result.index,

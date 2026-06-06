@@ -70,6 +70,7 @@ pub fn run(args: Args) -> Result<()> {
         MergeDirectoryRenamesMode::FromConfig,
         rename_options,
         Some((ours_oid.to_hex(), theirs_oid.to_hex())),
+        None,
     )?;
 
     let auto_resolved_directory_file_paths: Vec<Vec<u8>> = merge_result

@@ -75,6 +75,8 @@ enum RebaseBackend {
 #[derive(Clone, Copy)]
 struct RebaseConflictContext<'a> {
     backend: RebaseBackend,
+    /// Abbreviated object id of the commit being picked (for the diff3 ancestor label).
+    picked_short_oid: &'a str,
     picked_subject: &'a str,
     ignore_space_change: bool,
 }
@@ -102,7 +104,11 @@ impl<'a> RebaseConflictContext<'a> {
 
     fn label_base(self) -> String {
         match self.backend {
-            RebaseBackend::Merge => format!("parent of {}", self.picked_subject),
+            // Matches Git's sequencer: out->parent_label = "parent of <abbrev> (<subject>)".
+            RebaseBackend::Merge => format!(
+                "parent of {} ({})",
+                self.picked_short_oid, self.picked_subject
+            ),
             RebaseBackend::Apply => "constructed fake ancestor".to_string(),
         }
     }
@@ -6912,12 +6918,18 @@ fn cherry_pick_for_rebase(
         bail_if_df_merge_would_remove_cwd(wt, &base_entries, &ours_entries, &theirs_entries)?;
     }
     maybe_run_rebase_merge_strategy(repo, git_dir, rb_dir, *commit_oid)?;
+    let picked_short_oid = commit_oid.to_hex()[..7].to_string();
     let conflict_ctx = RebaseConflictContext {
         backend,
+        picked_short_oid: &picked_short_oid,
         picked_subject: commit.message.lines().next().unwrap_or("replayed commit"),
         ignore_space_change: replay_opts.ignore_space_change,
     };
     let merge_favor = load_rebase_merge_favor(rb_dir);
+    // Conflict-marker base label for the ancestor block (diff3/zdiff3 style). For the merge
+    // backend this is "parent of <abbrev> (<subject>)"; for the apply backend it is
+    // "constructed fake ancestor" — matching Git's sequencer / git-am behavior (t6427).
+    let conflict_base_label = conflict_ctx.label_base();
 
     let (mut merged_index, mut merge_conflict_files) = if ws_fix_rule.is_none() {
         if commit.parents.is_empty() && merge_favor == MergeFavor::Theirs {
@@ -6948,6 +6960,7 @@ fn cherry_pick_for_rebase(
                     .ok_or_else(|| anyhow::anyhow!("cherry-pick of root commit not supported"))?,
                 &head_oid,
                 merge_favor,
+                Some(conflict_base_label.as_str()),
             )?;
             if tree_merge.has_conflicts && merge_favor == MergeFavor::Theirs {
                 let mut idx = Index::new();
