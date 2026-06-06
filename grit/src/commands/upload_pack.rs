@@ -8,14 +8,8 @@ use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
 use grit_lib::config::ConfigSet;
 use grit_lib::merge_base;
-<<<<<<< ours
 use grit_lib::objects::{parse_commit, parse_tag, parse_tree, ObjectId, ObjectKind};
-||||||| ancestor
-use grit_lib::objects::{parse_commit, ObjectId, ObjectKind};
-=======
-use grit_lib::objects::{parse_commit, ObjectId, ObjectKind};
 use grit_lib::ref_namespace;
->>>>>>> theirs
 use grit_lib::refs;
 use grit_lib::repo::Repository;
 use grit_lib::state::resolve_head;

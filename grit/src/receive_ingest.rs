@@ -5,20 +5,12 @@
 
 use anyhow::{bail, Context, Result};
 use grit_lib::config::ConfigSet;
-<<<<<<< ours
+use grit_lib::objects::ObjectId;
 use grit_lib::odb::Odb;
 use grit_lib::promisor::repo_treats_promisor_packs;
-||||||| ancestor
-=======
-use grit_lib::objects::ObjectId;
->>>>>>> theirs
 use grit_lib::receive_pack::{max_input_size_from_config, should_use_unpack_objects};
-<<<<<<< ours
 use grit_lib::unpack_objects::{unpack_objects, UnpackOptions};
-||||||| ancestor
-=======
 use std::collections::HashSet;
->>>>>>> theirs
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -51,11 +43,16 @@ pub fn ingest_received_pack_with_shallow(
     let max_input_bytes = max_input_size_from_config(remote_cfg);
 
     if should_use_unpack_objects(pack, remote_cfg) {
-<<<<<<< ours
         let allow_promisor_missing = strict
             && (repo_treats_promisor_packs(git_dir, remote_cfg) || has_promisor_pack(git_dir));
         if allow_promisor_missing {
-            return ingest_promisor_pack_in_process(git_dir, pack, max_input_bytes, strict);
+            return ingest_promisor_pack_in_process(
+                git_dir,
+                pack,
+                max_input_bytes,
+                strict,
+                shallow_boundaries,
+            );
         }
         ingest_via_unpack_objects_subprocess(
             git_dir,
@@ -63,29 +60,19 @@ pub fn ingest_received_pack_with_shallow(
             max_input_bytes,
             strict,
             allow_promisor_missing,
-        )
-||||||| ancestor
-        ingest_via_unpack_objects_subprocess(git_dir, pack, max_input_bytes, strict)
-=======
-        ingest_via_unpack_objects_subprocess(
-            git_dir,
-            pack,
-            max_input_bytes,
-            strict,
             shallow_boundaries,
         )
->>>>>>> theirs
     } else {
         ingest_via_index_pack_subprocess(git_dir, pack, max_input_bytes)
     }
 }
 
-<<<<<<< ours
 fn ingest_promisor_pack_in_process(
     git_dir: &Path,
     pack: &[u8],
     max_input: Option<u64>,
     strict: bool,
+    shallow_boundaries: &HashSet<ObjectId>,
 ) -> Result<()> {
     let objects_dir = git_dir.join("objects");
     let odb = Odb::new(&objects_dir);
@@ -96,14 +83,13 @@ fn ingest_promisor_pack_in_process(
         allowed_missing: Default::default(),
         allow_promisor_missing_references: true,
         max_input_bytes: max_input,
+        shallow_boundaries: shallow_boundaries.clone(),
     };
     unpack_objects(&mut &pack[..], &odb, &opts)
         .map(|_| ())
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-||||||| ancestor
-=======
 /// Write shallow boundary OIDs to a temporary file under `git_dir` for `--shallow-file`.
 ///
 /// Returns `None` when the set is empty (no file is needed). The caller removes the file after the
@@ -122,18 +108,13 @@ fn write_temp_shallow_file(git_dir: &Path, boundaries: &HashSet<ObjectId>) -> Op
     Some(path)
 }
 
->>>>>>> theirs
 fn ingest_via_unpack_objects_subprocess(
     git_dir: &Path,
     pack: &[u8],
     max_input: Option<u64>,
     strict: bool,
-<<<<<<< ours
     allow_promisor_missing: bool,
-||||||| ancestor
-=======
     shallow_boundaries: &HashSet<ObjectId>,
->>>>>>> theirs
 ) -> Result<()> {
     let shallow_file = write_temp_shallow_file(git_dir, shallow_boundaries);
     let mut cmd = Command::new(grit_exe::grit_executable());

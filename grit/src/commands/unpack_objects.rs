@@ -13,14 +13,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use grit_lib::config::{parse_i64, ConfigSet};
-<<<<<<< ours
-use grit_lib::objects::ObjectKind;
-use grit_lib::promisor::{promisor_expanded_object_ids, repo_treats_promisor_packs};
-||||||| ancestor
-use grit_lib::objects::ObjectKind;
-=======
 use grit_lib::objects::{ObjectId, ObjectKind};
->>>>>>> theirs
+use grit_lib::promisor::{promisor_expanded_object_ids, repo_treats_promisor_packs};
 use grit_lib::repo::Repository;
 use grit_lib::unpack_objects::{unpack_objects, UnpackOptions};
 
@@ -79,7 +73,6 @@ pub fn run(args: Args) -> Result<()> {
 
     enforce_alloc_limit_for_non_streaming_large_objects(&repo, args.dry_run)?;
 
-<<<<<<< ours
     let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
     let allow_promisor_missing_references = args.strict
         && (repo_treats_promisor_packs(&repo.git_dir, &cfg)
@@ -90,14 +83,13 @@ pub fn run(args: Args) -> Result<()> {
         Default::default()
     };
 
-||||||| ancestor
-=======
     let shallow_boundaries = match args.shallow_file.as_deref() {
         Some(path) => read_shallow_file_oids(path),
         None => Default::default(),
     };
 
->>>>>>> theirs
+    let quiet = args.quiet || !io::stderr().is_terminal();
+
     let opts = UnpackOptions {
         dry_run: args.dry_run,
         quiet,

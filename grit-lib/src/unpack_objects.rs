@@ -236,18 +236,13 @@ pub fn unpack_objects(reader: &mut dyn Read, odb: &Odb, opts: &UnpackOptions) ->
             dot_fsck_map.insert(*oid, (kind, data));
         }
         gitmodules::verify_packed_dot_special(&dot_fsck_map)?;
-<<<<<<< ours
         strict_verify_packed_references_map(
             Some(odb),
             &by_oid,
             &opts.allowed_missing,
             opts.allow_promisor_missing_references,
+            &opts.shallow_boundaries,
         )?;
-||||||| ancestor
-        strict_verify_packed_references_map(Some(odb), &by_oid)?;
-=======
-        strict_verify_packed_references_map(Some(odb), &by_oid, &opts.shallow_boundaries)?;
->>>>>>> theirs
     }
 
     Ok(count)
@@ -294,13 +289,9 @@ fn entry_object_bytes<'a>(entry: &'a PackedObjectEntry, odb: &Odb) -> Result<Cow
 fn strict_verify_packed_references_map(
     odb: Option<&Odb>,
     pack: &HashMap<ObjectId, PackedObjectEntry>,
-<<<<<<< ours
     allowed_missing: &HashSet<ObjectId>,
     allow_promisor_missing_references: bool,
-||||||| ancestor
-=======
     shallow_boundaries: &HashSet<ObjectId>,
->>>>>>> theirs
 ) -> Result<()> {
     for (oid, entry) in pack {
         match entry {
