@@ -3872,6 +3872,11 @@ fn reset_index_to_head(repo: &Repository, git_dir: &Path) -> Result<()> {
     let mut index = Index::new();
     index.entries = entries;
     index.sort();
+    // `tree_to_index_entries` zeroes the stat cache; populate it from the work tree so a following
+    // `git diff-files` does not report every entry as modified (the index would otherwise carry no
+    // mtime/size and diff would re-hash nothing). Matches Git refreshing the index after rebase
+    // (t3426 `test_superproject_content`: `git diff-files --ignore-submodules` must be empty).
+    refresh_index_stat_cache_from_worktree(repo, &mut index)?;
     repo.write_index(&mut index)?;
     Ok(())
 }
