@@ -1561,26 +1561,29 @@ fn push_to_url(
         }
     } else if args.tags || args.follow_tags {
         // `git push --tags` (no refspec) pushes only tags, handled by the tags block below.
+    } else if push_default_mode(config) == "matching" {
+        // `push.default = matching` pushes every ref present on both sides; it does not need a
+        // current branch, so it works with a detached HEAD (t5516 test 52 pushes after a
+        // detached checkout).
+        let matched = collect_matching_push_updates(
+            repo,
+            &remote_repo,
+            remote_name,
+            args,
+            &mut updates,
+            &mut submodule_tips,
+            &[],
+            false,
+        )?;
+        if matched == 0 {
+            bail!(
+                "No refs in common and none specified; doing nothing.\nPerhaps you should specify a branch."
+            );
+        }
     } else {
-        // Default push mode (simple/current/upstream/matching/nothing).
+        // Default push mode (simple/current/upstream/nothing) needs the current branch.
         let branch = current_branch.context("not on a branch; specify a refspec to push")?;
-        if push_default_mode(config) == "matching" {
-            let matched = collect_matching_push_updates(
-                repo,
-                &remote_repo,
-                remote_name,
-                args,
-                &mut updates,
-                &mut submodule_tips,
-                &[],
-                false,
-            )?;
-            if matched == 0 {
-                bail!(
-                    "No refs in common and none specified; doing nothing.\nPerhaps you should specify a branch."
-                );
-            }
-        } else {
+        {
             let (local_ref, remote_ref, auto_set_upstream) =
                 default_push_ref_for_current_branch(config, remote_name, branch)?;
 
@@ -3869,6 +3872,10 @@ fn configured_remote_names(config: &ConfigSet) -> std::collections::BTreeSet<Str
 }
 
 fn infer_implicit_push_remote(config: &ConfigSet, current_branch: Option<&str>) -> String {
+    // Git `remote_get` push lookup (remote.c `pushremote_for_branch`):
+    // `branch.<name>.pushRemote` > `remote.pushDefault` > `branch.<name>.remote` > `origin`.
+    // `remote.pushDefault` applies even when HEAD is detached (no current branch) — t5516 test 52
+    // pushes after a detached checkout and must still target `remote.pushdefault`.
     if let Some(branch) = current_branch {
         if let Some(name) = config
             .get(&format!("branch.{branch}.pushRemote"))
@@ -3876,12 +3883,14 @@ fn infer_implicit_push_remote(config: &ConfigSet, current_branch: Option<&str>) 
         {
             return name;
         }
-        if let Some(name) = config
-            .get("remote.pushDefault")
-            .or_else(|| config.get("remote.pushdefault"))
-        {
-            return name;
-        }
+    }
+    if let Some(name) = config
+        .get("remote.pushDefault")
+        .or_else(|| config.get("remote.pushdefault"))
+    {
+        return name;
+    }
+    if let Some(branch) = current_branch {
         if let Some(name) = config.get(&format!("branch.{branch}.remote")) {
             return name;
         }
