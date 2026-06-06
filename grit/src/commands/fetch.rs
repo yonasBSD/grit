@@ -2664,29 +2664,10 @@ fn fetch_remote(
                     dst.is_empty(),
                 ));
             }
-            if args.set_upstream {
-                if let Some(remote_ref_name) = resolved_remote_ref.as_deref() {
-                    if remote_ref_name.starts_with("refs/heads/") {
-                        let local_branch = if !dst.is_empty() {
-                            normalize_fetch_refspec_dst(&dst)
-                                .strip_prefix("refs/heads/")
-                                .map(ToOwned::to_owned)
-                        } else {
-                            remote_ref_name
-                                .strip_prefix("refs/heads/")
-                                .map(ToOwned::to_owned)
-                        };
-                        if let Some(local_branch) = local_branch {
-                            set_fetch_upstream_config(
-                                git_dir,
-                                &local_branch,
-                                remote_name,
-                                remote_ref_name,
-                            )?;
-                        }
-                    }
-                }
-            }
+            // `--set-upstream` is handled once, after all refspecs are processed, in
+            // `apply_set_upstream` (mirroring builtin/fetch.c). Doing it per-refspec here would set
+            // the wrong branch (it must configure the *current* branch, not the fetched one) and
+            // would ignore the "exactly one branch / no explicit destination" rules.
 
             // If a destination is specified, write the ref there
             if !dst.is_empty() {
@@ -3667,6 +3648,30 @@ fn fetch_remote(
             eprintln!("would write to .git/FETCH_HEAD");
         }
     }
+
+    // `--set-upstream` runs after FETCH_HEAD is committed and is independent of ref-update results:
+    // git installs the branch config even when a remote-tracking ref update fails (t5510 "upstream
+    // tracking info is added even with conflicts"). Run it before the failure bails below.
+    if args.set_upstream && !args.dry_run {
+        // Build the combined list of advertised remote refs so a bare branch/tag/HEAD source
+        // argument can be resolved to its full ref name (matching `builtin/fetch.c`).
+        let mut all_refs: Vec<(String, ObjectId)> = remote_advertised.clone();
+        for (name, oid) in remote_heads.iter().chain(remote_tags.iter()) {
+            if !all_refs.iter().any(|(n, _)| n == name) {
+                all_refs.push((name.clone(), *oid));
+            }
+        }
+        apply_set_upstream(
+            git_dir,
+            remote_name,
+            cli_refspecs,
+            user_passed_cli_refspecs,
+            url_override.is_some(),
+            &all_refs,
+            remote_symbolic_head_branch.as_deref(),
+        );
+    }
+
     if !tag_clobber_failures.is_empty() {
         bail!("some local refs could not be updated");
     }
@@ -3726,6 +3731,99 @@ fn fetch_remote(
     }
 
     Ok(())
+}
+
+/// Implement `git fetch --set-upstream` (mirrors the `set_upstream` block in `builtin/fetch.c`).
+///
+/// The upstream configuration is written for the *current* branch (HEAD). The merge value is the
+/// single "source ref" being fetched into FETCH_HEAD without a tracking destination (i.e. a CLI
+/// refspec with no explicit `:dst`, or — for an anonymous URL fetch with no refspec — the remote
+/// `HEAD`). If more than one such branch is requested, or none is found, nothing is configured.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_set_upstream(
+    git_dir: &Path,
+    remote_name: &str,
+    cli_refspecs: &[String],
+    user_passed_cli_refspecs: bool,
+    is_anonymous_url: bool,
+    remote_all_refs: &[(String, ObjectId)],
+    remote_symbolic_head_branch: Option<&str>,
+) {
+    // Collect the source refs: refs fetched to FETCH_HEAD only (no peer/tracking destination).
+    let mut source_refs: Vec<String> = Vec::new();
+    if user_passed_cli_refspecs {
+        for spec in cli_refspecs {
+            if spec.starts_with('^') {
+                continue;
+            }
+            let spec_clean = spec.strip_prefix('+').unwrap_or(spec.as_str());
+            let (src, has_dst) = match spec_clean.split_once(':') {
+                Some((src, dst)) => (src, !dst.is_empty()),
+                None => (spec_clean, false),
+            };
+            // A refspec with an explicit destination has a peer_ref and is skipped.
+            if has_dst {
+                continue;
+            }
+            // Source refs containing globs are not eligible upstream sources for --set-upstream.
+            if src.contains('*') {
+                continue;
+            }
+            let resolved = resolve_advertised_ref_for_fetch_src(
+                src,
+                remote_all_refs,
+                remote_symbolic_head_branch,
+            )
+            .unwrap_or_else(|| {
+                if src.is_empty() || src == "HEAD" {
+                    "HEAD".to_owned()
+                } else if src.starts_with("refs/") {
+                    src.to_owned()
+                } else {
+                    format!("refs/heads/{src}")
+                }
+            });
+            source_refs.push(resolved);
+        }
+    } else if is_anonymous_url {
+        // `git fetch --set-upstream <url>` with no refspec fetches the remote HEAD into FETCH_HEAD
+        // with no tracking destination, so HEAD is the single source ref.
+        source_refs.push("HEAD".to_owned());
+    }
+    // A named remote with a configured tracking refspec maps every ref to a remote-tracking ref
+    // (peer_ref set), so there is no FETCH_HEAD-only source branch and nothing is configured.
+
+    if source_refs.len() > 1 {
+        eprintln!("warning: multiple branches detected, incompatible with --set-upstream");
+        return;
+    }
+    let Some(source_ref) = source_refs.into_iter().next() else {
+        return;
+    };
+
+    let branch = current_branch_from_head(git_dir);
+    let Some(branch) = branch else {
+        let shortname = source_ref
+            .strip_prefix("refs/heads/")
+            .unwrap_or(&source_ref);
+        eprintln!(
+            "warning: could not set upstream of HEAD to '{shortname}' from '{remote_name}' when \
+             it does not point to any branch."
+        );
+        return;
+    };
+
+    if source_ref == "HEAD" || source_ref.starts_with("refs/heads/") {
+        if let Err(err) = set_fetch_upstream_config(git_dir, &branch, remote_name, &source_ref) {
+            eprintln!("warning: failed to set upstream for branch '{branch}': {err}");
+        }
+    } else if source_ref.starts_with("refs/remotes/") {
+        eprintln!("warning: not setting upstream for a remote remote-tracking branch");
+    } else if source_ref.starts_with("refs/tags/") {
+        eprintln!("warning: not setting upstream for a remote tag");
+    } else {
+        eprintln!("warning: unknown branch type");
+    }
 }
 
 fn maybe_write_commit_graph_after_fetch(git_dir: &Path, args: &Args) -> Result<()> {

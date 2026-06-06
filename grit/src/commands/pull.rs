@@ -137,6 +137,19 @@ pub struct Args {
     /// Do not verify GPG signatures (passed through to merge).
     #[arg(long = "no-verify-signatures")]
     pub no_verify_signatures: bool,
+
+    /// Set the upstream (branch.<name>.remote / .merge) of the current branch from the fetch
+    /// (passed through to the underlying fetch, matching `git pull --set-upstream`).
+    #[arg(long = "set-upstream")]
+    pub set_upstream: bool,
+
+    /// Fetch all tags from the remote (passed through to the underlying fetch).
+    #[arg(short = 't', long = "tags")]
+    pub tags: bool,
+
+    /// Do not fetch tags (passed through to the underlying fetch).
+    #[arg(long = "no-tags")]
+    pub no_tags: bool,
 }
 
 fn rebase_cli_value_is_valid(s: &str) -> bool {
@@ -226,7 +239,11 @@ fn pull_head_refspec_to_fetch_token(
         }
     }
     let Some(p) = local_remote_path else {
-        bail!("could not resolve remote HEAD for '{remote_name}' (missing refs/remotes/{remote_name}/HEAD)");
+        // No `refs/remotes/<remote>/HEAD` and no resolved local path (e.g. the remote URL is a bare
+        // relative name like `parent` that the local-path heuristic does not recognize). Leave the
+        // refspec as `HEAD`; the underlying fetch resolves the remote's advertised HEAD directly
+        // (`git fetch <remote> HEAD`), so pull need not pre-resolve it to a branch name.
+        return Ok("HEAD".to_owned());
     };
     remote_default_branch_short(p)
 }
@@ -520,6 +537,33 @@ fn die_if_merge_in_progress(repo: &Repository) -> Result<()> {
     Ok(())
 }
 
+/// Apply `--set-upstream` for a pull that integrates from a local repository (the local-path or
+/// `git pull .` shortcuts that bypass `fetch::run`). `git pull --set-upstream` passes the flag
+/// straight through to fetch, so this mirrors `fetch::apply_set_upstream` using the original CLI
+/// refspecs.
+fn apply_pull_set_upstream(
+    git_dir: &Path,
+    remote_name: &str,
+    remote_git_dir: &Path,
+    cli_refspecs: &[String],
+    is_anonymous_url: bool,
+) {
+    let all_refs = refs::list_refs(remote_git_dir, "refs/").unwrap_or_default();
+    let symbolic_head = refs::read_symbolic_ref(remote_git_dir, "HEAD")
+        .ok()
+        .flatten()
+        .and_then(|s| s.strip_prefix("refs/heads/").map(ToOwned::to_owned));
+    super::fetch::apply_set_upstream(
+        git_dir,
+        remote_name,
+        cli_refspecs,
+        !cli_refspecs.is_empty(),
+        is_anonymous_url,
+        &all_refs,
+        symbolic_head.as_deref(),
+    );
+}
+
 pub fn run(args: Args) -> Result<()> {
     let mut args = normalize_pull_positionals(args);
     // Reconcile `-q`/`-v` into Git's single verbosity counter (clap parses them as independent
@@ -763,6 +807,21 @@ pub fn run(args: Args) -> Result<()> {
             Ok(())
         })?;
 
+        if args.set_upstream {
+            // An anonymous URL/path remote (e.g. `git pull <file://...>`) that is not a configured
+            // remote uses the URL itself as the config remote value, and its bare HEAD as the merge
+            // source — mirroring `git fetch`'s `url_override` path.
+            let is_anonymous_url = remote_token_looks_like_path(remote_name)
+                && config.get(&format!("remote.{remote_name}.url")).is_none();
+            apply_pull_set_upstream(
+                &repo.git_dir,
+                remote_name,
+                &remote_repo.git_dir,
+                &args.refspecs,
+                is_anonymous_url,
+            );
+        }
+
         grit_lib::pack::clear_pack_cache();
         let kind = do_merge_or_rebase_after_fetch(&args, &config, &repo, &head)?;
         maybe_update_submodules_after_pull(&args, &config, kind)?;
@@ -830,6 +889,16 @@ pub fn run(args: Args) -> Result<()> {
         };
         fs::write(repo.git_dir.join("FETCH_HEAD"), lines.concat())?;
 
+        if args.set_upstream {
+            apply_pull_set_upstream(
+                &repo.git_dir,
+                remote_name,
+                &repo.git_dir,
+                &args.refspecs,
+                false,
+            );
+        }
+
         grit_lib::pack::clear_pack_cache();
         let kind = do_merge_or_rebase_after_fetch(&args, &config, &repo, &head)?;
         maybe_update_submodules_after_pull(&args, &config, kind)?;
@@ -846,8 +915,8 @@ pub fn run(args: Args) -> Result<()> {
         no_auto_gc: false,
         no_write_commit_graph: false,
         multiple: false,
-        tags: false,
-        no_tags: false,
+        tags: args.tags,
+        no_tags: args.no_tags,
         prune: false,
         no_prune: false,
         force: args.force,
@@ -877,7 +946,7 @@ pub fn run(args: Args) -> Result<()> {
         show_forced_updates: false,
         negotiate_only: false,
         negotiation_tip: Vec::new(),
-        set_upstream: false,
+        set_upstream: args.set_upstream,
         update_head_ok: false,
         prefetch: false,
         update_refs: false,
@@ -902,6 +971,10 @@ pub fn run(args: Args) -> Result<()> {
     grit_lib::pack::clear_pack_cache();
     if effective_refspecs.is_empty() {
         normalize_fetch_head_for_pull_branch(&repo, &merge_branch)?;
+    } else {
+        // Every command-line refspec is a merge candidate (builtin/fetch.c), including one with an
+        // explicit `<src>:<dst>` whose fetch wrote it not-for-merge.
+        mark_cli_refspecs_for_merge(&repo, &effective_refspecs)?;
     }
 
     let kind = do_merge_or_rebase_after_fetch(&args, &config, &repo, &head)?;
@@ -1449,6 +1522,57 @@ fn fetch_head_line_parts(line: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((oid, desc))
+}
+
+/// Mark the FETCH_HEAD entries fetched via explicit command-line refspecs as for-merge.
+///
+/// `builtin/fetch.c` records every command-line refspec as `FETCH_HEAD_MERGE` ("Merge everything on
+/// the command line"), even one with an explicit `<src>:<dst>`. Grit's fetch writes such an entry
+/// `not-for-merge` (its destination is a tracking ref), which would leave `git pull <remote>
+/// <src>:<dst>` with no merge candidate. Re-mark only the lines whose source matches a CLI refspec
+/// so auto-followed tags (`--tags`) stay not-for-merge (t5553 `pull --set-upstream main:other2`).
+fn mark_cli_refspecs_for_merge(repo: &Repository, refspecs: &[String]) -> Result<()> {
+    if refspecs.is_empty() {
+        return Ok(());
+    }
+    // Short source names named on the command line (e.g. `main`, `HEAD`, `refs/heads/x` -> `x`).
+    let wanted: HashSet<String> = refspecs
+        .iter()
+        .map(|spec| {
+            let (src, _dst) = split_pull_refspec(spec);
+            src.strip_prefix("refs/heads/").unwrap_or(src).to_owned()
+        })
+        .collect();
+
+    let path = repo.git_dir.join("FETCH_HEAD");
+    let content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+    let mut changed = false;
+    let mut lines = Vec::new();
+    for line in content.lines() {
+        // Only promote `branch '<name>'` lines whose name was requested on the command line; leave
+        // tag lines and unrelated entries untouched.
+        let is_cli_branch = fetch_head_branch_name(line)
+            .map(|name| wanted.contains(name))
+            .unwrap_or(false);
+        if is_cli_branch {
+            if let Some((oid, desc)) = fetch_head_line_parts(line) {
+                let promoted = format!("{oid}\t\t{desc}");
+                if promoted != line {
+                    changed = true;
+                }
+                lines.push(promoted);
+                continue;
+            }
+        }
+        lines.push(line.to_owned());
+    }
+    if changed {
+        fs::write(&path, lines.join("\n") + "\n").context("writing FETCH_HEAD")?;
+    }
+    Ok(())
 }
 
 fn normalize_fetch_head_for_pull_branch(repo: &Repository, merge_branch: &str) -> Result<()> {
