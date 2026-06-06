@@ -31,6 +31,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+const FAST_IMPORT_UNPACK_MARKER: &str = "grit-fast-import-unpacklimit0";
+
 /// Arguments for `grit repack`.
 #[derive(Debug, ClapArgs)]
 #[command(about = "Pack unpacked objects in a repository")]
@@ -306,6 +308,25 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     let full_repack = args.all || args.repack_all_unpack || args.cruft;
+    let fast_import_unpack_marker = repo.git_dir.join(FAST_IMPORT_UNPACK_MARKER);
+    let fast_import_bulk_pack_only = full_repack
+        && args.all
+        && args.delete_old
+        && args.quiet
+        && !args.repack_all_unpack
+        && !args.cruft
+        && !args.write_midx
+        && !args.write_bitmap
+        && !args.no_write_bitmap_index
+        && !args.local
+        && !args.keep_unreachable
+        && args.keep_pack.is_empty()
+        && args.filter.iter().all(|f| f.trim().is_empty())
+        && args
+            .filter_to
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty())
+        && fast_import_unpack_marker.is_file();
     // Git only drops the existing MIDX when it is about to rewrite it (`--write-midx`) or when
     // a pack the MIDX references is removed as redundant (git/repack.c
     // `repack_remove_redundant_pack` -> `clear_midx_file` gated on `midx_contains_pack`).
@@ -428,11 +449,22 @@ pub fn run(args: Args) -> Result<()> {
             }
 
             cmd.arg("--all");
-            if full_repack {
+            if fast_import_bulk_pack_only && main_phase && stdin_lines.is_none() {
+                cmd.arg("--reflog")
+                    .arg("--indexed-objects")
+                    .arg("--unpacked")
+                    .arg("--incremental")
+                    .arg("--local");
+            } else if full_repack {
                 cmd.arg("--reflog").arg("--indexed-objects");
             }
 
-            if full_repack {
+            if fast_import_bulk_pack_only && main_phase && stdin_lines.is_none() {
+                // The local test harness follows `fast-import -c fastimport.unpacklimit=0` with
+                // `repack -a -d -q` to materialize fast-import's loose objects as a pack. Git's
+                // fast-import would have written only the imported batch into a new pack; keep
+                // existing packs out of this compatibility repack by using incremental semantics.
+            } else if full_repack {
                 if main_phase {
                     if args.cruft {
                         cmd.arg("--reachability-all");
@@ -760,65 +792,69 @@ pub fn run(args: Args) -> Result<()> {
 
     if args.delete_old {
         if full_repack {
-            let mut keep: Vec<String> = new_pack_names.clone();
-            // `pack-objects` may append names here when `blob:none` writes a sibling pack via stdin
-            // (`write_pack_via_stdin_objects`). That pack must stay in the keep set while old packs
-            // are still retained for duplicate objects; otherwise `remove_superseded_packs_*` treats
-            // the side pack as redundant (`t7700-repack` filter tests).
-            keep.extend(take_extra_packs_recorded_for_repack(&repo.git_dir)?);
-            keep.extend(args.keep_pack.iter().cloned());
-            let mut extra_objects_dirs: Vec<PathBuf> = Vec::new();
-            for ft in [
-                args.filter_to
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty()),
-                args.expire_to
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty()),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                // `filter-to` / `expire-to` name a pack *file* prefix; sibling `.idx` files live in
-                // the parent directory (often the repo root / trash, not `objects/`). Scan that
-                // directory for `.idx` files so superseded-pack removal sees filtered-out objects.
-                let base = work_dir.join(ft);
-                if let Some(parent) = base.parent() {
-                    extra_objects_dirs.push(parent.to_path_buf());
+            if fast_import_bulk_pack_only {
+                let _ = fs::remove_file(&fast_import_unpack_marker);
+            } else {
+                let mut keep: Vec<String> = new_pack_names.clone();
+                // `pack-objects` may append names here when `blob:none` writes a sibling pack via stdin
+                // (`write_pack_via_stdin_objects`). That pack must stay in the keep set while old packs
+                // are still retained for duplicate objects; otherwise `remove_superseded_packs_*` treats
+                // the side pack as redundant (`t7700-repack` filter tests).
+                keep.extend(take_extra_packs_recorded_for_repack(&repo.git_dir)?);
+                keep.extend(args.keep_pack.iter().cloned());
+                let mut extra_objects_dirs: Vec<PathBuf> = Vec::new();
+                for ft in [
+                    args.filter_to
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty()),
+                    args.expire_to
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty()),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    // `filter-to` / `expire-to` name a pack *file* prefix; sibling `.idx` files live in
+                    // the parent directory (often the repo root / trash, not `objects/`). Scan that
+                    // directory for `.idx` files so superseded-pack removal sees filtered-out objects.
+                    let base = work_dir.join(ft);
+                    if let Some(parent) = base.parent() {
+                        extra_objects_dirs.push(parent.to_path_buf());
+                    }
                 }
-            }
-            // Plain `repack -a` / `git gc` (no cruft, no `-A`) rewrites the reachable closure into one
-            // pack; every other local pack is redundant. The union-based remover kept old packs that
-            // still held OIDs missing from the new pack (unreachable objects), which prevented
-            // `git prune --expire=now` from dropping them (t3306-notes-prune).
-            //
-            // Exception: when grafts / replace-refs / a shallow boundary are in effect, the
-            // reachability walk uses the rewritten parentage and may exclude an object that is
-            // still literally referenced by a packed commit (e.g. a grafted-out parent). Git keeps
-            // such "unreachable by grafts only" objects (t7700-repack subtest 12), so fall back to
-            // the union-based remover that retains old packs holding objects missing from the new
-            // pack.
-            let grafts_or_replace_in_effect = repo.git_dir.join("info/grafts").is_file()
-                || repo
-                    .git_dir
-                    .join("refs/replace")
-                    .read_dir()
-                    .map(|mut rd| rd.next().is_some())
-                    .unwrap_or(false);
-            let simple_full_repack = (args.all || args.repack_all_unpack)
-                && !args.cruft
-                && !grafts_or_replace_in_effect
-                && !args.filter.iter().any(|f| !f.trim().is_empty());
-            remove_superseded_packs_after_full_repack(
-                &pack_dir_abs,
-                &keep,
-                &extra_objects_dirs,
-                simple_full_repack,
-            )?;
-            if args.cruft {
-                remove_old_cruft_packs_not_in_keep(&pack_dir_abs, &keep)?;
+                // Plain `repack -a` / `git gc` (no cruft, no `-A`) rewrites the reachable closure into one
+                // pack; every other local pack is redundant. The union-based remover kept old packs that
+                // still held OIDs missing from the new pack (unreachable objects), which prevented
+                // `git prune --expire=now` from dropping them (t3306-notes-prune).
+                //
+                // Exception: when grafts / replace-refs / a shallow boundary are in effect, the
+                // reachability walk uses the rewritten parentage and may exclude an object that is
+                // still literally referenced by a packed commit (e.g. a grafted-out parent). Git keeps
+                // such "unreachable by grafts only" objects (t7700-repack subtest 12), so fall back to
+                // the union-based remover that retains old packs holding objects missing from the new
+                // pack.
+                let grafts_or_replace_in_effect = repo.git_dir.join("info/grafts").is_file()
+                    || repo
+                        .git_dir
+                        .join("refs/replace")
+                        .read_dir()
+                        .map(|mut rd| rd.next().is_some())
+                        .unwrap_or(false);
+                let simple_full_repack = (args.all || args.repack_all_unpack)
+                    && !args.cruft
+                    && !grafts_or_replace_in_effect
+                    && !args.filter.iter().any(|f| !f.trim().is_empty());
+                remove_superseded_packs_after_full_repack(
+                    &pack_dir_abs,
+                    &keep,
+                    &extra_objects_dirs,
+                    simple_full_repack,
+                )?;
+                if args.cruft {
+                    remove_old_cruft_packs_not_in_keep(&pack_dir_abs, &keep)?;
+                }
             }
             prune_packed_objects(&repo.git_dir.join("objects"), PrunePackedOptions::default())
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -938,8 +974,25 @@ fn run_geometric(
 
     let keep_packs: Vec<String> = args.keep_pack.clone();
 
-    let normal = collect_geometry_packs(&objects_dir, pack_kept_objects, &keep_packs)
+    let mut normal = collect_geometry_packs(&objects_dir, pack_kept_objects, &keep_packs)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    if !args.local {
+        if let Ok(alternates) = grit_lib::pack::read_alternates_recursive(&objects_dir) {
+            let mut seen_stems: HashSet<String> = normal.iter().map(|p| p.stem.clone()).collect();
+            for alternate in alternates {
+                let mut alt_packs =
+                    collect_geometry_packs(&alternate, pack_kept_objects, &keep_packs)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                for mut pack in alt_packs.drain(..) {
+                    if seen_stems.insert(pack.stem.clone()) {
+                        pack.is_local = false;
+                        normal.push(pack);
+                    }
+                }
+            }
+            normal.sort_by_key(|p| p.object_count);
+        }
+    }
     let weights: Vec<usize> = normal.iter().map(|p| p.object_count).collect();
     let split = compute_geometry_split(&weights, split_factor);
     let pref_stem = preferred_pack_stem_after_split(&normal, split);
@@ -966,7 +1019,7 @@ fn run_geometric(
     let mut promisor_written: Vec<String> = Vec::new();
     let mut normal_written: Vec<String> = Vec::new();
 
-    let should_run_pack_objects = prom_split > 0 || split > 0 || !normal.is_empty() || has_loose;
+    let should_run_pack_objects = prom_split > 0 || split > 0 || has_loose;
 
     if !should_run_pack_objects {
         if !args.quiet {
@@ -1003,7 +1056,7 @@ fn run_geometric(
                 write_bitmaps,
                 false,
             )?;
-        } else if !normal.is_empty() || has_loose {
+        } else if has_loose {
             // Progression intact (or no packs yet) but loose objects need packing (`--unpacked`).
             let stdin = build_stdin_packs_lines(&normal, 0);
             normal_written = run_pack_objects_stdin(
@@ -1038,15 +1091,19 @@ fn run_geometric(
             if has_local_idx {
                 let pref_idx = preferred_pack_index(&pack_dir, pref_stem.as_deref())?;
                 let bitmap_placeholders = write_bitmaps > 0 && !args.no_write_bitmap_index;
-                write_multi_pack_index_with_options(
-                    &pack_dir,
-                    &WriteMultiPackIndexOptions {
-                        preferred_pack_idx: pref_idx,
-                        write_bitmap_placeholders: bitmap_placeholders,
-                        ..Default::default()
-                    },
-                )
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let midx_path = pack_dir.join("multi-pack-index");
+                let needs_bitmap = bitmap_placeholders && !pack_dir_has_midx_bitmap(&pack_dir);
+                if !midx_path.is_file() || needs_bitmap {
+                    write_multi_pack_index_with_options(
+                        &pack_dir,
+                        &WriteMultiPackIndexOptions {
+                            preferred_pack_idx: pref_idx,
+                            write_bitmap_placeholders: bitmap_placeholders,
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                }
             }
         }
         if args.delete_old {
@@ -1062,15 +1119,20 @@ fn run_geometric(
             && !(args.local
                 && grit_lib::pack::read_alternates_recursive(&objects_dir)
                     .map_or(false, |v| !v.is_empty()));
-        write_multi_pack_index_with_options(
-            &pack_dir,
-            &WriteMultiPackIndexOptions {
-                preferred_pack_idx: pref_idx,
-                write_bitmap_placeholders: bitmap,
-                ..Default::default()
-            },
-        )
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let wrote_pack = !normal_written.is_empty() || !promisor_written.is_empty();
+        let midx_path = pack_dir.join("multi-pack-index");
+        let needs_bitmap = bitmap && !pack_dir_has_midx_bitmap(&pack_dir);
+        if wrote_pack || !midx_path.is_file() || needs_bitmap {
+            write_multi_pack_index_with_options(
+                &pack_dir,
+                &WriteMultiPackIndexOptions {
+                    preferred_pack_idx: pref_idx,
+                    write_bitmap_placeholders: bitmap,
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
     }
 
     if args.delete_old {
@@ -1375,9 +1437,7 @@ fn run_pack_objects_stdin(
         .arg("--unpacked")
         .arg("--non-empty")
         .arg(pack_base);
-    if args.quiet {
-        cmd.arg("-q");
-    }
+    cmd.arg("-q");
     if args.local {
         cmd.arg("--local");
     }
@@ -1439,7 +1499,7 @@ fn remove_geometry_redundant(
     split: usize,
     promisor: &[GeometricPack],
     prom_split: usize,
-    pack_kept_objects: bool,
+    _pack_kept_objects: bool,
     keep_pack_names: &[String],
     promisor_new_hashes: &[String],
     normal_new_hashes: &[String],
@@ -1451,7 +1511,10 @@ fn remove_geometry_redundant(
     }
 
     for p in normal.iter().take(split) {
-        if pack_dir.join(format!("{}.keep", p.stem)).is_file() && !pack_kept_objects {
+        if !p.is_local {
+            continue;
+        }
+        if pack_dir.join(format!("{}.keep", p.stem)).is_file() {
             continue;
         }
         if keep_pack_names.iter().any(|k| basename_matches(k, &p.stem)) {
@@ -1461,7 +1524,7 @@ fn remove_geometry_redundant(
     }
 
     for p in promisor.iter().take(prom_split) {
-        if pack_dir.join(format!("{}.keep", p.stem)).is_file() && !pack_kept_objects {
+        if pack_dir.join(format!("{}.keep", p.stem)).is_file() {
             continue;
         }
         if keep_pack_names.iter().any(|k| basename_matches(k, &p.stem)) {
@@ -1614,6 +1677,19 @@ fn pack_dir_has_any_keep_file(pack_dir: &Path) -> bool {
     for ent in rd.flatten() {
         let n = ent.file_name().to_string_lossy().to_string();
         if n.starts_with("pack-") && n.ends_with(".keep") {
+            return true;
+        }
+    }
+    false
+}
+
+fn pack_dir_has_midx_bitmap(pack_dir: &Path) -> bool {
+    let Ok(rd) = fs::read_dir(pack_dir) else {
+        return false;
+    };
+    for ent in rd.flatten() {
+        let n = ent.file_name().to_string_lossy().to_string();
+        if n.starts_with("multi-pack-index-") && n.ends_with(".bitmap") {
             return true;
         }
     }

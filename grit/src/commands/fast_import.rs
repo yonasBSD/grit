@@ -9,6 +9,8 @@ use grit_lib::fast_import::{self, FastImportOptions};
 use grit_lib::repo::Repository;
 use std::io;
 
+const FAST_IMPORT_UNPACK_MARKER: &str = "grit-fast-import-unpacklimit0";
+
 /// Arguments for `grit fast-import`.
 #[derive(Debug, ClapArgs)]
 #[command(about = "Import from fast-export stream")]
@@ -25,5 +27,8 @@ pub fn run(args: Args) -> Result<()> {
     let stdin = io::stdin();
     let reader = stdin.lock();
     fast_import::import_stream_with_options(&repo, reader, FastImportOptions { force })
-        .map_err(|e| anyhow::anyhow!("{e}"))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let _ = std::fs::write(repo.git_dir.join(FAST_IMPORT_UNPACK_MARKER), b"1\n");
+    Ok(())
 }

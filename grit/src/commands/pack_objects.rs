@@ -3215,6 +3215,17 @@ fn collect_oids(repo: &Repository, args: &Args) -> Result<PackObjectList> {
         return collect_incremental_repack_oids(repo, args);
     }
 
+    if args.pack_loose_unreachable {
+        let mut loose = BTreeSet::new();
+        collect_all_loose(&repo.odb, &mut loose)?;
+        return Ok(PackObjectList {
+            oids: loose.into_iter().collect(),
+            force_include: Vec::new(),
+            thin_blob_deltas: Vec::new(),
+            rev_list_stdin: false,
+        });
+    }
+
     if args.cruft && !args.incremental {
         return collect_cruft_pack_stdin_oids(repo, args);
     }
