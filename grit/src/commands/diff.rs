@@ -4629,6 +4629,46 @@ fn run_no_index(args: Args) -> Result<()> {
             indent_heuristic,
             quote_path_fully,
         )
+    } else if args.function_context
+        && !ws_mode.ignore_all_space
+        && !ws_mode.ignore_space_change
+        && !ws_mode.ignore_space_at_eol
+        && !ws_mode.ignore_cr_at_eol
+    {
+        // `--function-context` (optionally with `--ignore-blank-lines`): the
+        // worktree path expands hunks to whole functions and then drops
+        // ignorable changes. Reuse the same machinery here (the no-index body
+        // generator does not support `-W`). No userdiff driver applies to a bare
+        // `--no-index` path, so the built-in funcname detection is used.
+        let func_matcher = matcher_for_path_parsed(
+            cfg_for_word_regex,
+            &diff_algo_ctx.attrs.rules,
+            &diff_algo_ctx.attrs.macros,
+            path_a_str.as_str(),
+            ignore_case_attrs,
+        )
+        .unwrap_or(None);
+        let body = unified_diff_with_prefix_and_funcname_and_algorithm(
+            &text_a,
+            &text_b,
+            paths[0].as_str(),
+            paths[1].as_str(),
+            context_lines,
+            inter_hunk_context,
+            "a/",
+            "b/",
+            func_matcher.as_ref(),
+            algo_sim,
+            true,
+            algo_hist,
+            indent_heuristic,
+            quote_path_fully,
+        );
+        if ws_mode.ignore_blank_lines {
+            suppress_ignored_hunks_in_patch(&body, &[], true)
+        } else {
+            body
+        }
     } else {
         // Diff the textconv (or UTF-8 lossy) view so hunks match what we compare for exit status
         // and stats; raw blob bytes would ignore `diff.<driver>.textconv` in the patch body (t4042).
