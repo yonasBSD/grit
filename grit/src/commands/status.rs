@@ -626,18 +626,22 @@ pub fn run(mut args: Args) -> Result<()> {
         );
     }
 
+    let mut write_index_for_untracked_cache = false;
     match config
         .get("core.untrackedCache")
         .map(|s| s.to_ascii_lowercase())
         .as_deref()
     {
         Some("false") | Some("0") | Some("no") | Some("off") => {
-            index.untracked_cache = None;
+            if index.untracked_cache.take().is_some() {
+                write_index_for_untracked_cache = true;
+            }
         }
         Some("true") | Some("1") | Some("yes") | Some("on") if index.untracked_cache.is_none() => {
             let flags = untracked_cache::dir_flags_from_config(&config);
             let ident = untracked_cache::untracked_cache_ident(work_tree);
             index.untracked_cache = Some(UntrackedCache::new_shell(flags, ident));
+            write_index_for_untracked_cache = true;
         }
         _ => {}
     }
@@ -772,6 +776,9 @@ pub fn run(mut args: Args) -> Result<()> {
                         uc_mode,
                     )
                     .is_ok();
+                    if refresh_ok {
+                        write_index_for_untracked_cache = true;
+                    }
                     if refresh_ok && ignored_mode == IgnoredMode::No {
                         untracked_from_cache = Some(
                             untracked_cache::collect_untracked_from_cache(uc)
@@ -1036,7 +1043,12 @@ directory contents. Running 'git clean' may assist in this cleanup."
         // Opportunistic write, like Git: persist when refresh changed an entry or when the
         // index itself is stale/racy enough that rewriting advances its mtime.
         // Best-effort: status must succeed even when `.git/` is read-only (t7508).
-        if refreshed || racy || force_full_index_write || force_sparse_index_write {
+        if refreshed
+            || racy
+            || force_full_index_write
+            || force_sparse_index_write
+            || write_index_for_untracked_cache
+        {
             if force_sparse_index_write {
                 if let Ok(trace2_event) = std::env::var("GIT_TRACE2_EVENT") {
                     if !trace2_event.trim().is_empty() {

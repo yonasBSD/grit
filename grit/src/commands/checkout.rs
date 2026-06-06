@@ -2087,7 +2087,8 @@ fn switch_branch(
                 .load_index()
                 .map(|idx| idx.entries.is_empty())
                 .unwrap_or(true);
-            if index_empty {
+            let sparse_on = sparse_checkout_config_enabled(&repo.git_dir);
+            if index_empty || sparse_on {
                 switch_to_tree(
                     repo,
                     &head,
