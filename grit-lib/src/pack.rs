@@ -982,6 +982,54 @@ pub struct VerifyObjectRecord {
     pub base_oid: Option<Vec<u8>>,
 }
 
+/// How a delta object in a pack references its base, used to compute chain depth order-independently.
+enum DeltaBaseLink {
+    /// `REF_DELTA`: base identified by raw object id (20 or 32 bytes).
+    Oid(Vec<u8>),
+    /// `OFS_DELTA`: base identified by its absolute offset in the pack.
+    Offset(u64),
+}
+
+/// Resolve the delta-chain depth of record `i`, memoizing the result into `records[i].depth`.
+///
+/// Full (non-delta) objects have depth 0. A delta's depth is one greater than its base's depth.
+/// Following base links by offset/oid makes this independent of the order objects appear in the
+/// pack — a ref-delta's base may be stored *after* the delta itself. A base that is not present in
+/// this pack (thin pack) or a cycle is treated as depth 0 for the missing/looping link.
+///
+/// # Errors
+///
+/// Returns [`Error::CorruptObject`] when a ref-delta record is missing its base oid.
+fn resolve_delta_depth(
+    i: usize,
+    base_links: &[Option<DeltaBaseLink>],
+    by_oid: &HashMap<Vec<u8>, usize>,
+    by_offset_idx: &HashMap<u64, usize>,
+    records: &mut [VerifyObjectRecord],
+) -> Result<u64> {
+    if let Some(d) = records[i].depth {
+        return Ok(d);
+    }
+    let Some(link) = &base_links[i] else {
+        return Ok(0);
+    };
+    let base_idx = match link {
+        DeltaBaseLink::Oid(oid) => by_oid.get(oid).copied(),
+        DeltaBaseLink::Offset(off) => by_offset_idx.get(off).copied(),
+    };
+    // Mark this record visited before recursing so a malformed cyclic chain cannot recurse forever.
+    records[i].depth = Some(1);
+    let depth = match base_idx {
+        Some(b) if b != i => {
+            resolve_delta_depth(b, base_links, by_oid, by_offset_idx, records)?.saturating_add(1)
+        }
+        // Base absent from this pack (thin) or self-referential: count this delta as depth 1.
+        _ => 1,
+    };
+    records[i].depth = Some(depth);
+    Ok(depth)
+}
+
 /// Verify one pack/index pair and optionally return object records.
 ///
 /// # Errors
@@ -1072,7 +1120,12 @@ pub fn verify_pack_and_collect(idx_path: &Path) -> Result<Vec<VerifyObjectRecord
     }
 
     let mut by_oid: HashMap<Vec<u8>, usize> = HashMap::new();
+    let mut by_offset_idx: HashMap<u64, usize> = HashMap::new();
     let mut records: Vec<VerifyObjectRecord> = Vec::with_capacity(offsets.len());
+    // Per-record base pointer for delta objects, captured while scanning headers and resolved into
+    // chain depths afterwards. Delta bases can appear *after* the delta in pack order (ref-deltas in
+    // particular), so depth must be computed by following these pointers, not in scan order.
+    let mut base_links: Vec<Option<DeltaBaseLink>> = Vec::with_capacity(offsets.len());
     for (i, offset) in offsets.iter().copied().enumerate() {
         let oid = by_offset.get(&offset).cloned().ok_or_else(|| {
             Error::CorruptObject(format!("missing object id for offset {}", offset))
@@ -1091,7 +1144,7 @@ pub fn verify_pack_and_collect(idx_path: &Path) -> Result<Vec<VerifyObjectRecord
         let mut p = offset as usize;
         let (packed_type, size) = parse_pack_object_header(&pack_bytes, &mut p)?;
         let mut base_oid: Option<Vec<u8>> = None;
-        let mut depth = None;
+        let mut base_link: Option<DeltaBaseLink> = None;
 
         match packed_type {
             PackedType::RefDelta => {
@@ -1101,16 +1154,13 @@ pub fn verify_pack_and_collect(idx_path: &Path) -> Result<Vec<VerifyObjectRecord
                         offset
                     )));
                 }
-                base_oid = Some(pack_bytes[p..p + hb].to_vec());
+                let raw = pack_bytes[p..p + hb].to_vec();
+                base_oid = Some(raw.clone());
+                base_link = Some(DeltaBaseLink::Oid(raw));
             }
             PackedType::OfsDelta => {
                 let base_offset = parse_ofs_delta_base(&pack_bytes, &mut p, offset)?;
-                let base_depth = records
-                    .iter()
-                    .find(|r| r.offset == base_offset)
-                    .and_then(|r| r.depth)
-                    .unwrap_or(0);
-                depth = Some(base_depth + 1);
+                base_link = Some(DeltaBaseLink::Offset(base_offset));
             }
             PackedType::Commit | PackedType::Tree | PackedType::Blob | PackedType::Tag => {}
         }
@@ -1122,26 +1172,21 @@ pub fn verify_pack_and_collect(idx_path: &Path) -> Result<Vec<VerifyObjectRecord
             size,
             size_in_pack,
             offset,
-            depth,
+            depth: None,
             base_oid,
         });
+        base_links.push(base_link);
         by_oid.insert(oid, i);
+        by_offset_idx.insert(offset, i);
     }
 
+    // Resolve delta chain depths by following base links to their record index, regardless of the
+    // order objects appear in the pack. A delta's depth is one more than its base's depth; full
+    // objects have depth 0 (represented as `None` in the record). Memoize to keep this O(n).
     for i in 0..records.len() {
-        if records[i].packed_type != PackedType::RefDelta {
-            continue;
+        if base_links[i].is_some() {
+            let _ = resolve_delta_depth(i, &base_links, &by_oid, &by_offset_idx, &mut records)?;
         }
-        let base = records[i]
-            .base_oid
-            .as_ref()
-            .ok_or_else(|| Error::CorruptObject("ref-delta missing base oid".to_owned()))?;
-        let base_depth = by_oid
-            .get(base)
-            .and_then(|ix| records.get(*ix))
-            .and_then(|r| r.depth)
-            .unwrap_or(0);
-        records[i].depth = Some(base_depth + 1);
     }
 
     for entry in &idx.entries {
