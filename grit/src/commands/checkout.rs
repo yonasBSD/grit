@@ -1421,7 +1421,14 @@ pub fn run(mut args: Args) -> Result<()> {
     // Try as a commit (detached HEAD)
     match resolve_to_commit(&repo, &target) {
         Ok(oid) => {
-            let result = detach_head_with_label(&repo, &oid, switch_force, &target);
+            // `checkout -m <tag-or-commit>` detaches HEAD at the target but still re-applies local
+            // modifications via a three-way merge, matching Git's `merge_working_tree` (which runs
+            // the same merge for branch and detached checkouts). `-f` discards local changes.
+            let result = if branch_merge_wanted && !switch_force {
+                detach_head_with_merge(&repo, &oid, switch_force, &target)
+            } else {
+                detach_head_with_label(&repo, &oid, switch_force, &target)
+            };
             if result.is_ok() && RECURSE_SUBMODULES.with(|r| r.get()) && target == "first" {
                 let _ = crate::commands::submodule::unset_linked_worktree_submodule_core_worktrees(
                     &repo,
@@ -2993,6 +3000,96 @@ fn detach_head_inner(
             label,
         )?;
     }
+    Ok(())
+}
+
+/// Detach HEAD at `oid` while carrying local changes via a three-way merge (`checkout -m <commit>`).
+///
+/// `git checkout -m <tag-or-commit>` behaves like `checkout -m <branch>` except HEAD ends up
+/// detached at the target commit instead of pointing at a branch ref. The working-tree merge is
+/// identical: local modifications relative to the current HEAD are re-applied on top of the target
+/// tree (with the merge base of the two tips as ancestor), and conflicts leave unmerged index
+/// stages. This mirrors upstream `merge_working_tree` (builtin/checkout.c), which runs the same
+/// merge for both branch and detached checkouts.
+///
+/// # Parameters
+/// - `repo`: open repository handle.
+/// - `oid`: commit object the detached HEAD should point at after the merge.
+/// - `force`: when true, discard local changes (plain reset to the target tree).
+/// - `label`: human-readable revision name used in reflog/detached-HEAD messages.
+///
+/// # Errors
+/// Returns an error if the index is unmerged, staged changes collide with the target, or any I/O
+/// during the merge/HEAD update fails.
+fn detach_head_with_merge(
+    repo: &Repository,
+    oid: &ObjectId,
+    force: bool,
+    label: &str,
+) -> Result<()> {
+    let head = resolve_head(&repo.git_dir)?;
+    let old_head_commit = head.oid().copied();
+    let already_at_target = head.oid() == Some(oid);
+
+    // Nothing to merge if we are already sitting on the target commit and the user did not force a
+    // rebuild; fall back to the plain detach so messages/reflog match.
+    if already_at_target && !force {
+        return detach_head_with_label(repo, oid, force, label);
+    }
+
+    let recurse = RECURSE_SUBMODULES.with(|r| r.get());
+    let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let style = match config
+        .get("merge.conflictstyle")
+        .as_deref()
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("diff3" | "zdiff3") => ConflictStyle::Diff3,
+        _ => ConflictStyle::Merge,
+    };
+    let old_label = match &head {
+        HeadState::Branch { short_name, .. } => short_name.clone(),
+        HeadState::Detached { oid } => {
+            abbreviate_object_id(repo, *oid, 7).unwrap_or_else(|_| oid.to_hex()[..7].to_string())
+        }
+        _ => "ancestor".to_string(),
+    };
+    let presentation = TreeMergeConflictPresentation {
+        label_ours: label,
+        label_theirs: TheirsConflictLabel::Fixed("local"),
+        label_base: old_label.as_str(),
+        style,
+        checkout_merge: true,
+    };
+
+    with_checkout_smudge_context(None, oid.to_string(), || {
+        merge_branch_working_tree(repo, &head, oid, force, presentation, recurse)
+    })?;
+
+    if let HeadState::Detached { oid: old_detached } = head {
+        print_detached_checkout_leave_message(repo, old_detached, *oid)?;
+    }
+
+    let old_oid = old_head_commit.unwrap_or_else(ObjectId::zero);
+    let from_desc = match &head {
+        HeadState::Branch { short_name, .. } => short_name.clone(),
+        HeadState::Detached { oid } => oid.to_hex()[..7].to_string(),
+        HeadState::Invalid => "unknown".to_string(),
+    };
+    let msg = format!("checkout: moving from {} to {}", from_desc, label);
+    write_checkout_reflog(repo, &head, &old_oid, oid, &msg);
+
+    std::fs::write(repo.git_dir.join("HEAD"), format!("{oid}\n"))?;
+    remove_branch_state(&repo.git_dir);
+
+    run_post_checkout_hook(repo, old_head_commit.as_ref(), oid, true)?;
+    print_detached_head_message_inner(
+        repo,
+        oid,
+        matches!(head, HeadState::Detached { .. }),
+        Some(label),
+    )?;
     Ok(())
 }
 
