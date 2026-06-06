@@ -7014,13 +7014,67 @@ fn cherry_pick_for_rebase(
     // "constructed fake ancestor" — matching Git's sequencer / git-am behavior (t6427).
     let conflict_base_label = conflict_ctx.label_base();
 
-    let (mut merged_index, mut merge_conflict_files) = if ws_fix_rule.is_none() {
-        if commit.parents.is_empty() && merge_favor == MergeFavor::Theirs {
-            let mut idx = Index::new();
-            idx.entries = theirs_entries.values().cloned().collect();
-            idx.sort();
-            (idx, Vec::new())
-        } else if commit.parents.is_empty() {
+    // With `--ignore-whitespace`/`--ignore-space-change`, route the content merge through
+    // `three_way_merge_with_content`, which threads `ignore_space_change` into the per-file
+    // 3-way merge (Git's apply backend runs `git am --ignore-whitespace`; the merge backend passes
+    // `--ignore-space-change` to the merge strategy). The tree-merge cherry-pick path does not honor
+    // this flag, so a whitespace-only divergence would spuriously conflict (t3436).
+    let want_ignore_ws_merge = replay_opts.ignore_space_change;
+    let (mut merged_index, mut merge_conflict_files) =
+        if ws_fix_rule.is_none() && !want_ignore_ws_merge {
+            if commit.parents.is_empty() && merge_favor == MergeFavor::Theirs {
+                let mut idx = Index::new();
+                idx.entries = theirs_entries.values().cloned().collect();
+                idx.sort();
+                (idx, Vec::new())
+            } else if commit.parents.is_empty() {
+                let merge_result = three_way_merge_with_content(
+                    repo,
+                    &base_entries,
+                    &ours_entries,
+                    &theirs_entries,
+                    &conflict_ctx,
+                    merge_favor,
+                )?;
+                (merge_result.index, merge_result.conflict_files)
+            } else {
+                let tree_merge = merge_trees_for_single_cherry_pick(
+                    repo,
+                    base_tree_oid,
+                    head_tree_oid,
+                    commit_tree_oid,
+                    commit_oid,
+                    commit.parents.first().ok_or_else(|| {
+                        anyhow::anyhow!("cherry-pick of root commit not supported")
+                    })?,
+                    &head_oid,
+                    merge_favor,
+                    Some(conflict_base_label.as_str()),
+                )?;
+                if tree_merge.has_conflicts && merge_favor == MergeFavor::Theirs {
+                    let mut idx = Index::new();
+                    idx.entries = theirs_entries.values().cloned().collect();
+                    idx.sort();
+                    (idx, Vec::new())
+                } else {
+                    let short = commit_oid.to_hex()[..7].to_string();
+                    let subject = commit.message.lines().next().unwrap_or("");
+                    let from = format!(">>>>>>> {short}\n");
+                    let to = format!(">>>>>>> {short} ({subject})\n");
+                    let cf = tree_merge
+                        .conflict_files
+                        .into_iter()
+                        .map(|(p, c)| {
+                            let content = String::from_utf8(c)
+                                .map(|s| s.replace(&from, &to).into_bytes())
+                                .unwrap_or_else(|e| e.into_bytes());
+                            (p.into_bytes(), content)
+                        })
+                        .collect::<Vec<_>>();
+                    (tree_merge.index, cf)
+                }
+            }
+        } else {
             let merge_result = three_way_merge_with_content(
                 repo,
                 &base_entries,
@@ -7030,60 +7084,16 @@ fn cherry_pick_for_rebase(
                 merge_favor,
             )?;
             (merge_result.index, merge_result.conflict_files)
-        } else {
-            let tree_merge = merge_trees_for_single_cherry_pick(
-                repo,
-                base_tree_oid,
-                head_tree_oid,
-                commit_tree_oid,
-                commit_oid,
-                commit
-                    .parents
-                    .first()
-                    .ok_or_else(|| anyhow::anyhow!("cherry-pick of root commit not supported"))?,
-                &head_oid,
-                merge_favor,
-                Some(conflict_base_label.as_str()),
-            )?;
-            if tree_merge.has_conflicts && merge_favor == MergeFavor::Theirs {
-                let mut idx = Index::new();
-                idx.entries = theirs_entries.values().cloned().collect();
-                idx.sort();
-                (idx, Vec::new())
-            } else {
-                let short = commit_oid.to_hex()[..7].to_string();
-                let subject = commit.message.lines().next().unwrap_or("");
-                let from = format!(">>>>>>> {short}\n");
-                let to = format!(">>>>>>> {short} ({subject})\n");
-                let cf = tree_merge
-                    .conflict_files
-                    .into_iter()
-                    .map(|(p, c)| {
-                        let content = String::from_utf8(c)
-                            .map(|s| s.replace(&from, &to).into_bytes())
-                            .unwrap_or_else(|e| e.into_bytes());
-                        (p.into_bytes(), content)
-                    })
-                    .collect::<Vec<_>>();
-                (tree_merge.index, cf)
-            }
-        }
-    } else {
-        let merge_result = three_way_merge_with_content(
-            repo,
-            &base_entries,
-            &ours_entries,
-            &theirs_entries,
-            &conflict_ctx,
-            merge_favor,
-        )?;
-        (merge_result.index, merge_result.conflict_files)
-    };
+        };
 
     if let Some(rule) = ws_fix_rule {
         apply_ws_fix_to_index(repo, &mut merged_index, rule)?;
     }
-    if merge_conflict_files.is_empty() && ws_fix_rule.is_none() && merge_favor == MergeFavor::None {
+    if merge_conflict_files.is_empty()
+        && ws_fix_rule.is_none()
+        && !want_ignore_ws_merge
+        && merge_favor == MergeFavor::None
+    {
         merge_conflict_files.extend(overlapping_content_changes(
             repo,
             &base_entries,
@@ -7186,13 +7196,6 @@ fn cherry_pick_for_rebase(
                     )
                 });
         if let Err(e) = obstruction {
-            if std::env::var("GRIT_DEBUG_OBSTRUCT").is_ok() {
-                eprintln!(
-                    "DEBUG: obstruction marker written for {} in {}",
-                    commit_oid.to_hex(),
-                    rb_dir.display()
-                );
-            }
             let _ = fs::write(
                 git_dir.join("REBASE_HEAD"),
                 format!("{}\n", commit_oid.to_hex()),
@@ -8112,7 +8115,21 @@ fn do_continue() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("HEAD has no OID"))?
         .to_owned();
 
-    if interactive_continue && matches!(todo_cmd, RebaseTodoCmd::Fixup | RebaseTodoCmd::Squash) {
+    // A fixup/squash that halted on an obstruction (its untracked file would be overwritten) leaves
+    // the worktree equal to HEAD, which otherwise looks like an empty fixup whose change is already
+    // present. Skip the no-op shortcut so the obstructed fixup is re-applied below and recorded for
+    // the post-rewrite hook (t5407 "git rebase with failed pick", whose trailing `fixup I` must map
+    // its old oid to the amended commit). The marker is checked without consuming it here.
+    let fixup_was_obstructed = rb_dir.join("obstructed-pick").exists()
+        && fs::read_to_string(rb_dir.join("obstructed-pick"))
+            .ok()
+            .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
+            .and_then(|hex| ObjectId::from_hex(&hex).ok())
+            .is_some_and(|oid| oid == current_oid);
+    if interactive_continue
+        && matches!(todo_cmd, RebaseTodoCmd::Fixup | RebaseTodoCmd::Squash)
+        && !fixup_was_obstructed
+    {
         let head_tree = commit_tree_oid_for_rebase(&repo, head_oid)?;
         if diff_index_to_tree(&repo.odb, &index, Some(&head_tree), false)
             .map(|diffs| diffs.is_empty())
@@ -8167,9 +8184,6 @@ fn do_continue() -> Result<()> {
         if rebase_obstructed_pick_needs_reapply(&repo, git_dir, &rb_dir, &current_oid)? {
             let next_after_continue =
                 peek_next_rebase_flush_hint(&repo, &todo_lines_continue, 0, interactive_continue);
-            if std::env::var("GRIT_DEBUG_OBSTRUCT").is_ok() {
-                eprintln!("DEBUG: re-pick obstructed {} cmd={:?} final_fixup={} next={:?}", current_oid.to_hex(), todo_cmd, final_fixup, next_after_continue);
-            }
             let _ = fs::remove_file(git_dir.join("REBASE_HEAD"));
             let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
             cherry_pick_for_rebase(
@@ -8454,7 +8468,13 @@ fn do_continue() -> Result<()> {
         let (message, encoding, raw_message) =
             finalize_message_for_commit_encoding(cleaned, &config);
         let author_script_path = rebase_merge_dir(git_dir).join("author-script");
-        let author = if author_script_path.exists() {
+        // The author-script preserves the picked commit's original author identity and date; fall
+        // back to the picked commit's author line when it is absent. Either way, route the raw
+        // author through `rebase_replayed_author_line` so `--reset-author-date` /
+        // `--committer-date-is-author-date` still apply when committing a conflict resolution via
+        // `--continue` (t3436). The committer line derives from the same raw author so
+        // `--committer-date-is-author-date` keeps committer date == author date.
+        let raw_author_for_replay = if author_script_path.exists() {
             match read_rebase_author_script(git_dir) {
                 Ok(line) => line,
                 Err(e) => {
@@ -8464,15 +8484,16 @@ fn do_continue() -> Result<()> {
                 }
             }
         } else {
-            rebase_replayed_author_line(
-                &original_commit.author,
-                replay_opts_continue,
-                now_continue,
-            )?
+            original_commit.author.clone()
         };
+        let author = rebase_replayed_author_line(
+            &raw_author_for_replay,
+            replay_opts_continue,
+            now_continue,
+        )?;
         let committer = rebase_replayed_committer_line(
             &config,
-            &original_commit.author,
+            &raw_author_for_replay,
             replay_opts_continue,
             now_continue,
         )?;
