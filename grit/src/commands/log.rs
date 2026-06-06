@@ -1252,7 +1252,7 @@ fn run_line_log(
         Some(collect_decorations_inner(
             repo,
             decorate_full,
-            args.clear_decorations,
+            decorations_initial_set_all(&args, &repo.git_dir),
             &build_decoration_filter(&args, &repo.git_dir),
         )?)
     };
@@ -2637,7 +2637,7 @@ fn run_rev_list_log(
         Some(collect_decorations_inner(
             repo,
             decorate_full,
-            args.clear_decorations,
+            decorations_initial_set_all(&args, &repo.git_dir),
             &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
@@ -3080,7 +3080,7 @@ fn run_graph_log(
         Some(collect_decorations_inner(
             repo,
             decorate_full_graph,
-            args.clear_decorations,
+            decorations_initial_set_all(&args, &repo.git_dir),
             &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
@@ -5445,7 +5445,7 @@ pub fn run(mut args: Args) -> Result<()> {
         Some(collect_decorations_inner(
             &repo,
             decorate_full,
-            args.clear_decorations,
+            decorations_initial_set_all(&args, &repo.git_dir),
             &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
@@ -5455,7 +5455,7 @@ pub fn run(mut args: Args) -> Result<()> {
         Some(collect_decorations_inner(
             &repo,
             false,
-            args.clear_decorations,
+            decorations_initial_set_all(&args, &repo.git_dir),
             &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
@@ -6248,7 +6248,7 @@ pub fn run_no_walk(
         Some(collect_decorations_inner(
             repo,
             decorate_full,
-            args.clear_decorations,
+            decorations_initial_set_all(&args, &repo.git_dir),
             &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
@@ -11602,6 +11602,23 @@ fn decoration_pattern_matches(pattern: &str, refname: &str) -> bool {
 
 /// Build the decoration filter from command-line args and `log.excludeDecoration`
 /// config.
+/// Whether hidden/auxiliary refs (`refs/hidden/*`, `refs/rewritten/*`, `refs/prefetch/*`, notes,
+/// …) should be decorated. Git starts from the "all" decoration set when either `--clear-decorations`
+/// is given or `log.initialDecorationSet=all` is configured; the default ("short") set hides those
+/// refs. Unlike `--clear-decorations`, `log.initialDecorationSet=all` does *not* drop user/config
+/// exclusions — only the implicit hidden-ref filter — so this is kept separate from
+/// `args.clear_decorations` (which `build_decoration_filter` still uses to skip `log.excludeDecoration`).
+fn decorations_initial_set_all(args: &Args, git_dir: &Path) -> bool {
+    if args.clear_decorations {
+        return true;
+    }
+    ConfigSet::load(Some(git_dir), true)
+        .ok()
+        .and_then(|cfg| cfg.get("log.initialDecorationSet"))
+        .map(|v| v.trim().eq_ignore_ascii_case("all"))
+        .unwrap_or(false)
+}
+
 fn build_decoration_filter(args: &Args, git_dir: &Path) -> DecorationFilter {
     let mut filter = DecorationFilter {
         include: args
@@ -11620,10 +11637,20 @@ fn build_decoration_filter(args: &Args, git_dir: &Path) -> DecorationFilter {
     // hidden-ref exclusions, which grit doesn't apply here anyway).
     if !args.clear_decorations {
         if let Ok(cfg) = ConfigSet::load(Some(git_dir), true) {
-            for value in cfg.get_all("log.excludeDecoration") {
-                let v = value.trim();
-                if !v.is_empty() {
-                    filter.exclude_config.push(normalize_glob_ref(v));
+            for value in cfg.get_all_raw("log.excludeDecoration") {
+                match value {
+                    // A bare `log.excludeDecoration` (no value) is not fatal in Git: the
+                    // decoration setup reports `error: missing value for 'log.excludeDecoration'`
+                    // to stderr (git_config_string -> config_error_nonbool) and skips it.
+                    None => {
+                        eprintln!("error: missing value for 'log.excludeDecoration'");
+                    }
+                    Some(v) => {
+                        let v = v.trim();
+                        if !v.is_empty() {
+                            filter.exclude_config.push(normalize_glob_ref(v));
+                        }
+                    }
                 }
             }
         }
