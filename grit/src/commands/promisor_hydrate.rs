@@ -238,7 +238,15 @@ pub(crate) fn list_promisor_remotes(
     }
 
     if let Some(name) = partial_clone_remote {
-        if seen.insert(name.clone()) {
+        // The `extensions.partialClone` remote is the lazy-fetch fallback, but an explicit
+        // `remote.<name>.promisor = false` opts it out so missing objects are reported as
+        // genuinely absent rather than silently re-fetched (`t5601` "partial clone": after
+        // `remote.origin.promisor=false`, `cat-file -e <reverted-blob>` must fail).
+        let explicitly_disabled = config
+            .get(&format!("remote.{name}.promisor"))
+            .map(|v| v.trim().eq_ignore_ascii_case("false"))
+            .unwrap_or(false);
+        if !explicitly_disabled && seen.insert(name.clone()) {
             if let Some(src) = open_promisor_remote_named(config, git_dir, &name)? {
                 out.push((name, src));
             }
