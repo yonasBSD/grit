@@ -3588,6 +3588,80 @@ fn git_vertical_stripspace(s: &str) -> String {
         .to_string()
 }
 
+/// Byte-level twin of [`git_vertical_stripspace`]: strip leading `\n`/`\r` and any
+/// trailing horizontal/vertical whitespace, operating on raw bytes so that invalid
+/// UTF-8 message payloads (Git stores commit bodies verbatim) survive cleanup.
+fn git_vertical_stripspace_bytes(bytes: &[u8]) -> Vec<u8> {
+    let mut start = 0usize;
+    while start < bytes.len() && matches!(bytes[start], b'\n' | b'\r') {
+        start += 1;
+    }
+    let mut end = bytes.len();
+    while end > start && matches!(bytes[end - 1], b'\n' | b'\r' | b' ' | b'\t') {
+        end -= 1;
+    }
+    bytes[start..end].to_vec()
+}
+
+/// Byte-level twin of [`cleanup_edited_commit_message`]: drop comment lines, trim each
+/// line's trailing whitespace, and collapse runs of blank lines. Operates on raw bytes
+/// so invalid-UTF-8 payloads are preserved.
+fn cleanup_edited_commit_message_bytes(bytes: &[u8], comment_prefix: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut empties = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let line_end = match bytes[i..].iter().position(|&b| b == b'\n') {
+            Some(pos) => i + pos + 1,
+            None => bytes.len(),
+        };
+        let line = &bytes[i..line_end];
+        i = line_end;
+
+        if !comment_prefix.is_empty() && line.starts_with(comment_prefix) {
+            continue;
+        }
+        let mut content_len = line.len();
+        while content_len > 0 && line[content_len - 1].is_ascii_whitespace() {
+            content_len -= 1;
+        }
+        if content_len > 0 {
+            if empties > 0 && !out.is_empty() {
+                out.push(b'\n');
+            }
+            empties = 0;
+            out.extend_from_slice(&line[..content_len]);
+            out.push(b'\n');
+        } else {
+            empties += 1;
+        }
+    }
+    out
+}
+
+/// Apply `mode`'s cleanup to a raw (possibly non-UTF-8) message body and return the
+/// bytes Git would store, with a single trailing newline when non-empty. Mirrors
+/// [`apply_cleanup_message`] for the non-`Scissors`/non-verbose cases that `-m`/`-F`
+/// take. The caller only routes non-UTF-8 payloads here, so scissors/verbose (which
+/// require text scanning) never apply.
+fn cleanup_message_bytes(
+    bytes: &[u8],
+    comment_prefix: &[u8],
+    mode: CommitMsgCleanupMode,
+) -> Vec<u8> {
+    let mut cleaned = match mode {
+        CommitMsgCleanupMode::None => bytes.to_vec(),
+        CommitMsgCleanupMode::All => cleanup_edited_commit_message_bytes(bytes, comment_prefix),
+        CommitMsgCleanupMode::Space | CommitMsgCleanupMode::Scissors => {
+            git_vertical_stripspace_bytes(bytes)
+        }
+    };
+    if !cleaned.is_empty() && !cleaned.ends_with(b"\n") {
+        cleaned.push(b'\n');
+    }
+    cleaned
+}
+
 fn rest_is_empty_signedoff_only(s: &str, start: usize) -> bool {
     const SOB: &str = "Signed-off-by:";
     let rest = s.get(start..).unwrap_or("");
@@ -4332,9 +4406,33 @@ fn prepare_commit_message(
         }
         let no_editor_cleanup = resolve_commit_cleanup_mode(args, config, false);
         let cleaned = apply_cleanup_message(&msg, 0, comment_prefix, no_editor_cleanup);
+        // Git stores the commit body verbatim and never transcodes it. When the raw
+        // `-m` argv bytes are not valid UTF-8 (e.g. an unknown `i18n.commitEncoding`),
+        // preserve them by cleaning the raw bytes and routing them through `raw_bytes`.
+        let raw_bytes = if args.raw_messages.len() == args.message.len()
+            && args
+                .raw_messages
+                .iter()
+                .any(|m| std::str::from_utf8(m).is_err())
+        {
+            let mut joined: Vec<u8> = Vec::new();
+            for (idx, m) in args.raw_messages.iter().enumerate() {
+                if idx > 0 {
+                    joined.extend_from_slice(b"\n\n");
+                }
+                joined.extend_from_slice(m);
+            }
+            Some(cleanup_message_bytes(
+                &joined,
+                comment_prefix.as_bytes(),
+                no_editor_cleanup,
+            ))
+        } else {
+            None
+        };
         return Ok(MessageResult {
             message: ensure_trailing_newline(&cleaned),
-            raw_bytes: None,
+            raw_bytes,
             from_merge_msg: false,
         });
     }
@@ -4375,9 +4473,20 @@ fn prepare_commit_message(
             return raw_to_message_result(raw);
         }
         let cleaned = apply_cleanup_message(&text, 0, comment_prefix, cleanup_mode);
+        // Preserve verbatim bytes (Git never transcodes the body) when the `-F` file
+        // content is not valid UTF-8; apply the same cleanup at the byte level.
+        let raw_bytes = if std::str::from_utf8(&raw).is_err() {
+            Some(cleanup_message_bytes(
+                &raw,
+                comment_prefix.as_bytes(),
+                cleanup_mode,
+            ))
+        } else {
+            None
+        };
         return Ok(MessageResult {
             message: ensure_trailing_newline(&cleaned),
-            raw_bytes: None,
+            raw_bytes,
             from_merge_msg: false,
         });
     }
