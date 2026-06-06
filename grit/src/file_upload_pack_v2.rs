@@ -361,10 +361,12 @@ pub(crate) fn v2_fetch_supports_sideband_all(caps: &[String]) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_v2_fetch_request(
     stdin: &mut impl Write,
     object_format: &str,
     wants: &[ObjectId],
+    haves: &[ObjectId],
     sideband_all: bool,
     include_tag: bool,
     deepen_relative: bool,
@@ -464,6 +466,16 @@ pub(crate) fn write_v2_fetch_request(
     for exclude in shallow_exclude {
         let line = format!("deepen-not {exclude}");
         trace_packet_git('>', &line);
+        pkt_line::write_line(stdin, &line)?;
+    }
+    // Send the locally-available tips as `have` lines so the server can build a thin pack and so a
+    // bundle-uri clone advertises the bundle tips during negotiation (t5558 `negotiation:` cases).
+    // We send them all in this single round and immediately follow with `done`, so the server skips
+    // the `acknowledgments` exchange and streams the pack directly.
+    for h in haves {
+        let line = format!("have {}", h.to_hex());
+        trace_packet_git('>', line.trim_end());
+        wire_trace::trace_packet_upload_pack('<', line.trim_end());
         pkt_line::write_line(stdin, &line)?;
     }
     trace_packet_git('>', "done");
@@ -711,6 +723,7 @@ pub(crate) fn clone_preflight_file_v2_if_needed(
         &mut stdin,
         &default_hash,
         &wants,
+        &[],
         fetch_supports_sideband_all,
         true,
         false,

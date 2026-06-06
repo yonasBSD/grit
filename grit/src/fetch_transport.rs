@@ -64,6 +64,70 @@ fn peel_commit_oid_for_negotiation(repo: &Repository, oid: ObjectId) -> Result<O
     })
 }
 
+/// Collect the local tips usable as `have` lines for a v2 fetch negotiation: refs under
+/// `refs/bundles/` (applied by `--bundle-uri`), `refs/heads/`, `refs/tags/`, and `HEAD`. Each tip
+/// is peeled to a commit and kept only if its object is present locally; `wants` are excluded.
+///
+/// When `negotiation_tip_oids` is `Some`, the haves are restricted to those tips (matching the
+/// `--negotiation-tip` semantics applied by the v1 negotiation path) so that
+/// `git fetch --negotiation-tip=...` limits the advertised `have` lines. Returns a deterministic,
+/// deduplicated list.
+fn local_negotiation_haves(
+    local_git_dir: &Path,
+    wants: &[ObjectId],
+    negotiation_tip_oids: Option<&[ObjectId]>,
+) -> Vec<ObjectId> {
+    let Ok(repo) = Repository::open(local_git_dir, None) else {
+        return Vec::new();
+    };
+    let want_set: HashSet<ObjectId> = wants.iter().copied().collect();
+
+    // `--negotiation-tip`: restrict the `have` set to the peeled tip commits the caller named.
+    let tip_filter: Option<HashSet<ObjectId>> = negotiation_tip_oids.map(|tips| {
+        tips.iter()
+            .filter_map(|tip| peel_commit_oid_for_negotiation(&repo, *tip).ok().flatten())
+            .collect()
+    });
+
+    let mut haves: Vec<ObjectId> = Vec::new();
+    let mut seen: HashSet<ObjectId> = HashSet::new();
+
+    let consider = |oid: ObjectId, haves: &mut Vec<ObjectId>, seen: &mut HashSet<ObjectId>| {
+        if repo.odb.read(&oid).is_err() {
+            return;
+        }
+        let Ok(Some(peeled)) = peel_commit_oid_for_negotiation(&repo, oid) else {
+            return;
+        };
+        if want_set.contains(&peeled) {
+            return;
+        }
+        if tip_filter
+            .as_ref()
+            .is_some_and(|filter| !filter.contains(&peeled))
+        {
+            return;
+        }
+        if seen.insert(peeled) {
+            haves.push(peeled);
+        }
+    };
+
+    for prefix in ["refs/bundles/", "refs/heads/", "refs/tags/"] {
+        if let Ok(entries) = refs::list_refs(local_git_dir, prefix) {
+            for (name, oid) in entries {
+                let tip = resolve_revision(&repo, &name).unwrap_or(oid);
+                consider(tip, &mut haves, &mut seen);
+            }
+        }
+    }
+    if let Ok(h) = refs::resolve_ref(local_git_dir, "HEAD") {
+        consider(h, &mut haves, &mut seen);
+    }
+
+    haves
+}
+
 /// Split a simple upload-pack command string into leading `VAR=value` tokens (shell-style, no
 /// quotes) and the remainder. Used when rewriting `… git-upload-pack` to `grit upload-pack` so
 /// tests like `GIT_TEST_ASSUME_DIFFERENT_OWNER=true git-upload-pack` keep their environment
@@ -1193,10 +1257,27 @@ pub fn fetch_via_upload_pack_skipping(
             } else {
                 (Vec::new(), None, false, None, &[][..], false)
             };
+        // Advertise locally-available tips (bundle refs applied via `--bundle-uri`, plus existing
+        // heads/tags/HEAD) as `have` lines so the server can build a thin pack and skip objects we
+        // already obtained from the bundle (t5558 `negotiation:` cases require the bundle tip to be
+        // sent as `have`). Skipped during a shallow/deepening request, where the local objects do
+        // not form a usable negotiation base. Note `shallow_options` is `Some` for every clone, so
+        // gate on an actual shallow/deepen request rather than its presence.
+        let shallow_request = depth.is_some()
+            || shallow_since.is_some()
+            || !shallow_exclude.is_empty()
+            || unshallow
+            || !shallow_oids.is_empty();
+        let haves: Vec<ObjectId> = if shallow_request {
+            Vec::new()
+        } else {
+            local_negotiation_haves(local_git_dir, &wants, negotiation_tip_oids)
+        };
         write_v2_fetch_request(
             &mut stdin,
             &default_hash,
             &wants,
+            &haves,
             sideband_all,
             include_tag,
             deepen_relative,
@@ -1651,6 +1732,7 @@ fn fetch_upload_pack_negotiate_pack_bytes(
             &mut stdin,
             &default_hash,
             wants,
+            &[],
             sideband_all,
             false,
             false,
@@ -2201,6 +2283,7 @@ pub fn fetch_via_git_protocol_skipping(
             &mut stream_w,
             &default_hash,
             &wants,
+            &[],
             false,
             true,
             false,
@@ -2322,6 +2405,7 @@ pub fn fetch_via_ssh_upload_pack_skipping(
             &mut stdin,
             &default_hash,
             &wants,
+            &[],
             false,
             true,
             false,
