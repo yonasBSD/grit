@@ -487,16 +487,36 @@ pub(crate) fn run_add_patch_with_reader(
                             accepted.resize(n, false);
                             continue 'hunk_loop;
                         }
-                        'e' => match edit_worktree_via_editor(&cur_work) {
-                            Ok(edited) => {
-                                cur_work = edited;
-                                continue 'rediff;
+                        'e' => {
+                            match edit_hunk_and_apply(
+                                &mut out,
+                                path_str.as_str(),
+                                &index_side_bytes,
+                                &cur_work,
+                                &ops[s..e],
+                                context,
+                            ) {
+                                Ok(Some(new_work)) => {
+                                    // Git marks the edited hunk for staging (`hunk->use = USE_HUNK`)
+                                    // and advances (`goto soft_increment`). We adopt the edited
+                                    // content as the new staged worktree side and accept this hunk
+                                    // so the end-of-file blend stages it.
+                                    cur_work = new_work;
+                                    accepted[hunk_cursor] = true;
+                                    hunk_cursor += 1;
+                                    continue 'hunk_loop;
+                                }
+                                Ok(None) => {
+                                    // Editor aborted (no change) or empty edit: leave hunk as-is.
+                                    render = false;
+                                    continue 'hunk_loop;
+                                }
+                                Err(_) => {
+                                    render = false;
+                                    continue 'hunk_loop;
+                                }
                             }
-                            Err(_) => {
-                                render = false;
-                                continue 'hunk_loop;
-                            }
-                        },
+                        }
                         '?' => {
                             writeln!(
                                 out,
@@ -723,9 +743,24 @@ fn write_index_blob_and_mode(
 ) -> Result<()> {
     let oid = odb.write(ObjectKind::Blob, blob_data)?;
     let meta = fs::symlink_metadata(abs_path).ok();
+    // Whether the staged blob equals the current worktree bytes. When a partial hunk (or an edited
+    // hunk) stages content that differs from the worktree, the index entry's stat must NOT claim to
+    // match the worktree — otherwise `git diff` (diff-files) takes the stat fast-path and reports
+    // the path clean even though the staged blob differs (t3701 "real edit works").
+    let worktree_bytes = fs::read(abs_path).ok();
+    let blob_matches_worktree = worktree_bytes.as_deref() == Some(blob_data);
     let mut new_ent = if let Some(m) = meta.as_ref() {
         let mut e = entry_from_metadata(m, path_str.as_bytes(), oid, mode);
         e.mode = mode;
+        if !blob_matches_worktree {
+            // Record the blob's true size and drop the worktree mtime so diff-files re-hashes and
+            // sees the difference (Git leaves such entries stat-dirty).
+            e.size = blob_data.len() as u32;
+            e.mtime_sec = 0;
+            e.mtime_nsec = 0;
+            e.ctime_sec = 0;
+            e.ctime_nsec = 0;
+        }
         e
     } else {
         IndexEntry {
@@ -775,18 +810,20 @@ fn emit_index_trace_region(label: &str) {
     }
 }
 
-fn edit_worktree_via_editor(content: &[u8]) -> Result<Vec<u8>> {
+/// Open `content` in the user's editor (`GIT_EDITOR`/`VISUAL`/`EDITOR`), returning the edited bytes.
+fn run_editor_on_text(content: &[u8]) -> Result<Vec<u8>> {
     use std::io::Write;
     let mut f = tempfile::NamedTempFile::new().context("temp file for add -p edit")?;
     f.as_file_mut().write_all(content)?;
     f.flush()?;
     let path = f.path().to_owned();
-    let editor = std::env::var("VISUAL")
+    let editor = std::env::var("GIT_EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".to_string());
     let status = std::process::Command::new("sh")
         .arg("-c")
-        .arg(format!("{} \"$1\"", editor))
+        .arg(format!("{editor} \"$1\""))
         .arg("sh")
         .arg(&path)
         .status()
@@ -795,4 +832,182 @@ fn edit_worktree_via_editor(content: &[u8]) -> Result<Vec<u8>> {
         bail!("editor failed");
     }
     fs::read(&path).context("reading edited file")
+}
+
+/// Compute the inclusive index(old)-side line span `[old_start, old_end)` covered by `op_slice`.
+fn index_span(op_slice: &[similar::DiffOp]) -> (usize, usize) {
+    let mut start = usize::MAX;
+    let mut end = 0usize;
+    for op in op_slice {
+        let (s, e) = match *op {
+            similar::DiffOp::Equal { old_index, len, .. } => (old_index, old_index + len),
+            similar::DiffOp::Delete {
+                old_index, old_len, ..
+            } => (old_index, old_index + old_len),
+            similar::DiffOp::Insert { old_index, .. } => (old_index, old_index),
+            similar::DiffOp::Replace {
+                old_index, old_len, ..
+            } => (old_index, old_index + old_len),
+        };
+        start = start.min(s);
+        end = end.max(e);
+    }
+    if start == usize::MAX {
+        (0, 0)
+    } else {
+        (start, end)
+    }
+}
+
+/// Manually edit the current hunk (the `e` command), mirroring `edit_hunk_manually` +
+/// `recount_edited_hunk` + apply-check in `add-patch.c`.
+///
+/// Renders the hunk body with a commented quick-guide, runs the editor, strips comment lines,
+/// then applies the edited hunk to the index-side content at this hunk's location to produce the
+/// new full worktree content. If the edited hunk's context/removed lines do not match the index
+/// content, prints `error: patch failed` / `hunk does not apply` (matching `git apply`) and
+/// returns `Ok(None)`.
+///
+/// # Returns
+/// - `Ok(Some(new_work))` — the new worktree-side content after applying the edited hunk.
+/// - `Ok(None)` — the edit was abandoned/empty or did not apply (hunk left unchanged).
+///
+/// # Errors
+/// Propagates editor/IO failures.
+fn edit_hunk_and_apply(
+    out: &mut impl Write,
+    path: &str,
+    index_bytes: &[u8],
+    work_bytes: &[u8],
+    op_slice: &[similar::DiffOp],
+    context: usize,
+) -> Result<Option<Vec<u8>>> {
+    // The body to present is the hunk text (header + ` `/`+`/`-` lines), as displayed.
+    let hunk_text =
+        partial_unified_for_op_range(path, index_bytes, work_bytes, op_slice, context, true);
+
+    // Comment guide, matching add-patch.c. Comment char defaults to '#'.
+    let mut buf = String::new();
+    buf.push_str("# Manual hunk edit mode -- see bottom for a quick guide.\n");
+    buf.push_str(&hunk_text);
+    buf.push_str("# ---\n");
+    buf.push_str("# To remove '-' lines, make them ' ' lines (context).\n");
+    buf.push_str("# To remove '+' lines, delete them.\n");
+    buf.push_str("# Lines starting with # will be removed.\n");
+    buf.push_str(
+        "# If it does not apply cleanly, you will be given an opportunity to\n\
+         # edit again.  If all lines of the hunk are removed, then the edit is\n\
+         # aborted and the hunk is left unchanged.\n",
+    );
+
+    let edited = run_editor_on_text(buf.as_bytes())?;
+    let edited = String::from_utf8_lossy(&edited).into_owned();
+
+    // Strip comment lines.
+    let body: Vec<&str> = edited.lines().filter(|l| !l.starts_with('#')).collect();
+
+    // Drop the @@ header line(s); keep ` `/`+`/`-`/`\` body lines.
+    let mut old_lines: Vec<String> = Vec::new();
+    let mut new_lines: Vec<String> = Vec::new();
+    let mut saw_body = false;
+    for line in &body {
+        if line.starts_with("@@") {
+            saw_body = true;
+            continue;
+        }
+        if !saw_body {
+            // Lines before the header (shouldn't happen) are ignored.
+            continue;
+        }
+        if line.starts_with('\\') {
+            continue; // "\ No newline at end of file"
+        }
+        let (marker, rest) = match line.chars().next() {
+            Some(c @ (' ' | '+' | '-')) => (c, &line[1..]),
+            // A line with no leading marker is treated as context (Git strips a single space).
+            _ => (' ', *line),
+        };
+        match marker {
+            ' ' => {
+                old_lines.push(rest.to_string());
+                new_lines.push(rest.to_string());
+            }
+            '-' => old_lines.push(rest.to_string()),
+            '+' => new_lines.push(rest.to_string()),
+            _ => {}
+        }
+    }
+
+    if old_lines.is_empty() && new_lines.is_empty() {
+        // All lines removed: abandon the edit.
+        return Ok(None);
+    }
+
+    // Apply positionally, like `git apply`: locate where the edited hunk's old side
+    // (context + removed lines) matches a contiguous run of the index content, preferring the
+    // original hunk position, then splice the new side (context + added) in its place.
+    let (orig_old_start, _orig_old_end) = index_span(op_slice);
+    let index_str = String::from_utf8_lossy(index_bytes);
+    let index_lines: Vec<&str> = index_str.lines().collect();
+
+    let match_at = locate_hunk(&index_lines, &old_lines, orig_old_start);
+    let Some(pos) = match_at else {
+        writeln!(out, "error: patch failed: {path}:{}", orig_old_start + 1).ok();
+        writeln!(out, "error: {path}: patch does not apply").ok();
+        writeln!(
+            out,
+            "Your edited hunk does not apply. Edit again (saying \"no\" discards!) [y/n]? "
+        )
+        .ok();
+        return Ok(None);
+    };
+
+    let trailing_newline = work_bytes.ends_with(b"\n") || index_bytes.ends_with(b"\n");
+    let mut result_lines: Vec<String> = Vec::new();
+    result_lines.extend(index_lines[..pos].iter().map(|s| s.to_string()));
+    result_lines.extend(new_lines.iter().cloned());
+    result_lines.extend(
+        index_lines[(pos + old_lines.len()).min(index_lines.len())..]
+            .iter()
+            .map(|s| s.to_string()),
+    );
+
+    let mut new_content = result_lines.join("\n");
+    if trailing_newline && !new_content.is_empty() {
+        new_content.push('\n');
+    }
+    Ok(Some(new_content.into_bytes()))
+}
+
+/// Find the line index in `haystack` where `needle` matches contiguously, preferring `hint` then
+/// scanning outward (the position-then-fuzz search `git apply` performs). Returns `None` if no
+/// match exists. An empty `needle` (pure insertion) matches at `hint` (clamped).
+fn locate_hunk(haystack: &[&str], needle: &[String], hint: usize) -> Option<usize> {
+    let n = needle.len();
+    if n == 0 {
+        return Some(hint.min(haystack.len()));
+    }
+    if n > haystack.len() {
+        return None;
+    }
+    let matches_at = |p: usize| {
+        haystack[p..p + n]
+            .iter()
+            .zip(needle)
+            .all(|(a, b)| *a == b.as_str())
+    };
+    let last = haystack.len() - n;
+    let start = hint.min(last);
+    // Search forward then backward from the hint.
+    for p in start..=last {
+        if matches_at(p) {
+            return Some(p);
+        }
+    }
+    for p in (0..start).rev() {
+        if matches_at(p) {
+            return Some(p);
+        }
+    }
+    None
 }
