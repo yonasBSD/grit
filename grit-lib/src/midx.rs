@@ -374,6 +374,34 @@ fn clear_stale_split_layers(pack_dir: &Path, keep: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Remove every incremental MIDX layer file (`multi-pack-index-<hash>.midx`,
+/// `.bitmap`, `.rev`) from `multi-pack-index.d/` and unlink the chain file, but
+/// leave the (now empty) directory in place.
+///
+/// This mirrors git's `clear_incremental_midx_files_ext` plus the chain unlink in
+/// `clear_midx_files` for a non-incremental write: git iterates the directory and
+/// `unlink`s the matching files individually and never `rmdir`s the directory, so
+/// a single-file MIDX write leaves an empty `multi-pack-index.d/` behind rather
+/// than removing it (see t5334 "convert incremental to non-incremental").
+fn clear_incremental_midx_files(pack_dir: &Path) -> Result<()> {
+    let midx_d = midx_d_dir(pack_dir);
+    // Unlink the chain file regardless of whether other entries remain.
+    let _ = fs::remove_file(chain_file_path(pack_dir));
+    if !midx_d.exists() {
+        return Ok(());
+    }
+    for ent in fs::read_dir(&midx_d).map_err(Error::Io)? {
+        let ent = ent.map_err(Error::Io)?;
+        let name = ent.file_name().to_string_lossy().to_string();
+        if name.starts_with("multi-pack-index-")
+            && (name.ends_with(".midx") || name.ends_with(".bitmap") || name.ends_with(".rev"))
+        {
+            let _ = fs::remove_file(ent.path());
+        }
+    }
+    Ok(())
+}
+
 fn pack_mtime_for_midx(idx: &PackIndex) -> std::time::SystemTime {
     fs::metadata(&idx.pack_path)
         .and_then(|m| m.modified())
@@ -2283,8 +2311,11 @@ pub fn write_multi_pack_index_with_options(
             }
         }
     } else {
-        // A non-incremental write replaces any prior split layout entirely; Git
-        // leaves no `multi-pack-index.d/` directory behind for a single-file MIDX.
+        // A non-incremental write replaces any prior split layout. Git removes the
+        // individual incremental layer files inside `multi-pack-index.d/` and
+        // unlinks the chain file, but never `rmdir`s the directory itself, so an
+        // empty `multi-pack-index.d/` is left behind (t5334 expects
+        // `test_dir_is_empty $midxdir` after the conversion).
         let dest = pack_dir.join("multi-pack-index");
 
         // Git's `midx_needs_update`: if the new MIDX is byte-identical to the one
@@ -2292,7 +2323,10 @@ pub fn write_multi_pack_index_with_options(
         // untouched so its mtime is preserved (t5319 `test_midx_is_retained`).
         let bitmap_path = pack_dir.join(format!("multi-pack-index-{hash_hex}.bitmap"));
         let bitmap_ok = !opts.write_bitmap_placeholders || bitmap_path.exists();
-        if bitmap_ok && !midx_d_dir(pack_dir).exists() {
+        // Only short-circuit when there is no active incremental chain to collapse;
+        // an empty leftover `multi-pack-index.d/` (from a prior conversion) must not
+        // defeat the retention optimization, so key off the chain file, not the dir.
+        if bitmap_ok && !chain_file_path(pack_dir).exists() {
             if let Ok(existing) = fs::read(&dest) {
                 if existing == out {
                     return Ok(());
@@ -2300,11 +2334,7 @@ pub fn write_multi_pack_index_with_options(
             }
         }
 
-        let midx_d = midx_d_dir(pack_dir);
-        if midx_d.exists() {
-            let _ = fs::remove_dir_all(&midx_d);
-        }
-        let _ = fs::remove_file(chain_file_path(pack_dir));
+        clear_incremental_midx_files(pack_dir)?;
 
         fs::write(&dest, &out).map_err(Error::Io)?;
 
