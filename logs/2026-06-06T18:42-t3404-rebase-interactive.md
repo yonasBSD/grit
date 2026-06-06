@@ -95,6 +95,27 @@ Still failing 85 (core.commentchar=auto): needs git's multi-line Git-3.0 depreca
 (`Support for 'core.commentChar=auto' is deprecated...` + the scope-aware `git config unset/set`
 advice block). Niche, single test, skipped for now.
 
+## Fix 5: --root fixup/squash produces a true root commit
+
+When a fixup/squash amends the rebased root commit, the result must itself be a root commit (no
+parent). `cherry_pick_for_rebase` now computes `amend_parents` = empty when the HEAD being amended
+has no parents (or its sole parent is the `--root` squash-onto sentinel), instead of
+`vec![amend_parent]`. Verified in isolation (t3404 76 "rebase -i --root fixup root commit": parent
+count now 0).
+
+## Fix 6: --root sentinel HEAD on first-pick conflict (UNBLOCKED 75/76/77 + cascade)
+
+When the FIRST pick of a `--root` rebase conflicts while HEAD is still unborn, grit left HEAD UNBORN
+(zero) so `git cat-file commit HEAD` -> `fatal: Not a valid object name HEAD` and `git rebase --abort`
+failed, corrupting state for 76/77 downstream. Fix: in `cherry_pick_for_rebase`'s conflict path, when
+`head_at_empty_tree && root_rebase`, materialize + check out `ensure_squash_onto_fake_root` (empty-tree
+root commit) as HEAD before bailing. Combined with Fix 5 (amend drops the sentinel/empty parent), this
+made 75, 76, 77 pass without breaking 73/74/78. Full run 83 -> 87.
+
+Still failing in this cluster: 79, 80 (`--root` when root has an UNTRACKED FILE conflict — a
+different halt path; the untracked-overwrite obstruction during a root pick needs the same sentinel
+HEAD treatment).
+
 ## KEY: full-run vs isolation divergence
 Many tests pass with `--run=1,N` but fail in the full sequential run because an EARLIER
 failing test leaves a rebase-in-progress / wrong branch. `/tmp/run3404.sh` replicates the

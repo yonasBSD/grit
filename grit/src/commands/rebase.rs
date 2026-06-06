@@ -7823,6 +7823,15 @@ fn cherry_pick_for_rebase(
     }
 
     if has_conflicts {
+        // A `--root` rebase whose first pick conflicts while HEAD is still unborn must leave HEAD at
+        // the squash-onto sentinel (an empty-tree root commit), so `git cat-file commit HEAD` and
+        // `git rebase --abort` work during the halt (t3404 "rebase -i --root temporary sentinel
+        // commit"). Without this, HEAD stays unborn and those commands fail.
+        if head_at_empty_tree && root_rebase {
+            if let Ok(sentinel) = ensure_squash_onto_fake_root(repo, git_dir, rb_dir) {
+                let _ = fs::write(git_dir.join("HEAD"), format!("{}\n", sentinel.to_hex()));
+            }
+        }
         let _ = grit_lib::rerere::repo_rerere(repo, load_rebase_rerere_autoupdate(rb_dir));
         let _ = write_rebase_patch_file(repo, rb_dir, commit_oid);
         let _ = fs::write(
@@ -7846,6 +7855,20 @@ fn cherry_pick_for_rebase(
         let head_obj = repo.odb.read(&head_oid)?;
         let hc = parse_commit(&head_obj.data)?;
         let amend_parent = hc.parents.first().copied().unwrap_or(head_oid);
+        // When the commit being amended is the rebased root, the fixup/squash result must itself be a
+        // root commit with no parent. The root being amended is HEAD with no parents, or HEAD whose
+        // sole parent is the `--root` squash-onto sentinel (t3404 "rebase -i --root fixup root
+        // commit").
+        let squash_onto = fs::read_to_string(rb_dir.join("squash-onto"))
+            .ok()
+            .and_then(|s| ObjectId::from_hex(s.trim()).ok());
+        let amend_parents: Vec<ObjectId> = if hc.parents.is_empty()
+            || (hc.parents.len() == 1 && squash_onto == Some(amend_parent))
+        {
+            Vec::new()
+        } else {
+            vec![amend_parent]
+        };
 
         if todo_cmd == RebaseTodoCmd::Fixup && !final_fixup {
             // `message-fixup` holds the non-comment message Git would pass for intermediate
@@ -7865,7 +7888,7 @@ fn cherry_pick_for_rebase(
                 git_dir,
                 &merged_index,
                 &config,
-                vec![amend_parent],
+                amend_parents.clone(),
                 &hc.author,
                 cleaned,
                 replay_opts,
@@ -7885,7 +7908,7 @@ fn cherry_pick_for_rebase(
                 git_dir,
                 &merged_index,
                 &config,
-                vec![amend_parent],
+                amend_parents.clone(),
                 &hc.author,
                 cleaned,
                 replay_opts,
@@ -7922,7 +7945,7 @@ fn cherry_pick_for_rebase(
                 git_dir,
                 &merged_index,
                 &config,
-                vec![amend_parent],
+                amend_parents.clone(),
                 &hc.author,
                 cleaned,
                 replay_opts,
@@ -7958,7 +7981,7 @@ fn cherry_pick_for_rebase(
             git_dir,
             &merged_index,
             &config,
-            vec![amend_parent],
+            amend_parents.clone(),
             &hc.author,
             cleaned,
             replay_opts,
