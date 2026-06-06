@@ -1533,7 +1533,11 @@ pub fn http_fetch_pack(
                 Some(pkt_line::Packet::Data(s)) => s,
                 Some(other) => bail!("unexpected fetch response: {other:?}"),
             };
-            if pkt == "acknowledgments" {
+            if let Some(msg) = pkt.strip_prefix("ERR ") {
+                // Server rejected the request (e.g. `not our ref` when the advertised ref changed
+                // mid-negotiation). Surface it as `fatal: remote error: <msg>` (t5703).
+                bail!("fatal: remote error: {}", msg.trim_end());
+            } else if pkt == "acknowledgments" {
                 skip_to_flush(&mut cur)?;
             } else if pkt == "shallow-info" {
                 let (shallow, unshallow) = read_shallow_info_section(&mut cur)?;
@@ -1571,7 +1575,9 @@ pub fn http_fetch_pack(
             Some(pkt_line::Packet::Data(s)) => s,
             Some(other) => bail!("unexpected fetch response: {other:?}"),
         };
-        if pkt == "acknowledgments" {
+        if let Some(msg) = pkt.strip_prefix("ERR ") {
+            bail!("fatal: remote error: {}", msg.trim_end());
+        } else if pkt == "acknowledgments" {
             skip_to_flush(&mut cur)?;
         } else if pkt == "shallow-info" {
             let (shallow, unshallow) = read_shallow_info_section(&mut cur)?;

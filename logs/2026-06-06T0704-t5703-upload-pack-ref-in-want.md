@@ -69,12 +69,28 @@ t5516 106/124, t5552 6, t5616 46. grit-lib lib tests: only the 2 pre-existing
 `ignore::gitignore_glob_tests` failures (another agent's area; I touched no
 gitignore code).
 
-## Remaining 4 (22, 23, 25, 26) — smart-HTTP, PERL_TEST_HELPERS
+## smart-HTTP server validation + ERR propagation — now 23/26 (22 fixed)
 
-These run over the test httpd `one_time_script` (stateless-RPC) and simulate the
-server's advertised ref changing mid-negotiation. They need the same want-ref +
-multi-round negotiation in grit's **smart-HTTP** client (grit/src/http_smart.rs),
-plus "not our ref" / "unknown ref refs/heads/rain" error propagation. Currently
-`git fetch` over HTTP succeeds where it must fail (test 22). That is a separate,
-larger HTTP-transport implementation than the `file://` subprocess path fixed
-here; deferred.
+- serve_v2.rs `cmd_fetch`: validate every `want <oid>` before serving (mirrors
+  `upload-pack.c parse_want`/`check_non_tip`). Unknown/forbidden OID -> emit
+  `ERR upload-pack: not our ref <oid>` and exit 128. Honors
+  `uploadpack.allow{Tip,Reachable,Any}SHA1InWant`. Added helpers
+  `serve_our_ref_oids`, `serve_is_reachable_from_our_refs`,
+  `serve_reject_not_our_ref`. This is what makes test 22 (server changed the
+  advertised main OID under the client) fail correctly.
+- Client ERR propagation: http_smart.rs v2 response loops and fetch_transport.rs
+  `read_v2_fetch_pack_response`/`read_v2_acknowledgments` now detect an `ERR `
+  pkt-line and `bail!("fatal: remote error: <msg>")`, which main.rs prints as
+  `fatal: remote error: ...` (test greps exactly that).
+
+Regression re-check (unchanged): t5510 215, t5601 112, t5616 46.
+
+## Remaining 3 (23, 25, 26) — smart-HTTP want-ref
+
+All have `uploadpack.allowRefInWant true` and need grit's **smart-HTTP** v2 client
+(http_smart.rs `http_fetch_pack`) to send `want-ref <name>` and consume the
+`wanted-refs` section, so the ref re-resolves against the (changed) server state
+mid-negotiation (23, 25) and an `unknown ref refs/heads/rain` is surfaced (26).
+The HTTP client currently only sends `want <oid>` from its own ls-refs snapshot.
+Adding want-ref there is the same shape as the `file://` fix already landed but in
+the stateless-RPC HTTP path; not yet done.

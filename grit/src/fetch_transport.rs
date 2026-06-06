@@ -1224,6 +1224,10 @@ fn read_v2_fetch_pack_response(stdout: &mut impl Read, out: &mut Vec<u8>) -> Res
             Some(other) => bail!("unexpected v2 fetch response: {other:?}"),
         };
         trace_packet_fetch('<', hdr.trim_end());
+        if let Some(msg) = hdr.strip_prefix("ERR ") {
+            // Server rejected the request (e.g. `not our ref`). Surface as `fatal: remote error:`.
+            bail!("fatal: remote error: {}", msg.trim_end());
+        }
         match hdr.as_str() {
             "acknowledgments" | "wanted-refs" | "shallow-info" | "packfile-uris" => {
                 skip_v2_section_until_boundary(stdout)?;
@@ -1269,6 +1273,9 @@ fn read_v2_acknowledgments(stdout: &mut impl Read) -> Result<Option<V2AckRound>>
         Some(other) => bail!("unexpected v2 fetch response: {other:?}"),
     };
     trace_packet_fetch('<', hdr.trim_end());
+    if let Some(msg) = hdr.strip_prefix("ERR ") {
+        bail!("fatal: remote error: {}", msg.trim_end());
+    }
     if hdr != "acknowledgments" {
         // Not an acknowledgments section (server went straight to pack / shallow / wanted-refs).
         // Signal the caller to handle this header itself.
