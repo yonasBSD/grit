@@ -136,6 +136,16 @@ into the todo AFTER autosquash (`todo_list_add_exec_commands`), so the exec land
 FIX NEEDED: switch from the `exec`-file global runner to inserting `exec <cmd>` todo lines after each
 pick post-autosquash (would also align 107 abbreviateCommands+exec).
 
+## Fix 9: core.abbrev in todo commit IDs
+
+`format_rebase_todo_line` now passes `rebase_core_abbrev_len(config)` (from `core.abbrev`) as the
+minimum abbreviation length to `abbreviate_object_id` (which still extends further on collision)
+instead of a hardcoded 7. Fixed t3404 92/93 (full run 90 -> 92).
+
+Still failing 91 (short commit ID collide): needs the collision-aware abbreviation to actually
+EXTEND past the configured length when two object IDs share the prefix; verify `abbreviate_object_id`
+honours the collision extension when min_len is small (core.abbrev=4 here).
+
 ## KEY: full-run vs isolation divergence
 Many tests pass with `--run=1,N` but fail in the full sequential run because an EARLIER
 failing test leaves a rebase-in-progress / wrong branch. `/tmp/run3404.sh` replicates the

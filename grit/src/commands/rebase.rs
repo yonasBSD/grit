@@ -1102,6 +1102,19 @@ fn validate_rebase_instruction_format(config: &ConfigSet) -> Result<()> {
     Ok(())
 }
 
+/// Minimum abbreviated-commit length for the rebase todo, from `core.abbrev` (default 7; `auto`/empty
+/// -> 7; `false`/`no`/`off`/`0` -> full 40; numeric clamped to `[4, 40]`).
+fn rebase_core_abbrev_len(config: &ConfigSet) -> usize {
+    match config.get("core.abbrev") {
+        None => 7,
+        Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "false" | "no" | "off" | "0" => 40,
+            "auto" | "" => 7,
+            v => v.parse::<usize>().map(|n| n.clamp(4, 40)).unwrap_or(7),
+        },
+    }
+}
+
 fn format_rebase_todo_line(
     repo: &Repository,
     oid: &ObjectId,
@@ -1115,7 +1128,9 @@ fn format_rebase_todo_line(
     let empty = is_commit_tree_unchanged(repo, oid).unwrap_or(false);
     let cmd_word = rebase_todo_command_for_display(cmd, &commit);
     let oid_field = if short_oid_field {
-        abbreviate_object_id(repo, *oid, 7)?
+        // Honour `core.abbrev` for the minimum length; `abbreviate_object_id` still extends further
+        // on collision (t3404 "respect core.abbrev" / "short commit ID collide").
+        abbreviate_object_id(repo, *oid, rebase_core_abbrev_len(config))?
     } else {
         oid.to_hex()
     };
