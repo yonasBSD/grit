@@ -36,9 +36,45 @@ the conflict resolution preserved both features correctly).
 9, 10, 11, 13 (file://), 22, 23, 25, 26 (httpd, PERL_TEST_HELPERS).
 
 Root cause (per prior agent, confirmed): grit's v2 fetch client
-`write_v2_fetch_request` (grit/src/file_upload_pack_v2.rs) does single-round
-`want <oid> + done`; never sends `want-ref <refname>`, never consumes
-`wanted-refs`, never emits `negotiation_v2/total_rounds=2` (multi-round have/ACK
-loop). Adding this is a broad rewrite of shared `fetch_via_upload_pack_skipping`
-machinery in grit/src/fetch_transport.rs that many other passing t5xxx tests flow
-through — high regression risk. Deferred by prior agent for that reason.
+`write_v2_fetch_request` (grit/src/file_upload_pack_v2.rs) did single-round
+`want <oid> + done`; never sent `want-ref <refname>`, never consumed
+`wanted-refs`, never emitted `negotiation_v2/total_rounds=2`.
+
+## Client-side fix implemented — now 22/26 (9, 10, 11, 13 fixed)
+
+Threaded want-ref + a real multi-round have/ACK loop through the `file://`
+(subprocess) v2 fetch path:
+
+- `write_v2_fetch_request` gained `want_refs: &[String]` and `send_done: bool`.
+  Emits `want-ref <name>` lines and can omit `done` for a non-final round. All 5
+  call sites updated; the 4 secondary ones pass `&[]`/`true` (behavior unchanged).
+- `v2_fetch_supports_ref_in_want(caps)` added (file_upload_pack_v2.rs).
+- `cli_want_refs_and_oids` (fetch_transport.rs): classifies CLI refspec sources —
+  named/wildcard sources that resolve to an advertised ref become `want-ref`,
+  exact-OID sources stay `want <oid>` (mirrors `fetch-pack.c add_wants`).
+- `read_v2_acknowledgments`: reads one v2 `acknowledgments` section, reporting
+  `ready`/`seen_ack` (mirrors `process_ack`).
+- `local_negotiation_haves` now expands ref tips into a committer-date-ordered
+  commit walk (`date_ordered_have_walk`, max 1024), so round 1 offers the newest
+  commits first. Without this only ref tips were offered and a single round always
+  sufficed (test 9 wanted `total_rounds=2`).
+- Main v2 path in `fetch_via_upload_pack_skipping`: when there are local haves and
+  it is not a shallow request, do round 1 (wants/want-refs + first 16 haves, no
+  `done`) -> read acknowledgments -> if `ready`/no-ack-section read pack now
+  (total_rounds=1), else round 2 (remaining haves + `done`) and read pack
+  (total_rounds=2). Emits `negotiation_v2.total_rounds`.
+
+Regression sweep (all unchanged from baseline): t5510 215/215, t5601 112/115,
+t5516 106/124, t5552 6, t5616 46. grit-lib lib tests: only the 2 pre-existing
+`ignore::gitignore_glob_tests` failures (another agent's area; I touched no
+gitignore code).
+
+## Remaining 4 (22, 23, 25, 26) — smart-HTTP, PERL_TEST_HELPERS
+
+These run over the test httpd `one_time_script` (stateless-RPC) and simulate the
+server's advertised ref changing mid-negotiation. They need the same want-ref +
+multi-round negotiation in grit's **smart-HTTP** client (grit/src/http_smart.rs),
+plus "not our ref" / "unknown ref refs/heads/rain" error propagation. Currently
+`git fetch` over HTTP succeeds where it must fail (test 22). That is a separate,
+larger HTTP-transport implementation than the `file://` subprocess path fixed
+here; deferred.

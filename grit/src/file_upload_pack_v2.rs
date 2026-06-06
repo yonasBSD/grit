@@ -360,7 +360,15 @@ pub(crate) fn v2_fetch_supports_sideband_all(caps: &[String]) -> bool {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+/// True when the server's v2 `fetch` capability advertises `ref-in-want` (so the client may send
+/// `want-ref <name>` lines instead of resolving named refspecs to OIDs itself).
+pub(crate) fn v2_fetch_supports_ref_in_want(caps: &[String]) -> bool {
+    caps.iter().any(|c| {
+        c.strip_prefix("fetch=")
+            .is_some_and(|rest| rest.split_whitespace().any(|w| w == "ref-in-want"))
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_v2_fetch_request(
     stdin: &mut impl Write,
@@ -379,6 +387,8 @@ pub(crate) fn write_v2_fetch_request(
     shallow_exclude: &[String],
     unshallow: bool,
     promisor_remote_reply: Option<&str>,
+    want_refs: &[String],
+    send_done: bool,
 ) -> Result<()> {
     trace_packet_git('>', "command=fetch");
     pkt_line::write_line(stdin, "command=fetch")?;
@@ -433,6 +443,15 @@ pub(crate) fn write_v2_fetch_request(
         wire_trace::trace_packet_upload_pack('<', line.trim_end());
         pkt_line::write_line(stdin, &line)?;
     }
+    // Refs requested by name (not exact OID) go out as `want-ref <refname>` when the server
+    // advertised the `ref-in-want` feature (matches `fetch-pack.c` `add_wants`). The server resolves
+    // them in a `wanted-refs` section in its response.
+    for r in want_refs {
+        let line = format!("want-ref {r}");
+        trace_packet_git('>', line.trim_end());
+        wire_trace::trace_packet_upload_pack('<', line.trim_end());
+        pkt_line::write_line(stdin, &line)?;
+    }
     if let Some(spec) = filter_spec.map(str::trim).filter(|s| !s.is_empty()) {
         let line = format!("filter {spec}");
         trace_packet_git('>', &line);
@@ -478,8 +497,10 @@ pub(crate) fn write_v2_fetch_request(
         wire_trace::trace_packet_upload_pack('<', line.trim_end());
         pkt_line::write_line(stdin, &line)?;
     }
-    trace_packet_git('>', "done");
-    pkt_line::write_line(stdin, "done")?;
+    if send_done {
+        trace_packet_git('>', "done");
+        pkt_line::write_line(stdin, "done")?;
+    }
     pkt_line::write_flush(stdin)?;
     trace_packet_git('>', "0000");
     stdin.flush()?;
@@ -736,6 +757,8 @@ pub(crate) fn clone_preflight_file_v2_if_needed(
         &[],
         false,
         None,
+        &[],
+        true,
     )?;
     drop(stdin);
     drain_v2_fetch_response(&mut stdout, fetch_supports_sideband_all)?;
