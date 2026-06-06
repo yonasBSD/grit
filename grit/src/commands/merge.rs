@@ -11243,8 +11243,11 @@ fn resolve_merge_target(repo: &Repository, spec: &str) -> Result<ObjectId> {
     // `merge main3` must merge the `main3` branch tip, not treat `main3` as a pathspec).
     if !spec.contains('/') && !spec.starts_with('.') {
         let branch_ref = format!("refs/heads/{spec}");
-        if let Ok(oid) = resolve_ref(&repo.git_dir, &branch_ref) {
-            return Ok(oid);
+        let (dwim_count, _) = grit_lib::refs::resolve_ref_dwim(&repo.git_dir, spec);
+        if dwim_count <= 1 {
+            if let Ok(oid) = resolve_ref(&repo.git_dir, &branch_ref) {
+                return Ok(oid);
+            }
         }
     }
     // Git resolves the merge argument with `get_merge_parent` (rev-parse / `dwim_ref`), which for

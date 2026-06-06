@@ -65,7 +65,7 @@ pub fn run_from_argv(argv: Vec<String>) -> Result<()> {
     let config = if let Some(ref r) = repo {
         ConfigSet::load(Some(&r.git_dir), true)?
     } else {
-        ConfigSet::new()
+        ConfigSet::load(None, true)?
     };
 
     let mut stdin = io::stdin().lock();

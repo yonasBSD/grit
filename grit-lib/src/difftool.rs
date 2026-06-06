@@ -15,7 +15,7 @@ use crate::odb::Odb;
 use crate::repo::Repository;
 use crate::rev_parse::{peel_to_tree, resolve_revision};
 use crate::state::resolve_head;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -239,7 +239,11 @@ pub fn run_difftool(
     }
 
     let trust_exit_code = resolve_trust_exit_code(opts, config);
-    let should_prompt = resolve_should_prompt(opts, env, config);
+    let should_prompt = if opts.dir_diff {
+        false
+    } else {
+        resolve_should_prompt(opts, env, config)
+    };
     let tool_ctx = resolve_tool_context(opts, env, config)?;
 
     let index = match repo.load_index() {
@@ -509,7 +513,36 @@ fn collect_diff_entries(
         }
     };
 
+    let entries = entries
+        .into_iter()
+        .filter(|entry| entry.status != DiffStatus::Unmerged)
+        .collect();
+    let paths = normalize_pathspecs(work_tree, &paths);
     Ok(filter_paths(entries, &paths))
+}
+
+fn normalize_pathspecs(work_tree: &Path, paths: &[String]) -> Vec<String> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| work_tree.to_path_buf());
+    let prefix = cwd
+        .strip_prefix(work_tree)
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .filter(|p| !p.is_empty());
+    paths
+        .iter()
+        .map(|path| {
+            if path == "." {
+                return prefix.clone().unwrap_or_else(|| ".".to_string());
+            }
+            if Path::new(path).is_absolute() {
+                return path.clone();
+            }
+            match &prefix {
+                Some(prefix) => format!("{prefix}/{path}"),
+                None => path.clone(),
+            }
+        })
+        .collect()
 }
 
 fn filter_paths(entries: Vec<DiffEntry>, paths: &[String]) -> Vec<DiffEntry> {
@@ -537,7 +570,8 @@ fn apply_rotate_skip(
             .iter()
             .position(|e| e.path() == target)
             .ok_or_else(|| Error::Message(format!("File '{target}' not in diff list")))?;
-        let tail = entries.split_off(pos);
+        let mut tail = entries.split_off(pos);
+        tail.append(&mut entries);
         entries = tail;
     }
     if let Some(target) = skip_to {
@@ -621,9 +655,9 @@ fn materialize_pair(
 
     match entry.status {
         DiffStatus::Added => {
-            write_blob_or_empty(&repo.odb, &entry.new_oid, &local_tmp)?;
-            let wt = work_tree.join(entry.path());
-            Ok((local_tmp, wt))
+            write_blob_or_empty(&repo.odb, &ObjectId::zero(), &local_tmp)?;
+            write_blob_or_empty(&repo.odb, &entry.new_oid, &remote_tmp)?;
+            Ok((local_tmp, remote_tmp))
         }
         DiffStatus::Deleted => {
             write_blob_or_empty(&repo.odb, &entry.old_oid, &local_tmp)?;
@@ -661,15 +695,22 @@ fn run_tool(
     total: usize,
 ) -> Result<std::process::ExitStatus> {
     if let Some(extcmd) = &tool.extcmd {
+        let append_pair = !extcmd.contains(char::is_whitespace);
         let script = format!(
             "export LOCAL={local} REMOTE={remote} MERGED={merged} BASE={merged}; \
              export GIT_DIFF_PATH_COUNTER={counter} GIT_DIFF_PATH_TOTAL={total} GIT_PREFIX=.; \
              set -- \"$MERGED\" \"$LOCAL\" \"$REMOTE\"; \
-             eval {extcmd} \"$LOCAL\" \"$REMOTE\"",
+             cmd={cmd}; \
+             if test {append_pair} = true; then \
+                 eval \"$cmd\" \"$LOCAL\" \"$REMOTE\"; \
+             else \
+                 eval \"$cmd\"; \
+             fi",
             local = shell_quote(&local.display().to_string()),
             remote = shell_quote(&remote.display().to_string()),
             merged = shell_quote(merged),
-            extcmd = extcmd,
+            cmd = shell_quote(extcmd),
+            append_pair = if append_pair { "true" } else { "false" },
         );
         return Command::new("sh")
             .arg("-c")
@@ -735,7 +776,7 @@ fn run_dir_diff(
     stdin: &mut dyn BufRead,
     stdout: &mut dyn Write,
 ) -> Result<DifftoolResult> {
-    let tmp = tempfile::tempdir().map_err(Error::Io)?;
+    let tmp = difftool_tempdir()?;
     let left = tmp.path().join("left");
     let right = tmp.path().join("right");
     std::fs::create_dir_all(&left).map_err(Error::Io)?;
@@ -750,6 +791,11 @@ fn run_dir_diff(
         populate_dir_side(repo, &left, entry, true, work_tree, index, use_symlinks)?;
         populate_dir_side(repo, &right, entry, false, work_tree, index, use_symlinks)?;
     }
+    let right_baseline = if use_symlinks {
+        BTreeMap::new()
+    } else {
+        capture_dir_diff_baseline(&right, entries)
+    };
 
     if should_prompt {
         let prompt_label = tool.extcmd.as_deref().unwrap_or(&tool.tool_name);
@@ -806,6 +852,12 @@ fn run_dir_diff(
     };
 
     let code = status.code().unwrap_or(1);
+    if !use_symlinks {
+        if let Err(err) = sync_dir_diff_right_to_worktree(&right, work_tree, &right_baseline) {
+            let _ = tmp.keep();
+            return Err(err);
+        }
+    }
     if code >= 126 {
         return Ok(DifftoolResult { exit_code: code });
     }
@@ -813,6 +865,53 @@ fn run_dir_diff(
         return Ok(DifftoolResult { exit_code: code });
     }
     Ok(DifftoolResult { exit_code: 0 })
+}
+
+fn capture_dir_diff_baseline(
+    right: &Path,
+    entries: &[DiffEntry],
+) -> BTreeMap<String, Option<Vec<u8>>> {
+    let mut baseline = BTreeMap::new();
+    for entry in entries {
+        let Some(path) = entry.new_path.as_deref().or(entry.old_path.as_deref()) else {
+            continue;
+        };
+        baseline.insert(path.to_string(), std::fs::read(right.join(path)).ok());
+    }
+    baseline
+}
+
+fn sync_dir_diff_right_to_worktree(
+    right: &Path,
+    work_tree: &Path,
+    baseline: &BTreeMap<String, Option<Vec<u8>>>,
+) -> Result<()> {
+    let mut conflict = false;
+    for (rel, before) in baseline {
+        let right_path = right.join(rel);
+        let Ok(after) = std::fs::read(&right_path) else {
+            continue;
+        };
+        if before.as_ref() == Some(&after) {
+            continue;
+        }
+        let wt_path = work_tree.join(rel);
+        let wt_now = std::fs::read(&wt_path).ok();
+        if wt_now != *before {
+            conflict = true;
+            continue;
+        }
+        if let Some(parent) = wt_path.parent() {
+            std::fs::create_dir_all(parent).map_err(Error::Io)?;
+        }
+        std::fs::write(&wt_path, after).map_err(Error::Io)?;
+    }
+    if conflict {
+        return Err(Error::Message(
+            "working tree file changed during difftool".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn populate_dir_side(
@@ -833,9 +932,6 @@ fn populate_dir_side(
         return Ok(());
     };
     let dest = dir.join(rel);
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(Error::Io)?;
-    }
 
     let mode_str = if is_left {
         &entry.old_mode
@@ -849,6 +945,9 @@ fn populate_dir_side(
     };
 
     if mode_str == "160000" {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(Error::Io)?;
+        }
         let label = if oid.is_zero() {
             "Subproject commit 0000000000000000000000000000000000000000"
         } else {
@@ -859,24 +958,50 @@ fn populate_dir_side(
     }
 
     if mode_str.starts_with("120000") {
-        let target = if oid.is_zero() {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(Error::Io)?;
+        }
+        let wt_symlink = work_tree.join(rel);
+        let target = if oid.is_zero() || (!is_left && use_symlinks && wt_symlink.is_symlink()) {
             std::fs::read_link(work_tree.join(rel))
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default()
         } else {
-            String::from_utf8_lossy(&repo.odb.read(oid)?.data).into_owned()
+            match repo.odb.read(oid) {
+                Ok(blob) => String::from_utf8_lossy(&blob.data).into_owned(),
+                Err(_) if !is_left && wt_symlink.is_symlink() => std::fs::read_link(wt_symlink)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .map_err(Error::Io)?,
+                Err(err) => return Err(err),
+            }
         };
-        if use_symlinks {
-            let _ = std::fs::remove_file(&dest);
-            std::os::unix::fs::symlink(&target, &dest).map_err(Error::Io)?;
-        } else {
-            std::fs::write(&dest, target).map_err(Error::Io)?;
-        }
+        std::fs::write(&dest, format!("{target}\n")).map_err(Error::Io)?;
         return Ok(());
     }
 
     if oid.is_zero() {
         return Ok(());
+    }
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(Error::Io)?;
+    }
+
+    if !is_left && use_symlinks {
+        let wt = work_tree.join(rel);
+        if wt.is_file() {
+            let _ = std::fs::remove_file(&dest);
+            std::os::unix::fs::symlink(&wt, &dest).map_err(Error::Io)?;
+            return Ok(());
+        }
+    }
+
+    if !is_left {
+        let wt = work_tree.join(rel);
+        if wt.is_file() {
+            std::fs::copy(wt, &dest).map_err(Error::Io)?;
+            return Ok(());
+        }
     }
 
     let data = repo.odb.read(oid)?;
@@ -897,6 +1022,19 @@ fn populate_dir_side(
         }
     }
     Ok(())
+}
+
+fn difftool_tempdir() -> Result<tempfile::TempDir> {
+    let Some(raw) = std::env::var_os("TMPDIR") else {
+        return tempfile::tempdir().map_err(Error::Io);
+    };
+    let cleaned = PathBuf::from(raw.to_string_lossy().trim_end_matches('/').to_string());
+    if cleaned.as_os_str().is_empty() {
+        return tempfile::tempdir().map_err(Error::Io);
+    }
+    tempfile::Builder::new()
+        .tempdir_in(cleaned)
+        .map_err(Error::Io)
 }
 
 fn run_no_index_difftool(
@@ -942,7 +1080,16 @@ fn run_no_index_difftool(
         1,
         1,
     )?;
-    Ok(DifftoolResult {
-        exit_code: status.code().unwrap_or(1),
-    })
+    let code = status.code().unwrap_or(1);
+    if code == 0 && paths_differ(&local, &remote) {
+        return Ok(DifftoolResult { exit_code: 1 });
+    }
+    Ok(DifftoolResult { exit_code: code })
+}
+
+fn paths_differ(left: &Path, right: &Path) -> bool {
+    match (std::fs::read(left), std::fs::read(right)) {
+        (Ok(left), Ok(right)) => left != right,
+        _ => true,
+    }
 }
