@@ -250,17 +250,24 @@ pub fn detect_moved_lines(patch: &str, mode: ColorMovedMode, ws_flags: u32) -> V
             continue;
         };
 
-        let key = normalize_key(body, ws_flags);
+        let (indent_off, indent_width) = if allow_indent {
+            fill_indent(body)
+        } else {
+            (0, 0)
+        };
+        // With allow-indentation-change, Git interns/compares from the indent
+        // offset (`l->line + l->indent_off`), so leading indentation does not
+        // affect the content id; the indent delta is checked separately.
+        let key = if allow_indent {
+            normalize_key(&body[indent_off.min(body.len())..], ws_flags)
+        } else {
+            normalize_key(body, ws_flags)
+        };
         let id = *interner.entry(key).or_insert_with(|| {
             let v = next_id;
             next_id += 1;
             v
         });
-        let (_indent_off, indent_width) = if allow_indent {
-            fill_indent(body)
-        } else {
-            (0, 0)
-        };
         syms.push(Symbol {
             line_index: idx,
             is_plus,
