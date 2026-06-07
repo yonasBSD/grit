@@ -157,6 +157,18 @@ pub struct Args {
     #[arg(short = 'p', long = "patch", hide = true)]
     pub patch: bool,
 
+    /// Lines of context for `--patch` (validated to require `-p`).
+    #[arg(long = "unified", short = 'U', allow_hyphen_values = true, hide = true)]
+    pub unified: Option<i32>,
+
+    /// Context lines between adjacent `--patch` hunks (validated to require `-p`).
+    #[arg(long = "inter-hunk-context", allow_hyphen_values = true, hide = true)]
+    pub inter_hunk_context: Option<i32>,
+
+    /// Disable auto-advance in interactive patch mode (validated to require `-p`).
+    #[arg(long = "no-auto-advance", hide = true)]
+    pub no_auto_advance: bool,
+
     /// Untracked files mode.
     #[arg(short = 'u', long = "untracked-files", value_name = "MODE", num_args = 0..=1, default_missing_value = "all")]
     pub untracked_files: Option<String>,
@@ -515,6 +527,19 @@ pub(crate) fn preprocess_commit_for_parse(argv: &[String]) -> Vec<String> {
 /// Run the `commit` command.
 pub fn run(mut args: Args) -> Result<()> {
     peel_message_flags_from_pathspec(&mut args);
+
+    crate::commands::add::validate_patch_context_options(
+        args.unified,
+        args.inter_hunk_context,
+        args.patch,
+    )?;
+    if args.no_auto_advance && !args.patch {
+        bail!(
+            "the option '{}' requires '{}'",
+            "--no-auto-advance",
+            "--interactive/--patch"
+        );
+    }
 
     // Tests and some scripts pass `-q` after `-m MSG`; if it lands in the
     // trailing pathspec bucket, strip it so we match Git (quiet is already

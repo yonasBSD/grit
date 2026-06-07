@@ -87,6 +87,23 @@ pub struct Args {
     #[arg(short = 'p', long = "patch", global = true)]
     pub patch: bool,
 
+    /// Lines of context for `--patch` (validated to require `-p`).
+    #[arg(
+        long = "unified",
+        short = 'U',
+        allow_hyphen_values = true,
+        global = true
+    )]
+    pub unified: Option<i32>,
+
+    /// Context lines between adjacent `--patch` hunks (validated to require `-p`).
+    #[arg(long = "inter-hunk-context", allow_hyphen_values = true, global = true)]
+    pub inter_hunk_context: Option<i32>,
+
+    /// Disable auto-advance in interactive patch mode (validated to require `-p`).
+    #[arg(long = "no-auto-advance", global = true)]
+    pub no_auto_advance: bool,
+
     /// Quiet mode — suppress output messages.
     #[arg(short = 'q', long = "quiet", global = true)]
     pub quiet: bool,
@@ -250,6 +267,27 @@ pub enum StashCommand {
 
 /// Run `grit stash`.
 pub fn run(args: Args) -> Result<()> {
+    // The `-U`/`--inter-hunk-context`/`--no-auto-advance` options require `-p`; the patch flag may
+    // be the global one or the subcommand's.
+    let effective_patch = args.patch
+        || matches!(
+            args.command,
+            Some(StashCommand::Push { patch: true, .. })
+                | Some(StashCommand::Save { patch: true, .. })
+        );
+    crate::commands::add::validate_patch_context_options(
+        args.unified,
+        args.inter_hunk_context,
+        effective_patch,
+    )?;
+    if args.no_auto_advance && !effective_patch {
+        bail!(
+            "the option '{}' requires '{}'",
+            "--no-auto-advance",
+            "--interactive/--patch"
+        );
+    }
+
     match args.command {
         None => {
             assume_push_or_error(&args)?;

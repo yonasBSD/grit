@@ -240,13 +240,18 @@ pub struct Args {
     #[arg(long = "conflict")]
     pub conflict: Option<String>,
 
-    /// Lines of context for --patch.
-    #[arg(long = "unified", short = 'U')]
-    pub unified: Option<usize>,
+    /// Lines of context for --patch. `i32` (with the `-1` unset sentinel) so negative values are
+    /// rejected with Git's wording rather than clap's parse error.
+    #[arg(long = "unified", short = 'U', allow_hyphen_values = true)]
+    pub unified: Option<i32>,
 
     /// Maximum number of context lines between diff hunks.
-    #[arg(long = "inter-hunk-context")]
-    pub inter_hunk_context: Option<usize>,
+    #[arg(long = "inter-hunk-context", allow_hyphen_values = true)]
+    pub inter_hunk_context: Option<i32>,
+
+    /// Disable auto-advance in interactive patch mode (validated to require `-p`).
+    #[arg(long = "no-auto-advance")]
+    pub no_auto_advance: bool,
 
     /// Do not fail on entries with skip-worktree bit set.
     #[arg(long = "ignore-skip-worktree-bits")]
@@ -467,6 +472,20 @@ pub fn run(mut args: Args) -> Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
     let merge_cli = parse_checkout_merge_flags_from_raw(&raw_args);
     validate_checkout_conflict_arg(&raw_args)?;
+
+    // Interactive context options (`-U`/`--inter-hunk-context`/`--no-auto-advance`) require `-p`.
+    crate::commands::add::validate_patch_context_options(
+        args.unified,
+        args.inter_hunk_context,
+        args.patch,
+    )?;
+    if args.no_auto_advance && !args.patch {
+        bail!(
+            "the option '{}' requires '{}'",
+            "--no-auto-advance",
+            "--interactive/--patch"
+        );
+    }
 
     // Validate --pathspec-file-nul requires --pathspec-from-file
     if args.pathspec_file_nul && args.pathspec_from_file.is_none() {

@@ -277,6 +277,18 @@ pub struct Args {
     #[arg(short = 'p', long = "patch")]
     pub patch: bool,
 
+    /// Lines of context for `--patch` (validated to require `-p`).
+    #[arg(long = "unified", short = 'U', allow_hyphen_values = true)]
+    pub unified: Option<i32>,
+
+    /// Context lines between adjacent `--patch` hunks (validated to require `-p`).
+    #[arg(long = "inter-hunk-context", allow_hyphen_values = true)]
+    pub inter_hunk_context: Option<i32>,
+
+    /// Disable auto-advance in interactive patch mode (validated to require `-p`).
+    #[arg(long = "no-auto-advance")]
+    pub no_auto_advance: bool,
+
     /// Read pathspecs from a file, or from stdin when the value is `-`.
     #[arg(long = "pathspec-from-file", value_name = "FILE")]
     pub pathspec_from_file: Option<String>,
@@ -446,6 +458,19 @@ pub fn run(mut args: Args) -> Result<()> {
     // Git accepts `reset <commit> --hard`; clap's `trailing_var_arg` collects `--hard` into
     // `rest` so it is never parsed as a flag. Strip known options from `rest` first.
     normalize_reset_trailing_args(&mut args)?;
+
+    crate::commands::add::validate_patch_context_options(
+        args.unified,
+        args.inter_hunk_context,
+        args.patch,
+    )?;
+    if args.no_auto_advance && !args.patch {
+        bail!(
+            "the option '{}' requires '{}'",
+            "--no-auto-advance",
+            "--interactive/--patch"
+        );
+    }
 
     let mode = parse_mode(&args)?;
 

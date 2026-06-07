@@ -246,6 +246,44 @@ pub(crate) fn resolve_patch_interhunk(inter: Option<i32>, config: &ConfigSet) ->
     Ok(0)
 }
 
+/// Validate the interactive context options (`-U`/`--unified`, `--inter-hunk-context`) shared by
+/// the patch-capable commands (`add`/`checkout`/`restore`/`reset`/`commit`/`stash`). Mirrors Git's
+/// `parse_opt_unified`/`add-interactive` checks: a value below the `-1` "unset" sentinel is
+/// rejected as negative, and outside `-p`/`-i` the options are an error.
+pub(crate) fn validate_patch_context_options(
+    unified: Option<i32>,
+    inter_hunk_context: Option<i32>,
+    interactive: bool,
+) -> Result<()> {
+    if let Some(n) = unified {
+        if n < -1 {
+            bail!("'{}' cannot be negative", "--unified");
+        }
+    }
+    if let Some(n) = inter_hunk_context {
+        if n < -1 {
+            bail!("'{}' cannot be negative", "--inter-hunk-context");
+        }
+    }
+    if !interactive {
+        if unified.is_some() {
+            bail!(
+                "the option '{}' requires '{}'",
+                "--unified",
+                "--interactive/--patch"
+            );
+        }
+        if inter_hunk_context.is_some() {
+            bail!(
+                "the option '{}' requires '{}'",
+                "--inter-hunk-context",
+                "--interactive/--patch"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Arguments for `grit add`.
 #[derive(Debug, ClapArgs)]
 #[command(about = "Add file contents to the index")]
