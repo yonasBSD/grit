@@ -48,6 +48,42 @@ produces the `fixup!`/`amend!`/`squash!` subject (commit.rs).
 
 Net: 92 -> 94 / 132.
 
+## Fix D: validate todo label/refname + reject merge commits (tests 130, 131)
+
+`validate_edited_interactive_todo` now accumulates per-line errors (Git's
+`todo_list_parse_insn_buffer` continues past each), adds `check_label_or_ref_arg`
+(label != `#` and one-level refname valid; update-ref must be fully qualified) and
+`report_merge_commit_rejection` (pick/reword/edit print `'<cmd>' does not accept
+merge commits` + per-command `hint:` advice; fixup/squash print
+`cannot squash merge commit into another commit`). Honors `advice.rebaseTodoError`.
+94 -> 96.
+
+## Fix E: honor core.abbrev in dropped-commit warnings (cascade root for 100-102)
+
+Test 92 sets `core.abbrev 12` (persists in repo config). The "Dropped commits"
+missing-commit warning used a hardcoded 7-char abbrev, so 100/101/102's expected
+12-char `%h` hashes mismatched in the full run. Now uses
+`rebase_core_abbrev_len(config)`. 96 -> 99 (unblocked 100,101,102).
+
+## Fix F: CHERRY_PICK_HEAD on halted rebase pick + cleanup (tests 97,118,119)
+
+A halted interactive `pick` (empty-pick stop) now writes `CHERRY_PICK_HEAD`
+(== REBASE_HEAD), restricted to Pick/Reword (a fixup/squash stop must not, or the
+fixup continuation amends with the wrong message — t3404 76). `cleanup_rebase_state`
+now removes `CHERRY_PICK_HEAD` (Git's `sequencer_remove_state`) so `--continue`
+clears it (t3404 97). commit.rs `commit_is_rebase_pick_whence` reports an in-progress
+rebase (vs cherry-pick) for partial-commit / `--amend` errors (t3404 118/119).
+99 -> 100 (118 remains a cascade victim; passes in isolation).
+
+## COEXISTENCE NOTE
+Another agent was concurrently editing grit/src/commands/rebase.rs (reset-target
+`make_script_with_merges` rewrite, t3415 squash-message, merge-conflict handling)
+and left stray `DEBUG …` eprintln lines that broke 124/131; I removed those debug
+prints. A third agent's in-flight log.rs change (added `CommitInfo.raw_message`)
+broke the shared build at one point — not my files. Committing rebase.rs swept the
+other agent's (test-passing) in-flight hunks because hunk-level `but stage` cliIds
+went stale on every concurrent edit.
+
 ## Remaining (38) — clusters
 - 123 (--update-refs + --rebase-merges todo generation: the rebase-merges path
   builds its own todo and doesn't yet interleave update-ref decorations).
