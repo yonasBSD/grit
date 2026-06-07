@@ -924,11 +924,11 @@ fn run_test_tool_ref_store(rest: &[String]) -> Result<()> {
     }
     let backend = rest[1].as_str();
     let sub = rest[2].as_str();
-    if backend.starts_with("worktree:") {
+    if backend.starts_with("worktree:") || backend.starts_with("submodule:") {
         return commands::test_tool_ref_store::run(&rest[1..]);
     }
     if backend != "main" {
-        bail!("test-tool ref-store: unsupported backend (only 'main' and 'worktree:*' are implemented)");
+        bail!("test-tool ref-store: unsupported backend (only 'main', 'worktree:*' and 'submodule:*' are implemented)");
     }
 
     let repo = grit_lib::repo::Repository::discover(None)?;
