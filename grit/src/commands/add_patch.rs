@@ -135,6 +135,10 @@ fn split_range(s: &str) -> (String, String) {
 
 const DISPLAY_HUNKS_LINES: usize = 20;
 
+/// Sentinel `hunk_ranges` entry for the body-less mode-change pseudo-hunk (git's
+/// `file_diff->mode_change`); it maps to no `ops` range.
+const MODE_HUNK: (usize, usize) = (usize::MAX, usize::MAX);
+
 /// Render a single hunk (`@@ -o,c +o,c @@` header + body) for the op range `[start, end)`, using
 /// **absolute** line offsets from `old_lines`/`new_lines`. Leading/trailing equal runs in the range
 /// are capped to `context` lines of surrounding context, matching `git diff`'s hunk headers — which
@@ -701,11 +705,15 @@ pub(crate) fn run_add_patch_with_reader(
         let mut effective_mode = ie.mode;
         let index_side_bytes = index_blob.clone();
 
-        if mode_differs {
-            write!(out, "(1/1) Stage mode change [y,n,q,a,d,e,p,P,?]? ").ok();
+        // A mode-only change (no content diff) is presented as a standalone `(1/1) Stage mode
+        // change` prompt here; when content ALSO differs, the mode change is folded into the hunk
+        // loop below as hunk 0 (git's `file_diff->mode_change`).
+        if mode_differs && !content_differs {
+            write!(out, "(1/1) Stage mode change [y,n,q,a,d,p,P,?]? ").ok();
             out.flush().ok();
             match read_one_command(&mut reader, &mut out)? {
                 ReadCmd::Eof => {
+                    writeln!(out).ok();
                     repo.write_index_at(&index_path, &mut index)?;
                     return Ok(());
                 }
@@ -713,6 +721,7 @@ pub(crate) fn run_add_patch_with_reader(
                 ReadCmd::Char { lower, .. } => match lower {
                     'y' => effective_mode = mode_from_metadata(&meta),
                     'q' => {
+                        writeln!(out).ok();
                         repo.write_index_at(&index_path, &mut index)?;
                         return Ok(());
                     }
@@ -770,6 +779,12 @@ pub(crate) fn run_add_patch_with_reader(
             } else {
                 natural_hunk_ranges(&ops, context, inter_hunk_context)
             };
+            // A mode change accompanying content is hunk 0 (git's `file_diff->mode_change`): a
+            // body-less pseudo-hunk marked by the `MODE_HUNK` sentinel range. It has no `s`/`e`.
+            let mode_hunk = mode_differs;
+            if mode_hunk {
+                hunk_ranges.insert(0, MODE_HUNK);
+            }
             let mut decisions = vec![Decision::Undecided; hunk_ranges.len()];
             let mut hunk_index = 0usize;
             // -1 means "nothing rendered yet"; the hunk body is only re-printed when the cursor
@@ -801,6 +816,10 @@ pub(crate) fn run_add_patch_with_reader(
             let old_lines: Vec<&str> = index_side_str.lines().collect();
             let render_hunk = |i: usize, ranges: &[(usize, usize)], work: &[u8]| -> String {
                 let (s, e) = ranges[i];
+                if (s, e) == MODE_HUNK {
+                    // The mode-change pseudo-hunk has no diff body.
+                    return String::new();
+                }
                 let work_str = String::from_utf8_lossy(work).into_owned();
                 let new_lines: Vec<&str> = work_str.lines().collect();
                 render_hunk_with_offsets(&old_lines, &new_lines, &ops, s, e, context)
@@ -844,8 +863,12 @@ pub(crate) fn run_add_patch_with_reader(
                     break 'hunk_loop;
                 }
 
+                let is_mode_hunk = hunk_ranges[hunk_index] == MODE_HUNK;
                 if rendered_hunk_index != hunk_index as isize {
-                    write!(out, "{}", render_hunk(hunk_index, &hunk_ranges, &cur_work)).ok();
+                    // The mode-change pseudo-hunk has no diff body to print.
+                    if !is_mode_hunk {
+                        write!(out, "{}", render_hunk(hunk_index, &hunk_ranges, &cur_work)).ok();
+                    }
                     rendered_hunk_index = hunk_index as isize;
                 }
 
@@ -874,11 +897,11 @@ pub(crate) fn run_add_patch_with_reader(
                 if allow_goto {
                     nav.push_str(",g,/");
                 }
-                let splittable = !is_deletion && splittable_into(&ops, s, e) > 1;
+                let splittable = !is_deletion && !is_mode_hunk && splittable_into(&ops, s, e) > 1;
                 if splittable {
                     nav.push_str(",s");
                 }
-                let allow_edit = !is_deletion && !(mode_differs && hunk_index == 0);
+                let allow_edit = !is_deletion && !is_mode_hunk;
                 if allow_edit {
                     nav.push_str(",e");
                 }
@@ -888,7 +911,7 @@ pub(crate) fn run_add_patch_with_reader(
                     HunkKind::Deletion
                 } else if is_addition {
                     HunkKind::Addition
-                } else if mode_differs && hunk_index == 0 {
+                } else if is_mode_hunk {
                     HunkKind::ModeChange
                 } else {
                     HunkKind::Hunk
@@ -918,6 +941,9 @@ pub(crate) fn run_add_patch_with_reader(
                     None => {
                         // EOF: git prints a trailing newline and applies decided hunks so far.
                         writeln!(out).ok();
+                        if mode_hunk && decisions[0] == Decision::Use {
+                            effective_mode = mode_from_metadata(&meta);
+                        }
                         let accepted = decisions_to_accepted(&decisions);
                         let blended = blend_for_stage_hunks(
                             &index_side_bytes,
@@ -981,6 +1007,9 @@ pub(crate) fn run_add_patch_with_reader(
                         // `putchar('\n')` and applies the decided hunks for this file before
                         // stopping all further files.
                         writeln!(out).ok();
+                        if mode_hunk && decisions[0] == Decision::Use {
+                            effective_mode = mode_from_metadata(&meta);
+                        }
                         let accepted = decisions_to_accepted(&decisions);
                         let blended = blend_for_stage_hunks(
                             &index_side_bytes,
@@ -1222,6 +1251,10 @@ pub(crate) fn run_add_patch_with_reader(
             // Git prints a trailing newline when leaving `patch_update_file`.
             writeln!(out).ok();
 
+            // Stage the mode change iff the mode pseudo-hunk (index 0) was accepted.
+            if mode_hunk && decisions[0] == Decision::Use {
+                effective_mode = mode_from_metadata(&meta);
+            }
             let accepted = decisions_to_accepted(&decisions);
             let blended =
                 blend_for_stage_hunks(&index_side_bytes, &cur_work, &hunk_ranges, &accepted);
