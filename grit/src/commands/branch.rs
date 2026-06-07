@@ -2911,8 +2911,14 @@ fn delete_branch(repo: &Repository, head: &HeadState, args: &Args, name_input: &
         return Ok(());
     }
 
-    let resolved_ref =
-        symbolic_full_name(repo, name_input).filter(|full| full.starts_with("refs/heads/"));
+    // Git's `branch -d` expands `@{-N}`/`@{upstream}` but treats a literal
+    // "HEAD" as the branch name `refs/heads/HEAD` rather than dereferencing the
+    // symbolic HEAD (t1430 "branch -d can remove refs/heads/HEAD").
+    let resolved_ref = if name_input == "HEAD" {
+        None
+    } else {
+        symbolic_full_name(repo, name_input).filter(|full| full.starts_with("refs/heads/"))
+    };
     let (name, refname) = if let Some(full) = resolved_ref {
         (
             full.strip_prefix("refs/heads/")

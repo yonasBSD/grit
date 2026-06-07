@@ -2328,7 +2328,13 @@ fn validate_new_branch_name(name: &str) -> Result<()> {
         allow_onelevel: true,
         ..Default::default()
     };
-    if check_refname_format(&full, &opts).is_err() {
+    // Mirror `check_branch_ref()` in refs.c: a branch may not be named "HEAD"
+    // (i.e. `refs/heads/HEAD`) nor begin with a dash, regardless of whether the
+    // expanded refname would otherwise pass `check_refname_format`.
+    if name.starts_with('-')
+        || full == "refs/heads/HEAD"
+        || check_refname_format(&full, &opts).is_err()
+    {
         bail!("'{name}' is not a valid branch name");
     }
     Ok(())
