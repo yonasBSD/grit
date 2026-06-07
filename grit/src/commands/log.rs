@@ -1466,6 +1466,7 @@ fn run_line_log(
             None,
             None,
             None,
+            None,
         )?;
         let nparents = load_raw_parents(repo, *oid)?.len();
         if show_patch {
@@ -2613,6 +2614,13 @@ fn run_rev_list_log(
     use_mailmap: bool,
     mailmap: &MailmapTable,
 ) -> Result<()> {
+    let grep_colorizer = GrepColorizer::from_config(
+        &repo.git_dir,
+        use_color,
+        &grep_filter.str_res,
+        author_res,
+        committer_res,
+    );
     let merged_argv = merge_log_revision_argv(repo, args)?;
     let (revision_specs, implied_pathspecs) =
         extract_log_cli_revision_specs(repo, args, &merged_argv)?;
@@ -2902,6 +2910,7 @@ fn run_rev_list_log(
                 None,
                 None,
                 None,
+                grep_colorizer.as_ref(),
             )?;
         }
 
@@ -3302,6 +3311,7 @@ fn run_graph_log(
                         &repo.odb,
                         Some(node.parents.as_slice()),
                         false,
+                        None,
                         None,
                         None,
                         None,
@@ -5031,6 +5041,142 @@ impl GrepFilter {
     }
 }
 
+/// Colorizes grep/author/committer matches inside log output lines, mirroring
+/// Git's `color_line` (grep.c). Only built when `--color` is active and at least
+/// one of `--grep`/`--author`/`--committer` is set, so coloring is applied only
+/// to commits that are in the output because they matched.
+struct GrepColorizer {
+    /// `color.grep.selected` — wraps the *non-matching* spans of a matching
+    /// line. Empty (the default) means those spans are emitted uncolored.
+    selected: String,
+    /// `color.grep.matchSelected` (falling back to `color.grep.match`) — wraps
+    /// each matched substring. Defaults to bold red.
+    match_selected: String,
+    /// Reset sequence (`\x1b[m`).
+    reset: String,
+    /// Patterns matched against `--grep` message lines.
+    grep_res: Vec<Regex>,
+    /// Patterns matched against the Author header.
+    author_res: Vec<Regex>,
+    /// Patterns matched against the Commit/committer header.
+    committer_res: Vec<Regex>,
+}
+
+impl GrepColorizer {
+    /// Build from config when `--color` is active and any grep-like pattern is
+    /// set; otherwise `None` (no coloring).
+    fn from_config(
+        git_dir: &Path,
+        use_color: bool,
+        grep_res: &[Regex],
+        author_res: &[Regex],
+        committer_res: &[Regex],
+    ) -> Option<Self> {
+        if !use_color || (grep_res.is_empty() && author_res.is_empty() && committer_res.is_empty())
+        {
+            return None;
+        }
+        let cfg = ConfigSet::load(Some(git_dir), true).unwrap_or_default();
+        let parse = |key: &str| -> Option<String> {
+            cfg.get(key)
+                .and_then(|v| grit_lib::config::parse_color(&v).ok())
+                .filter(|s| !s.is_empty())
+        };
+        let selected = parse("color.grep.selected").unwrap_or_default();
+        let match_selected = parse("color.grep.matchselected")
+            .or_else(|| parse("color.grep.match"))
+            .unwrap_or_else(|| "\x1b[1;31m".to_string());
+        Some(Self {
+            selected,
+            match_selected,
+            reset: "\x1b[m".to_string(),
+            grep_res: grep_res.to_vec(),
+            author_res: author_res.to_vec(),
+            committer_res: committer_res.to_vec(),
+        })
+    }
+
+    /// Collect all non-overlapping match spans of `regexes` within `text`,
+    /// merged so overlapping/adjacent matches don't double-wrap. Spans are
+    /// returned sorted by start, with overlaps coalesced.
+    fn match_spans(text: &str, regexes: &[Regex]) -> Vec<(usize, usize)> {
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        for re in regexes {
+            for m in re.find_iter(text) {
+                if m.start() != m.end() {
+                    spans.push((m.start(), m.end()));
+                }
+            }
+        }
+        if spans.is_empty() {
+            return spans;
+        }
+        spans.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        let mut merged: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
+        for (s, e) in spans {
+            if let Some(last) = merged.last_mut() {
+                if s <= last.1 {
+                    last.1 = last.1.max(e);
+                    continue;
+                }
+            }
+            merged.push((s, e));
+        }
+        merged
+    }
+
+    /// Return the colorized form of `text` (a single line, no trailing newline)
+    /// given `regexes`, or `None` if nothing matched. Non-matching spans use
+    /// `selected` (when non-empty); each matched span uses `match_selected`.
+    fn colorize(&self, text: &str, regexes: &[Regex]) -> Option<String> {
+        if regexes.is_empty() {
+            return None;
+        }
+        let spans = Self::match_spans(text, regexes);
+        if spans.is_empty() {
+            return None;
+        }
+        let mut out = String::with_capacity(text.len() + 16);
+        let mut pos = 0usize;
+        let emit_plain = |out: &mut String, seg: &str| {
+            if seg.is_empty() {
+                return;
+            }
+            if self.selected.is_empty() {
+                out.push_str(seg);
+            } else {
+                out.push_str(&self.selected);
+                out.push_str(seg);
+                out.push_str(&self.reset);
+            }
+        };
+        for (s, e) in spans {
+            emit_plain(&mut out, &text[pos..s]);
+            out.push_str(&self.match_selected);
+            out.push_str(&text[s..e]);
+            out.push_str(&self.reset);
+            pos = e;
+        }
+        emit_plain(&mut out, &text[pos..]);
+        Some(out)
+    }
+
+    /// Colorize an Author header value (the part after `Author: `).
+    fn colorize_author(&self, text: &str) -> Option<String> {
+        self.colorize(text, &self.author_res)
+    }
+
+    /// Colorize a Commit/committer header value.
+    fn colorize_committer(&self, text: &str) -> Option<String> {
+        self.colorize(text, &self.committer_res)
+    }
+
+    /// Colorize a message body line.
+    fn colorize_message(&self, text: &str) -> Option<String> {
+        self.colorize(text, &self.grep_res)
+    }
+}
+
 /// Decide whether a branch (short name, e.g. `topic`) is selected by `--branches[=<glob>]`.
 ///
 /// An empty glob (plain `--branches`) selects everything. Following git's `for_each_glob_ref`,
@@ -5406,6 +5552,15 @@ pub fn run(mut args: Args) -> Result<()> {
             .with_context(|| format!("invalid --grep regex: {p}"))?;
         grep_res.push(re);
     }
+    // Colorize matched grep/author/committer substrings in the output (Git's
+    // `color_line`), only when `--color` is active and a pattern is set.
+    let grep_colorizer = GrepColorizer::from_config(
+        &repo.git_dir,
+        use_color,
+        &grep_res,
+        &author_res,
+        &committer_res,
+    );
     // Assemble the encoding-aware grep filter. When `--encoding` selects a non-UTF-8 charset, Git
     // greps the message *after* re-encoding it (see `commit_match` in revision.c), at the byte
     // level, so recover the raw needle bytes from `args_os` (the lossy top-level argv mangles
@@ -6020,6 +6175,7 @@ pub fn run(mut args: Args) -> Result<()> {
                     None,
                     source_for_oneline,
                     percent_s_source_map.get(&oid).map(|s| s.as_str()),
+                    grep_colorizer.as_ref(),
                 )?;
             }
 
@@ -6249,6 +6405,7 @@ pub fn run(mut args: Args) -> Result<()> {
                     None,
                     source_for_oneline,
                     percent_s_source_map.get(oid).map(|s| s.as_str()),
+                    grep_colorizer.as_ref(),
                 )?;
             }
 
@@ -6724,6 +6881,7 @@ pub fn run_no_walk(
                 &repo.odb,
                 None,
                 false,
+                None,
                 None,
                 None,
                 None,
@@ -7968,12 +8126,34 @@ struct CommitInfo {
 /// When `info.raw_message` is present (non-decodable commit encoding) the verbatim bytes are
 /// written without lossy UTF-8 conversion; otherwise the decoded `message` string is used.
 fn write_commit_body(out: &mut impl Write, info: &CommitInfo, et: usize) -> Result<()> {
+    write_commit_body_colored(out, info, et, None)
+}
+
+/// Like [`write_commit_body`] but, when `colorizer` is set, colorizes grep
+/// matches within each message line (Git `color_line`). The 4-space indent is
+/// emitted uncolored; only the message text after it is colorized.
+fn write_commit_body_colored(
+    out: &mut impl Write,
+    info: &CommitInfo,
+    et: usize,
+    colorizer: Option<&GrepColorizer>,
+) -> Result<()> {
     if let Some(raw) = info.raw_message.as_deref() {
         // Mirror `str::lines()`: split on '\n', strip a trailing '\r', and drop the final empty
         // segment produced by a body that ends in '\n' (Git does not print a spurious blank line).
         let body = raw.strip_suffix(b"\n").unwrap_or(raw);
         for line in body.split(|&b| b == b'\n') {
             let line = line.strip_suffix(b"\r").unwrap_or(line);
+            // Colorize only when the line is valid UTF-8 (grep patterns are
+            // UTF-8 regexes); otherwise fall back to the byte path.
+            if let (Some(c), Ok(text)) = (colorizer, std::str::from_utf8(line)) {
+                if let Some(colored) = c.colorize_message(text) {
+                    let indented = grit_lib::tab_expand::indent_and_expand_tabs(&colored, 4, et);
+                    out.write_all(indented.as_bytes())?;
+                    out.write_all(b"\n")?;
+                    continue;
+                }
+            }
             out.write_all(&grit_lib::tab_expand::indent_and_expand_tabs_bytes(
                 line, 4, et,
             ))?;
@@ -7981,11 +8161,19 @@ fn write_commit_body(out: &mut impl Write, info: &CommitInfo, et: usize) -> Resu
         }
     } else {
         for line in info.message.lines() {
-            writeln!(
-                out,
-                "{}",
-                grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
-            )?;
+            if let Some(colored) = colorizer.and_then(|c| c.colorize_message(line)) {
+                writeln!(
+                    out,
+                    "{}",
+                    grit_lib::tab_expand::indent_and_expand_tabs(&colored, 4, et)
+                )?;
+            } else {
+                writeln!(
+                    out,
+                    "{}",
+                    grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
+                )?;
+            }
         }
     }
     Ok(())
@@ -9719,6 +9907,7 @@ fn run_symmetric_log(
             None,
             source_for_oneline,
             percent_s_source_map.get(oid).map(|s| s.as_str()),
+            None,
         )?;
     }
 
@@ -9799,6 +9988,7 @@ fn format_commit(
     merge_from_parent: Option<&ObjectId>,
     source_for_oneline: Option<&str>,
     percent_s_source: Option<&str>,
+    grep_colorizer: Option<&GrepColorizer>,
 ) -> Result<()> {
     let hex = oid.to_hex();
     let abbrev_len = if args.no_abbrev {
@@ -10025,18 +10215,18 @@ fn format_commit(
                     .collect();
                 writeln!(out, "Merge: {}", parent_abbrevs.join(" "))?;
             }
-            writeln!(
-                out,
-                "Author: {}",
-                format_ident_display_mailmap(mailmap, &info.author, use_mailmap)
-            )?;
+            let author_disp = format_ident_display_mailmap(mailmap, &info.author, use_mailmap);
+            let author_disp = grep_colorizer
+                .and_then(|c| c.colorize_author(&author_disp))
+                .unwrap_or(author_disp);
+            writeln!(out, "Author: {author_disp}")?;
             writeln!(
                 out,
                 "Date:   {}",
                 format_author_date_internal(&info.author, date_format, true)
             )?;
             writeln!(out)?;
-            write_commit_body(out, info, et)?;
+            write_commit_body_colored(out, info, et, grep_colorizer)?;
             write_notes(out, oid, notes_cache, args, odb)?;
         }
         Some("full") => {
@@ -10058,18 +10248,19 @@ fn format_commit(
                     .collect();
                 writeln!(out, "Merge: {}", parent_abbrevs.join(" "))?;
             }
-            writeln!(
-                out,
-                "Author: {}",
-                format_ident_display_mailmap(mailmap, &info.author, use_mailmap)
-            )?;
-            writeln!(
-                out,
-                "Commit: {}",
-                format_ident_display_mailmap(mailmap, &info.committer, use_mailmap)
-            )?;
+            let author_disp = format_ident_display_mailmap(mailmap, &info.author, use_mailmap);
+            let author_disp = grep_colorizer
+                .and_then(|c| c.colorize_author(&author_disp))
+                .unwrap_or(author_disp);
+            writeln!(out, "Author: {author_disp}")?;
+            let committer_disp =
+                format_ident_display_mailmap(mailmap, &info.committer, use_mailmap);
+            let committer_disp = grep_colorizer
+                .and_then(|c| c.colorize_committer(&committer_disp))
+                .unwrap_or(committer_disp);
+            writeln!(out, "Commit: {committer_disp}")?;
             writeln!(out)?;
-            write_commit_body(out, info, et)?;
+            write_commit_body_colored(out, info, et, grep_colorizer)?;
             write_notes(out, oid, notes_cache, args, odb)?;
         }
         Some("fuller") => {
@@ -10091,28 +10282,29 @@ fn format_commit(
                     .collect();
                 writeln!(out, "Merge: {}", parent_abbrevs.join(" "))?;
             }
-            writeln!(
-                out,
-                "Author:     {}",
-                format_ident_display_mailmap(mailmap, &info.author, use_mailmap)
-            )?;
+            let author_disp = format_ident_display_mailmap(mailmap, &info.author, use_mailmap);
+            let author_disp = grep_colorizer
+                .and_then(|c| c.colorize_author(&author_disp))
+                .unwrap_or(author_disp);
+            writeln!(out, "Author:     {author_disp}")?;
             writeln!(
                 out,
                 "AuthorDate: {}",
                 format_author_date_internal(&info.author, date_format, true)
             )?;
-            writeln!(
-                out,
-                "Commit:     {}",
-                format_ident_display_mailmap(mailmap, &info.committer, use_mailmap)
-            )?;
+            let committer_disp =
+                format_ident_display_mailmap(mailmap, &info.committer, use_mailmap);
+            let committer_disp = grep_colorizer
+                .and_then(|c| c.colorize_committer(&committer_disp))
+                .unwrap_or(committer_disp);
+            writeln!(out, "Commit:     {committer_disp}")?;
             writeln!(
                 out,
                 "CommitDate: {}",
                 format_author_date_internal(&info.committer, date_format, true)
             )?;
             writeln!(out)?;
-            write_commit_body(out, info, et)?;
+            write_commit_body_colored(out, info, et, grep_colorizer)?;
             write_notes(out, oid, notes_cache, args, odb)?;
         }
         Some("reference") => {
@@ -12735,6 +12927,7 @@ fn write_commit_diff(
                 false,
                 None,
                 Some(parent_oid),
+                None,
                 None,
                 None,
             )?;
