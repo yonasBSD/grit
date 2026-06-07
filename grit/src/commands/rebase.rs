@@ -1956,6 +1956,8 @@ enum RebaseReplayStep {
     MergePlain {
         merge_args: String,
     },
+    /// `update-ref <ref>`: record the current HEAD as the ref's pending new value.
+    UpdateRef(String),
 }
 
 fn parse_rebase_replay_step(
@@ -1997,6 +1999,7 @@ fn parse_rebase_replay_step(
                 ParsedRebaseTodoLine::Break => RebaseReplayStep::Break,
                 ParsedRebaseTodoLine::Label(s) => RebaseReplayStep::Label(s),
                 ParsedRebaseTodoLine::Reset(s) => RebaseReplayStep::Reset(s),
+                ParsedRebaseTodoLine::UpdateRef(s) => RebaseReplayStep::UpdateRef(s),
             }),
         );
     }
@@ -2014,6 +2017,9 @@ fn parse_rebase_replay_step(
                     merge_args,
                     edit_message,
                 }));
+            }
+            ParsedRebaseTodoLine::UpdateRef(s) => {
+                return Ok(Some(RebaseReplayStep::UpdateRef(s)));
             }
             ParsedRebaseTodoLine::Commit { .. } => {}
             ParsedRebaseTodoLine::Noop
@@ -2050,6 +2056,8 @@ enum ParsedRebaseTodoLine {
     Break,
     Label(String),
     Reset(String),
+    /// `update-ref <ref>` — track a branch tip to update at rebase completion.
+    UpdateRef(String),
     /// `merge -C <ref> ...` — replay merge commit message from `merge_oid`, merge heads from the rest.
     MergeReuseMessage {
         merge_oid: ObjectId,
@@ -2096,8 +2104,13 @@ fn parse_interactive_rebase_todo_line(
     if cmd_lower == "noop" || cmd_lower == "drop" || cmd_lower == "d" {
         return Ok(Some(ParsedRebaseTodoLine::Noop));
     }
-    if cmd_lower == "update-ref" {
-        return Ok(Some(ParsedRebaseTodoLine::Noop));
+    if cmd_lower == "update-ref" || cmd_lower == "u" {
+        let rest = t[cmd_word.len()..].trim_start();
+        let refname = rest.split_whitespace().next().unwrap_or("");
+        if refname.is_empty() {
+            bail!("malformed update-ref todo line: {line}");
+        }
+        return Ok(Some(ParsedRebaseTodoLine::UpdateRef(refname.to_owned())));
     }
     if cmd_lower == "break" || cmd_lower == "b" {
         return Ok(Some(ParsedRebaseTodoLine::Break));
@@ -2227,7 +2240,8 @@ fn peek_next_rebase_flush_hint(
                 RebaseReplayStep::Noop
                 | RebaseReplayStep::Break
                 | RebaseReplayStep::Label(_)
-                | RebaseReplayStep::Reset(_) => RebaseTodoCmd::Pick,
+                | RebaseReplayStep::Reset(_)
+                | RebaseReplayStep::UpdateRef(_) => RebaseTodoCmd::Pick,
             });
         }
         j += 1;
@@ -2475,7 +2489,7 @@ fn next_non_fixup_index(
                 | RebaseReplayStep::Break
                 | RebaseReplayStep::Label(_)
                 | RebaseReplayStep::Reset(_) => return Some(j),
-                RebaseReplayStep::Noop => {
+                RebaseReplayStep::Noop | RebaseReplayStep::UpdateRef(_) => {
                     j += 1;
                 }
             }
@@ -4554,6 +4568,120 @@ fn todo_command_is_fixup(word: &str) -> bool {
     matches!(word, "squash" | "s" | "fixup" | "f")
 }
 
+/// Validate a `label` / `update-ref` argument, returning the error message if invalid.
+///
+/// Mirrors Git's `check_label_or_ref_arg` (sequencer.c): a `label` may not be `#` (reserved by
+/// the merge command) and must pass `check_refname_format` with one-level allowed; an
+/// `update-ref` refname must pass one-level validation and additionally be fully qualified
+/// (multi-component), else the `update-ref requires a fully qualified refname …` message.
+///
+/// # Parameters
+/// - `word`: the lowercased command word (`label`/`l` or `update-ref`/`u`).
+/// - `arg`: the argument token.
+///
+/// # Returns
+/// `Some(message)` describing the violation, or `None` when the argument is valid.
+fn check_label_or_ref_arg(word: &str, arg: &str) -> Option<String> {
+    use grit_lib::check_ref_format::{check_refname_format, RefNameOptions};
+    let onelevel = RefNameOptions {
+        allow_onelevel: true,
+        refspec_pattern: false,
+        normalize: false,
+    };
+    let fully_qualified = RefNameOptions {
+        allow_onelevel: false,
+        refspec_pattern: false,
+        normalize: false,
+    };
+    if word == "label" || word == "l" {
+        if arg == "#" || check_refname_format(arg, &onelevel).is_err() {
+            return Some(format!("'{arg}' is not a valid label"));
+        }
+        return None;
+    }
+    // update-ref / u
+    if check_refname_format(arg, &onelevel).is_err() {
+        return Some(format!("'{arg}' is not a valid refname"));
+    }
+    if check_refname_format(arg, &fully_qualified).is_err() {
+        return Some(format!(
+            "update-ref requires a fully qualified refname e.g. refs/heads/{arg}"
+        ));
+    }
+    None
+}
+
+/// Report a non-merge todo command targeting a merge commit (Git's `check_merge_commit_insn`).
+///
+/// `pick`/`reword`/`edit` print `'<cmd>' does not accept merge commits` plus a per-command
+/// `hint:` advice block (suppressed when `advice_enabled` is false); `fixup`/`squash` print
+/// `cannot squash merge commit into another commit`. `drop`/`merge`/`label`/etc. are accepted.
+///
+/// # Parameters
+/// - `repo`: repository to look up the commit's parent count.
+/// - `word`: lowercased command word.
+/// - `oid`: the targeted commit.
+/// - `advice_enabled`: whether `advice.rebaseTodoError` advice should be emitted.
+///
+/// # Returns
+/// `true` when the command rejects this (merge) commit (caller emits `invalid line N`), else
+/// `false`.
+fn report_merge_commit_rejection(
+    repo: &Repository,
+    word: &str,
+    oid: ObjectId,
+    advice_enabled: bool,
+) -> bool {
+    let is_merge = repo
+        .odb
+        .read(&oid)
+        .ok()
+        .and_then(|obj| parse_commit(&obj.data).ok())
+        .map(|c| c.parents.len() > 1)
+        .unwrap_or(false);
+    if !is_merge {
+        return false;
+    }
+    let disable = "hint: Disable this message with \"git config set advice.rebaseTodoError false\"";
+    match word {
+        "pick" | "p" => {
+            eprintln!("error: 'pick' does not accept merge commits");
+            if advice_enabled {
+                eprintln!("hint: 'pick' does not take a merge commit. If you wanted to");
+                eprintln!("hint: replay the merge, use 'merge -C' on the commit.");
+                eprintln!("{disable}");
+            }
+            true
+        }
+        "reword" | "r" => {
+            eprintln!("error: 'reword' does not accept merge commits");
+            if advice_enabled {
+                eprintln!("hint: 'reword' does not take a merge commit. If you wanted to");
+                eprintln!("hint: replay the merge and reword the commit message, use");
+                eprintln!("hint: 'merge -c' on the commit");
+                eprintln!("{disable}");
+            }
+            true
+        }
+        "edit" | "e" => {
+            eprintln!("error: 'edit' does not accept merge commits");
+            if advice_enabled {
+                eprintln!("hint: 'edit' does not take a merge commit. If you wanted to");
+                eprintln!("hint: replay the merge, use 'merge -C' on the commit, and then");
+                eprintln!("hint: 'break' to give the control back to you so that you can");
+                eprintln!("hint: do 'git commit --amend && git rebase --continue'.");
+                eprintln!("{disable}");
+            }
+            true
+        }
+        "fixup" | "f" | "squash" | "s" => {
+            eprintln!("error: cannot squash merge commit into another commit");
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Validates the edited interactive-rebase todo before execution (Git's `todo_list_parse_insn_buffer`
 /// + `todo_list_check`).
 ///
@@ -4584,8 +4712,18 @@ fn validate_edited_interactive_todo(
         t.starts_with(comment_prefix.as_ref()) || rebase_todo_line_is_comment(t)
     };
 
-    // Structural validation: unknown commands, bad SHAs, and a leading fixup all abort with advice.
-    let mut fixup_okay = false;
+    // Structural validation: unknown commands, bad SHAs, bad labels/refnames, merge commits on
+    // non-merge commands, and a leading fixup all abort with advice. Git's
+    // `todo_list_parse_insn_buffer` continues past a per-line error (printing `error: invalid line
+    // N` for each), then aborts once at the end, so we accumulate rather than early-return.
+    let advice_enabled = config
+        .get_bool("advice.rebaseTodoError")
+        .and_then(|r| r.ok())
+        .unwrap_or(true);
+    let mut fixup_okay = fs::read_to_string(rb_merge.join("done"))
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let mut had_error = false;
     for (idx, raw) in edited.lines().enumerate() {
         let t = raw.trim();
         if t.is_empty() || is_comment(t) {
@@ -4600,26 +4738,53 @@ fn validate_edited_interactive_todo(
             let original_word = t.split_whitespace().next().unwrap_or(&word);
             eprintln!("error: invalid command '{original_word}'");
             eprintln!("error: invalid line {}: {t}", idx + 1);
-            eprintln!("{ADVICE}");
-            return Err(crate::explicit_exit::SilentNonZeroExit { code: 1 }.into());
+            had_error = true;
+            continue;
         }
-        // Validate that pick-like commands carry a resolvable commit.
-        if todo_command_is_pick_like(&word) {
-            if let Err(_e) = parse_interactive_rebase_todo_line(repo, t) {
+        // Validate `label`/`update-ref` argument format (Git `check_label_or_ref_arg`).
+        if word == "label" || word == "l" || word == "update-ref" || word == "u" {
+            let arg = t
+                .split_whitespace()
+                .nth(1)
+                .map(str::to_owned)
+                .unwrap_or_default();
+            if let Some(msg) = check_label_or_ref_arg(&word, &arg) {
+                eprintln!("error: {msg}");
                 eprintln!("error: invalid line {}: {t}", idx + 1);
-                eprintln!("{ADVICE}");
-                return Err(crate::explicit_exit::SilentNonZeroExit { code: 1 }.into());
+                had_error = true;
+            }
+            continue;
+        }
+        // Validate that pick-like commands carry a resolvable commit and (for non-merge commands)
+        // do not target a merge commit.
+        if todo_command_is_pick_like(&word) {
+            match todo_line_commit_oid(repo, t) {
+                Some(oid) => {
+                    if report_merge_commit_rejection(repo, &word, oid, advice_enabled) {
+                        eprintln!("error: invalid line {}: {t}", idx + 1);
+                        had_error = true;
+                        continue;
+                    }
+                }
+                None => {
+                    eprintln!("error: invalid line {}: {t}", idx + 1);
+                    had_error = true;
+                    continue;
+                }
             }
         }
-        let is_noop = word == "noop";
+        let is_noop = word == "noop" || word == "drop" || word == "d";
         if !fixup_okay && todo_command_is_fixup(&word) {
             eprintln!("error: cannot '{word}' without a previous commit");
-            eprintln!("{ADVICE}");
-            return Err(crate::explicit_exit::SilentNonZeroExit { code: 1 }.into());
+            had_error = true;
         }
         if !is_noop && !todo_command_is_fixup(&word) {
             fixup_okay = true;
         }
+    }
+    if had_error {
+        eprintln!("{ADVICE}");
+        return Err(crate::explicit_exit::SilentNonZeroExit { code: 1 }.into());
     }
 
     // Missing-commit check (`rebase.missingCommitsCheck`).
@@ -5443,7 +5608,6 @@ Use '--' to separate paths from revisions, like this:\n\
         }
     }
 
-    let commits_for_update_refs = commits.clone();
     let mut generated_merge_script: Option<String> = None;
     // For a plain `rebase -i`, captures (original todo with help, raw edited todo) so the static
     // todo check (`todo_list_check`) can run after the rebase state dir is established.
@@ -5657,9 +5821,6 @@ Use '--' to separate paths from revisions, like this:\n\
         _ => "detached HEAD".to_string(),
     };
     fs::write(rb_dir.join("head-name"), &head_name)?;
-    if rebase_update_refs_enabled(&args, &config) && matches!(backend, RebaseBackend::Merge) {
-        write_rebase_update_refs(git_dir, &commits_for_update_refs)?;
-    }
     fs::write(rb_dir.join("orig-head"), head_oid.to_hex())?;
     fs::write(
         git_dir.join("ORIG_HEAD"),
@@ -5722,6 +5883,11 @@ Use '--' to separate paths from revisions, like this:\n\
     let total_cmds = count_rebase_todo_actionable_lines(&todo_body);
     if rebase_interactive {
         fs::write(rb_dir.join("interactive"), "")?;
+    }
+    // Initialize the `--update-refs` state from the finalized todo's `update-ref` lines (Git's
+    // `todo_list_add_update_ref_commands` writes the before/after-null records here).
+    if rebase_update_refs_enabled(&args, &config) && matches!(backend, RebaseBackend::Merge) {
+        write_rebase_update_refs(git_dir, &todo_body)?;
     }
     write_rebase_todo_file(&repo, &rb_dir, &todo_body)?;
     if rebase_merges_on && !args.interactive {
@@ -6662,6 +6828,14 @@ fn replay_remaining(
                     if rebase_interactive {
                         append_interactive_rebase_done_line(rb_dir, todo[i])?;
                     }
+                }
+                RebaseReplayStep::UpdateRef(refname) => {
+                    // Record the current HEAD as the ref's pending new tip; the ref itself is
+                    // moved at completion by `apply_update_refs` (Git's `do_update_ref`).
+                    if rebase_interactive {
+                        append_interactive_rebase_done_line(rb_dir, todo[i])?;
+                    }
+                    do_update_ref(repo, rb_dir, &refname)?;
                 }
                 RebaseReplayStep::Break => {
                     let _ = fs::remove_file(rb_dir.join("current"));
@@ -8762,11 +8936,14 @@ fn finish_rebase(
             if autostash_oid_finish.is_some() {
                 apply_pending_autostash(repo, rb_dir)?;
             }
-            cleanup_rebase_state(git_dir);
             flush_rebase_stdout();
             if !quiet {
                 eprintln!("Successfully rebased and updated {success_target}.");
             }
+            // Apply `--update-refs` after the success message and before clearing rebase state
+            // (Git: `do_update_refs` runs after "Successfully rebased", before cleanup).
+            apply_update_refs(git_dir, quiet)?;
+            cleanup_rebase_state(git_dir);
         }
         RebaseBackend::Apply => {
             cleanup_rebase_state(git_dir);
