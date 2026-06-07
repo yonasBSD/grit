@@ -51,7 +51,12 @@ fn expand_tilde_path(value: &str) -> String {
 
 fn effective_template_dir(args: &Args) -> Option<PathBuf> {
     match &args.template {
-        Some(t) if t.is_empty() => None,
+        // `--template=` (explicit empty) means "use no template". Upstream Git's clone treats this
+        // as an empty template directory: `hooks/`, `info/`, `description`, and `branches/` are NOT
+        // created (they are template content), so a later `mkdir .git/info` in the harness succeeds
+        // (t1090). Return an empty path so `init_repository*`'s `skip_hooks_info` guard fires; the
+        // empty path is never `is_dir()`, so no template copy is attempted.
+        Some(t) if t.is_empty() => Some(PathBuf::new()),
         Some(t) => Some(PathBuf::from(t)),
         None => {
             if let Ok(tdir) = std::env::var("GIT_TEMPLATE_DIR") {
