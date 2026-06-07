@@ -973,8 +973,9 @@ fn run_test_tool_ref_store(rest: &[String]) -> Result<()> {
             let skip_refname_verification =
                 flags.iter().any(|f| f == "REF_SKIP_REFNAME_VERIFICATION");
 
+            // `dispatch` is given the subcommand name separately, so `args` must contain
+            // only the flags/operands of `git update-ref` (not the "update-ref" word itself).
             let mut args = vec![
-                "update-ref".to_owned(),
                 "-m".to_owned(),
                 msg.clone(),
                 refname.clone(),
@@ -7448,6 +7449,34 @@ fn test_tool_parse_git_bool_strict(value: &str) -> std::result::Result<bool, ()>
     }
 }
 
+/// Locate the repository git directory for `test-tool config` without requiring config to parse.
+///
+/// `Repository::discover` reads (and parses) the repository config as part of discovery, so when the
+/// config file contains a syntax error discovery fails and returns `None`. The config test helper
+/// must still find the local `config` file in that case so the malformed line surfaces as a fatal
+/// parse error (t1308 "proper error on error in default config files"). Mirror the `git config`
+/// command's `resolve_git_dir`: try discovery first, then fall back to a config-free directory walk.
+fn test_tool_config_locate_git_dir() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("GIT_DIR") {
+        let p = std::path::PathBuf::from(dir);
+        if p.is_absolute() {
+            return Some(p);
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            return Some(cwd.join(p));
+        }
+        return Some(p);
+    }
+    grit_lib::repo::Repository::discover(None)
+        .ok()
+        .map(|r| r.git_dir)
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .and_then(grit_lib::precompose_config::locate_git_dir_from_cwd)
+        })
+}
+
 /// Handle `test-tool config` — config API test helper.
 fn run_test_tool_config(rest: &[String]) -> Result<()> {
     use grit_lib::config::{canonical_key, ConfigFile};
@@ -7473,8 +7502,8 @@ fn run_test_tool_config(rest: &[String]) -> Result<()> {
         };
     }
 
-    let repo = grit_lib::repo::Repository::discover(None).ok();
-    let git_dir = repo.as_ref().map(|r| r.git_dir.as_path());
+    let git_dir_buf = test_tool_config_locate_git_dir();
+    let git_dir = git_dir_buf.as_deref();
 
     match subcmd {
         "get" => {
