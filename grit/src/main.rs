@@ -7610,8 +7610,14 @@ fn run_test_tool_config(rest: &[String]) -> Result<()> {
 
     if subcmd == "read_early_config" {
         let key = rest.get(1).map(|s| s.as_str()).unwrap_or("");
-        let repo = grit_lib::repo::Repository::discover(None).ok();
-        let git_dir = repo.as_ref().map(|r| r.git_dir.as_path());
+        // Locate the git dir the way Git's `read_early_config`/`discover_git_directory_reason`
+        // does: still record the gitdir even when the repository format is unsupported
+        // (`GIT_DIR_INVALID_FORMAT`), so `read_early_config` can emit the
+        // "Expected git repo version <= N" warning and skip the repo's local config (t1309).
+        // `Repository::discover` validates the format and would yield no gitdir for such a repo,
+        // so use the validation-free locator (it still honors GIT_DIR/ceilings).
+        let git_dir_buf = test_tool_config_locate_git_dir();
+        let git_dir = git_dir_buf.as_deref();
         return match ConfigSet::read_early_config(git_dir, key) {
             Ok(values) => {
                 if values.is_empty() {
