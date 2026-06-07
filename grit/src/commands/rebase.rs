@@ -1373,9 +1373,20 @@ fn generate_rebase_merge_script(
         ..Default::default()
     };
     label_state.used_labels.insert("onto".to_owned());
+    // Git labels the BOTTOM rev of the `upstream...head` symmetric walk as "onto"
+    // (sequencer.c: `revs->cmdline.rev[0].flags & BOTTOM`). For `base...head` that bottom is the
+    // merge-base of upstream and head, which differs from the `--onto` target when upstream is not
+    // an ancestor of head. The reset-target lookup in the third phase relies on this: a boundary
+    // that equals the merge-base resolves to "onto" (→ `reset onto`), while a true cousin boundary
+    // gets a fresh `label_oid` (→ `reset <abbrev> # <subj>`). t3421 keep-empty resets to onto;
+    // t3430 'do not rebase cousins' resets to the branch point.
+    let onto_label_oid = merge_bases_first_vs_rest(repo, upstream_oid, &[head_oid])?
+        .into_iter()
+        .next()
+        .unwrap_or(onto_oid);
     label_state
         .commit_to_label
-        .insert(onto_oid, "onto".to_owned());
+        .insert(onto_label_oid, "onto".to_owned());
 
     let (walk_order, cherry_equiv) =
         commits_for_rebase_merge_walk(repo, head_oid, upstream_oid, filter_cherry_equivalents)?;
@@ -1518,32 +1529,34 @@ fn generate_rebase_merge_script(
                 "reset [new root]\n"
             });
         } else if let Some(b) = boundary {
-            if b == onto_oid {
-                out.push_str("reset onto\n");
-            } else if !interesting.contains(&b) {
-                // The first-parent walk stopped at a commit below the rebased set (an ancestor of
-                // `onto`/upstream that Git's limited symmetric walk collapses away). Git resets to
-                // `onto` here — e.g. rebasing a linear branch whose merge-base differs from `onto`
-                // (t3421 --rebase-merges --keep-empty: `reset onto`, not `reset [new root]`).
-                // A true `[new root]` only arises when the walk reaches an actual root commit
-                // (handled by `stopped_at_root` above).
-                out.push_str("reset onto\n");
-            } else if let Some(lbl) = label_state.commit_to_label.get(&b) {
-                if lbl == "onto" {
-                    out.push_str("reset onto\n");
-                } else {
+            // Mirror Git's `make_script_with_merges` (sequencer.c) exactly. The first-parent walk
+            // stopped at `b` because it is no longer interesting or was already shown. Pick the
+            // reset target: prefer an existing label (the merge-base is pre-labeled "onto", branch
+            // points are "branch-point"); otherwise, when *not* rebasing cousins, synthesize a label
+            // from `b`'s abbreviated hash via `label_oid(oid, NULL)`. Cousins mode leaves an
+            // unlabeled boundary as `None`, falling back to `reset onto`.
+            let to: Option<String> = if let Some(lbl) = label_state.commit_to_label.get(&b) {
+                Some(lbl.clone())
+            } else if !rebase_cousins {
+                Some(label_oid_for_merge_script(
+                    &b,
+                    None,
+                    &mut label_state,
+                    repo,
+                )?)
+            } else {
+                None
+            };
+            match to {
+                None => out.push_str("reset onto\n"),
+                Some(ref lbl) if lbl == "onto" => out.push_str("reset onto\n"),
+                Some(lbl) => {
                     // Git's `reset <label> # <subject>` comment uses the commit subject only, not
                     // the abbreviated hash (which is already encoded in the label). t3430 expects
                     // `reset branch-point # C`, not `reset branch-point # <hash> # C`.
                     let subj = reset_comment_subject(repo, &b, config)?;
                     out.push_str(&format!("reset {lbl} # {subj}\n"));
                 }
-            } else if rebase_cousins {
-                out.push_str("reset onto\n");
-            } else {
-                let lbl = label_oid_for_merge_script(&b, None, &mut label_state, repo)?;
-                let subj = reset_comment_subject(repo, &b, config)?;
-                out.push_str(&format!("reset {lbl} # {subj}\n"));
             }
         }
 
@@ -4951,9 +4964,6 @@ fn run_interactive_rebase(
     let todo_with_help = append_rebase_todo_help(&todo, command_count, revs_onto, config);
     fs::write(&todo_path, todo_with_help.as_bytes())?;
     let editor = sequence_editor_cmd(config)?;
-    if std::env::var("GRIT_DEBUG_T3415").is_ok() {
-        eprintln!("DEBUG run_interactive_rebase editor=[{editor}]");
-    }
     let status = run_shell_editor(&editor, &todo_path)?;
     let edited = fs::read_to_string(&todo_path)?;
     let _ = fs::remove_dir_all(&rb_merge);
@@ -6917,8 +6927,30 @@ fn replay_remaining(
                     let st = run_plain_merge_for_rebase(repo, merge_args.as_str())?;
                     if !st.success() {
                         if git_dir.join("MERGE_HEAD").exists() {
-                            let remaining_merge: Vec<&str> = todo[i..].to_vec();
-                            write_rebase_todo_slice(rb_dir, &remaining_merge)?;
+                            // Content conflict on a plain `merge <branch>` (no `-C`). Git's
+                            // `error_with_patch` writes the synthesized merge message to
+                            // `.git/rebase-merge/message` and drops the merge from the todo: it is
+                            // now in progress via MERGE_HEAD, so `--continue` commits it through the
+                            // staged-changes path rather than re-running `merge` (t3430 'failed
+                            // `merge <branch>` does not crash'). No `patch` is written because there
+                            // is no original merge commit to diff against.
+                            let (heads, oneline) = parse_merge_todo_arg_list(&merge_args);
+                            let merge_message = oneline.unwrap_or_else(|| {
+                                if heads.len() > 1 {
+                                    format!("Merge branches {}", heads.join(" "))
+                                } else {
+                                    format!(
+                                        "Merge branch '{}'",
+                                        heads.first().cloned().unwrap_or_default()
+                                    )
+                                }
+                            });
+                            if !rb_dir.join("message").exists() {
+                                let _ =
+                                    fs::write(rb_dir.join("message"), format!("{merge_message}\n"));
+                            }
+                            let rest: Vec<&str> = todo[i + 1..].to_vec();
+                            write_rebase_todo_slice(rb_dir, &rest)?;
                             std::process::exit(1);
                         }
                         std::process::exit(st.code().unwrap_or(1));
@@ -8434,6 +8466,16 @@ fn cherry_pick_for_rebase(
                 git_dir.join("REBASE_HEAD"),
                 format!("{}\n", commit_oid.to_hex()),
             )?;
+            // Git records CHERRY_PICK_HEAD for a halted `pick` (matching REBASE_HEAD) so a
+            // subsequent `git commit` detects an in-progress rebase pick (t3404 118/119). Restrict
+            // to plain picks: a fixup/squash stop must not leave CHERRY_PICK_HEAD, which would make
+            // the fixup continuation amend with the wrong message (t3404 76 `--root fixup`).
+            if matches!(todo_cmd, RebaseTodoCmd::Pick | RebaseTodoCmd::Reword) {
+                fs::write(
+                    git_dir.join("CHERRY_PICK_HEAD"),
+                    format!("{}\n", commit_oid.to_hex()),
+                )?;
+            }
             let (message, _encoding, _raw_message) = transcoded_replayed_message(&commit, &config);
             fs::write(git_dir.join("COMMIT_EDITMSG"), message)?;
             eprintln!(
@@ -8601,13 +8643,31 @@ fn cherry_pick_for_rebase(
             let squash_ctx = read_squash_ctx(rb_dir);
             let mut cleaned = if fixup_path.exists() && !squash_ctx.seen_squash {
                 let tmpl = fs::read_to_string(&fixup_path)?;
-                let raw = if fixup_message_opens_editor(rb_dir) {
+                if fixup_message_opens_editor(rb_dir) {
                     let edit_tmpl = fixup_edit_template(rb_dir, &tmpl);
-                    run_commit_editor_for_template(repo, git_dir, &edit_tmpl, "squash", None)?
+                    let raw =
+                        run_commit_editor_for_template(repo, git_dir, &edit_tmpl, "squash", None)?;
+                    cleanup_squash_editor_message(&raw, &config)
                 } else {
-                    commit_message_after_prepare_hook(repo, git_dir, &tmpl, "message", Some(":"))?
-                };
-                cleanup_squash_editor_message(&raw, &config)
+                    // Git's sequencer writes only the plain folded message body (no `# This is a
+                    // combination …` headers) to `message-fixup`, then `try_to_commit` runs
+                    // `prepare-commit-msg` on *that* body and applies only the configured
+                    // `commit.cleanup` (NONE when unset). Mirror that here: collapse the squash
+                    // template down to its message body first, run the hook on the body, then apply
+                    // `commit.cleanup`. Running the squash editor cleanup *after* the hook would
+                    // strip hook-appended comment lines such as a trailing `# Prepared` that must
+                    // survive when `commit.cleanup` is unset (t3415 `pick and fixup respect
+                    // commit.cleanup`).
+                    let body = cleanup_squash_editor_message(&tmpl, &config);
+                    let raw = commit_message_after_prepare_hook(
+                        repo,
+                        git_dir,
+                        &body,
+                        "message",
+                        Some(":"),
+                    )?;
+                    apply_commit_msg_cleanup(&raw, rebase_commit_msg_cleanup(&config))
+                }
             } else {
                 let tmpl = fs::read_to_string(rb_dir.join("message-squash"))?;
                 let after_editor =
@@ -9086,6 +9146,17 @@ fn do_continue() -> Result<()> {
         && rb_dir.join("rebase-merge-args").exists()
         && !git_dir.join("MERGE_HEAD").exists()
     {
+        // Git's `commit_staged_changes` gate (sequencer.c). A merge that was *blocked* before it
+        // could touch the index (e.g. an untracked working-tree file would be overwritten) leaves
+        // no `.git/rebase-merge/message`. If the user then stages unrelated changes and runs
+        // `--continue`, Git refuses with "you have staged changes in your working tree" rather than
+        // silently retrying the merge with a dirty index (t3430 'failed `merge -C` writes patch').
+        // After `git reset --hard` cleans the worktree, the index matches HEAD and we proceed to
+        // retry the merge. The MERGE_HEAD conflict-resolution continue takes the other branch below
+        // (it always has a `message` file), so this gate never fires for genuine conflict resolves.
+        if !rb_dir.join("message").exists() && !worktree_matches_head(&repo, git_dir)? {
+            bail!("error: you have staged changes in your working tree");
+        }
         let src_hex = fs::read_to_string(rb_dir.join("rebase-merge-source"))?;
         let merge_src_oid = ObjectId::from_hex(src_hex.trim())?;
         let merge_args = fs::read_to_string(rb_dir.join("rebase-merge-args"))?;
@@ -9117,11 +9188,35 @@ fn do_continue() -> Result<()> {
             );
         }
         if git_dir.join("MERGE_HEAD").exists() {
+            // The retried merge produced a *content* conflict (Git's `do_merge` returns >0). Unlike
+            // a blocked retry, Git drops the merge from the todo (it is now in progress via
+            // MERGE_HEAD) and writes `patch` + REBASE_HEAD via `error_with_patch`. The next
+            // `--continue` then commits the resolved merge through the MERGE_HEAD path below.
+            let merge_commit_oid = peel_to_commit_for_merge_base(&repo, merge_src_oid)?;
+            let rest: Vec<String> = todo_lines_retry
+                .iter()
+                .skip(1)
+                .map(|s| s.to_string())
+                .collect();
+            let rest_body = if rest.is_empty() {
+                String::new()
+            } else {
+                rest.join("\n") + "\n"
+            };
+            fs::write(rb_dir.join("git-rebase-todo"), &rest_body)?;
+            fs::write(rb_dir.join("todo"), &rest_body)?;
+            let _ = fs::remove_file(rb_dir.join("rebase-merge-source"));
             let _ = fs::remove_file(rb_dir.join("rebase-merge-args"));
+            let _ = fs::remove_file(rb_dir.join("rebase-merge-edit-msg"));
             let _ = fs::write(
                 rb_dir.join("stopped-sha"),
-                format!("{}\n", merge_src_oid.to_hex()),
+                format!("{}\n", merge_commit_oid.to_hex()),
             );
+            fs::write(
+                git_dir.join("REBASE_HEAD"),
+                format!("{}\n", merge_commit_oid.to_hex()),
+            )?;
+            let _ = write_rebase_patch_file(&repo, &rb_dir, &merge_commit_oid);
             bail!(
                 "merge conflicts during rebase merge; resolve, then run 'grit rebase --continue'"
             );
@@ -10247,6 +10342,9 @@ fn cleanup_rebase_state(git_dir: &Path) {
     let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
     let _ = fs::remove_file(git_dir.join("SQUASH_MSG"));
     let _ = fs::remove_file(git_dir.join("REBASE_HEAD"));
+    // Git clears CHERRY_PICK_HEAD when a rebase finishes/aborts (the sequencer's
+    // `sequencer_remove_state`); a halted interactive pick records it (t3404 97/118/119).
+    let _ = fs::remove_file(git_dir.join("CHERRY_PICK_HEAD"));
 }
 
 fn commit_message_unicode(commit: &CommitData) -> String {
