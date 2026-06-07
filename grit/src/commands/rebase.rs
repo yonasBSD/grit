@@ -1009,6 +1009,162 @@ fn format_autosquash_subject_for_match(message: &str) -> String {
     commit_subject_single_line(message)
 }
 
+/// Apply autosquash (`fixup!`/`squash!`/`amend!`) rearrangement to a generated `--rebase-merges`
+/// todo script, mirroring Git's `todo_list_rearrange_squash` (which `complete_action` runs over the
+/// FULL merge script — picks AND merges — before the sequence editor opens).
+///
+/// Each `pick <oid> # …` and `merge … <oid> # …` line carries a commit; we match a fixup/squash
+/// pick to its target by commit subject (or, for a one-token suffix, by commit name), convert the
+/// matched line's command to `fixup`/`squash`, and move it directly after its target (threading
+/// multiple fixups via a per-target tail). Non-commit lines (`label`/`reset`/`exec`/blank/comment)
+/// are preserved in place. t3430 'with --autosquash and --exec'.
+fn rearrange_autosquash_merge_script(repo: &Repository, script: &str) -> Result<String> {
+    let lines: Vec<&str> = script.lines().collect();
+    let n = lines.len();
+
+    // Per-line: the commit oid (if this line is a pick/merge with a commit) and its subject.
+    let mut line_oid: Vec<Option<ObjectId>> = vec![None; n];
+    let mut subjects: Vec<Option<String>> = vec![None; n];
+    // subject -> first line index that introduced it (target lookup by title).
+    let mut subject_to_index: HashMap<String, usize> = HashMap::new();
+    // commit oid -> line index (target lookup by commit name).
+    let mut oid_to_index: HashMap<ObjectId, usize> = HashMap::new();
+    let mut next: Vec<isize> = vec![-1; n];
+    let mut tail: Vec<isize> = vec![-1; n];
+    // The new command keyword for a rearranged line ("fixup"/"squash"); None = leave the line as-is.
+    let mut new_cmd: Vec<Option<&'static str>> = vec![None; n];
+    let mut rearranged = false;
+
+    for i in 0..n {
+        let line = lines[i].trim();
+        // Determine the commit oid for pick/merge lines. `pick <abbrev> # subj` and the merge forms
+        // `merge -C <abbrev> <label> # subj` / `merge -c <abbrev> …` both expose a commit oid.
+        let oid = pick_or_merge_commit_oid(repo, line);
+        let Some(oid) = oid else {
+            continue;
+        };
+        let obj = repo.odb.read(&oid)?;
+        let commit = parse_commit(&obj.data)?;
+        let subj = format_autosquash_subject_for_match(&commit.message);
+        line_oid[i] = Some(oid);
+        subjects[i] = Some(subj.clone());
+
+        let mut target_idx: Option<usize> = None;
+        if let Some(rest) = skip_fixupish_prefix(&subj) {
+            let key = strip_fixupish_chain(rest).trim();
+            if let Some(&idx) = subject_to_index.get(key) {
+                target_idx = Some(idx);
+            } else if !key.contains(' ') {
+                if let Ok(t) = resolve_revision(repo, key) {
+                    if t != oid {
+                        if let Some(&idx) = oid_to_index.get(&t) {
+                            target_idx = Some(idx);
+                        }
+                    }
+                }
+            }
+            if target_idx.is_none() {
+                // Prefix match against an earlier subject (Git's final fallback).
+                for (i2, s) in subjects.iter().enumerate().take(i) {
+                    if let Some(s) = s {
+                        if s.starts_with(key) {
+                            target_idx = Some(i2);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(i2) = target_idx {
+            rearranged = true;
+            if subj.starts_with("fixup!") || subj.starts_with("amend!") {
+                new_cmd[i] = Some("fixup");
+            } else {
+                new_cmd[i] = Some("squash");
+            }
+            if tail[i2] < 0 {
+                next[i] = next[i2];
+                next[i2] = i as isize;
+            } else {
+                let t = tail[i2] as usize;
+                next[i] = next[t];
+                next[t] = i as isize;
+            }
+            tail[i2] = i as isize;
+        } else {
+            subject_to_index.entry(subj).or_insert(i);
+            oid_to_index.entry(oid).or_insert(i);
+        }
+    }
+
+    if !rearranged {
+        return Ok(script.to_owned());
+    }
+
+    let mut out: Vec<String> = Vec::with_capacity(n);
+    for i in 0..n {
+        // Rearranged (fixup/squash) lines are emitted only by following a target's `next` chain.
+        if new_cmd[i].is_some() {
+            continue;
+        }
+        let mut cur = i as isize;
+        while cur >= 0 {
+            let ci = cur as usize;
+            if let Some(cmd) = new_cmd[ci] {
+                // Rewrite the leading command keyword (`pick`/`p`) to `fixup`/`squash`.
+                out.push(rewrite_todo_command_keyword(lines[ci], cmd));
+            } else {
+                out.push(lines[ci].to_owned());
+            }
+            cur = next[ci];
+        }
+    }
+    let mut body = out.join("\n");
+    if script.ends_with('\n') {
+        body.push('\n');
+    }
+    Ok(body)
+}
+
+/// The commit oid named by a `pick`/`merge -C`/`merge -c` todo line, or `None` for other lines.
+fn pick_or_merge_commit_oid(repo: &Repository, line: &str) -> Option<ObjectId> {
+    let t = line.trim();
+    let mut parts = t.split_whitespace();
+    let cmd = parts.next()?.to_ascii_lowercase();
+    match cmd.as_str() {
+        "pick" | "p" => {
+            let tok = parts.next()?;
+            resolve_revision(repo, tok).ok()
+        }
+        "merge" | "m" => {
+            // `merge [-C <commit> | -c <commit>] <label> [# oneline]`. Only `-C`/`-c` name a commit.
+            let opt = parts.next()?;
+            if opt == "-C" || opt == "-c" {
+                let tok = parts.next()?;
+                resolve_revision(repo, tok).ok()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Replace the leading command word of a todo line with `new_cmd`, preserving the rest verbatim.
+fn rewrite_todo_command_keyword(line: &str, new_cmd: &str) -> String {
+    let leading_ws_len = line.len() - line.trim_start().len();
+    let (lead, rest) = line.split_at(leading_ws_len);
+    let mut it = rest.splitn(2, char::is_whitespace);
+    let _old = it.next().unwrap_or("");
+    let tail = it.next().unwrap_or("");
+    if tail.is_empty() {
+        format!("{lead}{new_cmd}")
+    } else {
+        format!("{lead}{new_cmd} {tail}")
+    }
+}
+
 fn is_commit_tree_unchanged(repo: &Repository, oid: &ObjectId) -> Result<bool> {
     const GIT_EMPTY_TREE_HEX: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
     let obj = repo.odb.read(oid)?;
@@ -1679,6 +1835,52 @@ enum TodoBuildItem {
     UpdateRef(String),
     /// A `# Ref <ref> checked out at <path>` comment (branch is checked out elsewhere).
     RefComment(String),
+    /// An `exec <command>` step inserted by `--exec`/`-x` after a pick (or merge) chain.
+    Exec(String),
+}
+
+/// Insert `exec` items after every pick/merge chain, mirroring Git's `todo_list_add_exec_commands`:
+/// fixup/squash chains count as part of the preceding pick, so the exec commands are inserted only
+/// once the next non-fixup command (or end of list) is reached. The decoration items
+/// (`UpdateRef`/`RefComment`) are inert and do not reset the pending insert.
+fn insert_exec_commands(items: Vec<TodoBuildItem>, exec_cmds: &[String]) -> Vec<TodoBuildItem> {
+    if exec_cmds.is_empty() {
+        return items;
+    }
+    let mut out: Vec<TodoBuildItem> = Vec::with_capacity(items.len() + exec_cmds.len());
+    let mut insert = false;
+    for item in items {
+        // Git's `is_fixup(command)` is true for both fixup and squash; the pending exec is flushed
+        // before any non-fixup command.
+        let is_fixup = matches!(
+            item,
+            TodoBuildItem::Commit(_, RebaseTodoCmd::Fixup | RebaseTodoCmd::Squash)
+        );
+        // Only a `pick` (Git also: `merge`) arms the pending insert. `reword` does not.
+        let is_pick = matches!(item, TodoBuildItem::Commit(_, RebaseTodoCmd::Pick));
+        // Decoration items (update-ref / ref-comment) are not real commands and must not trigger an
+        // early exec insert; keep the pending state across them so exec lands after the pick chain.
+        let is_decoration = matches!(
+            item,
+            TodoBuildItem::UpdateRef(_) | TodoBuildItem::RefComment(_)
+        );
+        if insert && !is_fixup && !is_decoration {
+            for cmd in exec_cmds {
+                out.push(TodoBuildItem::Exec(cmd.clone()));
+            }
+            insert = false;
+        }
+        out.push(item);
+        if is_pick {
+            insert = true;
+        }
+    }
+    if insert {
+        for cmd in exec_cmds {
+            out.push(TodoBuildItem::Exec(cmd.clone()));
+        }
+    }
+    out
 }
 
 /// Build the autosquash-rearranged todo item list, optionally interleaving `--update-refs`
@@ -5165,6 +5367,7 @@ fn run_interactive_rebase(
     autostash_oid: Option<&ObjectId>,
     autosquash: bool,
     update_refs: bool,
+    exec_cmds: &[String],
     revs_onto: Option<(&str, &str)>,
 ) -> Result<(
     Vec<String>,
@@ -5177,6 +5380,9 @@ fn run_interactive_rebase(
         validate_rebase_instruction_format(config)?;
     }
     let items = build_autosquash_with_update_refs(repo, git_dir, commits, autosquash, update_refs)?;
+    // Git's `complete_action` runs `todo_list_add_exec_commands` after the autosquash rearrange, so
+    // `--exec` lines are interleaved into the visible todo after each pick chain (t3404 #70, #107).
+    let items = insert_exec_commands(items, exec_cmds);
     let comment_prefix = comment_line_prefix_full(config);
     let mut todo = String::new();
     for item in &items {
@@ -5190,6 +5396,9 @@ fn run_interactive_rebase(
             }
             TodoBuildItem::RefComment(text) => {
                 todo.push_str(&format!("{comment_prefix} {text}\n"));
+            }
+            TodoBuildItem::Exec(cmd) => {
+                todo.push_str(&format!("exec {cmd}\n"));
             }
         }
     }
@@ -5894,6 +6103,14 @@ Use '--' to separate paths from revisions, like this:\n\
             !args.no_keep_empty || args.keep_empty,
             &config,
         )?;
+        // Git's `complete_action` runs `todo_list_rearrange_squash` over the whole merge script
+        // (picks and merges) before the editor opens, so `--autosquash` works with `--rebase-merges`
+        // (t3430 'with --autosquash and --exec').
+        let script = if want_autosquash {
+            rearrange_autosquash_merge_script(&repo, &script)?
+        } else {
+            script
+        };
         generated_merge_script = Some(script.clone());
         if args.interactive {
             let pre_nonempty = count_rebase_todo_actionable_lines(&script);
@@ -6202,9 +6419,12 @@ Use '--' to separate paths from revisions, like this:\n\
         fs::write(rb_dir.join("ignore_date"), "")?;
     }
 
-    if !args.exec.is_empty() {
-        // Persist every `--exec` command (one per line, in order); the replay runs each after each
-        // pick (t3404 "rebase -ix with several instances of --exec").
+    if !args.exec.is_empty() && !rebase_interactive {
+        // For a *non-interactive* `rebase --exec`, persist every command (one per line, in order);
+        // the replay runs each after each pick (t3404 "rebase -ix with several instances of
+        // --exec", "rebase --exec works without -i"). In interactive mode the `--exec` commands are
+        // already woven into the visible todo as `exec` lines by `insert_exec_commands`, so the
+        // replay executes them from the todo; writing the global file too would double-run them.
         fs::write(rb_dir.join("exec"), args.exec.join("\n"))?;
     }
     if let Some(ref strategy) = args.strategy {
