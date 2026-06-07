@@ -10,7 +10,7 @@
 //!
 //! This three-way merge produces the replayed commit.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -20,28 +20,28 @@ use std::path::{Path, PathBuf};
 
 use grit_lib::commit_trailers::{append_signoff_trailer, format_signoff_line};
 use grit_lib::config::ConfigSet;
-use grit_lib::diff::{self, count_changes, diff_index_to_tree, diff_index_to_worktree, DiffEntry};
-use grit_lib::hooks::{run_commit_hook, run_hook, CommitHookEnv, HookResult};
+use grit_lib::diff::{self, DiffEntry, count_changes, diff_index_to_tree, diff_index_to_worktree};
+use grit_lib::hooks::{CommitHookEnv, HookResult, run_commit_hook, run_hook};
 use grit_lib::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_SYMLINK, MODE_TREE};
 use grit_lib::interpret_trailers::{
-    complete_line, process_trailers, NewTrailerArg, ProcessTrailerOptions,
+    NewTrailerArg, ProcessTrailerOptions, complete_line, process_trailers,
 };
 use grit_lib::merge_base::{ancestor_closure, fork_point, is_ancestor, merge_bases_first_vs_rest};
-use grit_lib::merge_file::{merge, ConflictStyle, MergeFavor, MergeInput};
+use grit_lib::merge_file::{ConflictStyle, MergeFavor, MergeInput, merge};
 use grit_lib::objects::{
-    parse_commit, parse_tree, serialize_commit, CommitData, ObjectId, ObjectKind,
+    CommitData, ObjectId, ObjectKind, parse_commit, parse_tree, serialize_commit,
 };
 use grit_lib::patch_ids::compute_patch_id;
 use grit_lib::refs::{append_reflog, delete_ref, list_refs, resolve_ref, write_ref};
 use grit_lib::repo::Repository;
-use grit_lib::rev_list::{rev_list, split_revision_token, OrderingMode, RevListOptions};
+use grit_lib::rev_list::{OrderingMode, RevListOptions, rev_list, split_revision_token};
 use grit_lib::rev_parse::{
     abbreviate_object_id, peel_to_commit_for_merge_base, resolve_revision,
     resolve_revision_as_commit_without_index_dwim, resolve_revision_for_range_end,
     split_triple_dot_range, upstream_suffix_info,
 };
-use grit_lib::state::{resolve_head, HeadState};
-use grit_lib::whitespace_rule::{fix_blob_bytes, parse_whitespace_rule, WS_DEFAULT_RULE};
+use grit_lib::state::{HeadState, resolve_head};
+use grit_lib::whitespace_rule::{WS_DEFAULT_RULE, fix_blob_bytes, parse_whitespace_rule};
 use grit_lib::write_tree::write_tree_from_index;
 
 use super::checkout::{
@@ -57,7 +57,7 @@ use super::merge::refresh_index_stat_cache_from_worktree;
 use super::replay::merge_trees_for_single_cherry_pick;
 use super::stash;
 use crate::explicit_exit::ExplicitExit;
-use crate::ident::{resolve_email, resolve_name, IdentRole};
+use crate::ident::{IdentRole, resolve_email, resolve_name};
 
 #[derive(Clone, Copy, Debug)]
 struct RebaseReplayCommitOpts {
@@ -2984,6 +2984,51 @@ fn rebase_state_todo_lines(
         .collect()
 }
 
+/// Build the non-interactive todo for a plain merge-backend rebase with `--update-refs`.
+///
+/// Each commit becomes a `pick` line; after a commit, any local branch pointing at it is
+/// interleaved as an `update-ref <ref>` step (or a `# Ref ... checked out` comment when the
+/// branch is occupied by a worktree), mirroring Git's `todo_list_add_update_ref_commands`. This
+/// lets a plain `git rebase --update-refs <upstream>` populate the `rebase-merge/update-refs`
+/// state file even though no sequence editor was opened, so the scheduled branches become
+/// "used by worktree" while the rebase is paused on a conflict (t2407 #6).
+///
+/// # Parameters
+/// - `repo`: repository handle (for worktree-occupancy checks and object reads).
+/// - `git_dir`: git directory for branch-decoration enumeration.
+/// - `config`: config set controlling the comment prefix and todo-line formatting.
+/// - `commits`: the commits to rebase, in todo order (oldest first).
+///
+/// # Errors
+/// Propagates object-read and ref-enumeration failures.
+fn rebase_update_refs_todo_lines(
+    repo: &Repository,
+    git_dir: &Path,
+    config: &ConfigSet,
+    commits: &[ObjectId],
+) -> Result<Vec<String>> {
+    let items = build_autosquash_with_update_refs(repo, git_dir, commits, false, true)?;
+    let comment_prefix = comment_line_prefix_full(config);
+    let mut lines = Vec::with_capacity(items.len());
+    for item in &items {
+        match item {
+            TodoBuildItem::Commit(oid, cmd) => {
+                lines.push(format_rebase_todo_line(repo, oid, *cmd, config, false)?);
+            }
+            TodoBuildItem::UpdateRef(refname) => {
+                lines.push(format!("update-ref {refname}"));
+            }
+            TodoBuildItem::RefComment(text) => {
+                lines.push(format!("{comment_prefix} {text}"));
+            }
+            TodoBuildItem::Exec(cmd) => {
+                lines.push(format!("exec {cmd}"));
+            }
+        }
+    }
+    Ok(lines)
+}
+
 /// Index of the next todo line that is not a `fixup`/`squash` pick, if any.
 fn next_non_fixup_index(
     repo: &Repository,
@@ -5139,7 +5184,7 @@ fn todo_command_is_fixup(word: &str) -> bool {
 /// # Returns
 /// `Some(message)` describing the violation, or `None` when the argument is valid.
 fn check_label_or_ref_arg(word: &str, arg: &str) -> Option<String> {
-    use grit_lib::check_ref_format::{check_refname_format, RefNameOptions};
+    use grit_lib::check_ref_format::{RefNameOptions, check_refname_format};
     let onelevel = RefNameOptions {
         allow_onelevel: true,
         refspec_pattern: false,
@@ -5966,7 +6011,7 @@ Use '--' to separate paths from revisions, like this:\n\
                 Err(e) if e.to_string().contains("no merge base") => {}
                 Err(e) => {
                     return Err(e)
-                        .with_context(|| format!("fork-point resolution failed for '{fp_spec}'"))
+                        .with_context(|| format!("fork-point resolution failed for '{fp_spec}'"));
                 }
             }
         }
@@ -6345,6 +6390,17 @@ Use '--' to separate paths from revisions, like this:\n\
     } else if want_autosquash {
         let entries = rearrange_autosquash(&repo, commits)?;
         (rebase_state_todo_lines(&repo, &config, &entries)?, false)
+    } else if rebase_update_refs_enabled(&args, &config)
+        && matches!(choose_rebase_backend(&args), RebaseBackend::Merge)
+    {
+        // A plain merge-backend `rebase --update-refs` still schedules branch updates even though
+        // no sequence editor opens: Git's `todo_list_add_update_ref_commands` interleaves
+        // `update-ref` steps so the scheduled branches are recorded in `rebase-merge/update-refs`
+        // and become "used by worktree" while the rebase is paused (t2407 #6).
+        (
+            rebase_update_refs_todo_lines(&repo, git_dir, &config, &commits)?,
+            false,
+        )
     } else {
         let entries: Vec<(ObjectId, RebaseTodoCmd)> = commits
             .into_iter()
@@ -8084,6 +8140,19 @@ fn replay_remaining(
                             continue 'rebase_loop;
                         }
                         Err(_e) => {
+                            // An untracked-file obstruction (the commit never applied) sets the
+                            // `obstructed-pick` marker in the child. Git keeps such a pick pending and
+                            // re-consumes it into `done` on retry, so the obstructed line appears in
+                            // `done` *twice* (t3404 "rebase -i commits that overwrite untracked
+                            // files"). The line was already appended to `done` above; remember it
+                            // verbatim so the obstructed-pick re-apply on `--continue` can append it a
+                            // second time. A genuine merge conflict (no marker) keeps the single record.
+                            if rebase_interactive && rb_dir.join("obstructed-pick").exists() {
+                                let _ = fs::write(
+                                    rb_dir.join("obstructed-pick-line"),
+                                    format!("{}\n", todo[i]),
+                                );
+                            }
                             let remaining: Vec<&str> = if rebase_interactive {
                                 todo[i + 1..].to_vec()
                             } else {
@@ -10056,6 +10125,35 @@ fn do_continue() -> Result<()> {
             // (t3404 "auto-amend only edited commits after edit").
             bail!("error: you have staged changes in your working tree");
         }
+        // Git's `commit_staged_changes`: when the worktree is clean (`is_clean` and not a final
+        // fixup), an `edit` continue does NOT re-commit — it removes CHERRY_PICK_HEAD/MERGE_MSG and
+        // returns, leaving HEAD at the edited commit, then proceeds to the next todo item. Amending
+        // an unchanged `edit` here would rewrite the commit with a fresh committer (new OID) and could
+        // even pick up a stale message, so a subsequent obstruction would leave HEAD on the rewritten
+        // commit instead of the original (t3404 "rebase -i commits that overwrite untracked files
+        // (squash)"/"(no ff)", whose `test_cmp_rev HEAD F` must still hold after the failed continue).
+        if edit_continue
+            && !read_current_final_fixup(&rb_dir)
+            && worktree_matches_head(&repo, git_dir)?
+        {
+            let _ = fs::remove_file(git_dir.join("CHERRY_PICK_HEAD"));
+            let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
+            let next_peek_amend =
+                peek_next_rebase_flush_hint(&repo, &todo_lines_continue, 0, interactive_continue);
+            record_rebase_in_rewritten_pending(git_dir, &rb_dir, &amend_old_oid, next_peek_amend)?;
+            let _ = fs::remove_file(rb_dir.join("stopped-sha"));
+            let _ = fs::remove_file(rb_dir.join("amend"));
+            let _ = fs::remove_file(rb_dir.join("rebase-amend-continue"));
+            let _ = fs::remove_file(rb_dir.join("rebase-edit-continue"));
+            return replay_remaining(
+                &repo,
+                &rb_dir,
+                autostash_continue,
+                backend_continue,
+                had_autostash_continue,
+                force_rewrite_continue,
+            );
+        }
         let amend_src_commit = repo
             .odb
             .read(&amend_old_oid)
@@ -10065,7 +10163,13 @@ fn do_continue() -> Result<()> {
             .as_ref()
             .map(|c| c.author.clone())
             .unwrap_or_else(|| hc.author.clone());
-        let msg_src = if git_dir.join("COMMIT_EDITMSG").exists() {
+        // For an `edit` continue, Git amends HEAD via `git commit --amend -F rebase-merge/message`,
+        // i.e. it reuses the *edited commit's* message (which is HEAD's message, since `edit` applied
+        // the commit and left HEAD at it). A leftover `.git/COMMIT_EDITMSG` from an unrelated earlier
+        // commit must NOT be used here (t3404 "rebase -i commits that overwrite untracked files
+        // (squash)", where a stale COMMIT_EDITMSG held "P" and corrupted the amended `edit` commit's
+        // message). `COMMIT_EDITMSG` is only the message source for reword/user-edited flows.
+        let msg_src = if !edit_continue && git_dir.join("COMMIT_EDITMSG").exists() {
             fs::read_to_string(git_dir.join("COMMIT_EDITMSG"))?
         } else {
             hc.message.clone()
@@ -10157,6 +10261,29 @@ fn do_continue() -> Result<()> {
             had_autostash_continue,
             force_rewrite_continue,
         );
+    }
+
+    // Git's `commit_staged_changes` gate (sequencer.c): a pick that was *blocked* before it could
+    // touch the index (an untracked working-tree file would have been overwritten) leaves no
+    // `.git/rebase-merge/message` — the commit never started. If the user then stages unrelated
+    // changes and runs `--continue`, Git refuses with "you have staged changes in your working
+    // tree" rather than silently re-running the pick against a dirty index. This must run BEFORE the
+    // `stopped-sha`/`patch` files are consumed below: deleting them would disarm the obstructed-pick
+    // re-apply path so the subsequent clean `--continue` (after `git reset --hard`) would rewrite the
+    // commit instead of fast-forwarding it (t3404 "rebase -i commits that overwrite untracked
+    // files", whose final `HEAD` must stay byte-identical to the original commit `D`).
+    if rb_dir.join("current").exists() && !rb_dir.join("message").exists() {
+        if let Some(obstructed_oid) = fs::read_to_string(rb_dir.join("current"))
+            .ok()
+            .and_then(|s| ObjectId::from_hex(s.trim()).ok())
+        {
+            if rebase_pick_was_obstructed(&rb_dir, &obstructed_oid)
+                && !worktree_matches_head(&repo, git_dir)?
+            {
+                // main.rs prefixes `error: `, so emit the bare message to match Git exactly.
+                bail!("you have staged changes in your working tree");
+            }
+        }
     }
 
     let stopped_path = rb_dir.join("stopped-sha");
@@ -10318,6 +10445,18 @@ fn do_continue() -> Result<()> {
         let needs_reapply = matches!(todo_cmd, RebaseTodoCmd::Pick | RebaseTodoCmd::Fixup)
             && rebase_pick_was_obstructed(&rb_dir, &current_oid);
         if needs_reapply {
+            // Git re-consumes the obstructed pick into `done` when it is retried, so the obstructed
+            // line is recorded twice (t3404 "rebase -i commits that overwrite untracked files"). The
+            // halt saved the verbatim line; append it again here, before re-applying.
+            if interactive_continue {
+                if let Ok(line) = fs::read_to_string(rb_dir.join("obstructed-pick-line")) {
+                    let line = line.trim_end_matches('\n');
+                    if !line.is_empty() {
+                        append_interactive_rebase_done_line(&rb_dir, line)?;
+                    }
+                }
+            }
+            let _ = fs::remove_file(rb_dir.join("obstructed-pick-line"));
             // Consume the obstruction marker before re-running so a fresh obstruction on a later step
             // re-arms it cleanly and a stale value can never divert an unrelated continue.
             let _ = fs::remove_file(rb_dir.join("obstructed-pick"));
