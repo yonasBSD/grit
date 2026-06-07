@@ -2597,6 +2597,16 @@ fn resolve_reflog_oid(
             let len = entries.len();
             if index == 0 {
                 if len == 0 {
+                    // Git's `repo_dwim_log` only treats `ref@{N}` as resolvable when the
+                    // reflog file actually exists; with no reflog at all the resolution
+                    // fails. Only when the reflog exists but is empty does `ref@{0}` fall
+                    // back to the ref's current value (the `nth == co_cnt` case in
+                    // object-name.c).
+                    if !crate::reflog::reflog_exists(&repo.git_dir, refname) {
+                        return Err(Error::Message(format!(
+                            "fatal: log for '{display}' is empty"
+                        )));
+                    }
                     return refs::resolve_ref(&repo.git_dir, refname).map_err(|_| {
                         Error::Message(format!("fatal: log for '{display}' is empty"))
                     });

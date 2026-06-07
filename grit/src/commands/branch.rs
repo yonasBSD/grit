@@ -2911,8 +2911,14 @@ fn delete_branch(repo: &Repository, head: &HeadState, args: &Args, name_input: &
         return Ok(());
     }
 
-    let resolved_ref =
-        symbolic_full_name(repo, name_input).filter(|full| full.starts_with("refs/heads/"));
+    // Git's `branch -d` expands `@{-N}`/`@{upstream}` but treats a literal
+    // "HEAD" as the branch name `refs/heads/HEAD` rather than dereferencing the
+    // symbolic HEAD (t1430 "branch -d can remove refs/heads/HEAD").
+    let resolved_ref = if name_input == "HEAD" {
+        None
+    } else {
+        symbolic_full_name(repo, name_input).filter(|full| full.starts_with("refs/heads/"))
+    };
     let (name, refname) = if let Some(full) = resolved_ref {
         (
             full.strip_prefix("refs/heads/")
@@ -2954,6 +2960,18 @@ fn delete_branch(repo: &Repository, head: &HeadState, args: &Args, name_input: &
             "cannot delete branch '{}' used by worktree at '{}'",
             name,
             wt_path
+        );
+    }
+
+    // Git's `branch_checked_out()` also reports a branch as in-use when a worktree (including the
+    // current one) is mid-rebase or mid-bisect on it: there the worktree HEAD is detached, so the
+    // checks above miss it. Refuse the delete with the same message (t2400 "not allow to delete a
+    // branch under rebase").
+    if let Some(path) = crate::commands::worktree_refs::branch_occupied_any_worktree(repo, &name) {
+        bail!(
+            "cannot delete branch '{}' used by worktree at '{}'",
+            name,
+            path
         );
     }
 

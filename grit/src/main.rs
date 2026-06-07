@@ -2702,6 +2702,57 @@ pub(crate) fn git_exec_path_for_helpers(cli_exec_path: Option<&Path>) -> Option<
         .and_then(|e| e.parent().map(|p| p.to_path_buf()))
 }
 
+/// Git subcommands that vanilla Git ships as separate `git-<cmd>` executables in its
+/// libexec dir, but which grit implements as built-ins. When grit's exec path is an
+/// explicitly-provided, writable directory (the test harness points `GIT_EXEC_PATH`
+/// at a dedicated helper dir), a sibling *real* `git` invocation such as
+/// `/usr/bin/git submodule add ...` resolves `git-submodule` from `GIT_EXEC_PATH` and
+/// fails with "submodule is not a git command" because the dir only contains the few
+/// shims the harness wrote. Installing a passthrough shim that re-invokes grit lets
+/// those real-git calls delegate to grit's own implementation.
+const EXEC_PATH_PASSTHROUGH_HELPERS: &[&str] = &["submodule"];
+
+/// Install passthrough shims for [`EXEC_PATH_PASSTHROUGH_HELPERS`] into the
+/// `GIT_EXEC_PATH` helper directory so a sibling vanilla `git` can find the
+/// `git-<cmd>` helpers that grit implements as built-ins.
+///
+/// This only acts when `GIT_EXEC_PATH` is set in the environment to a directory that
+/// already exists and is writable; otherwise it is a no-op (production runs that do
+/// not set `GIT_EXEC_PATH`, or point it at git's read-only libexec, are unaffected).
+/// Each shim is written at most once (skipped when already present) and re-invokes the
+/// running grit binary, so the behavior matches grit's own built-in subcommand.
+fn install_exec_path_passthrough_helpers() {
+    let Ok(exec_dir) = std::env::var("GIT_EXEC_PATH") else {
+        return;
+    };
+    if exec_dir.is_empty() {
+        return;
+    }
+    let exec_dir = PathBuf::from(exec_dir);
+    if !exec_dir.is_dir() {
+        return;
+    }
+    let Ok(self_exe) = std::env::current_exe() else {
+        return;
+    };
+    let self_exe = self_exe.display().to_string();
+    for cmd in EXEC_PATH_PASSTHROUGH_HELPERS {
+        let shim = exec_dir.join(format!("git-{cmd}"));
+        if shim.exists() {
+            continue;
+        }
+        let body = format!("#!/bin/sh\nexec \"{self_exe}\" {cmd} \"$@\"\n");
+        if fs::write(&shim, body).is_err() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&shim, fs::Permissions::from_mode(0o755));
+        }
+    }
+}
+
 /// Extract global options and return (globals, subcommand_name, remaining_args).
 ///
 /// We scan argv[1..] for global flags that appear before the subcommand.
@@ -3703,6 +3754,11 @@ fn run() -> Result<()> {
             std::env::set_var("GRIT_INVOCATION_CWD", cwd.display().to_string());
         }
     }
+
+    // When GIT_EXEC_PATH points at a writable helper dir, expose shims for the few
+    // subcommands vanilla Git ships as separate executables but grit implements as
+    // built-ins, so a sibling real `git submodule …` can delegate to grit.
+    install_exec_path_passthrough_helpers();
 
     let args = argv_lossy();
     let (opts, subcmd, rest) = extract_globals(&args)?;
@@ -4756,6 +4812,14 @@ fn strip_log_revision_pseudo_for_clap(rest: &[String]) -> Vec<String> {
     let mut i = 0usize;
     while i < rest.len() {
         let a = rest[i].as_str();
+        // After `--end-of-options`, every remaining token is a revision or
+        // pathspec (e.g. a branch literally named `--source`), not an option.
+        // Drop them from clap's view (the revision machinery re-reads them from
+        // `raw_argv_tail`) so clap does not mistake e.g. `--source` for its flag.
+        if a == "--end-of-options" {
+            out.push(rest[i].clone());
+            break;
+        }
         if a == "--not" {
             i += 1;
             continue;
@@ -4853,8 +4917,11 @@ fn preprocess_log_args(rest: &[String]) -> Vec<String> {
             i += 1;
             continue;
         }
-        // `-L:pat:file` must keep the leading `:` (e.g. `-L:$:file.c` → `:$:file.c` for line-log).
-        if arg.starts_with("-L:") {
+        // Normalize the attached form `-L<value>` into `-L <value>` so the value is parsed as the
+        // line-range option rather than being swallowed by the hyphen-tolerant `revisions`
+        // positional. This covers both `-L1,1:file` and `-L:pat:file` (the leading `:` of the
+        // latter is preserved). `arg[2..]` strips only the `-L` prefix and keeps the remainder.
+        if arg.starts_with("-L") && arg.len() > 2 {
             result.push("-L".to_string());
             result.push(arg[2..].to_string());
             i += 1;

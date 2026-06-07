@@ -240,13 +240,18 @@ pub struct Args {
     #[arg(long = "conflict")]
     pub conflict: Option<String>,
 
-    /// Lines of context for --patch.
-    #[arg(long = "unified", short = 'U')]
-    pub unified: Option<usize>,
+    /// Lines of context for --patch. `i32` (with the `-1` unset sentinel) so negative values are
+    /// rejected with Git's wording rather than clap's parse error.
+    #[arg(long = "unified", short = 'U', allow_hyphen_values = true)]
+    pub unified: Option<i32>,
 
     /// Maximum number of context lines between diff hunks.
-    #[arg(long = "inter-hunk-context")]
-    pub inter_hunk_context: Option<usize>,
+    #[arg(long = "inter-hunk-context", allow_hyphen_values = true)]
+    pub inter_hunk_context: Option<i32>,
+
+    /// Disable auto-advance in interactive patch mode (validated to require `-p`).
+    #[arg(long = "no-auto-advance")]
+    pub no_auto_advance: bool,
 
     /// Do not fail on entries with skip-worktree bit set.
     #[arg(long = "ignore-skip-worktree-bits")]
@@ -467,6 +472,20 @@ pub fn run(mut args: Args) -> Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
     let merge_cli = parse_checkout_merge_flags_from_raw(&raw_args);
     validate_checkout_conflict_arg(&raw_args)?;
+
+    // Interactive context options (`-U`/`--inter-hunk-context`/`--no-auto-advance`) require `-p`.
+    crate::commands::add::validate_patch_context_options(
+        args.unified,
+        args.inter_hunk_context,
+        args.patch,
+    )?;
+    if args.no_auto_advance && !args.patch {
+        bail!(
+            "the option '{}' requires '{}'",
+            "--no-auto-advance",
+            "--interactive/--patch"
+        );
+    }
 
     // Validate --pathspec-file-nul requires --pathspec-from-file
     if args.pathspec_file_nul && args.pathspec_from_file.is_none() {
@@ -2328,7 +2347,13 @@ fn validate_new_branch_name(name: &str) -> Result<()> {
         allow_onelevel: true,
         ..Default::default()
     };
-    if check_refname_format(&full, &opts).is_err() {
+    // Mirror `check_branch_ref()` in refs.c: a branch may not be named "HEAD"
+    // (i.e. `refs/heads/HEAD`) nor begin with a dash, regardless of whether the
+    // expanded refname would otherwise pass `check_refname_format`.
+    if name.starts_with('-')
+        || full == "refs/heads/HEAD"
+        || check_refname_format(&full, &opts).is_err()
+    {
         bail!("'{name}' is not a valid branch name");
     }
     Ok(())
@@ -4177,6 +4202,62 @@ fn refresh_written_index_entries(
     changed
 }
 
+/// Verify that every gitlink whose target commit changes can actually be checked out in its
+/// submodule, *before* the superproject work tree is modified.
+///
+/// Mirrors Git's dry-run `check_submodule_move_head` in unpack-trees: when `--recurse-submodules`
+/// is in effect, a submodule whose recorded commit is missing from the submodule's object store
+/// must abort the entire checkout atomically. Only initialized submodules (those with a local
+/// `.git/modules/<path>/HEAD`) are checked — uninitialized gitlinks are left as empty placeholders
+/// and never moved, so they cannot fail. Submodules whose target commit is unchanged from the old
+/// index are skipped (no move happens).
+///
+/// # Errors
+/// Returns an error naming the submodule path when its target commit is not present in the
+/// submodule object store.
+fn check_submodule_targets_available(
+    repo: &Repository,
+    old_index: &Index,
+    new_index: &Index,
+    work_tree: &Path,
+) -> Result<()> {
+    let old_gitlinks: HashMap<&[u8], &ObjectId> = old_index
+        .entries
+        .iter()
+        .filter(|e| e.stage() == 0 && e.mode == MODE_GITLINK)
+        .map(|e| (e.path.as_slice(), &e.oid))
+        .collect();
+
+    for entry in &new_index.entries {
+        if entry.stage() != 0 || entry.mode != MODE_GITLINK {
+            continue;
+        }
+        // Unchanged gitlink: the submodule worktree is not moved, so nothing can fail.
+        if old_gitlinks
+            .get(entry.path.as_slice())
+            .is_some_and(|old_oid| **old_oid == entry.oid)
+        {
+            continue;
+        }
+        let rel = String::from_utf8_lossy(&entry.path).into_owned();
+        let Ok(modules_git) = submodule_modules_git_dir_for_checkout(repo, work_tree, &rel) else {
+            continue;
+        };
+        // Only initialized submodules are populated/moved; an uninitialized gitlink stays an empty
+        // placeholder directory and is never checked out, so it cannot fail.
+        if !modules_git.join("HEAD").exists() {
+            continue;
+        }
+        let odb = Odb::new(&modules_git.join("objects"));
+        if !odb.exists(&entry.oid) {
+            bail!(
+                "Submodule '{rel}' could not be updated.\nerror: Submodule '{rel}' cannot checkout new HEAD."
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Populate a submodule worktree for a single gitlink index entry (path + commit OID).
 ///
 /// Used by full-tree checkout and by `git checkout -- <paths>` when paths include gitlinks.
@@ -5658,6 +5739,7 @@ fn checkout_patch_inner(
                     skip_file = true;
                 }
                 "q" | "Q" => {
+                    writeln!(out).ok();
                     if matches!(patch_mode, PatchMode::HeadTree) && !worktree_only {
                         apply_checkout_head_mode(
                             repo,
@@ -5688,6 +5770,13 @@ fn checkout_patch_inner(
                 }
                 _ => {}
             }
+        }
+
+        // Git prints a trailing newline when leaving each file's interactive hunk loop
+        // (`patch_update_file`'s final `putchar('\n')`), so the raw output ends with a newline
+        // exactly like the color-decoded copy (t3701 "falls back to color.ui").
+        if !hunks.is_empty() {
+            writeln!(out).ok();
         }
 
         if matches!(patch_mode, PatchMode::HeadTree) && !worktree_only {
@@ -6578,6 +6667,20 @@ pub(crate) fn refuse_populated_submodule_tree_replacement(
     new_index: &Index,
     work_tree: &std::path::Path,
 ) -> Result<()> {
+    refuse_populated_submodule_tree_replacement_inner(old_index, new_index, work_tree, false)
+}
+
+/// Like [`refuse_populated_submodule_tree_replacement`], but when `require_populated_on_disk` is
+/// true only refuse for submodules whose work tree is actually populated on disk (has non-`.git`
+/// content). A plain `git checkout` that switches a branch which turns a submodule into a tracked
+/// directory/file must fail when the submodule is checked out (its untracked work-tree files would
+/// be overwritten; t6041), but must still be allowed when the submodule directory is empty/absent.
+fn refuse_populated_submodule_tree_replacement_inner(
+    old_index: &Index,
+    new_index: &Index,
+    work_tree: &std::path::Path,
+    require_populated_on_disk: bool,
+) -> Result<()> {
     let old_gitlinks: Vec<&[u8]> = old_index
         .entries
         .iter()
@@ -6588,6 +6691,14 @@ pub(crate) fn refuse_populated_submodule_tree_replacement(
     for gpath in &old_gitlinks {
         let g = *gpath;
         let rel = String::from_utf8_lossy(g);
+        if require_populated_on_disk {
+            let abs = work_tree.join(rel.as_ref());
+            if !abs.join(".git").exists() && !submodule_dir_has_non_dotgit_content(&abs) {
+                // Empty or absent submodule work tree: replacing it cannot clobber any
+                // local content, so allow the transition (matches Git's verify_clean_submodule).
+                continue;
+            }
+        }
         for ne in new_index.entries.iter().filter(|e| e.stage() == 0) {
             if ne.path == g {
                 if ne.mode != MODE_GITLINK {
@@ -6824,8 +6935,30 @@ fn checkout_index_to_worktree_inner(
         .map(|e| (e.path.as_slice(), e))
         .collect();
 
-    if refuse_submodule_replacement && preserve_dropped_gitlink_dirs && !populate_gitlinks {
-        refuse_populated_submodule_tree_replacement(old_index, new_index, work_tree)?;
+    if refuse_submodule_replacement && preserve_dropped_gitlink_dirs {
+        if populate_gitlinks {
+            // Plain `git checkout`/`git switch` of a branch that turns a submodule into a tracked
+            // directory or file: refuse only when the submodule is populated on disk so its
+            // untracked work-tree files would be clobbered (t6041), allowing the transition when
+            // the submodule is empty/absent.
+            refuse_populated_submodule_tree_replacement_inner(
+                old_index, new_index, work_tree, true,
+            )?;
+        } else {
+            // Rebase-style application (empty placeholder dir, no `.git`): refuse unconditionally
+            // so a recorded submodule is never silently replaced (t3426/t6042).
+            refuse_populated_submodule_tree_replacement(old_index, new_index, work_tree)?;
+        }
+    }
+
+    // Preflight: when recursing into submodules, verify every gitlink target commit is available
+    // in its submodule object store *before* touching the work tree. Git's unpack-trees runs a
+    // dry-run `check_submodule_move_head` so a missing submodule commit aborts the whole checkout
+    // atomically (t2013 "updating to a missing submodule commit fails"). Without this, a forced
+    // checkout rewrites every regular file (bumping mtimes) and only then fails on the gitlink,
+    // leaving the work tree stat out of sync with the unchanged index.
+    if populate_gitlinks && RECURSE_SUBMODULES.with(|r| r.get()) {
+        check_submodule_targets_available(repo, old_index, new_index, work_tree)?;
     }
 
     // Remove paths that are no longer present in the new index.
@@ -7270,6 +7403,26 @@ fn write_blob_to_worktree(
     let obj = read_object_for_checkout(repo, oid).context("reading object for checkout")?;
     if obj.kind != ObjectKind::Blob {
         bail!("cannot checkout non-blob at '{rel_path}'");
+    }
+
+    // Path-only checkout: if the work tree file is stat-clean against the matching index entry, it
+    // is already up to date and we skip rewriting WITHOUT running any smudge filter. Git's
+    // `checkout_entry` skips up-to-date entries via `ie_match_stat` before invoking the clean/smudge
+    // machinery, so a `git checkout <pathspec>` only smudges the paths that are missing or dirty.
+    // Running the filter just to compare bytes (the fallback below) would spuriously log a smudge
+    // for every up-to-date path under a `filter.<driver>.process` long-running filter (t0021 "required
+    // process filter should filter data").
+    if !full_smudge_meta && mode != MODE_SYMLINK {
+        if let Some(entry) = index.get(rel_path.as_bytes(), 0) {
+            if &entry.oid == oid && entry.mode == mode {
+                let abs_path = work_tree.join(rel_path);
+                if let Ok(meta) = std::fs::symlink_metadata(&abs_path) {
+                    if meta.is_file() && stat_matches(entry, &meta) {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
     }
 
     // Path-only checkout: if the work tree already matches the *smudged* blob Git would write

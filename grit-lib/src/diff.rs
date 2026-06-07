@@ -1976,6 +1976,26 @@ pub fn diff_index_to_worktree_with_options(
         if ie.mode == 0o160000 {
             let sub_dir = work_tree.join(path_str_ref);
             let sub_head_oid = read_submodule_head_oid(&sub_dir);
+            // A gitlink whose worktree directory is entirely absent is a deleted submodule. Git's
+            // `check_removed` (diff-lib.c) `lstat`s the path first: a missing directory is reported
+            // as a removal (`D`, new mode 000000), *before* the submodule "not checked out" special
+            // case (which only applies when the directory exists). An empty directory that exists is
+            // a placeholder and stays unchanged. Skipped when `simplify_gitlinks` so callers that
+            // only compare recorded HEADs keep their behaviour. (t4060 #50/#51.)
+            if !simplify_gitlinks && sub_head_oid.is_none() && !sub_dir.exists() {
+                let path_owned = path_str_ref.to_owned();
+                result.push(DiffEntry {
+                    status: DiffStatus::Deleted,
+                    old_path: Some(path_owned.clone()),
+                    new_path: Some(path_owned),
+                    old_mode: format_mode(ie.mode),
+                    new_mode: "000000".to_owned(),
+                    old_oid: ie.oid,
+                    new_oid: zero_oid(),
+                    score: None,
+                });
+                continue;
+            }
             let ref_matches = if let Some(oid) = sub_head_oid {
                 oid == ie.oid
             } else {
@@ -2006,6 +2026,15 @@ pub fn diff_index_to_worktree_with_options(
                     });
                 }
                 continue;
+            }
+            // A populated submodule whose HEAD points at a commit object that is missing from its
+            // own object store is corrupt. Git's `is_submodule_modified` shells `git status` into
+            // the submodule, which fails, and Git aborts the surrounding status/diff. Mirror that:
+            // a broken submodule is a hard error rather than a silently-clean gitlink (t5526 #38).
+            if sub_head_oid.is_some() && submodule_head_object_broken(&sub_dir) {
+                return Err(Error::ConfigError(format!(
+                    "'git status --porcelain=2' failed in submodule {path_str_ref}"
+                )));
             }
             let mut flags = submodule_porcelain_flags(work_tree, path_str_ref, ie.oid);
             if ignore_submodule_untracked {
@@ -2673,34 +2702,70 @@ pub fn diff_tree_to_worktree(
                 .get(path.as_bytes())
                 .is_some_and(|ie| ie.mode == 0o160000);
         if is_gitlink {
-            if let Some(te) = tree_entry {
-                let sub_dir = work_tree.join(path);
-                let sub_head = read_submodule_head_oid(&sub_dir);
-                let index_oid = index_entries
-                    .get(path.as_bytes())
-                    .filter(|ie| ie.mode == 0o160000)
-                    .map(|ie| ie.oid);
-                let index_matches_tree = index_oid.is_some_and(|oid| oid == te.oid);
-                let head_differs = sub_head.as_ref() != Some(&te.oid);
-                let dirty_while_aligned = index_matches_tree
-                    && !head_differs
-                    && submodule_has_dirty_worktree_for_super_diff(work_tree, path, &te.oid);
-                if head_differs || dirty_while_aligned {
-                    // Raw `git diff <tree>` lines use a null OID on the worktree side when the
-                    // checked-out submodule HEAD differs from the tree's gitlink; patch output still
-                    // resolves the real commit from the submodule directory.
-                    let new_oid = if head_differs { zero_oid() } else { te.oid };
+            let sub_dir = work_tree.join(path);
+            let index_gitlink_oid = index_entries
+                .get(path.as_bytes())
+                .filter(|ie| ie.mode == 0o160000)
+                .map(|ie| ie.oid);
+            match (tree_entry, index_gitlink_oid) {
+                (Some(te), _) => {
+                    let sub_head = read_submodule_head_oid(&sub_dir);
+                    // A gitlink whose worktree directory no longer exists is a deleted submodule:
+                    // Git's `diff-lib.c` reports it as a deletion (status `D`, new mode 000000) and
+                    // `--submodule` renders the `(submodule deleted)` summary (t4041 #46).
+                    if sub_head.is_none() && !sub_dir.exists() {
+                        result.push(DiffEntry {
+                            status: DiffStatus::Deleted,
+                            old_path: Some(path.clone()),
+                            new_path: Some(path.clone()),
+                            old_mode: format_mode(te.mode),
+                            new_mode: "000000".to_string(),
+                            old_oid: te.oid,
+                            new_oid: zero_oid(),
+                            score: None,
+                        });
+                        continue;
+                    }
+                    let index_matches_tree = index_gitlink_oid.is_some_and(|oid| oid == te.oid);
+                    let head_differs = sub_head.as_ref() != Some(&te.oid);
+                    let dirty_while_aligned = index_matches_tree
+                        && !head_differs
+                        && submodule_has_dirty_worktree_for_super_diff(work_tree, path, &te.oid);
+                    if head_differs || dirty_while_aligned {
+                        // Raw `git diff <tree>` lines use a null OID on the worktree side when the
+                        // checked-out submodule HEAD differs from the tree's gitlink; patch output
+                        // still resolves the real commit from the submodule directory.
+                        let new_oid = if head_differs { zero_oid() } else { te.oid };
+                        result.push(DiffEntry {
+                            status: DiffStatus::Modified,
+                            old_path: Some(path.clone()),
+                            new_path: Some(path.clone()),
+                            old_mode: format_mode(te.mode),
+                            new_mode: format_mode(te.mode),
+                            old_oid: te.oid,
+                            new_oid,
+                            score: None,
+                        });
+                    }
+                }
+                (None, Some(idx_oid)) => {
+                    // Gitlink staged in the index but absent from the tree: a new submodule. Git
+                    // reports it as an addition (status `A`) with the index gitlink on the new side,
+                    // so `--submodule` renders `(new submodule)` (t4041 #46). The patch renderer
+                    // resolves the real commit from the index OID / submodule HEAD.
+                    let new_oid = read_submodule_head_oid(&sub_dir).unwrap_or(idx_oid);
                     result.push(DiffEntry {
-                        status: DiffStatus::Modified,
+                        status: DiffStatus::Added,
                         old_path: Some(path.clone()),
                         new_path: Some(path.clone()),
-                        old_mode: format_mode(te.mode),
-                        new_mode: format_mode(te.mode),
-                        old_oid: te.oid,
+                        old_mode: "000000".to_string(),
+                        new_mode: format_mode(0o160000),
+                        old_oid: zero_oid(),
                         new_oid,
                         score: None,
                     });
                 }
+                (None, None) => {}
             }
             continue;
         }
@@ -5696,6 +5761,34 @@ pub fn read_submodule_head_oid(sub_dir: &Path) -> Option<ObjectId> {
         }
     } else {
         ObjectId::from_hex(head_trimmed).ok()
+    }
+}
+
+/// True when a populated submodule checkout is *broken*: its `HEAD` resolves to a commit OID, but
+/// that commit object cannot be read from the submodule's own object database.
+///
+/// This mirrors Git's [`is_submodule_modified`], which shells out to `git status --porcelain=2`
+/// inside the submodule; when the submodule's object store is corrupt (e.g. `rm -r .git/objects`),
+/// that inner status fails and Git aborts the surrounding `status`/`diff`/`fetch`. We detect the
+/// same condition in-process so the superproject operation can return a fatal error rather than
+/// silently treating the submodule as clean (t5526 "fetching submodule into a broken repository").
+///
+/// Returns `false` when the submodule is not checked out, has no embedded git dir, or has an
+/// unresolvable HEAD (those are handled separately by the unpopulated/placeholder logic).
+#[must_use]
+pub fn submodule_head_object_broken(sub_dir: &Path) -> bool {
+    let Some(sub_git_dir) = submodule_embedded_git_dir(sub_dir) else {
+        return false;
+    };
+    let Some(head_oid) = read_submodule_head_oid(sub_dir) else {
+        return false;
+    };
+    let odb = Odb::new(&sub_git_dir.join("objects"));
+    match odb.read(&head_oid) {
+        // HEAD object present but not a commit would be a different kind of corruption; only the
+        // missing-object case is the broken-repo scenario Git guards against here.
+        Ok(obj) => parse_commit(&obj.data).is_err(),
+        Err(_) => true,
     }
 }
 

@@ -46,6 +46,30 @@ pub struct Args {
     #[arg(long = "encoding", value_name = "ENCODING")]
     pub encoding: Option<String>,
 
+    /// Limit output to commits whose message matches the given pattern (like `git log --grep`).
+    #[arg(long = "grep", value_name = "PATTERN")]
+    pub grep_patterns: Vec<String>,
+
+    /// Interpret `--grep` patterns as fixed strings.
+    #[arg(short = 'F', long = "fixed-strings")]
+    pub fixed_strings: bool,
+
+    /// Interpret `--grep` patterns as POSIX basic regular expressions.
+    #[arg(short = 'G', long = "basic-regexp")]
+    pub basic_regexp: bool,
+
+    /// Interpret `--grep` patterns as POSIX extended regular expressions.
+    #[arg(short = 'E', long = "extended-regexp")]
+    pub extended_regexp: bool,
+
+    /// Interpret `--grep` patterns as Perl-compatible regular expressions.
+    #[arg(short = 'P', long = "perl-regexp")]
+    pub perl_regexp: bool,
+
+    /// Match `--grep` patterns case-insensitively.
+    #[arg(short = 'i', long = "regexp-ignore-case")]
+    pub regexp_ignore_case: bool,
+
     /// Write output to stdout instead of individual files.
     #[arg(long)]
     pub stdout: bool,
@@ -684,6 +708,21 @@ pub fn run(mut args: Args) -> Result<()> {
     // Limit to commits that touch the pathspec, and remember which paths to diff.
     if !pathspec.is_empty() {
         commits.retain(|(_oid, commit)| commit_touches_pathspec(&repo, commit, &pathspec));
+    }
+
+    // `--grep` limits the series to commits whose message matches (like `git log
+    // --grep`), honoring `grep.patternType` / `-F`/`-G`/`-E`/`-P`/`-i`.
+    if !args.grep_patterns.is_empty() {
+        let grep_res = crate::commands::log::compile_command_grep_regexes(
+            &args.grep_patterns,
+            args.fixed_strings,
+            args.basic_regexp,
+            args.extended_regexp,
+            args.perl_regexp,
+            args.regexp_ignore_case,
+            &config,
+        )?;
+        commits.retain(|(_oid, commit)| grep_res.iter().any(|re| re.is_match(&commit.message)));
     }
 
     // Resolve threading / signature / cover-from-description / base / in-body-from settings

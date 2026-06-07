@@ -745,11 +745,19 @@ fn cmd_fetch(
         .map(|r| !r.trim().is_empty())
         .unwrap_or(false);
     let omit_missing_promisor = accepted_promisor && filter_spec.is_some();
-    let force_lazy_fetch = if filter_spec.is_some() {
-        !omit_missing_promisor
-    } else {
-        caps.promisor_remote_info.is_none()
-    };
+    // `upload-pack` pins `GIT_NO_LAZY_FETCH=1` by default, so the server-side `pack-objects` never
+    // lazily fetches missing objects from a promisor remote — it just fails if it cannot read an
+    // object (t0411-clone-from-partial: a plain clone/fetch from a partial-clone server must NOT
+    // run the promisor's upload-pack). Only when the operator explicitly re-enables lazy fetching
+    // (`GIT_NO_LAZY_FETCH=0`) may the server back-fill omitted blobs before serving them.
+    let lazy_fetch_enabled =
+        !crate::commands::promisor_hydrate::git_no_lazy_fetch_env_disables_lazy().unwrap_or(false);
+    let force_lazy_fetch = lazy_fetch_enabled
+        && if filter_spec.is_some() {
+            !omit_missing_promisor
+        } else {
+            caps.promisor_remote_info.is_none()
+        };
     let mut exclude_commits = if client_shallow_oids.is_empty() {
         have_commits.clone()
     } else {

@@ -1236,10 +1236,20 @@ fn push_to_url(
             &negs,
             refspec_force,
         )?;
-        if matched == 0 {
-            bail!(
-                "No refs in common and none specified; doing nothing.\nPerhaps you should specify a branch."
-            );
+        // An explicit matching (`:`/`+:`) refspec that matches nothing is a successful no-op, not a
+        // fatal error: C Git (`send_pack`/`transport_push`) prints a diagnostic but returns 0 and
+        // lets the caller report "Everything up-to-date". Only warn (to stderr) when the *remote*
+        // advertises no refs at all, mirroring send-pack.c's `!remote_refs` branch. Pushing `:` from
+        // a detached HEAD with no matching branches (t7406 "git-dir recursive") must just succeed.
+        if matched == 0 && !args.quiet {
+            let remote_has_refs = refs::list_refs(&remote_repo.git_dir, "refs/heads/")
+                .map(|r| !r.is_empty())
+                .unwrap_or(false);
+            if !remote_has_refs {
+                eprintln!(
+                    "No refs in common and none specified; doing nothing.\nPerhaps you should specify a branch."
+                );
+            }
         }
     } else if push_all {
         // Push all branches (refs/heads/*)

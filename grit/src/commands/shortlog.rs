@@ -10,7 +10,7 @@ use grit_lib::objects::{parse_commit, CommitData, ObjectId};
 use grit_lib::repo::Repository;
 use grit_lib::rev_list::{rev_list, RevListOptions};
 use std::collections::HashMap;
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, IsTerminal, Write};
 
 const DEFAULT_WRAPLEN: i32 = 76;
 const DEFAULT_INDENT1: i32 = 6;
@@ -772,16 +772,29 @@ fn read_from_stdin(stdin: &io::Stdin, log: &mut Shortlog) -> Result<()> {
         ("Author: ", "author ")
     };
 
-    let reader = stdin.lock();
-    let lines: Vec<String> = reader.lines().map_while(|l| l.ok()).collect();
+    // Read raw bytes and split on LF (Git `strbuf_getline_lf`). The `git log` output may contain
+    // an invalid-UTF-8 commit body (e.g. under `i18n.commitEncoding=non-utf-8`, which makes
+    // `logmsg_reencode` a no-op so the body is emitted verbatim). Decoding lines as UTF-8 here
+    // would either drop everything after the first invalid line or replace bytes with U+FFFD,
+    // changing the wrapped output. So parse and store onelines at the byte level.
+    let m0b = m0.as_bytes();
+    let m1b = m1.as_bytes();
+    let mut reader = stdin.lock();
+    let mut buf = Vec::new();
+    io::Read::read_to_end(&mut reader, &mut buf)?;
+    // Split into LF-terminated lines, dropping a trailing final empty segment.
+    let lines: Vec<&[u8]> = {
+        let body = buf.strip_suffix(b"\n").unwrap_or(&buf);
+        if body.is_empty() {
+            Vec::new()
+        } else {
+            body.split(|&b| b == b'\n').collect()
+        }
+    };
     let mut idx = 0;
     while idx < lines.len() {
-        let line = &lines[idx];
-        let ident = if let Some(v) = line.strip_prefix(m0) {
-            Some(v.to_owned())
-        } else {
-            line.strip_prefix(m1).map(|v| v.to_owned())
-        };
+        let line = lines[idx];
+        let ident = line.strip_prefix(m0b).or_else(|| line.strip_prefix(m1b));
         idx += 1;
         let Some(ident) = ident else { continue };
 
@@ -794,20 +807,22 @@ fn read_from_stdin(stdin: &io::Stdin, log: &mut Shortlog) -> Result<()> {
             idx += 1;
         }
         // The oneline is the next line (indented in default log output).
-        let oneline = if idx < lines.len() {
-            let raw = &lines[idx];
-            raw.strip_prefix("    ").unwrap_or(raw).to_owned()
+        let oneline: &[u8] = if idx < lines.len() {
+            let raw = lines[idx];
+            raw.strip_prefix(b"    ").unwrap_or(raw)
         } else {
-            String::new()
+            b""
         };
 
-        let mapped = map_ident(&ident, log.opts.email, &log.mailmap);
-        let oneline_str = if oneline.is_empty() {
-            "<none>".to_owned()
+        // Idents go through mailmap (String-based); the test idents are ASCII, and Git itself
+        // treats the ident as bytes — lossy decode here only affects display of the grouping key.
+        let ident_str = String::from_utf8_lossy(ident);
+        let mapped = map_ident(&ident_str, log.opts.email, &log.mailmap);
+        if oneline.is_empty() {
+            log.insert_record(mapped, b"<none>");
         } else {
-            oneline
-        };
-        log.insert_record(mapped, oneline_str.as_bytes());
+            log.insert_record(mapped, oneline);
+        }
     }
     Ok(())
 }

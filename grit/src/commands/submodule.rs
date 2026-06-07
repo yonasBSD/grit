@@ -1055,7 +1055,20 @@ fn get_default_remote_for_path_in_super(path: &str, super_work_tree: &Path) -> R
         }
     };
     let (final_git_dir, _final_wt, super_wt, super_git_dir, sm) =
-        resolve_submodule_chain(&repo, path, &sub_rel)?;
+        match resolve_submodule_chain(&repo, path, &sub_rel) {
+            Ok(v) => v,
+            Err(e) => {
+                // Git's `get_default_remote_submodule` only needs a working repository handle for
+                // the submodule; a `.gitmodules` entry is optional. When the submodule is populated
+                // but absent from `.gitmodules` (e.g. recorded only in the index, t5526 #36), read
+                // the default remote straight from the submodule's own config — like
+                // `repo_default_remote(&subrepo)` — instead of failing.
+                if let Some(gd) = resolve_submodule_git_dir(&abs_sub) {
+                    return Ok(get_default_remote_from_git_dir(&gd));
+                }
+                return Err(e);
+            }
+        };
 
     let resolved_url = resolve_submodule_super_url(&super_wt, &super_git_dir, &sm.url)?;
     let config_path = final_git_dir.join("config");
@@ -2326,6 +2339,18 @@ fn init_in_repo(repo: &Repository, args: &InitArgs, quiet: bool) -> Result<()> {
             Some(m) => m.url.trim().is_empty() && config_submodule_url(repo, &m.name).is_none(),
         };
         if needs_url {
+            // A gitlink missing from `.gitmodules` but already populated (its work tree has `.git`)
+            // does not need init: it was cloned previously and only its HEAD will be moved. Git's
+            // `submodule update` warns-and-skips such paths (`next_submodule_warn_missing`) rather
+            // than dying, so an entry deleted from `.gitmodules` while still checked out must not
+            // abort `checkout --recurse-submodules` (t5526 #42/#45). Only paths with NO `.gitmodules`
+            // mapping qualify; a present-but-url-less mapping still errors as before.
+            if matched.is_none() {
+                let abs = work_tree.join(gl);
+                if abs.join(".git").exists() {
+                    continue;
+                }
+            }
             let display = rev_parse::to_relative_path(
                 &work_tree.join(gl),
                 &std::env::current_dir().unwrap_or_else(|_| work_tree.to_path_buf()),
@@ -3102,6 +3127,10 @@ fn run_add(args: &AddArgs) -> Result<()> {
             if !status.success() {
                 bail!("failed to clone submodule from '{}'", args.url);
             }
+            // `clone --separate-git-dir` writes an absolute `gitdir:` path; submodules need a
+            // relative gitlink (C Git's `connect_work_tree_and_git_dir`) so the worktree survives
+            // being moved/copied with its superproject (t7400 "submodule add").
+            write_submodule_gitfile(&sub_path, &modules_dir).map_err(|e| anyhow::anyhow!("{e}"))?;
             set_separate_gitdir_worktree(&grit_bin, &modules_dir, &sub_path);
             did_clone = true;
         }
@@ -3434,23 +3463,15 @@ pub(crate) fn resolve_submodule_super_url(
         return Ok(raw_url.to_string());
     }
 
-    // Use this repository's git dir for `remote.*.url` (matches Git's `resolve_relative_url`: it
-    // reads `the_repository`, not the outer superproject). Nested sync runs with `git_dir` under
-    // `.git/modules/<name>/` and must use that config—using only the top-level `.git` breaks
-    // recursive sync (t7403).
-    let outer_git = superproject_git_dir_for_nested_modules(repo_git_dir)
-        .unwrap_or_else(|| repo_git_dir.to_path_buf());
-    let outer_wt = outer_git
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| work_tree.to_path_buf());
-
-    let base = if superproject_git_dir_for_nested_modules(repo_git_dir).is_some() {
-        work_tree.to_string_lossy().into_owned()
-    } else {
-        default_remote_url_raw(repo_git_dir)
-            .unwrap_or_else(|| outer_wt.to_string_lossy().into_owned())
-    };
+    // Match Git's `resolve_relative_url(url, NULL)`: resolve against this repository's
+    // `remote.<default>.url` (read from `the_repository`'s config — which during a recursive
+    // `submodule update` is the submodule's own config under `.git/modules/<name>/`). Git only
+    // falls back to the process cwd (the submodule worktree during recursion) when no remote URL
+    // is configured. Using the worktree path unconditionally for nested repos is wrong: e.g. a
+    // submodule cloned with `remote.origin.url = <super>/super` must resolve its own `../merging`
+    // against `<super>/super`, not against `<recursivesuper>/super` (t7406 recursive update).
+    let base = default_remote_url_raw(repo_git_dir)
+        .unwrap_or_else(|| work_tree.to_string_lossy().into_owned());
     git_relative_url(&base, raw_url, None)
 }
 

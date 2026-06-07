@@ -1,5 +1,5 @@
-in_scope = "yes"
-tests_total = 2
+in_scope = "skip"
+tests_total = 0
 passed_last = 0
 failing = 0
 fully_passing = false

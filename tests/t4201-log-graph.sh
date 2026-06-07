@@ -4,6 +4,9 @@ test_description='grit log --graph, --first-parent, --reverse, --skip
 Tests the graph display mode and commit traversal options for the log
 command, including combinations of flags.'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 # ── Setup ────────────────────────────────────────────────────────────────────

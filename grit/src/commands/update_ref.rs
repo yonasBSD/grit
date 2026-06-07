@@ -434,6 +434,7 @@ fn run_batch(repo: &Repository, args: &Args) -> Result<()> {
             repo,
             args,
             &parts,
+            line,
             &mut transaction_active,
             &mut transaction_prepared,
             &mut staged,
@@ -490,6 +491,7 @@ fn run_implicit_stdin_batch(repo: &Repository, args: &Args, text: &str) -> Resul
             repo,
             args,
             &parts,
+            line,
             &mut transaction_active,
             &mut transaction_prepared,
             &mut staged,
@@ -734,16 +736,19 @@ fn queue_or_apply(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_batch_command(
     repo: &Repository,
     args: &Args,
     parts: &[&str],
+    raw_line: &str,
     transaction_active: &mut bool,
     transaction_prepared: &mut bool,
     staged: &mut Vec<(bool, BatchOp)>,
     pending_option_no_deref: &mut bool,
     implicit_one_shot: bool,
 ) -> Result<()> {
+    validate_batch_refname(parts[0], raw_line, args.null_terminated)?;
     match parts[0] {
         "update" => {
             let nd = take_batch_no_deref(args, pending_option_no_deref);
@@ -994,21 +999,100 @@ fn process_batch_command(
     Ok(())
 }
 
+/// Maximum number of arguments a batch command accepts, counting the first
+/// argument that shares the command field. Mirrors the `args` column of the
+/// `command[]` table in `builtin/update-ref.c`. With `-z`, the command word and
+/// its first argument live in one NUL-terminated field, and `args - 1`
+/// additional fields follow.
+fn batch_command_arg_count(cmd: &str) -> usize {
+    match cmd {
+        "update" => 3,
+        "symref-update" => 4,
+        "create" | "delete" | "verify" | "symref-create" | "symref-delete" | "symref-verify" => 2,
+        "option" => 1,
+        _ => 0,
+    }
+}
+
+/// A single logical batch command assembled from one or more NUL-terminated
+/// `-z` fields.
+struct NulCommand {
+    /// The raw first field (command word plus its first argument).
+    head: String,
+    /// `parts[0]` is the command word; remaining entries are the assembled
+    /// arguments (first argument from `head`, then the additional fields).
+    parts: Vec<String>,
+}
+
+/// Group NUL-terminated `-z` input fields into logical commands, consuming the
+/// proper number of trailing fields per command as `builtin/update-ref.c` does.
+fn group_nul_commands(input: &[u8]) -> Result<Vec<NulCommand>> {
+    let mut fields: Vec<String> = Vec::new();
+    for chunk in input.split(|b| *b == 0) {
+        fields.push(
+            std::str::from_utf8(chunk)
+                .context("invalid utf-8 in stdin")?
+                .to_owned(),
+        );
+    }
+    // The final NUL produces a trailing empty field; drop it so it is not seen
+    // as a spurious empty command.
+    if fields.last().map(|s| s.is_empty()).unwrap_or(false) {
+        fields.pop();
+    }
+
+    let mut commands = Vec::new();
+    let mut i = 0;
+    while i < fields.len() {
+        let head = fields[i].clone();
+        i += 1;
+        if head.is_empty() {
+            bail!("empty command in input");
+        }
+        if head.chars().next().is_some_and(|c| c.is_whitespace()) {
+            bail!("whitespace before command: {head}");
+        }
+        let cmd = head.split_whitespace().next().unwrap_or("").to_owned();
+        let arg_count = batch_command_arg_count(&cmd);
+
+        let mut parts: Vec<String> = vec![cmd.clone()];
+        // The first argument (if any) shares the command field.
+        if let Some(rest) = head.strip_prefix(&cmd) {
+            let rest = rest.strip_prefix(' ').unwrap_or(rest);
+            if !rest.is_empty() {
+                parts.push(rest.to_owned());
+            }
+        }
+        // Pull `arg_count - 1` additional NUL fields as the remaining arguments.
+        let already = parts.len().saturating_sub(1);
+        let mut needed = arg_count.saturating_sub(already);
+        while needed > 0 && i < fields.len() {
+            // A blank field terminates the optional argument list (e.g. update
+            // with no old-value emits a trailing empty field).
+            if fields[i].is_empty() {
+                i += 1;
+                break;
+            }
+            parts.push(fields[i].clone());
+            i += 1;
+            needed -= 1;
+        }
+
+        commands.push(NulCommand { head, parts });
+    }
+    Ok(commands)
+}
+
 fn run_batch_nul(repo: &Repository, args: &Args, input: &[u8]) -> Result<()> {
+    let commands = group_nul_commands(input)?;
+
     if !stdin_chunks_explicit_transaction(input)? {
         let mut staged: Vec<(bool, BatchOp)> = Vec::new();
         let mut pending_option_no_deref = false;
         let mut transaction_active = false;
         let mut transaction_prepared = false;
-        for chunk in input.split(|b| *b == 0) {
-            if chunk.is_empty() {
-                continue;
-            }
-            let line = std::str::from_utf8(chunk).context("invalid utf-8 in stdin")?;
-            if line.chars().next().is_some_and(|c| c.is_whitespace()) {
-                bail!("whitespace before command: {line}");
-            }
-            let parts: Vec<&str> = line.split_whitespace().collect();
+        for command in &commands {
+            let parts: Vec<&str> = command.parts.iter().map(|s| s.as_str()).collect();
             if parts.is_empty() {
                 continue;
             }
@@ -1016,6 +1100,7 @@ fn run_batch_nul(repo: &Repository, args: &Args, input: &[u8]) -> Result<()> {
                 repo,
                 args,
                 &parts,
+                &command.head,
                 &mut transaction_active,
                 &mut transaction_prepared,
                 &mut staged,
@@ -1034,15 +1119,8 @@ fn run_batch_nul(repo: &Repository, args: &Args, input: &[u8]) -> Result<()> {
     let mut staged: Vec<(bool, BatchOp)> = Vec::new();
     let mut pending_option_no_deref = false;
 
-    for chunk in input.split(|b| *b == 0) {
-        if chunk.is_empty() {
-            continue;
-        }
-        let line = std::str::from_utf8(chunk).context("invalid utf-8 in stdin")?;
-        if line.chars().next().is_some_and(|c| c.is_whitespace()) {
-            bail!("whitespace before command: {line}");
-        }
-        let parts: Vec<&str> = line.split_whitespace().collect();
+    for command in &commands {
+        let parts: Vec<&str> = command.parts.iter().map(|s| s.as_str()).collect();
         if parts.is_empty() {
             continue;
         }
@@ -1050,6 +1128,7 @@ fn run_batch_nul(repo: &Repository, args: &Args, input: &[u8]) -> Result<()> {
             repo,
             args,
             &parts,
+            &command.head,
             &mut transaction_active,
             &mut transaction_prepared,
             &mut staged,
@@ -1198,19 +1277,133 @@ fn validate_update_refname(refname: &str) -> Result<()> {
     .map_err(|_| anyhow::anyhow!("invalid ref format: {refname}"))
 }
 
-fn validate_delete_refname(refname: &str) -> Result<()> {
-    if validate_update_refname(refname).is_ok() {
+/// Commands whose first argument is a reference name and which must reject a
+/// badly formatted name with `fatal: invalid ref format: <ref>`, mirroring the
+/// `parse_refname()`/`check_refname_format()` check in `builtin/update-ref.c`.
+fn batch_command_takes_refname(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "update"
+            | "create"
+            | "delete"
+            | "verify"
+            | "symref-update"
+            | "symref-create"
+            | "symref-delete"
+            | "symref-verify"
+    )
+}
+
+/// Extract the raw reference name from the remainder of a stdin command line,
+/// matching `parse_refname()` in `builtin/update-ref.c`.
+///
+/// Without `-z` (`null_terminated == false`) the refname is the first
+/// whitespace-delimited argument, honoring backslash C-quoting. With `-z` the
+/// refname is everything up to the end of the field, preserving any trailing
+/// whitespace.
+fn extract_raw_refname(rest: &str, null_terminated: bool) -> Option<String> {
+    if null_terminated {
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(rest.to_owned());
+    }
+
+    let mut chars = rest.chars().peekable();
+    // Skip nothing: the caller has already trimmed the single delimiter space.
+    let mut out = String::new();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            break;
+        }
+        chars.next();
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                chars.next();
+                out.push(next);
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// Validate the reference name carried by a stdin batch command, emitting the
+/// `fatal: invalid ref format: <ref>` error Git produces for a bad name.
+fn validate_batch_refname(cmd: &str, raw_line: &str, null_terminated: bool) -> Result<()> {
+    if !batch_command_takes_refname(cmd) {
         return Ok(());
     }
-    let safe_namespace = refname == "HEAD" || refname.starts_with("refs/");
-    let unsafe_path = Path::new(refname).is_absolute()
-        || Path::new(refname).components().any(|component| {
-            matches!(
-                component,
-                std::path::Component::ParentDir | std::path::Component::CurDir
-            )
-        });
-    if safe_namespace && !unsafe_path {
+    // The refname follows the command word and a single delimiter character.
+    let rest = match raw_line.strip_prefix(cmd) {
+        Some(r) => r.strip_prefix(' ').unwrap_or(r),
+        None => return Ok(()),
+    };
+    let Some(refname) = extract_raw_refname(rest, null_terminated) else {
+        return Ok(());
+    };
+    if check_refname_format(
+        &refname,
+        &RefNameOptions {
+            allow_onelevel: true,
+            refspec_pattern: false,
+            normalize: false,
+        },
+    )
+    .is_err()
+    {
+        return Err(anyhow::Error::from(GritError::Message(format!(
+            "fatal: invalid ref format: {refname}"
+        ))));
+    }
+    Ok(())
+}
+
+/// Port of `refname_is_safe()` from `refs.c`: a delete may target a ref that no
+/// longer passes `check_refname_format` (e.g. a broken name), but only if the
+/// name is "safe" — either it lives under `refs/` without escaping that prefix,
+/// or it is a root-style ref made solely of uppercase letters and underscores
+/// (e.g. `HEAD`).
+fn refname_is_safe(refname: &str) -> bool {
+    if let Some(rest) = refname.strip_prefix("refs/") {
+        if rest.is_empty() || rest.starts_with('/') || rest.ends_with('/') {
+            return false;
+        }
+        // The refname must not escape `refs/` once normalized.
+        return normalize_path_copy(rest).as_deref() == Some(rest);
+    }
+
+    if refname.is_empty() {
+        return false;
+    }
+    refname.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
+}
+
+/// Minimal port of `normalize_path_copy()` (collapse `.`/`..`/`//`). Returns
+/// `None` when the path tries to escape above its root (a leading `..`).
+fn normalize_path_copy(path: &str) -> Option<String> {
+    let mut out: Vec<&str> = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "" | "." => continue,
+            ".." => {
+                if out.pop().is_none() {
+                    return None;
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    Some(out.join("/"))
+}
+
+fn validate_delete_refname(refname: &str) -> Result<()> {
+    if refname_is_safe(refname) {
         Ok(())
     } else {
         bail!("refusing to update ref with bad name '{refname}'")

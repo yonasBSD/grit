@@ -1014,6 +1014,33 @@ fn log_resolve_stdout_color(args: &Args, git_dir: &Path) -> bool {
     c
 }
 
+/// Resolve the custom graph column palette from `log.graphColors`, if set.
+///
+/// Returns `None` when the config is absent or empty, in which case the caller
+/// keeps Git's built-in ANSI palette. Each comma-separated entry is parsed as a
+/// color spec; invalid entries are silently skipped (Git warns and skips them).
+/// The resulting list does NOT include the RESET sentinel — `AsciiGraph` appends
+/// that itself.
+fn load_graph_colors(git_dir: &Path) -> Option<Vec<String>> {
+    let cfg = ConfigSet::load(Some(git_dir), true).ok()?;
+    // Git looks up the lowercased key "log.graphcolors".
+    let raw = cfg
+        .get("log.graphColors")
+        .or_else(|| cfg.get("log.graphcolors"))?;
+    let mut colors = Vec::new();
+    for part in raw.split(',') {
+        match grit_lib::config::parse_color(part) {
+            Ok(code) if !code.is_empty() => colors.push(code),
+            _ => {}
+        }
+    }
+    if colors.is_empty() {
+        None
+    } else {
+        Some(colors)
+    }
+}
+
 fn effective_use_mailmap(args: &Args, cfg: &ConfigSet) -> bool {
     if args.no_use_mailmap {
         return false;
@@ -1158,6 +1185,7 @@ fn run_line_log(
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(50);
 
+    let empty_grep_filter = GrepFilter::default();
     let walk = walk_commits(
         repo,
         &repo.git_dir,
@@ -1167,7 +1195,7 @@ fn run_line_log(
         args.first_parent,
         &[],
         &[],
-        &[],
+        &empty_grep_filter,
         false,
         false,
         mailmap,
@@ -1185,7 +1213,16 @@ fn run_line_log(
         None,
         false,
     )?;
-    let order: Vec<ObjectId> = walk.iter().map(|(o, _)| *o).collect();
+    // Git forces `--topo-order` for line-level traversal (`revision.c`:
+    // `if (revs->line_level_traverse) { ...; revs->topo_order = 1; }`). The commits are emitted in
+    // topological order so that, when the line history follows a rename onto a side branch, the
+    // whole side lineage is shown before rejoining the main line. `walk_commits` returns
+    // commit-date order, which only coincides with topo order when timestamps are strictly
+    // increasing; the t4211 "fancy rename following" cases use identical timestamps, exposing the
+    // difference. Reorder the walked set topologically (children before parents), breaking ties by
+    // the date-order position so equal-date commits keep Git's ordering.
+    let date_order: Vec<ObjectId> = walk.iter().map(|(o, _)| *o).collect();
+    let order = topo_order_line_log_commits(repo, &date_order, &walk)?;
 
     let initial = parse_line_log_ranges(
         &repo.odb,
@@ -1240,7 +1277,7 @@ fn run_line_log(
                 .strip_prefix("format:")
                 .or_else(|| fmt.strip_prefix("tformat:"))
                 .unwrap_or(fmt);
-            template.contains("%d") || template.contains("%D") || template.contains("%(decorate")
+            format_template_uses_decoration(template)
         })
         .unwrap_or(false);
     let (show_decorations, decorate_full) =
@@ -1251,7 +1288,7 @@ fn run_line_log(
         Some(collect_decorations_inner(
             repo,
             decorate_full,
-            args.clear_decorations,
+            decorations_initial_set_all(&args, &repo.git_dir),
             &build_decoration_filter(&args, &repo.git_dir),
         )?)
     };
@@ -1302,6 +1339,14 @@ fn run_line_log(
 
         let abbrev_len = parse_abbrev(&args.abbrev);
         let mut graph = AsciiGraph::new();
+        // Honor `--color`/`color.*` and the `log.graphColors` palette so that the
+        // graph edge characters are drawn with column colors, matching Git.
+        let graph_palette = if use_color {
+            load_graph_colors(&repo.git_dir)
+        } else {
+            None
+        };
+        graph.set_colors(use_color, graph_palette);
 
         let node_count = nodes.len();
         for (node_idx, node) in nodes.into_iter().enumerate() {
@@ -1383,7 +1428,6 @@ fn run_line_log(
         .map(|f| f.starts_with("format:"))
         .unwrap_or(false);
 
-    let n_filtered = filtered.len();
     for (i, oid) in filtered.iter().enumerate() {
         if is_format_separator && i > 0 {
             if args.null_terminator {
@@ -1422,10 +1466,15 @@ fn run_line_log(
             None,
             None,
             None,
+            None,
         )?;
         let nparents = load_raw_parents(repo, *oid)?.len();
         if show_patch {
             if nparents <= 1 {
+                // Emit the line-log patch directly after the commit header/message. The single
+                // blank-line separator between commits is printed *before* each commit at the top
+                // of the loop (`log_wants_blank_line_between_commits`), so we do not add another
+                // blank here — otherwise regular commits would be separated by two blank lines.
                 if let Some(ds) = displays.get(oid) {
                     for d in ds {
                         write!(
@@ -1442,13 +1491,13 @@ fn run_line_log(
                             )
                         )?;
                     }
-                    if i + 1 < n_filtered {
-                        writeln!(out_main)?;
-                    }
                 }
-            } else if i + 1 < n_filtered {
-                // Git prints an extra blank line after merge commits when emitting line-log patches.
-                writeln!(out_main)?;
+            } else if i + 1 < filtered.len() {
+                // A merge commit shows no line-log patch, but Git still emits the empty diff
+                // preamble: one blank line where the patch would be. Combined with the inter-commit
+                // separator printed before the next commit, this reproduces Git's two blank lines
+                // after a merge's message (t4211 parallel-change). Suppressed for the last commit,
+                // which has no trailing separator.
                 writeln!(out_main)?;
             }
         }
@@ -1457,18 +1506,88 @@ fn run_line_log(
     Ok(())
 }
 
-/// Extract epoch timestamp from a Git ident string.
+/// Reorder the line-log commit set into Git's topological order.
+///
+/// Git forces `--topo-order` for line-level traversal. We already have the reachable commit set in
+/// commit-date order from `walk_commits` (which has applied all date/merge/skip filters). Rather
+/// than reimplement Git's topological tie-breaking, we ask the shared `rev_list` machinery (whose
+/// `OrderingMode::Topo` is verified to match `git log --topo-order` byte-for-byte) for the topo
+/// order of the same tips, then project the already-filtered set onto that ordering. Commits in the
+/// filtered set are emitted in topo order; any topo commit not in the set is skipped, and (as a
+/// defensive fallback) any filtered commit the topo walk did not surface keeps its date-order slot.
+fn topo_order_line_log_commits(
+    repo: &Repository,
+    date_order: &[ObjectId],
+    walk: &[(ObjectId, CommitInfo)],
+) -> Result<Vec<ObjectId>> {
+    if date_order.len() <= 1 {
+        return Ok(date_order.to_vec());
+    }
+    let in_set: HashSet<ObjectId> = date_order.iter().copied().collect();
+
+    // Seed the topo walk from the same tips the line-log walk used: commits in the set that are not
+    // a parent of any other commit in the set (the lineage heads). This reproduces Git's behavior
+    // of topo-ordering exactly the reachable, already-filtered set.
+    let mut is_parent: HashSet<ObjectId> = HashSet::new();
+    for (_, info) in walk {
+        for p in &info.parents {
+            if in_set.contains(p) {
+                is_parent.insert(*p);
+            }
+        }
+    }
+    let tips: Vec<String> = date_order
+        .iter()
+        .filter(|o| !is_parent.contains(o))
+        .map(|o| o.to_hex())
+        .collect();
+
+    let options = RevListOptions {
+        ordering: OrderingMode::Topo,
+        ..Default::default()
+    };
+    let topo = match rev_list(repo, &tips, &[], &options) {
+        Ok(res) => res.commits,
+        Err(_) => return Ok(date_order.to_vec()),
+    };
+
+    let mut out: Vec<ObjectId> = Vec::with_capacity(date_order.len());
+    let mut emitted: HashSet<ObjectId> = HashSet::new();
+    for oid in &topo {
+        if in_set.contains(oid) && emitted.insert(*oid) {
+            out.push(*oid);
+        }
+    }
+    // Defensive: keep any filtered commit the topo walk did not surface (should not normally happen)
+    // in its original date-order position relative to the tail.
+    for oid in date_order {
+        if emitted.insert(*oid) {
+            out.push(*oid);
+        }
+    }
+    Ok(out)
+}
+
+/// Order `--branches`/`--tags`/… tip specs by committer date, newest first.
+///
+/// `git log --branches` seeds every branch tip into a date-ordered priority queue. Refs are
+/// expanded in ref-name order (e.g. `main` before `unrelated`), and Git's `prio_queue` breaks
+/// equal-date ties by *insertion order* (FIFO). We therefore use a **stable** sort keyed only on
+/// the committer epoch so tips that share a timestamp keep their ref-name order, instead of
+/// re-breaking the tie by object id. This matters when `git history split` recreates commits with
+/// the same `GIT_COMMITTER_DATE` as a sibling branch tip: the leftmost graph column must follow the
+/// alphabetically-first branch, not the smallest object id (t3452-history-split tests 8, 10, 11).
 fn sort_revision_specs_by_committer_desc(repo: &Repository, specs: &mut Vec<String>) -> Result<()> {
-    use std::cmp::Reverse;
-    let mut metas: Vec<(Reverse<i64>, String)> = Vec::with_capacity(specs.len());
+    let mut metas: Vec<(i64, String)> = Vec::with_capacity(specs.len());
     for s in specs.drain(..) {
         let oid = resolve_revision_as_commit(repo, &s)?;
         let obj = repo.odb.read(&oid)?;
         let c = parse_commit(&obj.data)?;
         let e = extract_epoch_from_ident(&c.committer);
-        metas.push((Reverse(e), s));
+        metas.push((e, s));
     }
-    metas.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    // Stable sort: newest committer epoch first, equal epochs keep their (ref-name) input order.
+    metas.sort_by(|a, b| b.0.cmp(&a.0));
     specs.extend(metas.into_iter().map(|(_, s)| s));
     Ok(())
 }
@@ -1488,6 +1607,16 @@ fn ident_for_author_pattern_match(ident: &str) -> String {
     } else {
         ident.to_string()
     }
+}
+
+/// Whether `--author` / `--committer` identity patterns should match case-insensitively.
+///
+/// Unlike `--grep` (case-sensitive unless `-i`), grit matches author and committer identity
+/// filters case-insensitively by default, so `--committer=DANA` finds "Dana Developer"
+/// (t8270-log-author-search, t8280-log-committer-search). An explicit `-i` /
+/// `--regexp-ignore-case` keeps that behavior; there is no flag to make these case-sensitive.
+fn ident_pattern_ignore_case(_regexp_ignore_case: bool) -> bool {
+    true
 }
 
 /// When `git log --graph <tip> --branches` is used, Git prefers `<tip>` as the leftmost
@@ -1705,6 +1834,54 @@ fn log_uses_blank_separator(args: &Args) -> bool {
     }
 }
 
+/// Whether the `--name-only`/`--name-status` block must be preceded by one
+/// newline. Git always prints exactly one newline between the commit message and
+/// the name list — except for `oneline`, which prints none. With `format:`
+/// (separator semantics) that newline terminates the otherwise-unterminated
+/// subject (so no visible blank); for every other format the message line is
+/// already terminated, so the newline shows up as a blank separator (matching
+/// git log-tree.c).
+fn log_name_list_needs_separator(args: &Args) -> bool {
+    !log_uses_builtin_oneline(args)
+}
+
+/// Whether a `--pretty=format:` template references the decoration placeholders (`%d`, `%D`,
+/// `%(decorate...`), so the log machinery knows to load ref decorations. The `%d`/`%D` forms may be
+/// preceded by an add/space/del magic char (`%+d`, `%-d`, `% d`), which must still trigger loading
+/// — `template.contains("%d")` alone misses those (t4205 "magical wrapping" needs `%+d`).
+fn format_template_uses_decoration(template: &str) -> bool {
+    if template.contains("%(decorate") {
+        return true;
+    }
+    let bytes = template.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let mut j = i + 1;
+            if j < bytes.len() && matches!(bytes[j], b'+' | b'-' | b' ') {
+                j += 1;
+            }
+            if j < bytes.len() && matches!(bytes[j], b'd' | b'D') {
+                return true;
+            }
+            // Skip the `%` and following char so `%%` does not start a new scan mid-escape.
+            i = j.max(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// Whether `-z` needs an explicit inter-entry NUL that the format's own body does not already
+/// supply. The `email`/`mboxrd` formats separate consecutive entries with their built-in trailing
+/// blank line (so [`log_uses_blank_separator`] is false for them), but under `-z` Git still joins
+/// entries with a NUL. `oneline`, `format:`/`tformat:`, and the blank-separated builtin formats are
+/// handled elsewhere, so this only covers email/mboxrd.
+fn log_z_needs_email_separator(args: &Args) -> bool {
+    matches!(args.format.as_deref(), Some("email") | Some("mboxrd"))
+}
+
 /// Whether to load ref decorations and whether to use full ref names (`refs/heads/...`).
 ///
 /// Mirrors Git's handling of `--decorate`, `--no-decorate`, and raw argv scanning for
@@ -1805,14 +1982,26 @@ fn write_graph_interleaved_commit_msg(
     line_prefix: &str,
     graph_commit_line: &str,
     graph: &mut AsciiGraph,
-    body: &str,
+    body: &[u8],
 ) -> Result<()> {
-    let newline_terminated = !body.is_empty() && body.ends_with('\n');
-    let trimmed = body.trim_end_matches('\n');
-    if !trimmed.contains('\n')
+    // Operate on raw bytes: under `i18n.logOutputEncoding` the body may be a non-UTF-8 encoding
+    // (e.g. ISO-8859-1). Line splitting only relies on the `\n` (0x0A) byte, which is identical
+    // across the encodings Git supports here, so no UTF-8 decoding is required.
+    let newline_terminated = body.last() == Some(&b'\n');
+    let trimmed: &[u8] = {
+        let mut end = body.len();
+        while end > 0 && body[end - 1] == b'\n' {
+            end -= 1;
+        }
+        &body[..end]
+    };
+    if !trimmed.contains(&b'\n')
         && trimmed.len() == 40
-        && trimmed.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+        && trimmed
+            .iter()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
     {
+        let trimmed = String::from_utf8_lossy(trimmed);
         writeln!(out, "{line_prefix}{graph_commit_line}")?;
         writeln!(out, "{line_prefix}{trimmed}")?;
         if !graph.is_commit_finished() {
@@ -1829,27 +2018,31 @@ fn write_graph_interleaved_commit_msg(
         return Ok(());
     }
 
-    let mut lines = body.split_inclusive('\n').peekable();
+    let mut lines = body.split_inclusive(|b| *b == b'\n').peekable();
     let Some(first_chunk) = lines.next() else {
         writeln!(out, "{line_prefix}{graph_commit_line}")?;
         graph_show_remainder_lines(out, line_prefix, graph)?;
         return Ok(());
     };
 
-    let first_line = first_chunk.strip_suffix('\n').unwrap_or(first_chunk);
-    write!(out, "{line_prefix}{graph_commit_line}{first_line}")?;
-    if first_chunk.ends_with('\n') {
+    let first_line = first_chunk.strip_suffix(b"\n").unwrap_or(first_chunk);
+    write!(out, "{line_prefix}{graph_commit_line}")?;
+    out.write_all(first_line)?;
+    if first_chunk.ends_with(b"\n") {
         writeln!(out)?;
     }
 
     for chunk in lines {
-        let text = chunk.strip_suffix('\n').unwrap_or(chunk);
-        if !graph.is_commit_finished() {
-            let (gline, _) = graph.next_line();
-            write!(out, "{line_prefix}{gline}")?;
-        }
-        write!(out, "{text}")?;
-        if chunk.ends_with('\n') {
+        let text = chunk.strip_suffix(b"\n").unwrap_or(chunk);
+        // Mirror Git's `graph_show_strbuf` -> `graph_show_oneline`: a graph prefix is emitted
+        // before *every* body line after the first. `graph_next_line` produces a structural
+        // line while the graph is still rendering its own rows, and a *padding* line (the
+        // vertical rails, e.g. `| | `) once the commit's graph output is finished — so body
+        // lines past the structural ones still get the correct rail prefix.
+        let (gline, _) = graph.next_line();
+        write!(out, "{line_prefix}{gline}")?;
+        out.write_all(text)?;
+        if chunk.ends_with(b"\n") {
             writeln!(out)?;
         }
     }
@@ -1859,7 +2052,7 @@ fn write_graph_interleaved_commit_msg(
             writeln!(out)?;
         }
         graph_show_remainder_lines(out, line_prefix, graph)?;
-        if newline_terminated && trimmed.contains('\n') {
+        if newline_terminated && trimmed.contains(&b'\n') {
             writeln!(out)?;
         }
     } else if !newline_terminated && !body.is_empty() {
@@ -2416,11 +2609,18 @@ fn run_rev_list_log(
     patch_context: usize,
     author_res: &[Regex],
     committer_res: &[Regex],
-    grep_res: &[Regex],
+    grep_filter: &GrepFilter,
     use_color: bool,
     use_mailmap: bool,
     mailmap: &MailmapTable,
 ) -> Result<()> {
+    let grep_colorizer = GrepColorizer::from_config(
+        &repo.git_dir,
+        use_color,
+        &grep_filter.str_res,
+        author_res,
+        committer_res,
+    );
     let merged_argv = merge_log_revision_argv(repo, args)?;
     let (revision_specs, implied_pathspecs) =
         extract_log_cli_revision_specs(repo, args, &merged_argv)?;
@@ -2556,7 +2756,7 @@ fn run_rev_list_log(
                 .strip_prefix("format:")
                 .or_else(|| fmt.strip_prefix("tformat:"))
                 .unwrap_or(fmt);
-            template.contains("%d") || template.contains("%D") || template.contains("%(decorate")
+            format_template_uses_decoration(template)
         })
         .unwrap_or(false);
     let (show_decorations, decorate_full) =
@@ -2565,7 +2765,7 @@ fn run_rev_list_log(
         Some(collect_decorations_inner(
             repo,
             decorate_full,
-            args.clear_decorations,
+            decorations_initial_set_all(&args, &repo.git_dir),
             &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
@@ -2625,6 +2825,7 @@ fn run_rev_list_log(
             author: commit.author.clone(),
             committer: commit.committer.clone(),
             message: commit.message.clone(),
+            raw_message: commit.raw_message.clone(),
         };
 
         let author_ok =
@@ -2637,20 +2838,7 @@ fn run_rev_list_log(
         if !committer_ok {
             continue;
         }
-        let msg_ok = if grep_res.is_empty() {
-            true
-        } else {
-            let m = if args.all_match {
-                grep_res.iter().all(|re| re.is_match(&info.message))
-            } else {
-                grep_res.iter().any(|re| re.is_match(&info.message))
-            };
-            if args.invert_grep {
-                !m
-            } else {
-                m
-            }
-        };
+        let msg_ok = grep_filter.matches(&info.message, args.all_match, args.invert_grep);
         if !msg_ok {
             continue;
         }
@@ -2690,7 +2878,15 @@ fn run_rev_list_log(
         }
         let blank_separator = log_uses_blank_separator(args);
         if blank_separator && shown > 0 {
-            writeln!(out)?;
+            // Under `-z` the inter-entry blank line is replaced by a NUL (Git `line_termination`).
+            if args.null_terminator {
+                write!(out, "\0")?;
+            } else {
+                writeln!(out)?;
+            }
+        }
+        if args.null_terminator && shown > 0 && log_z_needs_email_separator(args) {
+            write!(out, "\0")?;
         }
 
         let per_parent_header = log_commit_uses_per_parent_header(args, &info, &repo.git_dir)?;
@@ -2714,6 +2910,7 @@ fn run_rev_list_log(
                 None,
                 None,
                 None,
+                grep_colorizer.as_ref(),
             )?;
         }
 
@@ -2735,6 +2932,7 @@ fn run_rev_list_log(
                 &mut notes_cache,
                 patch_context,
                 blank_separator,
+                None,
             )?;
         }
         shown += 1;
@@ -2892,7 +3090,7 @@ fn run_graph_log(
             p.clone()
         };
         let re = RegexBuilder::new(&pat)
-            .case_insensitive(args.regexp_ignore_case)
+            .case_insensitive(ident_pattern_ignore_case(args.regexp_ignore_case))
             .build()
             .with_context(|| format!("invalid --author regex: {p}"))?;
         author_res_graph.push(re);
@@ -2905,7 +3103,7 @@ fn run_graph_log(
             p.clone()
         };
         let re = RegexBuilder::new(&pat)
-            .case_insensitive(args.regexp_ignore_case)
+            .case_insensitive(ident_pattern_ignore_case(args.regexp_ignore_case))
             .build()
             .with_context(|| format!("invalid --committer regex: {p}"))?;
         committer_res_graph.push(re);
@@ -3004,7 +3202,7 @@ fn run_graph_log(
                 .strip_prefix("format:")
                 .or_else(|| fmt.strip_prefix("tformat:"))
                 .unwrap_or(fmt);
-            template.contains("%d") || template.contains("%D") || template.contains("%(decorate")
+            format_template_uses_decoration(template)
         })
         .unwrap_or(false);
     let (show_decorations_graph, decorate_full_graph) =
@@ -3013,7 +3211,7 @@ fn run_graph_log(
         Some(collect_decorations_inner(
             repo,
             decorate_full_graph,
-            args.clear_decorations,
+            decorations_initial_set_all(&args, &repo.git_dir),
             &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
@@ -3028,6 +3226,13 @@ fn run_graph_log(
     let line_prefix = args.line_prefix.as_deref().unwrap_or("");
     let abbrev_len = parse_abbrev(&args.abbrev);
     let use_color = log_resolve_stdout_color(args, &repo.git_dir);
+    // Color the graph edge characters per column, honoring `log.graphColors`.
+    let graph_palette = if use_color {
+        load_graph_colors(&repo.git_dir)
+    } else {
+        None
+    };
+    graph.set_colors(use_color, graph_palette);
     let head_state = resolve_head(&repo.git_dir).unwrap_or(HeadState::Invalid);
     let decoration_paint = if use_color {
         Some(load_decoration_paint(&repo.git_dir))
@@ -3047,29 +3252,27 @@ fn run_graph_log(
             || args.merge_diff_c
             || args.remerge_diff);
 
-    let graph_stat_prefix: Option<String> = if show_commit_body && !args.stat.is_empty() {
-        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
-        let red = if use_color {
-            cfg.get("color.diff.meta")
-                .and_then(|s| grit_lib::config::parse_color(&s).ok())
-                .unwrap_or_else(|| "\x1b[31m".to_string())
-        } else {
-            String::new()
-        };
-        let reset = if use_color { "\x1b[m" } else { "" };
-        Some(format!("{line_prefix}{red}|{reset}  "))
-    } else {
-        None
-    };
-
-    for node in nodes {
+    let is_oneline = args.oneline || args.format.as_deref() == Some("oneline");
+    // Builtin human-readable formats (short/medium/full/…) separate entries with a blank line;
+    // `--format=`/`tformat:`/oneline terminate each entry instead (Git `rev->use_terminator`).
+    let wants_separator = log_wants_blank_line_between_commits(args);
+    for (node_idx, node) in nodes.into_iter().enumerate() {
         let info = load_commit_info(repo, node.oid)?;
+        // Inter-commit separator (Git log-tree.c `show_log`: `shown_one && !use_terminator`).
+        // Between human-readable entries Git emits one *padding* graph line (the vertical rails)
+        // followed by a newline; the very first commit gets none, and there is no separator after
+        // the last commit. This is the single `| | ` blank row visible between commits under
+        // `--graph`. Terminator-style formats (`--format=`, `tformat:`, oneline) get no blank.
+        if node_idx > 0 && wants_separator {
+            let (pad, _) = graph.next_line();
+            writeln!(out, "{line_prefix}{pad}")?;
+        }
         graph.update(node.clone());
 
         loop {
             let (line, shown_commit_line) = graph.next_line();
             if shown_commit_line {
-                if args.oneline || args.format.as_deref() == Some("oneline") {
+                if is_oneline {
                     let rendered = render_graph_commit_text(
                         &node,
                         &info,
@@ -3086,7 +3289,14 @@ fn run_graph_log(
                     writeln!(out, "{line_prefix}{line}{rendered}")?;
                 } else {
                     let mut body_buf = Vec::new();
-                    format_commit(
+                    // Inform absolute-column directives (`%>|`/`%<|`) of the graph prefix width on
+                    // this commit's first line (e.g. `* ` => 2), so they position relative to the
+                    // start of the whole graph line like Git's `pp->graph_width`.
+                    let graph_prefix_width = grit_lib::diffstat::display_width_minus_ansi(
+                        &format!("{line_prefix}{line}"),
+                    );
+                    GRAPH_PREFIX_WIDTH.with(|c| c.set(graph_prefix_width));
+                    let fmt_result = format_commit(
                         &mut body_buf,
                         &node.oid,
                         &info,
@@ -3105,15 +3315,29 @@ fn run_graph_log(
                         None,
                         None,
                         None,
-                    )?;
-                    let body = String::from_utf8(body_buf)
-                        .map_err(|e| anyhow::anyhow!("invalid UTF-8 in log output: {e}"))?;
+                        None,
+                    );
+                    GRAPH_PREFIX_WIDTH.with(|c| c.set(0));
+                    fmt_result?;
+                    // For builtin formats `format_commit` appends the inter-entry trailing blank
+                    // line that Git instead adds via the separator above. Strip that single
+                    // trailing blank so it is not double-emitted (and not rail-prefixed after the
+                    // final commit). When a diff body follows (`show_commit_body`), the trailing
+                    // blank is part of the diff output, not the message, so leave it intact.
+                    if wants_separator && !show_commit_body {
+                        while body_buf.last() == Some(&b'\n')
+                            && body_buf.len() >= 2
+                            && body_buf[body_buf.len() - 2] == b'\n'
+                        {
+                            body_buf.pop();
+                        }
+                    }
                     write_graph_interleaved_commit_msg(
                         &mut out,
                         line_prefix,
                         &line,
                         &mut graph,
-                        &body,
+                        &body_buf,
                     )?;
                 }
                 break;
@@ -3127,11 +3351,17 @@ fn run_graph_log(
         }
 
         if show_commit_body {
-            if !args.stat.is_empty() {
-                writeln!(out)?;
-            }
+            // Render the diff/stat/name-status body into a buffer, then prefix every line with
+            // the graph's *padding* rail (Git wires the diff machinery's `output_prefix` callback
+            // to `graph_padding_line`, so each diff line carries the vertical bars for the active
+            // columns). After the commit message the graph is finished (PADDING state); calling
+            // `next_line()` then yields a padding line without advancing structural state, so the
+            // same rail applies to every body line.
+            let (pad_rail, _) = graph.next_line();
+
+            let mut diff_buf: Vec<u8> = Vec::new();
             write_commit_diff(
-                &mut out,
+                &mut diff_buf,
                 repo,
                 &node.oid,
                 &info,
@@ -3139,7 +3369,9 @@ fn run_graph_log(
                 use_mailmap,
                 mailmap,
                 &combined_pathspecs,
-                graph_stat_prefix.as_deref(),
+                // The stat block's own `| ` graph prefix is superseded by the per-line rail
+                // applied below, so render the stat unprefixed here.
+                None,
                 decorations.as_ref(),
                 use_color,
                 decoration_paint.as_ref(),
@@ -3147,7 +3379,43 @@ fn run_graph_log(
                 &mut notes_cache,
                 patch_context,
                 false,
+                None,
             )?;
+
+            // Normalize the diff body: the non-graph renderer brackets it with a leading blank
+            // (name-only/stat) and a trailing inter-entry blank. In graph mode Git supplies the
+            // single message/diff separator itself (a railed `graph_show_padding` line), so strip
+            // one leading and one trailing blank line here and re-emit exactly one separator.
+            if diff_buf.first() == Some(&b'\n') {
+                diff_buf.remove(0);
+            }
+            if diff_buf.len() >= 2
+                && diff_buf[diff_buf.len() - 1] == b'\n'
+                && diff_buf[diff_buf.len() - 2] == b'\n'
+            {
+                diff_buf.pop();
+            }
+
+            // Only commits whose diff produced output get a railed body; a merge (or otherwise
+            // empty diff) emits nothing here, matching Git's `log_tree_diff` short-circuit.
+            if !diff_buf.is_empty() {
+                // Builtin multi-line formats (medium/short/full) already terminate the commit
+                // message with a railed blank line, which serves as the message/diff separator.
+                // Terminator formats (`--format=`, `tformat:`) do not, so emit the separator here
+                // (Git's post-message `graph_show_padding` when `use_terminator`).
+                if !wants_separator {
+                    writeln!(out, "{line_prefix}{pad_rail}")?;
+                }
+                // Prefix every rendered diff line with the padding rail (e.g. `| ` / `| | `). For a
+                // blank body line the rail's trailing space is stripped by the test's graph-output
+                // sanitizer, matching Git's `graph_padding_line` output.
+                for chunk in diff_buf.split_inclusive(|b| *b == b'\n') {
+                    let text = chunk.strip_suffix(b"\n").unwrap_or(chunk);
+                    write!(out, "{line_prefix}{pad_rail}")?;
+                    out.write_all(text)?;
+                    writeln!(out)?;
+                }
+            }
         }
     }
 
@@ -3654,6 +3922,7 @@ fn load_commit_info(repo: &Repository, oid: ObjectId) -> Result<CommitInfo> {
         author: commit.author,
         committer: commit.committer,
         message: commit.message,
+        raw_message: commit.raw_message,
     })
 }
 
@@ -3789,6 +4058,10 @@ enum GraphState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GraphColumn {
     oid: ObjectId,
+    /// Index into the color palette (`AsciiGraph::colors`). When this index is
+    /// `>= colors_max` (i.e. points at the RESET sentinel), the column is drawn
+    /// without color codes, exactly like Git's `struct column.color`.
+    color: usize,
 }
 
 #[derive(Debug)]
@@ -3811,10 +4084,49 @@ struct AsciiGraph {
     new_columns: Vec<GraphColumn>,
     mapping: Vec<isize>,
     old_mapping: Vec<isize>,
+    /// Color palette: a list of ANSI color escape sequences. The final entry is
+    /// always the RESET sequence and its index is `colors_max`. Mirrors Git's
+    /// `column_colors` array (set via `graph_set_column_colors`).
+    colors: Vec<String>,
+    /// The index of the RESET sentinel in `colors` (== `colors.len() - 1`).
+    /// Equivalent to Git's `column_colors_max`.
+    colors_max: usize,
+    /// The current default column color, an index into `colors`. Mirrors Git's
+    /// `git_graph::default_column_color`.
+    default_column_color: usize,
+    /// Whether to emit color escape sequences at all (i.e. `--color`/`color.*`).
+    use_color: bool,
 }
+
+/// Git's default ANSI graph column colors (`column_colors_ansi` in color.c).
+/// The RESET sentinel is appended by `AsciiGraph::resolve_graph_colors`, so this
+/// list contains only the drawable colors.
+const GRAPH_COLUMN_COLORS_ANSI: &[&str] = &[
+    "\x1b[31m",   // red
+    "\x1b[32m",   // green
+    "\x1b[33m",   // yellow
+    "\x1b[34m",   // blue
+    "\x1b[35m",   // magenta
+    "\x1b[36m",   // cyan
+    "\x1b[1;31m", // bold red
+    "\x1b[1;32m", // bold green
+    "\x1b[1;33m", // bold yellow
+    "\x1b[1;34m", // bold blue
+    "\x1b[1;35m", // bold magenta
+    "\x1b[1;36m", // bold cyan
+];
+
+const GRAPH_COLOR_RESET: &str = "\x1b[m";
 
 impl AsciiGraph {
     fn new() -> Self {
+        // The default palette (red..bold-cyan) plus the RESET sentinel.
+        let mut colors: Vec<String> = GRAPH_COLUMN_COLORS_ANSI
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        colors.push(GRAPH_COLOR_RESET.to_string());
+        let colors_max = colors.len() - 1;
         Self {
             current: None,
             num_parents: 0,
@@ -3834,7 +4146,82 @@ impl AsciiGraph {
             new_columns: Vec::new(),
             mapping: Vec::new(),
             old_mapping: Vec::new(),
+            colors,
+            colors_max,
+            // Start at the maximum value, since we always increment before the
+            // first commit we output; this way we start at index 0.
+            default_column_color: colors_max.saturating_sub(1),
+            use_color: false,
         }
+    }
+
+    /// Configure the color palette and whether color codes are emitted.
+    ///
+    /// When `use_color` is false the graph renders exactly as before (no escape
+    /// sequences). When `palette` is `Some`, it overrides the default ANSI
+    /// colors (this is how `log.graphColors` is honored). The RESET sentinel is
+    /// always appended automatically.
+    fn set_colors(&mut self, use_color: bool, palette: Option<Vec<String>>) {
+        self.use_color = use_color;
+        if let Some(custom) = palette {
+            if !custom.is_empty() {
+                let mut colors = custom;
+                colors.push(GRAPH_COLOR_RESET.to_string());
+                self.colors = colors;
+                self.colors_max = self.colors.len() - 1;
+            }
+        }
+        self.default_column_color = self.colors_max.saturating_sub(1);
+    }
+
+    /// The color index used for newly created columns. When color is disabled,
+    /// this returns `colors_max` (the RESET sentinel index) so the column draws
+    /// without any escape codes, matching Git's `graph_get_current_column_color`.
+    fn current_column_color(&self) -> usize {
+        if !self.use_color {
+            return self.colors_max;
+        }
+        self.default_column_color
+    }
+
+    /// Advance the default column color, wrapping modulo `colors_max`.
+    fn increment_column_color(&mut self) {
+        if self.colors_max == 0 {
+            return;
+        }
+        self.default_column_color = (self.default_column_color + 1) % self.colors_max;
+    }
+
+    /// Find the color of an existing column for `oid`, or the current default.
+    fn find_commit_color(&self, oid: ObjectId) -> usize {
+        for i in 0..self.num_columns {
+            if self.columns[i].oid == oid {
+                return self.columns[i].color;
+            }
+        }
+        self.current_column_color()
+    }
+
+    /// Append a single graph character, optionally wrapped in `col`'s color.
+    /// Mirrors Git's `graph_line_write_column`: only the visible char counts
+    /// toward `width`, the escape sequences do not.
+    fn write_column(&self, line: &mut String, width: &mut usize, col: &GraphColumn, ch: char) {
+        let colored = col.color < self.colors_max;
+        if colored {
+            line.push_str(&self.colors[col.color]);
+        }
+        line.push(ch);
+        *width += 1;
+        if colored {
+            line.push_str(&self.colors[self.colors_max]);
+        }
+    }
+
+    /// Append an uncolored character (used for the commit mark, spaces, dashes
+    /// that have no owning column). Counts toward visible `width`.
+    fn add_char(line: &mut String, width: &mut usize, ch: char) {
+        line.push(ch);
+        *width += 1;
     }
 
     fn update(&mut self, commit: GraphCommitNode) {
@@ -3861,13 +4248,17 @@ impl AsciiGraph {
             return (String::new(), false);
         }
         let mut line = String::new();
+        // Visible width of the line, excluding any color escape sequences.
+        // This mirrors Git's `graph_line.width` and is what padding uses.
+        let mut width: usize = 0;
         let shown_commit_line = match self.state {
             GraphState::Padding => {
-                self.output_padding_line(&mut line);
+                self.output_padding_line(&mut line, &mut width);
                 false
             }
             GraphState::Skip => {
                 line.push_str("...");
+                width += 3;
                 if self.needs_pre_commit_line() {
                     self.update_state(GraphState::PreCommit);
                 } else {
@@ -3876,26 +4267,29 @@ impl AsciiGraph {
                 false
             }
             GraphState::PreCommit => {
-                self.output_pre_commit_line(&mut line);
+                self.output_pre_commit_line(&mut line, &mut width);
                 false
             }
             GraphState::Commit => {
-                self.output_commit_line(&mut line);
+                self.output_commit_line(&mut line, &mut width);
                 true
             }
             GraphState::PostMerge => {
-                self.output_post_merge_line(&mut line);
+                self.output_post_merge_line(&mut line, &mut width);
                 false
             }
             GraphState::Collapsing => {
-                self.output_collapsing_line(&mut line);
+                self.output_collapsing_line(&mut line, &mut width);
                 false
             }
         };
 
+        // Pad to the commit's total width using the *visible* width, so that
+        // color escape sequences do not throw off the alignment of trailing
+        // text. Mirrors Git's `graph_pad_horizontally`.
         let pad_width = self.width;
-        if line.len() < pad_width {
-            line.push_str(&" ".repeat(pad_width - line.len()));
+        if width < pad_width {
+            line.push_str(&" ".repeat(pad_width - width));
         }
         (line, shown_commit_line)
     }
@@ -3910,13 +4304,15 @@ impl AsciiGraph {
             Some(current) => current.oid,
             None => return,
         };
+        let placeholder_col = GraphColumn {
+            oid: placeholder,
+            color: self.colors_max,
+        };
         if self.columns.len() < needed_columns {
-            self.columns
-                .resize(needed_columns, GraphColumn { oid: placeholder });
+            self.columns.resize(needed_columns, placeholder_col);
         }
         if self.new_columns.len() < needed_columns {
-            self.new_columns
-                .resize(needed_columns, GraphColumn { oid: placeholder });
+            self.new_columns.resize(needed_columns, placeholder_col);
         }
         let map_len = needed_columns.saturating_mul(2);
         if self.mapping.len() < map_len {
@@ -3932,12 +4328,18 @@ impl AsciiGraph {
     }
 
     fn insert_into_new_columns(&mut self, oid: ObjectId, idx: isize) {
-        let mut i = self.find_new_column_by_commit(oid).unwrap_or_else(|| {
-            let pos = self.num_new_columns;
-            self.new_columns[pos] = GraphColumn { oid };
-            self.num_new_columns += 1;
-            pos
-        });
+        // If the commit is not already in new_columns, add it and record the
+        // color it should be drawn with (mirrors `graph_insert_into_new_columns`).
+        let mut i = match self.find_new_column_by_commit(oid) {
+            Some(pos) => pos,
+            None => {
+                let color = self.find_commit_color(oid);
+                let pos = self.num_new_columns;
+                self.new_columns[pos] = GraphColumn { oid, color };
+                self.num_new_columns += 1;
+                pos
+            }
+        };
 
         let mapping_idx: usize;
         if self.num_parents > 1 && idx > -1 && self.merge_layout == -1 {
@@ -4014,12 +4416,17 @@ impl AsciiGraph {
                     .unwrap_or_default();
                 for parent in parents {
                     let idx = i as isize;
+                    // If this is a merge, or the start of a new childless
+                    // column, advance the current color before inserting the
+                    // parent column (mirrors `graph_update_columns`).
+                    if self.num_parents > 1 || !is_commit_in_columns {
+                        self.increment_column_color();
+                    }
                     self.insert_into_new_columns(parent, idx);
                 }
                 if self.num_parents == 0 {
                     self.width = self.width.saturating_add(2);
                 }
-                let _ = is_commit_in_columns;
             } else {
                 self.insert_into_new_columns(col_oid, -1);
             }
@@ -4058,15 +4465,15 @@ impl AsciiGraph {
         true
     }
 
-    fn output_padding_line(&self, line: &mut String) {
+    fn output_padding_line(&self, line: &mut String, width: &mut usize) {
         for i in 0..self.num_new_columns {
-            let _ = i;
-            line.push('|');
-            line.push(' ');
+            let col = self.new_columns[i];
+            self.write_column(line, width, &col, '|');
+            Self::add_char(line, width, ' ');
         }
     }
 
-    fn output_pre_commit_line(&mut self, line: &mut String) {
+    fn output_pre_commit_line(&mut self, line: &mut String, width: &mut usize) {
         let mut seen_this = false;
         let current_oid = match self.current.as_ref() {
             Some(c) => c.oid,
@@ -4074,23 +4481,26 @@ impl AsciiGraph {
         };
 
         for i in 0..self.num_columns {
-            let col_oid = self.columns[i].oid;
+            let col = self.columns[i];
+            let col_oid = col.oid;
             if col_oid == current_oid {
                 seen_this = true;
-                line.push('|');
-                line.push_str(&" ".repeat(self.expansion_row));
+                self.write_column(line, width, &col, '|');
+                for _ in 0..self.expansion_row {
+                    Self::add_char(line, width, ' ');
+                }
             } else if seen_this && self.expansion_row == 0 {
                 if self.prev_state == GraphState::PostMerge && self.prev_commit_index < i {
-                    line.push('\\');
+                    self.write_column(line, width, &col, '\\');
                 } else {
-                    line.push('|');
+                    self.write_column(line, width, &col, '|');
                 }
             } else if seen_this && self.expansion_row > 0 {
-                line.push('\\');
+                self.write_column(line, width, &col, '\\');
             } else {
-                line.push('|');
+                self.write_column(line, width, &col, '|');
             }
-            line.push(' ');
+            Self::add_char(line, width, ' ');
         }
 
         self.expansion_row += 1;
@@ -4107,7 +4517,7 @@ impl AsciiGraph {
         }
     }
 
-    fn draw_octopus_merge(&self, line: &mut String) {
+    fn draw_octopus_merge(&self, line: &mut String, width: &mut usize) {
         let dashed = self.num_dashed_parents().max(0) as usize;
         for i in 0..dashed {
             let map_idx = (self.commit_index + i + 2) * 2;
@@ -4115,12 +4525,13 @@ impl AsciiGraph {
             if j < 0 || j as usize >= self.num_new_columns {
                 continue;
             }
-            line.push('-');
-            line.push(if i == dashed - 1 { '.' } else { '-' });
+            let col = self.new_columns[j as usize];
+            self.write_column(line, width, &col, '-');
+            self.write_column(line, width, &col, if i == dashed - 1 { '.' } else { '-' });
         }
     }
 
-    fn output_commit_line(&mut self, line: &mut String) {
+    fn output_commit_line(&mut self, line: &mut String, width: &mut usize) {
         let mut seen_this = false;
         let current_oid = match self.current.as_ref() {
             Some(c) => c.oid,
@@ -4128,31 +4539,39 @@ impl AsciiGraph {
         };
 
         for i in 0..=self.num_columns {
+            let col = if i == self.num_columns {
+                GraphColumn {
+                    oid: current_oid,
+                    color: self.colors_max,
+                }
+            } else {
+                self.columns[i]
+            };
             let col_oid = if i == self.num_columns {
                 if seen_this {
                     break;
                 }
                 current_oid
             } else {
-                self.columns[i].oid
+                col.oid
             };
 
             if col_oid == current_oid {
                 seen_this = true;
-                line.push(self.output_commit_char());
+                Self::add_char(line, width, self.output_commit_char());
                 if self.num_parents > 2 {
-                    self.draw_octopus_merge(line);
+                    self.draw_octopus_merge(line, width);
                 }
             } else if seen_this && self.edges_added > 1 {
-                line.push('\\');
+                self.write_column(line, width, &col, '\\');
             } else if seen_this && self.edges_added == 1 {
                 if self.prev_state == GraphState::PostMerge
                     && self.prev_edges_added > 0
                     && self.prev_commit_index < i
                 {
-                    line.push('\\');
+                    self.write_column(line, width, &col, '\\');
                 } else {
-                    line.push('|');
+                    self.write_column(line, width, &col, '|');
                 }
             } else if self.prev_state == GraphState::Collapsing
                 && (2 * i + 1) < self.old_mapping.len()
@@ -4160,11 +4579,11 @@ impl AsciiGraph {
                 && (2 * i) < self.mapping.len()
                 && self.mapping[2 * i] < i as isize
             {
-                line.push('/');
+                self.write_column(line, width, &col, '/');
             } else {
-                line.push('|');
+                self.write_column(line, width, &col, '|');
             }
-            line.push(' ');
+            Self::add_char(line, width, ' ');
         }
 
         if self.num_parents > 1 {
@@ -4176,58 +4595,79 @@ impl AsciiGraph {
         }
     }
 
-    fn output_post_merge_line(&mut self, line: &mut String) {
+    fn output_post_merge_line(&mut self, line: &mut String, width: &mut usize) {
         let merge_chars = ['/', '|', '\\'];
         let current = match self.current.as_ref() {
-            Some(c) => c,
+            Some(c) => c.clone(),
             None => return,
         };
         let first_parent = current.parents.first().copied();
-        let mut parent_col_seen = false;
+        // The column that owns the first parent, once we have walked past it.
+        // Used to color the horizontal '_' edges (Git's `parent_col`).
+        let mut parent_col: Option<GraphColumn> = None;
         let mut seen_this = false;
 
         for i in 0..=self.num_columns {
+            let col = if i == self.num_columns {
+                GraphColumn {
+                    oid: current.oid,
+                    color: self.colors_max,
+                }
+            } else {
+                self.columns[i]
+            };
             let col_oid = if i == self.num_columns {
                 if seen_this {
                     break;
                 }
                 current.oid
             } else {
-                self.columns[i].oid
+                col.oid
             };
 
             if col_oid == current.oid {
                 seen_this = true;
                 let mut idx = self.merge_layout.clamp(0, 2) as usize;
                 for (j, parent) in current.parents.iter().enumerate() {
-                    if self.find_new_column_by_commit(*parent).is_none() {
-                        continue;
-                    }
+                    let par_column = match self.find_new_column_by_commit(*parent) {
+                        Some(p) => p,
+                        None => continue,
+                    };
                     let c = merge_chars[idx.min(2)];
-                    line.push(c);
+                    let pcol = self.new_columns[par_column];
+                    self.write_column(line, width, &pcol, c);
                     if idx == 2 {
                         if self.edges_added > 0 || j < current.parents.len().saturating_sub(1) {
-                            line.push(' ');
+                            Self::add_char(line, width, ' ');
                         }
                     } else {
                         idx += 1;
                     }
                 }
                 if self.edges_added == 0 {
-                    line.push(' ');
+                    Self::add_char(line, width, ' ');
                 }
             } else if seen_this {
-                line.push(if self.edges_added > 0 { '\\' } else { '|' });
-                line.push(' ');
+                self.write_column(
+                    line,
+                    width,
+                    &col,
+                    if self.edges_added > 0 { '\\' } else { '|' },
+                );
+                Self::add_char(line, width, ' ');
             } else {
-                line.push('|');
+                self.write_column(line, width, &col, '|');
                 if self.merge_layout != 0 || i != self.commit_index.saturating_sub(1) {
-                    line.push(if parent_col_seen { '_' } else { ' ' });
+                    if let Some(pcol) = parent_col {
+                        self.write_column(line, width, &pcol, '_');
+                    } else {
+                        Self::add_char(line, width, ' ');
+                    }
                 }
             }
 
             if first_parent.is_some_and(|p| p == col_oid) {
-                parent_col_seen = true;
+                parent_col = Some(col);
             }
         }
 
@@ -4238,7 +4678,7 @@ impl AsciiGraph {
         }
     }
 
-    fn output_collapsing_line(&mut self, line: &mut String) {
+    fn output_collapsing_line(&mut self, line: &mut String, width: &mut usize) {
         std::mem::swap(&mut self.mapping, &mut self.old_mapping);
         for i in 0..self.mapping_size {
             self.mapping[i] = -1;
@@ -4292,20 +4732,23 @@ impl AsciiGraph {
         for i in 0..self.mapping_size {
             let target = self.mapping[i];
             if target < 0 {
-                line.push(' ');
+                Self::add_char(line, width, ' ');
             } else if (target as usize) * 2 == i {
-                line.push('|');
+                let col = self.new_columns[target as usize];
+                self.write_column(line, width, &col, '|');
             } else if target == horizontal_target && i as isize != horizontal_edge - 1 {
                 if i != (target as usize).saturating_mul(2).saturating_add(3) {
                     self.mapping[i] = -1;
                 }
                 used_horizontal = true;
-                line.push('_');
+                let col = self.new_columns[target as usize];
+                self.write_column(line, width, &col, '_');
             } else {
                 if used_horizontal && (i as isize) < horizontal_edge {
                     self.mapping[i] = -1;
                 }
-                line.push('/');
+                let col = self.new_columns[target as usize];
+                self.write_column(line, width, &col, '/');
             }
         }
 
@@ -4425,6 +4868,73 @@ fn bre_to_ere(pattern: &str) -> String {
     out
 }
 
+/// Resolve the effective grep pattern type from explicit CLI flags (last-wins
+/// precedence, matching `resolve_grep_pattern_type`) falling back to
+/// `grep.patternType` config (default basic). Shared by commands that accept
+/// `--grep` but parse their own args (`format-patch`, `show`), so they apply the
+/// same pattern flavor as `git log`.
+fn resolve_grep_pattern_type_flags(
+    fixed: bool,
+    basic: bool,
+    extended: bool,
+    perl: bool,
+    cfg: &ConfigSet,
+) -> GrepPatternType {
+    if perl {
+        return GrepPatternType::Perl;
+    }
+    if extended {
+        return GrepPatternType::Extended;
+    }
+    if basic {
+        return GrepPatternType::Basic;
+    }
+    if fixed {
+        return GrepPatternType::Fixed;
+    }
+    match cfg
+        .get("grep.patterntype")
+        .map(|s| s.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("fixed") => GrepPatternType::Fixed,
+        Some("basic") => GrepPatternType::Basic,
+        Some("extended") => GrepPatternType::Extended,
+        Some("perl") => GrepPatternType::Perl,
+        _ => GrepPatternType::Basic,
+    }
+}
+
+/// Compile `--grep` patterns for a command that parses its own args, honoring the
+/// effective pattern type (CLI flags then `grep.patternType`). Returns the
+/// compiled regexes; a commit's message matches if ANY regex matches (Git's OR
+/// semantics for repeated `--grep`). Errors on a Perl pattern (no libpcre2) like
+/// `git log` does.
+pub fn compile_command_grep_regexes(
+    patterns: &[String],
+    fixed: bool,
+    basic: bool,
+    extended: bool,
+    perl: bool,
+    ignore_case: bool,
+    cfg: &ConfigSet,
+) -> Result<Vec<Regex>> {
+    if patterns.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ptype = resolve_grep_pattern_type_flags(fixed, basic, extended, perl, cfg);
+    if matches!(ptype, GrepPatternType::Perl) {
+        anyhow::bail!("cannot use Perl-compatible regexes when not compiled with USE_LIBPCRE");
+    }
+    let mut out = Vec::with_capacity(patterns.len());
+    for p in patterns {
+        let re = build_grep_regex(p, ptype, ignore_case)
+            .with_context(|| format!("invalid --grep regex: {p}"))?;
+        out.push(re);
+    }
+    Ok(out)
+}
+
 /// Build a Rust `Regex` for a grep-style pattern, applying the pattern flavor and case-sensitivity.
 fn build_grep_regex(
     pattern: &str,
@@ -4441,6 +4951,297 @@ fn build_grep_regex(
     RegexBuilder::new(&translated)
         .case_insensitive(ignore_case)
         .build()
+}
+
+/// Escape a single byte for inclusion in a `regex::bytes` pattern, emitting `\xHH` for any byte
+/// that is not a plain ASCII alphanumeric so the regex engine matches the literal byte. Used when
+/// the grep needle contains raw (possibly non-UTF-8) bytes such as a Latin-1 `é` (`0xE9`).
+fn escape_byte_for_bytes_regex(b: u8) -> String {
+    if b.is_ascii_alphanumeric() {
+        (b as char).to_string()
+    } else {
+        format!("\\x{b:02x}")
+    }
+}
+
+/// Build a `regex::bytes::Regex` for a grep needle that may contain raw, non-UTF-8 bytes.
+///
+/// Git greps commit messages in the log *output* encoding at the byte level (see
+/// `commit_match`/`grep_buffer` in `revision.c`). The Rust `regex::bytes` engine matches over
+/// `&[u8]`, but its pattern is still a `&str`; we therefore render the (possibly non-UTF-8) needle
+/// into an ASCII-safe pattern where every non-ASCII byte becomes `\xHH`. The whole pattern runs in
+/// byte mode (`(?-u)`) so `.`/classes/`\xHH` all operate on bytes, matching Git's regexec.
+fn build_grep_bytes_regex(
+    pattern_bytes: &[u8],
+    ptype: GrepPatternType,
+    ignore_case: bool,
+) -> std::result::Result<regex::bytes::Regex, regex::Error> {
+    let translated = match ptype {
+        GrepPatternType::Fixed => {
+            // Literal match: escape every byte.
+            pattern_bytes
+                .iter()
+                .map(|&b| escape_byte_for_bytes_regex(b))
+                .collect::<String>()
+        }
+        GrepPatternType::Basic | GrepPatternType::Extended | GrepPatternType::Perl => {
+            // For a regex needle, ASCII bytes keep their regex meaning; non-ASCII bytes become
+            // literal `\xHH`. BRE additionally needs its escaping swapped to ERE first. When the
+            // needle is valid UTF-8 we can run the existing BRE->ERE translation; otherwise we
+            // operate byte-by-byte (the non-UTF-8 tests only use single literal bytes).
+            if let Ok(s) = std::str::from_utf8(pattern_bytes) {
+                let ere = if ptype == GrepPatternType::Basic {
+                    bre_to_ere(s)
+                } else {
+                    s.to_string()
+                };
+                // Re-render any non-ASCII chars (multi-byte UTF-8) as their raw bytes so the
+                // byte engine compares against the re-encoded message bytes.
+                let mut out = String::new();
+                for ch in ere.chars() {
+                    if ch.is_ascii() {
+                        out.push(ch);
+                    } else {
+                        let mut buf = [0u8; 4];
+                        for &b in ch.encode_utf8(&mut buf).as_bytes() {
+                            out.push_str(&escape_byte_for_bytes_regex(b));
+                        }
+                    }
+                }
+                out
+            } else {
+                pattern_bytes
+                    .iter()
+                    .map(|&b| {
+                        // Keep ASCII regex metacharacters meaningful; escape the rest.
+                        if b.is_ascii() {
+                            (b as char).to_string()
+                        } else {
+                            escape_byte_for_bytes_regex(b)
+                        }
+                    })
+                    .collect::<String>()
+            }
+        }
+    };
+    regex::bytes::RegexBuilder::new(&translated)
+        .unicode(false)
+        .case_insensitive(ignore_case)
+        .build()
+}
+
+/// Recover the raw byte form of each `--grep` value from the process `args_os()`.
+///
+/// The top-level argv is captured lossily (`to_string_lossy`), so a needle byte like Latin-1 `é`
+/// (`0xE9`, invalid UTF-8) arrives as U+FFFD and can never match a re-encoded message. We re-scan
+/// the untouched OS args to recover the exact bytes, preserving command-line order so they line up
+/// positionally with `args.grep_patterns`.
+#[cfg(unix)]
+fn recover_raw_grep_pattern_bytes() -> Vec<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut out = Vec::new();
+    let mut args = std::env::args_os();
+    while let Some(arg) = args.next() {
+        let bytes = arg.as_bytes();
+        if let Some(val) = bytes.strip_prefix(b"--grep=") {
+            out.push(val.to_vec());
+        } else if bytes == b"--grep" {
+            if let Some(next) = args.next() {
+                out.push(next.as_bytes().to_vec());
+            }
+        }
+    }
+    out
+}
+
+#[cfg(not(unix))]
+fn recover_raw_grep_pattern_bytes() -> Vec<Vec<u8>> {
+    Vec::new()
+}
+
+/// Holds the compiled `--grep` needles plus the machinery to match them the way Git does.
+///
+/// Git greps the commit message in the **log output encoding** at the byte level (`commit_match`
+/// in `revision.c`). When that encoding is plain UTF-8 we match the Unicode message with the
+/// ordinary `regex` engine (`str_res`). When the user requested a non-UTF-8 `--encoding`, the
+/// message is first re-encoded to that charset and the needles (recovered as raw bytes from
+/// `args_os`) are matched against those bytes with `regex::bytes` (`byte_res`).
+#[derive(Default)]
+struct GrepFilter {
+    str_res: Vec<Regex>,
+    byte_res: Vec<regex::bytes::Regex>,
+    /// Non-UTF-8 output encoding label that the message must be re-encoded into before matching,
+    /// or `None` to grep the UTF-8 message directly.
+    reencode_to: Option<String>,
+}
+
+impl GrepFilter {
+    fn is_empty(&self) -> bool {
+        self.str_res.is_empty()
+    }
+
+    /// Whether the message satisfies the grep predicate, honoring `--all-match` / `--invert-grep`.
+    fn matches(&self, message: &str, all_match: bool, invert: bool) -> bool {
+        if self.str_res.is_empty() {
+            return true;
+        }
+        let m = if let Some(label) = self.reencode_to.as_deref() {
+            // Re-encode the Unicode message into the output charset and grep the raw bytes, so a
+            // Latin-1 needle matches a Latin-1-rendered message (and a UTF-8 needle does not).
+            let bytes = grit_lib::commit_encoding::encode_header_text(label, message)
+                .unwrap_or_else(|| message.as_bytes().to_vec());
+            if all_match {
+                self.byte_res.iter().all(|re| re.is_match(&bytes))
+            } else {
+                self.byte_res.iter().any(|re| re.is_match(&bytes))
+            }
+        } else if all_match {
+            self.str_res.iter().all(|re| re.is_match(message))
+        } else {
+            self.str_res.iter().any(|re| re.is_match(message))
+        };
+        if invert {
+            !m
+        } else {
+            m
+        }
+    }
+}
+
+/// Colorizes grep/author/committer matches inside log output lines, mirroring
+/// Git's `color_line` (grep.c). Only built when `--color` is active and at least
+/// one of `--grep`/`--author`/`--committer` is set, so coloring is applied only
+/// to commits that are in the output because they matched.
+struct GrepColorizer {
+    /// `color.grep.selected` — wraps the *non-matching* spans of a matching
+    /// line. Empty (the default) means those spans are emitted uncolored.
+    selected: String,
+    /// `color.grep.matchSelected` (falling back to `color.grep.match`) — wraps
+    /// each matched substring. Defaults to bold red.
+    match_selected: String,
+    /// Reset sequence (`\x1b[m`).
+    reset: String,
+    /// Patterns matched against `--grep` message lines.
+    grep_res: Vec<Regex>,
+    /// Patterns matched against the Author header.
+    author_res: Vec<Regex>,
+    /// Patterns matched against the Commit/committer header.
+    committer_res: Vec<Regex>,
+}
+
+impl GrepColorizer {
+    /// Build from config when `--color` is active and any grep-like pattern is
+    /// set; otherwise `None` (no coloring).
+    fn from_config(
+        git_dir: &Path,
+        use_color: bool,
+        grep_res: &[Regex],
+        author_res: &[Regex],
+        committer_res: &[Regex],
+    ) -> Option<Self> {
+        if !use_color || (grep_res.is_empty() && author_res.is_empty() && committer_res.is_empty())
+        {
+            return None;
+        }
+        let cfg = ConfigSet::load(Some(git_dir), true).unwrap_or_default();
+        let parse = |key: &str| -> Option<String> {
+            cfg.get(key)
+                .and_then(|v| grit_lib::config::parse_color(&v).ok())
+                .filter(|s| !s.is_empty())
+        };
+        let selected = parse("color.grep.selected").unwrap_or_default();
+        let match_selected = parse("color.grep.matchselected")
+            .or_else(|| parse("color.grep.match"))
+            .unwrap_or_else(|| "\x1b[1;31m".to_string());
+        Some(Self {
+            selected,
+            match_selected,
+            reset: "\x1b[m".to_string(),
+            grep_res: grep_res.to_vec(),
+            author_res: author_res.to_vec(),
+            committer_res: committer_res.to_vec(),
+        })
+    }
+
+    /// Collect all non-overlapping match spans of `regexes` within `text`,
+    /// merged so overlapping/adjacent matches don't double-wrap. Spans are
+    /// returned sorted by start, with overlaps coalesced.
+    fn match_spans(text: &str, regexes: &[Regex]) -> Vec<(usize, usize)> {
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        for re in regexes {
+            for m in re.find_iter(text) {
+                if m.start() != m.end() {
+                    spans.push((m.start(), m.end()));
+                }
+            }
+        }
+        if spans.is_empty() {
+            return spans;
+        }
+        spans.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        let mut merged: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
+        for (s, e) in spans {
+            if let Some(last) = merged.last_mut() {
+                if s <= last.1 {
+                    last.1 = last.1.max(e);
+                    continue;
+                }
+            }
+            merged.push((s, e));
+        }
+        merged
+    }
+
+    /// Return the colorized form of `text` (a single line, no trailing newline)
+    /// given `regexes`, or `None` if nothing matched. Non-matching spans use
+    /// `selected` (when non-empty); each matched span uses `match_selected`.
+    fn colorize(&self, text: &str, regexes: &[Regex]) -> Option<String> {
+        if regexes.is_empty() {
+            return None;
+        }
+        let spans = Self::match_spans(text, regexes);
+        if spans.is_empty() {
+            return None;
+        }
+        let mut out = String::with_capacity(text.len() + 16);
+        let mut pos = 0usize;
+        let emit_plain = |out: &mut String, seg: &str| {
+            if seg.is_empty() {
+                return;
+            }
+            if self.selected.is_empty() {
+                out.push_str(seg);
+            } else {
+                out.push_str(&self.selected);
+                out.push_str(seg);
+                out.push_str(&self.reset);
+            }
+        };
+        for (s, e) in spans {
+            emit_plain(&mut out, &text[pos..s]);
+            out.push_str(&self.match_selected);
+            out.push_str(&text[s..e]);
+            out.push_str(&self.reset);
+            pos = e;
+        }
+        emit_plain(&mut out, &text[pos..]);
+        Some(out)
+    }
+
+    /// Colorize an Author header value (the part after `Author: `).
+    fn colorize_author(&self, text: &str) -> Option<String> {
+        self.colorize(text, &self.author_res)
+    }
+
+    /// Colorize a Commit/committer header value.
+    fn colorize_committer(&self, text: &str) -> Option<String> {
+        self.colorize(text, &self.committer_res)
+    }
+
+    /// Colorize a message body line.
+    fn colorize_message(&self, text: &str) -> Option<String> {
+        self.colorize(text, &self.grep_res)
+    }
 }
 
 /// Decide whether a branch (short name, e.g. `topic`) is selected by `--branches[=<glob>]`.
@@ -4781,20 +5582,34 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     // Resolve grep pattern flavor (fixed/basic/extended/perl) from CLI flags + grep.patternType.
-    // Git's --grep/--author/--committer are case-SENSITIVE by default; -i/--regexp-ignore-case
-    // enables case-insensitivity.
+    // `--grep` is case-SENSITIVE by default; `-i`/`--regexp-ignore-case` enables case-insensitivity.
+    // The `--author`/`--committer` identity filters, by contrast, match case-INSENSITIVELY by
+    // default (see `ident_pattern_ignore_case`), so a pattern like `--author=ALICE` finds "Alice".
     let grep_ptype = resolve_grep_pattern_type(&args, &cfg);
+    // Grit is not linked against libpcre2 (the harness leaves USE_LIBPCRE2 unset), so a request
+    // for Perl-compatible regexes must die exactly as upstream Git does when compiled without
+    // PCRE (grep.c: `die(_("cannot use Perl-compatible regexes when not compiled with
+    // USE_LIBPCRE"))`). Only fire when there is actually a pattern to compile, matching Git.
+    if grep_ptype == GrepPatternType::Perl
+        && !(args.grep_patterns.is_empty()
+            && args.authors.is_empty()
+            && args.committers.is_empty()
+            && args.grep_reflog_patterns.is_empty())
+    {
+        anyhow::bail!("cannot use Perl-compatible regexes when not compiled with USE_LIBPCRE");
+    }
     let grep_ignore_case = args.regexp_ignore_case;
+    let ident_ignore_case = ident_pattern_ignore_case(args.regexp_ignore_case);
 
     let mut author_res: Vec<Regex> = Vec::new();
     for p in &args.authors {
-        let re = build_grep_regex(p, grep_ptype, grep_ignore_case)
+        let re = build_grep_regex(p, grep_ptype, ident_ignore_case)
             .with_context(|| format!("invalid --author regex: {p}"))?;
         author_res.push(re);
     }
     let mut committer_res: Vec<Regex> = Vec::new();
     for p in &args.committers {
-        let re = build_grep_regex(p, grep_ptype, grep_ignore_case)
+        let re = build_grep_regex(p, grep_ptype, ident_ignore_case)
             .with_context(|| format!("invalid --committer regex: {p}"))?;
         committer_res.push(re);
     }
@@ -4804,6 +5619,54 @@ pub fn run(mut args: Args) -> Result<()> {
             .with_context(|| format!("invalid --grep regex: {p}"))?;
         grep_res.push(re);
     }
+    // Colorize matched grep/author/committer substrings in the output (Git's
+    // `color_line`), only when `--color` is active and a pattern is set.
+    let grep_colorizer = GrepColorizer::from_config(
+        &repo.git_dir,
+        use_color,
+        &grep_res,
+        &author_res,
+        &committer_res,
+    );
+    // Assemble the encoding-aware grep filter. When `--encoding` selects a non-UTF-8 charset, Git
+    // greps the message *after* re-encoding it (see `commit_match` in revision.c), at the byte
+    // level, so recover the raw needle bytes from `args_os` (the lossy top-level argv mangles
+    // non-UTF-8 bytes into U+FFFD) and compile byte regexes for that path.
+    let grep_filter = {
+        let mut filter = GrepFilter {
+            str_res: grep_res.clone(),
+            ..GrepFilter::default()
+        };
+        if let Some(label) = args.log_output_encoding.clone() {
+            if !args.grep_patterns.is_empty()
+                && grit_lib::commit_encoding::is_known_encoding(&label)
+            {
+                let raw = recover_raw_grep_pattern_bytes();
+                let mut byte_res = Vec::with_capacity(args.grep_patterns.len());
+                let mut ok = true;
+                for (idx, lossy) in args.grep_patterns.iter().enumerate() {
+                    // Prefer the byte-exact needle recovered from args_os; fall back to the lossy
+                    // string's bytes if the position could not be recovered (e.g. non-unix).
+                    let pat_bytes: Vec<u8> = raw
+                        .get(idx)
+                        .cloned()
+                        .unwrap_or_else(|| lossy.clone().into_bytes());
+                    match build_grep_bytes_regex(&pat_bytes, grep_ptype, grep_ignore_case) {
+                        Ok(re) => byte_res.push(re),
+                        Err(_) => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    filter.byte_res = byte_res;
+                    filter.reencode_to = Some(label);
+                }
+            }
+        }
+        filter
+    };
     let mut grep_reflog_res: Vec<Regex> = Vec::new();
     for p in &args.grep_reflog_patterns {
         let re = build_grep_regex(p, grep_ptype, grep_ignore_case)
@@ -4846,7 +5709,7 @@ pub fn run(mut args: Args) -> Result<()> {
             patch_context,
             &author_res,
             &committer_res,
-            &grep_res,
+            &grep_filter,
             &grep_reflog_res,
             use_mailmap,
             &mailmap,
@@ -4863,7 +5726,17 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     let merged_argv_for_walk_probe = merge_log_revision_argv(&repo, &args)?;
-    let probe_pathspecs = pathspecs_after_dashdash(&merged_argv_for_walk_probe, &args.pathspecs);
+    let mut probe_pathspecs =
+        pathspecs_after_dashdash(&merged_argv_for_walk_probe, &args.pathspecs);
+    // Implied pathspecs from bare tokens (e.g. `git log ..` naming the parent directory from a
+    // subdir, with no `--`) must count here too; otherwise such a path-limited walk skips
+    // `run_rev_list_log` and loses default merge simplification (t4202 "dotdot is a parent
+    // directory" showed TREESAME merges that `git log -- ..` correctly hides).
+    if let Ok((_specs, implied)) =
+        extract_log_cli_revision_specs(&repo, &args, &merged_argv_for_walk_probe)
+    {
+        probe_pathspecs.extend(implied);
+    }
     let effective_for_rev_list = resolve_effective_pathspecs(&repo, &probe_pathspecs)?;
     let wants_rev_list_walk = !args.follow
         && args.branches.is_none()
@@ -4895,7 +5768,7 @@ pub fn run(mut args: Args) -> Result<()> {
             patch_context,
             &author_res,
             &committer_res,
-            &grep_res,
+            &grep_filter,
             use_color,
             use_mailmap,
             &mailmap,
@@ -4967,10 +5840,12 @@ pub fn run(mut args: Args) -> Result<()> {
         let mut start_oids = resolve_specs_to_commits_ignoring_missing(&repo, &pos_s, &args)?;
         let mut exclude_oids = resolve_specs_to_commits_ignoring_missing(&repo, &neg_s, &args)?;
 
-        if format_uses_percent_s {
+        // Both `%S` (format placeholder) and `--source` need each commit
+        // labeled with the named command-line revision it was reached from.
+        if format_uses_percent_s || args.source {
             // Label each commit with the named positive revision it was reached
             // from. Each positive spec (in command-line order) seeds the walk
-            // with its own display name as the `%S` source.
+            // with its own display name as the `%S`/`--source` source.
             // Seed from the *original* command-line specs so each side of a
             // symmetric range `A...B` is labeled with its own name (positive
             // splitting of `..`/`...` would otherwise drop the name).
@@ -4983,10 +5858,15 @@ pub fn run(mut args: Args) -> Result<()> {
                         continue;
                     }
                 }
-                // Plain positive spec (skip `^neg` and `A..B` exclusion forms).
-                if !spec.starts_with('^')
-                    && grit_lib::rev_parse::split_double_dot_range(spec).is_none()
-                {
+                // `A..B` range: only the positive endpoint `B` is a source tip.
+                if let Some((_neg, pos)) = grit_lib::rev_parse::split_double_dot_range(spec) {
+                    if !pos.is_empty() {
+                        named_specs.push(pos.to_owned());
+                    }
+                    continue;
+                }
+                // Plain positive spec (skip `^neg` exclusion forms).
+                if !spec.starts_with('^') {
                     named_specs.push(spec.clone());
                 }
             }
@@ -5007,17 +5887,28 @@ pub fn run(mut args: Args) -> Result<()> {
         }
         if args.reflog {
             // `--reflog` adds every reflog entry's old/new OID as a pending tip
-            // (Git's `add_reflogs_to_pending`); rev-list then dedupes and sorts.
-            let mut reflog_oids: Vec<ObjectId> = grit_lib::reflog::all_reflog_oids(&repo.git_dir)?
-                .into_iter()
-                .collect();
-            // Stable order so dedupe/tie-breaks are deterministic.
-            reflog_oids.sort_by(|a, b| a.to_hex().cmp(&b.to_hex()));
-            start_oids.extend(reflog_oids);
+            // (Git's `add_reflogs_to_pending`); rev-list then dedupes and date-sorts.
+            // Feed tips in Git's reflog-scan order so equal-date commits break ties by
+            // insertion order (Git's `prio_queue` FIFO), matching `rev-list --reflog`.
+            start_oids.extend(grit_lib::reflog::all_reflog_oids_ordered(&repo.git_dir)?);
         }
         if stdin_all_refs {
             stdin_merged_all_refs = true;
             start_oids.extend(collect_all_ref_oids(&repo.git_dir)?);
+        }
+        if args.bisect {
+            // `--bisect` adds `refs/bisect/bad*` as positive tips and `refs/bisect/good*` as
+            // negative tips (Git's `handle_revision_pseudo_opt`). For `%S`, each commit is labeled
+            // with the nearest bad ref that reaches it.
+            let (bad_tips, good_oids) = collect_bisect_ref_tips(&repo.git_dir)?;
+            if format_uses_percent_s {
+                let bisect_src = build_named_source_map(&repo.odb, &bad_tips, args.first_parent);
+                for (oid, label) in bisect_src {
+                    percent_s_source_map.entry(oid).or_insert(label);
+                }
+            }
+            start_oids.extend(bad_tips.into_iter().map(|(oid, _)| oid));
+            exclude_oids.extend(good_oids);
         }
 
         start_oids = dedupe_oid_order(start_oids);
@@ -5030,6 +5921,7 @@ pub fn run(mut args: Args) -> Result<()> {
             || !neg_s.is_empty()
             || args.all
             || args.reflog
+            || args.bisect
             || args.branches.is_some()
             || stdin_all_refs
             || (args.read_stdin && args.ignore_missing)
@@ -5098,7 +5990,10 @@ pub fn run(mut args: Args) -> Result<()> {
         } else if args.all || stdin_merged_all_refs {
             build_source_map(&repo.odb, &repo.git_dir, args.first_parent)?
         } else {
-            std::collections::HashMap::new()
+            // Explicit command-line revisions: paint each commit with the
+            // named revision arg it was reached from (built above into
+            // `percent_s_source_map`, which shares the `--source`/`%S` seeding).
+            percent_s_source_map.clone()
         }
     } else {
         std::collections::HashMap::new()
@@ -5112,7 +6007,7 @@ pub fn run(mut args: Args) -> Result<()> {
                 .strip_prefix("format:")
                 .or_else(|| fmt.strip_prefix("tformat:"))
                 .unwrap_or(fmt);
-            template.contains("%d") || template.contains("%D") || template.contains("%(decorate")
+            format_template_uses_decoration(template)
         })
         .unwrap_or(false);
 
@@ -5125,7 +6020,7 @@ pub fn run(mut args: Args) -> Result<()> {
         Some(collect_decorations_inner(
             &repo,
             decorate_full,
-            args.clear_decorations,
+            decorations_initial_set_all(&args, &repo.git_dir),
             &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
@@ -5135,7 +6030,7 @@ pub fn run(mut args: Args) -> Result<()> {
         Some(collect_decorations_inner(
             &repo,
             false,
-            args.clear_decorations,
+            decorations_initial_set_all(&args, &repo.git_dir),
             &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
@@ -5258,7 +6153,7 @@ pub fn run(mut args: Args) -> Result<()> {
             args.first_parent,
             &author_res,
             &committer_res,
-            &grep_res,
+            &grep_filter,
             args.all_match,
             args.invert_grep,
             &mailmap,
@@ -5302,7 +6197,15 @@ pub fn run(mut args: Args) -> Result<()> {
             }
             let blank_separator = log_uses_blank_separator(&args);
             if blank_separator && shown > 0 {
-                writeln!(out)?;
+                // Under `-z` the inter-entry blank line is replaced by a NUL.
+                if args.null_terminator {
+                    write!(out, "\0")?;
+                } else {
+                    writeln!(out)?;
+                }
+            }
+            if args.null_terminator && shown > 0 && log_z_needs_email_separator(&args) {
+                write!(out, "\0")?;
             }
             let oneline_fmt = args.oneline || args.format.as_deref() == Some("oneline");
             if args.source && !oneline_fmt {
@@ -5339,6 +6242,7 @@ pub fn run(mut args: Args) -> Result<()> {
                     None,
                     source_for_oneline,
                     percent_s_source_map.get(&oid).map(|s| s.as_str()),
+                    grep_colorizer.as_ref(),
                 )?;
             }
 
@@ -5360,6 +6264,7 @@ pub fn run(mut args: Args) -> Result<()> {
                     &mut notes_cache,
                     patch_context,
                     blank_separator,
+                    None,
                 )?;
             }
             if flush_each {
@@ -5377,7 +6282,7 @@ pub fn run(mut args: Args) -> Result<()> {
             args.first_parent,
             &author_res,
             &committer_res,
-            &grep_res,
+            &grep_filter,
             args.all_match,
             args.invert_grep,
             &mailmap,
@@ -5396,9 +6301,17 @@ pub fn run(mut args: Args) -> Result<()> {
             args.author_date_order,
         )?;
 
-        // Apply --follow: filter commits and track renames
+        // Apply --follow: filter commits and track renames/copies. `follow_display`
+        // maps each kept commit to the path the followed file had there (the copy/
+        // rename destination) and the detected diff entry, so the per-commit diff
+        // output retargets and shows `C100 <src> <dst>` like Git.
+        let mut follow_display: std::collections::HashMap<ObjectId, FollowDisplay> =
+            std::collections::HashMap::new();
         let commits = if args.follow && !combined_pathspecs.is_empty() {
-            follow_filter(&repo.odb, commits, &combined_pathspecs[0], args.max_count)?
+            let (filtered, display_map) =
+                follow_filter(&repo.odb, commits, &combined_pathspecs[0], args.max_count)?;
+            follow_display = display_map;
+            filtered
         } else {
             commits
         };
@@ -5511,9 +6424,18 @@ pub fn run(mut args: Args) -> Result<()> {
                 }
             }
             // Builtin pretty formats print a blank line between consecutive entries
-            // (git log-tree.c `shown_one`).
+            // (git log-tree.c `shown_one`). Under `-z` the inter-entry separator becomes a NUL
+            // instead of that blank line, matching Git's `line_termination = '\0'`: each entry's
+            // own trailing newline is kept, and entries are joined with `\0`.
             if blank_separator && i > 0 {
-                writeln!(out)?;
+                if args.null_terminator {
+                    write!(out, "\0")?;
+                } else {
+                    writeln!(out)?;
+                }
+            }
+            if args.null_terminator && i > 0 && log_z_needs_email_separator(&args) {
+                write!(out, "\0")?;
             }
             let oneline_fmt = args.oneline || args.format.as_deref() == Some("oneline");
             if args.source && !oneline_fmt {
@@ -5550,6 +6472,7 @@ pub fn run(mut args: Args) -> Result<()> {
                     None,
                     source_for_oneline,
                     percent_s_source_map.get(oid).map(|s| s.as_str()),
+                    grep_colorizer.as_ref(),
                 )?;
             }
 
@@ -5571,6 +6494,11 @@ pub fn run(mut args: Args) -> Result<()> {
                     &mut notes_cache,
                     patch_context,
                     blank_separator,
+                    if args.follow {
+                        follow_display.get(oid)
+                    } else {
+                        None
+                    },
                 )?;
             }
         }
@@ -5690,7 +6618,18 @@ fn validate_pathspec_scope(repo: &Repository, pathspecs: &[String]) -> Result<()
 
     let cwd = std::env::current_dir().context("resolving current directory")?;
     let Some(work_tree) = repo.work_tree.as_deref() else {
-        // Bare repos: pathspecs limit history without resolving against a work tree (t0410).
+        // Bare repos (and running inside `.git`): pathspecs still limit history without
+        // resolving against a work tree (t0410), but a pathspec that lexically escapes the
+        // repository — e.g. `..` from the repo root — is rejected just like upstream's
+        // `prefix_path_gently` failure (t6136).
+        for pathspec in pathspecs {
+            if pathspec.starts_with(':') {
+                continue;
+            }
+            if pathspec_escapes_repo_lexically(Path::new(pathspec)) {
+                anyhow::bail!("pathspec '{}' is outside repository", pathspec);
+            }
+        }
         return Ok(());
     };
 
@@ -5718,6 +6657,29 @@ fn validate_pathspec_scope(repo: &Repository, pathspecs: &[String]) -> Result<()
     }
 
     Ok(())
+}
+
+/// Whether a relative pathspec lexically escapes the repository (a leading `..`
+/// that walks above the root, or an absolute/rooted path). Used when there is no
+/// work tree (bare repo or running inside `.git`) to reproduce upstream's
+/// `'%s' is outside repository` diagnostic for pathspecs like `..` (t6136).
+fn pathspec_escapes_repo_lexically(pathspec: &Path) -> bool {
+    use std::path::Component;
+    let mut depth = 0usize;
+    for component in pathspec.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(_) => depth = depth.saturating_add(1),
+            Component::ParentDir => {
+                if depth == 0 {
+                    return true;
+                }
+                depth -= 1;
+            }
+            Component::RootDir | Component::Prefix(_) => return true,
+        }
+    }
+    false
 }
 
 /// Resolve pathspecs relative to current working directory inside the worktree.
@@ -5869,7 +6831,7 @@ pub fn run_no_walk(
             .strip_prefix("format:")
             .or_else(|| fmt.strip_prefix("tformat:"))
             .unwrap_or(fmt);
-        template.contains("%d") || template.contains("%D") || template.contains("%(decorate")
+        format_template_uses_decoration(template)
     });
     let decorations = if args.no_decorate {
         None
@@ -5877,7 +6839,7 @@ pub fn run_no_walk(
         Some(collect_decorations_inner(
             repo,
             decorate_full,
-            args.clear_decorations,
+            decorations_initial_set_all(&args, &repo.git_dir),
             &build_decoration_filter(&args, &repo.git_dir),
         )?)
     } else {
@@ -5895,6 +6857,7 @@ pub fn run_no_walk(
             author: commit.author.clone(),
             committer: commit.committer.clone(),
             message: commit.message.clone(),
+            raw_message: commit.raw_message.clone(),
         };
         commits.push((oid, info));
     }
@@ -5950,10 +6913,22 @@ pub fn run_no_walk(
     let blank_separator = log_uses_blank_separator(args);
     for (i, (oid, commit_data)) in commits.iter().enumerate() {
         if is_format_separator && i > 0 {
-            writeln!(out)?;
+            if args.null_terminator {
+                write!(out, "\0")?;
+            } else {
+                writeln!(out)?;
+            }
         }
         if blank_separator && i > 0 {
-            writeln!(out)?;
+            // Under `-z` the inter-entry blank line is replaced by a NUL.
+            if args.null_terminator {
+                write!(out, "\0")?;
+            } else {
+                writeln!(out)?;
+            }
+        }
+        if args.null_terminator && i > 0 && log_z_needs_email_separator(args) {
+            write!(out, "\0")?;
         }
         let per_parent_header =
             log_commit_uses_per_parent_header(args, commit_data, &repo.git_dir)?;
@@ -5973,6 +6948,7 @@ pub fn run_no_walk(
                 &repo.odb,
                 None,
                 false,
+                None,
                 None,
                 None,
                 None,
@@ -5997,6 +6973,7 @@ pub fn run_no_walk(
                 &mut notes_cache,
                 patch_context,
                 blank_separator,
+                None,
             )?;
         }
     }
@@ -6315,7 +7292,7 @@ fn run_reflog_walk(
     patch_context: usize,
     author_res: &[Regex],
     committer_res: &[Regex],
-    grep_res: &[Regex],
+    grep_filter: &GrepFilter,
     grep_reflog_res: &[Regex],
     use_mailmap: bool,
     mailmap: &MailmapTable,
@@ -6567,12 +7544,7 @@ fn run_reflog_walk(
         if !committer_ok {
             continue;
         }
-        let msg_ok = reflog_grep_matches(
-            grep_res,
-            &commit_data.message,
-            args.all_match,
-            args.invert_grep,
-        );
+        let msg_ok = grep_filter.matches(&commit_data.message, args.all_match, args.invert_grep);
         if !msg_ok {
             continue;
         }
@@ -6891,6 +7863,7 @@ fn run_reflog_walk(
             author: commit_data.author.clone(),
             committer: commit_data.committer.clone(),
             message: commit_data.message.clone(),
+            raw_message: commit_data.raw_message.clone(),
         };
         let show_diff = args.patch
             || args.patch_u
@@ -6925,6 +7898,7 @@ fn run_reflog_walk(
                 &mut notes_cache,
                 patch_context,
                 diff_leading_blank,
+                None,
             )?;
             if j > 0 {
                 writeln!(out)?;
@@ -7208,6 +8182,68 @@ struct CommitInfo {
     author: String,
     committer: String,
     message: String,
+    /// Verbatim body bytes when the commit was stored under an encoding Git cannot decode
+    /// (e.g. `i18n.commitEncoding=non-utf-8`). Set from [`CommitData::raw_message`]; the body
+    /// emitters use these instead of the lossy `message` so invalid-UTF-8 bytes round-trip.
+    raw_message: Option<Vec<u8>>,
+}
+
+/// Emit a commit message body line by line with a 4-space indent, matching Git's `pp_handle_indent`.
+///
+/// When `info.raw_message` is present (non-decodable commit encoding) the verbatim bytes are
+/// written without lossy UTF-8 conversion; otherwise the decoded `message` string is used.
+fn write_commit_body(out: &mut impl Write, info: &CommitInfo, et: usize) -> Result<()> {
+    write_commit_body_colored(out, info, et, None)
+}
+
+/// Like [`write_commit_body`] but, when `colorizer` is set, colorizes grep
+/// matches within each message line (Git `color_line`). The 4-space indent is
+/// emitted uncolored; only the message text after it is colorized.
+fn write_commit_body_colored(
+    out: &mut impl Write,
+    info: &CommitInfo,
+    et: usize,
+    colorizer: Option<&GrepColorizer>,
+) -> Result<()> {
+    if let Some(raw) = info.raw_message.as_deref() {
+        // Mirror `str::lines()`: split on '\n', strip a trailing '\r', and drop the final empty
+        // segment produced by a body that ends in '\n' (Git does not print a spurious blank line).
+        let body = raw.strip_suffix(b"\n").unwrap_or(raw);
+        for line in body.split(|&b| b == b'\n') {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            // Colorize only when the line is valid UTF-8 (grep patterns are
+            // UTF-8 regexes); otherwise fall back to the byte path.
+            if let (Some(c), Ok(text)) = (colorizer, std::str::from_utf8(line)) {
+                if let Some(colored) = c.colorize_message(text) {
+                    let indented = grit_lib::tab_expand::indent_and_expand_tabs(&colored, 4, et);
+                    out.write_all(indented.as_bytes())?;
+                    out.write_all(b"\n")?;
+                    continue;
+                }
+            }
+            out.write_all(&grit_lib::tab_expand::indent_and_expand_tabs_bytes(
+                line, 4, et,
+            ))?;
+            out.write_all(b"\n")?;
+        }
+    } else {
+        for line in info.message.lines() {
+            if let Some(colored) = colorizer.and_then(|c| c.colorize_message(line)) {
+                writeln!(
+                    out,
+                    "{}",
+                    grit_lib::tab_expand::indent_and_expand_tabs(&colored, 4, et)
+                )?;
+            } else {
+                writeln!(
+                    out,
+                    "{}",
+                    grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Key for Git-style date ordering: newest committer (or author) date first; ties broken by FIFO
@@ -7278,7 +8314,7 @@ struct WalkCommitsIter<'a> {
     first_parent: bool,
     author_res: &'a [Regex],
     committer_res: &'a [Regex],
-    grep_res: &'a [Regex],
+    grep_filter: &'a GrepFilter,
     all_match_grep: bool,
     invert_grep: bool,
     mailmap: &'a MailmapTable,
@@ -7300,7 +8336,7 @@ impl<'a> WalkCommitsIter<'a> {
         first_parent: bool,
         author_res: &'a [Regex],
         committer_res: &'a [Regex],
-        grep_res: &'a [Regex],
+        grep_filter: &'a GrepFilter,
         all_match_grep: bool,
         invert_grep: bool,
         mailmap: &'a MailmapTable,
@@ -7364,7 +8400,7 @@ impl<'a> WalkCommitsIter<'a> {
             first_parent,
             author_res,
             committer_res,
-            grep_res,
+            grep_filter,
             all_match_grep,
             invert_grep,
             mailmap,
@@ -7430,6 +8466,7 @@ impl<'a> WalkCommitsIter<'a> {
                 author: commit.author.clone(),
                 committer: commit.committer.clone(),
                 message: commit.message.clone(),
+                raw_message: commit.raw_message.clone(),
             };
 
             if !self.shallow_boundaries.contains(&oid) {
@@ -7487,20 +8524,9 @@ impl<'a> WalkCommitsIter<'a> {
             if !committer_ok {
                 continue;
             }
-            let msg_ok = if self.grep_res.is_empty() {
-                true
-            } else {
-                let m = if self.all_match_grep {
-                    self.grep_res.iter().all(|re| re.is_match(&info.message))
-                } else {
-                    self.grep_res.iter().any(|re| re.is_match(&info.message))
-                };
-                if self.invert_grep {
-                    !m
-                } else {
-                    m
-                }
-            };
+            let msg_ok =
+                self.grep_filter
+                    .matches(&info.message, self.all_match_grep, self.invert_grep);
             if !msg_ok {
                 continue;
             }
@@ -7570,7 +8596,7 @@ fn walk_commits(
     first_parent: bool,
     author_res: &[Regex],
     committer_res: &[Regex],
-    grep_res: &[Regex],
+    grep_filter: &GrepFilter,
     all_match_grep: bool,
     invert_grep: bool,
     mailmap: &MailmapTable,
@@ -7602,7 +8628,7 @@ fn walk_commits(
         first_parent,
         author_res,
         committer_res,
-        grep_res,
+        grep_filter,
         all_match_grep,
         invert_grep,
         mailmap,
@@ -8886,10 +9912,11 @@ fn run_symmetric_log(
         None
     };
 
-    // `%S` for a symmetric range labels each side's commits with its ref name.
+    // `%S` (format placeholder) and `--source` for a symmetric range label each
+    // side's commits with its ref name.
     let percent_s_source_map: std::collections::HashMap<ObjectId, String> = {
         let template = args.format.as_deref().unwrap_or("");
-        if template.contains("%S") {
+        if template.contains("%S") || args.source {
             let tips = vec![
                 (lhs_oid, lhs_spec.to_owned()),
                 (rhs_oid, rhs_spec.to_owned()),
@@ -8915,6 +9942,19 @@ fn run_symmetric_log(
             }
         };
         let info = load_commit_info(repo, *oid)?;
+        let oneline_fmt = args.oneline || args.format.as_deref() == Some("oneline");
+        if args.source && !oneline_fmt {
+            if let Some(src) = percent_s_source_map.get(oid) {
+                write!(out, "{}\t", short_ref_for_source_display(src))?;
+            }
+        }
+        let source_for_oneline = if args.source && oneline_fmt {
+            percent_s_source_map
+                .get(oid)
+                .map(|full| short_ref_for_source_display(full))
+        } else {
+            None
+        };
         format_commit(
             &mut out,
             oid,
@@ -8932,8 +9972,9 @@ fn run_symmetric_log(
             false,
             log_marker,
             None,
-            None,
+            source_for_oneline,
             percent_s_source_map.get(oid).map(|s| s.as_str()),
+            None,
         )?;
     }
 
@@ -9014,6 +10055,7 @@ fn format_commit(
     merge_from_parent: Option<&ObjectId>,
     source_for_oneline: Option<&str>,
     percent_s_source: Option<&str>,
+    grep_colorizer: Option<&GrepColorizer>,
 ) -> Result<()> {
     let hex = oid.to_hex();
     let abbrev_len = if args.no_abbrev {
@@ -9055,10 +10097,13 @@ fn format_commit(
         };
         let enc = args.log_output_encoding.as_deref();
         let abbrev = &hex[..abbrev_len.min(hex.len())];
+        // Under `-z`, each builtin `oneline` entry is NUL-terminated (Git `line_termination`),
+        // so consecutive entries are joined (and the final one terminated) by `\0`.
+        let line_term: &[u8] = if args.null_terminator { b"\0" } else { b"\n" };
         if let Some(src) = source_for_oneline {
             let line = format!("{abbrev}\t{src} {first_line}");
             out.write_all(&encode_log_str(&line, enc))?;
-            out.write_all(b"\n")?;
+            out.write_all(line_term)?;
         } else {
             let oid_color = if use_color {
                 decoration_paint
@@ -9090,7 +10135,7 @@ fn format_commit(
                 first_line
             );
             out.write_all(&encode_log_str(&line, enc))?;
-            out.write_all(b"\n")?;
+            out.write_all(line_term)?;
         }
         return Ok(());
     }
@@ -9111,6 +10156,29 @@ fn format_commit(
         _ => None,
     };
     let signature_ref = signature.as_ref();
+
+    // `--show-signature` emits the GPG/ssh verification lines (Git `show_signature`)
+    // right after the `commit <hash>`/`Merge:` header in the multi-line pretty
+    // formats. Under `--graph`, each line is prefixed with the graph rail.
+    let show_signature_lines: Option<String> = if args.show_signature {
+        odb.read(oid).ok().and_then(|obj| {
+            let config = grit_lib::repo::Repository::discover(None)
+                .ok()
+                .and_then(|repo| ConfigSet::load(Some(&repo.git_dir), true).ok())
+                .unwrap_or_default();
+            let s = format_commit_signature_lines(&config, &obj.data);
+            if s.is_empty() {
+                None
+            } else {
+                // Under `--graph`, the graph machinery rail-prefixes every line
+                // of the message buffer (incl. these), so emit them verbatim.
+                Some(s)
+            }
+        })
+    } else {
+        None
+    };
+    let show_signature_lines = show_signature_lines.as_deref();
 
     match format {
         Some(fmt) if fmt.starts_with("format:") || fmt.starts_with("tformat:") => {
@@ -9168,13 +10236,7 @@ fn format_commit(
             writeln!(out, "author {}", info.author)?;
             writeln!(out, "committer {}", info.committer)?;
             writeln!(out)?;
-            for line in info.message.lines() {
-                writeln!(
-                    out,
-                    "{}",
-                    grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
-                )?;
-            }
+            write_commit_body(out, info, et)?;
             // `git log --pretty=raw` omits notes unless `--notes` / `--show-notes` is given.
             if matches!(
                 std::env::var("GIT_GRIT_LOG_NOTES_CLI").ok().as_deref(),
@@ -9243,24 +10305,21 @@ fn format_commit(
                     .collect();
                 writeln!(out, "Merge: {}", parent_abbrevs.join(" "))?;
             }
-            writeln!(
-                out,
-                "Author: {}",
-                format_ident_display_mailmap(mailmap, &info.author, use_mailmap)
-            )?;
+            if let Some(sig) = show_signature_lines {
+                out.write_all(sig.as_bytes())?;
+            }
+            let author_disp = format_ident_display_mailmap(mailmap, &info.author, use_mailmap);
+            let author_disp = grep_colorizer
+                .and_then(|c| c.colorize_author(&author_disp))
+                .unwrap_or(author_disp);
+            writeln!(out, "Author: {author_disp}")?;
             writeln!(
                 out,
                 "Date:   {}",
                 format_author_date_internal(&info.author, date_format, true)
             )?;
             writeln!(out)?;
-            for line in info.message.lines() {
-                writeln!(
-                    out,
-                    "{}",
-                    grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
-                )?;
-            }
+            write_commit_body_colored(out, info, et, grep_colorizer)?;
             write_notes(out, oid, notes_cache, args, odb)?;
         }
         Some("full") => {
@@ -9282,24 +10341,22 @@ fn format_commit(
                     .collect();
                 writeln!(out, "Merge: {}", parent_abbrevs.join(" "))?;
             }
-            writeln!(
-                out,
-                "Author: {}",
-                format_ident_display_mailmap(mailmap, &info.author, use_mailmap)
-            )?;
-            writeln!(
-                out,
-                "Commit: {}",
-                format_ident_display_mailmap(mailmap, &info.committer, use_mailmap)
-            )?;
-            writeln!(out)?;
-            for line in info.message.lines() {
-                writeln!(
-                    out,
-                    "{}",
-                    grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
-                )?;
+            if let Some(sig) = show_signature_lines {
+                out.write_all(sig.as_bytes())?;
             }
+            let author_disp = format_ident_display_mailmap(mailmap, &info.author, use_mailmap);
+            let author_disp = grep_colorizer
+                .and_then(|c| c.colorize_author(&author_disp))
+                .unwrap_or(author_disp);
+            writeln!(out, "Author: {author_disp}")?;
+            let committer_disp =
+                format_ident_display_mailmap(mailmap, &info.committer, use_mailmap);
+            let committer_disp = grep_colorizer
+                .and_then(|c| c.colorize_committer(&committer_disp))
+                .unwrap_or(committer_disp);
+            writeln!(out, "Commit: {committer_disp}")?;
+            writeln!(out)?;
+            write_commit_body_colored(out, info, et, grep_colorizer)?;
             write_notes(out, oid, notes_cache, args, odb)?;
         }
         Some("fuller") => {
@@ -9321,34 +10378,32 @@ fn format_commit(
                     .collect();
                 writeln!(out, "Merge: {}", parent_abbrevs.join(" "))?;
             }
-            writeln!(
-                out,
-                "Author:     {}",
-                format_ident_display_mailmap(mailmap, &info.author, use_mailmap)
-            )?;
+            if let Some(sig) = show_signature_lines {
+                out.write_all(sig.as_bytes())?;
+            }
+            let author_disp = format_ident_display_mailmap(mailmap, &info.author, use_mailmap);
+            let author_disp = grep_colorizer
+                .and_then(|c| c.colorize_author(&author_disp))
+                .unwrap_or(author_disp);
+            writeln!(out, "Author:     {author_disp}")?;
             writeln!(
                 out,
                 "AuthorDate: {}",
                 format_author_date_internal(&info.author, date_format, true)
             )?;
-            writeln!(
-                out,
-                "Commit:     {}",
-                format_ident_display_mailmap(mailmap, &info.committer, use_mailmap)
-            )?;
+            let committer_disp =
+                format_ident_display_mailmap(mailmap, &info.committer, use_mailmap);
+            let committer_disp = grep_colorizer
+                .and_then(|c| c.colorize_committer(&committer_disp))
+                .unwrap_or(committer_disp);
+            writeln!(out, "Commit:     {committer_disp}")?;
             writeln!(
                 out,
                 "CommitDate: {}",
                 format_author_date_internal(&info.committer, date_format, true)
             )?;
             writeln!(out)?;
-            for line in info.message.lines() {
-                writeln!(
-                    out,
-                    "{}",
-                    grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
-                )?;
-            }
+            write_commit_body_colored(out, info, et, grep_colorizer)?;
             write_notes(out, oid, notes_cache, args, odb)?;
         }
         Some("reference") => {
@@ -9382,6 +10437,35 @@ fn format_commit(
             let bytes = encode_log_str(&formatted, args.log_output_encoding.as_deref());
             out.write_all(&bytes)?;
             out.write_all(b"\n")?;
+        }
+        Some("email") | Some("mboxrd") => {
+            // `--pretty=email` / `mboxrd` emit an mbox/patch header. Mirror `git show`'s builtin
+            // email arm so `git log --pretty=email` and `git show --pretty=email` agree byte for
+            // byte (and match the `-z` NUL framing in t4205's `--reflog` tests).
+            let subject = grit_lib::commit_pretty::message_subject(&info.message);
+            let subject = if et > 0 {
+                grit_lib::tab_expand::expand_tabs_in_line(&subject, et)
+            } else {
+                subject
+            };
+            writeln!(out, "From {hex} Mon Sep 17 00:00:00 2001")?;
+            writeln!(
+                out,
+                "From: {}",
+                format_ident_for_header_mailmap(mailmap, &info.author, use_mailmap)
+            )?;
+            writeln!(out, "Date: {}", format_date_for_header(&info.author))?;
+            writeln!(out, "Subject: [PATCH] {subject}")?;
+            writeln!(out)?;
+            for line in info.message.lines() {
+                let line_out = if et > 0 {
+                    grit_lib::tab_expand::expand_tabs_in_line(line, et)
+                } else {
+                    line.to_owned()
+                };
+                writeln!(out, "{line_out}")?;
+            }
+            writeln!(out)?;
         }
         Some(other) => {
             // Try as a format string directly
@@ -9561,6 +10645,70 @@ fn run_describe_for_format(
 ) -> Option<String> {
     let repo = grit_lib::repo::Repository::discover(None).ok()?;
     crate::commands::describe::describe_object(&repo, *oid, opts).ok()
+}
+
+/// Parse the inner part of a `%w(width,indent1,indent2)` directive (the text between the
+/// parentheses, with the parens already stripped). Mirrors Git's `strtoul`-based parse: an empty
+/// string is `(0, 0, 0)`; otherwise up to three comma-separated decimal values, where any trailing
+/// non-digit / non-comma junk makes the whole directive invalid (`None` => emit literally).
+/// Mimic C `strtoul(s, &next, 10)` over a byte slice: skip leading ASCII whitespace,
+/// consume leading decimal digits (saturating), and return `(value, rest)` where `rest`
+/// is the slice starting at the first unconsumed byte. With no digits, value is 0 and
+/// `rest` is the slice after any skipped whitespace (matching glibc behavior).
+fn strtoul_prefix(s: &str) -> (i64, &str) {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let mut val: i64 = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        val = val
+            .saturating_mul(10)
+            .saturating_add((bytes[i] - b'0') as i64);
+        i += 1;
+    }
+    (val, &s[i..])
+}
+
+/// Faithful port of git pretty.c `%w(width,indent1,indent2)` argument parsing (case 'w').
+/// Uses `strtoul` semantics: an empty or non-numeric leading segment yields 0 and the
+/// parse continues only as long as the next unconsumed byte is `,` (advance to next field).
+/// Anything other than `,`/end terminates a successful parse; leftover non-`)` => invalid.
+fn parse_wrap_spec(inner: &str) -> Option<(i64, i64, i64)> {
+    // Empty `%w()` => all zero (wrapping off).
+    if inner.is_empty() {
+        return Some((0, 0, 0));
+    }
+    let (width, rest) = strtoul_prefix(inner);
+    let mut indent1 = 0i64;
+    let mut indent2 = 0i64;
+    let mut rest = rest;
+    if let Some(after) = rest.strip_prefix(',') {
+        let (i1, r) = strtoul_prefix(after);
+        indent1 = i1;
+        rest = r;
+        if let Some(after2) = rest.strip_prefix(',') {
+            let (i2, r2) = strtoul_prefix(after2);
+            indent2 = i2;
+            rest = r2;
+        }
+    }
+    // After parsing, git requires the next byte to be `)` (handled by the caller, which
+    // already stripped the closing paren). Here `rest` must be fully consumed.
+    if !rest.is_empty() {
+        return None;
+    }
+    Some((width, indent1, indent2))
+}
+
+thread_local! {
+    /// Display width of the graph prefix (e.g. `* `, `| * `) on the line where the current commit's
+    /// formatted body begins. `%>|(N)` / `%<|(N)` absolute-column directives position relative to
+    /// the start of the whole output line, which under `--graph` includes this prefix (Git's
+    /// `pp->graph_width`). The graph renderer sets this before formatting each commit; it is 0 in
+    /// the non-graph path.
+    static GRAPH_PREFIX_WIDTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn apply_format_string(
@@ -9817,6 +10965,14 @@ fn apply_format_string(
     let mut result = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
 
+    // `%w(width,indent1,indent2)` rewrapping state (Git pretty.c `rewrap_message_tail`). Text
+    // appended since `wrap_start` is rewrapped with the *current* params whenever a new `%w`
+    // directive (or the end of formatting) changes them.
+    let mut wrap_width: i64 = 0;
+    let mut wrap_indent1: i64 = 0;
+    let mut wrap_indent2: i64 = 0;
+    let mut wrap_start: usize = 0;
+
     while let Some(ch) = chars.next() {
         if ch == '%' {
             // Check alignment directives. Parse against a clone so a malformed
@@ -9880,6 +11036,20 @@ fn apply_format_string(
                 }
                 _ => Magic::None,
             };
+            // `%+w()` / `%-w()` / `% w()` can never expand to a non-empty string yet would change
+            // the layout of preceding content, so Git's pretty.c refuses the combination and emits
+            // it literally (the "magical wrapping" case in t4205). Re-emit `%<magic>` and leave the
+            // `w(...)` for the loop to copy verbatim.
+            if magic != Magic::None && chars.peek() == Some(&'w') {
+                result.push('%');
+                result.push(match magic {
+                    Magic::AddLf => '+',
+                    Magic::AddSp => ' ',
+                    Magic::DelLf => '-',
+                    Magic::None => unreachable!(),
+                });
+                continue;
+            }
             let magic_start = result.len();
 
             let col_start = if pending_col.is_some() {
@@ -10277,15 +11447,61 @@ fn apply_format_string(
                     }
                 }
                 Some('w') => {
-                    // %w(...) wrapping directive — consume and ignore
-                    chars.next();
-                    if chars.peek() == Some(&'(') {
-                        chars.next();
-                        for c in chars.by_ref() {
-                            if c == ')' {
-                                break;
-                            }
+                    // `%w(width,indent1,indent2)` rewrapping directive (Git pretty.c). Parse
+                    // against a clone so a malformed or overflowing spec is emitted literally.
+                    let mut probe = chars.clone();
+                    probe.next(); // consume 'w'
+                    if probe.peek() != Some(&'(') {
+                        // Bare `%w` (no parens): Git refuses it, emit literally.
+                        result.push('%');
+                        continue;
+                    }
+                    probe.next(); // consume '('
+                    let mut inner = String::new();
+                    let mut closed = false;
+                    for c in probe.by_ref() {
+                        if c == ')' {
+                            closed = true;
+                            break;
                         }
+                        inner.push(c);
+                    }
+                    if !closed {
+                        result.push('%');
+                        continue;
+                    }
+                    // Empty `%w()` => width 0 (wrapping off). Otherwise parse up to three
+                    // comma-separated decimal values; any trailing junk => emit literally.
+                    let parsed = parse_wrap_spec(&inner);
+                    let Some((new_w, new_i1, new_i2)) = parsed else {
+                        result.push('%');
+                        continue;
+                    };
+                    const FORMATTING_LIMIT: i64 = 16 * 1024;
+                    if new_w > FORMATTING_LIMIT
+                        || new_i1 > FORMATTING_LIMIT
+                        || new_i2 > FORMATTING_LIMIT
+                    {
+                        result.push('%');
+                        continue;
+                    }
+                    chars = probe;
+                    // rewrap_message_tail: if the params actually change, rewrap the text added
+                    // since `wrap_start` with the *current* params, then adopt the new ones.
+                    if wrap_width != new_w || wrap_indent1 != new_i1 || wrap_indent2 != new_i2 {
+                        if wrap_start < result.len() {
+                            let tail = result.split_off(wrap_start);
+                            result.push_str(&grit_lib::commit_pretty::add_wrapped_text(
+                                &tail,
+                                wrap_indent1,
+                                wrap_indent2,
+                                wrap_width,
+                            ));
+                        }
+                        wrap_start = result.len();
+                        wrap_width = new_w;
+                        wrap_indent1 = new_i1;
+                        wrap_indent2 = new_i2;
                     }
                 }
                 Some('e') => {
@@ -10471,7 +11687,14 @@ fn apply_format_string(
                 // and credit them to the padding budget (Git pretty.c).
                 let mut effective_width = if spec.absolute {
                     let line_start = result.rfind('\n').map(|p| p + 1).unwrap_or(0);
-                    let current_col = display_width(&result[line_start..]);
+                    // Under `--graph` the line begins with a graph prefix (e.g. `* `) that the
+                    // formatted body does not yet contain; absolute columns count from there.
+                    let prefix_w = if line_start == 0 {
+                        GRAPH_PREFIX_WIDTH.with(|c| c.get())
+                    } else {
+                        0
+                    };
+                    let current_col = prefix_w + display_width(&result[line_start..]);
                     spec.width.saturating_sub(current_col)
                 } else {
                     spec.width
@@ -10532,6 +11755,18 @@ fn apply_format_string(
         } else {
             result.push(ch);
         }
+    }
+
+    // Final rewrap (Git `rewrap_message_tail(sb, &context, 0, 0, 0)`): if any `%w` set non-zero
+    // params, the text since the last `%w` is wrapped with those params.
+    if (wrap_width != 0 || wrap_indent1 != 0 || wrap_indent2 != 0) && wrap_start < result.len() {
+        let tail = result.split_off(wrap_start);
+        result.push_str(&grit_lib::commit_pretty::add_wrapped_text(
+            &tail,
+            wrap_indent1,
+            wrap_indent2,
+            wrap_width,
+        ));
     }
 
     result
@@ -11052,6 +12287,23 @@ fn decoration_pattern_matches(pattern: &str, refname: &str) -> bool {
 
 /// Build the decoration filter from command-line args and `log.excludeDecoration`
 /// config.
+/// Whether hidden/auxiliary refs (`refs/hidden/*`, `refs/rewritten/*`, `refs/prefetch/*`, notes,
+/// …) should be decorated. Git starts from the "all" decoration set when either `--clear-decorations`
+/// is given or `log.initialDecorationSet=all` is configured; the default ("short") set hides those
+/// refs. Unlike `--clear-decorations`, `log.initialDecorationSet=all` does *not* drop user/config
+/// exclusions — only the implicit hidden-ref filter — so this is kept separate from
+/// `args.clear_decorations` (which `build_decoration_filter` still uses to skip `log.excludeDecoration`).
+fn decorations_initial_set_all(args: &Args, git_dir: &Path) -> bool {
+    if args.clear_decorations {
+        return true;
+    }
+    ConfigSet::load(Some(git_dir), true)
+        .ok()
+        .and_then(|cfg| cfg.get("log.initialDecorationSet"))
+        .map(|v| v.trim().eq_ignore_ascii_case("all"))
+        .unwrap_or(false)
+}
+
 fn build_decoration_filter(args: &Args, git_dir: &Path) -> DecorationFilter {
     let mut filter = DecorationFilter {
         include: args
@@ -11070,10 +12322,20 @@ fn build_decoration_filter(args: &Args, git_dir: &Path) -> DecorationFilter {
     // hidden-ref exclusions, which grit doesn't apply here anyway).
     if !args.clear_decorations {
         if let Ok(cfg) = ConfigSet::load(Some(git_dir), true) {
-            for value in cfg.get_all("log.excludeDecoration") {
-                let v = value.trim();
-                if !v.is_empty() {
-                    filter.exclude_config.push(normalize_glob_ref(v));
+            for value in cfg.get_all_raw("log.excludeDecoration") {
+                match value {
+                    // A bare `log.excludeDecoration` (no value) is not fatal in Git: the
+                    // decoration setup reports `error: missing value for 'log.excludeDecoration'`
+                    // to stderr (git_config_string -> config_error_nonbool) and skips it.
+                    None => {
+                        eprintln!("error: missing value for 'log.excludeDecoration'");
+                    }
+                    Some(v) => {
+                        let v = v.trim();
+                        if !v.is_empty() {
+                            filter.exclude_config.push(normalize_glob_ref(v));
+                        }
+                    }
                 }
             }
         }
@@ -11671,11 +12933,22 @@ fn write_commit_diff(
     notes_cache: &mut NotesMapCache<'_>,
     patch_context: usize,
     leading_blank: bool,
+    follow_override: Option<&FollowDisplay>,
 ) -> Result<()> {
     let odb = &repo.odb;
     let git_dir = &repo.git_dir;
     let log_config = ConfigSet::load(Some(git_dir), true).unwrap_or_default();
     let indent_heuristic = indent_heuristic_from_config(&log_config);
+    // Under `--follow`, restrict the displayed diff to the path the followed file
+    // had in this commit (the copy/rename destination), not the original pathspec.
+    let follow_pathspecs: Vec<String> = follow_override
+        .map(|f| vec![f.display_path.clone()])
+        .unwrap_or_default();
+    let pathspecs: &[String] = if follow_override.is_some() {
+        &follow_pathspecs
+    } else {
+        pathspecs
+    };
     let is_merge = info.parents.len() > 1;
 
     if !log_commit_needs_diff_output(args, info, git_dir)? {
@@ -11755,6 +13028,7 @@ fn write_commit_diff(
                 Some(parent_oid),
                 None,
                 None,
+                None,
             )?;
             write_commit_diff_body(
                 out,
@@ -11784,6 +13058,17 @@ fn write_commit_diff(
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(50);
         entries = grit_lib::diff::detect_renames(odb, None, entries, threshold);
+    }
+    // Under `--follow`, the commit that introduced the followed file as a copy or
+    // rename of another path was detected up front (`follow_filter`). Replace the
+    // plain add/modify entry for the destination with that copy/rename entry so the
+    // displayed diff shows `C100 <src> <dst>` and the source blob is the patch base.
+    if let Some(detected) = follow_override.and_then(|f| f.display_entry.as_ref()) {
+        if matches!(detected.status, DiffStatus::Renamed | DiffStatus::Copied) {
+            let dest = detected.new_path.as_deref();
+            entries.retain(|e| e.new_path.as_deref() != dest);
+            entries.push(detected.clone());
+        }
     }
     if entries.is_empty() {
         return Ok(());
@@ -12002,7 +13287,7 @@ fn write_commit_diff_body(
     }
 
     if args.name_only {
-        if !list_raw_name.is_empty() {
+        if !list_raw_name.is_empty() && log_name_list_needs_separator(args) {
             writeln!(out)?;
         }
         for entry in list_raw_name {
@@ -12011,10 +13296,37 @@ fn write_commit_diff_body(
     }
 
     if args.name_status {
-        for entry in list_raw_name {
-            writeln!(out, "{}\t{}", entry.status.letter(), entry.path())?;
+        // Like `--name-only`, emit a single separator before the status block: in
+        // builtin multi-line pretty formats this is the blank line between the message
+        // and the diff body; with `format:` (whose subject line is left unterminated)
+        // it is the subject's terminating newline; `oneline`/`tformat:` already
+        // terminate the line, so nothing is added there. The inter-commit blank line is
+        // supplied by the caller's separator, so no trailing blank is printed here.
+        if !list_raw_name.is_empty() && log_name_list_needs_separator(args) {
+            writeln!(out)?;
         }
-        writeln!(out)?;
+        for entry in list_raw_name {
+            match entry.status {
+                // Renames and copies print the similarity score and both the source
+                // and destination paths (`R100\told\tnew`), matching diff-tree's
+                // name-status output. This is reached e.g. for `log --follow`, where
+                // the copy/rename that introduced the followed file is shown.
+                DiffStatus::Renamed | DiffStatus::Copied => {
+                    let score = entry.score.unwrap_or(100);
+                    writeln!(
+                        out,
+                        "{}{:03}\t{}\t{}",
+                        entry.status.letter(),
+                        score,
+                        entry.old_path.as_deref().unwrap_or(""),
+                        entry.new_path.as_deref().unwrap_or(""),
+                    )?;
+                }
+                _ => {
+                    writeln!(out, "{}\t{}", entry.status.letter(), entry.path())?;
+                }
+            }
+        }
     }
 
     if show_patch {
@@ -12868,19 +14180,37 @@ fn commit_has_object(
     Ok(false)
 }
 
-/// Filter commits by following a file across renames.
-/// Returns only commits that touch the tracked file, updating the path
-/// when renames are detected.
+/// What `--follow` should display for a kept commit: the path the followed file
+/// had in that commit (`display_path`, the destination of any copy/rename) and
+/// the already copy/rename-detected diff entry to render for it
+/// (`display_entry`).
+#[derive(Clone)]
+struct FollowDisplay {
+    display_path: String,
+    display_entry: Option<DiffEntry>,
+}
+
+/// Filter commits by following a file across renames and copies.
+/// Returns only commits that touch the tracked file, plus a per-commit map
+/// describing what to display. The display info mirrors Git's
+/// `try_to_follow_renames`: the commit that first introduces the file as a copy
+/// of a still-existing source shows `C100 <source> <dest>`, and older commits
+/// show the file under its earlier name.
 fn follow_filter(
     odb: &Odb,
     commits: Vec<(ObjectId, CommitInfo)>,
     initial_path: &str,
     max_count: Option<usize>,
-) -> Result<Vec<(ObjectId, CommitInfo)>> {
+) -> Result<(
+    Vec<(ObjectId, CommitInfo)>,
+    std::collections::HashMap<ObjectId, FollowDisplay>,
+)> {
     use grit_lib::diff::detect_copies;
 
     let mut tracked_path = initial_path.to_string();
     let mut result = Vec::new();
+    let mut display_map: std::collections::HashMap<ObjectId, FollowDisplay> =
+        std::collections::HashMap::new();
 
     for (oid, info) in commits {
         let parent_tree = if let Some(parent) = info.parents.first() {
@@ -12904,12 +14234,17 @@ fn follow_filter(
 
         let mut touches = false;
         let mut retarget: Option<String> = None;
+        // The path the followed file has in *this* commit is the current
+        // `tracked_path` (a copy/rename only retargets for older commits).
+        let display_path = tracked_path.clone();
+        let mut display_entry: Option<DiffEntry> = None;
         for entry in &entries {
             match entry.status {
                 DiffStatus::Renamed | DiffStatus::Copied => {
                     // The new path is the copy/rename destination; follow it back to the source.
                     if entry.new_path.as_deref() == Some(tracked_path.as_str()) {
                         touches = true;
+                        display_entry = Some(entry.clone());
                         if let Some(old_path) = entry.old_path.as_deref() {
                             retarget = Some(old_path.to_string());
                         }
@@ -12926,12 +14261,22 @@ fn follow_filter(
                 _ => {
                     if entry.path() == tracked_path {
                         touches = true;
+                        if display_entry.is_none() {
+                            display_entry = Some(entry.clone());
+                        }
                     }
                 }
             }
         }
 
         if touches {
+            display_map.insert(
+                oid,
+                FollowDisplay {
+                    display_path,
+                    display_entry,
+                },
+            );
             result.push((oid, info));
             if let Some(new_target) = retarget {
                 tracked_path = new_target;
@@ -12944,7 +14289,7 @@ fn follow_filter(
         }
     }
 
-    Ok(result)
+    Ok((result, display_map))
 }
 
 /// Build a map from commit OID → source name for the `%S` placeholder, seeded
@@ -12956,6 +14301,34 @@ fn follow_filter(
 /// wins. We mirror that with a date-ordered priority queue: pop the
 /// highest-dated pending commit, fix its label, then enqueue its parents with
 /// the same label (an already-labeled commit keeps its first label).
+/// Collect bisect ref tips for `git log --bisect`: positive `refs/bisect/bad*` tips (with their
+/// ref names, for `%S`) and negative `refs/bisect/good*` OIDs. Mirrors `rev-list`'s
+/// `append_bisect_ref_specs` (a "bad"/"good" prefix is matched whole or followed by `-`).
+fn collect_bisect_ref_tips(git_dir: &Path) -> Result<(Vec<(ObjectId, String)>, Vec<ObjectId>)> {
+    let refs =
+        grit_lib::refs::list_refs(git_dir, "refs/bisect/").context("failed to list bisect refs")?;
+    let mut bad_tips = Vec::new();
+    let mut good_oids = Vec::new();
+    for (name, oid) in refs {
+        if name.starts_with("refs/bisect/bad")
+            && name
+                .as_bytes()
+                .get("refs/bisect/bad".len())
+                .is_none_or(|b| *b == b'-')
+        {
+            bad_tips.push((oid, name));
+        } else if name.starts_with("refs/bisect/good")
+            && name
+                .as_bytes()
+                .get("refs/bisect/good".len())
+                .is_none_or(|b| *b == b'-')
+        {
+            good_oids.push(oid);
+        }
+    }
+    Ok((bad_tips, good_oids))
+}
+
 fn build_named_source_map(
     odb: &Odb,
     tips: &[(ObjectId, String)],

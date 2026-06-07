@@ -191,6 +191,14 @@ struct Options {
     merge_base: bool,
     /// Line-diff indent heuristic (Git `diff.indentHeuristic`).
     indent_heuristic: bool,
+    /// `--grep` message patterns (used by `whatchanged` to limit the series).
+    grep_patterns: Vec<String>,
+    /// `--grep` pattern flavor flags (`-F`/`-G`/`-E`/`-P`) and `-i`.
+    grep_fixed: bool,
+    grep_basic: bool,
+    grep_extended: bool,
+    grep_perl: bool,
+    grep_ignore_case: bool,
 }
 
 /// Whitespace comparison options for plumbing `diff-tree` (aligned with porcelain `git diff`).
@@ -302,6 +310,12 @@ impl Default for Options {
             check: false,
             merge_base: false,
             indent_heuristic: true,
+            grep_patterns: Vec::new(),
+            grep_fixed: false,
+            grep_basic: false,
+            grep_extended: false,
+            grep_perl: false,
+            grep_ignore_case: false,
         }
     }
 }
@@ -559,6 +573,26 @@ fn parse_options(repo: &Repository, argv: &[String]) -> Result<Options> {
                     opts.submodule_mode = Some(arg["--submodule=".len()..].to_string());
                 }
                 "--ignore-blank-lines" => opts.ignore_blank_lines = true,
+                // `--grep` message limiting (used by `whatchanged`). Only the long
+                // pattern-flavor forms are accepted here because diff-tree's short
+                // `-G`/`-S` are pickaxe options.
+                _ if arg.starts_with("--grep=") => {
+                    opts.grep_patterns.push(arg["--grep=".len()..].to_string());
+                }
+                "--grep" => {
+                    i += 1;
+                    if i >= argv.len() {
+                        bail!("option `--grep` requires a value");
+                    }
+                    opts.grep_patterns.push(argv[i].clone());
+                    i += 1;
+                    continue;
+                }
+                "--fixed-strings" => opts.grep_fixed = true,
+                "--basic-regexp" => opts.grep_basic = true,
+                "--extended-regexp" => opts.grep_extended = true,
+                "--perl-regexp" => opts.grep_perl = true,
+                "--regexp-ignore-case" => opts.grep_ignore_case = true,
                 _ => bail!("unknown option: {arg}"),
             }
             i += 1;
@@ -741,14 +775,34 @@ pub fn run_whatchanged(argv: &[String]) -> Result<()> {
     };
     let rl = grit_lib::rev_list::rev_list(&repo, &positive_specs, &[], &rl_opts)
         .map_err(|e| anyhow::anyhow!("rev-list failed: {e}"))?;
+    // `--grep` limits the series to commits whose message matches (like `git log
+    // --grep`), honoring `grep.patternType` / `--fixed-strings`/etc.
+    let grep_res = if opts.grep_patterns.is_empty() {
+        Vec::new()
+    } else {
+        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        crate::commands::log::compile_command_grep_regexes(
+            &opts.grep_patterns,
+            opts.grep_fixed,
+            opts.grep_basic,
+            opts.grep_extended,
+            opts.grep_perl,
+            opts.grep_ignore_case,
+            &cfg,
+        )?
+    };
     let mut commits: Vec<ObjectId> = Vec::new();
     for oid in rl.commits {
         let obj = repo.odb.read(&oid)?;
         let commit = parse_commit(&obj.data)?;
         // `whatchanged` skips merges (== `--no-merges`) unless combined.
-        if commit.parents.len() <= 1 || include_merges {
-            commits.push(oid);
+        if commit.parents.len() > 1 && !include_merges {
+            continue;
         }
+        if !grep_res.is_empty() && !grep_res.iter().any(|re| re.is_match(&commit.message)) {
+            continue;
+        }
+        commits.push(oid);
     }
 
     let stdout = io::stdout();

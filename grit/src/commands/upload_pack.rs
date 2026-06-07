@@ -434,8 +434,17 @@ pub fn run(args: Args) -> Result<()> {
             && wants_include_only_commits(&repo, &want_unique);
         let advertises_promisor = config_bool(&config, "promisor.advertise");
         let omit_missing_promisor = filter_spec.is_some() && advertises_promisor;
-        let force_lazy_fetch =
-            !advertises_promisor && (filter_spec.is_some() || !exclusion_commits.is_empty());
+        // `upload-pack` pins `GIT_NO_LAZY_FETCH=1` by default, so the server-side `pack-objects`
+        // never lazily fetches missing objects — it just fails if it cannot read an object
+        // (t0411-clone-from-partial: a plain clone/fetch from a partial-clone server must NOT run
+        // the promisor's upload-pack). Back-fill omitted blobs only when the operator explicitly
+        // re-enabled lazy fetching (`GIT_NO_LAZY_FETCH=0`).
+        let lazy_fetch_enabled =
+            !crate::commands::promisor_hydrate::git_no_lazy_fetch_env_disables_lazy()
+                .unwrap_or(false);
+        let force_lazy_fetch = lazy_fetch_enabled
+            && !advertises_promisor
+            && (filter_spec.is_some() || !exclusion_commits.is_empty());
         if force_lazy_fetch && !exclusion_commits.is_empty() {
             hydrate_upload_pack_blobs_missing_from_client(&repo, &want_unique, &exclusion_commits)?;
         }

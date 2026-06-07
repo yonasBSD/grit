@@ -380,6 +380,227 @@ pub fn git_path_relative_component(path: &str) -> &str {
     cleanup_path(trimmed)
 }
 
+/// One entry in Git's `common_list` (`git/path.c`).
+struct CommonDir {
+    is_dir: bool,
+    is_common: bool,
+    path: &'static str,
+}
+
+/// Git's `common_list` table from `git/path.c`. Each entry classifies a path
+/// (or directory prefix) under the git dir as belonging to the common dir or to
+/// the per-worktree git dir. The order is irrelevant for classification because
+/// `trie_find` always selects the longest `/`-terminated matching prefix.
+const COMMON_LIST: &[CommonDir] = &[
+    CommonDir {
+        is_dir: true,
+        is_common: true,
+        path: "branches",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: true,
+        path: "common",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: true,
+        path: "hooks",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: true,
+        path: "info",
+    },
+    CommonDir {
+        is_dir: false,
+        is_common: false,
+        path: "info/sparse-checkout",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: true,
+        path: "logs",
+    },
+    CommonDir {
+        is_dir: false,
+        is_common: false,
+        path: "logs/HEAD",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: false,
+        path: "logs/refs/bisect",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: false,
+        path: "logs/refs/rewritten",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: false,
+        path: "logs/refs/worktree",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: true,
+        path: "lost-found",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: true,
+        path: "objects",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: true,
+        path: "refs",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: false,
+        path: "refs/bisect",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: false,
+        path: "refs/rewritten",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: false,
+        path: "refs/worktree",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: true,
+        path: "remotes",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: true,
+        path: "worktrees",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: true,
+        path: "rr-cache",
+    },
+    CommonDir {
+        is_dir: true,
+        is_common: true,
+        path: "svn",
+    },
+    CommonDir {
+        is_dir: false,
+        is_common: true,
+        path: "config",
+    },
+    CommonDir {
+        is_dir: false,
+        is_common: true,
+        path: "gc.pid",
+    },
+    CommonDir {
+        is_dir: false,
+        is_common: true,
+        path: "packed-refs",
+    },
+    CommonDir {
+        is_dir: false,
+        is_common: true,
+        path: "shallow",
+    },
+];
+
+/// Git's `check_common` (`git/path.c`): decide, for the matched `common_list`
+/// entry and the unmatched remainder of the key, whether the path is common.
+fn check_common(entry: &CommonDir, unmatched: &[u8]) -> Option<bool> {
+    let first = unmatched.first().copied();
+    if entry.is_dir && (first.is_none() || first == Some(b'/')) {
+        return Some(entry.is_common);
+    }
+    if !entry.is_dir && first.is_none() {
+        return Some(entry.is_common);
+    }
+    None
+}
+
+/// Faithful port of Git's compressed-trie `trie_find` specialized to
+/// `common_list` + `check_common`. Returns the longest `/`-or-`\0`-terminated
+/// `common_list` prefix's classification for `key`, or `None` if no prefix
+/// matches (treated as "not common" by callers).
+///
+/// Mirrors the C trie semantics including: partial normalization (consecutive
+/// slashes are skipped) and the fallback to a shorter `/`-terminated prefix when
+/// a longer node yields no verdict.
+fn trie_find_common(key: &[u8]) -> Option<bool> {
+    // The trie distinguishes nodes by their full path; longest match wins, but
+    // when the deepest matching node declines (`check_common` -> None) and we are
+    // at a `/` boundary, control falls back to the next-shorter prefix that has a
+    // value. We emulate this by scanning candidate prefixes from longest to
+    // shortest. A candidate is a `common_list` path P that is a prefix of the
+    // normalized key, terminated in the key by `\0` or `/`.
+    let norm = normalize_double_slashes(key);
+    // Collect matching entries, longest path first.
+    let mut matches: Vec<&CommonDir> = COMMON_LIST
+        .iter()
+        .filter(|e| key_has_prefix_node(&norm, e.path.as_bytes()))
+        .collect();
+    matches.sort_by(|a, b| b.path.len().cmp(&a.path.len()));
+    for entry in matches {
+        let plen = entry.path.len();
+        let unmatched = &norm[plen..];
+        if let Some(verdict) = check_common(entry, unmatched) {
+            return Some(verdict);
+        }
+        // No verdict at this node. The C trie only falls back to a shorter
+        // prefix; continue to the next (shorter) candidate.
+    }
+    None
+}
+
+/// Collapse runs of consecutive `/` to a single `/` (Git's partial path
+/// normalization inside `trie_find`). A trailing slash is preserved as a single
+/// slash so directory-prefix matching still sees the boundary.
+fn normalize_double_slashes(key: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(key.len());
+    let mut prev_slash = false;
+    for &b in key {
+        if b == b'/' {
+            if !prev_slash {
+                out.push(b);
+            }
+            prev_slash = true;
+        } else {
+            out.push(b);
+            prev_slash = false;
+        }
+    }
+    out
+}
+
+/// True when `node` is a prefix of `key` terminated by end-of-string or `/`.
+fn key_has_prefix_node(key: &[u8], node: &[u8]) -> bool {
+    if key.len() < node.len() || &key[..node.len()] != node {
+        return false;
+    }
+    matches!(key.get(node.len()), None | Some(b'/'))
+}
+
+/// True when the relative git-dir path `rel` belongs to the common (shared)
+/// directory, mirroring Git's `update_common_dir` decision (`git/path.c`).
+///
+/// `rel` is the component after the git dir (e.g. `logs/refs`, `config`,
+/// `HEAD`). Any trailing `.lock` suffix is ignored for the decision, exactly as
+/// `update_common_dir` strips `LOCK_SUFFIX` before consulting the trie.
+#[must_use]
+pub fn is_common_git_path(rel: &str) -> bool {
+    let stripped = rel.strip_suffix(".lock").unwrap_or(rel);
+    matches!(trie_find_common(stripped.as_bytes()), Some(true))
+}
+
 /// Like Git's `strbuf_realpath` / `test-tool path-utils real_path`: resolve symlinks by
 /// walking path components (so symlink targets are interpreted at each step), then if the
 /// leaf is missing, resolve the longest existing prefix and append the remainder.
@@ -547,6 +768,47 @@ mod git_path_component_tests {
         );
         assert_eq!(git_path_relative_component("/info//grafts"), "info//grafts");
         assert_eq!(git_path_relative_component("HEAD"), "HEAD");
+    }
+
+    #[test]
+    fn is_common_git_path_matches_git_common_list() {
+        // Common (resolved against the common dir) — t0060 cases.
+        for p in [
+            "logs/refs",
+            "logs/refs/",
+            "logs/refs/bisec/foo",
+            "logs/refs/bisec",
+            "logs/refs/bisectfoo",
+            "objects",
+            "objects/bar",
+            "info/exclude",
+            "info/grafts",
+            "remotes/bar",
+            "branches/bar",
+            "logs/refs/heads/main",
+            "refs/heads/main",
+            "hooks/me",
+            "config",
+            "packed-refs",
+            "shallow",
+            "common",
+            "common/file",
+        ] {
+            assert!(is_common_git_path(p), "{p} should be common");
+        }
+        // Per-worktree (resolved against the git dir) — t0060 cases.
+        for p in [
+            "index",
+            "index.lock",
+            "HEAD",
+            "logs/HEAD",
+            "logs/HEAD.lock",
+            "logs/refs/bisect/foo",
+            "info/sparse-checkout",
+            "refs/bisect/foo",
+        ] {
+            assert!(!is_common_git_path(p), "{p} should be worktree-local");
+        }
     }
 
     #[test]

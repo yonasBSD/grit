@@ -161,6 +161,61 @@ pub fn all_reflog_oids(git_dir: &Path) -> Result<HashSet<ObjectId>> {
     Ok(out)
 }
 
+/// Like [`all_reflog_oids`], but returns the OIDs in Git's `add_reflogs_to_pending`
+/// insertion order so an equal-date priority-queue walk breaks ties the same way Git does.
+///
+/// Git iterates every reflog in sorted ref-name order (HEAD first, then `refs/...`), reads each
+/// reflog file oldest-first, and inserts `old_oid` then `new_oid` per entry. The first occurrence
+/// of each OID wins (later duplicates are dropped). `--reflog` on `git log`/`git rev-list` relies
+/// on this order so that commits sharing a committer timestamp are emitted in a stable,
+/// Git-compatible sequence.
+pub fn all_reflog_oids_ordered(git_dir: &Path) -> Result<Vec<ObjectId>> {
+    if crate::reftable::is_reftable_repo(git_dir) {
+        // Reftable repos: fall back to the ref-name-ordered reflog walk for a deterministic order.
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        let z = zero_oid();
+        let mut names = list_reflog_refs(git_dir).unwrap_or_default();
+        names.sort();
+        for refname in names {
+            for entry in read_reflog(git_dir, &refname).unwrap_or_default() {
+                for oid in [entry.old_oid, entry.new_oid] {
+                    if oid != z && seen.insert(oid) {
+                        out.push(oid);
+                    }
+                }
+            }
+        }
+        return Ok(out);
+    }
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let logs = git_dir.join("logs");
+    if !logs.is_dir() {
+        return Ok(out);
+    }
+    let z = zero_oid();
+    let mut names = list_reflog_refs(git_dir).unwrap_or_default();
+    names.sort();
+    for refname in names {
+        let path = reflog_path(git_dir, &refname);
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in content.lines() {
+            let Some(e) = parse_reflog_line(line) else {
+                continue;
+            };
+            for oid in [e.old_oid, e.new_oid] {
+                if oid != z && seen.insert(oid) {
+                    out.push(oid);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn walk_reflog_files(dir: &Path, out: &mut HashSet<ObjectId>, zero: &ObjectId) -> Result<()> {
     for entry in fs::read_dir(dir).map_err(Error::Io)? {
         let entry = entry.map_err(Error::Io)?;

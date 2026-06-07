@@ -1098,65 +1098,34 @@ pub fn run(args: Args) -> Result<()> {
                     let path_arg_out = path_arg; // original for output
                     let path_arg = &path_arg_for_match; // normalized for matching
 
-                    // Check GIT_COMMON_DIR: certain paths are relative to common dir
-                    // Worktree-local paths (NOT common):
-                    let is_worktree_local = {
-                        let p = path_arg.as_str();
-                        p == "HEAD"
-                            || p == "index"
-                            || p == "config.worktree"
-                            || p == "MERGE_HEAD"
-                            || p == "CHERRY_PICK_HEAD"
-                            || p == "REVERT_HEAD"
-                            || p == "BISECT_LOG"
-                            || p == "BISECT_TERMS"
-                            || p == "BISECT_EXPECTED_REV"
-                            || p == "AUTO_MERGE"
-                            || p == "SQUASH_MSG"
-                            || p == "MERGE_MSG"
-                            || p.starts_with("rebase-")
-                            || p.starts_with("sequencer")
-                            || p == "logs/HEAD"
-                            || p.starts_with("logs/HEAD.")
-                            || p.starts_with("logs/FETCH_HEAD")
-                            || p == "refs/bisect"
-                            || p.starts_with("refs/bisect/")
-                            || p == "logs/refs/bisect"
-                            || p.starts_with("logs/refs/bisect/")
-                            || p == "info/sparse-checkout"
-                    };
+                    // GIT_COMMON_DIR: paths classified as "common" by Git's
+                    // `update_common_dir`/`common_list` (port in
+                    // `grit_lib::git_path::is_common_git_path`) are resolved
+                    // against the common dir; everything else stays under the
+                    // per-worktree git dir. Git uses the env var spelling
+                    // verbatim (see setup.c `get_common_dir`) and replaces the
+                    // git-dir prefix, so a relative `GIT_COMMON_DIR=bar` yields a
+                    // relative `bar/<component>` result (printed as-is by
+                    // relative-if-shared since it shares no root with cwd).
                     if let Ok(common_dir) = std::env::var("GIT_COMMON_DIR") {
-                        if !is_worktree_local {
-                            let common_prefixes = [
-                                "objects",
-                                "refs",
-                                "packed-refs",
-                                "info",
-                                "config",
-                                "ORIG_HEAD",
-                                "FETCH_HEAD",
-                                "logs",
-                                "shallow",
-                                "remotes",
-                                "branches",
-                                "hooks",
-                                "common",
-                            ];
-                            let is_common = common_prefixes
-                                .iter()
-                                .any(|p| path_arg == p || path_arg.starts_with(&format!("{}/", p)));
-                            if is_common {
-                                let common_path = std::path::PathBuf::from(&common_dir);
-                                let common_path = if common_path.is_absolute() {
-                                    common_path
-                                } else {
-                                    current.git_dir.join(common_path)
-                                };
-                                let common_display =
-                                    common_path.canonicalize().unwrap_or(common_path);
-                                println!("{}/{}", common_display.display(), path_arg_out);
-                                continue;
-                            }
+                        // env-var overrides (grafts/index/objects) still win over
+                        // the common-dir replacement, matching `adjust_git_path`.
+                        let has_env_override = (path_arg == "info/grafts"
+                            && std::env::var("GIT_GRAFT_FILE").is_ok())
+                            || (path_arg == "index" && std::env::var("GIT_INDEX_FILE").is_ok())
+                            || ((path_arg == "objects" || path_arg.starts_with("objects/"))
+                                && std::env::var("GIT_OBJECT_DIRECTORY").is_ok());
+                        if !has_env_override
+                            && grit_lib::git_path::is_common_git_path(path_arg.as_str())
+                        {
+                            // Append the original component verbatim (preserving
+                            // internal `//`), mirroring `repo_git_pathv` +
+                            // `replace_dir`.
+                            let component =
+                                grit_lib::git_path::git_path_relative_component(path_arg_out);
+                            let sep = if common_dir.ends_with('/') { "" } else { "/" };
+                            println!("{common_dir}{sep}{component}");
+                            continue;
                         }
                     }
                     // Check env var overrides
@@ -1232,6 +1201,11 @@ pub fn run(args: Args) -> Result<()> {
                             current.git_dir.join(original_component)
                         }
                     };
+                    // For a real linked worktree (git_dir under `.../worktrees/<name>`),
+                    // worktree-local paths (those NOT classified as common) resolve to
+                    // the admin dir and print as a canonical absolute path.
+                    let is_worktree_local =
+                        !grit_lib::git_path::is_common_git_path(path_arg.as_str());
                     if is_worktree_local
                         && current
                             .git_dir

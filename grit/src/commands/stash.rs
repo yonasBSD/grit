@@ -87,6 +87,23 @@ pub struct Args {
     #[arg(short = 'p', long = "patch", global = true)]
     pub patch: bool,
 
+    /// Lines of context for `--patch` (validated to require `-p`).
+    #[arg(
+        long = "unified",
+        short = 'U',
+        allow_hyphen_values = true,
+        global = true
+    )]
+    pub unified: Option<i32>,
+
+    /// Context lines between adjacent `--patch` hunks (validated to require `-p`).
+    #[arg(long = "inter-hunk-context", allow_hyphen_values = true, global = true)]
+    pub inter_hunk_context: Option<i32>,
+
+    /// Disable auto-advance in interactive patch mode (validated to require `-p`).
+    #[arg(long = "no-auto-advance", global = true)]
+    pub no_auto_advance: bool,
+
     /// Quiet mode — suppress output messages.
     #[arg(short = 'q', long = "quiet", global = true)]
     pub quiet: bool,
@@ -250,6 +267,27 @@ pub enum StashCommand {
 
 /// Run `grit stash`.
 pub fn run(args: Args) -> Result<()> {
+    // The `-U`/`--inter-hunk-context`/`--no-auto-advance` options require `-p`; the patch flag may
+    // be the global one or the subcommand's.
+    let effective_patch = args.patch
+        || matches!(
+            args.command,
+            Some(StashCommand::Push { patch: true, .. })
+                | Some(StashCommand::Save { patch: true, .. })
+        );
+    crate::commands::add::validate_patch_context_options(
+        args.unified,
+        args.inter_hunk_context,
+        effective_patch,
+    )?;
+    if args.no_auto_advance && !effective_patch {
+        bail!(
+            "the option '{}' requires '{}'",
+            "--no-auto-advance",
+            "--interactive/--patch"
+        );
+    }
+
     match args.command {
         None => {
             assume_push_or_error(&args)?;
@@ -3707,6 +3745,13 @@ fn apply_stash_impl(
                             new_index
                                 .entries
                                 .retain(|e| e.path != path_bytes || e.stage() != 0);
+                            // Adding non-zero stages drops this path from any valid stage-0
+                            // cache-tree; invalidate it (Git's add_index_entry ->
+                            // cache_tree_invalidate_path) so a stale TREE extension is not written
+                            // alongside the conflicted index (otherwise GIT_TEST_CHECK_CACHE_TREE
+                            // rejects it with "corrupted cache-tree has entries not present in
+                            // index"; t7600 'merge with conflicted --autostash changes').
+                            new_index.invalidate_cache_tree_for_path(path_bytes);
                             // Add stage entries
                             if let Some(base_entry) = base_map.get(path) {
                                 add_stage_entry(
@@ -3895,6 +3940,11 @@ fn apply_stash_impl(
 
     if has_conflicts {
         new_index.sort();
+        // A conflicted index (unmerged stages) cannot have a valid stage-0 cache-tree; drop the
+        // TREE extension so write_index does not persist a stale one (which would fail
+        // GIT_TEST_CHECK_CACHE_TREE verification with "corrupted cache-tree has entries not
+        // present in index"). Mirrors Git, which only keeps a cache-tree for a fully merged index.
+        new_index.clear_cache_tree();
     }
     // Refresh cached stat for entries restored from the stash trees whose worktree content matches
     // the recorded OID, so a following `git diff-files` reflects only genuine differences (t3903

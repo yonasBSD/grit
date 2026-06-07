@@ -1089,15 +1089,29 @@ fn run_geometric(
                 })
                 .unwrap_or(false);
             if has_local_idx {
-                let pref_idx = preferred_pack_index(&pack_dir, pref_stem.as_deref())?;
                 let bitmap_placeholders = write_bitmaps > 0 && !args.no_write_bitmap_index;
                 let midx_path = pack_dir.join("multi-pack-index");
                 let needs_bitmap = bitmap_placeholders && !pack_dir_has_midx_bitmap(&pack_dir);
                 if !midx_path.is_file() || needs_bitmap {
+                    // No pack was written (nothing new to pack), so `split` and the
+                    // promisor split are both 0: every surviving pack is above the
+                    // split line. Build the explicit include list anyway so we never
+                    // inherit a stale MIDX referencing already-deleted packs.
+                    let include = geometric_midx_included_idx_names(
+                        &pack_dir,
+                        &normal,
+                        split,
+                        &promisor_list,
+                        prom_split,
+                        &keep_packs,
+                        &normal_written,
+                        &promisor_written,
+                    );
                     write_multi_pack_index_with_options(
                         &pack_dir,
                         &WriteMultiPackIndexOptions {
-                            preferred_pack_idx: pref_idx,
+                            preferred_pack_name: pref_stem.as_deref().map(|s| format!("{s}.idx")),
+                            pack_names_subset_ordered: Some(include),
                             write_bitmap_placeholders: bitmap_placeholders,
                             ..Default::default()
                         },
@@ -1113,7 +1127,6 @@ fn run_geometric(
     }
 
     if args.write_midx {
-        let pref_idx = preferred_pack_index(&pack_dir, pref_stem.as_deref())?;
         let bitmap = write_bitmaps > 0
             && !args.no_write_bitmap_index
             && !(args.local
@@ -1123,10 +1136,27 @@ fn run_geometric(
         let midx_path = pack_dir.join("multi-pack-index");
         let needs_bitmap = bitmap && !pack_dir_has_midx_bitmap(&pack_dir);
         if wrote_pack || !midx_path.is_file() || needs_bitmap {
+            // Mirror git/repack-midx.c `midx_included_packs`: the geometric MIDX is
+            // written from an explicit pack list (Git `multi-pack-index write
+            // --stdin-packs`) covering kept packs, newly written packs, surviving
+            // above-split packs, and any cruft packs. It does NOT inherit the
+            // existing MIDX's pack list, so packs about to be removed as redundant
+            // (and packs a prior run already deleted) are naturally excluded.
+            let include = geometric_midx_included_idx_names(
+                &pack_dir,
+                &normal,
+                split,
+                &promisor_list,
+                prom_split,
+                &keep_packs,
+                &normal_written,
+                &promisor_written,
+            );
             write_multi_pack_index_with_options(
                 &pack_dir,
                 &WriteMultiPackIndexOptions {
-                    preferred_pack_idx: pref_idx,
+                    preferred_pack_name: pref_stem.as_deref().map(|s| format!("{s}.idx")),
+                    pack_names_subset_ordered: Some(include),
                     write_bitmap_placeholders: bitmap,
                     ..Default::default()
                 },
@@ -1491,6 +1521,106 @@ fn run_pack_objects_stdin(
         .map(str::to_owned)
         .collect();
     Ok(hashes)
+}
+
+/// Compute the explicit `.idx` basenames the geometric MIDX should cover, mirroring
+/// git/repack-midx.c `midx_included_packs` (its `--stdin-packs` argument).
+///
+/// Git's MIDX covers every surviving local pack: kept packs, newly written packs, and all
+/// existing packs above the geometric split line. Grit's geometry only ranks `pack-*` packs,
+/// so any other local pack (e.g. the `loose-*` pack the loose-objects task writes) is never
+/// below the split and always survives — it is added here by scanning the directory and
+/// excluding only the stems that this run rolled up (the below-split packs being deleted).
+/// Cruft (`*.mtimes`) packs are kept too (`midx_must_contain_cruft`). Building the list
+/// explicitly means the MIDX never inherits a stale entry for a pack a prior run deleted.
+///
+/// # Parameters
+/// - `pack_dir`: the `objects/pack` directory, scanned for all surviving `.idx` files.
+/// - `normal` / `promisor`: pre-repack pack lists sorted ascending by object count.
+/// - `split` / `prom_split`: number of low packs that were rolled into the new pack(s).
+/// - `keep_pack_names`: `--keep-pack` basenames to always retain.
+/// - `normal_new_hashes` / `promisor_new_hashes`: hashes of packs written this run.
+///
+/// # Returns
+/// The `*.idx` basenames to pass as the MIDX `--stdin-packs` subset, in git's order. Names
+/// whose pack no longer exists are dropped downstream by the writer.
+#[allow(clippy::too_many_arguments)]
+fn geometric_midx_included_idx_names(
+    pack_dir: &Path,
+    normal: &[GeometricPack],
+    split: usize,
+    promisor: &[GeometricPack],
+    prom_split: usize,
+    keep_pack_names: &[String],
+    normal_new_hashes: &[String],
+    promisor_new_hashes: &[String],
+) -> Vec<String> {
+    let mut include: Vec<String> = Vec::new();
+    let mut push = |name: String, into: &mut Vec<String>| {
+        if !into.contains(&name) {
+            into.push(name);
+        }
+    };
+
+    // Stems rolled up by this run (below the split line). These packs are removed as
+    // redundant, so they must NOT appear in the new MIDX.
+    let mut removed: HashSet<String> = HashSet::new();
+    for p in normal.iter().take(split) {
+        if p.is_local
+            && !pack_dir.join(format!("{}.keep", p.stem)).is_file()
+            && !keep_pack_names.iter().any(|k| basename_matches(k, &p.stem))
+        {
+            removed.insert(p.stem.clone());
+        }
+    }
+    for p in promisor.iter().take(prom_split) {
+        if !pack_dir.join(format!("{}.keep", p.stem)).is_file()
+            && !keep_pack_names.iter().any(|k| basename_matches(k, &p.stem))
+        {
+            removed.insert(p.stem.clone());
+        }
+    }
+
+    // Kept packs first, then the newly written packs, matching git's ordering.
+    for p in normal.iter().chain(promisor.iter()) {
+        if !p.is_local {
+            continue;
+        }
+        let kept = pack_dir.join(format!("{}.keep", p.stem)).is_file()
+            || keep_pack_names.iter().any(|k| basename_matches(k, &p.stem));
+        if kept {
+            push(format!("{}.idx", p.stem), &mut include);
+        }
+    }
+    for h in normal_new_hashes.iter().chain(promisor_new_hashes.iter()) {
+        push(format!("pack-{h}.idx"), &mut include);
+    }
+
+    // Every other surviving local pack on disk: above-split `pack-*` packs plus any
+    // non-`pack-*` local pack (e.g. `loose-*`) and cruft packs that grit's geometry
+    // does not rank. Skip the below-split packs being deleted.
+    if let Ok(rd) = fs::read_dir(pack_dir) {
+        let mut survivors: Vec<String> = rd
+            .flatten()
+            .filter_map(|ent| {
+                let name = ent.file_name().to_string_lossy().to_string();
+                let stem = name.strip_suffix(".idx")?.to_string();
+                if removed.contains(&stem) {
+                    return None;
+                }
+                if !pack_dir.join(format!("{stem}.pack")).is_file() {
+                    return None;
+                }
+                Some(name)
+            })
+            .collect();
+        survivors.sort();
+        for name in survivors {
+            push(name, &mut include);
+        }
+    }
+
+    include
 }
 
 fn remove_geometry_redundant(

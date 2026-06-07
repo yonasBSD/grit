@@ -2832,7 +2832,12 @@ Aborting"
 
     // Update working tree
     let sparse_on = sparse_checkout_enabled(&repo.git_dir);
-    if merge_result.has_conflicts && exit_on_merge_conflict && !trial_for_multi_strategy {
+    // Refuse before mutating the work tree if applying the merge would remove the process cwd
+    // (`ERROR_CWD_IN_THE_WAY`). This must run for clean merges too — a conflict-free merge that
+    // replaces a tracked directory containing the cwd with a file (e.g. `dirORfile/` -> `dirORfile`)
+    // would otherwise delete files under the cwd before discovering the cwd cannot be removed,
+    // leaving the work tree dirty (`t2501-cwd-empty` "merge fails if cwd needs to be removed").
+    if exit_on_merge_conflict && !trial_for_multi_strategy {
         if let Some(wt) = repo.work_tree.as_deref() {
             if let Err(e) = preflight_merge_worktree_for_cwd(
                 repo,
@@ -3730,7 +3735,11 @@ fn record_submodule_merge_conflict(
     }
     submodule_merge_advice.push((path_str.to_owned(), advice_abbrev));
     *has_conflicts = true;
-    stage_entry(index, be, 1);
+    // A null base (no common merge base for the submodule path) is not recorded at
+    // stage 1 — git leaves only the stage-2/stage-3 unmerged entries in that case.
+    if be.oid != zero_oid() {
+        stage_entry(index, be, 1);
+    }
     stage_entry(index, oe, 2);
     stage_entry(index, te, 3);
     conflict_descriptions.push(ConflictDescription {
@@ -4062,44 +4071,47 @@ fn maybe_prefetch_partial_clone_merge_blobs(
     let mut batches: Vec<Vec<ObjectId>> = Vec::new();
     let mut already: std::collections::HashSet<ObjectId> = std::collections::HashSet::new();
 
+    // For each side (ours, then theirs), rename detection runs in two phases that
+    // each issue at most one lazy-fetch batch: a basename-matching phase, then a
+    // general (full-matrix) phase over remaining relevant sources x all unpaired
+    // destinations. A phase only produces a batch when it actually has missing
+    // blobs to hydrate.
+    let mut push_batch =
+        |oids: Vec<ObjectId>,
+         batches: &mut Vec<Vec<ObjectId>>,
+         already: &mut std::collections::HashSet<ObjectId>| {
+            let mut batch: Vec<ObjectId> = Vec::new();
+            let mut seen: BTreeSet<ObjectId> = BTreeSet::new();
+            for oid in oids {
+                if already.contains(&oid) || seen.contains(&oid) || !is_missing(&oid) {
+                    continue;
+                }
+                seen.insert(oid);
+                batch.push(oid);
+            }
+            if !batch.is_empty() {
+                for o in &batch {
+                    already.insert(*o);
+                }
+                batches.push(batch);
+            }
+        };
+
     for (side, other) in [(ours, theirs), (theirs, ours)] {
-        let mut batch: Vec<ObjectId> = Vec::new();
-        let mut seen: BTreeSet<ObjectId> = BTreeSet::new();
-        for oid in relevant_rename_blob_oids(base, side, other) {
-            if already.contains(&oid) || seen.contains(&oid) || !is_missing(&oid) {
-                continue;
-            }
-            seen.insert(oid);
-            batch.push(oid);
-        }
-        if !batch.is_empty() {
-            for o in &batch {
-                already.insert(*o);
-            }
-            batches.push(batch);
-        }
+        let RenameDetectionBlobs { basename, general } =
+            relevant_rename_blob_oids(base, side, other);
+        push_batch(basename, &mut batches, &mut already);
+        push_batch(general, &mut batches, &mut already);
     }
 
     // Phase 3: content merge. A path whose blob differs from base on BOTH ours and
     // theirs needs a 3-way content merge; the side blobs not already fetched are
     // pulled here. Base blobs are already local from rename detection.
-    {
-        let mut batch: Vec<ObjectId> = Vec::new();
-        let mut seen: BTreeSet<ObjectId> = BTreeSet::new();
-        for oid in content_merge_blob_oids(base, ours, theirs) {
-            if already.contains(&oid) || seen.contains(&oid) || !is_missing(&oid) {
-                continue;
-            }
-            seen.insert(oid);
-            batch.push(oid);
-        }
-        if !batch.is_empty() {
-            for o in &batch {
-                already.insert(*o);
-            }
-            batches.push(batch);
-        }
-    }
+    push_batch(
+        content_merge_blob_oids(base, ours, theirs),
+        &mut batches,
+        &mut already,
+    );
 
     if batches.is_empty() {
         return Ok(());
@@ -4155,27 +4167,44 @@ fn renamed_dir_prefix(base_path: &[u8], dest_path: &[u8]) -> Option<Vec<u8>> {
     Some(bsplit[..keep].join(&b'/'))
 }
 
+/// The two lazy-fetch batches rename detection issues for one side of the merge:
+/// the basename-matching phase and the general (full-matrix) phase. Each is one
+/// `fetch.negotiationAlgorithm` child when non-empty (mirroring git's
+/// `basename_prefetch` / `inexact_prefetch`).
+struct RenameDetectionBlobs {
+    basename: Vec<ObjectId>,
+    general: Vec<ObjectId>,
+}
+
 /// Blobs read by Git's rename detection for the `base` -> `side` diff, restricted
-/// to *relevant* renames (the merge-ort optimization).
+/// to *relevant* renames (the merge-ort optimization), split into the two phases
+/// git runs (and prefetches for) separately.
 ///
 /// A source that `side` renamed-and-modified only needs its content read when the
 /// rename can affect the merge outcome, i.e. when `other` (the opposite side of
-/// the merge) touches the same path. Concretely a basename-matched rename pair
-/// (deleted base path D, added side path with the same final component, different
-/// content) is relevant when either:
+/// the merge) touches the same path. Concretely a deleted base path D is relevant
+/// when either:
 ///   * D is content-modified by `other` (a 3-way content merge of the renamed
 ///     file is required), or
 ///   * D lives under a directory that `side` renamed away and `other` added a new
 ///     path into (directory-rename detection is needed, which reads the renamed
 ///     files' content).
 ///
-/// Both the source (base) and destination (side) blobs of a relevant pair are
-/// returned. Exact renames are resolved without reading content and are skipped.
+/// Phase 1 (basename): for each relevant source whose basename matches a unique
+/// added destination basename, both the source (base) and destination (side)
+/// blobs are fetched (git's `find_basename_matches` / `basename_prefetch`).
+///
+/// Phase 2 (general): only runs when relevant sources remain unpaired after the
+/// basename phase. It then fetches every still-unpaired destination plus every
+/// remaining relevant source (git's `inexact_prefetch`), because any relevant
+/// source must be compared against all possible unpaired destinations.
+///
+/// Exact renames are resolved without reading content and are excluded from both.
 fn relevant_rename_blob_oids(
     base: &HashMap<Vec<u8>, IndexEntry>,
     side: &HashMap<Vec<u8>, IndexEntry>,
     other: &HashMap<Vec<u8>, IndexEntry>,
-) -> Vec<ObjectId> {
+) -> RenameDetectionBlobs {
     fn basename(p: &[u8]) -> &[u8] {
         match p.iter().rposition(|&b| b == b'/') {
             Some(i) => &p[i + 1..],
@@ -4237,16 +4266,19 @@ fn relevant_rename_blob_oids(
         .cloned()
         .collect();
 
-    // Deleted base paths (renamed-and-modified candidates: not an exact rename).
+    // Rename-source candidates: base paths removed on this side (renamed away or
+    // deleted). A path still present at its original location — even if modified in
+    // place — is NOT a rename source; it is handled by the content merge, not
+    // rename detection. Exact renames are resolved without reading content.
     let mut deleted: Vec<(&Vec<u8>, &IndexEntry)> = Vec::new();
     for (p, e) in base {
         if !is_regularish(e.mode) {
             continue;
         }
-        if side.get(p).is_some_and(|s| s.oid == e.oid) {
-            continue; // unchanged at this path
+        if side.contains_key(p) {
+            continue; // still present at the original path (modified in place if changed)
         }
-        if !side.contains_key(p) && side_oid_paths.contains_key(&e.oid) {
+        if side_oid_paths.contains_key(&e.oid) {
             continue; // exact rename, no content read
         }
         deleted.push((p, e));
@@ -4267,19 +4299,38 @@ fn relevant_rename_blob_oids(
         added.push((p, e));
     }
 
-    // A deleted source is relevant when `other` modifies it in place, or when it
-    // lives under a directory `side` renamed and `other` added a new path into.
-    let is_relevant_source = |dp: &[u8]| -> bool {
-        // Content-modified by `other` at the same base path?
-        if other
+    // Classify a deleted source's relevance, mirroring merge-ort's add_pair():
+    //   * CONTENT relevant: the file's content is not preserved unchanged on the
+    //     other side at the original path (the other side deleted/renamed it, or
+    //     modified it in place). A 3-way content merge of the rename target may be
+    //     needed, so its content must be read and it participates in BOTH the
+    //     basename and (if unpaired) the general rename phase.
+    //   * LOCATION relevant: under a directory `side` renamed away and `other`
+    //     added a new path into (directory-rename detection). It participates only
+    //     in the basename phase; if it has no basename-matched destination it is
+    //     culled (the directory rename is already known from exact renames) and is
+    //     NOT read in the general phase.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Relevance {
+        Content,
+        Location,
+        None,
+    }
+    let relevance_of = |dp: &[u8]| -> Relevance {
+        // Content relevant unless `other` keeps the file unchanged at this path.
+        let kept_unchanged_by_other = other
             .get(dp)
-            .is_some_and(|o| base.get(dp).is_some_and(|b| o.oid != b.oid))
-        {
-            return true;
+            .is_some_and(|o| base.get(dp).is_some_and(|b| o.oid == b.oid));
+        if !kept_unchanged_by_other {
+            return Relevance::Content;
         }
-        relevant_renamed_prefixes
+        if relevant_renamed_prefixes
             .iter()
             .any(|pre| path_under_dir(dp, pre))
+        {
+            return Relevance::Location;
+        }
+        Relevance::None
     };
 
     // Number of shared trailing path components between two paths.
@@ -4293,32 +4344,72 @@ fn relevant_rename_blob_oids(
         n
     }
 
-    let mut out: Vec<ObjectId> = Vec::new();
-    for (dp, de) in &deleted {
-        if !is_relevant_source(dp) {
-            continue;
-        }
+    // Relevant deleted sources (the only sources rename detection reads), tagged
+    // with whether they are content- or location-relevant.
+    let relevant_deleted: Vec<(&Vec<u8>, &IndexEntry, Relevance)> = deleted
+        .iter()
+        .filter_map(|(dp, de)| match relevance_of(dp) {
+            Relevance::None => None,
+            r => Some((*dp, *de, r)),
+        })
+        .collect();
+
+    // Phase 1: basename matching. For each relevant source, pair it with the added
+    // destination sharing its basename and the longest trailing path suffix (its
+    // directory-rename image). This avoids spuriously pairing e.g.
+    // `dir/subdir/Makefile` with `folder/subdir/tweaked/Makefile` when
+    // `folder/subdir/Makefile` exists. A destination may be consumed by only one
+    // source pairing; once paired it is excluded from the general phase.
+    let mut basename_out: Vec<ObjectId> = Vec::new();
+    let mut paired_dest_idx: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut paired_source: Vec<bool> = vec![false; relevant_deleted.len()];
+    for (si, (dp, de, _rel)) in relevant_deleted.iter().enumerate() {
         let dbase = basename(dp);
-        // Pair this source with its single best basename-matched destination: the
-        // added path sharing the longest trailing suffix (its directory-rename
-        // image). This avoids spuriously pairing e.g. `dir/subdir/Makefile` with
-        // `folder/subdir/tweaked/Makefile` when `folder/subdir/Makefile` exists.
-        let mut best: Option<(usize, ObjectId)> = None;
-        for (ap, ae) in &added {
-            if basename(ap) != dbase || de.oid == ae.oid {
+        let mut best: Option<(usize, usize, ObjectId)> = None;
+        for (ai, (ap, ae)) in added.iter().enumerate() {
+            if paired_dest_idx.contains(&ai) || basename(ap) != dbase || de.oid == ae.oid {
                 continue;
             }
             let score = shared_suffix_components(dp, ap);
-            if best.is_none_or(|(s, _)| score > s) {
-                best = Some((score, ae.oid));
+            if best.is_none_or(|(s, _, _)| score > s) {
+                best = Some((score, ai, ae.oid));
             }
         }
-        if let Some((_, add_oid)) = best {
-            out.push(de.oid);
-            out.push(add_oid);
+        if let Some((_, ai, add_oid)) = best {
+            paired_dest_idx.insert(ai);
+            paired_source[si] = true;
+            basename_out.push(de.oid);
+            basename_out.push(add_oid);
         }
     }
-    out
+
+    // Phase 2: general (full-matrix) rename detection. Git only runs this when
+    // CONTENT-relevant sources remain unpaired after the basename phase; it then
+    // reads every still-unpaired destination and every remaining content-relevant
+    // source (`inexact_prefetch`). Location-relevant sources left unpaired are
+    // culled (their directory rename is already known) and never read here. When
+    // no content-relevant source remains unpaired, no general fetch happens.
+    let mut general_out: Vec<ObjectId> = Vec::new();
+    let remaining_sources: Vec<ObjectId> = relevant_deleted
+        .iter()
+        .enumerate()
+        .filter(|(si, (_, _, rel))| !paired_source[*si] && *rel == Relevance::Content)
+        .map(|(_, (_, de, _))| de.oid)
+        .collect();
+    if !remaining_sources.is_empty() {
+        for (ai, (_, ae)) in added.iter().enumerate() {
+            if paired_dest_idx.contains(&ai) {
+                continue;
+            }
+            general_out.push(ae.oid);
+        }
+        general_out.extend(remaining_sources);
+    }
+
+    RenameDetectionBlobs {
+        basename: basename_out,
+        general: general_out,
+    }
 }
 
 /// Blobs read by 3-way content merge: for a base path modified on both ours and
@@ -4376,7 +4467,37 @@ fn content_merge_blob_oids(
                 best = Some((score, e.oid));
             }
         }
-        best.map(|(_, oid)| oid)
+        if let Some((_, oid)) = best {
+            return Some(oid);
+        }
+        // General (non-basename) rename: the file was renamed to a different
+        // basename (e.g. general/leap1 -> general/jump1). We cannot identify the
+        // exact target without content similarity, but for a both-sides-modified
+        // content merge we only need to know a rename target exists on this side so
+        // the in-place modification on the other side gets fetched. Pick any added,
+        // non-exact-rename path in the same parent directory as the base path; its
+        // blob was already fetched during general rename detection, so this never
+        // introduces an extra fetch.
+        fn parent_of(p: &[u8]) -> &[u8] {
+            match p.iter().rposition(|&b| b == b'/') {
+                Some(i) => &p[..i],
+                None => b"",
+            }
+        }
+        let parent = parent_of(base_path);
+        for (p, e) in side {
+            if base.contains_key(p) || e.oid == *base_oid {
+                continue;
+            }
+            // Skip exact renames of some base file (those are not inexact targets).
+            if base.values().any(|b| b.oid == e.oid) {
+                continue;
+            }
+            if parent_of(p) == parent {
+                return Some(e.oid);
+            }
+        }
+        None
     };
 
     let mut out: Vec<ObjectId> = Vec::new();
@@ -4916,18 +5037,10 @@ fn do_octopus_merge(
     }
 
     if !args.quiet {
-        if head_is_ancestor_of_all {
-            if let Some(first) = merge_names.first() {
-                println!("Fast-forwarding to: {first}");
-            }
-            for name in merge_names.iter().skip(1) {
-                println!("Trying simple merge with {name}");
-            }
-        } else {
-            for name in &merge_names {
-                println!("Trying simple merge with {name}");
-            }
-        }
+        // The per-head "Fast-forwarding to:" / "Trying simple merge with" lines are
+        // already emitted by the real merge loop above (matching git-merge-octopus,
+        // which prints them as it processes each head). Only the final summary line
+        // belongs here, so it appears exactly once.
         println!("Merge made by the '{strategy_name}' strategy.");
         let show_stat = args.stat || args.summary || !args.no_stat;
         if show_stat {
@@ -7043,6 +7156,7 @@ fn merge_trees(
     let mut dir_renames_applied_to_ours: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
     let mut dir_renames_applied_to_theirs: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
     let mut theirs_renames_pre_dir_for_labels: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+    let mut ours_renames_pre_dir_for_labels: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
     let mut ours_rename_to_self_content_conflicts: BTreeSet<Vec<u8>> = BTreeSet::new();
     let mut theirs_rename_to_self_content_conflicts: BTreeSet<Vec<u8>> = BTreeSet::new();
 
@@ -7165,6 +7279,7 @@ fn merge_trees(
         let theirs_renames_pre_dir = theirs_renames.clone();
         let ours_renames_pre_dir = ours_renames.clone();
         theirs_renames_pre_dir_for_labels = theirs_renames_pre_dir.clone();
+        ours_renames_pre_dir_for_labels = ours_renames_pre_dir.clone();
         let ours_dir_rename_result = apply_directory_renames_to_side(
             base,
             &mut ours_entries,
@@ -7629,15 +7744,45 @@ fn merge_trees(
             empty_base.oid = empty_oid;
             empty_base.mode = MODE_REGULAR;
             empty_base.flags &= 0x0FFF;
+            // rename/rename(2to1): two distinct sources land at the same destination, so the
+            // collision content merge is a two-way merge. Git's merge_3way derives the conflict
+            // marker labels from the three pathnames the colliding entry carries: when all three
+            // are identical it uses the bare branch names (`HEAD`/`B^0`), otherwise it suffixes
+            // each with `:path`. The per-side path is that side's rename target *before* any
+            // directory rename was applied: a plain rename leaves it equal to the destination,
+            // while a directory rename keeps the original explicit target (testcase 7b: B renamed
+            // x/d -> z/d and a directory rename moved it to y/d, so the marker reads `B^0:z/d`,
+            // whereas t6416's nested-conflicts case renames both sides directly to `m` and the
+            // labels stay bare `HEAD`/`R2^0`).
+            let ours_marker_path = ours_renames_pre_dir_for_labels
+                .get(&ours_src)
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+                .unwrap_or_else(|| dest_str.clone());
+            let theirs_marker_path = theirs_renames_pre_dir_for_labels
+                .get(&theirs_src)
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+                .unwrap_or_else(|| dest_str.clone());
+            let pathnames_all_equal =
+                ours_marker_path == dest_str && theirs_marker_path == dest_str;
+            let final_ours_label = if pathnames_all_equal {
+                ours_label.to_string()
+            } else {
+                format!("{ours_label}:{ours_marker_path}")
+            };
+            let final_theirs_label = if pathnames_all_equal {
+                their_name.to_string()
+            } else {
+                format!("{their_name}:{theirs_marker_path}")
+            };
             let final_content = match try_content_merge(
                 repo,
                 &dest_str,
                 &empty_base,
                 &s2,
                 &s3,
-                ours_label,
+                &final_ours_label,
                 rr_base_label,
-                their_name,
+                &final_theirs_label,
                 MergeFavor::None,
                 diff_algorithm,
                 merge_renormalize,
@@ -8189,17 +8334,52 @@ fn merge_trees(
                                 if let Some(theirs_src) = theirs_src_to_dest {
                                     let theirs_src_str =
                                         String::from_utf8_lossy(&theirs_src).into_owned();
-                                    conflict_descriptions.push(ConflictDescription {
-                                        kind: "rename/rename",
-                                        body: format!(
-                                            "{base_path_str} renamed to {new_path_str} in {ours_label} and {theirs_src_str} renamed to {new_path_str} in {their_name}."
-                                        ),
-                                        subject_path: new_path_str.clone(),
-                                        remerge_anchor_path: Some(base_path_str),
-                                        rename_rr_ours_dest: None,
-                                        rename_rr_theirs_dest: None,
-                                        auto_merge_hint_path: None,
-                                    });
+                                    // Both sides renamed distinct sources to the same path
+                                    // (rename/rename(2to1)). When the other side ALSO deleted
+                                    // each rename's source (so neither source survives on the
+                                    // opposite branch), merge-ort treats this as
+                                    // rename/rename(2to1)/delete/delete: it reports a
+                                    // `rename/delete` for EACH renamed source and leaves the two
+                                    // renamed blobs as add/add stages 2/3 at the shared
+                                    // destination (no stage 1), described as add/add. See
+                                    // git/merge-ort.c handle_rename_via_dir's
+                                    // `collision && source_deleted` branch (t4301 rrdd #17).
+                                    let theirs_src_deleted_on_ours =
+                                        ours_entries.get(&theirs_src).is_none();
+                                    if theirs_src_deleted_on_ours {
+                                        conflict_descriptions.push(ConflictDescription {
+                                            kind: "rename/delete",
+                                            body: format!(
+                                                "{theirs_src_str} renamed to {new_path_str} in {their_name}, but deleted in {ours_label}."
+                                            ),
+                                            subject_path: new_path_str.clone(),
+                                            remerge_anchor_path: Some(theirs_src_str),
+                                            rename_rr_ours_dest: None,
+                                            rename_rr_theirs_dest: None,
+                                            auto_merge_hint_path: None,
+                                        });
+                                        conflict_descriptions.push(ConflictDescription {
+                                            kind: "add/add",
+                                            body: format!("Merge conflict in {new_path_str}"),
+                                            subject_path: new_path_str.clone(),
+                                            remerge_anchor_path: Some(base_path_str),
+                                            rename_rr_ours_dest: None,
+                                            rename_rr_theirs_dest: None,
+                                            auto_merge_hint_path: None,
+                                        });
+                                    } else {
+                                        conflict_descriptions.push(ConflictDescription {
+                                            kind: "rename/rename",
+                                            body: format!(
+                                                "{base_path_str} renamed to {new_path_str} in {ours_label} and {theirs_src_str} renamed to {new_path_str} in {their_name}."
+                                            ),
+                                            subject_path: new_path_str.clone(),
+                                            remerge_anchor_path: Some(base_path_str),
+                                            rename_rr_ours_dest: None,
+                                            rename_rr_theirs_dest: None,
+                                            auto_merge_hint_path: None,
+                                        });
+                                    }
                                 } else {
                                     conflict_descriptions.push(ConflictDescription {
                                         kind: "rename/add",
@@ -9262,6 +9442,7 @@ fn merge_trees(
                         3,
                         2,
                         merge_ours_oid_hex,
+                        false,
                         &mut index,
                         &mut has_conflicts,
                         &mut conflict_descriptions,
@@ -9310,7 +9491,13 @@ fn merge_trees(
                     && te.mode != MODE_TREE =>
             {
                 let path_str = String::from_utf8_lossy(path).to_string();
+                let relocate_file = !criss_cross_outer_merge;
                 if oe.mode == MODE_GITLINK {
+                    let suffix = if relocate_file {
+                        their_name
+                    } else {
+                        merge_theirs_oid_hex
+                    };
                     conflict_submodule_vs_non_gitlink(
                         repo,
                         &path_str,
@@ -9319,13 +9506,19 @@ fn merge_trees(
                         te,
                         2,
                         3,
-                        merge_theirs_oid_hex,
+                        suffix,
+                        relocate_file,
                         &mut index,
                         &mut has_conflicts,
                         &mut conflict_descriptions,
                         &mut conflict_files,
                     )?;
                 } else {
+                    let suffix = if relocate_file {
+                        ours_label
+                    } else {
+                        merge_ours_oid_hex
+                    };
                     conflict_submodule_vs_non_gitlink(
                         repo,
                         &path_str,
@@ -9334,7 +9527,8 @@ fn merge_trees(
                         oe,
                         3,
                         2,
-                        merge_ours_oid_hex,
+                        suffix,
+                        relocate_file,
                         &mut index,
                         &mut has_conflicts,
                         &mut conflict_descriptions,
@@ -9372,6 +9566,7 @@ fn merge_trees(
                             2,
                             3,
                             merge_theirs_oid_hex,
+                            false,
                             &mut index,
                             &mut has_conflicts,
                             &mut conflict_descriptions,
@@ -9387,6 +9582,7 @@ fn merge_trees(
                             3,
                             2,
                             merge_ours_oid_hex,
+                            false,
                             &mut index,
                             &mut has_conflicts,
                             &mut conflict_descriptions,
@@ -9485,15 +9681,12 @@ fn merge_trees(
                     // With merge.renormalize, treat pure normalization-only edits
                     // as unchanged so delete/modify can resolve to delete.
                 } else {
-                    match favor {
-                        MergeFavor::Ours => {
-                            // -X ours: keep our decision (delete)
-                        }
-                        MergeFavor::Theirs => {
-                            // -X theirs: keep their version
-                            index.entries.push(te.clone());
-                        }
-                        _ => {
+                    // Modify/delete is never auto-resolved by `-X ours`/`-X theirs`.
+                    // Git's merge-ort (process_entry, filemask 3/5) does not consult
+                    // `recursive_variant` for modify/delete: it always leaves the modified
+                    // version in the tree and reports CONFLICT(modify/delete), exiting 1.
+                    {
+                        {
                             // Theirs modified, ours deleted → conflict
                             let path_str = String::from_utf8_lossy(path).to_string();
                             has_conflicts = true;
@@ -9557,15 +9750,12 @@ fn merge_trees(
                     // With merge.renormalize, treat pure normalization-only edits
                     // as unchanged so modify/delete can resolve to delete.
                 } else {
-                    match favor {
-                        MergeFavor::Ours => {
-                            // -X ours: keep our version
-                            index.entries.push(oe.clone());
-                        }
-                        MergeFavor::Theirs => {
-                            // -X theirs: keep their decision (delete)
-                        }
-                        _ => {
+                    // Modify/delete is never auto-resolved by `-X ours`/`-X theirs`.
+                    // Git's merge-ort (process_entry, filemask 3/5) does not consult
+                    // `recursive_variant` for modify/delete: it always leaves the modified
+                    // version in the tree and reports CONFLICT(modify/delete), exiting 1.
+                    {
+                        {
                             // Ours modified, theirs deleted → conflict
                             let path_str = String::from_utf8_lossy(path).to_string();
                             has_conflicts = true;
@@ -9623,8 +9813,29 @@ fn merge_trees(
             (None, Some(oe), Some(te)) => {
                 let path_str = String::from_utf8_lossy(path).to_string();
                 if oe.mode == MODE_GITLINK && te.mode == MODE_GITLINK {
-                    has_conflicts = true;
                     remove_stage_zero_entry(&mut index, path);
+                    // Submodule add/add with no common merge base (each superproject branch
+                    // introduced the submodule independently). Run the gitlink merge with a
+                    // null base so the "go to submodule" advice referencing the submodule's
+                    // HEAD^1 is emitted, matching git merge-ort's merge_submodule().
+                    let mut null_base = oe.clone();
+                    null_base.oid = zero_oid();
+                    if try_merge_gitlink_entries(
+                        repo,
+                        &path_str,
+                        &null_base,
+                        oe,
+                        te,
+                        favor,
+                        &mut index,
+                        &mut has_conflicts,
+                        &mut conflict_descriptions,
+                        &mut submodule_merge_stdout,
+                        &mut submodule_merge_advice,
+                    )? {
+                        continue;
+                    }
+                    has_conflicts = true;
                     stage_entry(&mut index, oe, 2);
                     stage_entry(&mut index, te, 3);
                     conflict_descriptions.push(ConflictDescription {
@@ -10480,7 +10691,17 @@ fn try_content_merge_ext(
         paths.push(path_str.to_string());
     }
     let output = merge_file::merge(&input)?;
-    let mode = ours.mode; // Use ours mode by default
+    // Merge the file modes the same way git's `merge_3way` (merge-ort.c) does: when both sides
+    // agree on the mode, or our side did not change it from the base, take theirs; otherwise our
+    // side changed the mode while theirs did not, so keep ours. This preserves an executable-bit
+    // change introduced on only one side even when the file content is identical on both sides
+    // (e.g. rebasing a mode-only amend onto an upstream that already has the content change —
+    // t3419 "do not drop patch modechange").
+    let mode = if ours.mode == theirs.mode || ours.mode == base.mode {
+        theirs.mode
+    } else {
+        ours.mode
+    };
 
     if output.conflicts == 0 {
         if !merge_renormalize
@@ -10937,25 +11158,54 @@ fn conflict_submodule_vs_non_gitlink(
     gitlink_entry: &IndexEntry,
     other: &IndexEntry,
     gitlink_stage: u8,
-    _other_stage: u8,
+    other_stage: u8,
     file_conflict_suffix: &str,
+    relocate_file: bool,
     index: &mut Index,
     has_conflicts: &mut bool,
     conflict_descriptions: &mut Vec<ConflictDescription>,
     conflict_files: &mut Vec<(String, Vec<u8>)>,
 ) -> Result<()> {
     *has_conflicts = true;
+    let relocated = format!("{path_str}~{file_conflict_suffix}");
     let mut gl = gitlink_entry.clone();
     gl.path = path.to_vec();
+    if relocate_file {
+        // git merge-ort handles a submodule-vs-file "distinct types" clash for a normal merge by
+        // keeping the gitlink at `path` and *renaming* the non-gitlink side to `path~<label>`,
+        // staging it there. Recording the relocated file in the index (rather than leaving an
+        // untracked working-tree copy) is what lets `git reset --hard` clean it up afterward
+        // (t6437 file/submodule conflict; merge --abort works afterward).
+        let mut ot = other.clone();
+        ot.path = relocated.as_bytes().to_vec();
+        stage_entry(index, &gl, gitlink_stage);
+        stage_entry(index, &ot, other_stage);
+        conflict_descriptions.push(ConflictDescription {
+            kind: "distinct types",
+            body: format!(
+                "{path_str} had different types on each side; renamed one of them so each can be recorded somewhere."
+            ),
+            subject_path: relocated.clone(),
+            remerge_anchor_path: Some(path_str.to_owned()),
+            rename_rr_ours_dest: None,
+            rename_rr_theirs_dest: None,
+            auto_merge_hint_path: None,
+        });
+        if matches!(other.mode, MODE_REGULAR | MODE_EXECUTABLE) {
+            if let Ok(obj) = repo.odb.read(&other.oid) {
+                conflict_files.push((relocated, obj.data));
+            }
+        }
+        return Ok(());
+    }
+    // Virtual-base / criss-cross computation: stage both unmerged entries at the original
+    // `path` so the recursive virtual-base builder still detects the submodule add/add and
+    // omits the path (t6416 submodule vs symlink). The conflicting file is materialized as an
+    // untracked working-tree copy at `path~<suffix>`.
     let mut ot = other.clone();
     ot.path = path.to_vec();
-    if gitlink_stage == 2 {
-        stage_entry(index, &gl, 2);
-        stage_entry(index, &ot, 3);
-    } else {
-        stage_entry(index, &ot, 2);
-        stage_entry(index, &gl, 3);
-    }
+    stage_entry(index, &gl, gitlink_stage);
+    stage_entry(index, &ot, other_stage);
     conflict_descriptions.push(ConflictDescription {
         kind: "submodule",
         body: format!("Merge conflict in {path_str}"),
@@ -10967,8 +11217,7 @@ fn conflict_submodule_vs_non_gitlink(
     });
     if matches!(other.mode, MODE_REGULAR | MODE_EXECUTABLE) {
         if let Ok(obj) = repo.odb.read(&other.oid) {
-            let conflict_path = format!("{path_str}~{file_conflict_suffix}");
-            conflict_files.push((conflict_path, obj.data));
+            conflict_files.push((relocated, obj.data));
         }
     }
     Ok(())
@@ -11096,6 +11345,32 @@ fn apply_directory_file_conflicts(
         } else {
             format!("{path_display}~{branch_desc}")
         };
+
+        // When the file that lands in `path/` got there by a rename whose source the
+        // *other* side deleted (and did not itself rename away), this is a rename/delete
+        // that merge-ort reports in addition to the file/directory relocation. The C
+        // rename machinery emits the rename/delete during rename collection, before the
+        // directory/file pass relocates the blob; reproduce that message here so the bare
+        // `path` (the directory-rename-adjusted destination) carries it (t4301 4-stacked).
+        if let Some(source) = rename_source {
+            let other_deleted_source =
+                other_entries.get(source).is_none() && base.contains_key(source);
+            if other_deleted_source && !opposite_renames.contains_key(source) {
+                let source_str = String::from_utf8_lossy(source).into_owned();
+                let delete_branch = if file_is_ours { their_name } else { ours_label };
+                conflict_descriptions.push(ConflictDescription {
+                    kind: "rename/delete",
+                    body: format!(
+                        "{source_str} renamed to {path_display} in {branch_desc}, but deleted in {delete_branch}."
+                    ),
+                    subject_path: path_display.clone(),
+                    remerge_anchor_path: Some(source_str),
+                    rename_rr_ours_dest: None,
+                    rename_rr_theirs_dest: None,
+                    auto_merge_hint_path: None,
+                });
+            }
+        }
 
         if !clean_directory_side {
             let body = format!(

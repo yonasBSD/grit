@@ -1939,7 +1939,7 @@ fn do_merge_or_rebase_after_fetch(
             r#continue: false,
             abort: false,
             skip: false,
-            exec: None,
+            exec: Vec::new(),
             merge: false,
             apply: false,
             rebase_merges: if rebase_kind == PullRebaseKind::Merges {

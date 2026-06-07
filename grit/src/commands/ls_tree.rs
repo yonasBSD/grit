@@ -606,8 +606,12 @@ fn list_tree(
         let recurse = is_tree && !is_submodule && (args.recursive || pathspec_descends);
 
         if recurse {
-            // Suppress the intermediate tree node unless `-t`/`-d` asks to show trees.
-            if args.show_trees || args.only_trees {
+            // Git `show_tree_common`: when a tree is recursed into, the intermediate node is
+            // emitted only when `LS_SHOW_TREES` is set. That flag comes from `-t` (`show_trees`)
+            // or is auto-set for `-d -r` together (see the `only_trees && recursive` step above).
+            // Plain `-d` with a descending pathspec (e.g. `dir/`) must NOT print `dir` itself —
+            // only entries strictly below it — so don't gate on `only_trees` here.
+            if args.show_trees {
                 let display_name = make_cwd_relative(&full_name, cwd_prefix);
                 print_entry(repo, entry, &display_name, args, out, term, quote_fully)?;
             }

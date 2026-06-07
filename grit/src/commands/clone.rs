@@ -34,7 +34,7 @@ use crate::commands::submodule::{
 use crate::trace_run_command_git_invocation;
 use grit_lib::submodule_gitdir::{
     ensure_submodule_gitdir_config, submodule_gitdir_outer_conflict, submodule_path_config_enabled,
-    validate_submodule_path,
+    validate_submodule_path, write_submodule_gitfile,
 };
 
 fn expand_tilde_path(value: &str) -> String {
@@ -4003,6 +4003,11 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                 &j.modules_dir,
                 &j.sub_dest,
             );
+            // Rewrite the absolute `gitdir:` left by `clone --separate-git-dir` into a relative
+            // gitlink (C Git's `connect_work_tree_and_git_dir`), so a copied/moved superproject
+            // keeps its submodule pointing at the copy's git dir (t7406).
+            write_submodule_gitfile(&j.sub_dest, &j.modules_dir)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             if let Some(strategy) = j.alternate_strategy.as_deref() {
                 crate::commands::submodule::write_submodule_alternate_inheritance_config(
                     &j.modules_dir,
@@ -4050,6 +4055,9 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                                 &j.modules_dir,
                                 &j.sub_dest,
                             );
+                            // Relative gitlink (see single-worker branch / C `connect_work_tree_and_git_dir`).
+                            write_submodule_gitfile(&j.sub_dest, &j.modules_dir)
+                                .map_err(|e| e.to_string())?;
                             if let Some(strategy) = j.alternate_strategy.as_deref() {
                                 crate::commands::submodule::write_submodule_alternate_inheritance_config(
                                     &j.modules_dir,

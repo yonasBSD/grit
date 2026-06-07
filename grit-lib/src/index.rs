@@ -1324,28 +1324,46 @@ impl Index {
     }
 
     /// Mark cache-tree nodes affected by an index path change as invalid.
+    ///
+    /// Mirrors Git's `do_invalidate_path` (`cache-tree.c`): each ancestor node along `path`
+    /// is invalidated (`entry_count = -1`), and when the final path component names an existing
+    /// **subtree** node, that subtree is removed entirely. The removal is essential for the
+    /// directory→file transition (e.g. tracked dir `a/b/` replaced by file `a/b`): without it,
+    /// stale descendant nodes (`a/b/c`, …) keep their positive `entry_count` and later trip
+    /// [`crate::write_tree::verify_cache_tree`] with "corrupted cache-tree has entries not present
+    /// in index".
     pub fn invalidate_cache_tree_for_path(&mut self, path: &[u8]) {
         let Some(root) = self.cache_tree.as_mut() else {
             self.cache_tree_root = None;
             return;
         };
-        root.invalidate();
         self.cache_tree_root = None;
+        Self::do_invalidate_cache_tree_path(root, path);
+    }
 
-        let mut current = root;
-        for component in path.split(|&b| b == b'/') {
-            if component.is_empty() {
-                break;
+    /// Recursive worker for [`Self::invalidate_cache_tree_for_path`], mirroring
+    /// Git's `do_invalidate_path`.
+    fn do_invalidate_cache_tree_path(node: &mut CacheTreeNode, path: &[u8]) {
+        node.invalidate();
+        let slash = path.iter().position(|&b| b == b'/');
+        match slash {
+            // Final component: drop the matching subtree node, if any.
+            None => {
+                if !path.is_empty() {
+                    node.children.retain(|child| child.name != path);
+                }
             }
-            let Some(child) = current
-                .children
-                .iter_mut()
-                .find(|child| child.name == component)
-            else {
-                break;
-            };
-            child.invalidate();
-            current = child;
+            // Interior component: descend into the named subtree and recurse on the rest.
+            Some(idx) => {
+                let (component, rest) = (&path[..idx], &path[idx + 1..]);
+                if let Some(child) = node
+                    .children
+                    .iter_mut()
+                    .find(|child| child.name == component)
+                {
+                    Self::do_invalidate_cache_tree_path(child, rest);
+                }
+            }
         }
     }
 
