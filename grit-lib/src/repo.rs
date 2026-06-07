@@ -538,6 +538,29 @@ impl Repository {
         self.write_index_at_split(path, index, WriteSplitIndexRequest::default())
     }
 
+    /// Whether reading `index` under this repository's config would mark the cache changed solely to
+    /// materialize a split index.
+    ///
+    /// Git's `tweak_split_index` runs after every index read: when `core.splitIndex` is `true` and the
+    /// index is not yet a split index, `add_split_index` sets `SPLIT_INDEX_ORDERED` on `cache_changed`,
+    /// which makes opportunistic writers such as `status` (`repo_update_index_if_able`) rewrite the
+    /// index in split form, creating `.git/sharedindex.<oid>`. This returns `true` exactly when that
+    /// would happen: split index is requested (config `true` or `GIT_TEST_SPLIT_INDEX`) and the
+    /// supplied `index` does not already carry a `link` extension.
+    ///
+    /// Returns `false` when split index is disabled/unset or the index is already split.
+    #[must_use]
+    pub fn split_index_would_force_write(&self, index: &Index) -> bool {
+        if index.split_index_base_oid().is_some() {
+            return false;
+        }
+        let cfg = ConfigSet::load(Some(&self.git_dir), true).unwrap_or_default();
+        matches!(
+            crate::split_index::split_index_config(&cfg),
+            crate::split_index::SplitIndexConfig::Enabled
+        ) || crate::split_index::git_test_split_index_env()
+    }
+
     /// Like [`Repository::write_index_at`], but passes explicit `post-index-change` hook flags.
     ///
     /// Parameters:
@@ -1420,6 +1443,120 @@ fn validate_repository_format(git_dir: &Path) -> Result<()> {
     };
 
     let content = fs::read_to_string(&config_path).map_err(Error::Io)?;
+    let parsed = parse_repository_format(&content, &config_path)?;
+
+    if parsed.repo_version > 1 {
+        return Err(Error::UnsupportedRepositoryFormatVersion(
+            parsed.repo_version,
+        ));
+    }
+
+    if let Some(raw) = parsed.ref_storage.as_deref() {
+        let lower = raw.to_ascii_lowercase();
+        let name = lower
+            .split_once(':')
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(lower.as_str());
+        if !matches!(name, "files" | "reftable") {
+            return Err(Error::Message(format!(
+                "error: invalid value for 'extensions.refstorage': '{raw}'"
+            )));
+        }
+    }
+
+    if let Some(msg) = parsed.format_error_message() {
+        return Err(Error::Message(msg));
+    }
+
+    Ok(())
+}
+
+/// The result of parsing `core.repositoryformatversion` and `extensions.*` from a
+/// repository's `config` file, mirroring git/setup.c `check_repo_format`.
+struct RepositoryFormat {
+    /// Declared `core.repositoryformatversion` (defaults to 0; invalid values ignored).
+    repo_version: u32,
+    /// All extension keys (lowercased) declared under `[extensions]`.
+    extensions: BTreeSet<String>,
+    /// Raw value of `extensions.refstorage`, if present.
+    ref_storage: Option<String>,
+}
+
+impl RepositoryFormat {
+    /// Build git's `verify_repository_format` warning/error message for unsupported
+    /// extension declarations, or `None` if the extensions are all acceptable.
+    ///
+    /// This does not cover the `core.repositoryformatversion > 1` case; callers that
+    /// need the version message handle it separately via
+    /// [`repository_format_warning`].
+    fn format_error_message(&self) -> Option<String> {
+        // Mirror git/setup.c `check_repo_format` / `verify_repository_format`. Extensions
+        // split into:
+        //   * v0-compatible (`handle_extension_v0`): respected even in a v0 repository.
+        //   * v1-only (`handle_extension`): legal only when `core.repositoryformatversion >= 1`.
+        // A v0 repository that declares any v1-only extension is rejected (t0001 #60, #62);
+        // an unknown extension is rejected only in a v1 repository.
+        let mut v1_only_found: Vec<&str> = Vec::new();
+        let mut unknown_found: Vec<&str> = Vec::new();
+        for extension in &self.extensions {
+            match extension.as_str() {
+                // v0-compatible extensions — always allowed.
+                "noop" | "preciousobjects" | "partialclone" | "worktreeconfig" => {}
+                // v1-only extensions — only valid with repository format version >= 1.
+                "noop-v1"
+                | "objectformat"
+                | "compatobjectformat"
+                | "refstorage"
+                | "relativeworktrees"
+                | "submodulepathconfig" => {
+                    if self.repo_version == 0 {
+                        v1_only_found.push(extension);
+                    }
+                }
+                // Unknown extension — rejected only in a v1 repository.
+                _ => {
+                    if self.repo_version >= 1 {
+                        unknown_found.push(extension);
+                    }
+                }
+            }
+        }
+
+        if !unknown_found.is_empty() {
+            let mut msg = if unknown_found.len() == 1 {
+                "unknown repository extension found:".to_owned()
+            } else {
+                "unknown repository extensions found:".to_owned()
+            };
+            for ext in &unknown_found {
+                msg.push_str(&format!("\n\t{ext}"));
+            }
+            return Some(msg);
+        }
+
+        if !v1_only_found.is_empty() {
+            let mut msg = if v1_only_found.len() == 1 {
+                "repo version is 0, but v1-only extension found:".to_owned()
+            } else {
+                "repo version is 0, but v1-only extensions found:".to_owned()
+            };
+            for ext in &v1_only_found {
+                msg.push_str(&format!("\n\t{ext}"));
+            }
+            return Some(msg);
+        }
+
+        None
+    }
+}
+
+/// Parse `core.repositoryformatversion` and `[extensions]` entries out of raw
+/// `config` file contents.
+///
+/// # Errors
+///
+/// Returns [`Error::ConfigError`] if a section header is malformed (no closing `]`).
+fn parse_repository_format(content: &str, config_path: &Path) -> Result<RepositoryFormat> {
     let mut in_core = false;
     let mut in_extensions = false;
     let mut repo_version = 0u32;
@@ -1476,90 +1613,51 @@ fn validate_repository_format(git_dir: &Path) -> Result<()> {
             if key.eq_ignore_ascii_case("refstorage") {
                 ref_storage = value.map(str::to_owned);
             }
-            let key = if let Some((key, _)) = line.split_once('=') {
-                key.trim()
-            } else {
-                line
-            };
             if !key.is_empty() {
                 extensions.insert(key.to_ascii_lowercase());
             }
         }
     }
 
-    if repo_version > 1 {
-        return Err(Error::UnsupportedRepositoryFormatVersion(repo_version));
+    Ok(RepositoryFormat {
+        repo_version,
+        extensions,
+        ref_storage,
+    })
+}
+
+/// Return the warning message git would print for a repository whose `config`
+/// declares an unsupported format, or `None` if the format is acceptable.
+///
+/// This mirrors git/setup.c `check_repository_format_gently` + `verify_repository_format`:
+/// commands that run with `RUN_SETUP_GENTLY` (e.g. `git config`) emit this text as a
+/// `warning:` and then behave as if no repository were present, which makes the command
+/// fail with a non-zero exit. The returned string is the bare message without the
+/// `warning: ` prefix.
+///
+/// `git_dir` is the resolved git directory; its `config` (or the common-dir `config` for
+/// linked worktrees) is parsed. A missing config yields `None` (git treats it as ok).
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if the config file exists but cannot be read, or
+/// [`Error::ConfigError`] if a section header is malformed.
+pub fn repository_format_warning(git_dir: &Path) -> Result<Option<String>> {
+    const GIT_REPO_VERSION_READ: u32 = 1;
+    let Some(config_path) = repository_config_path(git_dir) else {
+        return Ok(None);
+    };
+    let content = fs::read_to_string(&config_path).map_err(Error::Io)?;
+    let parsed = parse_repository_format(&content, &config_path)?;
+
+    if parsed.repo_version > GIT_REPO_VERSION_READ {
+        return Ok(Some(format!(
+            "Expected git repo version <= {GIT_REPO_VERSION_READ}, found {}",
+            parsed.repo_version
+        )));
     }
 
-    if let Some(raw) = ref_storage.as_deref() {
-        let lower = raw.to_ascii_lowercase();
-        let name = lower
-            .split_once(':')
-            .map(|(prefix, _)| prefix)
-            .unwrap_or(lower.as_str());
-        if !matches!(name, "files" | "reftable") {
-            return Err(Error::Message(format!(
-                "error: invalid value for 'extensions.refstorage': '{raw}'"
-            )));
-        }
-    }
-
-    // Mirror git/setup.c `check_repo_format` / `verify_repository_format`. Extensions split into:
-    //   * v0-compatible (`handle_extension_v0`): respected even in a v0 repository.
-    //   * v1-only (`handle_extension`): legal only when `core.repositoryformatversion >= 1`.
-    // A v0 repository that declares any v1-only extension is rejected (t0001 #60, #62); an
-    // unknown extension is rejected only in a v1 repository.
-    let mut v1_only_found: Vec<String> = Vec::new();
-    let mut unknown_found: Vec<String> = Vec::new();
-    for extension in extensions {
-        match extension.as_str() {
-            // v0-compatible extensions — always allowed.
-            "noop" | "preciousobjects" | "partialclone" | "worktreeconfig" => {}
-            // v1-only extensions — only valid with repository format version >= 1.
-            "noop-v1"
-            | "objectformat"
-            | "compatobjectformat"
-            | "refstorage"
-            | "relativeworktrees"
-            | "submodulepathconfig" => {
-                if repo_version == 0 {
-                    v1_only_found.push(extension);
-                }
-            }
-            // Unknown extension — rejected only in a v1 repository.
-            _ => {
-                if repo_version >= 1 {
-                    unknown_found.push(extension);
-                }
-            }
-        }
-    }
-
-    if !unknown_found.is_empty() {
-        let mut msg = if unknown_found.len() == 1 {
-            "unknown repository extension found:".to_owned()
-        } else {
-            "unknown repository extensions found:".to_owned()
-        };
-        for ext in &unknown_found {
-            msg.push_str(&format!("\n\t{ext}"));
-        }
-        return Err(Error::Message(msg));
-    }
-
-    if !v1_only_found.is_empty() {
-        let mut msg = if v1_only_found.len() == 1 {
-            "repo version is 0, but v1-only extension found:".to_owned()
-        } else {
-            "repo version is 0, but v1-only extensions found:".to_owned()
-        };
-        for ext in &v1_only_found {
-            msg.push_str(&format!("\n\t{ext}"));
-        }
-        return Err(Error::Message(msg));
-    }
-
-    Ok(())
+    Ok(parsed.format_error_message())
 }
 
 /// Try to open a repository rooted exactly at `dir`.

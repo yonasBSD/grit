@@ -1035,6 +1035,10 @@ directory contents. Running 'git clean' may assist in this cleanup."
         );
         let (index_mtime_sec, index_mtime_nsec) = index_mtime;
         let racy = has_racy_timestamp(&index, index_mtime_sec, index_mtime_nsec);
+        // Git's `tweak_split_index` marks the cache changed when `core.splitIndex=true` but the
+        // loaded index is not yet split, so `repo_update_index_if_able` rewrites it in split form
+        // (creating `.git/sharedindex.<oid>`) even when nothing else changed (t1700 #22).
+        let force_split_index_write = repo.split_index_would_force_write(&index);
         // Opportunistic write, like Git: persist when refresh changed an entry or when the
         // index itself is stale/racy enough that rewriting advances its mtime.
         // Best-effort: status must succeed even when `.git/` is read-only (t7508).
@@ -1042,6 +1046,7 @@ directory contents. Running 'git clean' may assist in this cleanup."
             || racy
             || force_full_index_write
             || force_sparse_index_write
+            || force_split_index_write
             || write_index_for_untracked_cache
         {
             if force_sparse_index_write {
