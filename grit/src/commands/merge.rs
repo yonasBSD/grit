@@ -9661,15 +9661,12 @@ fn merge_trees(
                     // With merge.renormalize, treat pure normalization-only edits
                     // as unchanged so delete/modify can resolve to delete.
                 } else {
-                    match favor {
-                        MergeFavor::Ours => {
-                            // -X ours: keep our decision (delete)
-                        }
-                        MergeFavor::Theirs => {
-                            // -X theirs: keep their version
-                            index.entries.push(te.clone());
-                        }
-                        _ => {
+                    // Modify/delete is never auto-resolved by `-X ours`/`-X theirs`.
+                    // Git's merge-ort (process_entry, filemask 3/5) does not consult
+                    // `recursive_variant` for modify/delete: it always leaves the modified
+                    // version in the tree and reports CONFLICT(modify/delete), exiting 1.
+                    {
+                        {
                             // Theirs modified, ours deleted → conflict
                             let path_str = String::from_utf8_lossy(path).to_string();
                             has_conflicts = true;
@@ -9733,15 +9730,12 @@ fn merge_trees(
                     // With merge.renormalize, treat pure normalization-only edits
                     // as unchanged so modify/delete can resolve to delete.
                 } else {
-                    match favor {
-                        MergeFavor::Ours => {
-                            // -X ours: keep our version
-                            index.entries.push(oe.clone());
-                        }
-                        MergeFavor::Theirs => {
-                            // -X theirs: keep their decision (delete)
-                        }
-                        _ => {
+                    // Modify/delete is never auto-resolved by `-X ours`/`-X theirs`.
+                    // Git's merge-ort (process_entry, filemask 3/5) does not consult
+                    // `recursive_variant` for modify/delete: it always leaves the modified
+                    // version in the tree and reports CONFLICT(modify/delete), exiting 1.
+                    {
+                        {
                             // Ours modified, theirs deleted → conflict
                             let path_str = String::from_utf8_lossy(path).to_string();
                             has_conflicts = true;
