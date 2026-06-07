@@ -2826,6 +2826,7 @@ fn run_rev_list_log(
             committer: commit.committer.clone(),
             message: commit.message.clone(),
             raw_message: commit.raw_message.clone(),
+            encoding: commit.encoding.clone(),
         };
 
         let author_ok =
@@ -3923,6 +3924,7 @@ fn load_commit_info(repo: &Repository, oid: ObjectId) -> Result<CommitInfo> {
         committer: commit.committer,
         message: commit.message,
         raw_message: commit.raw_message,
+        encoding: commit.encoding,
     })
 }
 
@@ -6858,6 +6860,7 @@ pub fn run_no_walk(
             committer: commit.committer.clone(),
             message: commit.message.clone(),
             raw_message: commit.raw_message.clone(),
+            encoding: commit.encoding.clone(),
         };
         commits.push((oid, info));
     }
@@ -7864,6 +7867,7 @@ fn run_reflog_walk(
             committer: commit_data.committer.clone(),
             message: commit_data.message.clone(),
             raw_message: commit_data.raw_message.clone(),
+            encoding: commit_data.encoding.clone(),
         };
         let show_diff = args.patch
             || args.patch_u
@@ -8186,14 +8190,80 @@ struct CommitInfo {
     /// (e.g. `i18n.commitEncoding=non-utf-8`). Set from [`CommitData::raw_message`]; the body
     /// emitters use these instead of the lossy `message` so invalid-UTF-8 bytes round-trip.
     raw_message: Option<Vec<u8>>,
+    /// The commit's `encoding` header (`i18n.commitEncoding` at commit time), if any. Used to
+    /// re-encode the body into the log output encoding, mirroring Git's `logmsg_reencode`.
+    encoding: Option<String>,
 }
 
 /// Emit a commit message body line by line with a 4-space indent, matching Git's `pp_handle_indent`.
 ///
 /// When `info.raw_message` is present (non-decodable commit encoding) the verbatim bytes are
 /// written without lossy UTF-8 conversion; otherwise the decoded `message` string is used.
-fn write_commit_body(out: &mut impl Write, info: &CommitInfo, et: usize) -> Result<()> {
-    write_commit_body_colored(out, info, et, None)
+fn write_commit_body(
+    out: &mut impl Write,
+    info: &CommitInfo,
+    et: usize,
+    output_encoding: Option<&str>,
+) -> Result<()> {
+    write_commit_body_colored(out, info, et, None, output_encoding)
+}
+
+/// Resolve the body bytes to print, mirroring Git's `logmsg_reencode`/`pretty_print_commit`.
+///
+/// Git re-encodes every builtin pretty format (medium/full/fuller/raw/short) from the commit's
+/// `encoding` header into the log output encoding before formatting. grit keeps the *decoded*
+/// UTF-8 form in `info.message` plus the original bytes in `info.raw_message`; this picks the
+/// right one:
+///
+/// * Output is UTF-8 (`output_encoding` is `None`): emit the decoded `message` (already UTF-8) —
+///   unless grit could not faithfully decode the commit encoding (unknown label), in which case
+///   Git's `reencode_string` returns NULL and the verbatim bytes are kept (`raw_message`).
+/// * Output is a non-UTF-8 label: re-encode the decoded `message` into that label; if encoding
+///   fails (unknown target) fall back to the verbatim bytes (Git's no-op fallback).
+fn commit_body_output_bytes<'a>(
+    info: &'a CommitInfo,
+    output_encoding: Option<&str>,
+) -> std::borrow::Cow<'a, [u8]> {
+    use std::borrow::Cow;
+    // Whether grit can faithfully decode the commit's stored encoding (so `message` is exact).
+    let commit_encoding_decodable = match info.encoding.as_deref() {
+        None => true,
+        Some(label) => {
+            label.eq_ignore_ascii_case("utf-8")
+                || label.eq_ignore_ascii_case("utf8")
+                || grit_lib::commit_encoding::is_known_encoding(label)
+        }
+    };
+    match output_encoding {
+        None => {
+            // UTF-8 output: prefer the decoded message when the decode was faithful; otherwise
+            // keep the verbatim bytes (Git keeps the raw buffer when reencoding is impossible).
+            if commit_encoding_decodable {
+                Cow::Borrowed(info.message.as_bytes())
+            } else if let Some(raw) = info.raw_message.as_deref() {
+                Cow::Borrowed(raw)
+            } else {
+                Cow::Borrowed(info.message.as_bytes())
+            }
+        }
+        Some(label) => {
+            // Non-UTF-8 output: re-encode the decoded message into the target charset.
+            if commit_encoding_decodable {
+                match grit_lib::commit_encoding::encode_header_text(label, &info.message) {
+                    Some(bytes) => Cow::Owned(bytes),
+                    None => info
+                        .raw_message
+                        .as_deref()
+                        .map(Cow::Borrowed)
+                        .unwrap_or(Cow::Borrowed(info.message.as_bytes())),
+                }
+            } else if let Some(raw) = info.raw_message.as_deref() {
+                Cow::Borrowed(raw)
+            } else {
+                Cow::Borrowed(info.message.as_bytes())
+            }
+        }
+    }
 }
 
 /// Like [`write_commit_body`] but, when `colorizer` is set, colorizes grep
@@ -8204,8 +8274,11 @@ fn write_commit_body_colored(
     info: &CommitInfo,
     et: usize,
     colorizer: Option<&GrepColorizer>,
+    output_encoding: Option<&str>,
 ) -> Result<()> {
-    if let Some(raw) = info.raw_message.as_deref() {
+    let body_bytes = commit_body_output_bytes(info, output_encoding);
+    {
+        let raw = body_bytes.as_ref();
         // Mirror `str::lines()`: split on '\n', strip a trailing '\r', and drop the final empty
         // segment produced by a body that ends in '\n' (Git does not print a spurious blank line).
         let body = raw.strip_suffix(b"\n").unwrap_or(raw);
@@ -8225,22 +8298,6 @@ fn write_commit_body_colored(
                 line, 4, et,
             ))?;
             out.write_all(b"\n")?;
-        }
-    } else {
-        for line in info.message.lines() {
-            if let Some(colored) = colorizer.and_then(|c| c.colorize_message(line)) {
-                writeln!(
-                    out,
-                    "{}",
-                    grit_lib::tab_expand::indent_and_expand_tabs(&colored, 4, et)
-                )?;
-            } else {
-                writeln!(
-                    out,
-                    "{}",
-                    grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
-                )?;
-            }
         }
     }
     Ok(())
@@ -8467,6 +8524,7 @@ impl<'a> WalkCommitsIter<'a> {
                 committer: commit.committer.clone(),
                 message: commit.message.clone(),
                 raw_message: commit.raw_message.clone(),
+                encoding: commit.encoding.clone(),
             };
 
             if !self.shallow_boundaries.contains(&oid) {
@@ -10236,7 +10294,7 @@ fn format_commit(
             writeln!(out, "author {}", info.author)?;
             writeln!(out, "committer {}", info.committer)?;
             writeln!(out)?;
-            write_commit_body(out, info, et)?;
+            write_commit_body(out, info, et, args.log_output_encoding.as_deref())?;
             // `git log --pretty=raw` omits notes unless `--notes` / `--show-notes` is given.
             if matches!(
                 std::env::var("GIT_GRIT_LOG_NOTES_CLI").ok().as_deref(),
@@ -10319,7 +10377,13 @@ fn format_commit(
                 format_author_date_internal(&info.author, date_format, true)
             )?;
             writeln!(out)?;
-            write_commit_body_colored(out, info, et, grep_colorizer)?;
+            write_commit_body_colored(
+                out,
+                info,
+                et,
+                grep_colorizer,
+                args.log_output_encoding.as_deref(),
+            )?;
             write_notes(out, oid, notes_cache, args, odb)?;
         }
         Some("full") => {
@@ -10356,7 +10420,13 @@ fn format_commit(
                 .unwrap_or(committer_disp);
             writeln!(out, "Commit: {committer_disp}")?;
             writeln!(out)?;
-            write_commit_body_colored(out, info, et, grep_colorizer)?;
+            write_commit_body_colored(
+                out,
+                info,
+                et,
+                grep_colorizer,
+                args.log_output_encoding.as_deref(),
+            )?;
             write_notes(out, oid, notes_cache, args, odb)?;
         }
         Some("fuller") => {
@@ -10403,7 +10473,13 @@ fn format_commit(
                 format_author_date_internal(&info.committer, date_format, true)
             )?;
             writeln!(out)?;
-            write_commit_body_colored(out, info, et, grep_colorizer)?;
+            write_commit_body_colored(
+                out,
+                info,
+                et,
+                grep_colorizer,
+                args.log_output_encoding.as_deref(),
+            )?;
             write_notes(out, oid, notes_cache, args, odb)?;
         }
         Some("reference") => {
