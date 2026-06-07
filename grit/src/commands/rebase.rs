@@ -6204,7 +6204,11 @@ Use '--' to separate paths from revisions, like this:\n\
             onto_oid,
             filter_cherry_equivalents,
             rebase_cousins,
-            args.root,
+            // `root_with_onto`: only a root rebase that has an explicit `--onto` resets to `onto`. A
+            // bare `--root -r` resets each branch base to `[new root]` (a `[new root]` reset makes the
+            // following pick a root commit, which lets an unchanged `--root -r` fast-forward as a whole
+            // -graph no-op). t3430 'root commits' second `git rebase -i --root -r` must be a no-op.
+            args.root && args.onto.is_some(),
             !args.no_keep_empty || args.keep_empty,
             &config,
         )?;
@@ -8530,15 +8534,17 @@ fn cherry_pick_for_rebase(
     let root_rebase = rb_dir.join("root").exists();
     let ws_fix_rule = load_ws_fix_rule_from_rebase_state(git_dir);
 
-    // Fast-forward a root-commit pick when HEAD is unborn (`rebase --root` without `--onto`, with
-    // fast-forward allowed). Git's sequencer fast-forwards picks where `!parent && unborn`
-    // (sequencer.c `do_pick_commit`), so a linear `rebase --root` reuses the original commits
-    // instead of rewriting them with fresh committer dates (t3421 "rebase --root on linear history
-    // is a no-op"). Forced rebases (`-f`/`--no-ff`/signoff/trailers) and whitespace fixups must
-    // still rewrite the root.
+    // Fast-forward a root-commit pick when HEAD is unborn (`rebase --root` without `--onto`) OR
+    // sitting on the `[new root]` squash-onto sentinel (`reset [new root]` then `pick <root>` in a
+    // `--rebase-merges` script), with fast-forward allowed. Git's sequencer fast-forwards picks where
+    // `!parent && unborn` (sequencer.c `do_pick_commit`), so an unchanged `rebase --root -r` reuses
+    // the original root commits instead of rewriting them with fresh committer dates — making the
+    // second `git rebase -i --root -r` a whole-graph no-op (t3421 "rebase --root … is a no-op",
+    // t3430 'root commits'). Forced rebases (`-f`/`--no-ff`/signoff/trailers) and whitespace fixups
+    // must still rewrite the root.
     if todo_cmd == RebaseTodoCmd::Pick
         && commit.parents.is_empty()
-        && head_at_empty_tree
+        && pick_is_root
         && !force_rewrite_commits
         && ws_fix_rule.is_none()
         && !rebase_signoff(rb_dir)
