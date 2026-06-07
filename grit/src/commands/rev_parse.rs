@@ -1039,39 +1039,45 @@ pub fn run(args: Args) -> Result<()> {
                     }
                 }
             }
-            Action::BisectRefs(_) => {
+            Action::BisectRefs(symbolic_full_name) => {
                 let Some(current) = repo.as_ref() else {
                     bail!("not a git repository (or any of the parent directories)");
                 };
+                // Mirror git rev-parse --bisect: iterate refs under the
+                // `refs/bisect/bad` prefix (printed as "good" revs) and the
+                // `refs/bisect/good` prefix (printed as anti-revs, "^"). Git
+                // uses a plain string-prefix match and emits refs in
+                // sorted-by-name order, so `refs/bisect/b` and `refs/bisect/go`
+                // are excluded (they do not start with the full prefixes).
                 let all = grit_lib::refs::list_refs(&current.git_dir, "refs/bisect/")
                     .context("failed to list bisect refs")?;
-                let mut bad: Vec<_> = all
-                    .iter()
-                    .filter(|(r, _)| {
-                        r.starts_with("refs/bisect/bad")
-                            && r.as_bytes()
-                                .get("refs/bisect/bad".len())
-                                .is_none_or(|b| *b == b'-')
-                    })
-                    .map(|(_, oid)| *oid)
-                    .collect();
-                bad.sort();
-                for oid in &bad {
-                    println!("{oid}");
+
+                // Collect (name, oid) for each prefix, sorted by ref name to
+                // match git's ref-store iteration order.
+                let collect_sorted = |prefix: &str| {
+                    let mut v: Vec<_> = all
+                        .iter()
+                        .filter(|(r, _)| r.starts_with(prefix))
+                        .collect();
+                    v.sort_by(|(a, _), (b, _)| a.cmp(b));
+                    v
+                };
+
+                // With --symbolic-full-name git prints the full ref name (via
+                // dwim resolution); otherwise it prints the object id.
+                for (name, oid) in collect_sorted("refs/bisect/bad") {
+                    if *symbolic_full_name {
+                        println!("{name}");
+                    } else {
+                        println!("{oid}");
+                    }
                 }
-                let mut good: Vec<_> = all
-                    .iter()
-                    .filter(|(r, _)| {
-                        r.starts_with("refs/bisect/good")
-                            && r.as_bytes()
-                                .get("refs/bisect/good".len())
-                                .is_none_or(|b| *b == b'-')
-                    })
-                    .map(|(_, oid)| *oid)
-                    .collect();
-                good.sort();
-                for oid in &good {
-                    println!("^{oid}");
+                for (name, oid) in collect_sorted("refs/bisect/good") {
+                    if *symbolic_full_name {
+                        println!("^{name}");
+                    } else {
+                        println!("^{oid}");
+                    }
                 }
             }
             Action::MaxAge(date) => {
