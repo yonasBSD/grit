@@ -180,9 +180,12 @@ fn print_file_list(out: &mut impl Write, files: &[FileItem], selected: Option<&[
         let index = render_adddel(&item.index, "unchanged");
         let worktree = render_adddel(&item.worktree, "nothing");
         let _ = item.prefix_length;
+        // Git's `print_file_item` uses `%c%2d:` — the selection marker char plus the 1-based
+        // index right-aligned to width 2 (`  1:`), not width 3 (t3701 "brackets appear without
+        // color"). The header's 5 leading spaces line up with `<mark><2-wide>: ` = 1 + 2 + 2.
         writeln!(
             out,
-            "{mark}{:>3}: {:>12} {:>12} {}",
+            "{mark}{:>2}: {:>12} {:>12} {}",
             i + 1,
             index,
             worktree,
@@ -199,7 +202,7 @@ fn print_name_list(out: &mut impl Write, files: &[FileItem], selected: &[bool]) 
     for (i, item) in files.iter().enumerate() {
         let sel = selected.get(i).copied().unwrap_or(false);
         let mark = if sel { '*' } else { ' ' };
-        writeln!(out, "{mark}{:>3}: {}", i + 1, item.name).ok();
+        writeln!(out, "{mark}{:>2}: {}", i + 1, item.name).ok();
     }
 }
 
