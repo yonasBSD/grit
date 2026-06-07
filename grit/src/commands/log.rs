@@ -2817,6 +2817,7 @@ fn run_rev_list_log(
             author: commit.author.clone(),
             committer: commit.committer.clone(),
             message: commit.message.clone(),
+            raw_message: commit.raw_message.clone(),
         };
 
         let author_ok =
@@ -3911,6 +3912,7 @@ fn load_commit_info(repo: &Repository, oid: ObjectId) -> Result<CommitInfo> {
         author: commit.author,
         committer: commit.committer,
         message: commit.message,
+        raw_message: commit.raw_message,
     })
 }
 
@@ -6621,6 +6623,7 @@ pub fn run_no_walk(
             author: commit.author.clone(),
             committer: commit.committer.clone(),
             message: commit.message.clone(),
+            raw_message: commit.raw_message.clone(),
         };
         commits.push((oid, info));
     }
@@ -7625,6 +7628,7 @@ fn run_reflog_walk(
             author: commit_data.author.clone(),
             committer: commit_data.committer.clone(),
             message: commit_data.message.clone(),
+            raw_message: commit_data.raw_message.clone(),
         };
         let show_diff = args.patch
             || args.patch_u
@@ -7943,6 +7947,38 @@ struct CommitInfo {
     author: String,
     committer: String,
     message: String,
+    /// Verbatim body bytes when the commit was stored under an encoding Git cannot decode
+    /// (e.g. `i18n.commitEncoding=non-utf-8`). Set from [`CommitData::raw_message`]; the body
+    /// emitters use these instead of the lossy `message` so invalid-UTF-8 bytes round-trip.
+    raw_message: Option<Vec<u8>>,
+}
+
+/// Emit a commit message body line by line with a 4-space indent, matching Git's `pp_handle_indent`.
+///
+/// When `info.raw_message` is present (non-decodable commit encoding) the verbatim bytes are
+/// written without lossy UTF-8 conversion; otherwise the decoded `message` string is used.
+fn write_commit_body(out: &mut impl Write, info: &CommitInfo, et: usize) -> Result<()> {
+    if let Some(raw) = info.raw_message.as_deref() {
+        // Mirror `str::lines()`: split on '\n', strip a trailing '\r', and drop the final empty
+        // segment produced by a body that ends in '\n' (Git does not print a spurious blank line).
+        let body = raw.strip_suffix(b"\n").unwrap_or(raw);
+        for line in body.split(|&b| b == b'\n') {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            out.write_all(&grit_lib::tab_expand::indent_and_expand_tabs_bytes(
+                line, 4, et,
+            ))?;
+            out.write_all(b"\n")?;
+        }
+    } else {
+        for line in info.message.lines() {
+            writeln!(
+                out,
+                "{}",
+                grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Key for Git-style date ordering: newest committer (or author) date first; ties broken by FIFO
@@ -8165,6 +8201,7 @@ impl<'a> WalkCommitsIter<'a> {
                 author: commit.author.clone(),
                 committer: commit.committer.clone(),
                 message: commit.message.clone(),
+                raw_message: commit.raw_message.clone(),
             };
 
             if !self.shallow_boundaries.contains(&oid) {
@@ -9895,13 +9932,7 @@ fn format_commit(
             writeln!(out, "author {}", info.author)?;
             writeln!(out, "committer {}", info.committer)?;
             writeln!(out)?;
-            for line in info.message.lines() {
-                writeln!(
-                    out,
-                    "{}",
-                    grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
-                )?;
-            }
+            write_commit_body(out, info, et)?;
             // `git log --pretty=raw` omits notes unless `--notes` / `--show-notes` is given.
             if matches!(
                 std::env::var("GIT_GRIT_LOG_NOTES_CLI").ok().as_deref(),
@@ -9981,13 +10012,7 @@ fn format_commit(
                 format_author_date_internal(&info.author, date_format, true)
             )?;
             writeln!(out)?;
-            for line in info.message.lines() {
-                writeln!(
-                    out,
-                    "{}",
-                    grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
-                )?;
-            }
+            write_commit_body(out, info, et)?;
             write_notes(out, oid, notes_cache, args, odb)?;
         }
         Some("full") => {
@@ -10020,13 +10045,7 @@ fn format_commit(
                 format_ident_display_mailmap(mailmap, &info.committer, use_mailmap)
             )?;
             writeln!(out)?;
-            for line in info.message.lines() {
-                writeln!(
-                    out,
-                    "{}",
-                    grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
-                )?;
-            }
+            write_commit_body(out, info, et)?;
             write_notes(out, oid, notes_cache, args, odb)?;
         }
         Some("fuller") => {
@@ -10069,13 +10088,7 @@ fn format_commit(
                 format_author_date_internal(&info.committer, date_format, true)
             )?;
             writeln!(out)?;
-            for line in info.message.lines() {
-                writeln!(
-                    out,
-                    "{}",
-                    grit_lib::tab_expand::indent_and_expand_tabs(line, 4, et)
-                )?;
-            }
+            write_commit_body(out, info, et)?;
             write_notes(out, oid, notes_cache, args, odb)?;
         }
         Some("reference") => {
