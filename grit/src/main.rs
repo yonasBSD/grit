@@ -1103,7 +1103,10 @@ fn run_test_tool_ref_store(rest: &[String]) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("usage: test-tool ref-store main {sub} <ref>"))?;
             let mut entries = grit_lib::reflog::read_reflog(&git_dir, refname)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            if sub == "for-each-reflog-ent" {
+            // `read_reflog` returns entries in file order (oldest-first), which
+            // matches upstream `files_for_each_reflog_ent` (front-to-back stream).
+            // Only the `-reverse` variant emits newest-first.
+            if sub == "for-each-reflog-ent-reverse" {
                 entries.reverse();
             }
             for entry in entries {

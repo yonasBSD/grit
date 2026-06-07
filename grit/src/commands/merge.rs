@@ -1664,6 +1664,12 @@ pub(crate) fn create_virtual_merge_base(
     // Two-base criss-cross cases fold oldest first for stable conflict markers (t6416).
     // With three or more bases, upstream's ambiguous-base behavior preserves the newer-first
     // order in t6404's fragile virtual tree check.
+    //
+    // git merge-ort builds the virtual base by *reversing* `get_merge_bases()` (oldest date
+    // first) and folding `prev`(branch1) with `next`(branch2). For equal-date bases the order
+    // is the reverse of git's `merge-base --all` output, which grit emits OID-ascending; thus
+    // the equal-date tiebreak here must be OID-descending so the second (`next`/"Temporary
+    // merge branch 2") base matches git (t6422 submodule/directory preliminary conflict).
     let mut ordered_bases = bases.to_vec();
     ordered_bases.sort_by(|a, b| {
         let ta = commit_author_timestamp(repo, *a).unwrap_or(0);
@@ -1671,7 +1677,7 @@ pub(crate) fn create_virtual_merge_base(
         if bases.len() > 2 {
             tb.cmp(&ta).then_with(|| b.cmp(a))
         } else {
-            ta.cmp(&tb).then_with(|| a.cmp(b))
+            ta.cmp(&tb).then_with(|| b.cmp(a))
         }
     });
 
@@ -4929,7 +4935,20 @@ fn do_octopus_merge(
         merge_current_oid = write_octopus_step_commit(repo, step_tree, &step_parents)?;
     }
 
-    // All merges succeeded — build the octopus merge commit
+    // All merges succeeded — build the octopus merge commit.
+    // A `-F <file>` (or `-m`) message must override the auto-generated `Merge branches '…'` summary,
+    // matching the non-octopus path (and Git's `do_merge` octopus, which passes `-F <merge_msg>`).
+    // t3430 'octopus merges' replays the original `Tüntenfüsch` message via `merge … --no-log -F`.
+    let octopus_msg_config = ConfigSet::load(Some(&repo.git_dir), true)?;
+    let octopus_custom_msg: Option<String> = if let Some(ref file_path) = args.file {
+        Some(read_merge_message_from_file(
+            Path::new(file_path),
+            &octopus_msg_config,
+        )?)
+    } else {
+        args.message.clone()
+    };
+
     let mut final_index = Index::new();
     final_index.entries = current_tree_entries;
     final_index.sort();
@@ -4965,7 +4984,8 @@ fn do_octopus_merge(
             .map(|oid| format!("{}\n", oid.to_hex()))
             .collect();
         fs::write(repo.git_dir.join("MERGE_HEAD"), &merge_head_content)?;
-        let msg = build_octopus_merge_message(head, &merge_names, args.message.as_deref(), repo);
+        let msg =
+            build_octopus_merge_message(head, &merge_names, octopus_custom_msg.as_deref(), repo);
         fs::write(repo.git_dir.join("MERGE_MSG"), &msg)?;
         fs::write(repo.git_dir.join("MERGE_MODE"), "no-ff\n")?;
         if !args.quiet {
@@ -4980,7 +5000,7 @@ fn do_octopus_merge(
     repo.write_index(&mut final_index)?;
 
     let tree_oid = write_tree_from_index(&repo.odb, &final_index, "")?;
-    let msg = build_octopus_merge_message(head, &merge_names, args.message.as_deref(), repo);
+    let msg = build_octopus_merge_message(head, &merge_names, octopus_custom_msg.as_deref(), repo);
 
     let config = ConfigSet::load(Some(&repo.git_dir), true)?;
     let hook_cleanup = args.cleanup.as_deref().unwrap_or("whitespace");
@@ -9433,6 +9453,42 @@ fn merge_trees(
                         index.entries.push(te.clone());
                         continue;
                     };
+                    if criss_cross_outer_merge {
+                        // Virtual-base / criss-cross build: theirs added a submodule at `path`
+                        // while ours holds a directory `path/...`. git merge-ort relocates the
+                        // submodule out of the way to `path~<theirs label>` and keeps the full
+                        // directory intact (the directory files in `ours_entries` are emitted by
+                        // their own per-path iterations below). The relocated gitlink then surfaces
+                        // as a `path~<label>` -> `path` rename in the outer merge (t6422 #26).
+                        let relocated = format!("{path_str}~{their_name}");
+                        has_conflicts = true;
+                        let mut gl = te.clone();
+                        gl.path = relocated.as_bytes().to_vec();
+                        stage_entry(&mut index, &gl, 3);
+                        conflict_descriptions.push(ConflictDescription {
+                            kind: "file/directory",
+                            body: format!(
+                                "directory in the way of {path_str} from {their_name}; moving it to {relocated} instead."
+                            ),
+                            subject_path: relocated.clone(),
+                            remerge_anchor_path: Some(path_str.clone()),
+                            rename_rr_ours_dest: None,
+                            rename_rr_theirs_dest: None,
+                            auto_merge_hint_path: None,
+                        });
+                        conflict_descriptions.push(ConflictDescription {
+                            kind: "modify/delete",
+                            body: format!(
+                                "{relocated} deleted in {ours_label} and modified in {their_name}.  Version {their_name} of {relocated} left in tree."
+                            ),
+                            subject_path: relocated.clone(),
+                            remerge_anchor_path: Some(path_str.clone()),
+                            rename_rr_ours_dest: None,
+                            rename_rr_theirs_dest: None,
+                            auto_merge_hint_path: None,
+                        });
+                        continue;
+                    }
                     conflict_submodule_vs_non_gitlink(
                         repo,
                         &path_str,

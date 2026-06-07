@@ -768,27 +768,95 @@ fn walk_first_parent_filtered(
     Ok(matches)
 }
 
-/// Commits reachable from `tip` along first-parent edges until `base` is hit, oldest first.
+/// Commits reachable from `tip` but not from `base`, in topological order (oldest first).
 ///
-/// Matches Git's `A..B` for cherry-pick: walk from `B` toward roots; stop when `A` is reached
-/// (so `A` is excluded). This differs from walking only the first-parent chain from `B` to root.
+/// Matches Git's `A..B` for cherry-pick: `git rev-list --reverse A..B` selects every commit
+/// reachable from `B` that is *not* reachable from `A`. Unlike a naive first-parent walk (which
+/// would never stop when `A` is off the first-parent chain, e.g. `A` is a merge commit whose
+/// second parent introduced shared history), this walks ALL parents and excludes the entire
+/// ancestor closure of `A`, then emits the survivors oldest-first (git applies picks oldest-first).
 fn walk_commit_range(repo: &Repository, base: ObjectId, tip: ObjectId) -> Result<Vec<ObjectId>> {
-    let mut chain = Vec::new();
-    let mut current = tip;
-    loop {
-        if current == base {
-            break;
+    // Everything reachable from `base` (inclusive) is excluded.
+    let excluded = grit_lib::merge_base::ancestor_closure(repo, base)?;
+
+    // Collect commits reachable from `tip` that are not in `excluded`, recording each commit's
+    // generation depth (max distance to any selected root) so we can emit them oldest-first.
+    let mut selected: HashSet<ObjectId> = HashSet::new();
+    let mut order: Vec<ObjectId> = Vec::new();
+    let mut stack = vec![tip];
+    let mut parents_of: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    while let Some(current) = stack.pop() {
+        if excluded.contains(&current) || !selected.insert(current) {
+            continue;
         }
-        chain.push(current);
+        order.push(current);
         let obj = repo.odb.read(&current)?;
         let commit = parse_commit(&obj.data)?;
-        let Some(p) = commit.parents.first().copied() else {
-            break;
-        };
-        current = p;
+        let parents: Vec<ObjectId> = commit
+            .parents
+            .iter()
+            .copied()
+            .filter(|p| !excluded.contains(p))
+            .collect();
+        for &p in &parents {
+            stack.push(p);
+        }
+        parents_of.insert(current, parents);
     }
-    chain.reverse();
-    Ok(chain)
+
+    // Topological sort (Kahn): a commit may be applied only after all its selected ancestors.
+    // Emit oldest-first. Ties broken by commit date (newer applied later) to match git's
+    // rev-list ordering closely enough for cherry-pick replay.
+    let mut indegree: HashMap<ObjectId, usize> = HashMap::new();
+    let mut children: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    for oid in &order {
+        indegree.entry(*oid).or_insert(0);
+        for &p in parents_of.get(oid).map(|v| v.as_slice()).unwrap_or(&[]) {
+            *indegree.entry(*oid).or_insert(0) += 1;
+            children.entry(p).or_default().push(*oid);
+        }
+    }
+    // Ready set: commits whose selected parents are all already emitted (start with roots).
+    let mut ready: Vec<ObjectId> = order
+        .iter()
+        .copied()
+        .filter(|o| indegree.get(o).copied().unwrap_or(0) == 0)
+        .collect();
+    let mut result = Vec::with_capacity(order.len());
+    let mut emitted: HashSet<ObjectId> = HashSet::new();
+    while !ready.is_empty() {
+        // Pick the ready commit with the oldest commit date so the apply order is oldest-first.
+        ready.sort_by_key(|o| commit_date_for(repo, *o).unwrap_or(i64::MAX));
+        let next = ready.remove(0);
+        if !emitted.insert(next) {
+            continue;
+        }
+        result.push(next);
+        if let Some(kids) = children.get(&next) {
+            for &k in kids {
+                let e = indegree.get_mut(&k).expect("child has indegree");
+                *e -= 1;
+                if *e == 0 {
+                    ready.push(k);
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Committer date (seconds since epoch) for ordering selected commits oldest-first.
+fn commit_date_for(repo: &Repository, oid: ObjectId) -> Option<i64> {
+    let obj = repo.odb.read(&oid).ok()?;
+    let commit = parse_commit(&obj.data).ok()?;
+    let committer = &commit.committer;
+    // `Name <email> <secs> <tz>`: the timestamp is the second-to-last whitespace token.
+    let toks: Vec<&str> = committer.split_whitespace().collect();
+    if toks.len() >= 2 {
+        toks[toks.len() - 2].parse::<i64>().ok()
+    } else {
+        None
+    }
 }
 
 fn cherry_pick_one_commit(

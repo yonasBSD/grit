@@ -587,78 +587,107 @@ pub fn run(args: Args) -> Result<()> {
             negated = true;
             spec = rest;
         }
+        // Git's `try_difference()` only treats `A..B` / `A...B` as a range when *both*
+        // endpoints resolve. If either side fails (e.g. a ref name that merely contains
+        // `..`/`...`, such as the broken ref names exercised by t1430), git restores the
+        // string and resolves the whole spec as a single revision. Resolving the endpoints
+        // here with `.ok()` lets us fall through to the single-spec path on failure rather
+        // than reporting an "ambiguous argument" error for the left endpoint.
         if let Some((left, right)) = split_double_dot_range(spec) {
-            let left_oid = match if left.is_empty() {
-                resolve_revision_for_range_end(current, "HEAD")
-            } else {
-                resolve_revision_for_range_end(current, left)
-            } {
-                Ok(oid) => oid,
-                Err(e) => return fail_verify_resolve(quiet, &e, Some(current)),
-            };
-            let right_oid = match if right.is_empty() {
-                resolve_revision_for_range_end(current, "HEAD")
-            } else {
-                resolve_revision_for_range_end(current, right)
-            } {
-                Ok(oid) => oid,
-                Err(e) => return fail_verify_resolve(quiet, &e, Some(current)),
-            };
-            if let Some(mut len) = short_len {
-                if len == 0 {
-                    use grit_lib::config::ConfigSet;
-                    let config = ConfigSet::load(Some(&current.git_dir), false)
-                        .unwrap_or_else(|_| ConfigSet::new());
-                    len = config
-                        .get("core.abbrev")
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .unwrap_or(7);
+            let endpoints = (|| {
+                let left_oid = if left.is_empty() {
+                    resolve_revision_for_range_end(current, "HEAD")
+                } else {
+                    resolve_revision_for_range_end(current, left)
                 }
-                println!("{}", abbreviate_object_id(current, left_oid, len)?);
-                println!("^{}", abbreviate_object_id(current, right_oid, len)?);
-            } else {
-                println!("{left_oid}");
-                println!("^{right_oid}");
+                .ok()?;
+                let right_oid = if right.is_empty() {
+                    resolve_revision_for_range_end(current, "HEAD")
+                } else {
+                    resolve_revision_for_range_end(current, right)
+                }
+                .ok()?;
+                Some((left_oid, right_oid))
+            })();
+            if let Some((left_oid, right_oid)) = endpoints {
+                if let Some(mut len) = short_len {
+                    if len == 0 {
+                        use grit_lib::config::ConfigSet;
+                        let config = ConfigSet::load(Some(&current.git_dir), false)
+                            .unwrap_or_else(|_| ConfigSet::new());
+                        len = config
+                            .get("core.abbrev")
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(7);
+                    }
+                    println!("{}", abbreviate_object_id(current, left_oid, len)?);
+                    println!("^{}", abbreviate_object_id(current, right_oid, len)?);
+                } else {
+                    println!("{left_oid}");
+                    println!("^{right_oid}");
+                }
+                return Ok(());
             }
-            return Ok(());
         }
         if let Some((left, right)) = split_triple_dot_range(spec) {
-            let left_tip = if left.is_empty() {
-                resolve_revision_for_range_end(current, "HEAD")?
-            } else {
-                resolve_revision_for_range_end(current, left)?
-            };
-            let right_tip = if right.is_empty() {
-                resolve_revision_for_range_end(current, "HEAD")?
-            } else {
-                resolve_revision_for_range_end(current, right)?
-            };
-            let left_commit = peel_to_commit_for_merge_base(current, left_tip)?;
-            let right_commit = peel_to_commit_for_merge_base(current, right_tip)?;
-            let bases =
-                merge_base::merge_bases_first_vs_rest(current, left_commit, &[right_commit])?;
-            let Some(mb) = bases.into_iter().next() else {
-                return fail_verify(quiet, false);
-            };
-            if let Some(mut len) = short_len {
-                if len == 0 {
-                    use grit_lib::config::ConfigSet;
-                    let config = ConfigSet::load(Some(&current.git_dir), false)
-                        .unwrap_or_else(|_| ConfigSet::new());
-                    len = config
-                        .get("core.abbrev")
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .unwrap_or(7);
+            let tips = (|| {
+                let left_tip = if left.is_empty() {
+                    resolve_revision_for_range_end(current, "HEAD")
+                } else {
+                    resolve_revision_for_range_end(current, left)
                 }
-                println!("{}", abbreviate_object_id(current, left_tip, len)?);
-                println!("{}", abbreviate_object_id(current, right_tip, len)?);
-                println!("^{}", abbreviate_object_id(current, mb, len)?);
-            } else {
-                println!("{left_tip}");
-                println!("{right_tip}");
-                println!("^{mb}");
+                .ok()?;
+                let right_tip = if right.is_empty() {
+                    resolve_revision_for_range_end(current, "HEAD")
+                } else {
+                    resolve_revision_for_range_end(current, right)
+                }
+                .ok()?;
+                Some((left_tip, right_tip))
+            })();
+            if let Some((left_tip, right_tip)) = tips {
+                let left_commit = peel_to_commit_for_merge_base(current, left_tip)?;
+                let right_commit = peel_to_commit_for_merge_base(current, right_tip)?;
+                let bases =
+                    merge_base::merge_bases_first_vs_rest(current, left_commit, &[right_commit])?;
+                let Some(mb) = bases.into_iter().next() else {
+                    return fail_verify(quiet, false);
+                };
+                if let Some(mut len) = short_len {
+                    if len == 0 {
+                        use grit_lib::config::ConfigSet;
+                        let config = ConfigSet::load(Some(&current.git_dir), false)
+                            .unwrap_or_else(|_| ConfigSet::new());
+                        len = config
+                            .get("core.abbrev")
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(7);
+                    }
+                    println!("{}", abbreviate_object_id(current, left_tip, len)?);
+                    println!("{}", abbreviate_object_id(current, right_tip, len)?);
+                    println!("^{}", abbreviate_object_id(current, mb, len)?);
+                } else {
+                    println!("{left_tip}");
+                    println!("{right_tip}");
+                    println!("^{mb}");
+                }
+                return Ok(());
             }
-            return Ok(());
+        }
+        // We only reach here for a `..`/`...` spec when at least one range endpoint failed
+        // to resolve (matching git's `try_difference`, which then treats the whole string as
+        // a single revision). Git refuses to resolve a ref whose name is itself invalid, so a
+        // dotted name like `refs/heads/broken...symref` yields "Needed a single revision"
+        // rather than following the broken-named symref. Mirror that: reject a dotted spec
+        // that is not a valid ref name before attempting whole-spec resolution.
+        if (split_double_dot_range(spec).is_some() || split_triple_dot_range(spec).is_some())
+            && grit_lib::check_ref_format::check_refname_format(
+                spec,
+                &grit_lib::check_ref_format::RefNameOptions::default(),
+            )
+            .is_err()
+        {
+            return fail_verify(quiet, false);
         }
         let oid = if matches!(spec, "REVERT_HEAD" | "CHERRY_PICK_HEAD") {
             let path = current.git_dir.join(spec);
@@ -1039,39 +1068,42 @@ pub fn run(args: Args) -> Result<()> {
                     }
                 }
             }
-            Action::BisectRefs(_) => {
+            Action::BisectRefs(symbolic_full_name) => {
                 let Some(current) = repo.as_ref() else {
                     bail!("not a git repository (or any of the parent directories)");
                 };
+                // Mirror git rev-parse --bisect: iterate refs under the
+                // `refs/bisect/bad` prefix (printed as "good" revs) and the
+                // `refs/bisect/good` prefix (printed as anti-revs, "^"). Git
+                // uses a plain string-prefix match and emits refs in
+                // sorted-by-name order, so `refs/bisect/b` and `refs/bisect/go`
+                // are excluded (they do not start with the full prefixes).
                 let all = grit_lib::refs::list_refs(&current.git_dir, "refs/bisect/")
                     .context("failed to list bisect refs")?;
-                let mut bad: Vec<_> = all
-                    .iter()
-                    .filter(|(r, _)| {
-                        r.starts_with("refs/bisect/bad")
-                            && r.as_bytes()
-                                .get("refs/bisect/bad".len())
-                                .is_none_or(|b| *b == b'-')
-                    })
-                    .map(|(_, oid)| *oid)
-                    .collect();
-                bad.sort();
-                for oid in &bad {
-                    println!("{oid}");
+
+                // Collect (name, oid) for each prefix, sorted by ref name to
+                // match git's ref-store iteration order.
+                let collect_sorted = |prefix: &str| {
+                    let mut v: Vec<_> = all.iter().filter(|(r, _)| r.starts_with(prefix)).collect();
+                    v.sort_by(|(a, _), (b, _)| a.cmp(b));
+                    v
+                };
+
+                // With --symbolic-full-name git prints the full ref name (via
+                // dwim resolution); otherwise it prints the object id.
+                for (name, oid) in collect_sorted("refs/bisect/bad") {
+                    if *symbolic_full_name {
+                        println!("{name}");
+                    } else {
+                        println!("{oid}");
+                    }
                 }
-                let mut good: Vec<_> = all
-                    .iter()
-                    .filter(|(r, _)| {
-                        r.starts_with("refs/bisect/good")
-                            && r.as_bytes()
-                                .get("refs/bisect/good".len())
-                                .is_none_or(|b| *b == b'-')
-                    })
-                    .map(|(_, oid)| *oid)
-                    .collect();
-                good.sort();
-                for oid in &good {
-                    println!("^{oid}");
+                for (name, oid) in collect_sorted("refs/bisect/good") {
+                    if *symbolic_full_name {
+                        println!("^{name}");
+                    } else {
+                        println!("^{oid}");
+                    }
                 }
             }
             Action::MaxAge(date) => {

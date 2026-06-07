@@ -29,7 +29,7 @@ test_expect_success 'setup repository' '
 test_expect_success 'status --porcelain on clean repo shows branch header' '
 	(
 	cd repo &&
-	grit status --porcelain >../out &&
+	grit status --porcelain -b >../out &&
 	grep "^## master" ../out
 	)
 '
@@ -185,7 +185,7 @@ test_expect_success 'status --porcelain with staged add and unstaged untracked' 
 test_expect_success 'status --porcelain shows branch in header' '
 	(
 	cd repo &&
-	grit status --porcelain >../out &&
+	grit status --porcelain -b >../out &&
 	grep "^## master" ../out
 	)
 '
@@ -234,7 +234,7 @@ test_expect_success 'status --porcelain in fresh empty repo has branch header' '
 	(
 	grit init empty-repo &&
 	cd empty-repo &&
-	grit status --porcelain >../empty_out &&
+	grit status --porcelain -b >../empty_out &&
 	grep "^## " ../empty_out
 	)
 '

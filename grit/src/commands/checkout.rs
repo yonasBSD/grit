@@ -6734,7 +6734,10 @@ fn refuse_populated_submodule_tree_replacement_inner(
         }
         let mut prefix = PathBuf::new();
         for component in path_str.split('/') {
-            if component.is_empty() {
+            // Skip empty and `.`/`..` components: a `.` segment (e.g. an index path stored as
+            // `./-`) would push the work-tree root into `prefix`, and `work_tree/.git` always
+            // exists for the repo itself — that is not a submodule and must never be flagged.
+            if component.is_empty() || component == "." || component == ".." {
                 continue;
             }
             prefix.push(component);
