@@ -2957,6 +2957,18 @@ fn delete_branch(repo: &Repository, head: &HeadState, args: &Args, name_input: &
         );
     }
 
+    // Git's `branch_checked_out()` also reports a branch as in-use when a worktree (including the
+    // current one) is mid-rebase or mid-bisect on it: there the worktree HEAD is detached, so the
+    // checks above miss it. Refuse the delete with the same message (t2400 "not allow to delete a
+    // branch under rebase").
+    if let Some(path) = crate::commands::worktree_refs::branch_occupied_any_worktree(repo, &name) {
+        bail!(
+            "cannot delete branch '{}' used by worktree at '{}'",
+            name,
+            path
+        );
+    }
+
     let branch_oid = grit_lib::refs::resolve_ref(&repo.git_dir, &refname)
         .map_err(|_| anyhow::anyhow!("branch '{name}' not found."))?;
 
