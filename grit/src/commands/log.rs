@@ -10090,6 +10090,29 @@ fn format_commit(
     };
     let signature_ref = signature.as_ref();
 
+    // `--show-signature` emits the GPG/ssh verification lines (Git `show_signature`)
+    // right after the `commit <hash>`/`Merge:` header in the multi-line pretty
+    // formats. Under `--graph`, each line is prefixed with the graph rail.
+    let show_signature_lines: Option<String> = if args.show_signature {
+        odb.read(oid).ok().and_then(|obj| {
+            let config = grit_lib::repo::Repository::discover(None)
+                .ok()
+                .and_then(|repo| ConfigSet::load(Some(&repo.git_dir), true).ok())
+                .unwrap_or_default();
+            let s = format_commit_signature_lines(&config, &obj.data);
+            if s.is_empty() {
+                None
+            } else {
+                // Under `--graph`, the graph machinery rail-prefixes every line
+                // of the message buffer (incl. these), so emit them verbatim.
+                Some(s)
+            }
+        })
+    } else {
+        None
+    };
+    let show_signature_lines = show_signature_lines.as_deref();
+
     match format {
         Some(fmt) if fmt.starts_with("format:") || fmt.starts_with("tformat:") => {
             let is_tformat = fmt.starts_with("tformat:");
@@ -10215,6 +10238,9 @@ fn format_commit(
                     .collect();
                 writeln!(out, "Merge: {}", parent_abbrevs.join(" "))?;
             }
+            if let Some(sig) = show_signature_lines {
+                out.write_all(sig.as_bytes())?;
+            }
             let author_disp = format_ident_display_mailmap(mailmap, &info.author, use_mailmap);
             let author_disp = grep_colorizer
                 .and_then(|c| c.colorize_author(&author_disp))
@@ -10247,6 +10273,9 @@ fn format_commit(
                     })
                     .collect();
                 writeln!(out, "Merge: {}", parent_abbrevs.join(" "))?;
+            }
+            if let Some(sig) = show_signature_lines {
+                out.write_all(sig.as_bytes())?;
             }
             let author_disp = format_ident_display_mailmap(mailmap, &info.author, use_mailmap);
             let author_disp = grep_colorizer
@@ -10281,6 +10310,9 @@ fn format_commit(
                     })
                     .collect();
                 writeln!(out, "Merge: {}", parent_abbrevs.join(" "))?;
+            }
+            if let Some(sig) = show_signature_lines {
+                out.write_all(sig.as_bytes())?;
             }
             let author_disp = format_ident_display_mailmap(mailmap, &info.author, use_mailmap);
             let author_disp = grep_colorizer
