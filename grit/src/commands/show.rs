@@ -344,6 +344,15 @@ pub fn run(mut args: Args) -> Result<()> {
     // captures everything after the first positional into `objects`, so pull
     // any such formatting options back out and apply them, mirroring git's
     // `setup_revisions` interleaving of options and revisions.
+    // `--grep`/pattern-flavor flags interspersed in the trailing args (`git show`
+    // shares `git log`'s revision walker) are pulled out here and applied as a
+    // message filter on the shown commits, honoring `grep.patternType`.
+    let mut grep_patterns: Vec<String> = Vec::new();
+    let mut grep_fixed = false;
+    let mut grep_basic = false;
+    let mut grep_extended = false;
+    let mut grep_perl = false;
+    let mut grep_ignore_case = false;
     {
         let mut kept: Vec<String> = Vec::with_capacity(args.objects.len());
         let mut iter = args.objects.iter().peekable();
@@ -370,12 +379,45 @@ pub fn run(mut args: Args) -> Result<()> {
                     args.encoding = Some((*v).clone());
                     iter.next();
                 }
+            } else if let Some(v) = tok.strip_prefix("--grep=") {
+                grep_patterns.push(v.to_owned());
+            } else if tok == "--grep" {
+                if let Some(v) = iter.peek() {
+                    grep_patterns.push((*v).clone());
+                    iter.next();
+                }
+            } else if tok == "--fixed-strings" {
+                grep_fixed = true;
+            } else if tok == "--basic-regexp" {
+                // NB: do not alias `-G` here — in `git show` `-G` is the pickaxe
+                // (`-G<regex>`), so only the long form selects basic-regexp grep.
+                grep_basic = true;
+            } else if tok == "--extended-regexp" {
+                grep_extended = true;
+            } else if tok == "--perl-regexp" {
+                grep_perl = true;
+            } else if tok == "--regexp-ignore-case" {
+                grep_ignore_case = true;
             } else {
                 kept.push(tok.clone());
             }
         }
         args.objects = kept;
     }
+    let grep_res = if grep_patterns.is_empty() {
+        Vec::new()
+    } else {
+        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        crate::commands::log::compile_command_grep_regexes(
+            &grep_patterns,
+            grep_fixed,
+            grep_basic,
+            grep_extended,
+            grep_perl,
+            grep_ignore_case,
+            &cfg,
+        )?
+    };
 
     // `--root` forces a root commit's diff against the empty tree even when
     // `log.showroot=false`. It is not a real object, so strip it from the list.
@@ -730,6 +772,14 @@ pub fn run(mut args: Args) -> Result<()> {
             .with_context(|| format!("unknown revision or path: '{spec}'"))?;
 
         let obj = repo.odb.read(&oid).context("reading object")?;
+
+        // `--grep` limits `git show` to commits whose message matches.
+        if !grep_res.is_empty() && obj.kind == ObjectKind::Commit {
+            let commit = parse_commit(&obj.data).context("parsing commit")?;
+            if !grep_res.iter().any(|re| re.is_match(&commit.message)) {
+                continue;
+            }
+        }
 
         if shown && !compact_multi_subject {
             writeln!(out)?;

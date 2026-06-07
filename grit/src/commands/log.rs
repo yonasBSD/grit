@@ -4868,6 +4868,73 @@ fn bre_to_ere(pattern: &str) -> String {
     out
 }
 
+/// Resolve the effective grep pattern type from explicit CLI flags (last-wins
+/// precedence, matching `resolve_grep_pattern_type`) falling back to
+/// `grep.patternType` config (default basic). Shared by commands that accept
+/// `--grep` but parse their own args (`format-patch`, `show`), so they apply the
+/// same pattern flavor as `git log`.
+fn resolve_grep_pattern_type_flags(
+    fixed: bool,
+    basic: bool,
+    extended: bool,
+    perl: bool,
+    cfg: &ConfigSet,
+) -> GrepPatternType {
+    if perl {
+        return GrepPatternType::Perl;
+    }
+    if extended {
+        return GrepPatternType::Extended;
+    }
+    if basic {
+        return GrepPatternType::Basic;
+    }
+    if fixed {
+        return GrepPatternType::Fixed;
+    }
+    match cfg
+        .get("grep.patterntype")
+        .map(|s| s.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("fixed") => GrepPatternType::Fixed,
+        Some("basic") => GrepPatternType::Basic,
+        Some("extended") => GrepPatternType::Extended,
+        Some("perl") => GrepPatternType::Perl,
+        _ => GrepPatternType::Basic,
+    }
+}
+
+/// Compile `--grep` patterns for a command that parses its own args, honoring the
+/// effective pattern type (CLI flags then `grep.patternType`). Returns the
+/// compiled regexes; a commit's message matches if ANY regex matches (Git's OR
+/// semantics for repeated `--grep`). Errors on a Perl pattern (no libpcre2) like
+/// `git log` does.
+pub fn compile_command_grep_regexes(
+    patterns: &[String],
+    fixed: bool,
+    basic: bool,
+    extended: bool,
+    perl: bool,
+    ignore_case: bool,
+    cfg: &ConfigSet,
+) -> Result<Vec<Regex>> {
+    if patterns.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ptype = resolve_grep_pattern_type_flags(fixed, basic, extended, perl, cfg);
+    if matches!(ptype, GrepPatternType::Perl) {
+        anyhow::bail!("cannot use Perl-compatible regexes when not compiled with USE_LIBPCRE");
+    }
+    let mut out = Vec::with_capacity(patterns.len());
+    for p in patterns {
+        let re = build_grep_regex(p, ptype, ignore_case)
+            .with_context(|| format!("invalid --grep regex: {p}"))?;
+        out.push(re);
+    }
+    Ok(out)
+}
+
 /// Build a Rust `Regex` for a grep-style pattern, applying the pattern flavor and case-sensitivity.
 fn build_grep_regex(
     pattern: &str,

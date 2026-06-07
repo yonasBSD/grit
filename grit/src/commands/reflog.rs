@@ -63,6 +63,30 @@ pub struct Args {
     /// Date format.
     #[arg(long = "date")]
     pub date: Option<String>,
+
+    /// Limit output to commits whose message matches the given pattern (like `git log --grep`).
+    #[arg(long = "grep", value_name = "PATTERN")]
+    pub grep_patterns: Vec<String>,
+
+    /// Interpret `--grep` patterns as fixed strings.
+    #[arg(short = 'F', long = "fixed-strings")]
+    pub fixed_strings: bool,
+
+    /// Interpret `--grep` patterns as POSIX basic regular expressions.
+    #[arg(short = 'G', long = "basic-regexp")]
+    pub basic_regexp: bool,
+
+    /// Interpret `--grep` patterns as POSIX extended regular expressions.
+    #[arg(short = 'E', long = "extended-regexp")]
+    pub extended_regexp: bool,
+
+    /// Interpret `--grep` patterns as Perl-compatible regular expressions.
+    #[arg(short = 'P', long = "perl-regexp")]
+    pub perl_regexp: bool,
+
+    /// Match `--grep` patterns case-insensitively.
+    #[arg(short = 'i', long = "regexp-ignore-case")]
+    pub regexp_ignore_case: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -122,6 +146,30 @@ pub struct ShowArgs {
     /// Walk reflogs instead of ancestry.
     #[arg(short = 'g', long = "walk-reflogs")]
     pub walk_reflogs: bool,
+
+    /// Limit output to commits whose message matches the given pattern (like `git log --grep`).
+    #[arg(long = "grep", value_name = "PATTERN")]
+    pub grep_patterns: Vec<String>,
+
+    /// Interpret `--grep` patterns as fixed strings.
+    #[arg(short = 'F', long = "fixed-strings")]
+    pub fixed_strings: bool,
+
+    /// Interpret `--grep` patterns as POSIX basic regular expressions.
+    #[arg(short = 'G', long = "basic-regexp")]
+    pub basic_regexp: bool,
+
+    /// Interpret `--grep` patterns as POSIX extended regular expressions.
+    #[arg(short = 'E', long = "extended-regexp")]
+    pub extended_regexp: bool,
+
+    /// Interpret `--grep` patterns as Perl-compatible regular expressions.
+    #[arg(short = 'P', long = "perl-regexp")]
+    pub perl_regexp: bool,
+
+    /// Match `--grep` patterns case-insensitively.
+    #[arg(short = 'i', long = "regexp-ignore-case")]
+    pub regexp_ignore_case: bool,
 }
 
 /// Arguments for `reflog list`.
@@ -249,6 +297,12 @@ pub fn run(args: Args) -> Result<()> {
                 format: args.format,
                 date: args.date,
                 walk_reflogs: false,
+                grep_patterns: args.grep_patterns,
+                fixed_strings: args.fixed_strings,
+                basic_regexp: args.basic_regexp,
+                extended_regexp: args.extended_regexp,
+                perl_regexp: args.perl_regexp,
+                regexp_ignore_case: args.regexp_ignore_case,
             })
         }
     }
@@ -366,15 +420,15 @@ fn run_show(args: ShowArgs) -> Result<()> {
         show_linear_break: None,
         show_signature: false,
         no_abbrev: args.no_abbrev_commit,
-        grep_patterns: Vec::new(),
+        grep_patterns: args.grep_patterns,
         grep_reflog_patterns: Vec::new(),
         invert_grep: false,
-        regexp_ignore_case: false,
+        regexp_ignore_case: args.regexp_ignore_case,
         all_match: false,
-        basic_regexp: false,
-        extended_regexp: false,
-        fixed_strings: false,
-        perl_regexp: false,
+        basic_regexp: args.basic_regexp,
+        extended_regexp: args.extended_regexp,
+        fixed_strings: args.fixed_strings,
+        perl_regexp: args.perl_regexp,
         end_of_options: false,
         read_stdin: false,
         date_order: false,
