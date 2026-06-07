@@ -1886,8 +1886,14 @@ fn pathspecs_relative_to_cwd(repo: &Repository, pathspecs: &[String]) -> Vec<Str
     pathspecs
         .iter()
         .map(|s| {
-            if Path::new(s).is_absolute() || s.starts_with(':') {
+            if Path::new(s).is_absolute() {
                 s.clone()
+            } else if s.starts_with(':') {
+                // Magic pathspecs (`:(exclude)x`, `:!x`, `:/x`) are cwd-relative unless they
+                // carry `:(top)` / `:/`. Rebase them against the current prefix so e.g. `:!sub/`
+                // from `repo/sub` becomes `:!sub/sub/` (t6132 grep/add/etc. with all-negative
+                // pathspecs run via `-C sub`). `resolve_pathspec` leaves `:(top)`/`:/` intact.
+                resolve_pathspec(s, wt, Some(prefix))
             } else {
                 normalize_repo_rel_path(&format!("{prefix}/{s}"))
             }
