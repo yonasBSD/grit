@@ -936,6 +936,48 @@ pub fn rev_list(
     // set so date-order emission can still traverse *through* those dropped tips to reach matching
     // ancestors — otherwise a `log -- <path>` whose only matching commit is an ancestor of HEAD
     // would emit nothing (Git's `limit_list` walks the full graph and only filters emission).
+    // Compute the changed-path Bloom-filter configuration once up front so that both the dense
+    // path-limited walk (which performs the real TREESAME comparison) and any later re-check use
+    // the same chain. Git records Bloom statistics during its single `limit_list` walk, so the
+    // dense walk is the natural place to consult the filters and emit the `GIT_TRACE2_PERF`
+    // counters; doing it later (after the set is already reduced) would miss TREESAME-dropped
+    // commits like the latest layer's empty filters.
+    let (bloom_chain, bloom_read_changed, bloom_version, bloom_cwd) = if !options.paths.is_empty() {
+        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        let mut core_cg = match cfg.get_bool("core.commitgraph") {
+            Some(Ok(b)) => b,
+            _ => true,
+        };
+        if std::env::var("GIT_TEST_COMMIT_GRAPH").ok().as_deref() == Some("0") {
+            core_cg = false;
+        }
+        let read_paths = cfg
+            .get("commitgraph.readchangedpaths")
+            .and_then(|v| crate::config::parse_bool(&v).ok())
+            .unwrap_or(true);
+        let version = cfg
+            .get("commitgraph.changedpathsversion")
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(-1);
+        let use_bloom = core_cg
+            && options.use_commit_graph_bloom
+            && crate::pathspec::pathspecs_allow_bloom(&options.paths);
+        let read_changed = read_paths && options.commit_graph_read_changed_paths;
+        let chain = if use_bloom {
+            CommitGraphChain::load(&repo.git_dir.join("objects"))
+        } else {
+            None
+        };
+        let version = if options.commit_graph_changed_paths_version != -1 {
+            options.commit_graph_changed_paths_version
+        } else {
+            version
+        };
+        (chain, read_changed, version, repo.bloom_pathspec_cwd())
+    } else {
+        (None, false, -1, None)
+    };
+
     let mut dense_path_limited = false;
     let dense_traversable: HashSet<ObjectId> = if !options.paths.is_empty()
         && !options.full_history
@@ -943,6 +985,29 @@ pub fn rev_list(
         && !options.simplify_merges
     {
         let traversable = included.clone();
+        // Consult the Bloom filter over the full reachable set *before* dense limiting prunes the
+        // traversal. Git loads a first-parent Bloom filter for every commit its `limit_list` walk
+        // reaches — including those simplified away by TREESAME merges — which both feeds the
+        // `GIT_TRACE2_PERF` statistics and surfaces the reader's corrupt-graph integrity warnings.
+        // Consulting only the pruned/selected set would undercount the statistics (e.g. side-branch
+        // commits hidden by a TREESAME merge) and miss warnings for commits that don't touch the
+        // path. This runs whenever a Bloom chain is present, independent of statistics collection.
+        if bloom_chain.is_some() {
+            let bloom_ctx = DenseBloomCtx {
+                chain: bloom_chain.as_ref(),
+                read_changed_paths: bloom_read_changed,
+                changed_paths_version: bloom_version,
+                stats: options.bloom_stats.as_ref(),
+                cwd: bloom_cwd.as_deref(),
+            };
+            consult_dense_bloom_filters(
+                repo,
+                &mut graph,
+                &traversable,
+                &options.paths,
+                &bloom_ctx,
+            )?;
+        }
         included = walk_dense_path_limited_closure(
             repo,
             &mut graph,
@@ -1042,42 +1107,20 @@ pub fn rev_list(
         OrderingMode::AuthorDateTopo => topo_sort(&mut graph, &included, true)?,
     };
 
-    // Path filtering: keep only commits that modify given paths
+    // Path filtering: keep only commits that modify given paths.
     if !options.paths.is_empty() {
         let paths = &options.paths;
-        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
-        let mut core_cg = match cfg.get_bool("core.commitgraph") {
-            Some(Ok(b)) => b,
-            _ => true,
-        };
-        if std::env::var("GIT_TEST_COMMIT_GRAPH").ok().as_deref() == Some("0") {
-            core_cg = false;
-        }
-        let read_paths = cfg
-            .get("commitgraph.readchangedpaths")
-            .and_then(|v| crate::config::parse_bool(&v).ok())
-            .unwrap_or(true);
-        let version = cfg
-            .get("commitgraph.changedpathsversion")
-            .and_then(|s| s.parse::<i32>().ok())
-            .unwrap_or(-1);
-
-        let use_bloom = core_cg
-            && options.use_commit_graph_bloom
-            && crate::pathspec::pathspecs_allow_bloom(paths);
-        let read_changed = read_paths && options.commit_graph_read_changed_paths;
-        let bloom_chain = if use_bloom {
-            CommitGraphChain::load(&repo.git_dir.join("objects"))
-        } else {
+        // The dense path-limited walk above already performed the first-parent Bloom precheck and
+        // recorded its `GIT_TRACE2_PERF` statistics for every visited commit (matching Git's single
+        // `limit_list` pass). Re-running the precheck here would double-count those counters, so
+        // suppress stats in the dense case while still consulting the chain to filter the set.
+        // For `--full-history`/`--simplify-merges`/`--ancestry-path`, the dense walk was skipped, so
+        // this re-check is the only place the precheck runs and must record the statistics.
+        let retain_stats = if dense_path_limited {
             None
-        };
-        let bloom_version = if options.commit_graph_changed_paths_version != -1 {
-            options.commit_graph_changed_paths_version
         } else {
-            version
+            options.bloom_stats.as_ref()
         };
-        let bloom_cwd = repo.bloom_pathspec_cwd();
-
         ordered.retain(|oid| {
             commit_touches_paths(
                 repo,
@@ -1094,9 +1137,9 @@ pub fn rev_list(
                 &effective_ancestry_path_bottoms,
                 &excluded,
                 bloom_chain.as_ref(),
-                read_changed,
+                bloom_read_changed,
                 bloom_version,
-                options.bloom_stats.as_ref(),
+                retain_stats,
                 bloom_cwd.as_deref(),
             )
             .unwrap_or(false)
@@ -4314,6 +4357,20 @@ fn treesame_parent_is_ancestry_bottom_or_ancestor(
     Ok(false)
 }
 
+/// Bloom-filter context threaded through the dense path-limited walk so that the
+/// changed-path Bloom precheck (Git's `rev_compare_tree` first-parent shortcut) and its
+/// `GIT_TRACE2_PERF` statistics are recorded during the single real walk, exactly as Git
+/// does — rather than during a later re-check of an already-reduced set.
+#[derive(Clone, Copy)]
+struct DenseBloomCtx<'a> {
+    chain: Option<&'a CommitGraphChain>,
+    read_changed_paths: bool,
+    changed_paths_version: i32,
+    stats: Option<&'a BloomWalkStatsHandle>,
+    cwd: Option<&'a str>,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn walk_dense_path_limited_closure(
     repo: &Repository,
     graph: &mut CommitGraph<'_>,
@@ -4345,6 +4402,75 @@ fn walk_dense_path_limited_closure(
     }
 
     Ok(selected)
+}
+
+/// Consult the changed-path Bloom filter over the full reachable set, matching Git's walk.
+///
+/// Git consults the Bloom filter for the first-parent comparison of *every* commit it walks in
+/// `limit_list` via `rev_compare_tree`/`check_maybe_different_in_bloom_filter` (even commits later
+/// pruned by TREESAME merge simplification). This happens unconditionally — not just when
+/// `GIT_TRACE2_PERF` statistics are being collected — so loading the filter for each commit is also
+/// what surfaces the reader's integrity warnings (out-of-range / decreasing index offsets) for a
+/// corrupt commit-graph. grit's dense path-limited selection walk prunes the traversal (it follows
+/// only the TREESAME parent of a merge) and then filters an already-reduced set, so on its own it
+/// would consult far fewer filters than Git and miss both the statistics and these warnings.
+///
+/// This pass therefore runs over `reachable` — the full reachable set before dense limiting — and
+/// looks up each commit's first-parent Bloom filter exactly once, mirroring Git's single
+/// `limit_list` pass. When a `BloomWalkStats` handle is present it records the
+/// `filter_not_present` / `maybe` / `definitely_not` / `false_positive` counters; the pass runs even
+/// without one so corrupt-graph warnings still fire. It never changes which commits are selected for
+/// output (a `DefinitelyNot` only confirms what the tree diff would also conclude).
+fn consult_dense_bloom_filters(
+    repo: &Repository,
+    graph: &mut CommitGraph<'_>,
+    reachable: &HashSet<ObjectId>,
+    paths: &[String],
+    bloom: &DenseBloomCtx<'_>,
+) -> Result<()> {
+    let Some(chain) = bloom.chain else {
+        return Ok(());
+    };
+    for oid in reachable {
+        let parents = graph.parents_of(*oid)?;
+        // Bloom is consulted only against the first parent (Git `rev_compare_tree`,
+        // `nth_parent == 0`); root commits have no first-parent comparison.
+        let Some(first_parent) = parents.first().copied() else {
+            continue;
+        };
+        let pre = chain.bloom_precheck_for_paths(
+            &repo.odb,
+            *oid,
+            paths,
+            bloom.cwd,
+            bloom.changed_paths_version,
+            bloom.read_changed_paths,
+        )?;
+        if let Some(stats) = bloom.stats {
+            if let Ok(mut g) = stats.lock() {
+                g.record_precheck(pre);
+            }
+        }
+        // A `Maybe` result that turns out not to touch the path (tree-same against the first
+        // parent) is a Bloom false positive in Git's accounting. Only computed when stats are
+        // being collected, since it requires an extra tree diff that is otherwise unnecessary.
+        if pre == BloomPrecheck::Maybe {
+            if let Some(stats) = bloom.stats {
+                let commit = load_commit(repo, *oid)?;
+                let commit_map: HashMap<String, ObjectId> =
+                    flatten_tree(repo, commit.tree, "")?.into_iter().collect();
+                let parent = load_commit(repo, first_parent)?;
+                let parent_map: HashMap<String, ObjectId> =
+                    flatten_tree(repo, parent.tree, "")?.into_iter().collect();
+                if !path_differs_for_specs(&commit_map, &parent_map, paths) {
+                    if let Ok(mut g) = stats.lock() {
+                        g.record_false_positive();
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 struct DensePathAction {
