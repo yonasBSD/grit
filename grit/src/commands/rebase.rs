@@ -367,6 +367,21 @@ pub struct Args {
 /// Git's `-r` is an alias for `--rebase-merges` and must not consume a following revision (clap
 /// `short = 'r'` with optional value would eat `A` in `rebase -i -r A main`).
 pub fn preprocess_rebase_argv(rest: &[String]) -> Vec<String> {
+    // Git's parse-options reports a value-less `--exec`/`-x` at the end of the command line as
+    // `option 'exec' requires a value` / `switch 'x' requires a value` and exits 128, before any
+    // rebase work (t3404 'rebase -i --exec without <CMD>'). Clap's default ("a value is required
+    // for '--exec <EXEC>'…") does not contain "requires a value", so detect the trailing bare flag
+    // here and emit Git's wording directly.
+    if let Some(last) = rest.last() {
+        if last == "--exec" {
+            eprintln!("error: option `exec' requires a value");
+            std::process::exit(128);
+        }
+        if last == "-x" {
+            eprintln!("error: switch `x' requires a value");
+            std::process::exit(128);
+        }
+    }
     let mut out = Vec::new();
     let mut i = 0usize;
     while i < rest.len() {
@@ -1221,6 +1236,13 @@ fn merge_subject_label_from_oneline(oneline: &str) -> String {
 }
 
 fn sanitize_merge_label(base: &str, max_len: usize) -> String {
+    // Mirror Git's `label_oid` truncation (sequencer.c). The buffer length is measured in BYTES
+    // (`buf->len`), and a non-ASCII UTF-8 character is kept whole only if appending all of its bytes
+    // does not exceed `max_len` (`buf->len + (p - label) > max_len` → break). Git's loop guard is
+    // `buf->len + 1 < max_len`, so it stops once one more byte would reach `max_len`. Using the
+    // character's BYTE length (not its display width) is essential: e.g. `0123456789 我 123` truncates
+    // to `0123456789-我` at maxLabelLength=14 (10 + 1 + 3 = 14, accepted) but to `0123456789-` at 13
+    // (10 + 1 + 3 = 14 > 13, the 3-byte `我` is rejected). t3430 'truncate label names'.
     let mut out = String::new();
     for ch in base.chars() {
         if out.len() + 1 >= max_len {
@@ -1229,8 +1251,8 @@ fn sanitize_merge_label(base: &str, max_len: usize) -> String {
         if ch.is_ascii_alphanumeric() {
             out.push(ch);
         } else if !ch.is_ascii() {
-            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
-            if out.len() + w > max_len {
+            let nbytes = ch.len_utf8();
+            if out.len() + nbytes > max_len {
                 break;
             }
             out.push(ch);
@@ -6921,6 +6943,65 @@ fn write_rebase_todo_slice(rb_dir: &Path, lines: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Run the persisted global `--exec` commands (from `rebase-merge/exec`) after a *merge* step.
+///
+/// Git inserts an `exec` instruction after every `pick` AND `merge` command (`todo_list_add_exec_commands`).
+/// grit's pick path runs the persisted exec inline; merges share the same `rebase-merge/exec`
+/// file but did not run it, so a `done`-capturing `-x` (t3430 'truncate label names', which greps
+/// the post-merge `done` for the merge-tip label) never fired after the trailing merge. This runs
+/// each exec command in order; on failure it reschedules the failed exec (and the rest of the todo)
+/// and exits with the command's status, mirroring the pick-path behavior.
+fn run_global_exec_after_merge(
+    repo: &Repository,
+    rb_dir: &Path,
+    todo: &[&str],
+    i: usize,
+) -> Result<()> {
+    let Ok(global_exec_raw) = fs::read_to_string(rb_dir.join("exec")) else {
+        return Ok(());
+    };
+    let exec_cmds: Vec<String> = global_exec_raw
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    for (exec_idx, global_exec) in exec_cmds.iter().enumerate() {
+        if !rebase_quiet(rb_dir) {
+            eprintln!("Executing: {}", global_exec);
+        }
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(global_exec)
+            .current_dir(repo.work_tree.as_deref().unwrap_or_else(|| Path::new(".")))
+            .status()
+            .with_context(|| format!("failed to execute: {}", global_exec))?;
+        if !status.success() {
+            let code = status.code().filter(|code| *code != 127).unwrap_or(1);
+            let reschedule = rb_dir.join("reschedule-failed-exec").exists()
+                && !rb_dir.join("no-reschedule-failed-exec").exists();
+            eprintln!(
+                "warning: execution failed for: {}\n\
+                 hint: You can fix the problem, and then run\n\
+                 hint:   grit rebase --continue",
+                global_exec
+            );
+            if reschedule {
+                eprintln!("hint: '{}' has been rescheduled", global_exec);
+            }
+            let mut remaining: Vec<String> = exec_cmds[exec_idx..]
+                .iter()
+                .map(|c| format!("exec {c}"))
+                .collect();
+            remaining.extend(todo[i + 1..].iter().map(|line| (*line).to_owned()));
+            let remaining_refs: Vec<&str> = remaining.iter().map(String::as_str).collect();
+            write_rebase_todo_slice(rb_dir, &remaining_refs)?;
+            std::process::exit(code);
+        }
+    }
+    Ok(())
+}
+
 /// Replay all remaining commits from the todo list.
 ///
 /// After each successful step, the todo file is re-read so hooks and `exec` lines can append work
@@ -7140,6 +7221,8 @@ fn replay_remaining(
                         append_reflog(git_dir, "HEAD", &old_head, &new_oid, &ident, &msg, false);
                     let rest: Vec<&str> = todo[i + 1..].to_vec();
                     write_rebase_todo_slice(rb_dir, &rest)?;
+                    // Git inserts an `exec` after every merge too; run the persisted global exec.
+                    run_global_exec_after_merge(repo, rb_dir, &todo, i)?;
                     continue 'rebase_loop;
                 }
                 RebaseReplayStep::Exec(exec_cmd) => {
@@ -7280,6 +7363,10 @@ fn replay_remaining(
                                 let rest: Vec<&str> = todo[i + 1..].to_vec();
                                 write_rebase_todo_slice(rb_dir, &rest)?;
                             }
+                            // Git inserts an `exec` after every merge; run the persisted global
+                            // exec so a `-x` command captures the post-merge `done` (t3430
+                            // 'truncate label names').
+                            run_global_exec_after_merge(repo, rb_dir, &todo, i)?;
                             continue 'rebase_loop;
                         }
                         Ok(RebaseMergeReuseOutcome::Conflict) => {
