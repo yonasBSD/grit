@@ -4909,8 +4909,11 @@ fn preprocess_log_args(rest: &[String]) -> Vec<String> {
             i += 1;
             continue;
         }
-        // `-L:pat:file` must keep the leading `:` (e.g. `-L:$:file.c` → `:$:file.c` for line-log).
-        if arg.starts_with("-L:") {
+        // Normalize the attached form `-L<value>` into `-L <value>` so the value is parsed as the
+        // line-range option rather than being swallowed by the hyphen-tolerant `revisions`
+        // positional. This covers both `-L1,1:file` and `-L:pat:file` (the leading `:` of the
+        // latter is preserved). `arg[2..]` strips only the `-L` prefix and keeps the remainder.
+        if arg.starts_with("-L") && arg.len() > 2 {
             result.push("-L".to_string());
             result.push(arg[2..].to_string());
             i += 1;

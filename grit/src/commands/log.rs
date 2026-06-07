@@ -1213,7 +1213,16 @@ fn run_line_log(
         None,
         false,
     )?;
-    let order: Vec<ObjectId> = walk.iter().map(|(o, _)| *o).collect();
+    // Git forces `--topo-order` for line-level traversal (`revision.c`:
+    // `if (revs->line_level_traverse) { ...; revs->topo_order = 1; }`). The commits are emitted in
+    // topological order so that, when the line history follows a rename onto a side branch, the
+    // whole side lineage is shown before rejoining the main line. `walk_commits` returns
+    // commit-date order, which only coincides with topo order when timestamps are strictly
+    // increasing; the t4211 "fancy rename following" cases use identical timestamps, exposing the
+    // difference. Reorder the walked set topologically (children before parents), breaking ties by
+    // the date-order position so equal-date commits keep Git's ordering.
+    let date_order: Vec<ObjectId> = walk.iter().map(|(o, _)| *o).collect();
+    let order = topo_order_line_log_commits(repo, &date_order, &walk)?;
 
     let initial = parse_line_log_ranges(
         &repo.odb,
@@ -1419,7 +1428,6 @@ fn run_line_log(
         .map(|f| f.starts_with("format:"))
         .unwrap_or(false);
 
-    let n_filtered = filtered.len();
     for (i, oid) in filtered.iter().enumerate() {
         if is_format_separator && i > 0 {
             if args.null_terminator {
@@ -1462,6 +1470,10 @@ fn run_line_log(
         let nparents = load_raw_parents(repo, *oid)?.len();
         if show_patch {
             if nparents <= 1 {
+                // Emit the line-log patch directly after the commit header/message. The single
+                // blank-line separator between commits is printed *before* each commit at the top
+                // of the loop (`log_wants_blank_line_between_commits`), so we do not add another
+                // blank here — otherwise regular commits would be separated by two blank lines.
                 if let Some(ds) = displays.get(oid) {
                     for d in ds {
                         write!(
@@ -1478,19 +1490,81 @@ fn run_line_log(
                             )
                         )?;
                     }
-                    if i + 1 < n_filtered {
-                        writeln!(out_main)?;
-                    }
                 }
-            } else if i + 1 < n_filtered {
-                // Git prints an extra blank line after merge commits when emitting line-log patches.
-                writeln!(out_main)?;
+            } else if i + 1 < filtered.len() {
+                // A merge commit shows no line-log patch, but Git still emits the empty diff
+                // preamble: one blank line where the patch would be. Combined with the inter-commit
+                // separator printed before the next commit, this reproduces Git's two blank lines
+                // after a merge's message (t4211 parallel-change). Suppressed for the last commit,
+                // which has no trailing separator.
                 writeln!(out_main)?;
             }
         }
     }
 
     Ok(())
+}
+
+/// Reorder the line-log commit set into Git's topological order.
+///
+/// Git forces `--topo-order` for line-level traversal. We already have the reachable commit set in
+/// commit-date order from `walk_commits` (which has applied all date/merge/skip filters). Rather
+/// than reimplement Git's topological tie-breaking, we ask the shared `rev_list` machinery (whose
+/// `OrderingMode::Topo` is verified to match `git log --topo-order` byte-for-byte) for the topo
+/// order of the same tips, then project the already-filtered set onto that ordering. Commits in the
+/// filtered set are emitted in topo order; any topo commit not in the set is skipped, and (as a
+/// defensive fallback) any filtered commit the topo walk did not surface keeps its date-order slot.
+fn topo_order_line_log_commits(
+    repo: &Repository,
+    date_order: &[ObjectId],
+    walk: &[(ObjectId, CommitInfo)],
+) -> Result<Vec<ObjectId>> {
+    if date_order.len() <= 1 {
+        return Ok(date_order.to_vec());
+    }
+    let in_set: HashSet<ObjectId> = date_order.iter().copied().collect();
+
+    // Seed the topo walk from the same tips the line-log walk used: commits in the set that are not
+    // a parent of any other commit in the set (the lineage heads). This reproduces Git's behavior
+    // of topo-ordering exactly the reachable, already-filtered set.
+    let mut is_parent: HashSet<ObjectId> = HashSet::new();
+    for (_, info) in walk {
+        for p in &info.parents {
+            if in_set.contains(p) {
+                is_parent.insert(*p);
+            }
+        }
+    }
+    let tips: Vec<String> = date_order
+        .iter()
+        .filter(|o| !is_parent.contains(o))
+        .map(|o| o.to_hex())
+        .collect();
+
+    let options = RevListOptions {
+        ordering: OrderingMode::Topo,
+        ..Default::default()
+    };
+    let topo = match rev_list(repo, &tips, &[], &options) {
+        Ok(res) => res.commits,
+        Err(_) => return Ok(date_order.to_vec()),
+    };
+
+    let mut out: Vec<ObjectId> = Vec::with_capacity(date_order.len());
+    let mut emitted: HashSet<ObjectId> = HashSet::new();
+    for oid in &topo {
+        if in_set.contains(oid) && emitted.insert(*oid) {
+            out.push(*oid);
+        }
+    }
+    // Defensive: keep any filtered commit the topo walk did not surface (should not normally happen)
+    // in its original date-order position relative to the tail.
+    for oid in date_order {
+        if emitted.insert(*oid) {
+            out.push(*oid);
+        }
+    }
+    Ok(out)
 }
 
 /// Order `--branches`/`--tags`/… tip specs by committer date, newest first.
