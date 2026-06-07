@@ -1,7 +1,7 @@
 in_scope = "yes"
 tests_total = 40
-passed_last = 40
-failing = 0
-fully_passing = true
+passed_last = 38
+failing = 2
+fully_passing = false
 status = "ok"
 expect_failure = 0
