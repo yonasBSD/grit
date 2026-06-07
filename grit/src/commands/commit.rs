@@ -2808,6 +2808,10 @@ fn run_commit_patch_mode(
                 }
             }
 
+            // Git prints a trailing newline when leaving the file's interactive hunk loop
+            // (t3701 "commit falls back to color.ui" compares raw vs color-decoded output).
+            writeln!(out).ok();
+
             // `blend_line_diff_by_hunk_ranges` uses the first arg as "source" when a range is
             // accepted. For `commit -p` the diff is **index → worktree**; answering `y` must stage
             // the worktree side, so invert flags (same relationship as stash's `stash_accepted`).

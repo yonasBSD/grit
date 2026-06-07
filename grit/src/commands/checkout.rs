@@ -5739,6 +5739,7 @@ fn checkout_patch_inner(
                     skip_file = true;
                 }
                 "q" | "Q" => {
+                    writeln!(out).ok();
                     if matches!(patch_mode, PatchMode::HeadTree) && !worktree_only {
                         apply_checkout_head_mode(
                             repo,
@@ -5769,6 +5770,13 @@ fn checkout_patch_inner(
                 }
                 _ => {}
             }
+        }
+
+        // Git prints a trailing newline when leaving each file's interactive hunk loop
+        // (`patch_update_file`'s final `putchar('\n')`), so the raw output ends with a newline
+        // exactly like the color-decoded copy (t3701 "falls back to color.ui").
+        if !hunks.is_empty() {
+            writeln!(out).ok();
         }
 
         if matches!(patch_mode, PatchMode::HeadTree) && !worktree_only {
