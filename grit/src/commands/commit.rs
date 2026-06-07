@@ -4613,7 +4613,9 @@ fn prepare_commit_message(
     let initial = build_initial_commit_buffer(args, repo, fixup, template_path)?;
 
     // `git commit --amend --no-edit` (or implied no-edit): reuse HEAD without the editor.
-    if args.amend && !use_editor {
+    // `--fixup` overrides this: the message must become `fixup!`/`amend!`/`squash!` of the
+    // target's subject even when `--amend` replaces the current commit (t3404 `--update-refs`).
+    if args.amend && !use_editor && fixup.is_none() {
         let head_st = resolve_head(&repo.git_dir)?;
         if let Some(oid) = head_st.oid() {
             let obj = repo.odb.read(oid)?;
