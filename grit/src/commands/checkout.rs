@@ -6089,13 +6089,13 @@ fn print_detached_checkout_leave_message(
     let subject = commit_subject(repo, old_oid).unwrap_or_default();
     if count > 0 {
         let noun = if count == 1 { "commit" } else { "commits" };
-        eprintln!("Warning: you are leaving {count} {noun} behind, not connected to");
-        eprintln!("any of your branches:");
-        eprintln!();
-        eprintln!("  {short} {subject}");
-        eprintln!();
+        checkout_eprintln!("Warning: you are leaving {count} {noun} behind, not connected to");
+        checkout_eprintln!("any of your branches:");
+        checkout_eprintln!();
+        checkout_eprintln!("  {short} {subject}");
+        checkout_eprintln!();
     } else {
-        eprintln!("Previous HEAD position was {short} {subject}");
+        checkout_eprintln!("Previous HEAD position was {short} {subject}");
     }
     Ok(())
 }
