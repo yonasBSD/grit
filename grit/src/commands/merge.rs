@@ -4067,44 +4067,47 @@ fn maybe_prefetch_partial_clone_merge_blobs(
     let mut batches: Vec<Vec<ObjectId>> = Vec::new();
     let mut already: std::collections::HashSet<ObjectId> = std::collections::HashSet::new();
 
+    // For each side (ours, then theirs), rename detection runs in two phases that
+    // each issue at most one lazy-fetch batch: a basename-matching phase, then a
+    // general (full-matrix) phase over remaining relevant sources x all unpaired
+    // destinations. A phase only produces a batch when it actually has missing
+    // blobs to hydrate.
+    let mut push_batch =
+        |oids: Vec<ObjectId>,
+         batches: &mut Vec<Vec<ObjectId>>,
+         already: &mut std::collections::HashSet<ObjectId>| {
+            let mut batch: Vec<ObjectId> = Vec::new();
+            let mut seen: BTreeSet<ObjectId> = BTreeSet::new();
+            for oid in oids {
+                if already.contains(&oid) || seen.contains(&oid) || !is_missing(&oid) {
+                    continue;
+                }
+                seen.insert(oid);
+                batch.push(oid);
+            }
+            if !batch.is_empty() {
+                for o in &batch {
+                    already.insert(*o);
+                }
+                batches.push(batch);
+            }
+        };
+
     for (side, other) in [(ours, theirs), (theirs, ours)] {
-        let mut batch: Vec<ObjectId> = Vec::new();
-        let mut seen: BTreeSet<ObjectId> = BTreeSet::new();
-        for oid in relevant_rename_blob_oids(base, side, other) {
-            if already.contains(&oid) || seen.contains(&oid) || !is_missing(&oid) {
-                continue;
-            }
-            seen.insert(oid);
-            batch.push(oid);
-        }
-        if !batch.is_empty() {
-            for o in &batch {
-                already.insert(*o);
-            }
-            batches.push(batch);
-        }
+        let RenameDetectionBlobs { basename, general } =
+            relevant_rename_blob_oids(base, side, other);
+        push_batch(basename, &mut batches, &mut already);
+        push_batch(general, &mut batches, &mut already);
     }
 
     // Phase 3: content merge. A path whose blob differs from base on BOTH ours and
     // theirs needs a 3-way content merge; the side blobs not already fetched are
     // pulled here. Base blobs are already local from rename detection.
-    {
-        let mut batch: Vec<ObjectId> = Vec::new();
-        let mut seen: BTreeSet<ObjectId> = BTreeSet::new();
-        for oid in content_merge_blob_oids(base, ours, theirs) {
-            if already.contains(&oid) || seen.contains(&oid) || !is_missing(&oid) {
-                continue;
-            }
-            seen.insert(oid);
-            batch.push(oid);
-        }
-        if !batch.is_empty() {
-            for o in &batch {
-                already.insert(*o);
-            }
-            batches.push(batch);
-        }
-    }
+    push_batch(
+        content_merge_blob_oids(base, ours, theirs),
+        &mut batches,
+        &mut already,
+    );
 
     if batches.is_empty() {
         return Ok(());
@@ -4160,27 +4163,44 @@ fn renamed_dir_prefix(base_path: &[u8], dest_path: &[u8]) -> Option<Vec<u8>> {
     Some(bsplit[..keep].join(&b'/'))
 }
 
+/// The two lazy-fetch batches rename detection issues for one side of the merge:
+/// the basename-matching phase and the general (full-matrix) phase. Each is one
+/// `fetch.negotiationAlgorithm` child when non-empty (mirroring git's
+/// `basename_prefetch` / `inexact_prefetch`).
+struct RenameDetectionBlobs {
+    basename: Vec<ObjectId>,
+    general: Vec<ObjectId>,
+}
+
 /// Blobs read by Git's rename detection for the `base` -> `side` diff, restricted
-/// to *relevant* renames (the merge-ort optimization).
+/// to *relevant* renames (the merge-ort optimization), split into the two phases
+/// git runs (and prefetches for) separately.
 ///
 /// A source that `side` renamed-and-modified only needs its content read when the
 /// rename can affect the merge outcome, i.e. when `other` (the opposite side of
-/// the merge) touches the same path. Concretely a basename-matched rename pair
-/// (deleted base path D, added side path with the same final component, different
-/// content) is relevant when either:
+/// the merge) touches the same path. Concretely a deleted base path D is relevant
+/// when either:
 ///   * D is content-modified by `other` (a 3-way content merge of the renamed
 ///     file is required), or
 ///   * D lives under a directory that `side` renamed away and `other` added a new
 ///     path into (directory-rename detection is needed, which reads the renamed
 ///     files' content).
 ///
-/// Both the source (base) and destination (side) blobs of a relevant pair are
-/// returned. Exact renames are resolved without reading content and are skipped.
+/// Phase 1 (basename): for each relevant source whose basename matches a unique
+/// added destination basename, both the source (base) and destination (side)
+/// blobs are fetched (git's `find_basename_matches` / `basename_prefetch`).
+///
+/// Phase 2 (general): only runs when relevant sources remain unpaired after the
+/// basename phase. It then fetches every still-unpaired destination plus every
+/// remaining relevant source (git's `inexact_prefetch`), because any relevant
+/// source must be compared against all possible unpaired destinations.
+///
+/// Exact renames are resolved without reading content and are excluded from both.
 fn relevant_rename_blob_oids(
     base: &HashMap<Vec<u8>, IndexEntry>,
     side: &HashMap<Vec<u8>, IndexEntry>,
     other: &HashMap<Vec<u8>, IndexEntry>,
-) -> Vec<ObjectId> {
+) -> RenameDetectionBlobs {
     fn basename(p: &[u8]) -> &[u8] {
         match p.iter().rposition(|&b| b == b'/') {
             Some(i) => &p[i + 1..],
@@ -4242,16 +4262,19 @@ fn relevant_rename_blob_oids(
         .cloned()
         .collect();
 
-    // Deleted base paths (renamed-and-modified candidates: not an exact rename).
+    // Rename-source candidates: base paths removed on this side (renamed away or
+    // deleted). A path still present at its original location — even if modified in
+    // place — is NOT a rename source; it is handled by the content merge, not
+    // rename detection. Exact renames are resolved without reading content.
     let mut deleted: Vec<(&Vec<u8>, &IndexEntry)> = Vec::new();
     for (p, e) in base {
         if !is_regularish(e.mode) {
             continue;
         }
-        if side.get(p).is_some_and(|s| s.oid == e.oid) {
-            continue; // unchanged at this path
+        if side.contains_key(p) {
+            continue; // still present at the original path (modified in place if changed)
         }
-        if !side.contains_key(p) && side_oid_paths.contains_key(&e.oid) {
+        if side_oid_paths.contains_key(&e.oid) {
             continue; // exact rename, no content read
         }
         deleted.push((p, e));
@@ -4272,19 +4295,38 @@ fn relevant_rename_blob_oids(
         added.push((p, e));
     }
 
-    // A deleted source is relevant when `other` modifies it in place, or when it
-    // lives under a directory `side` renamed and `other` added a new path into.
-    let is_relevant_source = |dp: &[u8]| -> bool {
-        // Content-modified by `other` at the same base path?
-        if other
+    // Classify a deleted source's relevance, mirroring merge-ort's add_pair():
+    //   * CONTENT relevant: the file's content is not preserved unchanged on the
+    //     other side at the original path (the other side deleted/renamed it, or
+    //     modified it in place). A 3-way content merge of the rename target may be
+    //     needed, so its content must be read and it participates in BOTH the
+    //     basename and (if unpaired) the general rename phase.
+    //   * LOCATION relevant: under a directory `side` renamed away and `other`
+    //     added a new path into (directory-rename detection). It participates only
+    //     in the basename phase; if it has no basename-matched destination it is
+    //     culled (the directory rename is already known from exact renames) and is
+    //     NOT read in the general phase.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Relevance {
+        Content,
+        Location,
+        None,
+    }
+    let relevance_of = |dp: &[u8]| -> Relevance {
+        // Content relevant unless `other` keeps the file unchanged at this path.
+        let kept_unchanged_by_other = other
             .get(dp)
-            .is_some_and(|o| base.get(dp).is_some_and(|b| o.oid != b.oid))
-        {
-            return true;
+            .is_some_and(|o| base.get(dp).is_some_and(|b| o.oid == b.oid));
+        if !kept_unchanged_by_other {
+            return Relevance::Content;
         }
-        relevant_renamed_prefixes
+        if relevant_renamed_prefixes
             .iter()
             .any(|pre| path_under_dir(dp, pre))
+        {
+            return Relevance::Location;
+        }
+        Relevance::None
     };
 
     // Number of shared trailing path components between two paths.
@@ -4298,32 +4340,72 @@ fn relevant_rename_blob_oids(
         n
     }
 
-    let mut out: Vec<ObjectId> = Vec::new();
-    for (dp, de) in &deleted {
-        if !is_relevant_source(dp) {
-            continue;
-        }
+    // Relevant deleted sources (the only sources rename detection reads), tagged
+    // with whether they are content- or location-relevant.
+    let relevant_deleted: Vec<(&Vec<u8>, &IndexEntry, Relevance)> = deleted
+        .iter()
+        .filter_map(|(dp, de)| match relevance_of(dp) {
+            Relevance::None => None,
+            r => Some((*dp, *de, r)),
+        })
+        .collect();
+
+    // Phase 1: basename matching. For each relevant source, pair it with the added
+    // destination sharing its basename and the longest trailing path suffix (its
+    // directory-rename image). This avoids spuriously pairing e.g.
+    // `dir/subdir/Makefile` with `folder/subdir/tweaked/Makefile` when
+    // `folder/subdir/Makefile` exists. A destination may be consumed by only one
+    // source pairing; once paired it is excluded from the general phase.
+    let mut basename_out: Vec<ObjectId> = Vec::new();
+    let mut paired_dest_idx: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut paired_source: Vec<bool> = vec![false; relevant_deleted.len()];
+    for (si, (dp, de, _rel)) in relevant_deleted.iter().enumerate() {
         let dbase = basename(dp);
-        // Pair this source with its single best basename-matched destination: the
-        // added path sharing the longest trailing suffix (its directory-rename
-        // image). This avoids spuriously pairing e.g. `dir/subdir/Makefile` with
-        // `folder/subdir/tweaked/Makefile` when `folder/subdir/Makefile` exists.
-        let mut best: Option<(usize, ObjectId)> = None;
-        for (ap, ae) in &added {
-            if basename(ap) != dbase || de.oid == ae.oid {
+        let mut best: Option<(usize, usize, ObjectId)> = None;
+        for (ai, (ap, ae)) in added.iter().enumerate() {
+            if paired_dest_idx.contains(&ai) || basename(ap) != dbase || de.oid == ae.oid {
                 continue;
             }
             let score = shared_suffix_components(dp, ap);
-            if best.is_none_or(|(s, _)| score > s) {
-                best = Some((score, ae.oid));
+            if best.is_none_or(|(s, _, _)| score > s) {
+                best = Some((score, ai, ae.oid));
             }
         }
-        if let Some((_, add_oid)) = best {
-            out.push(de.oid);
-            out.push(add_oid);
+        if let Some((_, ai, add_oid)) = best {
+            paired_dest_idx.insert(ai);
+            paired_source[si] = true;
+            basename_out.push(de.oid);
+            basename_out.push(add_oid);
         }
     }
-    out
+
+    // Phase 2: general (full-matrix) rename detection. Git only runs this when
+    // CONTENT-relevant sources remain unpaired after the basename phase; it then
+    // reads every still-unpaired destination and every remaining content-relevant
+    // source (`inexact_prefetch`). Location-relevant sources left unpaired are
+    // culled (their directory rename is already known) and never read here. When
+    // no content-relevant source remains unpaired, no general fetch happens.
+    let mut general_out: Vec<ObjectId> = Vec::new();
+    let remaining_sources: Vec<ObjectId> = relevant_deleted
+        .iter()
+        .enumerate()
+        .filter(|(si, (_, _, rel))| !paired_source[*si] && *rel == Relevance::Content)
+        .map(|(_, (_, de, _))| de.oid)
+        .collect();
+    if !remaining_sources.is_empty() {
+        for (ai, (_, ae)) in added.iter().enumerate() {
+            if paired_dest_idx.contains(&ai) {
+                continue;
+            }
+            general_out.push(ae.oid);
+        }
+        general_out.extend(remaining_sources);
+    }
+
+    RenameDetectionBlobs {
+        basename: basename_out,
+        general: general_out,
+    }
 }
 
 /// Blobs read by 3-way content merge: for a base path modified on both ours and
@@ -4381,7 +4463,37 @@ fn content_merge_blob_oids(
                 best = Some((score, e.oid));
             }
         }
-        best.map(|(_, oid)| oid)
+        if let Some((_, oid)) = best {
+            return Some(oid);
+        }
+        // General (non-basename) rename: the file was renamed to a different
+        // basename (e.g. general/leap1 -> general/jump1). We cannot identify the
+        // exact target without content similarity, but for a both-sides-modified
+        // content merge we only need to know a rename target exists on this side so
+        // the in-place modification on the other side gets fetched. Pick any added,
+        // non-exact-rename path in the same parent directory as the base path; its
+        // blob was already fetched during general rename detection, so this never
+        // introduces an extra fetch.
+        fn parent_of(p: &[u8]) -> &[u8] {
+            match p.iter().rposition(|&b| b == b'/') {
+                Some(i) => &p[..i],
+                None => b"",
+            }
+        }
+        let parent = parent_of(base_path);
+        for (p, e) in side {
+            if base.contains_key(p) || e.oid == *base_oid {
+                continue;
+            }
+            // Skip exact renames of some base file (those are not inexact targets).
+            if base.values().any(|b| b.oid == e.oid) {
+                continue;
+            }
+            if parent_of(p) == parent {
+                return Some(e.oid);
+            }
+        }
+        None
     };
 
     let mut out: Vec<ObjectId> = Vec::new();
