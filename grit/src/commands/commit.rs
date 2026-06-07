@@ -2550,6 +2550,11 @@ fn run_commit_patch_mode(
     use similar::{Algorithm, TextDiff};
     use std::io::BufRead;
 
+    let patch_cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let context = crate::commands::add::resolve_patch_context(args.unified, &patch_cfg)?;
+    let inter_hunk_context =
+        crate::commands::add::resolve_patch_interhunk(args.inter_hunk_context, &patch_cfg)?;
+
     let index_path = resolved_index_path(repo);
     let disk_index = match repo.load_index_at(&index_path) {
         Ok(idx) => idx,
@@ -2707,12 +2712,13 @@ fn run_commit_patch_mode(
 
                 let display_idx = hunk_cursor + 1;
                 let (s, e) = hunk_ranges[hunk_cursor];
-                let hunk_only = crate::commands::stash::partial_unified_for_op_range(
+                let hunk_only = crate::commands::stash::partial_unified_for_op_range_interhunk(
                     path.as_str(),
                     &index_content,
                     &cur_work,
                     &ops[s..e],
-                    3,
+                    context,
+                    inter_hunk_context,
                     true,
                 );
 

@@ -491,7 +491,11 @@ pub fn run(mut args: Args) -> Result<()> {
 
     // Handle -p (patch mode): interactive partial unstaging / index application vs a treeish.
     if args.patch {
-        return reset_patch(&repo, &args.rest);
+        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        let context = crate::commands::add::resolve_patch_context(args.unified, &cfg)?;
+        let inter_hunk =
+            crate::commands::add::resolve_patch_interhunk(args.inter_hunk_context, &cfg)?;
+        return reset_patch(&repo, &args.rest, context, inter_hunk);
     }
 
     // Split positional args into (commit_spec, paths).
@@ -956,7 +960,12 @@ fn validate_reset_patch_treeish(repo: &Repository, treeish_spec: &str) -> Result
 }
 
 /// Interactive patch-mode reset (`git reset -p`): partial index updates toward `treeish`.
-fn reset_patch(repo: &Repository, rest: &[String]) -> Result<()> {
+fn reset_patch(
+    repo: &Repository,
+    rest: &[String],
+    context: usize,
+    inter_hunk_context: usize,
+) -> Result<()> {
     use std::io::{self, BufRead, Write};
 
     let work_tree = repo
@@ -1111,12 +1120,13 @@ fn reset_patch(repo: &Repository, rest: &[String]) -> Result<()> {
 
             let display_idx = hunk_cursor + 1;
             let (s, e) = hunk_ranges[hunk_cursor];
-            let hunk_only = crate::commands::stash::partial_unified_for_op_range(
+            let hunk_only = crate::commands::stash::partial_unified_for_op_range_interhunk(
                 path_str.as_str(),
                 &tree_bytes,
                 &index_bytes,
                 &ops[s..e],
-                3,
+                context,
+                inter_hunk_context,
                 true,
             );
 

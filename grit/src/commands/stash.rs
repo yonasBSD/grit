@@ -24,8 +24,8 @@ use grit_lib::combined_tree_diff::{combined_diff_paths_filtered, CombinedTreeDif
 use grit_lib::config::ConfigSet;
 use grit_lib::diff::{
     count_changes, diff_index_to_tree, diff_index_to_worktree, diff_trees, read_submodule_head_oid,
-    unified_diff, unified_diff_with_prefix_and_funcname_and_algorithm, zero_oid, DiffEntry,
-    DiffStatus,
+    unified_diff_with_prefix, unified_diff_with_prefix_and_funcname_and_algorithm, zero_oid,
+    DiffEntry, DiffStatus,
 };
 use grit_lib::diffstat::{terminal_columns, write_diffstat_block, DiffstatOptions, FileStatInput};
 use grit_lib::error::Error;
@@ -288,6 +288,19 @@ pub fn run(args: Args) -> Result<()> {
         );
     }
 
+    // Resolve patch context once (shared by all push spellings) for `stash -p` hunking.
+    let (patch_context, patch_inter_hunk) = {
+        let repo = Repository::discover(None).ok();
+        let cfg = repo
+            .as_ref()
+            .and_then(|r| ConfigSet::load(Some(&r.git_dir), true).ok())
+            .unwrap_or_default();
+        (
+            crate::commands::add::resolve_patch_context(args.unified, &cfg)?,
+            crate::commands::add::resolve_patch_interhunk(args.inter_hunk_context, &cfg)?,
+        )
+    };
+
     match args.command {
         None => {
             assume_push_or_error(&args)?;
@@ -304,6 +317,8 @@ pub fn run(args: Args) -> Result<()> {
                 patch: args.patch,
                 quiet: args.quiet,
                 pathspec: args.pathspec,
+                context: patch_context,
+                inter_hunk_context: patch_inter_hunk,
             })
         }
         Some(StashCommand::Push {
@@ -377,6 +392,8 @@ pub fn run(args: Args) -> Result<()> {
                 patch,
                 quiet: q,
                 pathspec,
+                context: patch_context,
+                inter_hunk_context: patch_inter_hunk,
             })
         }
         Some(StashCommand::Save {
@@ -413,6 +430,8 @@ pub fn run(args: Args) -> Result<()> {
                 patch: p,
                 quiet: q,
                 pathspec: Vec::new(),
+                context: patch_context,
+                inter_hunk_context: patch_inter_hunk,
             })
         }
         Some(StashCommand::List { args: list_args }) => do_list(list_args),
@@ -833,6 +852,10 @@ struct PushOpts {
     patch: bool,
     quiet: bool,
     pathspec: Vec<String>,
+    /// Resolved `-U`/`diff.context` (number of context lines) for `stash -p` hunking.
+    context: usize,
+    /// Resolved `--inter-hunk-context`/`diff.interhunkcontext` for `stash -p` hunking.
+    inter_hunk_context: usize,
 }
 
 /// True when the only pending work is `git add -N` (intent-to-add) paths not yet fully staged.
@@ -1242,12 +1265,13 @@ fn do_stash_patch_push(
 
                 let display_idx = hunk_cursor + 1;
                 let (s, e) = hunk_ranges[hunk_cursor];
-                let hunk_only = partial_unified_for_op_range(
+                let hunk_only = partial_unified_for_op_range_interhunk(
                     path.as_str(),
                     &head_content,
                     &cur_work,
                     &ops[s..e],
-                    3,
+                    opts.context,
+                    opts.inter_hunk_context,
                     true,
                 );
 
@@ -1511,6 +1535,31 @@ pub(crate) fn partial_unified_for_op_range(
     context: usize,
     indent_heuristic: bool,
 ) -> String {
+    partial_unified_for_op_range_interhunk(
+        path,
+        head_bytes,
+        work_bytes,
+        op_slice,
+        context,
+        0,
+        indent_heuristic,
+    )
+}
+
+/// Like [`partial_unified_for_op_range`] but honoring `--inter-hunk-context`: adjacent changes
+/// within the slice merge into one `@@` hunk when their unchanged gap is `<= 2*context + inter`
+/// lines. Used by `reset`/`commit`/`stash`/`checkout`/`restore` `-p` when `-U`/`--inter-hunk-context`
+/// are given (t3701 "<cmd> accepts -U and --inter-hunk-context").
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn partial_unified_for_op_range_interhunk(
+    path: &str,
+    head_bytes: &[u8],
+    work_bytes: &[u8],
+    op_slice: &[similar::DiffOp],
+    context: usize,
+    inter_hunk_context: usize,
+    indent_heuristic: bool,
+) -> String {
     let head_str = String::from_utf8_lossy(head_bytes);
     let work_str = String::from_utf8_lossy(work_bytes);
     let head_lines: Vec<&str> = head_str.lines().collect();
@@ -1563,12 +1612,15 @@ pub(crate) fn partial_unified_for_op_range(
         }
     }
 
-    let full = unified_diff(
+    let full = unified_diff_with_prefix(
         &old_partial,
         &new_partial,
         path,
         path,
         context,
+        inter_hunk_context,
+        "a/",
+        "b/",
         indent_heuristic,
         false,
     );
