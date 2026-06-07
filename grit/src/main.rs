@@ -4812,6 +4812,14 @@ fn strip_log_revision_pseudo_for_clap(rest: &[String]) -> Vec<String> {
     let mut i = 0usize;
     while i < rest.len() {
         let a = rest[i].as_str();
+        // After `--end-of-options`, every remaining token is a revision or
+        // pathspec (e.g. a branch literally named `--source`), not an option.
+        // Drop them from clap's view (the revision machinery re-reads them from
+        // `raw_argv_tail`) so clap does not mistake e.g. `--source` for its flag.
+        if a == "--end-of-options" {
+            out.push(rest[i].clone());
+            break;
+        }
         if a == "--not" {
             i += 1;
             continue;

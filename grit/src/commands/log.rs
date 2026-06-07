@@ -5618,10 +5618,12 @@ pub fn run(mut args: Args) -> Result<()> {
         let mut start_oids = resolve_specs_to_commits_ignoring_missing(&repo, &pos_s, &args)?;
         let mut exclude_oids = resolve_specs_to_commits_ignoring_missing(&repo, &neg_s, &args)?;
 
-        if format_uses_percent_s {
+        // Both `%S` (format placeholder) and `--source` need each commit
+        // labeled with the named command-line revision it was reached from.
+        if format_uses_percent_s || args.source {
             // Label each commit with the named positive revision it was reached
             // from. Each positive spec (in command-line order) seeds the walk
-            // with its own display name as the `%S` source.
+            // with its own display name as the `%S`/`--source` source.
             // Seed from the *original* command-line specs so each side of a
             // symmetric range `A...B` is labeled with its own name (positive
             // splitting of `..`/`...` would otherwise drop the name).
@@ -5634,10 +5636,15 @@ pub fn run(mut args: Args) -> Result<()> {
                         continue;
                     }
                 }
-                // Plain positive spec (skip `^neg` and `A..B` exclusion forms).
-                if !spec.starts_with('^')
-                    && grit_lib::rev_parse::split_double_dot_range(spec).is_none()
-                {
+                // `A..B` range: only the positive endpoint `B` is a source tip.
+                if let Some((_neg, pos)) = grit_lib::rev_parse::split_double_dot_range(spec) {
+                    if !pos.is_empty() {
+                        named_specs.push(pos.to_owned());
+                    }
+                    continue;
+                }
+                // Plain positive spec (skip `^neg` exclusion forms).
+                if !spec.starts_with('^') {
                     named_specs.push(spec.clone());
                 }
             }
@@ -5761,7 +5768,10 @@ pub fn run(mut args: Args) -> Result<()> {
         } else if args.all || stdin_merged_all_refs {
             build_source_map(&repo.odb, &repo.git_dir, args.first_parent)?
         } else {
-            std::collections::HashMap::new()
+            // Explicit command-line revisions: paint each commit with the
+            // named revision arg it was reached from (built above into
+            // `percent_s_source_map`, which shares the `--source`/`%S` seeding).
+            percent_s_source_map.clone()
         }
     } else {
         std::collections::HashMap::new()
@@ -9647,10 +9657,11 @@ fn run_symmetric_log(
         None
     };
 
-    // `%S` for a symmetric range labels each side's commits with its ref name.
+    // `%S` (format placeholder) and `--source` for a symmetric range label each
+    // side's commits with its ref name.
     let percent_s_source_map: std::collections::HashMap<ObjectId, String> = {
         let template = args.format.as_deref().unwrap_or("");
-        if template.contains("%S") {
+        if template.contains("%S") || args.source {
             let tips = vec![
                 (lhs_oid, lhs_spec.to_owned()),
                 (rhs_oid, rhs_spec.to_owned()),
@@ -9676,6 +9687,19 @@ fn run_symmetric_log(
             }
         };
         let info = load_commit_info(repo, *oid)?;
+        let oneline_fmt = args.oneline || args.format.as_deref() == Some("oneline");
+        if args.source && !oneline_fmt {
+            if let Some(src) = percent_s_source_map.get(oid) {
+                write!(out, "{}\t", short_ref_for_source_display(src))?;
+            }
+        }
+        let source_for_oneline = if args.source && oneline_fmt {
+            percent_s_source_map
+                .get(oid)
+                .map(|full| short_ref_for_source_display(full))
+        } else {
+            None
+        };
         format_commit(
             &mut out,
             oid,
@@ -9693,7 +9717,7 @@ fn run_symmetric_log(
             false,
             log_marker,
             None,
-            None,
+            source_for_oneline,
             percent_s_source_map.get(oid).map(|s| s.as_str()),
         )?;
     }

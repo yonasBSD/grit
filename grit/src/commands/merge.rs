@@ -5033,18 +5033,10 @@ fn do_octopus_merge(
     }
 
     if !args.quiet {
-        if head_is_ancestor_of_all {
-            if let Some(first) = merge_names.first() {
-                println!("Fast-forwarding to: {first}");
-            }
-            for name in merge_names.iter().skip(1) {
-                println!("Trying simple merge with {name}");
-            }
-        } else {
-            for name in &merge_names {
-                println!("Trying simple merge with {name}");
-            }
-        }
+        // The per-head "Fast-forwarding to:" / "Trying simple merge with" lines are
+        // already emitted by the real merge loop above (matching git-merge-octopus,
+        // which prints them as it processes each head). Only the final summary line
+        // belongs here, so it appears exactly once.
         println!("Merge made by the '{strategy_name}' strategy.");
         let show_stat = args.stat || args.summary || !args.no_stat;
         if show_stat {
@@ -7160,6 +7152,7 @@ fn merge_trees(
     let mut dir_renames_applied_to_ours: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
     let mut dir_renames_applied_to_theirs: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
     let mut theirs_renames_pre_dir_for_labels: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+    let mut ours_renames_pre_dir_for_labels: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
     let mut ours_rename_to_self_content_conflicts: BTreeSet<Vec<u8>> = BTreeSet::new();
     let mut theirs_rename_to_self_content_conflicts: BTreeSet<Vec<u8>> = BTreeSet::new();
 
@@ -7282,6 +7275,7 @@ fn merge_trees(
         let theirs_renames_pre_dir = theirs_renames.clone();
         let ours_renames_pre_dir = ours_renames.clone();
         theirs_renames_pre_dir_for_labels = theirs_renames_pre_dir.clone();
+        ours_renames_pre_dir_for_labels = ours_renames_pre_dir.clone();
         let ours_dir_rename_result = apply_directory_renames_to_side(
             base,
             &mut ours_entries,
@@ -7746,15 +7740,45 @@ fn merge_trees(
             empty_base.oid = empty_oid;
             empty_base.mode = MODE_REGULAR;
             empty_base.flags &= 0x0FFF;
+            // rename/rename(2to1): two distinct sources land at the same destination, so the
+            // collision content merge is a two-way merge. Git's merge_3way derives the conflict
+            // marker labels from the three pathnames the colliding entry carries: when all three
+            // are identical it uses the bare branch names (`HEAD`/`B^0`), otherwise it suffixes
+            // each with `:path`. The per-side path is that side's rename target *before* any
+            // directory rename was applied: a plain rename leaves it equal to the destination,
+            // while a directory rename keeps the original explicit target (testcase 7b: B renamed
+            // x/d -> z/d and a directory rename moved it to y/d, so the marker reads `B^0:z/d`,
+            // whereas t6416's nested-conflicts case renames both sides directly to `m` and the
+            // labels stay bare `HEAD`/`R2^0`).
+            let ours_marker_path = ours_renames_pre_dir_for_labels
+                .get(&ours_src)
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+                .unwrap_or_else(|| dest_str.clone());
+            let theirs_marker_path = theirs_renames_pre_dir_for_labels
+                .get(&theirs_src)
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+                .unwrap_or_else(|| dest_str.clone());
+            let pathnames_all_equal =
+                ours_marker_path == dest_str && theirs_marker_path == dest_str;
+            let final_ours_label = if pathnames_all_equal {
+                ours_label.to_string()
+            } else {
+                format!("{ours_label}:{ours_marker_path}")
+            };
+            let final_theirs_label = if pathnames_all_equal {
+                their_name.to_string()
+            } else {
+                format!("{their_name}:{theirs_marker_path}")
+            };
             let final_content = match try_content_merge(
                 repo,
                 &dest_str,
                 &empty_base,
                 &s2,
                 &s3,
-                ours_label,
+                &final_ours_label,
                 rr_base_label,
-                their_name,
+                &final_theirs_label,
                 MergeFavor::None,
                 diff_algorithm,
                 merge_renormalize,
