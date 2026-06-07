@@ -3561,13 +3561,39 @@ fn parse_tag_target(data: &[u8]) -> Result<ObjectId> {
 
 /// Search commit messages reachable from `start` and return the first commit
 /// whose message contains `pattern`.
+/// Parse the leading `!` semantics of a `^{/<pattern>}` (or `:/<pattern>`)
+/// commit-message search, matching git's `get_oid_oneline` in `object-name.c`.
+///
+/// Returns `(negate, effective_pattern)` where `effective_pattern` is the
+/// regular expression to compile and `negate` flips the match sense:
+///   - `!-<pat>` is a negated search (find a commit NOT matching `<pat>`).
+///   - `!!<pat>` escapes to a literal `!<pat>` regex search.
+///   - any other `!` prefix (e.g. `!Exp`, `!`, `!-` is fine but `!x` not) is
+///     reserved and yields `None`, signalling the caller to fail.
+fn parse_oneline_pattern(pattern: &str) -> Option<(bool, &str)> {
+    let Some(after_bang) = pattern.strip_prefix('!') else {
+        return Some((false, pattern));
+    };
+    if let Some(neg) = after_bang.strip_prefix('-') {
+        return Some((true, neg));
+    }
+    if after_bang.starts_with('!') {
+        // `!!<pat>` -> literal `!<pat>`; keep one leading `!` for the regex.
+        return Some((false, after_bang));
+    }
+    // Reserved: `!` followed by anything other than `!` or `-`.
+    None
+}
+
 fn resolve_commit_message_search_from(
     repo: &Repository,
     start: ObjectId,
     pattern: &str,
 ) -> Result<ObjectId> {
-    // Note: ! negation is NOT supported in ^{/pattern} peel context (only in :/! prefix)
-    let regex = Regex::new(pattern).ok();
+    let Some((negate, effective_pattern)) = parse_oneline_pattern(pattern) else {
+        return Err(Error::ObjectNotFound(format!(":/{pattern}")));
+    };
+    let regex = Regex::new(effective_pattern).ok();
     let mut visited = std::collections::HashSet::new();
     let mut queue = std::collections::VecDeque::new();
     queue.push_back(start);
@@ -3586,11 +3612,12 @@ fn resolve_commit_message_search_from(
             Err(_) => continue,
         };
 
-        let is_match = if let Some(re) = &regex {
+        let base_match = if let Some(re) = &regex {
             re.is_match(&commit.message)
         } else {
-            commit.message.contains(pattern)
+            commit.message.contains(effective_pattern)
         };
+        let is_match = negate ^ base_match;
         if is_match {
             return Ok(oid);
         }
