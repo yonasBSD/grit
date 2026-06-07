@@ -252,9 +252,10 @@ pub fn run(args: Args) -> Result<()> {
     if tree_oids.is_empty() {
         bail!("at least one tree required");
     }
-    if args.merge && tree_oids.len() > 3 {
-        bail!("too many trees for -m (max 3)");
-    }
+    // Git accepts up to MAX_UNPACK_TREES (8) trees for `-m`; for >= 3 trees it runs the
+    // three-way merge with `head_idx = stage - 2` (builtin/read-tree.c). Grit currently
+    // implements the symmetric 4-tree form (`read-tree -m T0 T1 T1 T0`, t1000 case #16) and the
+    // 1/2/3-tree forms; anything beyond is rejected below by the merge dispatch.
     if tree_oids.len() > 4 {
         bail!("too many trees (max 4)");
     }
