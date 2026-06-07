@@ -69,6 +69,404 @@ fn prompt_suffix(n_hunks: usize, splittable: bool, is_deletion: bool) -> String 
     s
 }
 
+/// Per-hunk decision state mirroring Git's `UNDECIDED_HUNK`/`USE_HUNK`/`SKIP_HUNK`
+/// (`add-patch.c`). The interactive hunk loop tracks one of these per hunk so navigation
+/// (`j`/`k`/`J`/`K`/`g`/`/`) can find undecided hunks and `(was: y)`/`(was: n)` can annotate
+/// already-decided ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Decision {
+    Undecided,
+    Use,
+    Skip,
+}
+
+/// `dec_mod` from `add-patch.c`: `(value + max - 1) % max`.
+fn dec_mod(value: usize, max: usize) -> usize {
+    (value + max - 1) % max
+}
+
+/// `summarize_hunk` (`add-patch.c`): one-line summary used by the `g` goto-list, e.g.
+/// `_-1,2_+1,3__________+15` (padded to width 20, then the first non-context line of the hunk,
+/// truncated to width 80). `hunk_text` is the rendered `@@ ... @@`-headed hunk body.
+fn summarize_hunk(hunk_text: &str) -> String {
+    const SUMMARY_HEADER_WIDTH: usize = 20;
+    const SUMMARY_LINE_WIDTH: usize = 80;
+    let mut lines = hunk_text.lines();
+    let header = lines.next().unwrap_or("");
+    // Parse `@@ -o,c +o,c @@` into the ` -o,c +o,c ` summary prefix git emits.
+    let mut out = String::new();
+    if let Some(rest) = header.strip_prefix("@@ ") {
+        if let Some(idx) = rest.find(" @@") {
+            let ranges = &rest[..idx]; // e.g. "-1,2 +1,3"
+            let mut parts = ranges.split_whitespace();
+            let old = parts.next().unwrap_or("-0,0").trim_start_matches('-');
+            let new = parts.next().unwrap_or("+0,0").trim_start_matches('+');
+            let (oo, oc) = split_range(old);
+            let (no, nc) = split_range(new);
+            out = format!(" -{oo},{oc} +{no},{nc} ");
+        }
+    }
+    if out.len() < SUMMARY_HEADER_WIDTH {
+        out.push_str(&" ".repeat(SUMMARY_HEADER_WIDTH - out.len()));
+    }
+    // First line that is not a context line (does not begin with a space).
+    for line in lines {
+        if !line.starts_with(' ') {
+            out.push_str(line);
+            break;
+        }
+    }
+    if out.len() > SUMMARY_LINE_WIDTH {
+        out.truncate(SUMMARY_LINE_WIDTH);
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// Parse a unified-diff range `o,c` (or bare `o`, meaning count 1) into `(offset, count)` strings.
+fn split_range(s: &str) -> (String, String) {
+    match s.split_once(',') {
+        Some((o, c)) => (o.to_string(), c.to_string()),
+        None => (s.to_string(), "1".to_string()),
+    }
+}
+
+const DISPLAY_HUNKS_LINES: usize = 20;
+
+/// Render a single hunk (`@@ -o,c +o,c @@` header + body) for the op range `[start, end)`, using
+/// **absolute** line offsets from `old_lines`/`new_lines`. Leading/trailing equal runs in the range
+/// are capped to `context` lines of surrounding context, matching `git diff`'s hunk headers — which
+/// the simpler [`partial_unified_for_op_range`] cannot because it rebuilds offsets from 1.
+fn render_hunk_with_offsets(
+    old_lines: &[&str],
+    new_lines: &[&str],
+    ops: &[similar::DiffOp],
+    start: usize,
+    end: usize,
+    context: usize,
+) -> String {
+    use similar::DiffOp;
+    // Collect body lines as (marker, text) and track absolute old/new starts and counts.
+    let mut body: Vec<(char, String)> = Vec::new();
+    let mut old_start: Option<usize> = None; // 0-based
+    let mut new_start: Option<usize> = None;
+    let mut old_count = 0usize;
+    let mut new_count = 0usize;
+
+    let range = &ops[start..end];
+    let last = range.len();
+    for (k, op) in range.iter().enumerate() {
+        match *op {
+            DiffOp::Equal {
+                old_index,
+                new_index,
+                len,
+            } => {
+                // Determine how many context lines to keep: up to `context` at the leading edge
+                // (k == 0) and trailing edge (k == last-1); interior equal runs are kept whole.
+                let lead = k == 0;
+                let trail = k == last - 1;
+                let (skip_front, take) = if lead && trail {
+                    // Whole-range equal (shouldn't happen for a change hunk): keep all.
+                    (0, len)
+                } else if lead {
+                    let keep = context.min(len);
+                    (len - keep, keep)
+                } else if trail {
+                    (0, context.min(len))
+                } else {
+                    (0, len)
+                };
+                for j in skip_front..(skip_front + take) {
+                    if old_start.is_none() {
+                        old_start = Some(old_index + j);
+                        new_start = Some(new_index + j);
+                    }
+                    body.push((' ', old_lines[old_index + j].to_string()));
+                    old_count += 1;
+                    new_count += 1;
+                }
+            }
+            DiffOp::Delete {
+                old_index,
+                old_len,
+                new_index,
+            } => {
+                for j in 0..old_len {
+                    if old_start.is_none() {
+                        old_start = Some(old_index + j);
+                        new_start = Some(new_index);
+                    }
+                    body.push(('-', old_lines[old_index + j].to_string()));
+                    old_count += 1;
+                }
+            }
+            DiffOp::Insert {
+                old_index,
+                new_index,
+                new_len,
+            } => {
+                for j in 0..new_len {
+                    if old_start.is_none() {
+                        old_start = Some(old_index);
+                        new_start = Some(new_index + j);
+                    }
+                    body.push(('+', new_lines[new_index + j].to_string()));
+                    new_count += 1;
+                }
+            }
+            DiffOp::Replace {
+                old_index,
+                old_len,
+                new_index,
+                new_len,
+            } => {
+                for j in 0..old_len {
+                    if old_start.is_none() {
+                        old_start = Some(old_index + j);
+                        new_start = Some(new_index);
+                    }
+                    body.push(('-', old_lines[old_index + j].to_string()));
+                    old_count += 1;
+                }
+                for j in 0..new_len {
+                    if old_start.is_none() {
+                        old_start = Some(old_index);
+                        new_start = Some(new_index + j);
+                    }
+                    body.push(('+', new_lines[new_index + j].to_string()));
+                    new_count += 1;
+                }
+            }
+        }
+    }
+
+    // Git: a zero-count side uses the bare 0-based position (`-0,0` / `+N,0`); a non-empty side
+    // uses the 1-based first line.
+    let o_off = match old_start {
+        Some(s) if old_count > 0 => s + 1,
+        Some(s) => s,
+        None => 0,
+    };
+    let n_off = match new_start {
+        Some(s) if new_count > 0 => s + 1,
+        Some(s) => s,
+        None => 0,
+    };
+    let o_hdr = if old_count == 1 {
+        format!("{o_off}")
+    } else {
+        format!("{o_off},{old_count}")
+    };
+    let n_hdr = if new_count == 1 {
+        format!("{n_off}")
+    } else {
+        format!("{n_off},{new_count}")
+    };
+    let mut s = format!("@@ -{o_hdr} +{n_hdr} @@\n");
+    for (m, line) in body {
+        s.push(m);
+        s.push_str(&line);
+        s.push('\n');
+    }
+    s
+}
+
+/// Compute the natural hunk ranges (`[start, end)` op-index spans) that `git diff -U<context>`
+/// would emit: changes separated by an equal run longer than `2 * context` lines start a new
+/// hunk; shorter gaps are absorbed. Each returned range still includes the full separating equal
+/// runs (the renderer caps the shown context to `context`). With overlap on the boundary equal run
+/// so each hunk renders its surrounding context, mirroring [`split_hunk_into_all`].
+fn natural_hunk_ranges(ops: &[similar::DiffOp], context: usize) -> Vec<(usize, usize)> {
+    let is_eq = |i: usize| matches!(ops.get(i), Some(similar::DiffOp::Equal { .. }));
+    let eq_len = |i: usize| match ops.get(i) {
+        Some(similar::DiffOp::Equal { len, .. }) => *len,
+        _ => 0,
+    };
+    let n = ops.len();
+    let change_idxs: Vec<usize> = (0..n).filter(|&i| !is_eq(i)).collect();
+    if change_idxs.is_empty() {
+        return vec![(0, n)];
+    }
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    // `group_first_change`/`prev_change` track the first/last change op of the current hunk.
+    let mut group_first_change = change_idxs[0];
+    let mut prev_change = change_idxs[0];
+    for &c in &change_idxs[1..] {
+        // Between two consecutive change ops there is at most one equal op; a big gap (> 2*context)
+        // closes the current hunk and starts a new one. The separating equal op is shared so both
+        // hunks render context around it.
+        let big_gap = (prev_change + 1..c).any(|mid| eq_len(mid) > 2 * context);
+        if big_gap {
+            // Range start: equal op before the first change (leading context), else the change.
+            let start = if group_first_change > 0 && is_eq(group_first_change - 1) {
+                group_first_change - 1
+            } else {
+                group_first_change
+            };
+            // Range end: include the trailing equal op after the last change.
+            let end = if is_eq(prev_change + 1) {
+                prev_change + 2
+            } else {
+                prev_change + 1
+            };
+            ranges.push((start, end));
+            group_first_change = c;
+        }
+        prev_change = c;
+    }
+    // Close the final hunk.
+    let start = if group_first_change > 0 && is_eq(group_first_change - 1) {
+        group_first_change - 1
+    } else {
+        group_first_change
+    };
+    let end = if is_eq(prev_change + 1) {
+        prev_change + 2
+    } else {
+        prev_change + 1
+    };
+    ranges.push((start, end));
+    ranges
+}
+
+/// Read a full answer line from stdin, returning `None` on EOF and `Some(trimmed)` otherwise
+/// (only the trailing newline is stripped; interior/leading spaces are preserved so that
+/// `g 1` and `/ pattern` round-trip). Matches `read_single_character`/`strbuf_getline`.
+fn read_answer(reader: &mut impl BufRead) -> Result<Option<String>> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(None);
+    }
+    let trimmed = line.trim_end_matches(['\n', '\r']).to_string();
+    Ok(Some(trimmed))
+}
+
+/// Convert per-hunk decisions to the `accepted: Vec<bool>` the blender expects (USE ⇒ true).
+fn decisions_to_accepted(decisions: &[Decision]) -> Vec<bool> {
+    decisions.iter().map(|d| *d == Decision::Use).collect()
+}
+
+/// Index of the first still-undecided hunk, if any (git's `get_first_undecided`).
+fn first_undecided(decisions: &[Decision]) -> Option<usize> {
+    decisions.iter().position(|d| *d == Decision::Undecided)
+}
+
+/// Fully split a hunk into all of its `splittable_into` sub-hunks (git's `s` splits all the way,
+/// not just the first gap). Returns true if at least one split happened.
+///
+/// Unlike [`split_hunk_at_first_gap`] (a hard op-range partition), the boundary equal run is
+/// **shared** by the two adjacent sub-hunks so each one renders with the surrounding context git
+/// shows (the `@@ ... @@` line and the trailing/leading context lines). Equal ops never consult
+/// `accepted` during blending, so the overlap is harmless to staging.
+fn split_hunk_into_all(
+    ranges: &mut Vec<(usize, usize)>,
+    hunk_index: usize,
+    ops: &[similar::DiffOp],
+) -> bool {
+    if hunk_index >= ranges.len() {
+        return false;
+    }
+    let (start, end) = ranges[hunk_index];
+    let is_eq = |i: usize| matches!(ops.get(i), Some(similar::DiffOp::Equal { .. }));
+
+    // Find the boundaries of each maximal change-run, then split at the middle of the equal runs
+    // that separate them. `boundaries[k]` is `(eq_run_start, eq_run_end)` for the k-th internal gap.
+    let mut sub: Vec<(usize, usize)> = Vec::new();
+    let mut i = start;
+    // Leading context.
+    while i < end && is_eq(i) {
+        i += 1;
+    }
+    let mut seg_start = start;
+    while i < end {
+        // Consume a change run.
+        while i < end && !is_eq(i) {
+            i += 1;
+        }
+        // Consume the following equal run.
+        let eq_start = i;
+        while i < end && is_eq(i) {
+            i += 1;
+        }
+        if eq_start < i && i < end {
+            // Internal gap: end this sub-hunk after the equal run, start the next at its start so
+            // the equal run is shared as trailing/leading context.
+            sub.push((seg_start, i));
+            seg_start = eq_start;
+        }
+    }
+    sub.push((seg_start, end));
+
+    if sub.len() < 2 {
+        return false;
+    }
+    ranges.splice(hunk_index..=hunk_index, sub);
+    true
+}
+
+/// Render the `g`-command hunk list (git's `display_hunks`): up to `DISPLAY_HUNKS_LINES` lines
+/// starting at `start`, each `%c%2d: <summary>`. Returns the index one past the last shown.
+fn display_hunk_list(
+    out: &mut impl Write,
+    ranges: &[(usize, usize)],
+    decisions: &[Decision],
+    work: &[u8],
+    start: usize,
+    render_hunk: &dyn Fn(usize, &[(usize, usize)], &[u8]) -> String,
+) -> usize {
+    let end = (start + DISPLAY_HUNKS_LINES).min(ranges.len());
+    for (i, dec) in decisions.iter().enumerate().take(end).skip(start) {
+        let mark = match dec {
+            Decision::Use => '+',
+            Decision::Skip => '-',
+            Decision::Undecided => ' ',
+        };
+        let text = render_hunk(i, ranges, work);
+        let summary = summarize_hunk(&text);
+        write!(out, "{mark}{:>2}: {summary}", i + 1).ok();
+    }
+    end
+}
+
+/// `?` help during the hunk loop. Git prints the always-available lines, then only the remainder
+/// lines whose command character is present in the current `nav` suffix.
+fn write_patch_help(out: &mut impl Write, nav: &str) {
+    let base = "y - stage this hunk\n\
+                n - do not stage this hunk\n\
+                q - quit; do not stage this hunk or any of the remaining ones\n\
+                a - stage this hunk and all later hunks in the file\n\
+                d - do not stage this hunk or any of the later hunks in the file\n";
+    write!(out, "{base}").ok();
+    // Remainder lines, each gated on its command character appearing in `nav`.
+    let remainder: &[(char, &str)] = &[
+        (
+            'k',
+            "k - leave this hunk undecided, see previous undecided hunk",
+        ),
+        ('K', "K - leave this hunk undecided, see previous hunk"),
+        (
+            'j',
+            "j - leave this hunk undecided, see next undecided hunk",
+        ),
+        ('J', "J - leave this hunk undecided, see next hunk"),
+        ('g', "g - select a hunk to go to"),
+        ('/', "/ - search for a hunk matching the given regex"),
+        ('s', "s - split the current hunk into smaller hunks"),
+        ('e', "e - manually edit the current hunk"),
+        ('p', "p - print the current hunk"),
+    ];
+    for (ch, line) in remainder {
+        if nav.contains(*ch) {
+            writeln!(out, "{line}").ok();
+        }
+    }
+    writeln!(out, "? - print help").ok();
+}
+
 /// 7-character abbreviated blob OID for `data` (Git's default short hash in patch headers).
 fn short_oid_of(odb: &Odb, data: &[u8]) -> String {
     let _ = odb;
@@ -147,7 +545,7 @@ pub(crate) fn run_add_patch_with_reader(
     external_reader: Option<&mut dyn BufRead>,
 ) -> Result<()> {
     let _ = opts.inter_hunk_context;
-    let _ = opts.auto_advance;
+    let auto_advance = opts.auto_advance;
     let context = opts.context;
     let work_tree = repo
         .work_tree
@@ -357,59 +755,133 @@ pub(crate) fn run_add_patch_with_reader(
             }
 
             let n_ops = ops.len();
-            let mut hunk_ranges: Vec<(usize, usize)> = vec![(0, n_ops)];
-            let mut accepted = vec![false; hunk_ranges.len()];
-            let mut hunk_cursor = 0usize;
-            // Render the file header + hunk body when arriving at a hunk; an invalid command or
-            // `?`/split-failure only re-prints the prompt (matching `add-patch.c`).
-            let mut render = true;
+            // Additions/deletions are a single whole-file hunk; otherwise split into the natural
+            // hunks `git diff -U<context>` would produce so navigation (j/k/J/K/g//) works without
+            // requiring `s` first.
+            let mut hunk_ranges: Vec<(usize, usize)> = if is_addition || is_deletion {
+                vec![(0, n_ops)]
+            } else {
+                natural_hunk_ranges(&ops, context)
+            };
+            let mut decisions = vec![Decision::Undecided; hunk_ranges.len()];
+            let mut hunk_index = 0usize;
+            // -1 means "nothing rendered yet"; the hunk body is only re-printed when the cursor
+            // lands on a different hunk (matching `rendered_hunk_index` in `add-patch.c`). Split
+            // resets this to force a re-render of the now-current hunk.
+            let mut rendered_hunk_index: isize = -1;
+
+            // Render the file diff header once per file (git: `render_diff_header`).
+            writeln!(out, "diff --git a/{path_str} b/{path_str}").ok();
+            if is_addition {
+                let short = short_oid_of(odb, &cur_work);
+                let new_mode = mode_from_metadata(&meta);
+                writeln!(out, "new file mode {new_mode:06o}").ok();
+                writeln!(out, "index 0000000..{short}").ok();
+                write!(out, "--- /dev/null\n+++ b/{path_str}\n").ok();
+            } else if is_deletion {
+                let short = short_oid_of(odb, &index_side_bytes);
+                writeln!(out, "deleted file mode {:06o}", ie.mode).ok();
+                writeln!(out, "index {short}..0000000").ok();
+                write!(out, "--- a/{path_str}\n+++ /dev/null\n").ok();
+            } else {
+                write!(out, "--- a/{path_str}\n+++ b/{path_str}\n").ok();
+            }
+
+            // Render the hunk body text for hunk `i` (header `@@ ... @@` + body lines) with the
+            // absolute line offsets `git diff` shows. `work` may change after an `e` edit, which
+            // re-diffs, so the ops/lines for that path are recomputed by the caller on `rediff`.
+            let index_side_str = String::from_utf8_lossy(&index_side_bytes).into_owned();
+            let old_lines: Vec<&str> = index_side_str.lines().collect();
+            let render_hunk = |i: usize, ranges: &[(usize, usize)], work: &[u8]| -> String {
+                let (s, e) = ranges[i];
+                let work_str = String::from_utf8_lossy(work).into_owned();
+                let new_lines: Vec<&str> = work_str.lines().collect();
+                render_hunk_with_offsets(&old_lines, &new_lines, &ops, s, e, context)
+            };
 
             'hunk_loop: loop {
                 let n_hunks = hunk_ranges.len();
-                if hunk_cursor >= n_hunks {
-                    break;
+                if hunk_index >= n_hunks {
+                    hunk_index = 0;
                 }
 
-                let display_idx = hunk_cursor + 1;
-                let (s, e) = hunk_ranges[hunk_cursor];
-
-                if render {
-                    let hunk_only = partial_unified_for_op_range(
-                        path_str.as_str(),
-                        &index_side_bytes,
-                        &cur_work,
-                        &ops[s..e],
-                        context,
-                        true,
-                    );
-
-                    // File header. An addition shows `new file mode`/`index 000..`/`--- /dev/null`,
-                    // a deletion shows `deleted file mode`/`index ..000`/`+++ /dev/null`, matching
-                    // `git diff`; everything else uses `a/`,`b/`.
-                    writeln!(out, "diff --git a/{path_str} b/{path_str}").ok();
-                    if is_addition {
-                        let short = short_oid_of(odb, &cur_work);
-                        let new_mode = mode_from_metadata(&meta);
-                        writeln!(out, "new file mode {new_mode:06o}").ok();
-                        writeln!(out, "index 0000000..{short}").ok();
-                        write!(out, "--- /dev/null\n+++ b/{path_str}\n").ok();
-                    } else if is_deletion {
-                        let short = short_oid_of(odb, &index_side_bytes);
-                        writeln!(out, "deleted file mode {:06o}", ie.mode).ok();
-                        writeln!(out, "index {short}..0000000").ok();
-                        write!(out, "--- a/{path_str}\n+++ /dev/null\n").ok();
-                    } else {
-                        write!(out, "--- a/{path_str}\n+++ b/{path_str}\n").ok();
+                // Find the nearest undecided hunk before/after the cursor (cyclic), git's
+                // `undecided_previous`/`undecided_next`.
+                let mut undecided_previous: Option<usize> = None;
+                let mut undecided_next: Option<usize> = None;
+                if n_hunks > 0 {
+                    let mut i = dec_mod(hunk_index, n_hunks);
+                    while i != hunk_index {
+                        if decisions[i] == Decision::Undecided {
+                            undecided_previous = Some(i);
+                            break;
+                        }
+                        i = dec_mod(i, n_hunks);
                     }
-                    write!(out, "{hunk_only}").ok();
+                    let mut i = (hunk_index + 1) % n_hunks;
+                    while i != hunk_index {
+                        if decisions[i] == Decision::Undecided {
+                            undecided_next = Some(i);
+                            break;
+                        }
+                        i = (i + 1) % n_hunks;
+                    }
                 }
-                render = true;
+
+                // Everything decided? Without auto-advance we stop advancing; with it we move on.
+                if undecided_previous.is_none()
+                    && undecided_next.is_none()
+                    && decisions[hunk_index] != Decision::Undecided
+                    && auto_advance
+                {
+                    break 'hunk_loop;
+                }
+
+                if rendered_hunk_index != hunk_index as isize {
+                    write!(out, "{}", render_hunk(hunk_index, &hunk_ranges, &cur_work)).ok();
+                    rendered_hunk_index = hunk_index as isize;
+                }
+
+                let (s, e) = hunk_ranges[hunk_index];
+                let display_idx = hunk_index + 1;
+
+                // Build the navigation suffix exactly as git does (order-sensitive).
+                let mut nav = String::new();
+                let allow_prev_undecided = undecided_previous.is_some();
+                let allow_prev = n_hunks > 1;
+                let allow_next_undecided = undecided_next.is_some();
+                let allow_next = n_hunks > 1;
+                let allow_goto = n_hunks > 1;
+                if allow_prev_undecided {
+                    nav.push_str(",k");
+                }
+                if allow_prev {
+                    nav.push_str(",K");
+                }
+                if allow_next_undecided {
+                    nav.push_str(",j");
+                }
+                if allow_next {
+                    nav.push_str(",J");
+                }
+                if allow_goto {
+                    nav.push_str(",g,/");
+                }
+                let splittable = !is_deletion && splittable_into(&ops, s, e) > 1;
+                if splittable {
+                    nav.push_str(",s");
+                }
+                let allow_edit = !is_deletion && !(mode_differs && hunk_index == 0);
+                if allow_edit {
+                    nav.push_str(",e");
+                }
+                nav.push_str(",p,P");
 
                 let kind = if is_deletion {
                     HunkKind::Deletion
                 } else if is_addition {
                     HunkKind::Addition
-                } else if mode_differs && hunk_cursor == 0 {
+                } else if mode_differs && hunk_index == 0 {
                     HunkKind::ModeChange
                 } else {
                     HunkKind::Hunk
@@ -420,20 +892,26 @@ pub(crate) fn run_add_patch_with_reader(
                     HunkKind::Addition => "Stage addition",
                     HunkKind::Hunk => "Stage this hunk",
                 };
-                let splittable = !is_deletion && splittable_into(&ops, s, e) > 1;
-                let suffix = prompt_suffix(n_hunks, splittable, is_deletion);
+                let was = match decisions[hunk_index] {
+                    Decision::Use => " (was: y)",
+                    Decision::Skip => " (was: n)",
+                    Decision::Undecided => "",
+                };
                 write!(
                     out,
-                    "({display_idx}/{n_hunks}) {verb} [y,n,q,a,d{suffix},?]? "
+                    "({display_idx}/{n_hunks}) {verb}{was} [y,n,q,a,d{nav},?]? "
                 )
                 .ok();
                 out.flush().ok();
 
-                match read_one_command(&mut reader, &mut out)? {
-                    ReadCmd::Eof => {
-                        // Git prints a trailing newline when leaving `patch_update_file` (the EOF
-                        // `break` falls through to `putchar('\n')`).
+                // `soft_increment`: after y/n/e move to the next undecided hunk, or off the end.
+                let soft_increment = |dec_next: Option<usize>| dec_next.unwrap_or(n_hunks);
+
+                let answer = match read_answer(&mut reader)? {
+                    None => {
+                        // EOF: git prints a trailing newline and applies decided hunks so far.
                         writeln!(out).ok();
+                        let accepted = decisions_to_accepted(&decisions);
                         let blended = blend_for_stage_hunks(
                             &index_side_bytes,
                             &cur_work,
@@ -451,54 +929,253 @@ pub(crate) fn run_add_patch_with_reader(
                         repo.write_index_at(&index_path, &mut index)?;
                         return Ok(());
                     }
-                    ReadCmd::Invalid => {
-                        render = false;
-                        continue 'hunk_loop;
+                    Some(a) => a,
+                };
+
+                if answer.is_empty() {
+                    continue 'hunk_loop;
+                }
+                let first = answer.chars().next().unwrap();
+                let lower = first.to_ascii_lowercase();
+
+                // 'g' takes a hunk number and '/' takes a regexp, so they may be multi-char.
+                if answer.chars().count() != 1 && lower != 'g' && first != '/' {
+                    writeln!(out, "Only one letter is expected, got '{answer}'").ok();
+                    continue 'hunk_loop;
+                }
+
+                match lower {
+                    'y' => {
+                        decisions[hunk_index] = Decision::Use;
+                        hunk_index = soft_increment(undecided_next);
                     }
-                    ReadCmd::Char { lower, raw } => match lower {
-                        'y' => {
-                            accepted[hunk_cursor] = true;
-                            hunk_cursor += 1;
-                        }
-                        'n' => {
-                            hunk_cursor += 1;
-                        }
-                        'a' => {
-                            for j in hunk_cursor..n_hunks {
-                                accepted[j] = true;
+                    'n' => {
+                        decisions[hunk_index] = Decision::Skip;
+                        hunk_index = soft_increment(undecided_next);
+                    }
+                    'a' => {
+                        for d in decisions.iter_mut().skip(hunk_index) {
+                            if *d == Decision::Undecided {
+                                *d = Decision::Use;
                             }
-                            break 'hunk_loop;
                         }
-                        'd' => break 'hunk_loop,
-                        'q' => {
-                            let blended = blend_for_stage_hunks(
-                                &index_side_bytes,
-                                &cur_work,
-                                &hunk_ranges,
-                                &accepted,
-                            );
-                            write_index_blob_and_mode(
-                                odb,
-                                &mut index,
-                                &path_str,
-                                &abs_path,
-                                blended.as_bytes(),
-                                effective_mode,
-                            )?;
-                            repo.write_index_at(&index_path, &mut index)?;
-                            return Ok(());
-                        }
-                        's' => {
-                            if !split_hunk_at_first_gap(&mut hunk_ranges, hunk_cursor, &ops) {
-                                writeln!(out, "Sorry, cannot split this hunk").ok();
-                                render = false;
-                                continue 'hunk_loop;
+                        hunk_index = first_undecided(&decisions).unwrap_or(0);
+                    }
+                    'd' => {
+                        for d in decisions.iter_mut().skip(hunk_index) {
+                            if *d == Decision::Undecided {
+                                *d = Decision::Skip;
                             }
-                            let n = hunk_ranges.len();
-                            accepted.resize(n, false);
+                        }
+                        hunk_index = first_undecided(&decisions).unwrap_or(0);
+                    }
+                    'q' => {
+                        // Git: `q` sets `patch_update_resp = file_diff_nr` and breaks, then
+                        // `putchar('\n')` and applies the decided hunks for this file before
+                        // stopping all further files.
+                        writeln!(out).ok();
+                        let accepted = decisions_to_accepted(&decisions);
+                        let blended = blend_for_stage_hunks(
+                            &index_side_bytes,
+                            &cur_work,
+                            &hunk_ranges,
+                            &accepted,
+                        );
+                        write_index_blob_and_mode(
+                            odb,
+                            &mut index,
+                            &path_str,
+                            &abs_path,
+                            blended.as_bytes(),
+                            effective_mode,
+                        )?;
+                        repo.write_index_at(&index_path, &mut index)?;
+                        return Ok(());
+                    }
+                    _ if first == 'K' => {
+                        if allow_prev {
+                            hunk_index = dec_mod(hunk_index, n_hunks);
+                        } else {
+                            writeln!(out, "No other hunk").ok();
+                        }
+                    }
+                    _ if first == 'J' => {
+                        if allow_next {
+                            hunk_index += 1;
+                        } else {
+                            writeln!(out, "No other hunk").ok();
+                        }
+                    }
+                    _ if first == 'k' => {
+                        if let Some(p) = undecided_previous {
+                            hunk_index = p;
+                        } else {
+                            writeln!(out, "No other undecided hunk").ok();
+                        }
+                    }
+                    _ if first == 'j' => {
+                        if let Some(n) = undecided_next {
+                            hunk_index = n;
+                        } else {
+                            writeln!(out, "No other undecided hunk").ok();
+                        }
+                    }
+                    'g' => {
+                        if !allow_goto {
+                            writeln!(out, "No other hunks to goto").ok();
                             continue 'hunk_loop;
                         }
-                        'e' => {
+                        // Strip the leading 'g' and trim.
+                        let mut arg: String = answer
+                            .chars()
+                            .skip(1)
+                            .collect::<String>()
+                            .trim()
+                            .to_string();
+                        // Show the hunk list until the user provides a target.
+                        let mut start = hunk_index as isize - (DISPLAY_HUNKS_LINES as isize) / 2;
+                        if start < 0 {
+                            start = 0;
+                        }
+                        let mut start = start as usize;
+                        while arg.is_empty() {
+                            let end = display_hunk_list(
+                                &mut out,
+                                &hunk_ranges,
+                                &decisions,
+                                &cur_work,
+                                start,
+                                &render_hunk,
+                            );
+                            if end < n_hunks {
+                                write!(out, "go to which hunk (<ret> to see more)? ").ok();
+                            } else {
+                                write!(out, "go to which hunk? ").ok();
+                            }
+                            out.flush().ok();
+                            start = end;
+                            match read_answer(&mut reader)? {
+                                None => {
+                                    writeln!(out).ok();
+                                    let accepted = decisions_to_accepted(&decisions);
+                                    let blended = blend_for_stage_hunks(
+                                        &index_side_bytes,
+                                        &cur_work,
+                                        &hunk_ranges,
+                                        &accepted,
+                                    );
+                                    write_index_blob_and_mode(
+                                        odb,
+                                        &mut index,
+                                        &path_str,
+                                        &abs_path,
+                                        blended.as_bytes(),
+                                        effective_mode,
+                                    )?;
+                                    repo.write_index_at(&index_path, &mut index)?;
+                                    return Ok(());
+                                }
+                                Some(a) => arg = a.trim().to_string(),
+                            }
+                        }
+                        match arg.parse::<usize>() {
+                            Ok(n) if n >= 1 && n <= n_hunks => hunk_index = n - 1,
+                            Ok(_) => {
+                                if n_hunks == 1 {
+                                    writeln!(out, "Sorry, only 1 hunk available.").ok();
+                                } else {
+                                    writeln!(out, "Sorry, only {n_hunks} hunks available.").ok();
+                                }
+                            }
+                            Err(_) => {
+                                writeln!(out, "Invalid number: '{arg}'").ok();
+                            }
+                        }
+                    }
+                    _ if first == '/' => {
+                        if !allow_goto {
+                            writeln!(out, "No other hunks to search").ok();
+                            continue 'hunk_loop;
+                        }
+                        let mut pat: String = answer.chars().skip(1).collect::<String>();
+                        pat = pat.trim_end_matches(['\n', '\r']).to_string();
+                        if pat.is_empty() {
+                            write!(out, "search for regex? ").ok();
+                            out.flush().ok();
+                            match read_answer(&mut reader)? {
+                                None => {
+                                    writeln!(out).ok();
+                                    let accepted = decisions_to_accepted(&decisions);
+                                    let blended = blend_for_stage_hunks(
+                                        &index_side_bytes,
+                                        &cur_work,
+                                        &hunk_ranges,
+                                        &accepted,
+                                    );
+                                    write_index_blob_and_mode(
+                                        odb,
+                                        &mut index,
+                                        &path_str,
+                                        &abs_path,
+                                        blended.as_bytes(),
+                                        effective_mode,
+                                    )?;
+                                    repo.write_index_at(&index_path, &mut index)?;
+                                    return Ok(());
+                                }
+                                Some(a) => pat = a.trim_end_matches(['\n', '\r']).to_string(),
+                            }
+                            if pat.is_empty() {
+                                continue 'hunk_loop;
+                            }
+                        }
+                        match regex::Regex::new(&pat) {
+                            Ok(re) => {
+                                let mut i = hunk_index;
+                                let mut found = false;
+                                loop {
+                                    let text = render_hunk(i, &hunk_ranges, &cur_work);
+                                    if re.is_match(&text) {
+                                        found = true;
+                                        break;
+                                    }
+                                    i = (i + 1) % n_hunks;
+                                    if i == hunk_index {
+                                        break;
+                                    }
+                                }
+                                if found {
+                                    hunk_index = i;
+                                } else {
+                                    writeln!(out, "No hunk matches the given pattern").ok();
+                                }
+                            }
+                            Err(_) => {
+                                writeln!(out, "Malformed search regexp {pat}").ok();
+                            }
+                        }
+                    }
+                    's' => {
+                        if !splittable {
+                            writeln!(out, "Sorry, cannot split this hunk").ok();
+                        } else {
+                            let before = hunk_ranges.len();
+                            if split_hunk_into_all(&mut hunk_ranges, hunk_index, &ops) {
+                                let added = hunk_ranges.len() - before;
+                                // The new sub-hunks (and the original slot) are all undecided.
+                                for _ in 0..added {
+                                    decisions.insert(hunk_index + 1, Decision::Undecided);
+                                }
+                                decisions[hunk_index] = Decision::Undecided;
+                                writeln!(out, "Split into {} hunks.", added + 1).ok();
+                                rendered_hunk_index = -1;
+                            }
+                        }
+                    }
+                    'e' => {
+                        if !allow_edit {
+                            writeln!(out, "Sorry, cannot edit this hunk").ok();
+                        } else {
                             match edit_hunk_and_apply(
                                 &mut out,
                                 path_str.as_str(),
@@ -507,56 +1184,38 @@ pub(crate) fn run_add_patch_with_reader(
                                 &ops[s..e],
                                 context,
                             ) {
-                                Ok(Some(new_work)) => {
-                                    // Git marks the edited hunk for staging (`hunk->use = USE_HUNK`)
-                                    // and advances (`goto soft_increment`). We adopt the edited
-                                    // content as the new staged worktree side and accept this hunk
-                                    // so the end-of-file blend stages it.
+                                Ok(EditResult::Unchanged) => {
+                                    // No-op edit: stage the hunk as-is (git: `hunk->use = USE_HUNK`).
+                                    decisions[hunk_index] = Decision::Use;
+                                    hunk_index = soft_increment(undecided_next);
+                                }
+                                Ok(EditResult::Edited(new_work)) => {
                                     cur_work = new_work;
-                                    accepted[hunk_cursor] = true;
-                                    hunk_cursor += 1;
-                                    continue 'hunk_loop;
+                                    decisions[hunk_index] = Decision::Use;
+                                    hunk_index = soft_increment(undecided_next);
                                 }
-                                Ok(None) => {
-                                    // Editor aborted (no change) or empty edit: leave hunk as-is.
-                                    render = false;
-                                    continue 'hunk_loop;
-                                }
-                                Err(_) => {
-                                    render = false;
-                                    continue 'hunk_loop;
-                                }
+                                Ok(EditResult::Aborted) | Err(_) => {}
                             }
                         }
-                        '?' => {
-                            writeln!(
-                                out,
-                                "y - stage this hunk\n\
-                                 n - do not stage this hunk\n\
-                                 q - quit; do not stage this hunk or any of the remaining ones\n\
-                                 a - stage this hunk and all later hunks in the file\n\
-                                 d - do not stage this hunk or any of the later hunks in the file\n\
-                                 s - split the current hunk into smaller hunks\n\
-                                 e - manually edit the current hunk\n"
-                            )
-                            .ok();
-                            render = false;
-                            continue 'hunk_loop;
-                        }
-                        ' ' => {
-                            render = false;
-                            continue 'hunk_loop;
-                        }
-                        _ => {
-                            // Git: `err(s, _("Unknown command '%s' ..."))`.
-                            writeln!(out, "Unknown command '{raw}' (use '?' for help)").ok();
-                            render = false;
-                            continue 'hunk_loop;
-                        }
-                    },
+                    }
+                    'p' => {
+                        // p/P just re-render the current hunk.
+                        rendered_hunk_index = -1;
+                    }
+                    '?' => {
+                        write_patch_help(&mut out, &nav);
+                    }
+                    ' ' => {}
+                    _ => {
+                        writeln!(out, "Unknown command '{answer}' (use '?' for help)").ok();
+                    }
                 }
             }
 
+            // Git prints a trailing newline when leaving `patch_update_file`.
+            writeln!(out).ok();
+
+            let accepted = decisions_to_accepted(&decisions);
             let blended =
                 blend_for_stage_hunks(&index_side_bytes, &cur_work, &hunk_ranges, &accepted);
 
@@ -892,6 +1551,16 @@ fn index_span(op_slice: &[similar::DiffOp]) -> (usize, usize) {
 ///
 /// # Errors
 /// Propagates editor/IO failures.
+/// Outcome of a manual hunk edit (`e`).
+enum EditResult {
+    /// The editor left the hunk unchanged: stage it as-is (`hunk->use = USE_HUNK`, no rediff).
+    Unchanged,
+    /// The hunk was edited: `cur_work` is replaced with the new full-file content.
+    Edited(Vec<u8>),
+    /// The edit was abandoned (all lines removed, or the patch did not apply): leave undecided.
+    Aborted,
+}
+
 fn edit_hunk_and_apply(
     out: &mut impl Write,
     path: &str,
@@ -899,7 +1568,7 @@ fn edit_hunk_and_apply(
     work_bytes: &[u8],
     op_slice: &[similar::DiffOp],
     context: usize,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<EditResult> {
     // The body to present is the hunk text (header + ` `/`+`/`-` lines), as displayed.
     let hunk_text =
         partial_unified_for_op_range(path, index_bytes, work_bytes, op_slice, context, true);
@@ -920,6 +1589,12 @@ fn edit_hunk_and_apply(
 
     let edited = run_editor_on_text(buf.as_bytes())?;
     let edited = String::from_utf8_lossy(&edited).into_owned();
+
+    // If the editor left the presented buffer unchanged (e.g. EDITOR=: / touch), git stages the
+    // hunk as-is without re-diffing the file.
+    if edited == buf {
+        return Ok(EditResult::Unchanged);
+    }
 
     // Strip comment lines.
     let body: Vec<&str> = edited.lines().filter(|l| !l.starts_with('#')).collect();
@@ -958,7 +1633,7 @@ fn edit_hunk_and_apply(
 
     if old_lines.is_empty() && new_lines.is_empty() {
         // All lines removed: abandon the edit.
-        return Ok(None);
+        return Ok(EditResult::Aborted);
     }
 
     // Apply positionally, like `git apply`: locate where the edited hunk's old side
@@ -977,7 +1652,7 @@ fn edit_hunk_and_apply(
             "Your edited hunk does not apply. Edit again (saying \"no\" discards!) [y/n]? "
         )
         .ok();
-        return Ok(None);
+        return Ok(EditResult::Aborted);
     };
 
     let trailing_newline = work_bytes.ends_with(b"\n") || index_bytes.ends_with(b"\n");
@@ -994,7 +1669,7 @@ fn edit_hunk_and_apply(
     if trailing_newline && !new_content.is_empty() {
         new_content.push('\n');
     }
-    Ok(Some(new_content.into_bytes()))
+    Ok(EditResult::Edited(new_content.into_bytes()))
 }
 
 /// Find the line index in `haystack` where `needle` matches contiguously, preferring `hint` then
