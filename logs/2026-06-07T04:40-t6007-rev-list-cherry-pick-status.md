@@ -64,3 +64,22 @@ This is a test-authoring discrepancy in the synthetic `*-status.sh` variant, not
 bug. The only ways to make it pass are (a) edit the test expectation (disallowed by the
 contract) or (b) make grit diverge from upstream git and regress other passing tests
 (unacceptable). Marking the ticket BLOCKED with this rationale. No grit code change made.
+
+## Round 2 re-verification (2026-06-07T08:36)
+Re-ran fresh after potential cascades from other agents: still 28/29 (only test 7 fails).
+Re-verified against the real git binary on this machine (git version 2.52.0), not just the
+2.39.5 cited above:
+```
+$ git rev-list --left-right --count left...right          => 2<TAB>2      (2 cols)
+$ git rev-list --left-right --count --cherry-mark left...right => 2<TAB>2<TAB>0 (3 cols)
+```
+grit produces byte-identical output for both invocations:
+```
+$ grit rev-list --left-right --count left...right          => 2<TAB>2
+$ grit rev-list --left-right --count --cherry-mark left...right => 2<TAB>2<TAB>0
+```
+Confirms the prior diagnosis under a newer real-git version. Test 7 demands `2\t2\t0` from
+`--left-right --count` WITHOUT `--cherry-mark`, which neither real git 2.52.0 nor grit emit.
+Re-read C source `git/builtin/rev-list.c:955-963` (3-col branch is `left_right && cherry_mark`).
+No grit change possible without regressing the upstream-faithful sibling
+`t6007-rev-list-cherry-pick-file.sh` test 21 (`1\t2`, 2 cols) and t5310. Remains BLOCKED.
