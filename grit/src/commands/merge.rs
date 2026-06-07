@@ -10520,7 +10520,17 @@ fn try_content_merge_ext(
         paths.push(path_str.to_string());
     }
     let output = merge_file::merge(&input)?;
-    let mode = ours.mode; // Use ours mode by default
+    // Merge the file modes the same way git's `merge_3way` (merge-ort.c) does: when both sides
+    // agree on the mode, or our side did not change it from the base, take theirs; otherwise our
+    // side changed the mode while theirs did not, so keep ours. This preserves an executable-bit
+    // change introduced on only one side even when the file content is identical on both sides
+    // (e.g. rebasing a mode-only amend onto an upstream that already has the content change —
+    // t3419 "do not drop patch modechange").
+    let mode = if ours.mode == theirs.mode || ours.mode == base.mode {
+        theirs.mode
+    } else {
+        ours.mode
+    };
 
     if output.conflicts == 0 {
         if !merge_renormalize
