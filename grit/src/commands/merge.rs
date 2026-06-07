@@ -4935,7 +4935,20 @@ fn do_octopus_merge(
         merge_current_oid = write_octopus_step_commit(repo, step_tree, &step_parents)?;
     }
 
-    // All merges succeeded — build the octopus merge commit
+    // All merges succeeded — build the octopus merge commit.
+    // A `-F <file>` (or `-m`) message must override the auto-generated `Merge branches '…'` summary,
+    // matching the non-octopus path (and Git's `do_merge` octopus, which passes `-F <merge_msg>`).
+    // t3430 'octopus merges' replays the original `Tüntenfüsch` message via `merge … --no-log -F`.
+    let octopus_msg_config = ConfigSet::load(Some(&repo.git_dir), true)?;
+    let octopus_custom_msg: Option<String> = if let Some(ref file_path) = args.file {
+        Some(read_merge_message_from_file(
+            Path::new(file_path),
+            &octopus_msg_config,
+        )?)
+    } else {
+        args.message.clone()
+    };
+
     let mut final_index = Index::new();
     final_index.entries = current_tree_entries;
     final_index.sort();
@@ -4971,7 +4984,8 @@ fn do_octopus_merge(
             .map(|oid| format!("{}\n", oid.to_hex()))
             .collect();
         fs::write(repo.git_dir.join("MERGE_HEAD"), &merge_head_content)?;
-        let msg = build_octopus_merge_message(head, &merge_names, args.message.as_deref(), repo);
+        let msg =
+            build_octopus_merge_message(head, &merge_names, octopus_custom_msg.as_deref(), repo);
         fs::write(repo.git_dir.join("MERGE_MSG"), &msg)?;
         fs::write(repo.git_dir.join("MERGE_MODE"), "no-ff\n")?;
         if !args.quiet {
@@ -4986,7 +5000,7 @@ fn do_octopus_merge(
     repo.write_index(&mut final_index)?;
 
     let tree_oid = write_tree_from_index(&repo.odb, &final_index, "")?;
-    let msg = build_octopus_merge_message(head, &merge_names, args.message.as_deref(), repo);
+    let msg = build_octopus_merge_message(head, &merge_names, octopus_custom_msg.as_deref(), repo);
 
     let config = ConfigSet::load(Some(&repo.git_dir), true)?;
     let hook_cleanup = args.cleanup.as_deref().unwrap_or("whitespace");

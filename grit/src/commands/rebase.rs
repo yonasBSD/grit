@@ -1843,6 +1843,52 @@ enum TodoBuildItem {
 /// fixup/squash chains count as part of the preceding pick, so the exec commands are inserted only
 /// once the next non-fixup command (or end of list) is reached. The decoration items
 /// (`UpdateRef`/`RefComment`) are inert and do not reset the pending insert.
+/// Insert `exec <cmd>` lines into a generated `--rebase-merges` todo script after every `pick`/
+/// `merge` (treating a fixup/squash chain as part of its pick — exec lands after the chain), and
+/// append trailing exec commands if the last command was a pick/merge. Mirrors Git's
+/// `todo_list_add_exec_commands`, which runs over the whole merge script after autosquash and before
+/// the editor. The inserted `exec` lines are then driven by the normal replay `RebaseReplayStep::Exec`
+/// path (with `done`-recording, reschedule, etc.). t3430 'truncate label names', 'with --autosquash
+/// and --exec'.
+fn insert_exec_into_merge_script(script: &str, exec_cmds: &[String]) -> String {
+    if exec_cmds.is_empty() {
+        return script.to_owned();
+    }
+    let trailing_newline = script.ends_with('\n');
+    let mut out: Vec<String> = Vec::new();
+    let mut pending = false;
+    let flush = |out: &mut Vec<String>| {
+        for c in exec_cmds {
+            out.push(format!("exec {c}"));
+        }
+    };
+    for line in script.lines() {
+        let t = line.trim();
+        let first = t.split_whitespace().next().map(str::to_ascii_lowercase);
+        let is_comment_or_blank = t.is_empty() || t.starts_with('#');
+        let is_fixup = matches!(first.as_deref(), Some("fixup" | "f" | "squash" | "s"));
+        let is_pick_or_merge = matches!(first.as_deref(), Some("pick" | "p" | "merge" | "m"));
+        // Flush the pending exec before the next non-fixup, non-comment command (Git treats
+        // comments/blank lines as transparent: they don't end a fixup chain).
+        if pending && !is_fixup && !is_comment_or_blank {
+            flush(&mut out);
+            pending = false;
+        }
+        out.push(line.to_owned());
+        if is_pick_or_merge {
+            pending = true;
+        }
+    }
+    if pending {
+        flush(&mut out);
+    }
+    let mut body = out.join("\n");
+    if trailing_newline {
+        body.push('\n');
+    }
+    body
+}
+
 fn insert_exec_commands(items: Vec<TodoBuildItem>, exec_cmds: &[String]) -> Vec<TodoBuildItem> {
     if exec_cmds.is_empty() {
         return items;
@@ -6167,6 +6213,15 @@ Use '--' to separate paths from revisions, like this:\n\
         // (t3430 'with --autosquash and --exec').
         let script = if want_autosquash {
             rearrange_autosquash_merge_script(&repo, &script)?
+        } else {
+            script
+        };
+        // Then weave `--exec` commands into the merge todo after each pick/merge (Git's
+        // `todo_list_add_exec_commands`, run after the rearrange). The merge path is "interactive",
+        // so the global `rebase-merge/exec` file is NOT written; the exec must live in the todo
+        // (t3430 'truncate label names' / 'with --autosquash and --exec').
+        let script = if !args.exec.is_empty() {
+            insert_exec_into_merge_script(&script, &args.exec)
         } else {
             script
         };
