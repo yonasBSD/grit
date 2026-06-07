@@ -1196,19 +1196,28 @@ fn branch_tip_names_by_oid(repo: &Repository) -> HashMap<ObjectId, String> {
 }
 
 fn merge_subject_label_from_oneline(oneline: &str) -> String {
+    // Mirror Git's `make_script_with_merges` `label_from_message`. The input is the bare merge
+    // subject (Git pretty-prints `# %s`, then strips the comment prefix).
     let rest = oneline.trim_start_matches('#').trim_start();
-    if let Some(i) = rest.find("Merge branch '") {
-        let after = &rest[i + "Merge branch '".len()..];
-        if let Some(end) = after.find('\'') {
-            return after[..end].to_owned();
+    // `# Merge <anything> '<label>' …` → text inside the first pair of single quotes after
+    // "Merge " (e.g. `Merge commit '<oid>' into labels` → `<oid>`; `Merge branch 'topic'` →
+    // `topic`). Git uses `skip_prefix("# Merge ")` then the first `'`…`'` pair.
+    if let Some(after_merge) = rest.strip_prefix("Merge ") {
+        if let Some(open) = after_merge.find('\'') {
+            let after_open = &after_merge[open + 1..];
+            if let Some(end) = after_open.find('\'') {
+                return after_open[..end].to_owned();
+            }
         }
     }
+    // `# Merge pull request … from <label>` → text after " from ".
     if let Some(i) = rest.find("Merge pull request ") {
         if let Some(from) = rest[i..].find(" from ") {
             return rest[i + from + " from ".len()..].trim().to_owned();
         }
     }
-    oneline.trim_start_matches('#').trim().to_owned()
+    // Otherwise the whole subject is the label seed.
+    rest.trim().to_owned()
 }
 
 fn sanitize_merge_label(base: &str, max_len: usize) -> String {
@@ -1412,11 +1421,24 @@ fn generate_rebase_merge_script(
         }
         let merge_c = abbreviate_object_id(repo, oid, 7)?;
         let mut merge_line = format!("merge -C {merge_c}");
+        // Git's `make_script_with_merges` label hint for a merged tip: the branch ref decoration
+        // (`refs/heads/<name>`) if present, otherwise a label derived from THIS merge's subject
+        // (`label_from_message` — strips `Merge branch '<x>'`/`Merge pull request ... from <x>`,
+        // else the whole subject). `label_oid` only uses this hint for *interesting* (rebased)
+        // parents; uninteresting ones fall back to an abbreviated hash. t3430 'truncate label
+        // names' expects `label 0123456789-我` from the subject `0123456789 我 123`.
+        // `oneline` is the formatted `pick <hash> # <subject>` line; the label hint derives from the
+        // bare subject (text after ` # `), matching Git which pretty-prints the merge with `# %s`.
+        let merge_subject = oneline
+            .find(" # ")
+            .map(|idx| &oneline[idx + 3..])
+            .unwrap_or_else(|| commit.message.lines().next().unwrap_or(""));
+        let subject_label = merge_subject_label_from_oneline(merge_subject);
         for p in commit.parents.iter().skip(1) {
-            // Match Git: use the merged branch's ref decoration (`refs/heads/<name>`) only.
-            // Do not fall back to parsing the merge subject — that can attach the wrong label to
-            // the wrong parent when multiple merges share similar subjects (t3430-rebase-merges).
-            let tip_name = decorations.get(p).map(String::as_str);
+            let tip_name = decorations
+                .get(p)
+                .map(String::as_str)
+                .or_else(|| (!subject_label.is_empty()).then_some(subject_label.as_str()));
             let lbl = label_oid_for_merge_script(p, tip_name, &mut label_state, repo)?;
             merge_line.push(' ');
             merge_line.push_str(&lbl);
