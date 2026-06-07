@@ -274,17 +274,24 @@ fn render_hunk_with_offsets(
     s
 }
 
-/// Compute the natural hunk ranges (`[start, end)` op-index spans) that `git diff -U<context>`
-/// would emit: changes separated by an equal run longer than `2 * context` lines start a new
-/// hunk; shorter gaps are absorbed. Each returned range still includes the full separating equal
-/// runs (the renderer caps the shown context to `context`). With overlap on the boundary equal run
-/// so each hunk renders its surrounding context, mirroring [`split_hunk_into_all`].
-fn natural_hunk_ranges(ops: &[similar::DiffOp], context: usize) -> Vec<(usize, usize)> {
+/// Compute the natural hunk ranges (`[start, end)` op-index spans) that
+/// `git diff -U<context> --inter-hunk-context=<inter>` would emit: two changes separated by an
+/// equal run are kept in the same hunk when the run is `<= 2*context + inter` lines (their context
+/// regions plus the inter-hunk gap would touch); a longer run starts a new hunk. Each returned
+/// range still includes the full separating equal runs (the renderer caps the shown context to
+/// `context`), with overlap on the boundary equal run so each hunk renders its surrounding context,
+/// mirroring [`split_hunk_into_all`].
+fn natural_hunk_ranges(
+    ops: &[similar::DiffOp],
+    context: usize,
+    inter_hunk_context: usize,
+) -> Vec<(usize, usize)> {
     let is_eq = |i: usize| matches!(ops.get(i), Some(similar::DiffOp::Equal { .. }));
     let eq_len = |i: usize| match ops.get(i) {
         Some(similar::DiffOp::Equal { len, .. }) => *len,
         _ => 0,
     };
+    let split_threshold = 2 * context + inter_hunk_context;
     let n = ops.len();
     let change_idxs: Vec<usize> = (0..n).filter(|&i| !is_eq(i)).collect();
     if change_idxs.is_empty() {
@@ -299,7 +306,7 @@ fn natural_hunk_ranges(ops: &[similar::DiffOp], context: usize) -> Vec<(usize, u
         // Between two consecutive change ops there is at most one equal op; a big gap (> 2*context)
         // closes the current hunk and starts a new one. The separating equal op is shared so both
         // hunks render context around it.
-        let big_gap = (prev_change + 1..c).any(|mid| eq_len(mid) > 2 * context);
+        let big_gap = (prev_change + 1..c).any(|mid| eq_len(mid) > split_threshold);
         if big_gap {
             // Range start: equal op before the first change (leading context), else the change.
             let start = if group_first_change > 0 && is_eq(group_first_change - 1) {
@@ -544,7 +551,7 @@ pub(crate) fn run_add_patch_with_reader(
     opts: &PatchOptions,
     external_reader: Option<&mut dyn BufRead>,
 ) -> Result<()> {
-    let _ = opts.inter_hunk_context;
+    let inter_hunk_context = opts.inter_hunk_context;
     let auto_advance = opts.auto_advance;
     let context = opts.context;
     let work_tree = repo
@@ -761,7 +768,7 @@ pub(crate) fn run_add_patch_with_reader(
             let mut hunk_ranges: Vec<(usize, usize)> = if is_addition || is_deletion {
                 vec![(0, n_ops)]
             } else {
-                natural_hunk_ranges(&ops, context)
+                natural_hunk_ranges(&ops, context, inter_hunk_context)
             };
             let mut decisions = vec![Decision::Undecided; hunk_ranges.len()];
             let mut hunk_index = 0usize;
