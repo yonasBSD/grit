@@ -764,11 +764,18 @@ pub fn run(mut args: Args) -> Result<()> {
 
     let index_path = resolved_index_path(&repo);
 
+    // For `commit --interactive` (`-i`), the selections are staged into a temporary index and the
+    // real on-disk index is left untouched until the commit succeeds (so an aborted commit does not
+    // mutate the index — t7501). Carry the staged index here so the post-commit refresh can persist
+    // it once the commit is final.
+    let mut interactive_staged_index: Option<Index> = None;
     let index = if args.interactive && !args.patch {
         let Some(wt) = work_tree else {
             bail!("this operation must be run in a work tree");
         };
-        run_commit_interactive_mode(&repo, wt, &args)?
+        let staged = run_commit_interactive_mode(&repo, wt, &args)?;
+        interactive_staged_index = Some(staged.clone());
+        staged
     } else if args.patch {
         let Some(wt) = work_tree else {
             bail!("this operation must be run in a work tree");
@@ -1792,11 +1799,16 @@ pub fn run(mut args: Args) -> Result<()> {
         let _ = fs::remove_dir_all(repo.git_dir.join("sequencer"));
     }
 
-    // Refresh the index file Git used for this commit (including `GIT_INDEX_FILE`).
-    let mut index_refresh = match repo.load_index_at(&index_path) {
-        Ok(idx) => idx,
-        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
-        Err(e) => return Err(e.into()),
+    // Refresh the index file Git used for this commit (including `GIT_INDEX_FILE`). For
+    // `commit --interactive`, the real index was intentionally not touched until now; promote the
+    // interactively staged index here, after the commit has succeeded.
+    let mut index_refresh = match interactive_staged_index.take() {
+        Some(idx) => idx,
+        None => match repo.load_index_at(&index_path) {
+            Ok(idx) => idx,
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
+            Err(e) => return Err(e.into()),
+        },
     };
     let cache_tree = build_cache_tree_from_index(&repo.odb, &index_refresh)?;
     index_refresh.set_cache_tree(cache_tree);
@@ -2324,37 +2336,103 @@ fn find_untracked_files(
     crate::commands::status::collect_untracked_normal_for_status(repo, index, work_tree, pathspecs)
 }
 
+/// `git commit --interactive` (`-i`): drive the full interactive-add menu loop (status / update /
+/// revert / add untracked / patch / diff) against a *temporary* index seeded from the current
+/// index, then commit the tree that index describes (Git's `interactive_add` on a temp index file).
+///
+/// The selections are made in a copy so the real index/work tree are untouched by the loop. After
+/// the loop the temp index is written over the real index path so the normal post-commit refresh
+/// records exactly the staged-and-committed state (e.g. `foo.c` ends up ` M` in `git status`).
 fn run_commit_interactive_mode(repo: &Repository, work_tree: &Path, args: &Args) -> Result<Index> {
-    use std::io::BufRead;
+    let real_index_path = resolved_index_path(repo);
 
-    let index_path = resolved_index_path(repo);
-    let mut index = match repo.load_index_at(&index_path) {
-        Ok(idx) => idx,
-        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
+    // Seed a temporary index file from the current index so interactive selections never touch the
+    // real index until the commit is being built.
+    let tmp_index_path = repo
+        .git_dir
+        .join(format!("next-index-{}", std::process::id()));
+    match fs::copy(&real_index_path, &tmp_index_path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // No index yet: start the temp index empty.
+            let mut empty = Index::new();
+            repo.write_index_at(&tmp_index_path, &mut empty)?;
+        }
         Err(e) => return Err(e.into()),
+    }
+
+    let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let core_filemode = config
+        .get_bool("core.filemode")
+        .and_then(|r| r.ok())
+        .unwrap_or(true);
+    let precompose_unicode =
+        grit_lib::precompose_config::effective_core_precomposeunicode(Some(&repo.git_dir));
+    let sparse_state = crate::commands::add::AddSparseState::load(repo, &config);
+    let add_cfg = crate::commands::add::AddConfig {
+        core_filemode,
+        precompose_unicode,
+        ignore_errors: false,
+        conv: grit_lib::crlf::ConversionConfig::from_config(&config),
+        attrs: grit_lib::crlf::load_gitattributes(work_tree),
+        config: config.clone(),
+        sparse: sparse_state,
+        include_sparse: false,
+        large_blobs: None,
     };
 
-    println!("*** Commands ***");
-    println!("  1: status       2: update       3: revert       4: add untracked");
-    println!("  5: patch        6: diff         7: quit         8: help");
-    print!("What now> ");
-    io::stdout().flush().ok();
+    // Point the interactive-add engine at the temp index for the duration of the loop.
+    let prev_index_env = std::env::var_os("GIT_INDEX_FILE");
+    std::env::set_var("GIT_INDEX_FILE", &tmp_index_path);
 
-    let mut first = String::new();
-    let mut stdin = io::stdin().lock();
-    if stdin.read_line(&mut first).unwrap_or(0) == 0 {
-        std::process::exit(1);
-    }
-    match first.trim() {
-        "7" | "q" | "Q" => std::process::exit(1),
-        "2" | "u" | "U" | "update" => {
-            if args.pathspec.is_empty() {
-                std::process::exit(1);
-            }
-            apply_pathspec_to_index(repo, work_tree, &mut index, &args.pathspec)?;
-            Ok(index)
+    let tmp_index = match repo.load_index_at(&tmp_index_path) {
+        Ok(idx) => idx,
+        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
+        Err(e) => {
+            restore_index_env(prev_index_env.as_deref());
+            return Err(e.into());
         }
-        _ => std::process::exit(1),
+    };
+
+    let loop_result = crate::commands::add_interactive::run_add_i(
+        repo,
+        tmp_index,
+        work_tree,
+        &config,
+        &add_cfg,
+        &args.pathspec,
+    );
+
+    restore_index_env(prev_index_env.as_deref());
+
+    if let Err(e) = loop_result {
+        let _ = fs::remove_file(&tmp_index_path);
+        return Err(e);
+    }
+
+    // Reload the temp index (now carrying the interactively staged hunks). The commit tree is built
+    // from this index, but the *real* index is deliberately left untouched here: a later abort
+    // (e.g. empty commit message) must leave the on-disk index unchanged (t7501 "commit
+    // --interactive doesn't change index if editor aborts"). The post-commit index refresh persists
+    // this staged index only once the commit actually succeeds.
+    let staged_index = match repo.load_index_at(&tmp_index_path) {
+        Ok(idx) => idx,
+        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp_index_path);
+            return Err(e.into());
+        }
+    };
+    let _ = fs::remove_file(&tmp_index_path);
+
+    Ok(staged_index)
+}
+
+/// Restore (or clear) `GIT_INDEX_FILE` after a temporary override.
+fn restore_index_env(prev: Option<&std::ffi::OsStr>) {
+    match prev {
+        Some(val) => std::env::set_var("GIT_INDEX_FILE", val),
+        None => std::env::remove_var("GIT_INDEX_FILE"),
     }
 }
 
