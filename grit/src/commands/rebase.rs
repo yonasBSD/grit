@@ -9270,12 +9270,16 @@ fn cherry_pick_for_rebase(
         let squash_onto = fs::read_to_string(rb_dir.join("squash-onto"))
             .ok()
             .and_then(|s| ObjectId::from_hex(s.trim()).ok());
+        // Preserve ALL of HEAD's parents: a `fixup`/`squash` that folds into a recreated MERGE commit
+        // (HEAD has 2+ parents) must keep the merge structure, not collapse to the first parent
+        // (t3430 'post-rewrite hook and fixups work for merges' — `git rebase -ir --autosquash` of a
+        // `fixup! <merge>` keeps the merge's second parent so `HEAD^2` still resolves).
         let amend_parents: Vec<ObjectId> = if hc.parents.is_empty()
             || (hc.parents.len() == 1 && squash_onto == Some(amend_parent))
         {
             Vec::new()
         } else {
-            vec![amend_parent]
+            hc.parents.clone()
         };
 
         if todo_cmd == RebaseTodoCmd::Fixup && !final_fixup {
