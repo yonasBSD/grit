@@ -1295,11 +1295,13 @@ fn validate_batch_refname(cmd: &str, raw_line: &str, null_terminated: bool) -> R
         Some(r) => r.strip_prefix(' ').unwrap_or(r),
         None => return Ok(()),
     };
-    // Grit always whitespace-tokenizes batch command lines, including `-z`
-    // input where NUL only terminates whole lines. The refname is therefore the
-    // first whitespace-delimited token regardless of `null_terminated`.
-    let _ = null_terminated;
-    let Some(refname) = extract_raw_refname(rest, false) else {
+    // Mirror `parse_refname()` in `builtin/update-ref.c`: without `-z` the
+    // refname is the first whitespace-delimited (C-quoted) argument, but with
+    // `-z` the refname is *everything* up to the end of the current
+    // NUL-terminated field, including any trailing whitespace. The latter is why
+    // `create ~a \0refs/heads/main\0` reports the bad name as `~a ` (with the
+    // trailing space) rather than `~a`.
+    let Some(refname) = extract_raw_refname(rest, null_terminated) else {
         return Ok(());
     };
     if check_refname_format(
