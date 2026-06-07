@@ -701,7 +701,7 @@ pub fn run(mut args: Args) -> Result<()> {
     let had_rv_head = repo.git_dir.join("REVERT_HEAD").exists();
     let seq_todo_path = repo.git_dir.join("sequencer").join("todo");
     let resume_pick_after_cp = had_cp_head && seq_todo_path.exists();
-    let _resume_revert_after_rv = had_rv_head && seq_todo_path.exists();
+    let resume_revert_after_rv = had_rv_head && seq_todo_path.exists();
     // Git's `sequencer_determine_whence`: a stopped interactive `pick` leaves CHERRY_PICK_HEAD
     // *and* a rebase state dir with REBASE_HEAD == CHERRY_PICK_HEAD. In that case `commit` reports
     // a rebase (not a cherry-pick) for partial-commit / amend errors (t3404 118/119).
@@ -1818,7 +1818,11 @@ pub fn run(mut args: Args) -> Result<()> {
     // state when the just-committed pick was the final one (`have_finished_the_last_pick`:
     // the todo has at most one line left). That lets the last pick of a sequence be
     // finished with a plain `git commit` (t3507 "successful final commit clears ... state").
-    if resume_pick_after_cp && sequencer_finished_last_pick(&repo.git_dir) {
+    // This applies equally to a revert sequence (REVERT_HEAD), matching
+    // sequencer_post_commit_cleanup which sets need_cleanup for either head.
+    if (resume_pick_after_cp || resume_revert_after_rv)
+        && sequencer_finished_last_pick(&repo.git_dir)
+    {
         let _ = fs::remove_dir_all(repo.git_dir.join("sequencer"));
     }
 
