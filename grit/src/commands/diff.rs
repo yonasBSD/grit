@@ -8284,6 +8284,16 @@ fn write_patch_with_prefix(
             continue;
         }
 
+        // Adding or deleting an empty file (both blobs empty) has no content hunk: git emits only
+        // the `diff --git` / `new|deleted file mode` / `index` header, with no `--- / +++` lines
+        // (t3701 "deleting an empty file" / "adding an empty file").
+        if matches!(entry.status, DiffStatus::Added | DiffStatus::Deleted)
+            && old_content.is_empty()
+            && new_content.is_empty()
+        {
+            continue;
+        }
+
         // For Added files, show --- /dev/null; for Deleted files, show +++ /dev/null
         let display_old = if entry.status == DiffStatus::Added {
             "/dev/null"
