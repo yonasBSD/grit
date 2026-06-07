@@ -1008,7 +1008,7 @@ pub fn run(mut args: Args) -> Result<()> {
             work_tree_keep_toplevel: empty_dir_ok,
             git_dir,
             git_dir_keep_toplevel,
-            disarmed: false,
+            mode: JunkMode::LeaveNone,
         }
     };
 
@@ -1679,6 +1679,12 @@ pub fn run(mut args: Args) -> Result<()> {
 
     let sparse_partial_skip =
         partial_blob_none && matches!(filter_spec.as_deref(), Some("blob:none")) && args.sparse;
+
+    // The repository (git dir + objects) is now fully populated. From here on a failure must leave
+    // the partial repo on disk so the user can inspect and retry, matching upstream Git's
+    // `junk_mode = JUNK_LEAVE_REPO` immediately before `checkout()` (builtin/clone.c). In
+    // particular, a checkout failure from a corrupt object keeps `<dest>/.git` (t1060).
+    junk_guard.leave_repo();
 
     // Checkout working tree unless --bare or --no-checkout.
     // Sparse partial clones already materialize tip files via promisor hydration.
@@ -4420,15 +4426,30 @@ fn remove_junk_path(path: &Path, keep_toplevel: bool) {
     }
 }
 
+/// What a [`JunkGuard`] removes when dropped, mirroring upstream Git's `enum junk_mode`
+/// (builtin/clone.c).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JunkMode {
+    /// Remove both the git dir and work tree (the default while the repo is still being set up).
+    LeaveNone,
+    /// Leave the partially populated repository on disk; only warn the user. Git switches to this
+    /// mode immediately before the worktree checkout, so a checkout failure (e.g. a corrupt object)
+    /// keeps `<dest>/.git` and the index around for inspection instead of deleting everything.
+    LeaveRepo,
+    /// Leave everything in place (the clone succeeded). Equivalent to disarming the guard.
+    LeaveAll,
+}
+
 /// RAII cleanup guard mirroring upstream Git's `remove_junk` (builtin/clone.c).
 ///
 /// On a failed clone, Git removes the git dir and work tree it created so the user does not have to
 /// clean up manually before retrying. If those directories already existed (empty) before the
 /// clone, only their contents are removed — the pre-existing directory is preserved.
 ///
-/// The guard runs cleanup when dropped unless [`JunkGuard::disarm`] is called after a successful
-/// clone. This matches Git's `atexit(remove_junk)` plus the `junk_mode = JUNK_LEAVE_ALL` reset on
-/// success.
+/// The guard runs cleanup when dropped while in [`JunkMode::LeaveNone`]. Once the clone reaches the
+/// worktree checkout phase, [`JunkGuard::leave_repo`] switches it to [`JunkMode::LeaveRepo`] so a
+/// checkout failure leaves the repository intact (matching Git's `junk_mode = JUNK_LEAVE_REPO`).
+/// On success [`JunkGuard::disarm`] selects [`JunkMode::LeaveAll`] (Git's `JUNK_LEAVE_ALL`).
 struct JunkGuard {
     /// Work tree directory to remove (absent for bare clones).
     work_tree: Option<PathBuf>,
@@ -4438,21 +4459,37 @@ struct JunkGuard {
     git_dir: Option<PathBuf>,
     /// Keep the git dir's top-level directory (it pre-existed and was empty).
     git_dir_keep_toplevel: bool,
-    /// When true, drop performs no cleanup (clone succeeded).
-    disarmed: bool,
+    /// Current cleanup mode. See [`JunkMode`].
+    mode: JunkMode,
 }
 
 impl JunkGuard {
     /// Disarm the guard so dropping it performs no cleanup (the clone succeeded).
     fn disarm(&mut self) {
-        self.disarmed = true;
+        self.mode = JunkMode::LeaveAll;
+    }
+
+    /// Switch to "leave the repo" cleanup: a later failure keeps the partial repository on disk and
+    /// only warns. Called before the worktree checkout so a corrupt-object checkout failure does not
+    /// delete `<dest>/.git` (upstream `junk_mode = JUNK_LEAVE_REPO`, t1060).
+    fn leave_repo(&mut self) {
+        self.mode = JunkMode::LeaveRepo;
     }
 }
 
 impl Drop for JunkGuard {
     fn drop(&mut self) {
-        if self.disarmed {
-            return;
+        match self.mode {
+            JunkMode::LeaveAll => return,
+            JunkMode::LeaveRepo => {
+                eprintln!(
+                    "warning: Clone succeeded, but checkout failed.\n\
+                     You can inspect what was checked out with 'git status'\n\
+                     and retry with 'git restore --source=HEAD :/'"
+                );
+                return;
+            }
+            JunkMode::LeaveNone => {}
         }
         // Upstream removes the git dir first, then the work tree. For a normal (non-separate)
         // clone the git dir lives inside the work tree, so removing the work tree afterwards
