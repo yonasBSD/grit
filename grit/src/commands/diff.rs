@@ -7803,6 +7803,14 @@ fn write_patch_with_prefix(
         let new_path = entry.new_path.as_deref().unwrap_or("/dev/null");
         let path_for_attrs = repo_path_for_diff_entry(entry, relative_prefix);
 
+        // `git diff --cached` reports an unmerged (conflicted) index entry as a single
+        // `* Unmerged path <name>` line — it has no stage-0 blob to diff against HEAD
+        // (t3701 "patch mode ignores unmerged entries").
+        if cached && entry.status == DiffStatus::Unmerged {
+            writeln!(out, "* Unmerged path {}", entry.path())?;
+            continue;
+        }
+
         if let Some(fmt) = submodule_fmt {
             if entry.old_mode == "160000" || entry.new_mode == "160000" {
                 // A blob→gitlink typechange against the work tree records the new gitlink as zero;
