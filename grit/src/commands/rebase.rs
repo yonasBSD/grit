@@ -923,7 +923,18 @@ fn validate_rebase_trailer_options(args: &Args) -> Result<()> {
 }
 
 fn rebase_force_rewrite_requested(args: &Args) -> bool {
-    args.no_ff || args.signoff || !args.trailer.is_empty()
+    // Git's `builtin/rebase.c` sets `REBASE_FORCE` (which clears `replay.allow_ff`) for `--no-ff`,
+    // `--force-rebase`, signoff, trailers, and for the date-rewriting options
+    // `--committer-date-is-author-date` / `--reset-author-date` (`--ignore-date`). With those date
+    // options a tree-identical pick — including a root pick after `reset [new root]` in a
+    // `rebase -r` script — must be rewritten rather than fast-forwarded so the new committer/author
+    // timestamp is actually applied (t3436 `--committer-date-is-author-date`/`--reset-author-date`
+    // with `rebase -r`).
+    args.no_ff
+        || args.signoff
+        || !args.trailer.is_empty()
+        || args.committer_date_is_author_date
+        || args.reset_author_date
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4166,10 +4177,8 @@ fn rebase_todo_line_is_comment(line: &str) -> bool {
 fn rebase_todo_actionable_lines(content: &str) -> Vec<&str> {
     content
         .lines()
-        .filter(|l| {
-            let t = l.trim();
-            !t.is_empty() && !rebase_todo_line_is_comment(t)
-        })
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && !rebase_todo_line_is_comment(t))
         .collect()
 }
 
