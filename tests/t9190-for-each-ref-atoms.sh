@@ -228,7 +228,7 @@ test_expect_success '--count larger than ref count returns all' '
 	(
 	cd repo &&
 	grit for-each-ref --format="%(refname)" >all &&
-	total=$(wc -l <all) &&
+	total=$(wc -l <all | tr -d " ") &&
 	grit for-each-ref --count=100 --format="%(refname)" >actual &&
 	test_line_count = "$total" actual
 	)
