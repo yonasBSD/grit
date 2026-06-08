@@ -4960,7 +4960,7 @@ fn resolve_stash_identity_for_role(
         .unwrap_or_else(|| "git@stash".to_owned());
     let timestamp = std::env::var(date_env)
         .ok()
-        .and_then(|d| crate::commands::commit::parse_date_to_git_timestamp(&d).or(Some(d)))
+        .and_then(|d| grit_lib::commit::parse_date_to_git_timestamp(&d).or(Some(d)))
         .unwrap_or_else(|| {
             let epoch = now.unix_timestamp();
             let offset = now.offset();

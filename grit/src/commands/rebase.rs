@@ -4709,7 +4709,7 @@ fn rebase_replayed_author_line(
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("corrupt author: missing date information"))?;
         let timestamp =
-            super::commit::parse_date_to_git_timestamp(tail).unwrap_or_else(|| tail.to_string());
+            grit_lib::commit::parse_date_to_git_timestamp(tail).unwrap_or_else(|| tail.to_string());
         return Ok(format!("{name} <{email}> {timestamp}"));
     }
     if !opts.ignore_date {
@@ -4747,7 +4747,7 @@ fn rebase_replayed_committer_line(
         // Match `git am`: pass the author date through `parse_date` / ident formatting, not
         // `@epoch` (which would drop non-UTC zones and break t3436).
         let timestamp =
-            super::commit::parse_date_to_git_timestamp(tail).unwrap_or_else(|| tail.to_string());
+            grit_lib::commit::parse_date_to_git_timestamp(tail).unwrap_or_else(|| tail.to_string());
         let (cname, cemail) = &committer;
         return Ok(format!("{cname} <{cemail}> {timestamp}"));
     }
@@ -11749,7 +11749,7 @@ fn format_ident(ident: &(String, String), now: time::OffsetDateTime) -> String {
 
     let date_str = std::env::var("GIT_COMMITTER_DATE").ok();
     let timestamp = date_str
-        .map(|d| super::commit::parse_date_to_git_timestamp(&d).unwrap_or(d))
+        .map(|d| grit_lib::commit::parse_date_to_git_timestamp(&d).unwrap_or(d))
         .unwrap_or_else(|| format!("{epoch} {hours:+03}{minutes:02}"));
     format!("{name} <{email}> {timestamp}")
 }

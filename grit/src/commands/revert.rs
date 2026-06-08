@@ -1487,7 +1487,7 @@ fn format_ident(ident: &(String, String), now: time::OffsetDateTime) -> String {
     .ok();
 
     let timestamp = date_str
-        .map(|d| super::commit::parse_date_to_git_timestamp(&d).unwrap_or(d))
+        .map(|d| grit_lib::commit::parse_date_to_git_timestamp(&d).unwrap_or(d))
         .unwrap_or_else(|| format!("{epoch} {hours:+03}{minutes:02}"));
     format!("{name} <{email}> {timestamp}")
 }

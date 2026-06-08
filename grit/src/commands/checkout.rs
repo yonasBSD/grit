@@ -8246,7 +8246,7 @@ fn resolve_checkout_identity(repo: &Repository) -> String {
     let timestamp = std::env::var("GIT_COMMITTER_DATE")
         .ok()
         .or_else(|| std::env::var("GIT_AUTHOR_DATE").ok())
-        .map(|d| super::commit::parse_date_to_git_timestamp(&d).unwrap_or(d))
+        .map(|d| grit_lib::commit::parse_date_to_git_timestamp(&d).unwrap_or(d))
         .unwrap_or_else(|| {
             let now = time::OffsetDateTime::now_utc();
             let epoch = now.unix_timestamp();

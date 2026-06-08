@@ -114,6 +114,7 @@ pub mod branch_tracking;
 pub mod check_ref_format;
 pub mod combined_diff_patch;
 pub mod combined_tree_diff;
+pub mod commit;
 pub mod commit_encoding;
 pub mod commit_graph_file;
 pub mod commit_graph_write;

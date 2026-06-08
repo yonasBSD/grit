@@ -775,7 +775,7 @@ fn build_ident_role(config: &ConfigSet, now: OffsetDateTime, prefix: &str) -> St
     let date = std::env::var(&date_key)
         .ok()
         .filter(|d| !d.trim().is_empty())
-        .and_then(|d| crate::commands::commit::parse_date_to_git_timestamp(&d).or(Some(d)))
+        .and_then(|d| grit_lib::commit::parse_date_to_git_timestamp(&d).or(Some(d)))
         .unwrap_or_else(|| {
             let epoch = now.unix_timestamp();
             let offset = now.offset();

@@ -1935,7 +1935,7 @@ fn current_committer_ident_line(repo: &Repository) -> String {
     let date = std::env::var("GIT_COMMITTER_DATE")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .and_then(|d| crate::commands::commit::parse_date_to_git_timestamp(&d).or(Some(d)))
+        .and_then(|d| grit_lib::commit::parse_date_to_git_timestamp(&d).or(Some(d)))
         .unwrap_or_else(|| {
             let now = time::OffsetDateTime::now_utc();
             let off = now.offset();

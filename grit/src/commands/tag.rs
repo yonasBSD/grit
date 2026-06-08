@@ -889,7 +889,7 @@ fn resolve_tagger(config: &ConfigSet, now: OffsetDateTime) -> Result<String> {
 
     let date_str = std::env::var("GIT_COMMITTER_DATE").ok();
     let timestamp = match date_str {
-        Some(d) => crate::commands::commit::parse_date_to_git_timestamp(&d).unwrap_or(d),
+        Some(d) => grit_lib::commit::parse_date_to_git_timestamp(&d).unwrap_or(d),
         None => format_git_timestamp(now),
     };
 
