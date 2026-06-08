@@ -506,6 +506,7 @@ dependencies = [
  "icu_normalizer",
  "imara-diff",
  "libc",
+ "merge3",
  "regex",
  "sha1",
  "sha2",
