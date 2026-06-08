@@ -22,5 +22,6 @@
 //! scaffolding they attach to.
 
 pub mod checkout;
+pub mod log;
 pub mod stash;
 pub mod status;
