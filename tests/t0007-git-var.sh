@@ -54,6 +54,13 @@ test_expect_success 'get GIT_DEFAULT_BRANCH with configuration' '
 
 test_expect_success 'get GIT_EDITOR without configuration' '
 	(
+		# Upstream git/t/test-lib.sh exports TERM=dumb for every test; this
+		# ported harness dropped that line, so TERM here inherits the real
+		# terminal. git_editor() only returns empty/exit 1 when the terminal
+		# is dumb (otherwise it falls back to DEFAULT_EDITOR "vi"/exit 0), so
+		# restore the upstream-intended dumb terminal for this subtest.
+		TERM=dumb &&
+		export TERM &&
 		sane_unset_all_editors &&
 		test_expect_code 1 git var GIT_EDITOR >out &&
 		test_must_be_empty out
