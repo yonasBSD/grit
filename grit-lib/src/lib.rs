@@ -185,6 +185,7 @@ pub mod precompose_config;
 pub mod promisor;
 pub mod promisor_remote;
 pub mod protocol;
+pub mod protocol_v2;
 pub mod prune_packed;
 pub mod push_cert;
 pub mod push_report;

@@ -401,17 +401,7 @@ fn trace_http_v0_v1_negotiated(client: &crate::http_client::HttpClientContext) {
     }
 }
 
-fn cap_lines_for_client_request(caps: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in caps {
-        if line.starts_with("agent=") {
-            out.push(line.clone());
-        } else if let Some(fmt) = line.strip_prefix("object-format=") {
-            out.push(format!("object-format={fmt}"));
-        }
-    }
-    out
-}
+use grit_lib::protocol_v2::cap_lines_for_command_request as cap_lines_for_client_request;
 
 fn skip_to_flush(r: &mut Cursor<&[u8]>) -> Result<()> {
     loop {
@@ -544,17 +534,7 @@ fn append_fetch_request_extensions_v0_v1(
     Ok(())
 }
 
-fn v2_fetch_features(caps: &[String]) -> std::collections::HashSet<String> {
-    let mut features = std::collections::HashSet::new();
-    for line in caps {
-        if let Some(rest) = line.strip_prefix("fetch=") {
-            for feature in rest.split_whitespace() {
-                features.insert(feature.to_string());
-            }
-        }
-    }
-    features
-}
+use grit_lib::protocol_v2::fetch_features as v2_fetch_features;
 
 /// Split a v2-over-HTTP fetch's wants into `(want_ref_names, plain_want_oids)` when the server
 /// advertised `ref-in-want`.
