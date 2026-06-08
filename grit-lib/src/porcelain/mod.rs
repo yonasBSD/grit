@@ -24,5 +24,6 @@
 pub mod checkout;
 pub mod log;
 pub mod merge;
+pub mod rebase;
 pub mod stash;
 pub mod status;

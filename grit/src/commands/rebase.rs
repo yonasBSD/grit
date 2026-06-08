@@ -32,6 +32,12 @@ use grit_lib::objects::{
     parse_commit, parse_tree, serialize_commit, CommitData, ObjectId, ObjectKind,
 };
 use grit_lib::patch_ids::compute_patch_id;
+use grit_lib::porcelain::rebase::{
+    append_commented, append_nth_squash_message, append_skipped_squash_message,
+    commit_subject_single_line, fixup_replacement_message, format_autosquash_subject_for_match,
+    message_body_after_subject, rebase_todo_command_for_display_abbrev, skip_fixupish_prefix,
+    strip_fixupish_chain, update_squash_message_for_fixup, FixupMessageMode, RebaseTodoCmd,
+};
 use grit_lib::refs::{append_reflog, delete_ref, list_refs, resolve_ref, write_ref};
 use grit_lib::repo::Repository;
 use grit_lib::rev_list::{rev_list, split_revision_token, OrderingMode, RevListOptions};
@@ -937,89 +943,6 @@ fn rebase_force_rewrite_requested(args: &Args) -> bool {
         || args.reset_author_date
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RebaseTodoCmd {
-    Pick,
-    Reword,
-    Fixup,
-    Squash,
-}
-
-impl RebaseTodoCmd {
-    fn as_str(self) -> &'static str {
-        match self {
-            RebaseTodoCmd::Pick => "pick",
-            RebaseTodoCmd::Reword => "reword",
-            RebaseTodoCmd::Fixup => "fixup",
-            RebaseTodoCmd::Squash => "squash",
-        }
-    }
-
-    fn parse_word(word: &str) -> Option<Self> {
-        match word {
-            "pick" | "p" => Some(RebaseTodoCmd::Pick),
-            "reword" | "r" => Some(RebaseTodoCmd::Reword),
-            "fixup" | "f" => Some(RebaseTodoCmd::Fixup),
-            "squash" | "s" => Some(RebaseTodoCmd::Squash),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FixupMessageMode {
-    UseCommit,
-    EditCommit,
-}
-
-/// First line of a commit message with continuation lines folded like `git format_subject(..., " ")`.
-fn commit_subject_single_line(message: &str) -> String {
-    let mut lines = message.lines();
-    let Some(first) = lines.next() else {
-        return String::new();
-    };
-    let mut out = first.trim_end().to_string();
-    for line in lines {
-        let t = line.trim_end();
-        if t.is_empty() {
-            break;
-        }
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(t.trim_start());
-    }
-    out
-}
-
-/// Strips one `fixup! ` / `amend! ` / `squash! ` prefix (bang + space), matching Git's
-/// `skip_fixupish` in `sequencer.c` (`todo_list_rearrange_squash`).
-fn skip_fixupish_prefix(subject: &str) -> Option<&str> {
-    let s = subject.trim_start();
-    if let Some(rest) = s.strip_prefix("fixup! ") {
-        return Some(rest);
-    }
-    if let Some(rest) = s.strip_prefix("amend! ") {
-        return Some(rest);
-    }
-    if let Some(rest) = s.strip_prefix("squash! ") {
-        return Some(rest);
-    }
-    None
-}
-
-fn strip_fixupish_chain(mut p: &str) -> &str {
-    while let Some(rest) = skip_fixupish_prefix(p) {
-        p = rest;
-        p = p.trim_start();
-    }
-    p
-}
-
-fn format_autosquash_subject_for_match(message: &str) -> String {
-    commit_subject_single_line(message)
-}
-
 /// Apply autosquash (`fixup!`/`squash!`/`amend!`) rearrangement to a generated `--rebase-merges`
 /// todo script, mirroring Git's `todo_list_rearrange_squash` (which `complete_action` runs over the
 /// FULL merge script — picks AND merges — before the sequence editor opens).
@@ -1335,22 +1258,6 @@ fn format_rebase_todo_line(
     Ok(line)
 }
 
-fn rebase_todo_command_for_display(cmd: RebaseTodoCmd, commit: &CommitData) -> &'static str {
-    if cmd == RebaseTodoCmd::Fixup
-        && commit
-            .message
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim_start()
-            .starts_with("amend! ")
-    {
-        "fixup -C"
-    } else {
-        cmd.as_str()
-    }
-}
-
 /// `rebase.abbreviateCommands` (Git `TODO_LIST_ABBREVIATE_CMDS`): when true the generated todo uses
 /// single-letter command keywords (`p`/`f`/`s`/`r`/`x`/…). Default false.
 fn rebase_abbreviate_commands(config: &ConfigSet) -> bool {
@@ -1358,42 +1265,6 @@ fn rebase_abbreviate_commands(config: &ConfigSet) -> bool {
         .get_bool("rebase.abbreviateCommands")
         .and_then(|r| r.ok())
         .unwrap_or(false)
-}
-
-/// Abbreviation-aware variant of [`rebase_todo_command_for_display`]. With `abbrev` set, mirrors
-/// Git's `command_to_char` (`pick`→`p`, `fixup`→`f`, `squash`→`s`, `reword`→`r`), keeping the
-/// `-C`/`-c` suffix for amend-fixup (`f -C`).
-fn rebase_todo_command_for_display_abbrev(
-    cmd: RebaseTodoCmd,
-    commit: &CommitData,
-    abbrev: bool,
-) -> String {
-    let is_amend_fixup = cmd == RebaseTodoCmd::Fixup
-        && commit
-            .message
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim_start()
-            .starts_with("amend! ");
-    if !abbrev {
-        return if is_amend_fixup {
-            "fixup -C".to_owned()
-        } else {
-            cmd.as_str().to_owned()
-        };
-    }
-    let ch = match cmd {
-        RebaseTodoCmd::Pick => "p",
-        RebaseTodoCmd::Reword => "r",
-        RebaseTodoCmd::Fixup => "f",
-        RebaseTodoCmd::Squash => "s",
-    };
-    if is_amend_fixup {
-        format!("{ch} -C")
-    } else {
-        ch.to_owned()
-    }
 }
 
 #[derive(Debug, Default)]
@@ -3246,192 +3117,6 @@ fn cleanup_head_message_after_fixup_skip(
     let new_oid = repo.odb.write(ObjectKind::Commit, &bytes)?;
     fs::write(git_dir.join("HEAD"), format!("{}\n", new_oid.to_hex()))?;
     Ok(())
-}
-
-fn message_body_after_subject(message: &str) -> &str {
-    match message.find('\n') {
-        Some(i) => &message[i + 1..],
-        None => "",
-    }
-}
-
-fn skip_blank_lines(mut message: &str) -> &str {
-    loop {
-        let trimmed = message.trim_start_matches([' ', '\t']);
-        if trimmed.starts_with('\n') {
-            message = &trimmed[1..];
-            continue;
-        }
-        return message;
-    }
-}
-
-fn fixup_replacement_message(message: &str) -> String {
-    let subject = message.lines().next().unwrap_or("").trim_start();
-    if subject.starts_with("amend! ") {
-        complete_line(skip_blank_lines(message_body_after_subject(message)))
-    } else {
-        complete_line(message)
-    }
-}
-
-fn first_line_len(body: &str) -> usize {
-    match body.find('\n') {
-        Some(i) => i,
-        None => body.len(),
-    }
-}
-
-fn squash_comment_subject_prefix(body: &str, cmd: RebaseTodoCmd, seen_squash: bool) -> usize {
-    let t = body.trim_start();
-    if t.starts_with("amend! ") {
-        return first_line_len(body);
-    }
-    if (cmd == RebaseTodoCmd::Squash || seen_squash)
-        && (t.starts_with("squash! ") || t.starts_with("fixup! "))
-    {
-        return first_line_len(body);
-    }
-    0
-}
-
-fn append_commented(buf: &mut String, text: &str) {
-    for line in text.lines() {
-        if line.is_empty() {
-            buf.push_str("#\n");
-        } else {
-            buf.push_str("# ");
-            buf.push_str(line);
-            buf.push('\n');
-        }
-    }
-}
-
-/// Comment out any un-commented commit messages in the squash buffer and rewrite their headers
-/// from "This is the Nth commit message:" to "The Nth commit message will be skipped:", leaving
-/// already-skipped sections untouched.
-///
-/// This is a faithful port of Git's `update_squash_message_for_fixup` (`sequencer.c`): it is run
-/// when a `fixup -C`/`fixup -c` step replaces the accumulated message (`is_fixup_flag && !seen_squash`)
-/// so every section accumulated so far is dropped from the final message. Unlike a single-section
-/// marker, it walks the whole buffer, so a chain such as `pick, fixup, fixup -C` correctly skips
-/// both the pick target's message and the plain fixup's section (t3437 #8/#12).
-fn update_squash_message_for_fixup(buf: &mut String) {
-    // `comment_line_str` is "#"; the commented header forms Git compares against.
-    let mut buf1 = String::from("# This is the 1st commit message:\n");
-    let mut buf2 = String::from("# The 1st commit message will be skipped:\n");
-    let update_comment_bufs = |b1: &mut String, b2: &mut String, n: usize| {
-        *b1 = format!("# This is the commit message #{n}:\n");
-        *b2 = format!("# The commit message #{n} will be skipped:\n");
-    };
-
-    let orig = std::mem::take(buf);
-    let bytes = orig.as_bytes();
-    let mut out = String::new();
-    // `start` marks the beginning of the not-yet-copied region; `comment_mode` selects whether the
-    // copied body is passed through verbatim or commented out (matching Git's `copy_lines` switch).
-    let mut start = 0usize;
-    let mut comment_mode = false;
-    let mut i = 1usize;
-    let mut s = 0usize;
-    while s < orig.len() {
-        if orig[s..].starts_with(buf1.as_str()) {
-            // An un-skipped header: copy the preceding section, drop the blank line that precedes
-            // this header, emit the "skipped" header, comment the following body.
-            let off = usize::from(s > start + 1 && bytes[s - 2] == b'\n');
-            copy_section(&mut out, &orig[start..s - off], comment_mode);
-            if off == 1 {
-                out.push('\n');
-            }
-            out.push_str(&buf2);
-            let mut next = s + buf1.len();
-            if next < orig.len() && bytes[next] == b'\n' {
-                out.push('\n');
-                next += 1;
-            }
-            start = next;
-            s = next;
-            comment_mode = true;
-            i += 1;
-            update_comment_bufs(&mut buf1, &mut buf2, i);
-        } else if orig[s..].starts_with(buf2.as_str()) {
-            // An already-skipped header: copy the preceding section verbatim (the body that follows
-            // is already commented), then continue in verbatim mode.
-            let off = usize::from(s > start + 1 && bytes[s - 2] == b'\n');
-            copy_section(&mut out, &orig[start..s - off], comment_mode);
-            start = s - off;
-            s += buf2.len();
-            comment_mode = false;
-            i += 1;
-            update_comment_bufs(&mut buf1, &mut buf2, i);
-        } else {
-            match orig[s..].find('\n') {
-                Some(rel) => s += rel + 1,
-                None => break,
-            }
-        }
-    }
-    copy_section(&mut out, &orig[start..], comment_mode);
-    *buf = out;
-}
-
-/// Copy `text` into `out`, commenting it out (Git's `add_commented_lines`, which avoids
-/// double-commenting already-commented lines) when `comment_mode` is set.
-///
-/// Already-commented lines (starting with `#`) are passed through verbatim; every other line —
-/// including empty ones, which become a bare `#` — is prefixed, matching Git's
-/// `strbuf_add_commented_lines`.
-fn copy_section(out: &mut String, text: &str, comment_mode: bool) {
-    if !comment_mode || text.is_empty() {
-        out.push_str(text);
-        return;
-    }
-    for line in text.split_inclusive('\n') {
-        let content = line.strip_suffix('\n').unwrap_or(line);
-        if content.starts_with('#') {
-            out.push_str(line);
-        } else if content.is_empty() {
-            out.push('#');
-            out.push_str(line);
-        } else {
-            out.push_str("# ");
-            out.push_str(line);
-        }
-    }
-}
-
-fn append_skipped_squash_message(buf: &mut String, body: &str, n: usize) {
-    if !buf.ends_with("\n\n") {
-        buf.push('\n');
-    }
-    buf.push_str("# The commit message #");
-    buf.push_str(&n.to_string());
-    buf.push_str(" will be skipped:\n\n");
-    append_commented(buf, body.trim_end_matches('\n'));
-}
-
-fn append_nth_squash_message(
-    buf: &mut String,
-    body: &str,
-    cmd: RebaseTodoCmd,
-    seen_squash: bool,
-    n: usize,
-) {
-    if !buf.ends_with("\n\n") {
-        buf.push('\n');
-    }
-    buf.push_str("# This is the commit message #");
-    buf.push_str(&n.to_string());
-    buf.push_str(":\n\n");
-    let pre = squash_comment_subject_prefix(body, cmd, seen_squash).min(body.len());
-    if pre > 0 {
-        append_commented(buf, &body[..pre]);
-        let rest = &body[pre..];
-        let rest = rest.strip_prefix('\n').unwrap_or(rest);
-        buf.push_str(rest);
-        return;
-    }
-    buf.push_str(&body[pre..]);
 }
 
 fn run_prepare_commit_msg_hook(
