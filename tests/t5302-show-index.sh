@@ -178,7 +178,10 @@ test_expect_success 'show-index output matches verify-pack object count' '
 	idx=$(echo .git/objects/pack/*.idx) &&
 	show_count=$(git show-index <"$idx" | wc -l) &&
 	verify_count=$(env -u GIT_EXEC_PATH "$REAL_GIT" verify-pack -v "$idx" | grep -cE "^[0-9a-f]{40}") &&
-	test "$show_count" = "$verify_count"
+	# Use numeric comparison: BSD wc -l left-pads its output ("      35"),
+	# while grep -c emits a bare number ("35"); the counts are equal so
+	# compare numerically to ignore the padding.
+	test "$show_count" -eq "$verify_count"
 	)
 '
 

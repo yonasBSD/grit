@@ -422,7 +422,7 @@ test_expect_success 'merge --stat respects COLUMNS with long name' '
 # where "<RED>" and "<RESET>" are ANSI escape codes to color the text.
 # To calculate the minimium terminal display width MIN_TERM_WIDTH so that the
 # FILENAME in the diffstat will not be shortened, we take the FILENAME length
-# and add 9 to it.
+# and add 17 to it.
 # To check if the diffstat width, when the line_prefix (the "<RED>|<RESET>" of
 # the graph) contains ANSI escape codes (the ANSI escape codes to color the
 # text), is calculated correctly, we:
@@ -433,7 +433,7 @@ test_expect_success 'merge --stat respects COLUMNS with long name' '
 test_expect_success 'diffstat where line_prefix contains ANSI escape codes is correct width' '
 	FILENAME="placeholder-text-placeholder-text" &&
 	FILENAME_TRIMMED="...eholder-text-placeholder-text" &&
-	MIN_TERM_WIDTH=$((${#FILENAME} + 9)) &&
+	MIN_TERM_WIDTH=$((${#FILENAME} + 17)) &&
 	test_config color.diff always &&
 	git commit --allow-empty --allow-empty-message &&
 	>${FILENAME} &&
