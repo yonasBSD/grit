@@ -6,6 +6,7 @@
 //! `--literal-pathspecs` before dispatching subcommands.
 
 use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 
 use crate::crlf::path_gitattribute_value;
 use crate::crlf::AttrRule;
@@ -1378,6 +1379,302 @@ pub fn wildmatch_flags_icase_glob(icase: bool, glob: bool) -> u32 {
         f |= WM_CASEFOLD;
     }
     f
+}
+
+/// Resolved path lies outside the repository work tree (Git `prefix_path_gently` failure).
+#[derive(Debug, Clone)]
+pub struct PathOutsideRepository {
+    /// User-facing pathspec token (argv element).
+    pub elt: String,
+    /// Resolved absolute path outside the work tree.
+    pub path: String,
+    /// Canonical work tree root.
+    pub work_tree: PathBuf,
+}
+
+impl std::fmt::Display for PathOutsideRepository {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "fatal: {}: '{}' is outside repository at '{}'",
+            self.elt,
+            self.path,
+            self.work_tree.display()
+        )
+    }
+}
+
+/// Resolve a magic pathspec relative to a current-directory prefix.
+///
+/// This keeps the `cwd` prefix case-sensitive (via an internal `prefix:` magic
+/// token) while still honoring magic options like `icase` for the tail.
+/// Returns `None` when `spec` is not a parseable magic pathspec.
+pub fn resolve_magic_pathspec(spec: &str, cwd_prefix: &str) -> Option<String> {
+    if !spec.starts_with(":(") {
+        return None;
+    }
+    let close_idx = spec.find(')')?;
+    let magic_prefix = &spec[..=close_idx];
+    let tail = &spec[close_idx + 1..];
+    Some(resolve_magic_pathspec_parts(magic_prefix, tail, cwd_prefix))
+}
+
+fn resolve_magic_pathspec_parts(magic_prefix: &str, tail: &str, cwd_prefix: &str) -> String {
+    if has_magic_prefix_token(magic_prefix) {
+        return format!("{magic_prefix}{tail}");
+    }
+
+    if let Some(rooted_tail) = tail.strip_prefix('/') {
+        return format!("{magic_prefix}{}", normalize_relative_path_str(rooted_tail));
+    }
+
+    let combined = if cwd_prefix.is_empty() {
+        normalize_relative_path_str(tail)
+    } else {
+        normalize_relative_path_str(&format!("{cwd_prefix}{tail}"))
+    };
+
+    let cwd_base = normalize_relative_path_str(cwd_prefix.trim_end_matches('/'));
+    if !cwd_base.is_empty()
+        && (combined == cwd_base || combined.starts_with(&format!("{cwd_base}/")))
+    {
+        let after_base = combined
+            .strip_prefix(&cwd_base)
+            .unwrap_or(combined.as_str());
+        let remainder = after_base.strip_prefix('/').unwrap_or(after_base);
+        let magic_with_prefix = inject_magic_prefix_token(magic_prefix, &format!("{cwd_base}/"));
+        return format!("{magic_with_prefix}{remainder}");
+    }
+
+    format!("{magic_prefix}{combined}")
+}
+
+fn has_magic_prefix_token(magic_prefix: &str) -> bool {
+    let Some(inner) = magic_prefix
+        .strip_prefix(":(")
+        .and_then(|s| s.strip_suffix(')'))
+    else {
+        return false;
+    };
+    inner
+        .split(',')
+        .map(str::trim)
+        .any(|token| token.starts_with("prefix:"))
+}
+
+fn inject_magic_prefix_token(magic_prefix: &str, prefix: &str) -> String {
+    let Some(inner) = magic_prefix
+        .strip_prefix(":(")
+        .and_then(|s| s.strip_suffix(')'))
+    else {
+        return magic_prefix.to_string();
+    };
+    if inner.trim().is_empty() {
+        format!(":(prefix:{prefix})")
+    } else {
+        format!(":({inner},prefix:{prefix})")
+    }
+}
+
+fn normalize_relative_path_str(path: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for component in std::path::Path::new(path).components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            std::path::Component::Normal(seg) => {
+                parts.push(seg.to_string_lossy().to_string());
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {}
+        }
+    }
+    parts.join("/")
+}
+
+/// Current directory relative to `work_tree`, or `None` if cwd is the work tree root.
+#[must_use]
+pub fn pathdiff(cwd: &Path, work_tree: &Path) -> Option<String> {
+    let cwd_canon = cwd.canonicalize().ok()?;
+    let wt_canon = work_tree.canonicalize().ok()?;
+
+    if cwd_canon == wt_canon {
+        return None;
+    }
+
+    cwd_canon
+        .strip_prefix(&wt_canon)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+/// For exclude (and other cwd-relative) pathspec magic from a subdirectory, Git resolves the
+/// pattern against the current directory (`:!sub/` from `repo/sub` → exclude `sub/sub/`).
+fn prepend_cwd_to_short_exclude_pathspec(spec: &str, cwd: &str) -> Option<String> {
+    let cwd = cwd.trim_end_matches('/');
+    if cwd.is_empty() {
+        return None;
+    }
+    let bytes = spec.as_bytes();
+    if bytes.first().copied() != Some(b':') {
+        return None;
+    }
+    // `:/path` is `:(top)` short form — exclude is relative to repo root, not cwd (t6132).
+    if bytes.get(1).copied() == Some(b'/') {
+        return None;
+    }
+    let mut i = 1usize;
+    while i < bytes.len() && bytes[i] != b':' {
+        let ch = bytes[i];
+        if ch == b'^' {
+            i += 1;
+            continue;
+        }
+        let is_magic = matches!(ch, b'!' | b'/');
+        if is_magic {
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    if i < bytes.len() && bytes[i] == b':' {
+        i += 1;
+    }
+    let pattern = spec.get(i..)?;
+    if pattern.is_empty() || pattern.starts_with('/') {
+        return None;
+    }
+    Some(format!("{}{}/{pattern}", &spec[..i], cwd))
+}
+
+/// Resolve a pathspec string to a path relative to the repository work tree.
+///
+/// `prefix` is the current directory relative to the work tree (no trailing slash),
+/// or `None` when cwd is the work tree root.
+#[must_use]
+pub fn resolve_pathspec(pathspec: &str, work_tree: &Path, prefix: Option<&str>) -> String {
+    // Git: `.` at repo root means "match the whole tree" (not an empty pathspec).
+    // An empty resolved pathspec would match nothing and breaks `grep -- . t` max-depth.
+    if pathspec == "." {
+        return match prefix {
+            Some(p) if !p.is_empty() => p.to_owned(),
+            _ => ".".to_owned(),
+        };
+    }
+    if pathspec.contains("../") || pathspec.starts_with("../") {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let abs = cwd.join(pathspec);
+        let wt_canon = work_tree
+            .canonicalize()
+            .unwrap_or_else(|_| work_tree.to_path_buf());
+        let mut parts: Vec<std::ffi::OsString> = Vec::new();
+        for component in abs.components() {
+            use std::path::Component;
+            match component {
+                Component::ParentDir => {
+                    parts.pop();
+                }
+                Component::CurDir => {}
+                other => parts.push(other.as_os_str().to_os_string()),
+            }
+        }
+        let abs_norm: PathBuf = parts.iter().collect();
+        if let Ok(rel) = abs_norm.strip_prefix(&wt_canon) {
+            return rel.to_string_lossy().to_string();
+        }
+    }
+    if Path::new(pathspec).is_absolute() {
+        let abs = Path::new(pathspec);
+        let wt_canon = work_tree
+            .canonicalize()
+            .unwrap_or_else(|_| work_tree.to_path_buf());
+        let abs_canon = abs.canonicalize().unwrap_or_else(|_| abs.to_path_buf());
+        if let Ok(rel) = abs_canon.strip_prefix(&wt_canon) {
+            return rel.to_string_lossy().to_string();
+        }
+        return pathspec.to_owned();
+    }
+
+    if pathspec.starts_with(':') {
+        if let Some(p) = prefix {
+            if !p.is_empty() && !literal_pathspecs_enabled() {
+                let cwd_ps = format!("{}/", p.trim_end_matches('/'));
+                if pathspec.starts_with(":(") {
+                    if let Some(resolved) = resolve_magic_pathspec(pathspec, &cwd_ps) {
+                        return resolved;
+                    }
+                    return pathspec.to_owned();
+                }
+                if pathspec_is_exclude(pathspec) {
+                    if let Some(fixed) = prepend_cwd_to_short_exclude_pathspec(pathspec, p) {
+                        return fixed;
+                    }
+                }
+            }
+        }
+        if let Some(rest) = pathspec.strip_prefix(":/") {
+            // `:/!foo` / `:/^bar` — `:/` is `:(top)`; the tail is still short magic, not a literal path.
+            if rest.starts_with('!') || rest.starts_with('^') {
+                return pathspec.to_owned();
+            }
+            return rest.to_owned();
+        }
+        // Long magic `:(...)` must stay intact — `:(exclude)path` is not the same as `path`
+        // (t6132-pathspec-exclude, grep --untracked with exclude pathspecs).
+        if pathspec.starts_with(":(") {
+            return pathspec.to_owned();
+        }
+        return pathspec.to_owned();
+    }
+
+    match prefix {
+        Some(p) if !p.is_empty() => {
+            normalize_relative_path_str(&PathBuf::from(p).join(pathspec).to_string_lossy())
+        }
+        _ => pathspec.to_owned(),
+    }
+}
+
+/// Resolve a pathspec and ensure it lies inside `work_tree` (used by `git add`, etc.).
+///
+/// Returns [`PathOutsideRepository`] when resolution stays absolute, matching Git's
+/// `'%s' is outside repository at '%s'` fatal (t7010).
+pub fn resolve_pathspec_in_worktree(
+    elt: &str,
+    pathspec: &str,
+    work_tree: &Path,
+    prefix: Option<&str>,
+) -> Result<String, PathOutsideRepository> {
+    let resolved = resolve_pathspec(pathspec, work_tree, prefix);
+    if Path::new(&resolved).is_absolute() {
+        let wt = work_tree
+            .canonicalize()
+            .unwrap_or_else(|_| work_tree.to_path_buf());
+        return Err(PathOutsideRepository {
+            elt: elt.to_string(),
+            path: resolved,
+            work_tree: wt,
+        });
+    }
+    Ok(resolved)
+}
+
+/// Normalize a worktree file path for porcelain commands (`blame`, `log`, …).
+///
+/// Accepts repo-relative or absolute paths under `work_tree`.
+#[must_use]
+pub fn normalize_worktree_file_path(
+    file_path: &str,
+    work_tree: &Path,
+    prefix: Option<&str>,
+) -> String {
+    let resolved = resolve_pathspec(file_path, work_tree, prefix);
+    if Path::new(&resolved).is_absolute() {
+        file_path.to_string()
+    } else {
+        resolved
+    }
 }
 
 #[cfg(test)]

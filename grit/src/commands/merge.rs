@@ -30,7 +30,11 @@ use grit_lib::index::{
 use grit_lib::merge_base::is_ancestor;
 use grit_lib::merge_file::{self, ConflictStyle, MergeFavor, MergeInput};
 use grit_lib::objects::{
-    parse_commit, parse_tag, parse_tree, serialize_commit, CommitData, ObjectId, ObjectKind,
+    parse_commit, parse_tag, serialize_commit, CommitData, ObjectId, ObjectKind,
+};
+use grit_lib::porcelain::merge::{
+    compose_fast_forward_index, compose_octopus_final_index, reduce_octopus_merge_heads,
+    tree_to_index_entries, tree_to_map,
 };
 use grit_lib::refs::resolve_ref;
 use grit_lib::repo::Repository;
@@ -689,82 +693,6 @@ pub(crate) fn merge_touched_paths(
 /// Fast-forward index: the merge target tree plus **unrelated** staged additions (paths not in
 /// `HEAD^{tree}` and not in the target tree). Paths present in HEAD but absent from the target
 /// (deletes/renames) must not be copied from the index — only the target layout wins.
-fn compose_fast_forward_index(
-    repo: &Repository,
-    target_tree: ObjectId,
-    head_tree: ObjectId,
-    current_index: &Index,
-) -> Result<Index> {
-    let mut new_entries = tree_to_index_entries(repo, &target_tree, "")?;
-    let target_paths: BTreeSet<Vec<u8>> = new_entries.iter().map(|e| e.path.clone()).collect();
-    let head_entries = tree_to_map(tree_to_index_entries(repo, &head_tree, "")?);
-    for e in &current_index.entries {
-        if e.stage() != 0 {
-            continue;
-        }
-        if target_paths.contains(&e.path) {
-            continue;
-        }
-        // Staged addition: not in HEAD — keep alongside the fast-forwarded tree.
-        if !head_entries.contains_key(&e.path) {
-            new_entries.push(e.clone());
-        }
-    }
-    let mut index = Index::new();
-    index.entries = new_entries;
-    index.sort();
-    // A duplicate-entry tree (t4058) flattens to several identical-path entries; Git's index keeps
-    // only one per path. Restore that invariant so status/diff against HEAD is consistent.
-    index.dedup_paths_keep_last();
-    Ok(index)
-}
-
-/// Preserve staged paths from before an octopus merge that the merge result does not touch
-/// (e.g. unrelated `git add`), matching Git's index composition.
-fn compose_octopus_final_index(pre_merge_index: &Index, final_index: &mut Index) {
-    let final_paths: BTreeSet<Vec<u8>> = final_index
-        .entries
-        .iter()
-        .filter(|e| e.stage() == 0)
-        .map(|e| e.path.clone())
-        .collect();
-    for e in &pre_merge_index.entries {
-        if e.stage() != 0 {
-            continue;
-        }
-        if final_paths.contains(&e.path) {
-            continue;
-        }
-        final_index.entries.push(e.clone());
-    }
-    final_index.sort();
-}
-
-/// Drop merge heads that are ancestors of another listed head (Git's "reduce parents").
-///
-/// Order of the remaining heads matches the first occurrence in the input (t7603).
-fn reduce_octopus_merge_heads(
-    repo: &Repository,
-    merge_oids: &[ObjectId],
-    merge_names: &[String],
-) -> Result<(Vec<ObjectId>, Vec<String>)> {
-    debug_assert_eq!(merge_oids.len(), merge_names.len());
-    let mut out_oids = Vec::with_capacity(merge_oids.len());
-    let mut out_names = Vec::with_capacity(merge_names.len());
-    for i in 0..merge_oids.len() {
-        let oid = merge_oids[i];
-        let redundant = merge_oids
-            .iter()
-            .enumerate()
-            .any(|(j, &other)| j != i && is_ancestor(repo, oid, other).unwrap_or(false));
-        if !redundant {
-            out_oids.push(oid);
-            out_names.push(merge_names[i].clone());
-        }
-    }
-    Ok((out_oids, out_names))
-}
-
 /// Restore index and working tree to match `head_oid` after a failed merge attempt
 /// (used when trying multiple `-s` strategies so a failed strategy leaves no residue).
 /// Write `index_snapshot` to disk and refresh the work tree (clears merge state files).
@@ -11695,14 +11623,12 @@ fn tree_to_index_entries_for_merge_tree(
     tree_oid: &ObjectId,
 ) -> Result<Vec<IndexEntry>> {
     tree_to_index_entries(repo, tree_oid, "").map_err(|e| {
-        if let Some(lib_err) = e.downcast_ref::<grit_lib::error::Error>() {
-            if let grit_lib::error::Error::ObjectNotFound(hex) = lib_err {
-                if let Ok(missing) = hex.parse::<ObjectId>() {
-                    return merge_tree_could_not_read_error(&missing);
-                }
+        if let grit_lib::error::Error::ObjectNotFound(hex) = &e {
+            if let Ok(missing) = hex.parse::<ObjectId>() {
+                return merge_tree_could_not_read_error(&missing);
             }
         }
-        e
+        e.into()
     })
 }
 
@@ -11903,61 +11829,6 @@ pub(crate) fn refresh_index_stat_cache_from_worktree(
 }
 
 /// Recursively flatten a tree into index entries.
-fn tree_to_index_entries(
-    repo: &Repository,
-    oid: &ObjectId,
-    prefix: &str,
-) -> Result<Vec<IndexEntry>> {
-    let obj = repo.odb.read(oid)?;
-    if obj.kind != ObjectKind::Tree {
-        bail!("expected tree, got {}", obj.kind);
-    }
-    let entries = parse_tree(&obj.data)?;
-    let mut result = Vec::new();
-
-    for te in entries {
-        let name = String::from_utf8_lossy(&te.name).into_owned();
-        let path = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{prefix}/{name}")
-        };
-
-        if te.mode == 0o040000 {
-            let sub = tree_to_index_entries(repo, &te.oid, &path)?;
-            result.extend(sub);
-        } else {
-            let path_bytes = path.into_bytes();
-            result.push(IndexEntry {
-                ctime_sec: 0,
-                ctime_nsec: 0,
-                mtime_sec: 0,
-                mtime_nsec: 0,
-                dev: 0,
-                ino: 0,
-                mode: te.mode,
-                uid: 0,
-                gid: 0,
-                size: 0,
-                oid: te.oid,
-                flags: path_bytes.len().min(0xFFF) as u16,
-                flags_extended: None,
-                path: path_bytes,
-                base_index_pos: 0,
-            });
-        }
-    }
-    Ok(result)
-}
-
-fn tree_to_map(entries: Vec<IndexEntry>) -> HashMap<Vec<u8>, IndexEntry> {
-    let mut out = HashMap::new();
-    for e in entries {
-        out.insert(e.path.clone(), e);
-    }
-    out
-}
-
 fn core_ignorecase(repo: &Repository) -> bool {
     ConfigSet::load(Some(&repo.git_dir), true)
         .ok()

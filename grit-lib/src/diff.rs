@@ -5962,3 +5962,209 @@ fn submodule_dir_has_untracked_inner(
     }
     false
 }
+
+/// Reorder diff entries by a `-O<orderfile>` (`diff.orderFile`): entries are sorted by the index of
+/// the first orderfile glob pattern that matches their path; unmatched entries sort last (stable).
+pub fn apply_orderfile_entries(
+    entries: Vec<DiffEntry>,
+    order_path: &str,
+    cwd: &Path,
+) -> Result<Vec<DiffEntry>> {
+    apply_orderfile(entries, order_path, cwd)
+}
+
+fn apply_orderfile(
+    mut entries: Vec<DiffEntry>,
+    order_path: &str,
+    cwd: &Path,
+) -> Result<Vec<DiffEntry>> {
+    let patterns = read_orderfile_patterns(order_path, cwd)?;
+    let sort_key = |entry: &DiffEntry| -> usize {
+        let path = entry
+            .new_path
+            .as_ref()
+            .or(entry.old_path.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        for (i, pat) in patterns.iter().enumerate() {
+            if orderfile_pattern_matches(pat, &path) {
+                return i;
+            }
+        }
+        patterns.len()
+    };
+    entries.sort_by_key(|e| sort_key(e));
+    Ok(entries)
+}
+
+/// Read non-empty, non-comment glob patterns (one per line) from a `-O<orderfile>` file.
+pub fn read_orderfile_patterns(order_path: &str, cwd: &Path) -> Result<Vec<String>> {
+    let path = Path::new(order_path);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    let _meta = std::fs::metadata(&resolved)
+        .map_err(|e| Error::Message(format!("could not read orderfile {order_path}: {e}")))?;
+    let mut f = std::fs::File::open(&resolved)
+        .map_err(|e| Error::Message(format!("could not read orderfile {order_path}: {e}")))?;
+    let mut content = String::new();
+    std::io::Read::read_to_string(&mut f, &mut content)
+        .map_err(|e| Error::Message(format!("could not read orderfile {order_path}: {e}")))?;
+    Ok(content
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect())
+}
+
+/// Reorder diff entries for `git diff` `--rotate-to` / `--skip-to` (changed paths only).
+pub fn apply_rotate_skip_entries(
+    mut entries: Vec<DiffEntry>,
+    rotate_to: Option<&str>,
+    skip_to: Option<&str>,
+) -> Result<Vec<DiffEntry>> {
+    let Some(needle) = rotate_to.or(skip_to) else {
+        return Ok(entries);
+    };
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return Ok(entries);
+    }
+    let idx = entries
+        .iter()
+        .position(|e| e.path() == needle)
+        .ok_or_else(|| Error::Message(format!("fatal: No such path '{needle}' in the diff")))?;
+    if rotate_to.is_some() {
+        entries.rotate_left(idx);
+    }
+    if let Some(skip) = skip_to.filter(|s| !s.trim().is_empty()) {
+        let pos = entries
+            .iter()
+            .position(|e| e.path() == skip)
+            .ok_or_else(|| Error::Message(format!("fatal: No such path '{skip}' in the diff")))?;
+        entries.drain(..pos);
+    }
+    Ok(entries)
+}
+
+/// `git log` rotate/skip: reorder using the **commit tree** path order (all blobs), then keep only
+/// paths present in `entries` — matches Git's `diff --rotate-to` with history walks.
+pub fn apply_rotate_skip_log_entries(
+    odb: &Odb,
+    commit_tree: &ObjectId,
+    entries: Vec<DiffEntry>,
+    rotate_to: Option<&str>,
+    skip_to: Option<&str>,
+) -> Result<Vec<DiffEntry>> {
+    let tree_paths = crate::merge_diff::all_blob_paths_in_tree_order(odb, commit_tree);
+    apply_rotate_skip_ordered_paths(&tree_paths, entries, rotate_to, skip_to)
+}
+
+fn apply_rotate_skip_ordered_paths(
+    tree_paths: &[String],
+    entries: Vec<DiffEntry>,
+    rotate_to: Option<&str>,
+    skip_to: Option<&str>,
+) -> Result<Vec<DiffEntry>> {
+    let rotate = rotate_to.and_then(|s| {
+        let t = s.trim();
+        (!t.is_empty()).then_some(t)
+    });
+    let skip = skip_to.and_then(|s| {
+        let t = s.trim();
+        (!t.is_empty()).then_some(t)
+    });
+    if rotate.is_none() && skip.is_none() {
+        return Ok(entries);
+    }
+
+    use std::collections::HashMap;
+    let mut by_path: HashMap<String, DiffEntry> = HashMap::new();
+    for e in entries {
+        by_path.insert(e.path().to_string(), e);
+    }
+
+    // `git log --skip-to`: only list changed paths from the skip point onward (unmodified paths
+    // in the tree-order suffix are omitted). `--rotate-to` still lists every changed file in order.
+    if rotate.is_none() {
+        let Some(skip_path) = skip else {
+            return Ok(by_path.into_values().collect());
+        };
+        let idx = tree_paths
+            .iter()
+            .position(|p| p == skip_path)
+            .ok_or_else(|| {
+                Error::Message(format!("fatal: No such path '{skip_path}' in the diff"))
+            })?;
+        let mut out = Vec::new();
+        for p in tree_paths.iter().skip(idx) {
+            if let Some(e) = by_path.remove(p) {
+                out.push(e);
+            }
+        }
+        return Ok(out);
+    }
+
+    let Some(needle) = rotate else {
+        return Ok(by_path.into_values().collect());
+    };
+    let idx = tree_paths
+        .iter()
+        .position(|p| p == needle)
+        .ok_or_else(|| Error::Message(format!("fatal: No such path '{needle}' in the diff")))?;
+    let mut order: Vec<String> = tree_paths.to_vec();
+    order.rotate_left(idx);
+    if let Some(skip_path) = skip {
+        let pos = order.iter().position(|p| p == skip_path).ok_or_else(|| {
+            Error::Message(format!("fatal: No such path '{skip_path}' in the diff"))
+        })?;
+        order.drain(..pos);
+    }
+    let mut out = Vec::new();
+    for p in order {
+        if let Some(e) = by_path.remove(&p) {
+            out.push(e);
+        }
+    }
+    Ok(out)
+}
+
+/// Check if an orderfile pattern matches a path (matches the basename or the full path).
+/// Supports basic glob patterns: `*` matches any sequence, `?` matches one char.
+pub fn orderfile_pattern_matches(pattern: &str, path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    orderfile_glob_match(pattern, name) || orderfile_glob_match(pattern, path)
+}
+
+/// Basic glob matching (supports `*` and `?`).
+fn orderfile_glob_match(pattern: &str, text: &str) -> bool {
+    let mut pi = 0;
+    let mut ti = 0;
+    let pb = pattern.as_bytes();
+    let tb = text.as_bytes();
+    let mut star_pi = usize::MAX;
+    let mut star_ti = 0;
+
+    while ti < tb.len() {
+        if pi < pb.len() && (pb[pi] == b'?' || pb[pi] == tb[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < pb.len() && pb[pi] == b'*' {
+            star_pi = pi;
+            star_ti = ti;
+            pi += 1;
+        } else if star_pi != usize::MAX {
+            pi = star_pi + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+    while pi < pb.len() && pb[pi] == b'*' {
+        pi += 1;
+    }
+    pi == pb.len()
+}

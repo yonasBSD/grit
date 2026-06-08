@@ -5,13 +5,13 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
+use grit_lib::commit::{format_git_timestamp, parse_date_to_git_timestamp};
 use grit_lib::config::ConfigSet;
 use grit_lib::diff::{
     diff_index_to_tree, diff_index_to_worktree, diff_trees, status_apply_rename_copy_detection,
     DiffEntry, DiffStatus,
 };
 use grit_lib::error::Error;
-use grit_lib::git_date::parse::parse_date;
 use grit_lib::hooks::{
     run_commit_hook, run_hook, run_reference_transaction_committed_for_head_update, CommitHookEnv,
     HookResult,
@@ -43,7 +43,6 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 /// Environment variable set by [`preprocess_commit_argv`] with the effective `-v` count after
@@ -5242,87 +5241,6 @@ fn validate_explicit_committer_identity(config: &ConfigSet) -> Result<()> {
     } else {
         bail!("unable to auto-detect committer identity")
     }
-}
-
-/// Parse a date string (like "2006-06-26 00:04:00 +0000") into git's
-/// `<epoch> <offset>` format. Returns None if already in epoch format.
-pub fn parse_date_to_git_timestamp(date_str: &str) -> Option<String> {
-    let trimmed = date_str.trim();
-
-    // ISO 8601 / RFC 3339, including forms Git accepts without an explicit offset
-    // (e.g. `2020-01-01T00:00:00` — treated as UTC when no zone is present).
-    if let Ok(dt) = OffsetDateTime::parse(trimmed, &Rfc3339) {
-        return Some(format_git_timestamp(dt));
-    }
-    let with_utc_z = format!("{trimmed}Z");
-    if let Ok(dt) = OffsetDateTime::parse(&with_utc_z, &Rfc3339) {
-        return Some(format_git_timestamp(dt));
-    }
-
-    // Already in `<epoch> <offset>` format? (epoch is all digits)
-    let parts: Vec<&str> = trimmed.rsplitn(2, ' ').collect();
-    if parts.len() == 2 {
-        let maybe_epoch = parts[1];
-        if maybe_epoch.chars().all(|c| c.is_ascii_digit()) {
-            // Already epoch + offset
-            return None;
-        }
-    }
-
-    // Try parsing "YYYY-MM-DD HH:MM:SS <tz>" format
-    if parts.len() == 2 {
-        let tz = parts[0];
-        let datetime = parts[1];
-
-        // Parse tz offset
-        let tz_bytes = tz.as_bytes();
-        if tz_bytes.len() >= 5 {
-            let sign: i64 = if tz_bytes[0] == b'-' { -1 } else { 1 };
-            let h: i64 = tz[1..3].parse().unwrap_or(0);
-            let m: i64 = tz[3..5].parse().unwrap_or(0);
-            let tz_secs = sign * (h * 3600 + m * 60);
-
-            // Try YYYY-MM-DD HH:MM:SS
-            if let Ok(offset) = time::UtcOffset::from_whole_seconds(tz_secs as i32) {
-                let fmt = time::format_description::parse(
-                    "[year]-[month]-[day] [hour]:[minute]:[second]",
-                )
-                .ok()?;
-                if let Ok(naive) = time::PrimitiveDateTime::parse(datetime, &fmt) {
-                    let dt = naive.assume_offset(offset);
-                    let epoch = dt.unix_timestamp();
-                    return Some(format!("{epoch} {tz}"));
-                }
-            }
-        }
-    }
-
-    // Try "@<epoch>" format (git uses this for testing)
-    if let Some(epoch_str) = trimmed.strip_prefix('@') {
-        // @<epoch> <tz>
-        let ep_parts: Vec<&str> = epoch_str.splitn(2, ' ').collect();
-        if ep_parts.len() == 2 {
-            if let Ok(_epoch) = ep_parts[0].parse::<i64>() {
-                return Some(format!("{} {}", ep_parts[0], ep_parts[1]));
-            }
-        }
-    }
-
-    // Loose Git dates without explicit zone (e.g. `2022-02-01 00:00` from GIT_COMMITTER_DATE).
-    if let Ok(canonical) = parse_date(trimmed) {
-        return Some(canonical);
-    }
-
-    None
-}
-
-/// Format a timestamp in Git's format: `<epoch> <offset>`.
-fn format_git_timestamp(dt: OffsetDateTime) -> String {
-    let epoch = dt.unix_timestamp();
-    let offset = dt.offset();
-    let hours = offset.whole_hours();
-    let minutes = offset.minutes_past_hour().unsigned_abs();
-    format!("{epoch} {hours:+03}{minutes:02}")
 }
 
 /// First and optional second argument for `prepare-commit-msg` (Git `prepare_to_commit` semantics).

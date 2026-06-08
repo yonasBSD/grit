@@ -159,22 +159,9 @@ pub(crate) fn read_v2_capability_block(stdout: &mut impl Read) -> Result<Vec<Str
     Ok(caps)
 }
 
-pub(crate) fn server_advertises_bundle_uri(caps: &[String]) -> bool {
-    caps.iter()
-        .any(|c| c == "bundle-uri" || c.starts_with("bundle-uri="))
-}
+pub(crate) use grit_lib::protocol_v2::server_advertises_bundle_uri;
 
-pub(crate) fn cap_lines_for_bundle_request(caps: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in caps {
-        if line.starts_with("agent=") {
-            out.push(line.clone());
-        } else if let Some(fmt) = line.strip_prefix("object-format=") {
-            out.push(format!("object-format={fmt}"));
-        }
-    }
-    out
-}
+pub(crate) use grit_lib::protocol_v2::cap_lines_for_command_request as cap_lines_for_bundle_request;
 
 pub(crate) fn write_bundle_uri_command(stdin: &mut impl Write, cap_send: &[String]) -> Result<()> {
     trace_packet_git('>', "command=bundle-uri");
@@ -356,37 +343,11 @@ fn should_use_source_head_symref_fallback(source_git_dir: &Path) -> bool {
     !unborn.eq_ignore_ascii_case("ignore")
 }
 
-/// True when the server's `fetch=` capability advertises `sideband-all`.
-pub(crate) fn v2_fetch_supports_sideband_all(caps: &[String]) -> bool {
-    caps.iter().any(|c| {
-        c.strip_prefix("fetch=")
-            .is_some_and(|rest| rest.split_whitespace().any(|w| w == "sideband-all"))
-    })
-}
+pub(crate) use grit_lib::protocol_v2::fetch_supports_sideband_all as v2_fetch_supports_sideband_all;
 
-/// True when the server's v2 `fetch` capability advertises `ref-in-want` (so the client may send
-/// `want-ref <name>` lines instead of resolving named refspecs to OIDs itself).
-pub(crate) fn v2_fetch_supports_ref_in_want(caps: &[String]) -> bool {
-    caps.iter().any(|c| {
-        c.strip_prefix("fetch=")
-            .is_some_and(|rest| rest.split_whitespace().any(|w| w == "ref-in-want"))
-    })
-}
+pub(crate) use grit_lib::protocol_v2::fetch_supports_ref_in_want as v2_fetch_supports_ref_in_want;
 
-/// True when the server's v2 `fetch` capability advertises `filter` (so the client may send a
-/// `filter <spec>` line).
-///
-/// Mirrors `fetch-pack.c` `send_filter`, which only writes the `filter` request line when the
-/// server advertised filtering support (`server_supports_feature("fetch", "filter", 0)`). A
-/// promisor remote without `uploadpack.allowFilter` does not advertise it, so the client must
-/// silently drop the filter and fetch unfiltered rather than send a line the server rejects with
-/// "unexpected line" (t0410 "fetching from another promisor remote").
-pub(crate) fn v2_fetch_supports_filter(caps: &[String]) -> bool {
-    caps.iter().any(|c| {
-        c.strip_prefix("fetch=")
-            .is_some_and(|rest| rest.split_whitespace().any(|w| w == "filter"))
-    })
-}
+pub(crate) use grit_lib::protocol_v2::fetch_supports_filter as v2_fetch_supports_filter;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_v2_fetch_request(
@@ -759,10 +720,7 @@ pub(crate) fn clone_preflight_file_v2_if_needed(
         return Ok((head_symref, head_oid));
     }
 
-    let fetch_supports_sideband_all = caps.iter().any(|c| {
-        c.strip_prefix("fetch=")
-            .is_some_and(|rest| rest.split_whitespace().any(|w| w == "sideband-all"))
-    });
+    let fetch_supports_sideband_all = v2_fetch_supports_sideband_all(&caps);
     write_v2_fetch_request(
         &mut stdin,
         &default_hash,
