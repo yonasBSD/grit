@@ -1333,7 +1333,7 @@ fn parse_hunk(
         hunk.new_count = new_seen;
     } else if old_seen < old_count || new_seen < new_count {
         return Err(Error::Message(format!(
-            "corrupt patch at {input_name}:{}",
+            "error: corrupt patch at {input_name}:{}",
             i + 1
         )));
     }
@@ -1437,7 +1437,7 @@ mod tests {
         let err = parse_patch(input, 1, "patch", false, None)
             .err()
             .expect("should fail");
-        assert_eq!(err.to_string(), "corrupt patch at patch:4");
+        assert_eq!(err.to_string(), "error: corrupt patch at patch:4");
     }
 
     #[test]
