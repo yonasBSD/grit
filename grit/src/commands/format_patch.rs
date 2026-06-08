@@ -2035,7 +2035,7 @@ fn format_single_patch(
     let diff_entries_raw = apply_relative_filter(diff_entries_raw, opts.relative.as_deref());
     let diff_entries = if let Some(ref order_path) = opts.order_file {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        crate::commands::diff::apply_orderfile_entries(diff_entries_raw, order_path, &cwd)?
+        grit_lib::diff::apply_orderfile_entries(diff_entries_raw, order_path, &cwd)?
     } else {
         diff_entries_raw
     };

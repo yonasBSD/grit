@@ -12918,10 +12918,9 @@ fn write_commit_diff(
                 continue;
             }
             if let Some(ref order_path) = args.order_file {
-                entries =
-                    crate::commands::diff::apply_orderfile_entries(entries, order_path, &log_cwd)?;
+                entries = grit_lib::diff::apply_orderfile_entries(entries, order_path, &log_cwd)?;
             }
-            entries = crate::commands::diff::apply_rotate_skip_log_entries(
+            entries = grit_lib::diff::apply_rotate_skip_log_entries(
                 odb,
                 &info.tree,
                 entries,
@@ -13016,7 +13015,7 @@ fn write_commit_diff(
     }
 
     if let Some(ref order_path) = args.order_file {
-        entries = crate::commands::diff::apply_orderfile_entries(entries, order_path, &log_cwd)?;
+        entries = grit_lib::diff::apply_orderfile_entries(entries, order_path, &log_cwd)?;
     }
 
     let combined_style = merge_diff_is_combined_style(args, is_merge, git_dir)?;
@@ -13026,7 +13025,7 @@ fn write_commit_diff(
         entries.clone()
     };
 
-    entries = crate::commands::diff::apply_rotate_skip_log_entries(
+    entries = grit_lib::diff::apply_rotate_skip_log_entries(
         odb,
         &info.tree,
         entries,
@@ -13034,7 +13033,7 @@ fn write_commit_diff(
         args.skip_to.as_deref(),
     )?;
     combined_entries = if combined_style {
-        crate::commands::diff::apply_rotate_skip_log_entries(
+        grit_lib::diff::apply_rotate_skip_log_entries(
             odb,
             &info.tree,
             combined_entries,
