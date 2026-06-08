@@ -105,6 +105,7 @@ pub mod configuration {
     };
 }
 
+pub mod am;
 pub mod apply;
 pub mod attributes;
 pub mod blame;
