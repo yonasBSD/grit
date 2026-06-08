@@ -106,6 +106,7 @@ pub mod configuration {
 }
 
 pub mod attributes;
+pub mod blame;
 pub mod bloom;
 pub mod branch_ref_format;
 pub mod branch_tracking;
