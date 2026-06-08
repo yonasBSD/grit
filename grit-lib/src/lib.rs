@@ -5,7 +5,19 @@
 //! All Git-compatible logic lives here; the `grit` binary is a thin CLI shim
 //! that parses arguments and delegates to types exposed from this crate.
 //!
-//! ## Modules
+//! ## Where to start
+//!
+//! - [`Repository`](repo::Repository) is the central handle — open or discover
+//!   one, then reach the object store, index, refs, and config through it.
+//! - [`prelude`] re-exports the handful of types most call sites need.
+//! - [`porcelain`] holds user-facing operations that return structured result
+//!   *models* (the CLI renders them); [`plumbing`] holds the low-level,
+//!   machine-stable building blocks. The flat module list below remains the
+//!   low-level escape hatch and keeps every existing path valid.
+//! - [`progress`] defines how long-running operations report progress and
+//!   observe cancellation without touching the terminal.
+//!
+//! ## Core modules
 //!
 //! - [`error`] — shared error types using `thiserror`
 //! - [`objects`] — object ID, object kinds, and in-memory representations
@@ -14,6 +26,22 @@
 //! - [`index`] — Git index (staging area) read/write
 //! - [`ignore`] — ignore/exclude pattern matching for check-ignore
 //! - [`refs`] — reference storage (files backend)
+
+// --- Curated public API (additive; the flat `pub mod` list below is unchanged
+// so every existing `grit_lib::<module>::…` path keeps resolving) ---
+pub mod plumbing;
+pub mod porcelain;
+pub mod progress;
+
+/// The types most callers need, re-exported for `use grit_lib::prelude::*;`.
+pub mod prelude {
+    pub use crate::config::ConfigSet;
+    pub use crate::error::{Error, Result};
+    pub use crate::index::Index;
+    pub use crate::objects::{Object, ObjectId, ObjectKind};
+    pub use crate::odb::Odb;
+    pub use crate::repo::Repository;
+}
 
 pub mod attributes;
 pub mod bloom;
