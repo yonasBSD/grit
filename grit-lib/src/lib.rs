@@ -14,6 +14,9 @@
 //!   *models* (the CLI renders them); [`plumbing`] holds the low-level,
 //!   machine-stable building blocks. The flat module list below remains the
 //!   low-level escape hatch and keeps every existing path valid.
+//! - Browse the engine by subsystem via the domain views: [`object_store`],
+//!   [`references`], [`worktree_index`], [`revision`], [`diffing`], [`merging`],
+//!   and [`configuration`].
 //! - [`progress`] defines how long-running operations report progress and
 //!   observe cancellation without touching the terminal.
 //!
@@ -41,6 +44,65 @@ pub mod prelude {
     pub use crate::objects::{Object, ObjectId, ObjectKind};
     pub use crate::odb::Odb;
     pub use crate::repo::Repository;
+}
+
+// Domain-grouped views of the engine. Each is a curated table of contents over
+// the flat module list below — pure module re-exports, so `object_store::objects`
+// and the original `objects` path both resolve. A module appears in at most one
+// domain; cross-cutting and operation-level modules stay in the flat list.
+
+/// Object storage: ids/kinds, the object database, packs, multi-pack index, deltas.
+pub mod object_store {
+    pub use crate::{
+        delta_encode, delta_islands, midx, objects, odb, pack, pack_geometry, pack_name_hash,
+        pack_rev, promisor, promisor_remote, prune_packed, unpack_objects,
+    };
+}
+
+/// References: the refs backends, reflog, refspecs, name validation, namespaces.
+pub mod references {
+    pub use crate::{
+        branch_ref_format, branch_tracking, check_ref_format, hide_refs, ref_exclusions,
+        ref_namespace, reflog, refs, refspec, reftable,
+    };
+}
+
+/// Index and working tree: the index, sparse checkout, attributes, ignore, CRLF.
+pub mod worktree_index {
+    pub use crate::{
+        attributes, crlf, ignore, index, index_name_hash_lazy, path_walk, resolve_undo,
+        sparse_checkout, split_index, untracked_cache, worktree, worktree_cwd, worktree_ref,
+        write_tree,
+    };
+}
+
+/// Revision machinery: rev-parse, rev-list, name-rev, commit-graph.
+pub mod revision {
+    pub use crate::{commit_graph_file, commit_graph_write, name_rev, rev_list, rev_parse};
+}
+
+/// Diffing: tree/content diff, rename detection, diffstat, line-log, pickaxe bloom.
+pub mod diffing {
+    pub use crate::{
+        bloom, combined_diff_patch, combined_tree_diff, diff, diff_indent_heuristic, diff_moved,
+        diffstat, difftool, line_log, patch_ids, userdiff,
+    };
+}
+
+/// Merging: merge-base, tree/file merges, rerere, merge-message formatting.
+pub mod merging {
+    pub use crate::{
+        fmt_merge_msg, merge_base, merge_diff, merge_file, merge_tree_trivial, merge_trees,
+        mergetool_vimdiff, rerere,
+    };
+}
+
+/// Configuration and identity: config cascade, .gitmodules, author/committer idents.
+pub mod configuration {
+    pub use crate::{
+        config, dotfile, gitmodules, ident, ident_config, ident_resolve, precompose_config,
+        url_rewrite,
+    };
 }
 
 pub mod attributes;
