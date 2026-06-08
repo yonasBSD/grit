@@ -21,5 +21,6 @@
 //! Operation modules are added one command at a time; this file is the
 //! scaffolding they attach to.
 
+pub mod checkout;
 pub mod stash;
 pub mod status;
