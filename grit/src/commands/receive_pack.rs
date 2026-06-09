@@ -41,6 +41,11 @@ pub struct Args {
     /// Skip connectivity verification after unpacking (matches `git receive-pack`).
     #[arg(long = "skip-connectivity-check", hide = true)]
     pub skip_connectivity_check: bool,
+
+    /// Test-only: refuse a thin incoming pack (forwarded to index-pack by upstream). Used by
+    /// `t5516` 'push --no-thin must produce non-thin pack' to verify the sender honored `--no-thin`.
+    #[arg(long = "reject-thin-pack-for-testing", hide = true)]
+    pub reject_thin_pack_for_testing: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -58,6 +63,18 @@ pub fn run(args: Args) -> Result<()> {
     let mut config = ConfigSet::new();
     if let Ok(Some(f)) = ConfigFile::from_path(&repo.git_dir.join("config"), ConfigScope::Local) {
         config.merge(&f);
+    }
+    // Honor `git -c key=value receive-pack` overrides (passed via GIT_CONFIG_PARAMETERS), so the
+    // remote side of `send-pack --receive-pack="git -c receive.denyDeletes=false receive-pack"`
+    // sees the override on top of the repository's own config — matching `git receive-pack`.
+    if let Ok(params) = std::env::var("GIT_CONFIG_PARAMETERS") {
+        if !params.trim().is_empty() {
+            if let Ok(cmd_file) =
+                ConfigFile::from_git_config_parameters(Path::new(":GIT_CONFIG_PARAMETERS"), &params)
+            {
+                config.merge(&cmd_file);
+            }
+        }
     }
     let extra_have = collect_alternate_have_oids(&repo, &config)?;
 
@@ -141,9 +158,18 @@ pub fn run(args: Args) -> Result<()> {
 
     let mut pack_map = None;
     let mut pack_parse_err: Option<String> = None;
+
+    // `--reject-thin-pack-for-testing`: refuse a thin incoming pack so the suite can verify a
+    // `git push --no-thin` actually produced a self-contained pack (t5516 'push --no-thin').
+    if has_pack
+        && args.reject_thin_pack_for_testing
+        && grit_lib::unpack_objects::pack_is_thin(&pack_data)
+    {
+        pack_parse_err = Some("fatal: pack has unresolved deltas (thin pack rejected)".to_owned());
+    }
     // Thin packs may not resolve fully in-memory against an empty ODB; skip this when we will
     // not run connectivity anyway (`git receive-pack` still unpacks via unpack-objects/index-pack).
-    if has_pack && !args.skip_connectivity_check {
+    if has_pack && !args.skip_connectivity_check && pack_parse_err.is_none() {
         match pack_bytes_to_object_map(&pack_data, &repo.odb) {
             Ok(m) => pack_map = Some(m),
             Err(e) => pack_parse_err = Some(format!("{e:#}")),
@@ -413,11 +439,10 @@ fn write_status_lines(
 ) -> Result<()> {
     let mut report: Vec<u8> = Vec::new();
     write_packet_raw(&mut report, unpack_status)?;
+    // `git receive-pack` reports the status of every ref command, including deletions
+    // (see `report()` in builtin/receive-pack.c): `ok <ref>` for accepted updates and
+    // `ng <ref> <reason>` for rejected ones.
     for outcome in outcomes {
-        // Deletions are not echoed in the status report (matches the existing receive-pack path).
-        if outcome.is_delete {
-            continue;
-        }
         let refname = &outcome.refname;
         match &outcome.reject_reason {
             Some(reason) => {
@@ -601,35 +626,44 @@ fn advertise_refs_phase(repo: &Repository, extra_have: &HashSet<ObjectId>) -> Re
     let cfg = ConfigSet::load(Some(&repo.git_dir), false).unwrap_or_default();
     let hide = hide_refs::hide_ref_patterns_receive(&cfg);
 
+    // `git receive-pack` does not advertise `HEAD`; it iterates only the ref store
+    // (`refs_for_each_ref_ext` in `write_head_info`). Each local ref is advertised under its
+    // logical name regardless of duplicate object ids; only out-of-namespace refs and alternate
+    // refs are folded into de-duplicated `.have` lines (matches `show_ref_cb`).
     let mut first = true;
-    if let Ok(head_oid) = refs::resolve_ref(&repo.git_dir, "HEAD") {
-        let full = ref_namespace::storage_ref_name("HEAD");
-        if !hide_refs::ref_is_hidden("HEAD", &full, &hide) {
-            let line = format!("{} HEAD\0{caps}\n", head_oid.to_hex());
-            wire_trace::trace_packet_receive_pack('>', line.trim_end_matches('\n'));
-            let len = 4 + line.len();
-            write!(out, "{:04x}{}", len, line)?;
-            first = false;
-        }
-    }
-
+    let namespace_prefix = ref_namespace::ref_storage_prefix();
     let mut seen_have: HashSet<ObjectId> = HashSet::new();
     let all_refs = refs::list_refs_physical(&repo.git_dir, "refs/")?;
     for (refname, oid) in &all_refs {
-        let display = if let Some(logical) = ref_namespace::logical_ref_name_from_storage(refname) {
-            let full = ref_namespace::storage_ref_name(&logical);
-            if hide_refs::ref_is_hidden(&logical, &full, &hide) {
-                continue;
+        // Determine the advertised name following Git's `strip_namespace`:
+        //  - no active namespace  -> the ref's own name (always advertised)
+        //  - in the active namespace -> its logical name (always advertised)
+        //  - outside the active namespace -> `.have` (de-duplicated by object id)
+        let display = match &namespace_prefix {
+            None => {
+                let full = ref_namespace::storage_ref_name(refname);
+                if hide_refs::ref_is_hidden(refname, &full, &hide) {
+                    continue;
+                }
+                let _ = seen_have.insert(*oid);
+                refname.clone()
             }
-            // Match Git `show_ref_cb`: every namespaced ref is advertised under its logical name,
-            // even when multiple refs share the same object id (t5509 hideRefs + packed-refs).
-            let _ = seen_have.insert(*oid);
-            logical
-        } else {
-            if !seen_have.insert(*oid) {
-                continue;
+            Some(_) => {
+                if let Some(logical) = ref_namespace::logical_ref_name_from_storage(refname) {
+                    let full = ref_namespace::storage_ref_name(&logical);
+                    if hide_refs::ref_is_hidden(&logical, &full, &hide) {
+                        continue;
+                    }
+                    let _ = seen_have.insert(*oid);
+                    logical
+                } else {
+                    // Out of the active namespace: advertise as a de-duplicated `.have`.
+                    if !seen_have.insert(*oid) {
+                        continue;
+                    }
+                    ".have".to_owned()
+                }
             }
-            refname.clone()
         };
         if first {
             let line = format!("{} {display}\0{caps}\n", oid.to_hex());

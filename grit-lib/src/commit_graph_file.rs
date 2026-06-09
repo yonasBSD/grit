@@ -24,6 +24,19 @@ fn warn_once_for_disabled_bloom_layer(id: &str) -> bool {
     }
 }
 
+/// Emit the "base graphs chunk is too small" warning at most once per layer id
+/// (grit re-reads the chain several times within one command; Git loads it once).
+fn warn_once_for_base_chunk_too_small(id: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let set = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    match set.lock() {
+        Ok(mut guard) => guard.insert(id.to_string()),
+        Err(_) => true,
+    }
+}
+
 const SIGNATURE: &[u8; 4] = b"CGPH";
 const GRAPH_VERSION: u8 = 1;
 const HASH_VERSION_SHA1: u8 = 1;
@@ -37,6 +50,7 @@ const CHUNK_GENERATION_DATA_OVERFLOW: u32 = 0x4744_4f32; // GDO2
 const CHUNK_EXTRA_EDGES: u32 = 0x4544_4745; // EDGE
 const CHUNK_BLOOM_INDEXES: u32 = 0x4249_4458; // BIDX
 const CHUNK_BLOOM_DATA: u32 = 0x4244_4154; // BDAT
+const CHUNK_BASE_GRAPHS: u32 = 0x4241_5345; // BASE
 
 const BLOOM_HEADER: usize = crate::bloom::BLOOMDATA_HEADER_LEN;
 
@@ -67,6 +81,11 @@ pub struct CommitGraphLayer {
     chunk_bloom_data: Option<(usize, usize)>,
     bloom_settings: Option<BloomFilterSettings>,
     bloom_disabled: bool,
+    /// Number of base graphs this layer declares in its header (`body[7]`).
+    base_layers_declared: u32,
+    /// Size in bytes of the BASE chunk (0 if absent). Used to bounds-check the
+    /// base-graph list against `base_layers_declared` (Git `add_graph_to_chain`).
+    base_chunk_size: usize,
 }
 
 impl CommitGraphLayer {
@@ -105,6 +124,7 @@ impl CommitGraphLayer {
         let mut generation_overflow_off = None;
         let mut bloom_idx_off = None;
         let mut bloom_data_range = None;
+        let mut base_graphs_off = None;
         let mut chunk_offsets: Vec<usize> = Vec::new();
         let mut toc_entries: Vec<(u32, usize)> = Vec::with_capacity(num_chunks);
 
@@ -129,6 +149,7 @@ impl CommitGraphLayer {
                 CHUNK_GENERATION_DATA => generation_off = Some(off),
                 CHUNK_GENERATION_DATA_OVERFLOW => generation_overflow_off = Some(off),
                 CHUNK_BLOOM_INDEXES => bloom_idx_off = Some(off),
+                CHUNK_BASE_GRAPHS => base_graphs_off = Some(off),
                 CHUNK_BLOOM_DATA => {
                     let end = if i + 1 < num_chunks {
                         let e2 = toc_start + (i + 1) * 12;
@@ -318,6 +339,15 @@ impl CommitGraphLayer {
             None
         };
 
+        let base_layers_declared = body[7] as u32;
+        let base_chunk_size = match base_graphs_off {
+            Some(off) => {
+                let end = chunk_byte_range(off, &toc_entries, file_end)?;
+                end.saturating_sub(off)
+            }
+            None => 0,
+        };
+
         Ok(Self {
             path,
             body,
@@ -330,6 +360,8 @@ impl CommitGraphLayer {
             chunk_bloom_data,
             bloom_settings,
             bloom_disabled: false,
+            base_layers_declared,
+            base_chunk_size,
         })
     }
 
@@ -511,6 +543,90 @@ impl CommitGraphChain {
         self.layers.iter().rev().map(|l| l.path.clone()).collect()
     }
 
+    /// Number of layers in the chain.
+    #[must_use]
+    pub fn num_layers(&self) -> usize {
+        self.layers.len()
+    }
+
+    /// Commit counts per layer, tip-first (layer 0 is the newest tip).
+    #[must_use]
+    pub fn layer_commit_counts_tip_first(&self) -> Vec<u32> {
+        self.layers.iter().map(|l| l.num_commits).collect()
+    }
+
+    /// Whether each layer carries a generation-data (GDA2) chunk, tip-first.
+    #[must_use]
+    pub fn layer_has_generation_data_tip_first(&self) -> Vec<bool> {
+        self.layers
+            .iter()
+            .map(|l| l.chunk_generation_data.is_some())
+            .collect()
+    }
+
+    /// Layer hex hashes (from `graph-<hash>.graph` file stem), tip-first.
+    #[must_use]
+    pub fn layer_hashes_tip_first(&self) -> Vec<String> {
+        self.layers.iter().map(|l| l.layer_display_id()).collect()
+    }
+
+    /// Source object directory each layer was loaded from (its `.git/objects`),
+    /// tip-first. Derived from the layer path: `<objdir>/info/commit-graphs/graph-*.graph`
+    /// or `<objdir>/info/commit-graph`.
+    #[must_use]
+    pub fn layer_object_dirs_tip_first(&self) -> Vec<PathBuf> {
+        self.layers
+            .iter()
+            .map(|l| {
+                // .../objects/info/commit-graphs/graph-X.graph  -> .../objects
+                // .../objects/info/commit-graph                 -> .../objects
+                let p = l.path.as_path();
+                let info = if p
+                    .parent()
+                    .and_then(|d| d.file_name())
+                    .map(|n| n == "commit-graphs")
+                    .unwrap_or(false)
+                {
+                    p.parent().and_then(|d| d.parent())
+                } else {
+                    p.parent()
+                };
+                info.and_then(|d| d.parent())
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("."))
+            })
+            .collect()
+    }
+
+    /// A sub-chain made of the layers at tip-first indices `start..end`
+    /// (so `start` becomes the new tip). Used by the writer when only some base
+    /// layers are kept after a split merge.
+    #[must_use]
+    pub fn sub_chain_tip_first(&self, start: usize, end: usize) -> Option<Self> {
+        let end = end.min(self.layers.len());
+        if start >= end {
+            return None;
+        }
+        Some(Self {
+            layers: self.layers[start..end].to_vec(),
+        })
+    }
+
+    /// All commit OIDs in one layer (by tip-first index), in lexicographic order.
+    #[must_use]
+    pub fn layer_oids(&self, tip_first_idx: usize) -> Vec<ObjectId> {
+        let Some(layer) = self.layers.get(tip_first_idx) else {
+            return Vec::new();
+        };
+        let mut out = Vec::with_capacity(layer.num_commits as usize);
+        for i in 0..layer.num_commits {
+            if let Some(oid) = layer.oid_at_lex(i) {
+                out.push(oid);
+            }
+        }
+        out
+    }
+
     /// Load from `objects/info/commit-graph` or `objects/info/commit-graphs/commit-graph-chain`.
     ///
     /// Returns `Ok(None)` when no commit-graph exists. Corrupt graphs (including invalid GDO2)
@@ -529,6 +645,19 @@ impl CommitGraphChain {
                 let graph_path = info.join("commit-graphs").join(format!("graph-{h}.graph"));
                 let raw = std::fs::read(&graph_path).map_err(Error::from)?;
                 let layer = CommitGraphLayer::try_parse(graph_path, raw)?;
+                // `add_graph_to_chain`: a layer that declares N base graphs must
+                // carry a BASE chunk large enough to hold N hashes. If it is too
+                // small, Git warns and refuses to add this layer (and anything
+                // above it) to the chain, falling back to the object database for
+                // those commits. `layers.len()` here is the number of base layers
+                // already loaded below this one.
+                let n = layers.len();
+                if n > 0 && layer.base_chunk_size / HASH_LEN < n {
+                    if warn_once_for_base_chunk_too_small(&layer.layer_display_id()) {
+                        eprintln!("warning: commit-graph base graphs chunk is too small");
+                    }
+                    break;
+                }
                 layers.push(layer);
             }
             if layers.is_empty() {
@@ -558,6 +687,103 @@ impl CommitGraphChain {
     /// Like [`Self::try_load`] but ignores parse errors (returns `None`).
     pub fn load(objects_dir: &Path) -> Option<Self> {
         Self::try_load(objects_dir).ok().flatten()
+    }
+
+    /// Load a split commit-graph chain that may live in (and reference layers across) an
+    /// alternate object directory.
+    ///
+    /// Git's commit-graph chain is owned by exactly one object directory, but its layer
+    /// `graph-<hash>.graph` files may be split between that directory and the alternate(s) it
+    /// inherits from. This is the situation created by a local clone whose `info/alternates`
+    /// points at a source repository that already has a split chain: a new `commit-graph write
+    /// --split` produces a chain file (in the local object dir) that lists the alternate's base
+    /// layer hashes followed by the locally-written tip layer.
+    ///
+    /// The chain file itself is taken from `objects_dir` if present, otherwise from the first
+    /// `alt_dirs` entry that has one. Each referenced `graph-<hash>.graph` layer is then resolved
+    /// by searching `objects_dir` first and each alternate in turn.
+    ///
+    /// # Parameters
+    /// - `objects_dir`: the primary object directory (e.g. the local `.git/objects`).
+    /// - `alt_dirs`: alternate object directories, in search order.
+    ///
+    /// # Returns
+    /// `Ok(None)` when no chain/single graph is found in any directory; `Ok(Some(_))` on success.
+    ///
+    /// # Errors
+    /// Returns an error if a referenced layer file is missing/unreadable or fails to parse.
+    pub fn try_load_across(
+        objects_dir: &Path,
+        alt_dirs: &[PathBuf],
+    ) -> Result<Option<Self>, Error> {
+        let layer_dir = |dir: &Path| dir.join("info").join("commit-graphs");
+        let resolve_layer = |hash: &str| -> Option<PathBuf> {
+            let name = format!("graph-{hash}.graph");
+            let local = layer_dir(objects_dir).join(&name);
+            if local.is_file() {
+                return Some(local);
+            }
+            alt_dirs
+                .iter()
+                .map(|d| layer_dir(d).join(&name))
+                .find(|p| p.is_file())
+        };
+
+        // A split write only chains on an existing *split chain*. Precedence for the chain owner:
+        //   1. the local dir's chain file (its layers may live across the alternate),
+        //   2. the local dir's single (non-split) `info/commit-graph` (Git migrates it),
+        //   3. a *chain file* in an alternate.
+        // An alternate's single (non-split) graph file is never used as a base — Git refuses to
+        // base a chain on a plain commit-graph file (t5324 "fork and fail to base a chain on a
+        // commit-graph file").
+        let local_chain = layer_dir(objects_dir).join("commit-graph-chain");
+        let local_single = objects_dir.join("info").join("commit-graph");
+        let chain_path = if local_chain.is_file() {
+            local_chain
+        } else if local_single.is_file() {
+            return Self::try_load(objects_dir);
+        } else {
+            match alt_dirs
+                .iter()
+                .map(PathBuf::as_path)
+                .find(|d| layer_dir(d).join("commit-graph-chain").is_file())
+            {
+                Some(owner) => layer_dir(owner).join("commit-graph-chain"),
+                None => return Ok(None),
+            }
+        };
+
+        let content = std::fs::read_to_string(&chain_path).map_err(Error::from)?;
+        let mut layers = Vec::new();
+        for line in content.lines() {
+            let h = line.trim();
+            if h.len() != 40 {
+                continue;
+            }
+            let graph_path = resolve_layer(h).ok_or_else(|| {
+                Error::from(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("commit-graph layer graph-{h}.graph not found"),
+                ))
+            })?;
+            let raw = std::fs::read(&graph_path).map_err(Error::from)?;
+            let layer = CommitGraphLayer::try_parse(graph_path, raw)?;
+            let n = layers.len();
+            if n > 0 && layer.base_chunk_size / HASH_LEN < n {
+                if warn_once_for_base_chunk_too_small(&layer.layer_display_id()) {
+                    eprintln!("warning: commit-graph base graphs chunk is too small");
+                }
+                break;
+            }
+            layers.push(layer);
+        }
+        if layers.is_empty() {
+            return Ok(None);
+        }
+        layers.reverse();
+        let mut chain = Self { layers };
+        chain.validate_bloom_compatibility();
+        Ok(Some(chain))
     }
 
     fn validate_bloom_compatibility(&mut self) {
@@ -864,23 +1090,29 @@ pub fn parse_graph_file(path: &Path) -> Option<ParsedGraphDump> {
     }
     let header_word = u32::from_be_bytes(body[0..4].try_into().ok()?);
     let num_chunks = body[6] as usize;
-    let mut chunk_names = Vec::new();
     let toc_start = 8;
+    let mut present: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for i in 0..num_chunks {
         let e = toc_start + i * 12;
         let id = u32::from_be_bytes(body[e..e + 4].try_into().ok()?);
-        let name = match id {
-            CHUNK_OID_FANOUT => "oid_fanout",
-            CHUNK_OID_LOOKUP => "oid_lookup",
-            CHUNK_COMMIT_DATA => "commit_metadata",
-            CHUNK_GENERATION_DATA => "generation_data",
-            CHUNK_GENERATION_DATA_OVERFLOW => "generation_data_overflow",
-            CHUNK_EXTRA_EDGES => "extra_edges",
-            CHUNK_BLOOM_INDEXES => "bloom_indexes",
-            CHUNK_BLOOM_DATA => "bloom_data",
-            _ => "unknown",
-        };
-        chunk_names.push(name.to_string());
+        present.insert(id);
+    }
+    // `git/t/helper/test-read-graph.c` prints a fixed set of recognized chunks in
+    // a fixed order, omitting the BASE chunk and any unknown chunk.
+    let mut chunk_names: Vec<String> = Vec::new();
+    for (id, label) in [
+        (CHUNK_OID_FANOUT, "oid_fanout"),
+        (CHUNK_OID_LOOKUP, "oid_lookup"),
+        (CHUNK_COMMIT_DATA, "commit_metadata"),
+        (CHUNK_GENERATION_DATA, "generation_data"),
+        (CHUNK_GENERATION_DATA_OVERFLOW, "generation_data_overflow"),
+        (CHUNK_EXTRA_EDGES, "extra_edges"),
+        (CHUNK_BLOOM_INDEXES, "bloom_indexes"),
+        (CHUNK_BLOOM_DATA, "bloom_data"),
+    ] {
+        if present.contains(&id) {
+            chunk_names.push(label.to_string());
+        }
     }
     let layer = CommitGraphLayer::parse(path.to_path_buf(), raw.clone())?;
     let bloom_opt = layer.bloom_settings.map(|s| {

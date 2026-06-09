@@ -14,11 +14,15 @@ use std::process::{Command, Stdio};
 use grit_lib::pkt_line;
 
 /// Arguments for `grit ls-remote`.
+///
+/// `--heads`/`-h` is a hidden, deprecated synonym for `--branches`/`-b`; the
+/// short forms are rewritten to the long names in the CLI preprocessing step
+/// (see `preprocess_ls_remote_argv` in `main.rs`) because clap reserves `-h`.
 #[derive(Debug, ClapArgs)]
 pub struct Args {
     /// Show only branches (`refs/heads/`).
-    #[arg(long = "heads")]
-    pub heads: bool,
+    #[arg(long = "branches", visible_alias = "heads")]
+    pub branches: bool,
 
     /// Show only tags (`refs/tags/`).
     #[arg(long = "tags")]
@@ -36,17 +40,29 @@ pub struct Args {
     #[arg(long = "upload-pack", alias = "exec")]
     pub upload_pack: Option<String>,
 
-    /// Quiet: suppress output, only set the exit status.
+    /// Quiet: suppress the "From <url>" header on stderr.
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
+
+    /// Print only the remote URL (`url.<base>.insteadOf` aware) and exit.
+    #[arg(long = "get-url")]
+    pub get_url: bool,
+
+    /// Exit with status 2 when no matching refs are found.
+    #[arg(long = "exit-code")]
+    pub exit_code: bool,
+
+    /// Sort refs by the given key (e.g. `refname`, `version:refname`).
+    #[arg(long = "sort", value_name = "KEY", action = clap::ArgAction::Append)]
+    pub sort: Vec<String>,
 
     /// Transmit the given string as a protocol-v2 server option.
     #[arg(short = 'o', long = "server-option", action = clap::ArgAction::Append)]
     pub server_options: Vec<String>,
 
-    /// Path to the local repository (bare or non-bare).
+    /// Path to the local repository or configured remote name (optional).
     #[arg(value_name = "REPOSITORY")]
-    pub repository: PathBuf,
+    pub repository: Option<PathBuf>,
 
     /// Optional ref patterns; only matching refs are printed.
     #[arg(value_name = "PATTERN", num_args = 0..)]
@@ -61,10 +77,38 @@ pub struct Args {
 ///
 /// Exits with status 1 when no refs match (same behaviour as `git ls-remote`).
 pub fn run(args: Args) -> Result<()> {
-    // If the repository argument is a configured remote name, resolve its URL
-    let effective_path = resolve_remote_or_path(&args.repository);
+    // git parses --sort options up front; a key requiring object data fails
+    // immediately when we are outside a repository, before contacting any
+    // remote.
+    let sort_keys = parse_sort_keys(&args.sort)?;
+
+    // Resolve the destination. When no <repository> argument is given, fall
+    // back to the default remote (branch.<name>.remote, the sole remote, or
+    // "origin") exactly like git's `remote_get(NULL)`.
+    let dest_given = args.repository.is_some();
+    let resolved = match &args.repository {
+        Some(p) => p.clone(),
+        None => {
+            let (url, _name) = resolve_default_remote()?;
+            PathBuf::from(url)
+        }
+    };
+
+    // If the destination is a configured remote name, resolve its URL.
+    let effective_path = resolve_remote_or_path(&resolved);
     let repo_path_str = effective_path.to_string_lossy().to_string();
-    let remote_name = maybe_remote_name(&args.repository);
+    let remote_name = maybe_remote_name(&resolved);
+
+    // `--get-url` prints the (insteadOf-rewritten) URL and exits.
+    if args.get_url {
+        let config = match Repository::discover(None) {
+            Ok(repo) => ConfigSet::load(Some(repo.git_dir.as_path()), true).unwrap_or_default(),
+            Err(_) => ConfigSet::load(None, true).unwrap_or_default(),
+        };
+        let rewritten = grit_lib::url_rewrite::rewrite_fetch_url(&config, &repo_path_str);
+        println!("{rewritten}");
+        return Ok(());
+    }
 
     // When operating on a configured remote, Git loads the remote definition,
     // which parses every configured fetch and push refspec.  An invalid
@@ -77,6 +121,12 @@ pub fn run(args: Args) -> Result<()> {
         bail!(
             "server options require protocol version 2 or later\nsee protocol.version in 'git help config'"
         );
+    }
+
+    // git prints "From <url>" to stderr when no <repository> was given and we
+    // are not in --quiet mode.
+    if !dest_given && !args.quiet {
+        eprintln!("From {repo_path_str}");
     }
 
     if repo_path_str.starts_with("git://") {
@@ -126,40 +176,288 @@ pub fn run(args: Args) -> Result<()> {
 
     if let Some(upload_pack) = args.upload_pack.as_deref() {
         if !upload_pack.is_empty() {
-            return run_ls_remote_via_upload_pack(&effective_path, upload_pack, &args);
+            return run_ls_remote_via_upload_pack(&effective_path, upload_pack, &args, &sort_keys);
         }
     }
 
-    let repo = open_local_repo(&effective_path)?;
+    let repo = match open_local_repo(&effective_path) {
+        Ok(repo) => repo,
+        Err(_) => {
+            // git's local transport runs `git-upload-pack <dest>`, which dies
+            // with "'<dest>' does not appear to be a git repository"; the
+            // client then reports it could not read from the remote. The dest
+            // shown is the user-supplied argument (e.g. a stray pattern).
+            let dest = resolved.to_string_lossy();
+            eprintln!("fatal: '{dest}' does not appear to be a git repository");
+            eprintln!("fatal: Could not read from remote repository.");
+            eprintln!();
+            eprintln!("Please make sure you have the correct access rights");
+            eprintln!("and the repository exists.");
+            return Err(crate::explicit_exit::SilentNonZeroExit { code: 128 }.into());
+        }
+    };
+
+    // Protocol v2 ls-refs advertises a symref-target for every symbolic ref;
+    // v0 only advertises the HEAD symref via a capability.
+    let all_symrefs = crate::protocol_wire::effective_client_protocol_version() >= 2;
 
     let opts = Options {
-        heads: args.heads,
+        heads: args.branches,
         tags: args.tags,
         refs_only: args.refs_only,
         symref: args.symref,
-        patterns: args.patterns,
+        all_symrefs,
+        patterns: args.patterns.clone(),
     };
 
     let refs_git_dir = common_git_dir_or_self(&repo.git_dir);
-    let entries = ls_remote(&refs_git_dir, &repo.odb, &opts)?;
+    let mut entries = ls_remote(&refs_git_dir, &repo.odb, &opts)?;
 
-    if entries.is_empty() {
-        // git ls-remote exits 0 even when no refs match patterns
-        return Ok(());
-    }
+    // Apply transfer.hiderefs / uploadpack.hiderefs filtering.
+    let config = ConfigSet::load(Some(repo.git_dir.as_path()), true).unwrap_or_default();
+    apply_hiderefs(&config, &mut entries);
 
-    if args.quiet {
-        return Ok(());
-    }
+    apply_ref_sorting(&sort_keys, &mut entries);
 
-    for entry in &entries {
+    print_entries_with_exit_code(&entries, args.exit_code)
+}
+
+/// Print ref entries and apply `--exit-code` semantics.
+///
+/// With `--exit-code`, exits with status 2 when no refs were printed; with a
+/// match, status is 0. The "From" header and other stderr output are handled
+/// by the caller.
+fn print_entries_with_exit_code(entries: &[RefEntry], exit_code: bool) -> Result<()> {
+    let mut printed = false;
+    for entry in entries {
         if let Some(target) = &entry.symref_target {
             println!("ref: {target}\t{}", entry.name);
         }
         println!("{}\t{}", entry.oid, entry.name);
+        printed = true;
     }
-
+    if exit_code && !printed {
+        std::process::exit(2);
+    }
     Ok(())
+}
+
+/// Drop refs hidden by `transfer.hiderefs` / `uploadpack.hiderefs`.
+///
+/// The two config keys are combined (`uploadpack.hiderefs` taking precedence on
+/// duplicates is not modeled separately because git merges both lists in
+/// declaration order). A leading `!` un-hides a previously hidden ref; the last
+/// matching rule wins. The peeled `^{}` companion of a tag follows the tag.
+fn apply_hiderefs(config: &ConfigSet, entries: &mut Vec<RefEntry>) {
+    let rules = collect_hiderefs(config);
+    if rules.is_empty() {
+        return;
+    }
+    entries.retain(|e| {
+        // Peeled entries follow the visibility of their base ref; if the base
+        // was kept, so is the peel (it is pushed adjacently right after).
+        let name = e.name.strip_suffix("^{}").unwrap_or(&e.name);
+        if name == "HEAD" {
+            return true;
+        }
+        !ref_is_hidden(name, &rules)
+    });
+}
+
+/// Gather `transfer.hiderefs` and `uploadpack.hiderefs` patterns in order.
+fn collect_hiderefs(config: &ConfigSet) -> Vec<String> {
+    let mut rules = Vec::new();
+    for entry in config.entries() {
+        let key = entry.key.as_str();
+        if key == "transfer.hiderefs" || key == "uploadpack.hiderefs" {
+            if let Some(v) = entry.value.as_deref() {
+                rules.push(v.to_owned());
+            }
+        }
+    }
+    rules
+}
+
+/// Determine whether `refname` is hidden given an ordered set of hideRefs rules.
+///
+/// Each rule hides refs matching the pattern (prefix match, or full match);
+/// a `!`-prefixed rule un-hides. The last matching rule decides.
+fn ref_is_hidden(refname: &str, rules: &[String]) -> bool {
+    let mut hidden = false;
+    for rule in rules {
+        let (negated, pattern) = match rule.strip_prefix('!') {
+            Some(rest) => (true, rest),
+            None => (false, rule.as_str()),
+        };
+        if hideref_pattern_matches(pattern, refname) {
+            hidden = !negated;
+        }
+    }
+    hidden
+}
+
+/// Match a single hideRefs pattern against a refname (git `ref_is_hidden`).
+///
+/// A pattern matches when the refname equals it, or when the refname starts
+/// with `<pattern>/`. A pattern starting with `^` is anchored to the full
+/// refname (exact match only).
+fn hideref_pattern_matches(pattern: &str, refname: &str) -> bool {
+    if let Some(anchored) = pattern.strip_prefix('^') {
+        return refname == anchored;
+    }
+    refname == pattern
+        || refname
+            .strip_prefix(pattern)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// A parsed `--sort` key: a field plus whether the order is reversed.
+#[derive(Debug, Clone)]
+struct SortKey {
+    field: SortField,
+    reverse: bool,
+}
+
+/// The supported `ls-remote --sort` fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortField {
+    /// Plain lexicographic refname comparison.
+    RefName,
+    /// Natural / version-aware refname comparison (`version:refname`).
+    RefNameVersion,
+}
+
+/// Parse and validate the `--sort` keys.
+///
+/// Each key may have a leading `-` for descending order. Only name-only fields
+/// are supported for sorting; any other field requires access to object data
+/// and, when we are not inside a git repository, fails with the same fatal
+/// message git produces.
+///
+/// # Errors
+///
+/// Returns an error when a field requires object data but no ambient git
+/// repository is available, mirroring git's `ref-filter` behaviour.
+fn parse_sort_keys(raw_keys: &[String]) -> Result<Vec<SortKey>> {
+    let have_git_dir = Repository::discover(None).is_ok();
+    let mut keys = Vec::new();
+    for raw in raw_keys {
+        let (reverse, name) = match raw.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, raw.as_str()),
+        };
+        let field = match name {
+            "refname" => SortField::RefName,
+            "version:refname" | "v:refname" => SortField::RefNameVersion,
+            _ => {
+                // Any other field (e.g. authordate, objectname) needs object
+                // data. Outside a repository that is fatal.
+                if !have_git_dir {
+                    bail!(
+                        "fatal: not a git repository, but the field '{name}' requires access to object data"
+                    );
+                }
+                // Inside a repo we still only support name-based sorting for
+                // ls-remote; fall back to plain refname ordering.
+                SortField::RefName
+            }
+        };
+        keys.push(SortKey { field, reverse });
+    }
+    Ok(keys)
+}
+
+/// Sort `entries` in place according to pre-parsed `--sort` keys.
+///
+/// With no keys the advertised order (HEAD first, then refname order) is kept.
+/// Peeled `^{}` companions stay paired with their base ref.
+fn apply_ref_sorting(keys: &[SortKey], entries: &mut [RefEntry]) {
+    if keys.is_empty() {
+        return;
+    }
+    entries.sort_by(|a, b| {
+        for key in keys {
+            let ord = compare_by_field(key.field, &a.name, &b.name);
+            let ord = if key.reverse { ord.reverse() } else { ord };
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+}
+
+/// Compare two refnames according to a [`SortField`].
+fn compare_by_field(field: SortField, a: &str, b: &str) -> std::cmp::Ordering {
+    match field {
+        SortField::RefName => a.cmp(b),
+        SortField::RefNameVersion => compare_refname_version(a, b),
+    }
+}
+
+/// Version token for natural ordering: a number or a string run.
+enum VersionToken {
+    Num(u64),
+    Str(String),
+}
+
+/// Split a refname into alternating non-digit / digit runs for version sort.
+fn tokenize_refname_version(s: &str) -> Vec<VersionToken> {
+    let b = s.as_bytes();
+    let mut i = 0usize;
+    let mut out = Vec::new();
+    while i < b.len() {
+        if b[i].is_ascii_digit() {
+            let start = i;
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+            let n = std::str::from_utf8(&b[start..i])
+                .ok()
+                .and_then(|x| x.parse::<u64>().ok())
+                .unwrap_or(0);
+            out.push(VersionToken::Num(n));
+        } else {
+            let start = i;
+            while i < b.len() && !b[i].is_ascii_digit() {
+                i += 1;
+            }
+            out.push(VersionToken::Str(
+                String::from_utf8_lossy(&b[start..i]).into_owned(),
+            ));
+        }
+    }
+    out
+}
+
+/// Compare two refnames using git-style natural/version ordering.
+fn compare_refname_version(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let ta = tokenize_refname_version(a);
+    let tb = tokenize_refname_version(b);
+    let len = ta.len().max(tb.len());
+    for k in 0..len {
+        match (ta.get(k), tb.get(k)) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(VersionToken::Str(sa)), Some(VersionToken::Str(sb))) => {
+                let c = sa.cmp(sb);
+                if c != Ordering::Equal {
+                    return c;
+                }
+            }
+            (Some(VersionToken::Num(na)), Some(VersionToken::Num(nb))) => {
+                let c = na.cmp(nb);
+                if c != Ordering::Equal {
+                    return c;
+                }
+            }
+            (Some(VersionToken::Str(_)), Some(VersionToken::Num(_))) => return Ordering::Less,
+            (Some(VersionToken::Num(_)), Some(VersionToken::Str(_))) => return Ordering::Greater,
+        }
+    }
+    Ordering::Equal
 }
 
 fn run_http_ls_remote(repo_url: &str, args: &Args) -> Result<()> {
@@ -186,7 +484,7 @@ fn run_http_ls_remote(repo_url: &str, args: &Args) -> Result<()> {
 
     let mut entries: Vec<RefEntry> = Vec::new();
     for e in advertised {
-        if args.heads && e.name != "HEAD" && !e.name.starts_with("refs/heads/") {
+        if args.branches && e.name != "HEAD" && !e.name.starts_with("refs/heads/") {
             continue;
         }
         if args.tags && !e.name.starts_with("refs/tags/") {
@@ -267,7 +565,7 @@ fn print_advertised_refs_for_ls_remote(
 ) -> Result<()> {
     let mut entries: Vec<RefEntry> = Vec::new();
     for (name, oid) in advertised {
-        if args.heads && name != "HEAD" && !name.starts_with("refs/heads/") {
+        if args.branches && name != "HEAD" && !name.starts_with("refs/heads/") {
             continue;
         }
         if args.tags && !name.starts_with("refs/tags/") {
@@ -307,6 +605,73 @@ fn print_advertised_refs_for_ls_remote(
         println!("{}\t{}", entry.oid, entry.name);
     }
     Ok(())
+}
+
+/// Resolve the default remote when `ls-remote` is run without a `<repository>`.
+///
+/// Mirrors git's `remote_get(NULL)`:
+/// 1. If the current branch has `branch.<name>.remote`, use that remote.
+/// 2. Else if exactly one remote is configured, use it.
+/// 3. Else use `"origin"`.
+///
+/// The chosen remote must have a configured URL; otherwise this fails with
+/// `No remote configured to list refs from.` (e.g. multiple remotes exist but
+/// none is named `origin`).
+///
+/// # Returns
+///
+/// `(url, remote_name)` of the resolved default remote.
+///
+/// # Errors
+///
+/// Returns an error when no usable default remote can be determined.
+fn resolve_default_remote() -> Result<(String, String)> {
+    let repo = Repository::discover(None)
+        .map_err(|_| anyhow::anyhow!("No remote configured to list refs from."))?;
+    let config = ConfigSet::load(Some(repo.git_dir.as_path()), true).unwrap_or_default();
+
+    let remote_names = configured_remote_names(&config);
+
+    // 1. branch.<current>.remote
+    let branch_remote = grit_lib::refs::read_symbolic_ref(&repo.git_dir, "HEAD")
+        .ok()
+        .flatten()
+        .and_then(|target| {
+            target
+                .strip_prefix("refs/heads/")
+                .map(std::borrow::ToOwned::to_owned)
+        })
+        .and_then(|short| config.get(&format!("branch.{short}.remote")));
+
+    let chosen = if let Some(name) = branch_remote {
+        name
+    } else if remote_names.len() == 1 {
+        remote_names[0].clone()
+    } else {
+        "origin".to_owned()
+    };
+
+    let url = config
+        .get(&format!("remote.{chosen}.url"))
+        .ok_or_else(|| anyhow::anyhow!("No remote configured to list refs from."))?;
+    Ok((url, chosen))
+}
+
+/// Return the names of all configured remotes (those with a `remote.<name>.url`).
+fn configured_remote_names(config: &ConfigSet) -> Vec<String> {
+    let mut names = Vec::new();
+    for entry in config.entries() {
+        let Some(rest) = entry.key.strip_prefix("remote.") else {
+            continue;
+        };
+        let Some(name) = rest.strip_suffix(".url") else {
+            continue;
+        };
+        if !names.iter().any(|n| n == name) {
+            names.push(name.to_owned());
+        }
+    }
+    names
 }
 
 fn maybe_remote_name(path: &Path) -> Option<String> {
@@ -380,7 +745,12 @@ fn effective_server_options(args: &Args, remote_name: Option<&str>) -> Vec<Strin
     out
 }
 
-fn run_ls_remote_via_upload_pack(repo_path: &Path, upload_pack: &str, args: &Args) -> Result<()> {
+fn run_ls_remote_via_upload_pack(
+    repo_path: &Path,
+    upload_pack: &str,
+    args: &Args,
+    sort_keys: &[SortKey],
+) -> Result<()> {
     let repo = open_local_repo(repo_path)?;
     let repo_dir = repo
         .work_tree
@@ -411,7 +781,8 @@ fn run_ls_remote_via_upload_pack(repo_path: &Path, upload_pack: &str, args: &Arg
         v
     });
 
-    let entries = read_ls_remote_upload_pack_output(&mut stdin, &mut stdout, &default_hash, args)?;
+    let mut entries =
+        read_ls_remote_upload_pack_output(&mut stdin, &mut stdout, &default_hash, args)?;
     drop(stdin);
 
     let status = child.wait()?;
@@ -425,19 +796,8 @@ fn run_ls_remote_via_upload_pack(repo_path: &Path, upload_pack: &str, args: &Arg
             status.code().unwrap_or(-1)
         );
     }
-    if entries.is_empty() {
-        return Ok(());
-    }
-    if args.quiet {
-        return Ok(());
-    }
-    for entry in &entries {
-        if let Some(target) = &entry.symref_target {
-            println!("ref: {target}\t{}", entry.name);
-        }
-        println!("{}\t{}", entry.oid, entry.name);
-    }
-    Ok(())
+    apply_ref_sorting(sort_keys, &mut entries);
+    print_entries_with_exit_code(&entries, args.exit_code)
 }
 
 fn read_ls_remote_upload_pack_output(
@@ -464,13 +824,16 @@ fn read_ls_remote_upload_pack_output(
             parse_v2_ls_refs_output(&buf, args)
         }
         pkt_line::Packet::Data(line) => {
-            let mut entries = parse_v0_ref_advertisement_line(&line, args)?;
+            // The capabilities on the first advertised ref carry all `symref=`
+            // entries (HEAD and any others), so collect them once up front.
+            let symref_map = symref_map_from_first_line(&line);
+            let mut entries = parse_v0_ref_advertisement_line(&line, args, &symref_map)?;
             loop {
                 match pkt_line::read_packet(stdout)? {
                     None => break,
                     Some(pkt_line::Packet::Flush) => break,
                     Some(pkt_line::Packet::Data(l)) => {
-                        entries.extend(parse_v0_ref_advertisement_line(&l, args)?);
+                        entries.extend(parse_v0_ref_advertisement_line(&l, args, &symref_map)?);
                     }
                     Some(other) => bail!("unexpected packet in v0 ref advertisement: {other:?}"),
                 }
@@ -479,6 +842,26 @@ fn read_ls_remote_upload_pack_output(
         }
         other => bail!("unexpected first packet from upload-pack: {other:?}"),
     }
+}
+
+/// Build a `refname -> symref-target` map from a v0 first advertised ref line.
+///
+/// The capabilities after the `\0` separator contain zero or more
+/// `symref=<from>:<to>` entries. v0 servers may advertise multiple symrefs
+/// (e.g. `HEAD` and `refs/remotes/origin/HEAD`).
+fn symref_map_from_first_line(raw: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let Some((_, caps)) = raw.split_once('\0') else {
+        return map;
+    };
+    for word in caps.split_whitespace() {
+        if let Some(spec) = word.strip_prefix("symref=") {
+            if let Some((from, to)) = spec.split_once(':') {
+                map.insert(from.to_owned(), to.to_owned());
+            }
+        }
+    }
+    map
 }
 
 /// Consume pkt-lines after the initial `version 2` line until `0000` flush.
@@ -493,21 +876,17 @@ fn skip_rest_of_v2_capability_advertisement(r: &mut impl Read) -> Result<()> {
     }
 }
 
-fn symref_head_target_from_caps(caps: &str) -> Option<String> {
-    for word in caps.split_whitespace() {
-        if let Some(t) = word.strip_prefix("symref=HEAD:") {
-            return Some(t.to_owned());
-        }
-    }
-    None
-}
-
 /// Parse one v0/v1 ref advertisement pkt-line (`<oid>\t<ref>[\0<capabilities>]`).
-fn parse_v0_ref_advertisement_line(raw: &str, args: &Args) -> Result<Vec<RefEntry>> {
-    let (payload, caps_opt) = match raw.split_once('\0') {
-        Some((p, c)) => (p, Some(c)),
-        None => (raw, None),
-    };
+///
+/// `symref_map` maps refnames to their symref targets (collected from the
+/// capabilities on the first advertised ref) and is applied when `--symref`
+/// is requested.
+fn parse_v0_ref_advertisement_line(
+    raw: &str,
+    args: &Args,
+    symref_map: &std::collections::HashMap<String, String>,
+) -> Result<Vec<RefEntry>> {
+    let payload = raw.split_once('\0').map_or(raw, |(p, _)| p);
     let (oid_hex, refname) = payload
         .split_once('\t')
         .or_else(|| payload.split_once(' '))
@@ -516,11 +895,19 @@ fn parse_v0_ref_advertisement_line(raw: &str, args: &Args) -> Result<Vec<RefEntr
     let oid = ObjectId::from_hex(oid_hex.trim())
         .with_context(|| format!("bad oid in v0 ref advertisement: {oid_hex}"))?;
 
-    if args.heads && refname != "HEAD" && !refname.starts_with("refs/heads/") {
+    // A `capabilities^{}` pseudo-ref carries only capabilities (used by
+    // standards-compliant empty remotes); it is never a real ref.
+    if refname == "capabilities^{}" {
         return Ok(vec![]);
     }
-    if args.tags && !refname.starts_with("refs/tags/") {
-        return Ok(vec![]);
+
+    // `--branches`/`--tags` form a union; HEAD is excluded when either is set.
+    if args.branches || args.tags {
+        let is_branch = args.branches && refname.starts_with("refs/heads/");
+        let is_tag = args.tags && refname.starts_with("refs/tags/");
+        if !is_branch && !is_tag {
+            return Ok(vec![]);
+        }
     }
     if args.refs_only && (refname == "HEAD" || refname.ends_with("^{}")) {
         return Ok(vec![]);
@@ -529,8 +916,8 @@ fn parse_v0_ref_advertisement_line(raw: &str, args: &Args) -> Result<Vec<RefEntr
         return Ok(vec![]);
     }
 
-    let symref_target = if args.symref && refname == "HEAD" {
-        caps_opt.and_then(symref_head_target_from_caps)
+    let symref_target = if args.symref {
+        symref_map.get(refname).cloned()
     } else {
         None
     };
@@ -552,7 +939,7 @@ fn write_v2_ls_refs_request(w: &mut impl Write, object_format: &str, args: &Args
     if !args.refs_only {
         pkt_line::write_line(w, "peel")?;
     }
-    if args.heads {
+    if args.branches {
         pkt_line::write_line(w, "ref-prefix refs/heads/")?;
     }
     if args.tags {
@@ -620,8 +1007,14 @@ pub(crate) fn parse_ls_refs_v2_line(
     let (oid_hex, after_oid) = line
         .split_once(' ')
         .ok_or_else(|| anyhow::anyhow!("bad ls-refs line: {line}"))?;
-    let oid =
-        ObjectId::from_hex(oid_hex).with_context(|| format!("bad oid in ls-refs: {oid_hex}"))?;
+    // Protocol v2 advertises an unborn HEAD (symref pointing at a branch with no commits) as the
+    // literal token `unborn` in place of the object id (gitprotocol-v2: `obj-id-or-unborn`). Map it
+    // to the null OID so callers can recognize "no object" via `ObjectId::is_zero`.
+    let oid = if oid_hex == "unborn" {
+        ObjectId::zero()
+    } else {
+        ObjectId::from_hex(oid_hex).with_context(|| format!("bad oid in ls-refs: {oid_hex}"))?
+    };
 
     let mut peeled = None;
     let mut symref_target = None;
@@ -773,8 +1166,12 @@ fn run_bundle_ls_remote(path: &Path, args: &Args) -> Result<()> {
         return Ok(());
     }
 
-    for (refname, oid) in &refs {
-        if args.heads && !refname.starts_with("refs/heads/") {
+    // Git's bundle transport (`get_refs_from_bundle`) prepends each header ref to
+    // the result list, so the refs it returns are in reverse header order. With no
+    // `--sort` given, `git ls-remote` applies no default ordering, so it prints
+    // them in exactly that reversed order. Reproduce that here.
+    for (refname, oid) in refs.iter().rev() {
+        if args.branches && !refname.starts_with("refs/heads/") {
             continue;
         }
         if args.tags && !refname.starts_with("refs/tags/") {

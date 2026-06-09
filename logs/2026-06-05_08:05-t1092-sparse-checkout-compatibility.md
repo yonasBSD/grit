@@ -134,3 +134,54 @@
   to recurse and find sparse-directory matches without emitting an index expansion trace.
 - Direct `--run=1,84` and `--run=1,85` pass, and canonical harness:
   `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh` -> `96/106`.
+- 2026-06-05 15:01 CEST: Subtests 93, 97, 99, and 100 were advanced. Worktree add/remove now
+  reports user-supplied relative paths, cached diff checks load missing sparse `.gitattributes`
+  rules from the index, apply skips worktree preimage reads for missing outside-cone files while
+  still emitting sparse-index expansion traces, reset preserves a partially expanded sparse-index
+  shape across `reset --hard`, and interactive add emits expansion traces for outside-cone patch
+  selections.
+- Direct `--run=1,99` and `--run=1,100` pass. Direct `--run=1,101,102,103,104,105,106` now
+  reaches subtest 101 and fails at `git add .` sparse-path advice before the checkout/reset patch
+  trace assertions. Canonical harness:
+  `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh --verbose --timeout 180` ->
+  `99/106`.
+- 2026-06-05 15:28 CEST: Subtest 101 now passes. `git add .` no longer emits sparse-path advice
+  when it staged an in-cone match and only skipped outside-cone materialized paths. `reset --patch`
+  and `checkout --patch` now emit `index/ensure_full_index` only for sparse patch candidates that
+  require index expansion, including partially expanded outside-cone paths.
+- Direct `--run=1,101` passes. Canonical harness:
+  `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh --verbose --timeout 180` ->
+  `101/106`.
+- 2026-06-05 15:39 CEST: Subtest 102 now passes. `status` emits the
+  `advice.sparseIndexExpanded` warning when a sparse index reports outside-cone worktree paths, and
+  still respects the advice config plus sparse-checkout/index.sparse state.
+- Direct `--run=1,102` passes. Canonical harness:
+  `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh --verbose --timeout 180` ->
+  `102/106`.
+- 2026-06-05 15:44 CEST: Subtest 103 now passes. `cat-file` emits an
+  `index/ensure_full_index` trace for `:path` lookups beneath sparse-directory placeholders while
+  keeping in-cone index-path lookups quiet.
+- Direct `--run=1,103` passes. Canonical harness:
+  `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh --verbose --timeout 180` ->
+  `103/106`.
+- 2026-06-05 15:52 CEST: Subtest 104 now passes. `cat-file --batch` reuses the same index-path
+  sparse expansion trace check for each parsed batch entry, including multi-line input containing
+  both in-cone and sparse-directory placeholder paths.
+- Direct `--run=1,104` passes. Canonical harness:
+  `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh --verbose --timeout 180` ->
+  `104/106`.
+- 2026-06-05 16:00 CEST: Subtest 105 now passes. `merge -s ours` computes the commit tree after
+  merge commit-message hooks and expands sparse-directory placeholders before writing the tree, so
+  sparse-index merges preserve the same HEAD tree as full checkouts.
+- Direct `--run=1,105` passes. Canonical harness:
+  `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh --verbose --timeout 180` ->
+  `105/106`.
+- 2026-06-05 16:10 CEST: The final canonical failure was subtest 85 under
+  `GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main`: repeated `init_repos_as_submodules` calls left
+  stale `submodule.<name>.url` entries in local config after `reset --hard`, and `submodule add`
+  rejected re-adding the existing checkout repositories. `submodule add` now allows the stale local
+  URL when the target path is already a non-bare repository, while keeping missing-path name reuse
+  rejection intact.
+- Direct canonical-env `--run=1,84,85` passes. Canonical harness:
+  `./scripts/run-tests.sh t1092-sparse-checkout-compatibility.sh --verbose --timeout 180` ->
+  `106/106`.

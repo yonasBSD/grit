@@ -24,21 +24,24 @@ use grit_lib::combined_tree_diff::{combined_diff_paths_filtered, CombinedTreeDif
 use grit_lib::config::ConfigSet;
 use grit_lib::diff::{
     count_changes, diff_index_to_tree, diff_index_to_worktree, diff_trees, read_submodule_head_oid,
-    unified_diff, unified_diff_with_prefix_and_funcname_and_algorithm, zero_oid, DiffEntry,
-    DiffStatus,
+    unified_diff_with_prefix, unified_diff_with_prefix_and_funcname_and_algorithm, zero_oid,
+    DiffEntry, DiffStatus,
 };
 use grit_lib::diffstat::{terminal_columns, write_diffstat_block, DiffstatOptions, FileStatInput};
 use grit_lib::error::Error;
-use grit_lib::ignore::{normalize_repo_relative, IgnoreMatcher};
+use grit_lib::ignore::IgnoreMatcher;
 use grit_lib::index::{
     entry_from_stat, Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_REGULAR, MODE_SYMLINK,
 };
 use grit_lib::merge_diff::format_combined_textconv_patch;
 use grit_lib::objects::{
-    parse_commit, parse_tree, serialize_commit, serialize_tree, CommitData, ObjectId, ObjectKind,
-    TreeEntry,
+    parse_commit, serialize_commit, serialize_tree, CommitData, ObjectId, ObjectKind, TreeEntry,
 };
 use grit_lib::odb::Odb;
+use grit_lib::porcelain::stash::{
+    apply_stash, check_stash_apply_would_overwrite_local_changes, flatten_tree_full,
+    remove_empty_dirs, FlatTreeEntry,
+};
 use grit_lib::reflog::{read_reflog, reflog_path};
 use grit_lib::refs::{resolve_ref, write_ref};
 use grit_lib::repo::Repository;
@@ -87,12 +90,29 @@ pub struct Args {
     #[arg(short = 'p', long = "patch", global = true)]
     pub patch: bool,
 
+    /// Lines of context for `--patch` (validated to require `-p`).
+    #[arg(
+        long = "unified",
+        short = 'U',
+        allow_hyphen_values = true,
+        global = true
+    )]
+    pub unified: Option<i32>,
+
+    /// Context lines between adjacent `--patch` hunks (validated to require `-p`).
+    #[arg(long = "inter-hunk-context", allow_hyphen_values = true, global = true)]
+    pub inter_hunk_context: Option<i32>,
+
+    /// Disable auto-advance in interactive patch mode (validated to require `-p`).
+    #[arg(long = "no-auto-advance", global = true)]
+    pub no_auto_advance: bool,
+
     /// Quiet mode — suppress output messages.
     #[arg(short = 'q', long = "quiet", global = true)]
     pub quiet: bool,
 
-    /// Pathspec arguments (for bare `grit stash -- <path>`).
-    #[arg(last = true)]
+    /// Pathspec arguments (for bare `grit stash <path>` or `grit stash -- <path>`).
+    #[arg(trailing_var_arg = true)]
     pub pathspec: Vec<String>,
 }
 
@@ -250,6 +270,40 @@ pub enum StashCommand {
 
 /// Run `grit stash`.
 pub fn run(args: Args) -> Result<()> {
+    // The `-U`/`--inter-hunk-context`/`--no-auto-advance` options require `-p`; the patch flag may
+    // be the global one or the subcommand's.
+    let effective_patch = args.patch
+        || matches!(
+            args.command,
+            Some(StashCommand::Push { patch: true, .. })
+                | Some(StashCommand::Save { patch: true, .. })
+        );
+    crate::commands::add::validate_patch_context_options(
+        args.unified,
+        args.inter_hunk_context,
+        effective_patch,
+    )?;
+    if args.no_auto_advance && !effective_patch {
+        bail!(
+            "the option '{}' requires '{}'",
+            "--no-auto-advance",
+            "--interactive/--patch"
+        );
+    }
+
+    // Resolve patch context once (shared by all push spellings) for `stash -p` hunking.
+    let (patch_context, patch_inter_hunk) = {
+        let repo = Repository::discover(None).ok();
+        let cfg = repo
+            .as_ref()
+            .and_then(|r| ConfigSet::load(Some(&r.git_dir), true).ok())
+            .unwrap_or_default();
+        (
+            crate::commands::add::resolve_patch_context(args.unified, &cfg)?,
+            crate::commands::add::resolve_patch_interhunk(args.inter_hunk_context, &cfg)?,
+        )
+    };
+
     match args.command {
         None => {
             assume_push_or_error(&args)?;
@@ -266,6 +320,8 @@ pub fn run(args: Args) -> Result<()> {
                 patch: args.patch,
                 quiet: args.quiet,
                 pathspec: args.pathspec,
+                context: patch_context,
+                inter_hunk_context: patch_inter_hunk,
             })
         }
         Some(StashCommand::Push {
@@ -339,6 +395,8 @@ pub fn run(args: Args) -> Result<()> {
                 patch,
                 quiet: q,
                 pathspec,
+                context: patch_context,
+                inter_hunk_context: patch_inter_hunk,
             })
         }
         Some(StashCommand::Save {
@@ -375,6 +433,8 @@ pub fn run(args: Args) -> Result<()> {
                 patch: p,
                 quiet: q,
                 pathspec: Vec::new(),
+                context: patch_context,
+                inter_hunk_context: patch_inter_hunk,
             })
         }
         Some(StashCommand::List { args: list_args }) => do_list(list_args),
@@ -534,17 +594,32 @@ fn skip_implicit_stash_push_prefix(rest: &[String]) -> (usize, bool) {
 
 /// Run before clap parses `stash` so `git stash -q drop` is not mistaken for `git stash drop`.
 pub fn pre_parse_stash_argv_guard(rest: &[String]) -> Result<()> {
+    validate_implicit_push_tokens(rest)
+}
+
+fn assume_push_or_error(args: &Args) -> Result<()> {
+    let t = tokens_after_stash_argv();
+    let _ = args;
+    validate_implicit_push_tokens(&t)
+}
+
+fn validate_implicit_push_tokens(rest: &[String]) -> Result<()> {
     let (i, saw_push_flag) = skip_implicit_stash_push_prefix(rest);
-    if !saw_push_flag {
-        return Ok(());
-    }
     let Some(tok) = rest.get(i) else {
         return Ok(());
     };
     if tok == "--" {
         return Ok(());
     }
-    if STASH_VERB_AFTER_PUSH_FLAGS.contains(&tok.as_str()) {
+    if tok == "push" || tok == "save" {
+        return Ok(());
+    }
+    if STASH_VERB_AFTER_PUSH_FLAGS.contains(&tok.as_str()) && !saw_push_flag {
+        return Ok(());
+    }
+    if (STASH_VERB_AFTER_PUSH_FLAGS.contains(&tok.as_str()) && saw_push_flag)
+        || (!tok.starts_with('-') && rest[i + 1..].iter().any(|a| a.starts_with('-')))
+    {
         return Err(anyhow::Error::new(ExplicitExit {
             code: 128,
             message: format!(
@@ -552,26 +627,6 @@ pub fn pre_parse_stash_argv_guard(rest: &[String]) -> Result<()> {
             ),
         }));
     }
-    Ok(())
-}
-
-fn assume_push_or_error(args: &Args) -> Result<()> {
-    let t = tokens_after_stash_argv();
-    let (i, _) = skip_implicit_stash_push_prefix(&t);
-    if let Some(tok) = t.get(i) {
-        if tok == "--" {
-            return Ok(());
-        }
-        if STASH_VERB_AFTER_PUSH_FLAGS.contains(&tok.as_str()) {
-            return Err(anyhow::Error::new(ExplicitExit {
-                code: 128,
-                message: format!(
-                    "fatal: subcommand wasn't specified; 'push' can't be assumed due to unexpected token '{tok}'"
-                ),
-            }));
-        }
-    }
-    let _ = args;
     Ok(())
 }
 
@@ -800,6 +855,10 @@ struct PushOpts {
     patch: bool,
     quiet: bool,
     pathspec: Vec<String>,
+    /// Resolved `-U`/`diff.context` (number of context lines) for `stash -p` hunking.
+    context: usize,
+    /// Resolved `--inter-hunk-context`/`diff.interhunkcontext` for `stash -p` hunking.
+    inter_hunk_context: usize,
 }
 
 /// True when the only pending work is `git add -N` (intent-to-add) paths not yet fully staged.
@@ -860,9 +919,12 @@ fn do_push(mut opts: PushOpts) -> Result<()> {
         .collect();
 
     let head = resolve_head(&repo.git_dir)?;
-    let head_oid = head
-        .oid()
-        .ok_or_else(|| anyhow::anyhow!("cannot stash on an unborn branch"))?;
+    let Some(head_oid) = head.oid() else {
+        if !opts.quiet {
+            eprintln!("You do not have the initial commit yet");
+        }
+        return Err(anyhow::Error::new(SilentNonZeroExit { code: 1 }));
+    };
 
     // Load index
     let index = match repo.load_index() {
@@ -888,11 +950,7 @@ fn do_push(mut opts: PushOpts) -> Result<()> {
     let has_pathspec = !opts.pathspec.is_empty();
 
     let cwd = std::env::current_dir().context("current directory")?;
-    let normalized_pathspec: Vec<String> = opts
-        .pathspec
-        .iter()
-        .map(|p| normalize_repo_relative(&repo, &cwd, p).map_err(|e| anyhow::anyhow!("{e}")))
-        .collect::<Result<Vec<_>>>()?;
+    let normalized_pathspec = opts.pathspec.clone();
 
     // Find untracked (and optionally ignored) files when `-u` / `-a` is used.
     let untracked_files = if opts.include_untracked && !opts.staged {
@@ -965,7 +1023,7 @@ fn do_push(mut opts: PushOpts) -> Result<()> {
     update_stash_ref(
         &repo,
         &stash_oid,
-        &stash_reflog_msg(&head, opts.message.as_deref()),
+        &stash_reflog_msg(&repo, &head, opts.message.as_deref()),
     )?;
 
     // Determine effective keep_index
@@ -1028,9 +1086,9 @@ fn do_push(mut opts: PushOpts) -> Result<()> {
     }
 
     if !opts.quiet {
-        let msg = stash_save_msg(&head, opts.message.as_deref());
+        let msg = stash_save_msg(&repo, &head, opts.message.as_deref());
         // Match Git: this line goes to stdout (t3905 redirects stderr only).
-        println!("Saved working directory and index state {msg}");
+        print!("Saved working directory and index state {msg}");
     }
 
     Ok(())
@@ -1052,11 +1110,7 @@ fn do_stash_patch_push(
 
     stash_preflight_index_writable(repo)?;
     let cwd = std::env::current_dir().context("current directory")?;
-    let normalized_pathspec: Vec<String> = opts
-        .pathspec
-        .iter()
-        .map(|p| normalize_repo_relative(repo, &cwd, p).map_err(|e| anyhow::anyhow!("{e}")))
-        .collect::<Result<Vec<_>>>()?;
+    let normalized_pathspec = opts.pathspec.clone();
     let untracked_for_patch = if opts.include_untracked && !opts.staged {
         find_untracked_for_stash(
             repo,
@@ -1076,6 +1130,14 @@ fn do_stash_patch_push(
 
     let head_obj = repo.odb.read(&head_oid)?;
     let head_commit = parse_commit(&head_obj.data)?;
+    if has_pathspec {
+        validate_stash_pathspecs_match_known_files(
+            repo,
+            index,
+            &head_commit.tree,
+            &normalized_pathspec,
+        )?;
+    }
     let head_tree_entries = flatten_tree_full(&repo.odb, &head_commit.tree, "")?;
     let head_flat_map: BTreeMap<String, &FlatTreeEntry> = head_tree_entries
         .iter()
@@ -1206,12 +1268,13 @@ fn do_stash_patch_push(
 
                 let display_idx = hunk_cursor + 1;
                 let (s, e) = hunk_ranges[hunk_cursor];
-                let hunk_only = partial_unified_for_op_range(
+                let hunk_only = partial_unified_for_op_range_interhunk(
                     path.as_str(),
                     &head_content,
                     &cur_work,
                     &ops[s..e],
-                    3,
+                    opts.context,
+                    opts.inter_hunk_context,
                     true,
                 );
 
@@ -1361,29 +1424,29 @@ fn do_stash_patch_push(
     }
 
     let now = OffsetDateTime::now_utc();
-    let identity = resolve_identity(repo, now)?;
+    let identities = resolve_identities(repo, now)?;
     let index_tree_oid = write_tree_from_expanded_index(&repo.odb, index)?;
     let index_commit_data = CommitData {
         tree: index_tree_oid,
         parents: vec![head_oid],
-        author: identity.clone(),
-        committer: identity.clone(),
+        author: identities.author.clone(),
+        committer: identities.committer.clone(),
         author_raw: Vec::new(),
         committer_raw: Vec::new(),
         encoding: None,
-        message: format!("index on {}\n", branch_description(head)),
+        message: format!("index on {}\n", branch_description(repo, head)),
         raw_message: None,
     };
     let index_commit_oid = repo
         .odb
         .write(ObjectKind::Commit, &serialize_commit(&index_commit_data))?;
     let wt_tree_oid = write_tree_from_expanded_index(&repo.odb, &wt_index)?;
-    let stash_msg = stash_save_msg(head, opts.message.as_deref());
+    let stash_msg = stash_save_msg(repo, head, opts.message.as_deref());
     let stash_commit = CommitData {
         tree: wt_tree_oid,
         parents: vec![head_oid, index_commit_oid],
-        author: identity.clone(),
-        committer: identity.clone(),
+        author: identities.author.clone(),
+        committer: identities.committer.clone(),
         author_raw: Vec::new(),
         committer_raw: Vec::new(),
         encoding: None,
@@ -1451,7 +1514,7 @@ fn do_stash_patch_push(
     update_stash_ref(
         repo,
         &stash_oid,
-        &stash_reflog_msg(head, opts.message.as_deref()),
+        &stash_reflog_msg(repo, head, opts.message.as_deref()),
     )?;
 
     if !opts.quiet {
@@ -1473,6 +1536,31 @@ pub(crate) fn partial_unified_for_op_range(
     work_bytes: &[u8],
     op_slice: &[similar::DiffOp],
     context: usize,
+    indent_heuristic: bool,
+) -> String {
+    partial_unified_for_op_range_interhunk(
+        path,
+        head_bytes,
+        work_bytes,
+        op_slice,
+        context,
+        0,
+        indent_heuristic,
+    )
+}
+
+/// Like [`partial_unified_for_op_range`] but honoring `--inter-hunk-context`: adjacent changes
+/// within the slice merge into one `@@` hunk when their unchanged gap is `<= 2*context + inter`
+/// lines. Used by `reset`/`commit`/`stash`/`checkout`/`restore` `-p` when `-U`/`--inter-hunk-context`
+/// are given (t3701 "<cmd> accepts -U and --inter-hunk-context").
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn partial_unified_for_op_range_interhunk(
+    path: &str,
+    head_bytes: &[u8],
+    work_bytes: &[u8],
+    op_slice: &[similar::DiffOp],
+    context: usize,
+    inter_hunk_context: usize,
     indent_heuristic: bool,
 ) -> String {
     let head_str = String::from_utf8_lossy(head_bytes);
@@ -1527,12 +1615,15 @@ pub(crate) fn partial_unified_for_op_range(
         }
     }
 
-    let full = unified_diff(
+    let full = unified_diff_with_prefix(
         &old_partial,
         &new_partial,
         path,
         path,
         context,
+        inter_hunk_context,
+        "a/",
+        "b/",
         indent_heuristic,
         false,
     );
@@ -1640,6 +1731,9 @@ fn do_push_pathspec(
     stash_preflight_index_writable(repo)?;
     let head_obj = repo.odb.read(head_oid)?;
     let head_commit = parse_commit(&head_obj.data)?;
+    if !opts.include_untracked {
+        validate_stash_pathspecs_match_known_files(repo, index, &head_commit.tree, pathspec)?;
+    }
 
     // Get all changes
     let staged = diff_index_to_tree(&repo.odb, index, Some(&head_commit.tree), false)?;
@@ -1687,19 +1781,19 @@ fn do_push_pathspec(
     }
 
     let now = OffsetDateTime::now_utc();
-    let identity = resolve_identity(repo, now)?;
+    let identities = resolve_identities(repo, now)?;
 
     // 1. Create index-state commit (current full index)
     let index_tree_oid = write_tree_from_expanded_index(&repo.odb, index)?;
     let index_commit_data = CommitData {
         tree: index_tree_oid,
         parents: vec![*head_oid],
-        author: identity.clone(),
-        committer: identity.clone(),
+        author: identities.author.clone(),
+        committer: identities.committer.clone(),
         author_raw: Vec::new(),
         committer_raw: Vec::new(),
         encoding: None,
-        message: format!("index on {}\n", branch_description(head)),
+        message: format!("index on {}\n", branch_description(repo, head)),
         raw_message: None,
     };
     let index_commit_bytes = serialize_commit(&index_commit_data);
@@ -1709,13 +1803,13 @@ fn do_push_pathspec(
         let tree_oid = create_untracked_tree(&repo.odb, work_tree, &matched_untracked)?;
         let ut_commit = CommitData {
             tree: tree_oid,
-            parents: vec![*head_oid],
-            author: identity.clone(),
-            committer: identity.clone(),
+            parents: Vec::new(),
+            author: identities.author.clone(),
+            committer: identities.committer.clone(),
             author_raw: Vec::new(),
             committer_raw: Vec::new(),
             encoding: None,
-            message: format!("untracked files on {}\n", branch_description(head)),
+            message: format!("untracked files on {}\n", branch_description(repo, head)),
             raw_message: None,
         };
         let ut_bytes = serialize_commit(&ut_commit);
@@ -1783,8 +1877,8 @@ fn do_push_pathspec(
         write_tree_from_expanded_index(&repo.odb, &wt_index)?
     };
 
-    let stash_msg = stash_save_msg(head, opts.message.as_deref());
-    let reflog_msg = stash_reflog_msg(head, opts.message.as_deref());
+    let stash_msg = stash_save_msg(repo, head, opts.message.as_deref());
+    let reflog_msg = stash_reflog_msg(repo, head, opts.message.as_deref());
 
     let mut parents = vec![*head_oid, index_commit_oid];
     if let Some(u) = untracked_commit_oid {
@@ -1794,8 +1888,8 @@ fn do_push_pathspec(
     let stash_commit = CommitData {
         tree: wt_tree_oid,
         parents,
-        author: identity.clone(),
-        committer: identity.clone(),
+        author: identities.author.clone(),
+        committer: identities.committer.clone(),
         author_raw: Vec::new(),
         committer_raw: Vec::new(),
         encoding: None,
@@ -1872,7 +1966,7 @@ fn do_push_pathspec(
     }
 
     if !opts.quiet {
-        println!("Saved working directory and index state {stash_msg}");
+        print!("Saved working directory and index state {stash_msg}");
     }
 
     Ok(())
@@ -1900,33 +1994,33 @@ fn do_push_staged(
     }
 
     let now = OffsetDateTime::now_utc();
-    let identity = resolve_identity(repo, now)?;
+    let identities = resolve_identities(repo, now)?;
 
     // The "index commit" is the current index state (which has staged changes)
     let index_tree_oid = write_tree_from_expanded_index(&repo.odb, index)?;
     let index_commit_data = CommitData {
         tree: index_tree_oid,
         parents: vec![*head_oid],
-        author: identity.clone(),
-        committer: identity.clone(),
+        author: identities.author.clone(),
+        committer: identities.committer.clone(),
         author_raw: Vec::new(),
         committer_raw: Vec::new(),
         encoding: None,
-        message: format!("index on {}\n", branch_description(head)),
+        message: format!("index on {}\n", branch_description(repo, head)),
         raw_message: None,
     };
     let index_commit_bytes = serialize_commit(&index_commit_data);
     let index_commit_oid = repo.odb.write(ObjectKind::Commit, &index_commit_bytes)?;
 
     // The stash commit tree is the index tree (since we're only stashing staged)
-    let stash_msg = stash_save_msg(head, opts.message.as_deref());
-    let reflog_msg = stash_reflog_msg(head, opts.message.as_deref());
+    let stash_msg = stash_save_msg(repo, head, opts.message.as_deref());
+    let reflog_msg = stash_reflog_msg(repo, head, opts.message.as_deref());
 
     let stash_commit = CommitData {
         tree: index_tree_oid,
         parents: vec![*head_oid, index_commit_oid],
-        author: identity.clone(),
-        committer: identity.clone(),
+        author: identities.author.clone(),
+        committer: identities.committer.clone(),
         author_raw: Vec::new(),
         committer_raw: Vec::new(),
         encoding: None,
@@ -1987,7 +2081,7 @@ fn do_push_staged(
     repo.write_index(&mut new_index)?;
 
     if !opts.quiet {
-        println!("Saved working directory and index state {stash_msg}");
+        print!("Saved working directory and index state {stash_msg}");
     }
 
     Ok(())
@@ -2567,7 +2661,7 @@ fn show_stash_stat_git_diffstat(
 ) -> Result<()> {
     let obj = repo.odb.read(stash_oid)?;
     let stash_commit = parse_commit(&obj.data)?;
-    let old_tree = stash_index_tree_oid(repo, &stash_commit)?;
+    let old_tree = stash_head_parent_tree_oid(repo, &stash_commit)?;
     let entries = diff_trees(&repo.odb, Some(&old_tree), Some(&stash_commit.tree), "")?;
     if entries.is_empty() {
         return Ok(());
@@ -2635,6 +2729,7 @@ fn show_stash_stat_git_diffstat(
     let opts = DiffstatOptions {
         total_width: terminal_columns(),
         line_prefix: "",
+        width_prefix: "",
         subtract_prefix_from_terminal: false,
         stat_name_width: eff_name_width,
         stat_graph_width: eff_graph_width,
@@ -2759,7 +2854,7 @@ fn flatten_untracked_tree(
     let ut_parent = stash_commit.parents[2];
     let ut_obj = repo.odb.read(&ut_parent)?;
     let ut_commit = parse_commit(&ut_obj.data)?;
-    flatten_tree_full(&repo.odb, &ut_commit.tree, "")
+    Ok(flatten_tree_full(&repo.odb, &ut_commit.tree, "")?)
 }
 
 fn show_stash_diff(
@@ -3259,7 +3354,7 @@ fn do_pop(stash_ref: Option<String>, index: bool, quiet: bool) -> Result<()> {
     let stash_oid = resolve_stash_ref(&repo, stash_ref.as_deref())?;
 
     // Apply the stash
-    let had_conflicts = apply_stash_impl(&repo, &work_tree, &stash_oid, index, quiet)?;
+    let had_conflicts = apply_stash(&repo, &work_tree, &stash_oid, index, quiet)?;
 
     if had_conflicts {
         // On conflict, do NOT drop the stash entry
@@ -3294,7 +3389,7 @@ fn do_apply(stash_ref: Option<String>, _drop_after: bool, index: bool, quiet: bo
     stash_preflight_index_writable(&repo)?;
     let stash_oid = resolve_stash_ref(&repo, stash_ref.as_deref())?;
 
-    let had_conflicts = apply_stash_impl(&repo, &work_tree, &stash_oid, index, quiet)?;
+    let had_conflicts = apply_stash(&repo, &work_tree, &stash_oid, index, quiet)?;
 
     if had_conflicts {
         bail!("Merge conflict in stash apply");
@@ -3332,491 +3427,6 @@ fn do_apply(stash_ref: Option<String>, _drop_after: bool, index: bool, quiet: bo
     }
 
     Ok(())
-}
-
-/// Apply a stash. Returns true if there were conflicts.
-fn apply_stash_impl(
-    repo: &Repository,
-    work_tree: &Path,
-    stash_oid: &ObjectId,
-    restore_index: bool,
-    _quiet: bool,
-) -> Result<bool> {
-    let obj = repo.odb.read(stash_oid)?;
-    let stash_commit = parse_commit(&obj.data)?;
-
-    if stash_commit.parents.len() < 2 {
-        bail!("corrupt stash commit: expected at least 2 parents");
-    }
-
-    let head_at_stash = &stash_commit.parents[0];
-    let index_commit_oid = &stash_commit.parents[1];
-
-    // Load current index
-    let current_index = match repo.load_index() {
-        Ok(idx) => idx,
-        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
-        Err(e) => return Err(e.into()),
-    };
-
-    // Read stash trees
-    let stash_tree_entries = flatten_tree_full(&repo.odb, &stash_commit.tree, "")?;
-
-    // Read HEAD-at-stash tree (base)
-    let head_at_stash_obj = repo.odb.read(head_at_stash)?;
-    let head_at_stash_commit = parse_commit(&head_at_stash_obj.data)?;
-    let base_tree_entries = flatten_tree_full(&repo.odb, &head_at_stash_commit.tree, "")?;
-
-    use std::collections::BTreeMap;
-    let base_map: BTreeMap<String, &FlatTreeEntry> = base_tree_entries
-        .iter()
-        .map(|e| (e.path.clone(), e))
-        .collect();
-    let stash_map: BTreeMap<String, &FlatTreeEntry> = stash_tree_entries
-        .iter()
-        .map(|e| (e.path.clone(), e))
-        .collect();
-
-    // Find files changed in the stash working tree vs base
-    let mut wt_changes: BTreeMap<String, Option<&FlatTreeEntry>> = BTreeMap::new();
-    for (path, stash_entry) in &stash_map {
-        match base_map.get(path) {
-            Some(base_entry)
-                if base_entry.oid != stash_entry.oid || base_entry.mode != stash_entry.mode =>
-            {
-                wt_changes.insert(path.clone(), Some(stash_entry));
-            }
-            None => {
-                wt_changes.insert(path.clone(), Some(stash_entry));
-            }
-            _ => {}
-        }
-    }
-    // Track deletions (in base but not in stash)
-    for path in base_map.keys() {
-        if !stash_map.contains_key(path) {
-            wt_changes.insert(path.clone(), None); // None = deleted
-        }
-    }
-
-    // Check for conflicts: does the worktree have local modifications to files
-    // that the stash also wants to change?
-    for path in wt_changes.keys() {
-        let file_path = work_tree.join(path);
-        // Get the current index entry for this file
-        if let Some(idx_entry) = current_index.get(path.as_bytes(), 0) {
-            if idx_entry.mode == MODE_GITLINK {
-                // Submodule: comparing index blob in the superproject ODB is wrong; t7402 expects
-                // stash apply to succeed while the nested repo keeps its own HEAD.
-                continue;
-            }
-            // Read the worktree file
-            match fs::read(&file_path) {
-                Ok(contents) => {
-                    // Check if worktree differs from index
-                    if let Ok(idx_blob) = repo.odb.read(&idx_entry.oid) {
-                        if contents != idx_blob.data {
-                            // Worktree has local changes that would be overwritten
-                            bail!("error: Your local changes to the following files would be overwritten by merge:\n\t{path}\nPlease commit your changes or stash them before you merge.");
-                        }
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // File doesn't exist in worktree — could be deleted locally
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
-    }
-
-    // Read index commit tree
-    let idx_obj = repo.odb.read(index_commit_oid)?;
-    let idx_commit = parse_commit(&idx_obj.data)?;
-    let idx_tree_entries = flatten_tree_full(&repo.odb, &idx_commit.tree, "")?;
-    let idx_map: BTreeMap<String, &FlatTreeEntry> = idx_tree_entries
-        .iter()
-        .map(|e| (e.path.clone(), e))
-        .collect();
-
-    // Determine if HEAD has moved since the stash was created
-    let current_head = resolve_head(&repo.git_dir)?;
-    let current_head_oid = current_head.oid().copied();
-    let head_moved = current_head_oid.as_ref() != Some(head_at_stash);
-
-    // Current HEAD tree (for three-way merge when HEAD moved, and for index reset without --index).
-    let current_head_flat: Vec<FlatTreeEntry> = if let Some(ref h) = current_head_oid {
-        let head_obj = repo.odb.read(h)?;
-        let head_commit = parse_commit(&head_obj.data)?;
-        flatten_tree_full(&repo.odb, &head_commit.tree, "")?
-    } else {
-        Vec::new()
-    };
-    let cur_head_map: BTreeMap<String, &FlatTreeEntry> = current_head_flat
-        .iter()
-        .map(|e| (e.path.clone(), e))
-        .collect();
-
-    // Build current HEAD tree map for three-way merge (OID only)
-    let current_tree_map: BTreeMap<String, grit_lib::objects::ObjectId> = if head_moved {
-        current_head_flat
-            .iter()
-            .map(|e| (e.path.clone(), e.oid))
-            .collect()
-    } else {
-        BTreeMap::new()
-    };
-
-    let mut has_conflicts = false;
-    let mut new_index = current_index.clone();
-
-    // Pre-check: detect type conflicts where the stash wants to place a FILE
-    // at a path that is currently a DIRECTORY in the worktree, or vice-versa.
-    // We must check BEFORE removing anything (deletions below may clear dirs).
-    for (path, change) in &wt_changes {
-        if let Some(entry) = change {
-            if entry.mode == MODE_GITLINK {
-                continue;
-            }
-            let file_path = work_tree.join(path);
-            if file_path.is_dir() {
-                // A file from the stash conflicts with a directory in the worktree.
-                // Mark as conflicted and remove the directory so we can write the file.
-                has_conflicts = true;
-                let _ = fs::remove_dir_all(&file_path);
-            }
-        }
-    }
-
-    // First pass: process deletions (None entries) before additions to avoid
-    // type conflicts (e.g., trying to write a file where a directory exists).
-    for (path, change) in &wt_changes {
-        if change.is_some() {
-            continue;
-        }
-        let file_path = work_tree.join(path);
-        if file_path.is_dir() {
-            let git_meta = file_path.join(".git");
-            if git_meta.is_file() || git_meta.is_dir() {
-                continue;
-            }
-            let _ = fs::remove_dir_all(&file_path);
-        } else {
-            let _ = fs::remove_file(&file_path);
-        }
-        if let Some(parent) = file_path.parent() {
-            remove_empty_dirs(parent, work_tree);
-        }
-    }
-
-    // Apply working tree changes (with three-way merge when HEAD has moved)
-    for (path, change) in &wt_changes {
-        let file_path = work_tree.join(path);
-        match change {
-            Some(entry) => {
-                if let Some(parent) = file_path.parent() {
-                    // If a component of the parent is a file, remove it first
-                    let mut cur = work_tree.to_path_buf();
-                    if let Ok(rel) = file_path
-                        .parent()
-                        .unwrap_or(work_tree)
-                        .strip_prefix(work_tree)
-                    {
-                        for comp in rel.components() {
-                            cur.push(comp);
-                            if cur.exists() && !cur.is_dir() {
-                                let _ = fs::remove_file(&cur);
-                            }
-                        }
-                    }
-                    fs::create_dir_all(parent)?;
-                }
-                if entry.mode == MODE_GITLINK {
-                    if file_path.is_file() || file_path.is_symlink() {
-                        let _ = fs::remove_file(&file_path);
-                    } else if file_path.is_dir() {
-                        let git_meta = file_path.join(".git");
-                        if !(git_meta.is_file() || git_meta.is_dir()) {
-                            fs::remove_dir_all(&file_path)?;
-                        }
-                    }
-                    fs::create_dir_all(&file_path)?;
-                    continue;
-                }
-
-                let stash_blob = repo.odb.read(&entry.oid)?;
-
-                if entry.mode == MODE_SYMLINK {
-                    let target = String::from_utf8(stash_blob.data)
-                        .map_err(|_| anyhow::anyhow!("symlink target is not UTF-8"))?;
-                    if file_path.exists() || file_path.symlink_metadata().is_ok() {
-                        let _ = fs::remove_file(&file_path);
-                    }
-                    #[cfg(unix)]
-                    std::os::unix::fs::symlink(&target, &file_path)?;
-                } else if head_moved {
-                    // Three-way merge: base (head_at_stash), ours (current HEAD), theirs (stash)
-                    let base_content = base_map
-                        .get(path)
-                        .and_then(|e| repo.odb.read(&e.oid).ok())
-                        .map(|o| o.data)
-                        .unwrap_or_default();
-                    let ours_content = current_tree_map
-                        .get(path)
-                        .and_then(|oid| repo.odb.read(oid).ok())
-                        .map(|o| o.data)
-                        .unwrap_or_default();
-                    let theirs_content = stash_blob.data;
-
-                    // If ours == base, no conflict (only stash changed this file)
-                    if ours_content == base_content {
-                        fs::write(&file_path, &theirs_content)?;
-                    } else if ours_content == theirs_content {
-                        // Both changed the same way, no conflict
-                        fs::write(&file_path, &ours_content)?;
-                    } else {
-                        // Both sides changed differently — try content merge
-                        use grit_lib::merge_file::{merge, ConflictStyle, MergeFavor, MergeInput};
-                        let input = MergeInput {
-                            base: &base_content,
-                            ours: &ours_content,
-                            theirs: &theirs_content,
-                            label_ours: "Updated upstream",
-                            label_base: "Stashed changes",
-                            label_theirs: "Stashed changes",
-                            favor: MergeFavor::None,
-                            style: ConflictStyle::Merge,
-                            marker_size: 7,
-                            diff_algorithm: None,
-                            ignore_all_space: false,
-                            ignore_space_change: false,
-                            ignore_space_at_eol: false,
-                            ignore_cr_at_eol: false,
-                        };
-                        let output = merge(&input)?;
-                        fs::write(&file_path, &output.content)?;
-                        if output.conflicts > 0 {
-                            has_conflicts = true;
-                            // Write conflict stages to index
-                            let path_bytes = path.as_bytes();
-                            // Remove existing stage-0 entry
-                            new_index
-                                .entries
-                                .retain(|e| e.path != path_bytes || e.stage() != 0);
-                            // Add stage entries
-                            if let Some(base_entry) = base_map.get(path) {
-                                add_stage_entry(
-                                    &mut new_index,
-                                    path_bytes,
-                                    &base_entry.oid,
-                                    base_entry.mode,
-                                    1,
-                                );
-                            }
-                            if let Some(ours_oid) = current_tree_map.get(path) {
-                                let mode = current_index
-                                    .get(path_bytes, 0)
-                                    .map(|e| e.mode)
-                                    .unwrap_or(0o100644);
-                                add_stage_entry(&mut new_index, path_bytes, ours_oid, mode, 2);
-                            }
-                            add_stage_entry(&mut new_index, path_bytes, &entry.oid, entry.mode, 3);
-                        }
-                    }
-                } else {
-                    fs::write(&file_path, &stash_blob.data)?;
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        if entry.mode == MODE_EXECUTABLE {
-                            let perms = std::fs::Permissions::from_mode(0o755);
-                            fs::set_permissions(&file_path, perms)?;
-                        }
-                    }
-                }
-            }
-            None => {
-                // Deleted in stash
-                let _ = fs::remove_file(&file_path);
-                if let Some(parent) = file_path.parent() {
-                    remove_empty_dirs(parent, work_tree);
-                }
-            }
-        }
-    }
-
-    // Update the index
-
-    if restore_index {
-        // --index: restore the index to the stash's index state for changed files
-        for (path, idx_entry) in &idx_map {
-            let base_oid = base_map.get(path).map(|e| &e.oid);
-            if base_oid != Some(&idx_entry.oid) {
-                // This file was staged differently from base in the stash
-                let path_bytes = path.as_bytes();
-                if let Some(ie) = new_index.get_mut(path_bytes, 0) {
-                    ie.oid = idx_entry.oid;
-                    ie.mode = idx_entry.mode;
-                } else {
-                    let flags = if path.len() > 0xFFF {
-                        0xFFF
-                    } else {
-                        path.len() as u16
-                    };
-                    new_index.entries.push(IndexEntry {
-                        ctime_sec: 0,
-                        ctime_nsec: 0,
-                        mtime_sec: 0,
-                        mtime_nsec: 0,
-                        dev: 0,
-                        ino: 0,
-                        mode: idx_entry.mode,
-                        uid: 0,
-                        gid: 0,
-                        size: 0,
-                        oid: idx_entry.oid,
-                        flags,
-                        flags_extended: None,
-                        path: path_bytes.to_vec(),
-                        base_index_pos: 0,
-                    });
-                }
-            }
-        }
-        // Handle files added in the index but not in base
-        // (already covered above)
-        for path in wt_changes.keys() {
-            if let Some(ie) = new_index.get_mut(path.as_bytes(), 0) {
-                ie.set_skip_worktree(false);
-            }
-        }
-        new_index.sort();
-    } else {
-        // Without --index: index tracks current HEAD for paths the stash touched
-        // (worktree gets the stashed changes; index matches HEAD at those paths).
-        //
-        // Exception: paths that exist in the stash index parent but not on **current** HEAD
-        // (e.g. a newly `git add`ed file) must be re-staged from the stash index parent
-        // (t3903 `stash an added file`).
-        let mut touched: BTreeSet<String> = BTreeSet::new();
-        for p in wt_changes.keys() {
-            touched.insert(p.clone());
-        }
-        for path in idx_map.keys() {
-            if !base_map.contains_key(path) {
-                touched.insert(path.clone());
-            }
-        }
-        for path in &touched {
-            if let Some(te) = cur_head_map.get(path.as_str()) {
-                let path_bytes = path.as_bytes();
-                let size = if te.mode == MODE_SYMLINK || te.mode == MODE_GITLINK {
-                    0u32
-                } else {
-                    repo.odb.read(&te.oid)?.data.len() as u32
-                };
-                let new_entry = IndexEntry {
-                    ctime_sec: 0,
-                    ctime_nsec: 0,
-                    mtime_sec: 0,
-                    mtime_nsec: 0,
-                    dev: 0,
-                    ino: 0,
-                    mode: te.mode,
-                    uid: 0,
-                    gid: 0,
-                    size,
-                    oid: te.oid,
-                    flags: path_bytes.len().min(0xFFF) as u16,
-                    flags_extended: None,
-                    path: path_bytes.to_vec(),
-                    base_index_pos: 0,
-                };
-                // Do not replace unmerged index entries: `stage_file` strips stages 1–3, which
-                // would hide merge conflicts after stash apply (t9903 conflict prompt).
-                let has_unmerged = new_index
-                    .entries
-                    .iter()
-                    .any(|e| e.path == path_bytes && e.stage() > 0);
-                if !has_unmerged {
-                    new_index.stage_file(new_entry);
-                }
-            } else {
-                let path_bytes = path.as_bytes();
-                let has_unmerged = new_index
-                    .entries
-                    .iter()
-                    .any(|e| e.path == path_bytes && e.stage() > 0);
-                if has_unmerged {
-                    continue;
-                }
-                if let Some(ie) = idx_map.get(path.as_str()) {
-                    let had_staged = match base_map.get(path.as_str()) {
-                        Some(b) => b.oid != ie.oid || b.mode != ie.mode,
-                        None => true,
-                    };
-                    if had_staged {
-                        let size = if ie.mode == MODE_SYMLINK || ie.mode == MODE_GITLINK {
-                            0u32
-                        } else {
-                            repo.odb.read(&ie.oid)?.data.len() as u32
-                        };
-                        new_index.stage_file(IndexEntry {
-                            ctime_sec: 0,
-                            ctime_nsec: 0,
-                            mtime_sec: 0,
-                            mtime_nsec: 0,
-                            dev: 0,
-                            ino: 0,
-                            mode: ie.mode,
-                            uid: 0,
-                            gid: 0,
-                            size,
-                            oid: ie.oid,
-                            flags: path_bytes.len().min(0xFFF) as u16,
-                            flags_extended: None,
-                            path: path_bytes.to_vec(),
-                            base_index_pos: 0,
-                        });
-                    } else {
-                        new_index.remove(path_bytes);
-                    }
-                } else {
-                    new_index.remove(path_bytes);
-                }
-            }
-        }
-        new_index.sort();
-    }
-
-    if has_conflicts {
-        new_index.sort();
-    }
-    // Refresh cached stat for entries restored from the stash trees whose worktree content matches
-    // the recorded OID, so a following `git diff-files` reflects only genuine differences (t3903
-    // 'stash apply --index refreshes the index').
-    if !has_conflicts {
-        grit_lib::diff::refresh_index_stat_content_verified(&mut new_index, work_tree, None);
-    }
-    repo.write_index(&mut new_index)
-        .context("writing index after stash apply")?;
-
-    // Apply untracked files if present (3rd parent)
-    if stash_commit.parents.len() >= 3 {
-        let ut_oid = &stash_commit.parents[2];
-        let ut_obj = repo.odb.read(ut_oid)?;
-        let ut_commit = parse_commit(&ut_obj.data)?;
-        let ut_entries = flatten_tree_full(&repo.odb, &ut_commit.tree, "")?;
-        for entry in &ut_entries {
-            let file_path = work_tree.join(&entry.path);
-            if let Some(parent) = file_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let blob = repo.odb.read(&entry.oid)?;
-            fs::write(&file_path, &blob.data)?;
-        }
-    }
-
-    Ok(has_conflicts)
 }
 
 /// Stash the current WIP for `git rebase --autostash`, update `refs/stash`, reset to HEAD, and
@@ -3889,7 +3499,7 @@ pub fn apply_autostash_for_rebase(repo: &Repository, stash_oid: &ObjectId) -> Re
         .work_tree
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("cannot apply autostash in a bare repository"))?;
-    apply_stash_impl(repo, work_tree, stash_oid, false, true)
+    Ok(apply_stash(repo, work_tree, stash_oid, false, true)?)
 }
 
 /// Record the pending rebase autostash on `refs/stash` without applying it (`git rebase --quit`).
@@ -3996,7 +3606,7 @@ pub fn apply_autostash_oid(repo: &Repository, stash_oid: &ObjectId) -> Result<()
         .work_tree
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("cannot apply autostash in a bare repository"))?;
-    let conflicted = apply_stash_impl(repo, work_tree, stash_oid, false, true)?;
+    let conflicted = apply_stash(repo, work_tree, stash_oid, false, true)?;
     if !conflicted {
         eprintln!("Applied autostash.");
     } else {
@@ -4029,7 +3639,7 @@ fn apply_or_save_autostash_ref(
         .ok_or_else(|| anyhow::anyhow!("cannot apply autostash in a bare repository"))?;
 
     let conflicted = if attempt_apply {
-        apply_stash_impl(repo, work_tree, &stash_oid, false, true)?
+        apply_stash(repo, work_tree, &stash_oid, false, true)?
     } else {
         true
     };
@@ -4051,35 +3661,6 @@ fn apply_or_save_autostash_ref(
     Ok(())
 }
 
-/// Helper to add a staged entry at a specific stage to the index.
-fn add_stage_entry(
-    index: &mut Index,
-    path: &[u8],
-    oid: &grit_lib::objects::ObjectId,
-    mode: u32,
-    stage: u16,
-) {
-    let name_len = path.len().min(0xFFF) as u16;
-    let flags = (stage << 12) | name_len;
-    index.entries.push(IndexEntry {
-        ctime_sec: 0,
-        ctime_nsec: 0,
-        mtime_sec: 0,
-        mtime_nsec: 0,
-        dev: 0,
-        ino: 0,
-        mode,
-        uid: 0,
-        gid: 0,
-        size: 0,
-        oid: *oid,
-        flags,
-        flags_extended: None,
-        path: path.to_vec(),
-        base_index_pos: 0,
-    });
-}
-
 // ---------------------------------------------------------------------------
 // Branch
 // ---------------------------------------------------------------------------
@@ -4093,8 +3674,7 @@ fn do_branch(branch_name: String, stash_ref: Option<String>) -> Result<()> {
         .to_path_buf();
 
     stash_preflight_index_writable(&repo)?;
-    let stash_index = parse_stash_index(stash_ref.as_deref())?;
-    let stash_oid = resolve_stash_ref(&repo, stash_ref.as_deref())?;
+    let (stash_oid, stash_index_to_drop) = resolve_stash_for_branch(&repo, stash_ref.as_deref())?;
 
     // Read the stash commit to get the parent (HEAD at stash time)
     let obj = repo.odb.read(&stash_oid)?;
@@ -4103,6 +3683,8 @@ fn do_branch(branch_name: String, stash_ref: Option<String>) -> Result<()> {
     if stash_commit.parents.len() < 2 {
         bail!("corrupt stash commit: expected at least 2 parents");
     }
+
+    check_stash_apply_would_overwrite_local_changes(&repo, &work_tree, &stash_commit)?;
 
     let head_at_stash = &stash_commit.parents[0];
 
@@ -4123,13 +3705,16 @@ fn do_branch(branch_name: String, stash_ref: Option<String>) -> Result<()> {
     reset_to_head(&repo, head_at_stash, &work_tree)?;
 
     // Now apply the stash with --index
-    let had_conflicts = apply_stash_impl(&repo, &work_tree, &stash_oid, true, false)?;
+    let had_conflicts = apply_stash(&repo, &work_tree, &stash_oid, true, false)?;
     if had_conflicts {
         bail!("Conflicts in index. Try without --index or use stash branch.");
     }
 
-    // Drop the stash entry only after a successful apply
-    drop_stash_entry(&repo, stash_index)?;
+    // Drop only stash stack entries. A stash-like commit from `stash create`
+    // is not stored in the reflog and must remain untouched.
+    if let Some(stash_index) = stash_index_to_drop {
+        drop_stash_entry(&repo, stash_index)?;
+    }
 
     Ok(())
 }
@@ -4192,6 +3777,40 @@ fn stash_pathspecs_use_attr_magic(pathspecs: &[String]) -> bool {
     pathspecs
         .iter()
         .any(|spec| spec.starts_with(":(attr:") || spec.contains(",attr:"))
+}
+
+fn validate_stash_pathspecs_match_known_files(
+    repo: &Repository,
+    index: &Index,
+    head_tree: &ObjectId,
+    pathspecs: &[String],
+) -> Result<()> {
+    let mut known_paths: BTreeSet<String> = flatten_tree_full(&repo.odb, head_tree, "")?
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect();
+    known_paths.extend(
+        index
+            .entries
+            .iter()
+            .filter(|entry| entry.stage() == 0)
+            .map(|entry| String::from_utf8_lossy(&entry.path).to_string()),
+    );
+
+    for spec in pathspecs {
+        if spec == "--" || grit_lib::pathspec::pathspec_is_exclude(spec) {
+            continue;
+        }
+        if !known_paths
+            .iter()
+            .any(|path| matches_pathspec(path, std::slice::from_ref(spec)))
+        {
+            eprintln!("error: pathspec ':(prefix:0){spec}' did not match any file(s) known to git");
+            eprintln!("Did you forget to 'git add'?");
+            return Err(anyhow::Error::new(SilentNonZeroExit { code: 1 }));
+        }
+    }
+    Ok(())
 }
 
 fn stash_pathspec_matches_worktree(
@@ -4278,19 +3897,19 @@ fn create_stash_commit(
     untracked_files: &[String],
 ) -> Result<ObjectId> {
     let now = OffsetDateTime::now_utc();
-    let identity = resolve_identity(repo, now)?;
+    let identities = resolve_identities(repo, now)?;
 
     // 1. Create index-state commit (tree from current index)
     let index_tree_oid = write_tree_from_expanded_index(&repo.odb, index)?;
     let index_commit_data = CommitData {
         tree: index_tree_oid,
         parents: vec![*head_oid],
-        author: identity.clone(),
-        committer: identity.clone(),
+        author: identities.author.clone(),
+        committer: identities.committer.clone(),
         author_raw: Vec::new(),
         committer_raw: Vec::new(),
         encoding: None,
-        message: format!("index on {}\n", branch_description(head)),
+        message: format!("index on {}\n", branch_description(repo, head)),
         raw_message: None,
     };
     let index_commit_bytes = serialize_commit(&index_commit_data);
@@ -4301,13 +3920,13 @@ fn create_stash_commit(
         let tree_oid = create_untracked_tree(&repo.odb, work_tree, untracked_files)?;
         let ut_commit = CommitData {
             tree: tree_oid,
-            parents: vec![*head_oid],
-            author: identity.clone(),
-            committer: identity.clone(),
+            parents: Vec::new(),
+            author: identities.author.clone(),
+            committer: identities.committer.clone(),
             author_raw: Vec::new(),
             committer_raw: Vec::new(),
             encoding: None,
-            message: format!("untracked files on {}\n", branch_description(head)),
+            message: format!("untracked files on {}\n", branch_description(repo, head)),
             raw_message: None,
         };
         let ut_bytes = serialize_commit(&ut_commit);
@@ -4322,7 +3941,7 @@ fn create_stash_commit(
     let wt_tree_oid =
         create_worktree_tree(&repo.odb, index, work_tree, &head_commit_for_tree.tree)?;
 
-    let stash_msg = stash_save_msg(head, message);
+    let stash_msg = stash_save_msg(repo, head, message);
 
     let mut parents = vec![*head_oid, index_commit_oid];
     if let Some(ut_oid) = untracked_commit_oid {
@@ -4332,8 +3951,8 @@ fn create_stash_commit(
     let stash_commit = CommitData {
         tree: wt_tree_oid,
         parents,
-        author: identity.clone(),
-        committer: identity.clone(),
+        author: identities.author.clone(),
+        committer: identities.committer.clone(),
         author_raw: Vec::new(),
         committer_raw: Vec::new(),
         encoding: None,
@@ -4353,22 +3972,22 @@ fn write_tree_from_expanded_index(odb: &Odb, index: &Index) -> Result<ObjectId> 
 }
 
 /// Generate the stash save message (used as commit message).
-fn stash_save_msg(head: &HeadState, message: Option<&str>) -> String {
+fn stash_save_msg(repo: &Repository, head: &HeadState, message: Option<&str>) -> String {
     match message {
         Some(msg) => format!("On {}: {msg}\n", branch_short_name(head)),
-        None => format!("WIP on {}\n", branch_description(head)),
+        None => format!("WIP on {}\n", branch_description(repo, head)),
     }
 }
 
 /// Generate the stash reflog message.
-fn stash_reflog_msg(head: &HeadState, message: Option<&str>) -> String {
-    stash_save_msg(head, message)
+fn stash_reflog_msg(repo: &Repository, head: &HeadState, message: Option<&str>) -> String {
+    stash_save_msg(repo, head, message)
 }
 
 /// Update refs/stash and its reflog.
 fn update_stash_ref(repo: &Repository, stash_oid: &ObjectId, message: &str) -> Result<()> {
     let now = OffsetDateTime::now_utc();
-    let identity = resolve_identity(repo, now)?;
+    let identity = resolve_identities(repo, now)?.committer;
 
     let old_stash = resolve_ref(&repo.git_dir, "refs/stash").ok();
     let zero_oid = ObjectId::from_hex("0000000000000000000000000000000000000000")?;
@@ -4481,6 +4100,70 @@ fn reject_bare_oid_for_stash_stack_op(repo: &Repository, stash_ref: Option<&str>
     Ok(())
 }
 
+fn resolve_stash_like_commit(repo: &Repository, stash_ref: &str) -> Result<ObjectId> {
+    let oid = match resolve_revision(repo, stash_ref) {
+        Ok(oid) => oid,
+        Err(_) if stash_ref.len() == 40 && stash_ref.chars().all(|c| c.is_ascii_hexdigit()) => {
+            ObjectId::from_hex(stash_ref)?
+        }
+        Err(_) => bail!("invalid stash reference: {stash_ref}"),
+    };
+    if !is_stash_like_commit(repo, &oid)? {
+        bail!("not a stash-like commit: {stash_ref}");
+    }
+    Ok(oid)
+}
+
+fn resolve_stash_for_branch(
+    repo: &Repository,
+    stash_ref: Option<&str>,
+) -> Result<(ObjectId, Option<usize>)> {
+    match parse_stash_index(stash_ref) {
+        Ok(index) => {
+            let oid = resolve_stash_ref(repo, stash_ref)?;
+            Ok((oid, Some(index)))
+        }
+        Err(_) => {
+            let stash_ref = stash_ref.ok_or_else(|| anyhow::anyhow!("No stash entries"))?;
+            let oid = resolve_stash_like_commit(repo, stash_ref)?;
+            Ok((oid, None))
+        }
+    }
+}
+
+fn reflog_entry_timestamp(entry: &grit_lib::reflog::ReflogEntry) -> Option<i64> {
+    let parts: Vec<&str> = entry.identity.rsplitn(3, ' ').collect();
+    if parts.len() >= 2 {
+        parts[1].parse::<i64>().ok()
+    } else {
+        None
+    }
+}
+
+fn resolve_stash_date_ref(repo: &Repository, stash_ref: &str) -> Result<Option<ObjectId>> {
+    let Some(inner) = stash_ref
+        .strip_prefix("stash@{")
+        .and_then(|s| s.strip_suffix('}'))
+    else {
+        return Ok(None);
+    };
+    let Some(target_ts) = grit_lib::rev_parse::reflog_date_selector_timestamp(inner) else {
+        return Ok(None);
+    };
+    let entries = read_reflog(&repo.git_dir, "refs/stash")?;
+    if entries.is_empty() {
+        bail!("No stash entries");
+    }
+    for entry in entries.iter().rev() {
+        if let Some(ts) = reflog_entry_timestamp(entry) {
+            if ts <= target_ts {
+                return Ok(Some(entry.new_oid));
+            }
+        }
+    }
+    Ok(entries.first().map(|entry| entry.new_oid))
+}
+
 /// Resolve a stash reference to an ObjectId.
 fn resolve_stash_ref(repo: &Repository, stash_ref: Option<&str>) -> Result<ObjectId> {
     // Try to parse as a stash index first
@@ -4499,6 +4182,9 @@ fn resolve_stash_ref(repo: &Repository, stash_ref: Option<&str>) -> Result<Objec
         }
         Err(_) => {
             if let Some(s) = stash_ref {
+                if let Some(oid) = resolve_stash_date_ref(repo, s)? {
+                    return Ok(oid);
+                }
                 if let Ok(oid) = resolve_revision(repo, s) {
                     return Ok(oid);
                 }
@@ -4548,17 +4234,39 @@ fn drop_stash_entry(repo: &Repository, index: usize) -> Result<()> {
     Ok(())
 }
 
+fn commit_subject_for_description(repo: &Repository, oid: &ObjectId) -> Option<String> {
+    let obj = repo.odb.read(oid).ok()?;
+    if obj.kind != ObjectKind::Commit {
+        return None;
+    }
+    let commit = parse_commit(&obj.data).ok()?;
+    let subject = grit_lib::commit_pretty::message_subject(&commit.message);
+    if subject.is_empty() {
+        None
+    } else {
+        Some(subject)
+    }
+}
+
+fn oid_description(repo: &Repository, oid: &ObjectId) -> String {
+    let short = &oid.to_hex()[..7];
+    match commit_subject_for_description(repo, oid) {
+        Some(subject) => format!("{short} {subject}"),
+        None => short.to_string(),
+    }
+}
+
 /// Get a branch description string for stash messages (e.g. "main: abc1234 commit msg").
-fn branch_description(head: &HeadState) -> String {
+fn branch_description(repo: &Repository, head: &HeadState) -> String {
     match head {
         HeadState::Branch { refname, oid, .. } => {
             let name = refname.strip_prefix("refs/heads/").unwrap_or(refname);
             match oid {
-                Some(oid) => format!("{name}: {}", &oid.to_hex()[..7]),
+                Some(oid) => format!("{name}: {}", oid_description(repo, oid)),
                 None => name.to_string(),
             }
         }
-        HeadState::Detached { oid } => format!("(no branch): {}", &oid.to_hex()[..7]),
+        HeadState::Detached { oid } => format!("(no branch): {}", oid_description(repo, oid)),
         HeadState::Invalid => "(invalid HEAD)".to_string(),
     }
 }
@@ -4575,23 +4283,57 @@ fn branch_short_name(head: &HeadState) -> String {
     }
 }
 
-/// Resolve committer identity from config/env.
-fn resolve_identity(repo: &Repository, now: OffsetDateTime) -> Result<String> {
+struct StashIdentities {
+    author: String,
+    committer: String,
+}
+
+/// Resolve stash author and committer identities from config/env.
+fn resolve_identities(repo: &Repository, now: OffsetDateTime) -> Result<StashIdentities> {
     let config = ConfigSet::load(Some(&repo.git_dir), true)?;
-    let name = std::env::var("GIT_COMMITTER_NAME")
+    let author = resolve_stash_identity_for_role(
+        &config,
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_AUTHOR_DATE",
+        "author.name",
+        "author.email",
+        now,
+    );
+    let committer = resolve_stash_identity_for_role(
+        &config,
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "GIT_COMMITTER_DATE",
+        "committer.name",
+        "committer.email",
+        now,
+    );
+    Ok(StashIdentities { author, committer })
+}
+
+fn resolve_stash_identity_for_role(
+    config: &ConfigSet,
+    name_env: &str,
+    email_env: &str,
+    date_env: &str,
+    name_config: &str,
+    email_config: &str,
+    now: OffsetDateTime,
+) -> String {
+    let name = std::env::var(name_env)
         .ok()
-        .or_else(|| std::env::var("GIT_AUTHOR_NAME").ok())
+        .or_else(|| config.get(name_config))
         .or_else(|| config.get("user.name"))
-        .unwrap_or_else(|| "Unknown".to_owned());
-    let email = std::env::var("GIT_COMMITTER_EMAIL")
+        .unwrap_or_else(|| "git stash".to_owned());
+    let email = std::env::var(email_env)
         .ok()
-        .or_else(|| std::env::var("GIT_AUTHOR_EMAIL").ok())
+        .or_else(|| config.get(email_config))
         .or_else(|| config.get("user.email"))
-        .unwrap_or_default();
-    let timestamp = std::env::var("GIT_COMMITTER_DATE")
+        .unwrap_or_else(|| "git@stash".to_owned());
+    let timestamp = std::env::var(date_env)
         .ok()
-        .or_else(|| std::env::var("GIT_AUTHOR_DATE").ok())
-        .and_then(|d| crate::commands::commit::parse_date_to_git_timestamp(&d).or(Some(d)))
+        .and_then(|d| grit_lib::commit::parse_date_to_git_timestamp(&d).or(Some(d)))
         .unwrap_or_else(|| {
             let epoch = now.unix_timestamp();
             let offset = now.offset();
@@ -4599,7 +4341,7 @@ fn resolve_identity(repo: &Repository, now: OffsetDateTime) -> Result<String> {
             let minutes = offset.minutes_past_hour().unsigned_abs();
             format!("{epoch} {hours:+03}{minutes:02}")
         });
-    Ok(format!("{name} <{email}> {timestamp}"))
+    format!("{name} <{email}> {timestamp}")
 }
 
 fn split_ident_timestamp_offset(ident: &str) -> Option<(&str, &str)> {
@@ -4610,49 +4352,6 @@ fn split_ident_timestamp_offset(ident: &str) -> Option<(&str, &str)> {
         Some((ts, tz))
     } else {
         None
-    }
-}
-
-/// A flat tree entry for diffing.
-#[derive(Clone)]
-struct FlatTreeEntry {
-    path: String,
-    mode: u32,
-    oid: ObjectId,
-}
-
-/// Recursively flatten a tree into (path, mode, oid) entries.
-fn flatten_tree_full(odb: &Odb, tree_oid: &ObjectId, prefix: &str) -> Result<Vec<FlatTreeEntry>> {
-    let obj = odb.read(tree_oid)?;
-    let entries = parse_tree(&obj.data)?;
-    let mut result = Vec::new();
-    for entry in entries {
-        let entry_name = String::from_utf8_lossy(&entry.name).to_string();
-        let full_path = if prefix.is_empty() {
-            entry_name
-        } else {
-            format!("{prefix}/{entry_name}")
-        };
-        if entry.mode == 0o40000 {
-            let sub = flatten_tree_full(odb, &entry.oid, &full_path)?;
-            result.extend(sub);
-        } else {
-            result.push(FlatTreeEntry {
-                path: full_path,
-                mode: entry.mode,
-                oid: entry.oid,
-            });
-        }
-    }
-    Ok(result)
-}
-
-fn git_index_mode_tag(mode: u32) -> String {
-    match mode {
-        MODE_REGULAR => "100644".to_owned(),
-        MODE_EXECUTABLE => "100755".to_owned(),
-        MODE_SYMLINK => "120000".to_owned(),
-        _ => format!("{mode:o}"),
     }
 }
 
@@ -4725,62 +4424,62 @@ fn show_tree_diff(
             (None, Some(n)) => {
                 println!("diff --git a/{path} b/{path}");
                 println!("new file mode {}", format_mode(n.mode));
-                let nm = git_index_mode_tag(n.mode);
                 println!(
-                    "index {}..{} {}",
+                    "index {}..{}",
                     &ObjectId::zero().to_hex()[..7],
-                    &n.oid.to_hex()[..7],
-                    nm
+                    &n.oid.to_hex()[..7]
                 );
                 let blob = odb.read(&n.oid)?;
-                let new_text = String::from_utf8_lossy(&blob.data);
-                let patch = unified_diff_with_prefix_and_funcname_and_algorithm(
-                    "",
-                    new_text.as_ref(),
-                    "/dev/null",
-                    path,
-                    0,
-                    0,
-                    "a/",
-                    "b/",
-                    None,
-                    algorithm,
-                    false,
-                    false,
-                    false,
-                    false,
-                );
-                print!("{patch}");
+                if !blob.data.is_empty() {
+                    let new_text = String::from_utf8_lossy(&blob.data);
+                    let patch = unified_diff_with_prefix_and_funcname_and_algorithm(
+                        "",
+                        new_text.as_ref(),
+                        "/dev/null",
+                        path,
+                        0,
+                        0,
+                        "a/",
+                        "b/",
+                        None,
+                        algorithm,
+                        false,
+                        false,
+                        false,
+                        false,
+                    );
+                    print!("{patch}");
+                }
             }
             (Some(o), None) => {
                 println!("diff --git a/{path} b/{path}");
                 println!("deleted file mode {}", format_mode(o.mode));
-                let om = git_index_mode_tag(o.mode);
                 println!(
-                    "index {}..{} {}",
+                    "index {}..{}",
                     &o.oid.to_hex()[..7],
-                    &ObjectId::zero().to_hex()[..7],
-                    om
+                    &ObjectId::zero().to_hex()[..7]
                 );
                 let blob = odb.read(&o.oid)?;
-                let old_text = String::from_utf8_lossy(&blob.data);
-                let patch = unified_diff_with_prefix_and_funcname_and_algorithm(
-                    old_text.as_ref(),
-                    "",
-                    path,
-                    "/dev/null",
-                    0,
-                    0,
-                    "a/",
-                    "b/",
-                    None,
-                    algorithm,
-                    false,
-                    false,
-                    false,
-                    false,
-                );
-                print!("{patch}");
+                if !blob.data.is_empty() {
+                    let old_text = String::from_utf8_lossy(&blob.data);
+                    let patch = unified_diff_with_prefix_and_funcname_and_algorithm(
+                        old_text.as_ref(),
+                        "",
+                        path,
+                        "/dev/null",
+                        0,
+                        0,
+                        "a/",
+                        "b/",
+                        None,
+                        algorithm,
+                        false,
+                        false,
+                        false,
+                        false,
+                    );
+                    print!("{patch}");
+                }
             }
             (None, None) => unreachable!(),
         }
@@ -5659,30 +5358,4 @@ fn remove_worktree_extras(
         }
     }
     Ok(())
-}
-
-/// Remove empty parent directories up to (but not including) the work tree root.
-fn remove_empty_dirs(dir: &Path, stop_at: &Path) {
-    let cwd_rel = grit_lib::worktree_cwd::process_cwd_repo_relative(stop_at);
-    let mut current = dir.to_path_buf();
-    while current != stop_at {
-        if fs::read_dir(&current)
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(false)
-        {
-            if let Some(ref cr) = cwd_rel {
-                if grit_lib::worktree_cwd::cwd_would_be_removed_with_dir(stop_at, &current, cr) {
-                    break;
-                }
-            }
-            let _ = fs::remove_dir(&current);
-            if let Some(parent) = current.parent() {
-                current = parent.to_path_buf();
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
 }

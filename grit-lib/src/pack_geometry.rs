@@ -18,6 +18,8 @@ pub struct GeometricPack {
     pub object_count: usize,
     /// Modification time of the `.pack` file (seconds), used for include-pack ordering.
     pub mtime_secs: u64,
+    /// Whether this pack lives in the repository's primary object directory rather than an alternate.
+    pub is_local: bool,
 }
 
 /// Split packs into "roll up" vs "keep" using Git's geometric progression rules.
@@ -127,6 +129,7 @@ pub fn collect_geometry_packs(
             stem,
             object_count: idx.entries.len(),
             mtime_secs,
+            is_local: true,
         });
     }
 
@@ -192,6 +195,7 @@ pub fn collect_promisor_geometry_packs(
             stem,
             object_count: idx.entries.len(),
             mtime_secs,
+            is_local: true,
         });
     }
 
@@ -205,8 +209,13 @@ pub fn preferred_pack_stem_after_split(packs: &[GeometricPack], split: usize) ->
     if split >= packs.len() {
         return None;
     }
-    // Largest pack in the retained suffix: rightmost after ascending sort.
-    packs.last().map(|p| p.stem.clone())
+    // Largest local pack in the retained suffix: rightmost after ascending sort.
+    packs
+        .iter()
+        .skip(split)
+        .rev()
+        .find(|p| p.is_local)
+        .map(|p| p.stem.clone())
 }
 
 #[cfg(test)]

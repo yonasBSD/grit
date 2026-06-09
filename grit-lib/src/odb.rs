@@ -445,6 +445,14 @@ impl Odb {
             return Ok(obj);
         }
 
+        // Git prepares the packed object store (registering the packs the MIDX names) before
+        // serving reads; a MIDX-referenced pack whose `.idx` cannot be opened reports
+        // `packfile <pack> index unavailable` even when the requested object turns out to be
+        // loose. Reproduce that once-per-process so `rev-list` over a corrupt idx still warns.
+        if self.config_git_dir.is_some() && self.core_multi_pack_index_enabled() {
+            crate::midx::validate_midx_referenced_packs(&self.objects_dir);
+        }
+
         let path = self.object_path(oid);
         match fs::File::open(&path) {
             Ok(file) => {

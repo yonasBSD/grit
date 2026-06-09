@@ -10,6 +10,7 @@ use std::io::Write;
 use crate::diff::{diff_trees, DiffEntry, DiffStatus};
 use crate::error::{Error, Result};
 use crate::objects::{parse_commit, parse_tag, CommitData, ObjectId, ObjectKind};
+use crate::pathspec::matches_pathspec_list;
 use crate::refs;
 use crate::repo::Repository;
 use crate::rev_list::{rev_list, OrderingMode, RevListOptions};
@@ -29,6 +30,10 @@ pub struct FastExportOptions {
     pub use_done_feature: bool,
     /// Omit `blob` commands and emit `M` lines with full object ids (matches `git fast-export --no-data`).
     pub no_data: bool,
+    /// Positive revision arguments to export when `all` is false.
+    pub revisions: Vec<String>,
+    /// Pathspecs limiting exported commits and file commands.
+    pub paths: Vec<String>,
 }
 
 struct AnonState<'a> {
@@ -339,6 +344,23 @@ fn depth_first_diff_sort(entries: &mut [DiffEntry]) {
     });
 }
 
+fn diff_entry_matches_paths(entry: &DiffEntry, paths: &[String]) -> bool {
+    if paths.is_empty() {
+        return true;
+    }
+    matches_pathspec_list(entry.path(), paths)
+        || entry
+            .old_path
+            .as_deref()
+            .is_some_and(|path| matches_pathspec_list(path, paths))
+}
+
+fn export_ref_for_non_all(repo: &Repository) -> Result<String> {
+    refs::read_head(&repo.git_dir)?.ok_or_else(|| {
+        Error::InvalidRef("fast-export: detached HEAD export not implemented".to_owned())
+    })
+}
+
 /// Write a fast-import stream for the repository to `writer`.
 ///
 /// # Errors
@@ -349,12 +371,6 @@ pub fn export_stream(
     mut writer: impl Write,
     options: &FastExportOptions,
 ) -> Result<()> {
-    if !options.all {
-        return Err(Error::InvalidRef(
-            "fast-export: only --all is implemented".to_owned(),
-        ));
-    }
-
     let seeds = if options.anonymize {
         parse_anonymize_maps(&options.anonymize_maps)?
     } else {
@@ -368,14 +384,25 @@ pub fn export_stream(
     }
 
     let head_branches = revision_source_tips(repo)?;
+    let non_all_export_ref = if options.all {
+        None
+    } else {
+        Some(export_ref_for_non_all(repo)?)
+    };
 
     let opts = RevListOptions {
-        all_refs: true,
+        all_refs: options.all,
         ordering: OrderingMode::Topo,
         reverse: true,
+        paths: options.paths.clone(),
         ..RevListOptions::default()
     };
-    let rev_result = rev_list(repo, &[] as &[String], &[] as &[String], &opts)?;
+    let positive_specs = if options.all {
+        &[] as &[String]
+    } else {
+        options.revisions.as_slice()
+    };
+    let rev_result = rev_list(repo, positive_specs, &[] as &[String], &opts)?;
     let commits: Vec<ObjectId> = rev_result.commits;
 
     let commit_set: HashSet<ObjectId> = commits.iter().copied().collect();
@@ -413,7 +440,7 @@ pub fn export_stream(
                         | DiffStatus::Renamed
                         | DiffStatus::Copied
                         | DiffStatus::TypeChanged
-                )
+                ) && diff_entry_matches_paths(e, &options.paths)
             })
             .collect();
         depth_first_diff_sort(&mut diff_vec);
@@ -450,7 +477,11 @@ pub fn export_stream(
             }
         }
 
-        let refname = ref_source_for_commit(repo, *oid, &head_branches)?;
+        let refname = if let Some(export_ref) = non_all_export_ref.as_deref() {
+            export_ref.to_owned()
+        } else {
+            ref_source_for_commit(repo, *oid, &head_branches)?
+        };
         let export_ref = if let Some(a) = anon.as_mut() {
             a.anonymize_refname(&refname)
         } else {
@@ -491,20 +522,18 @@ pub fn export_stream(
         writer.write_all(msg_bytes)?;
         writeln!(writer)?;
 
-        for (i, p) in raw_commit.parents.iter().enumerate() {
+        let exported_parents = raw_commit
+            .parents
+            .iter()
+            .filter_map(|p| marks.get(p).copied())
+            .collect::<Vec<_>>();
+        for (i, m) in exported_parents.iter().enumerate() {
             let label = if i == 0 { "from" } else { "merge" };
             write!(writer, "{label} ")?;
-            if let Some(&m) = marks.get(p) {
-                writeln!(writer, ":{m}")?;
-            } else {
-                let hex = p.to_hex();
-                let out = if let Some(a) = anon.as_mut() {
-                    a.anonymize_oid_hex(&hex)
-                } else {
-                    hex
-                };
-                writeln!(writer, "{out}")?;
-            }
+            writeln!(writer, ":{m}")?;
+        }
+        if !options.paths.is_empty() && exported_parents.is_empty() {
+            writeln!(writer, "deleteall")?;
         }
 
         let mut changed: HashSet<String> = HashSet::new();

@@ -1055,7 +1055,20 @@ fn get_default_remote_for_path_in_super(path: &str, super_work_tree: &Path) -> R
         }
     };
     let (final_git_dir, _final_wt, super_wt, super_git_dir, sm) =
-        resolve_submodule_chain(&repo, path, &sub_rel)?;
+        match resolve_submodule_chain(&repo, path, &sub_rel) {
+            Ok(v) => v,
+            Err(e) => {
+                // Git's `get_default_remote_submodule` only needs a working repository handle for
+                // the submodule; a `.gitmodules` entry is optional. When the submodule is populated
+                // but absent from `.gitmodules` (e.g. recorded only in the index, t5526 #36), read
+                // the default remote straight from the submodule's own config — like
+                // `repo_default_remote(&subrepo)` — instead of failing.
+                if let Some(gd) = resolve_submodule_git_dir(&abs_sub) {
+                    return Ok(get_default_remote_from_git_dir(&gd));
+                }
+                return Err(e);
+            }
+        };
 
     let resolved_url = resolve_submodule_super_url(&super_wt, &super_git_dir, &sm.url)?;
     let config_path = final_git_dir.join("config");
@@ -1076,6 +1089,23 @@ pub(crate) fn get_default_remote_for_path(path: &str) -> Result<String> {
     let repo = Repository::discover(None).context("not a git repository")?;
     let wt = repo.work_tree.as_deref().context("bare repository")?;
     get_default_remote_for_path_in_super(path, wt)
+}
+
+/// Default remote name for a submodule by reading its git dir directly (used when the submodule
+/// work tree is absent — e.g. recursing into a submodule that is changed by newly-fetched
+/// superproject commits but not present in the current index). Mirrors Git's `get_default_remote`:
+/// `branch.<HEAD-branch>.remote`, else `origin`.
+pub(crate) fn get_default_remote_from_git_dir(git_dir: &Path) -> String {
+    let config_path = git_dir.join("config");
+    let content = fs::read_to_string(&config_path).unwrap_or_default();
+    let config = match ConfigFile::parse(&config_path, &content, ConfigScope::Local) {
+        Ok(c) => c,
+        Err(_) => return "origin".to_string(),
+    };
+    let branch = resolve_head(git_dir)
+        .ok()
+        .and_then(|h| h.branch_name().map(str::to_owned));
+    default_remote_for_config(&config, branch.as_deref())
 }
 
 fn resolve_submodule_chain(
@@ -1163,12 +1193,19 @@ pub fn refresh_submodule_gitfiles(repo: &Repository) -> Result<()> {
         if !sm_dir.is_dir() {
             continue;
         }
+        let gitfile = sm_dir.join(".git");
+        if !gitfile.exists()
+            && fs::read_dir(&sm_dir)
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(false)
+        {
+            continue;
+        }
         let modules_git = submodule_separate_git_dir(repo, wt, &m.name, &m.path)?;
         if !modules_git.exists() {
             continue;
         }
         if let Ok(rel) = relativize_submodule_gitfile(&sm_dir, &modules_git) {
-            let gitfile = sm_dir.join(".git");
             let line = format!("gitdir: {}\n", rel.to_string_lossy().replace('\\', "/"));
             fs::write(&gitfile, line).with_context(|| {
                 format!("failed to write submodule gitfile at {}", gitfile.display())
@@ -2302,6 +2339,18 @@ fn init_in_repo(repo: &Repository, args: &InitArgs, quiet: bool) -> Result<()> {
             Some(m) => m.url.trim().is_empty() && config_submodule_url(repo, &m.name).is_none(),
         };
         if needs_url {
+            // A gitlink missing from `.gitmodules` but already populated (its work tree has `.git`)
+            // does not need init: it was cloned previously and only its HEAD will be moved. Git's
+            // `submodule update` warns-and-skips such paths (`next_submodule_warn_missing`) rather
+            // than dying, so an entry deleted from `.gitmodules` while still checked out must not
+            // abort `checkout --recurse-submodules` (t5526 #42/#45). Only paths with NO `.gitmodules`
+            // mapping qualify; a present-but-url-less mapping still errors as before.
+            if matched.is_none() {
+                let abs = work_tree.join(gl);
+                if abs.join(".git").exists() {
+                    continue;
+                }
+            }
             let display = rev_parse::to_relative_path(
                 &work_tree.join(gl),
                 &std::env::current_dir().unwrap_or_else(|_| work_tree.to_path_buf()),
@@ -2879,7 +2928,10 @@ fn run_add(args: &AddArgs) -> Result<()> {
         ConfigFile::parse(&local_config_path, "", ConfigScope::Local)?
     };
 
-    if !args.force && config_last_value(&local_config, &format!("submodule.{name}.url")).is_some() {
+    if !args.force
+        && config_last_value(&local_config, &format!("submodule.{name}.url")).is_some()
+        && !is_nonbare_repository_dir(&sub_path)
+    {
         bail!("submodule name '{name}' already used");
     }
 
@@ -2887,6 +2939,11 @@ fn run_add(args: &AddArgs) -> Result<()> {
         ensure_submodule_gitdir_config(work_tree, &store, &mut local_config, &name)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
     }
+
+    // Track whether we clone the submodule. Git only runs `checkout -f` (which detaches/repopulates
+    // the worktree) on the clone path; the "Adding existing repo" path leaves the existing worktree
+    // and its HEAD untouched (builtin/submodule--helper.c:add_submodule).
+    let mut did_clone = false;
 
     if sub_path.exists() {
         // If the path already exists and is a valid git repo, treat it like
@@ -2940,84 +2997,95 @@ fn run_add(args: &AddArgs) -> Result<()> {
                 outer.display()
             );
         }
-        if args.force && modules_dir.exists() {
-            fs::remove_dir_all(&modules_dir).with_context(|| {
+        // Git only clones when the module git dir does NOT already exist
+        // (builtin/submodule--helper.c `clone_submodule`); when it exists (e.g. re-adding a
+        // submodule that was `git rm`-ed but whose `.git/modules/<name>` survived), git reuses it,
+        // drops the stale index, connects the work tree, and checks out — it does not re-clone (so
+        // the source URL need not even be reachable). Reactivate that existing module dir here.
+        if modules_dir.exists() {
+            fs::create_dir_all(&sub_path).with_context(|| {
                 format!(
-                    "could not remove existing submodule git dir '{}'",
-                    modules_dir.display()
+                    "could not create submodule work tree '{}'",
+                    sub_path.display()
                 )
             })?;
-        }
-        // Only create the parent directory; git clone --separate-git-dir
-        // will create the modules_dir itself.
-        if let Some(parent) = modules_dir.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // Relative submodule URLs: from the superproject root for normal repos, and from the
-        // parent of this work tree when this repo lives under `.git/modules/<name>/` (nested
-        // submodule), matching Git. Paths starting with `./` or `../` resolve from the process cwd
-        // (matches `git clone` and t7001 `cd sub_nested && git submodule add ../sub_nested_nested`).
-        let url_base = if repo
-            .git_dir
-            .parent()
-            .and_then(|p| p.file_name())
-            .is_some_and(|n| n == "modules")
-        {
-            work_tree
-                .parent()
-                .ok_or_else(|| anyhow::anyhow!("cannot resolve nested submodule clone URL"))?
+            let _ = fs::remove_file(modules_dir.join("index"));
+            write_submodule_gitfile(&sub_path, &modules_dir).map_err(|e| anyhow::anyhow!("{e}"))?;
+            set_separate_gitdir_worktree(&grit_bin, &modules_dir, &sub_path);
+            // Populate the work tree from the module's HEAD via the staged-gitlink checkout below.
+            did_clone = true;
         } else {
-            work_tree
-        };
-        let cwd = std::env::current_dir().context("current directory for submodule URL")?;
-        let clone_source = if args.url.trim() == "." || args.url.trim() == "./" {
-            url_base.canonicalize().with_context(|| {
-                format!(
-                    "cannot resolve submodule URL '.' from '{}'",
-                    url_base.display()
-                )
-            })?
-        } else if args.url.starts_with("./") || args.url.starts_with("../") {
-            let origin_base = ConfigSet::load(Some(&repo.git_dir), true)
-                .ok()
-                .and_then(|cfg| cfg.get("remote.origin.url"))
-                .and_then(|origin| {
-                    let origin_path = Path::new(&origin);
-                    if origin.contains("://") {
-                        return None;
-                    }
-                    Some(if origin_path.is_absolute() {
-                        origin_path.to_path_buf()
-                    } else {
-                        work_tree.join(origin_path)
-                    })
-                });
-            let cwd_candidate = cwd.join(&args.url);
-            let origin_candidate = origin_base.as_ref().map(|base| base.join(&args.url));
-            match origin_candidate
-                .as_ref()
-                .and_then(|candidate| candidate.canonicalize().ok())
-                .or_else(|| cwd_candidate.canonicalize().ok())
-            {
-                Some(path) => path,
-                None => {
-                    let display_base = origin_base.as_ref().unwrap_or(&cwd);
-                    bail!(
-                        "cannot resolve relative submodule URL '{}' from '{}'",
-                        args.url,
-                        display_base.display()
-                    );
-                }
+            // Only create the parent directory; git clone --separate-git-dir
+            // will create the modules_dir itself.
+            if let Some(parent) = modules_dir.parent() {
+                fs::create_dir_all(parent)?;
             }
-        } else {
-            PathBuf::from(&args.url)
-        };
-        let clone_source_str = clone_source.to_string_lossy().into_owned();
 
-        let clone_src_trim = clone_source_str.trim_start();
-        let mut clone_cmd =
-            if clone_src_trim.starts_with("http://") || clone_src_trim.starts_with("https://") {
+            // Relative submodule URLs: from the superproject root for normal repos, and from the
+            // parent of this work tree when this repo lives under `.git/modules/<name>/` (nested
+            // submodule), matching Git. Paths starting with `./` or `../` resolve from the process cwd
+            // (matches `git clone` and t7001 `cd sub_nested && git submodule add ../sub_nested_nested`).
+            let url_base = if repo
+                .git_dir
+                .parent()
+                .and_then(|p| p.file_name())
+                .is_some_and(|n| n == "modules")
+            {
+                work_tree
+                    .parent()
+                    .ok_or_else(|| anyhow::anyhow!("cannot resolve nested submodule clone URL"))?
+            } else {
+                work_tree
+            };
+            let cwd = std::env::current_dir().context("current directory for submodule URL")?;
+            let clone_source = if args.url.trim() == "." || args.url.trim() == "./" {
+                url_base.canonicalize().with_context(|| {
+                    format!(
+                        "cannot resolve submodule URL '.' from '{}'",
+                        url_base.display()
+                    )
+                })?
+            } else if args.url.starts_with("./") || args.url.starts_with("../") {
+                let origin_base = ConfigSet::load(Some(&repo.git_dir), true)
+                    .ok()
+                    .and_then(|cfg| cfg.get("remote.origin.url"))
+                    .and_then(|origin| {
+                        let origin_path = Path::new(&origin);
+                        if origin.contains("://") {
+                            return None;
+                        }
+                        Some(if origin_path.is_absolute() {
+                            origin_path.to_path_buf()
+                        } else {
+                            work_tree.join(origin_path)
+                        })
+                    });
+                let cwd_candidate = cwd.join(&args.url);
+                let origin_candidate = origin_base.as_ref().map(|base| base.join(&args.url));
+                match origin_candidate
+                    .as_ref()
+                    .and_then(|candidate| candidate.canonicalize().ok())
+                    .or_else(|| cwd_candidate.canonicalize().ok())
+                {
+                    Some(path) => path,
+                    None => {
+                        let display_base = origin_base.as_ref().unwrap_or(&cwd);
+                        bail!(
+                            "cannot resolve relative submodule URL '{}' from '{}'",
+                            args.url,
+                            display_base.display()
+                        );
+                    }
+                }
+            } else {
+                PathBuf::from(&args.url)
+            };
+            let clone_source_str = clone_source.to_string_lossy().into_owned();
+
+            let clone_src_trim = clone_source_str.trim_start();
+            let mut clone_cmd = if clone_src_trim.starts_with("http://")
+                || clone_src_trim.starts_with("https://")
+            {
                 let mut c = Command::new(system_git_binary());
                 c.env_remove("GIT_DIR");
                 c.env_remove("GIT_WORK_TREE");
@@ -3027,39 +3095,45 @@ fn run_add(args: &AddArgs) -> Result<()> {
             } else {
                 grit_subprocess(&grit_bin)
             };
-        clone_cmd
-            .arg("clone")
-            .arg("--no-checkout")
-            .arg("--separate-git-dir")
-            .arg(&modules_dir);
-        if let Some(depth) = args.depth {
-            if depth > 0 {
-                clone_cmd.arg(format!("--depth={depth}"));
+            clone_cmd
+                .arg("clone")
+                .arg("--no-checkout")
+                .arg("--separate-git-dir")
+                .arg(&modules_dir);
+            if let Some(depth) = args.depth {
+                if depth > 0 {
+                    clone_cmd.arg(format!("--depth={depth}"));
+                }
             }
-        }
-        if args.progress {
-            clone_cmd.arg("--progress");
-        }
-        if args.dissociate {
-            clone_cmd.arg("--dissociate");
-        }
-        if let Some(ref format) = args.ref_format {
-            clone_cmd.arg(format!("--ref-format={format}"));
-        }
-        for r in &args.reference {
-            clone_cmd.arg("--reference").arg(r);
-        }
-        let status = clone_cmd
-            .arg(&clone_source_str)
-            .arg(&sub_path)
-            .current_dir(work_tree)
-            .status()
-            .context("failed to clone submodule")?;
+            if args.progress {
+                clone_cmd.arg("--progress");
+            }
+            if args.dissociate {
+                clone_cmd.arg("--dissociate");
+            }
+            if let Some(ref format) = args.ref_format {
+                clone_cmd.arg(format!("--ref-format={format}"));
+            }
+            for r in &args.reference {
+                clone_cmd.arg("--reference").arg(r);
+            }
+            let status = clone_cmd
+                .arg(&clone_source_str)
+                .arg(&sub_path)
+                .current_dir(work_tree)
+                .status()
+                .context("failed to clone submodule")?;
 
-        if !status.success() {
-            bail!("failed to clone submodule from '{}'", args.url);
+            if !status.success() {
+                bail!("failed to clone submodule from '{}'", args.url);
+            }
+            // `clone --separate-git-dir` writes an absolute `gitdir:` path; submodules need a
+            // relative gitlink (C Git's `connect_work_tree_and_git_dir`) so the worktree survives
+            // being moved/copied with its superproject (t7400 "submodule add").
+            write_submodule_gitfile(&sub_path, &modules_dir).map_err(|e| anyhow::anyhow!("{e}"))?;
+            set_separate_gitdir_worktree(&grit_bin, &modules_dir, &sub_path);
+            did_clone = true;
         }
-        set_separate_gitdir_worktree(&grit_bin, &modules_dir, &sub_path);
     }
 
     if let Some(ref branch) = args.branch {
@@ -3144,15 +3218,19 @@ fn run_add(args: &AddArgs) -> Result<()> {
 
     // `clone --no-checkout` leaves an empty work tree; populate it from the staged gitlink
     // (HEAD’s tree may not include the new submodule until after commit — read the index).
-    if let Some(oid) = read_gitlink_oid_from_index(&repo, &path)? {
-        checkout_submodule_worktree(
-            &grit_bin, &repo, work_tree, &name, &path, &name, &oid, args.quiet,
-        )?;
-        // With `-b <branch>`, git checks out `origin/<branch>` and leaves the submodule on a
-        // local branch of that name (not detached / default branch). Attach HEAD accordingly.
-        if let Some(ref branch) = args.branch {
-            let modules_dir = submodule_separate_git_dir(&repo, work_tree, &name, &path)?;
-            let _ = attach_submodule_head_to_named_branch(&modules_dir, branch);
+    // Only do this on the clone path: git's "Adding existing repo" path leaves the existing
+    // worktree and its (branch) HEAD untouched and never runs `checkout -f`.
+    if did_clone {
+        if let Some(oid) = read_gitlink_oid_from_index(&repo, &path)? {
+            checkout_submodule_worktree(
+                &grit_bin, &repo, work_tree, &name, &path, &name, &oid, args.quiet,
+            )?;
+            // With `-b <branch>`, git checks out `origin/<branch>` and leaves the submodule on a
+            // local branch of that name (not detached / default branch). Attach HEAD accordingly.
+            if let Some(ref branch) = args.branch {
+                let modules_dir = submodule_separate_git_dir(&repo, work_tree, &name, &path)?;
+                let _ = attach_submodule_head_to_named_branch(&modules_dir, branch);
+            }
         }
     }
 
@@ -3385,19 +3463,15 @@ pub(crate) fn resolve_submodule_super_url(
         return Ok(raw_url.to_string());
     }
 
-    // Use this repository's git dir for `remote.*.url` (matches Git's `resolve_relative_url`: it
-    // reads `the_repository`, not the outer superproject). Nested sync runs with `git_dir` under
-    // `.git/modules/<name>/` and must use that config—using only the top-level `.git` breaks
-    // recursive sync (t7403).
-    let outer_git = superproject_git_dir_for_nested_modules(repo_git_dir)
-        .unwrap_or_else(|| repo_git_dir.to_path_buf());
-    let outer_wt = outer_git
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| work_tree.to_path_buf());
-
+    // Match Git's `resolve_relative_url(url, NULL)`: resolve against this repository's
+    // `remote.<default>.url` (read from `the_repository`'s config — which during a recursive
+    // `submodule update` is the submodule's own config under `.git/modules/<name>/`). Git only
+    // falls back to the process cwd (the submodule worktree during recursion) when no remote URL
+    // is configured. Using the worktree path unconditionally for nested repos is wrong: e.g. a
+    // submodule cloned with `remote.origin.url = <super>/super` must resolve its own `../merging`
+    // against `<super>/super`, not against `<recursivesuper>/super` (t7406 recursive update).
     let base = default_remote_url_raw(repo_git_dir)
-        .unwrap_or_else(|| outer_wt.to_string_lossy().into_owned());
+        .unwrap_or_else(|| work_tree.to_string_lossy().into_owned());
     git_relative_url(&base, raw_url, None)
 }
 
@@ -3973,6 +4047,17 @@ pub(crate) fn absorb_submodule_dot_git_dir_into_modules(
     let relative_gitdir = pathdiff_relative(&sub_path, &modules_dir);
     fs::write(&dot_git, format!("gitdir: {relative_gitdir}\n"))?;
     Ok(())
+}
+
+/// Absorb a submodule's embedded gitdir before `git rm` removes its work tree.
+pub(crate) fn absorb_submodule_git_dir_for_rm(
+    repo: &Repository,
+    submodule_rel: &str,
+    quiet: bool,
+) -> Result<()> {
+    let work_tree = repo.work_tree.as_ref().context("bare repository")?;
+    let modules_cfg = parse_gitmodules_with_repo(work_tree, Some(repo))?;
+    absorb_git_dir_into_superproject(repo, work_tree, submodule_rel, None, quiet, &modules_cfg)
 }
 
 fn run_absorbgitdirs(args: &AbsorbgitdirsArgs, quiet: bool) -> Result<()> {

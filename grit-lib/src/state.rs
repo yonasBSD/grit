@@ -355,6 +355,11 @@ fn strip_ref_for_display(full: &str) -> String {
     full.to_string()
 }
 
+fn ref_name_exists(git_dir: &Path, refname: &str) -> bool {
+    git_dir.join(refname).exists()
+        || crate::refs::packed_refs_entry_exists(git_dir, refname).unwrap_or(false)
+}
+
 fn dwim_detach_label(git_dir: &Path, target: &str, noid: ObjectId) -> String {
     if target == "HEAD" {
         return abbrev_oid(&noid);
@@ -371,6 +376,9 @@ fn dwim_detach_label(git_dir: &Path, target: &str, noid: ObjectId) -> String {
         format!("refs/tags/{target}"),
         format!("refs/remotes/{target}"),
     ] {
+        if candidate.starts_with("refs/tags/") && ref_name_exists(git_dir, &candidate) {
+            return strip_ref_for_display(&candidate);
+        }
         if let Ok(oid) = crate::refs::resolve_ref(git_dir, &candidate) {
             if oid == noid {
                 return strip_ref_for_display(&candidate);
@@ -460,7 +468,11 @@ fn sequencer_first_replay(git_dir: &Path) -> Option<bool> {
         }
         let mut parts = t.split_whitespace();
         let cmd = parts.next()?;
-        return Some(matches!(cmd, "pick" | "p" | "revert" | "r"));
+        return match cmd {
+            "pick" | "p" => Some(true),
+            "revert" | "r" => Some(false),
+            _ => None,
+        };
     }
     None
 }

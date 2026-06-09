@@ -361,6 +361,7 @@ run_one() {
       # harness `git` wrapper and breaks once a test `cd`s into trash (./grit missing).
       unset -f git grit 2>/dev/null || true &&
       env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE -u GIT_SEQUENCE_EDITOR \
+        -u GIT_EDITOR \
         -u GIT_AUTHOR_DATE -u GIT_COMMITTER_DATE -u test_tick \
         -u GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME \
         -u TRASH_DIRECTORY -u BIN_DIRECTORY -u TEST_OUTPUT_DIRECTORY_OVERRIDE \
@@ -370,7 +371,9 @@ run_one() {
         ${git_test_allow_sudo:+GIT_TEST_ALLOW_SUDO=$git_test_allow_sudo} \
         GUST_BIN="$BIN" \
         PERL_PATH="$perl_abs" \
+        SHELL_PATH="${SHELL_PATH:-/bin/sh}" \
         GIT_TEST_BUILTIN_HASH=sha1 \
+        GIT_TEST_MAINT_AUTO_DETACH=false \
         GIT_DEFAULT_REF_FORMAT="${GIT_TEST_DEFAULT_REF_FORMAT:-files}" \
         GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main \
         GIT_SOURCE_DIR="$REPO/git" \

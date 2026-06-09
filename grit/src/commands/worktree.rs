@@ -632,6 +632,7 @@ fn cmd_add(args: AddArgs) -> Result<()> {
         }
     };
 
+    let display_path = worktree_add_display_path(&args.path, &wt_path);
     let wt_name = worktree::worktree_path_basename(&wt_path);
     check_worktree_add_destination(&repo, &wt_path, args.force)?;
     let wt_admin = worktree::allocate_worktree_admin_dir(&common, &wt_path);
@@ -661,6 +662,7 @@ fn cmd_add(args: AddArgs) -> Result<()> {
             &common,
             &wt_admin,
             &wt_path,
+            &display_path,
             orphan_branch,
             args.lock,
             args.reason.as_deref(),
@@ -904,18 +906,39 @@ fn cmd_add(args: AddArgs) -> Result<()> {
         // Create the branch ref if it doesn't exist yet
         let branch_ref = format!("refs/heads/{}", branch_name);
         let ref_path = common.join(&branch_ref);
-        if !ref_path.exists() {
-            refs::write_ref(&common, &branch_ref, &commit_oid)?;
+        let branch_exists = if grit_lib::reftable::is_reftable_repo(&common) {
+            // With reftable there is no loose ref file; consult the stack instead.
+            refs::resolve_ref(&common, &branch_ref).is_ok()
+        } else {
+            ref_path.exists()
+        };
+        if !branch_exists {
             let identity = crate::commands::update_ref::resolve_reflog_identity(&repo);
-            let _ = refs::append_reflog(
-                &common,
-                &branch_ref,
-                &ObjectId::zero(),
-                &commit_oid,
-                &identity,
-                "branch: Created from HEAD",
-                true,
-            );
+            if grit_lib::reftable::is_reftable_repo(&common) {
+                // Write the branch ref and its reflog entry in a single reftable
+                // transaction so only one table is appended to the main stack
+                // (upstream git behaviour). Splitting these into write_ref +
+                // append_reflog would append two tables instead.
+                grit_lib::reftable::reftable_write_ref(
+                    &common,
+                    &branch_ref,
+                    &commit_oid,
+                    Some(&identity),
+                    Some("branch: Created from HEAD"),
+                )
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            } else {
+                refs::write_ref(&common, &branch_ref, &commit_oid)?;
+                let _ = refs::append_reflog(
+                    &common,
+                    &branch_ref,
+                    &ObjectId::zero(),
+                    &commit_oid,
+                    &identity,
+                    "branch: Created from HEAD",
+                    true,
+                );
+            }
         } else if args.force == 0 {
             // Branch already exists — check if it's checked out in another worktree
             // (For simplicity, allow it; git also warns but --force overrides)
@@ -955,7 +978,7 @@ fn cmd_add(args: AddArgs) -> Result<()> {
         println!(
             "Preparing worktree (detached HEAD {}) at '{}'",
             &commit_oid.to_hex()[..7],
-            wt_path.display()
+            display_path.display()
         );
     } else {
         let branch_name = branch_name
@@ -964,7 +987,7 @@ fn cmd_add(args: AddArgs) -> Result<()> {
         println!(
             "Preparing worktree (new branch '{}') at '{}'",
             branch_name,
-            wt_path.display()
+            display_path.display()
         );
     }
 
@@ -1053,6 +1076,7 @@ fn setup_unborn_worktree(
     common: &Path,
     wt_admin: &Path,
     wt_path: &Path,
+    display_path: &Path,
     branch_name: &str,
     lock: bool,
     reason: Option<&str>,
@@ -1098,9 +1122,17 @@ fn setup_unborn_worktree(
     println!(
         "Preparing worktree (new branch '{}') at '{}'",
         branch_name,
-        wt_path.display()
+        display_path.display()
     );
     Ok(())
+}
+
+fn worktree_add_display_path(input: &Path, resolved: &Path) -> PathBuf {
+    if input.is_absolute() {
+        resolved.to_path_buf()
+    } else {
+        input.to_path_buf()
+    }
 }
 
 /// Populate a worktree directory with files from a commit.
@@ -1482,6 +1514,7 @@ fn cmd_remove(args: RemoveArgs) -> Result<()> {
         std::env::current_dir()?.join(&args.path)
     };
     let wt_path = wt_path.canonicalize().unwrap_or(wt_path);
+    let display_path = worktree_add_display_path(&args.path, &wt_path);
 
     // Find the matching admin entry
     let wt_name = find_worktree_name(&worktrees_dir, &wt_path)?;
@@ -1493,12 +1526,12 @@ fn cmd_remove(args: RemoveArgs) -> Result<()> {
         if args.force >= 1 {
             bail!(
                 "worktree '{}' is locked; use 'git worktree remove --force --force'",
-                wt_path.display()
+                display_path.display()
             );
         }
         bail!(
             "worktree '{}' is locked; use --force or unlock it first",
-            wt_path.display()
+            display_path.display()
         );
     }
 
@@ -1527,11 +1560,11 @@ fn cmd_remove(args: RemoveArgs) -> Result<()> {
             if let Ok(index) = load {
                 // Check for untracked files
                 if has_untracked_files(&wt_path, &index) {
-                    bail!("worktree '{}' contains modified or untracked files; use --force to delete it", wt_path.display());
+                    bail!("worktree '{}' contains modified or untracked files; use --force to delete it", display_path.display());
                 }
                 // Check for dirty tracked files
                 if has_dirty_files(&wt_path, &index, &repo) {
-                    bail!("worktree '{}' contains modified or untracked files; use --force to delete it", wt_path.display());
+                    bail!("worktree '{}' contains modified or untracked files; use --force to delete it", display_path.display());
                 }
             }
         }

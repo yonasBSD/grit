@@ -10,7 +10,7 @@ use grit_lib::diff::{
     GIT_DIFF_DEFAULT_MERGE_SCORE_AFTER_BREAK,
 };
 use grit_lib::index::{
-    Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_REGULAR, MODE_SYMLINK, MODE_TREE,
+    Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_REGULAR, MODE_SYMLINK,
 };
 use grit_lib::merge_base::{merge_base_for_diff_index, MergeBaseForDiffError};
 use grit_lib::objects::{parse_commit, parse_tag, parse_tree, ObjectId, ObjectKind};
@@ -363,6 +363,14 @@ pub fn run(mut args: Args) -> Result<()> {
         diff_entries
     };
 
+    // `--diff-filter=<letters>`: include uppercase status letters, exclude lowercase ones
+    // (e.g. `u` excludes unmerged `U`). Mirrors `git diff`'s diff-filter (t3701 reset -p check).
+    let diff_entries: Vec<DiffEntry> = if let Some(ref df) = options.diff_filter {
+        apply_diff_index_diff_filter(diff_entries, df)
+    } else {
+        diff_entries
+    };
+
     if options.check {
         let merged_attrs = match load_gitattributes_for_diff(&repo) {
             Ok(a) => a,
@@ -616,6 +624,37 @@ fn normalize_ignore_space_change_line(line: &str) -> String {
     normalized.trim_end().to_owned()
 }
 
+/// Apply `--diff-filter` like `git diff` (`apply_diff_filter`): uppercase letters select a status,
+/// lowercase letters exclude it. With at least one uppercase letter the filter is an allow-list;
+/// otherwise everything not excluded passes.
+fn apply_diff_index_diff_filter(entries: Vec<DiffEntry>, filter: &str) -> Vec<DiffEntry> {
+    let mut include: Option<std::collections::HashSet<char>> = None;
+    let mut exclude: std::collections::HashSet<char> = std::collections::HashSet::new();
+    for c in filter.chars() {
+        if c == '*' {
+            continue;
+        }
+        if c.is_ascii_uppercase() {
+            include.get_or_insert_with(Default::default).insert(c);
+        } else if c.is_ascii_lowercase() {
+            exclude.insert(c.to_ascii_uppercase());
+        }
+    }
+    entries
+        .into_iter()
+        .filter(|e| {
+            let ch = e.status.letter();
+            if exclude.contains(&ch) {
+                return false;
+            }
+            if let Some(ref inc) = include {
+                return inc.contains(&ch);
+            }
+            true
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 struct Options {
     tree_ish: String,
@@ -648,6 +687,9 @@ struct Options {
     nul_terminated: bool,
     relative: bool,
     check: bool,
+    /// `--diff-filter=<letters>`: include uppercase status letters, exclude lowercase (Git's
+    /// `diff_filter`). `u`/`U` selects unmerged entries.
+    diff_filter: Option<String>,
     indent_heuristic: bool,
     /// Git `-B` / `--break-rewrites`: split large in-place edits before rename/copy, then merge
     /// surviving pairs (see `diffcore-break.c`).
@@ -742,6 +784,7 @@ fn parse_options(argv: &[String]) -> Result<Options> {
     let mut nul_terminated = false;
     let mut relative = false;
     let mut check = false;
+    let mut diff_filter: Option<String> = None;
     let mut break_rewrites = false;
     let mut break_score: u64 = grit_lib::diff::GIT_DIFF_DEFAULT_BREAK_SCORE;
     let mut merge_after_break_score: u64 = GIT_DIFF_DEFAULT_MERGE_SCORE_AFTER_BREAK;
@@ -912,6 +955,9 @@ fn parse_options(argv: &[String]) -> Result<Options> {
                 "--check" => {
                     check = true;
                 }
+                _ if arg.starts_with("--diff-filter=") => {
+                    diff_filter = Some(arg.trim_start_matches("--diff-filter=").to_owned());
+                }
                 "--ignore-submodules" => {
                     ignore_submodules_all = true;
                 }
@@ -1004,6 +1050,7 @@ fn parse_options(argv: &[String]) -> Result<Options> {
         nul_terminated,
         relative,
         check,
+        diff_filter,
         indent_heuristic,
         break_rewrites,
         break_score,
@@ -2156,66 +2203,10 @@ pub(crate) struct SubmoduleDirtyFlags {
     modified: bool,
 }
 
-pub(crate) fn submodule_worktree_has_untracked(super_wt: &Path, path: &str) -> bool {
-    let sub = super_wt.join(path);
-    let Ok(sub_repo) = Repository::discover(Some(&sub)) else {
-        return false;
-    };
-    let Ok(index) = sub_repo.load_index() else {
-        return false;
-    };
-    let tracked: BTreeSet<String> = index
-        .entries
-        .iter()
-        .filter(|e| e.stage() == 0 && e.mode != MODE_TREE)
-        .map(|e| String::from_utf8_lossy(&e.path).into_owned())
-        .collect();
-    submodule_dir_has_untracked_files(&sub, &sub, &tracked)
-}
-
-fn submodule_dir_has_untracked_files(dir: &Path, root: &Path, tracked: &BTreeSet<String>) -> bool {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return false;
-    };
-    for e in entries.flatten() {
-        let name = e.file_name().to_string_lossy().to_string();
-        if name == ".git" {
-            continue;
-        }
-        let path = e.path();
-        let rel = path
-            .strip_prefix(root)
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|_| name.clone());
-        let is_dir = e.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-        if is_dir {
-            if submodule_dir_has_untracked_files(&path, root, tracked) {
-                return true;
-            }
-        } else if !tracked.contains(&rel) {
-            return true;
-        }
-    }
-    false
-}
-
-fn submodule_has_unstaged_changes(super_wt: &Path, path: &str) -> bool {
-    let sub = super_wt.join(path);
-    let Ok(sub_repo) = Repository::discover(Some(&sub)) else {
-        return false;
-    };
-    let Ok(idx) = sub_repo.load_index() else {
-        return false;
-    };
-    grit_lib::diff::diff_index_to_worktree(&sub_repo.odb, &idx, &sub, false, false)
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
-}
-
 pub(crate) fn submodule_dirty_flags(
     super_wt: &Path,
     path: &str,
-    _index_gitlink_oid: &ObjectId,
+    index_gitlink_oid: &ObjectId,
     ignore_untracked: bool,
     ignore_dirty: bool,
 ) -> SubmoduleDirtyFlags {
@@ -2223,11 +2214,16 @@ pub(crate) fn submodule_dirty_flags(
     if read_submodule_head_oid(&sub).is_none() {
         return SubmoduleDirtyFlags::default();
     }
-    let untracked = !ignore_untracked && submodule_worktree_has_untracked(super_wt, path);
-    let modified = !ignore_dirty && submodule_has_unstaged_changes(super_wt, path);
+    // Mirror Git's `is_submodule_modified`, which runs `git status --porcelain=2` inside the
+    // submodule. `submodule_porcelain_flags` reproduces that v2 state machine: it counts staged
+    // (index vs HEAD) *and* unstaged changes as `modified`, and — crucially — does not descend into
+    // a *nested* submodule's work tree when scanning for untracked content (a nested checkout is a
+    // tracked gitlink, not loose untracked files). The naive directory walk used previously treated
+    // every file under a nested submodule as untracked content of the parent (t4060 #50).
+    let flags = grit_lib::diff::submodule_porcelain_flags(super_wt, path, *index_gitlink_oid);
     SubmoduleDirtyFlags {
-        untracked,
-        modified,
+        untracked: !ignore_untracked && flags.untracked,
+        modified: !ignore_dirty && flags.modified,
     }
 }
 
@@ -2305,8 +2301,11 @@ fn write_submodule_log_commit_lines(
 /// Locate the absorbed git directory of a submodule whose worktree is no longer present.
 ///
 /// Git stores an absorbed submodule under `<super_git_dir>/modules/<name>`, keyed by the submodule
-/// logical *name* (from `.gitmodules`), which may differ from its path. Returns the path only if it
-/// exists and looks like a git directory.
+/// logical *name* (from `.gitmodules`), which may differ from its path. A *nested* submodule lives
+/// one level deeper: under `<parent_gitdir>/modules/<nested_name>`. This walks the path hierarchy —
+/// `sm2/nested` resolves the top-level `sm2` from the superproject `.gitmodules`, then descends
+/// `modules/nested` inside `sm2`'s absorbed gitdir (t4060 #51). Returns the path only if it exists
+/// and looks like a git directory.
 fn absorbed_submodule_gitdir(super_repo: &Repository, sub_path: &str) -> Option<PathBuf> {
     let work_tree = super_repo.work_tree.as_deref()?;
     let index = super_repo.load_index().ok();
@@ -2316,9 +2315,28 @@ fn absorbed_submodule_gitdir(super_repo: &Repository, sub_path: &str) -> Option<
         Some(&super_repo.odb),
     );
     // Fall back to the path itself as the name (the common case where name == path).
-    let name =
+    let top_name =
         grit_lib::submodule_config::submodule_name_for_path(&regs, sub_path).unwrap_or(sub_path);
-    let gitdir = grit_lib::submodule_gitdir::submodule_modules_git_dir(&super_repo.git_dir, name);
+    let direct =
+        grit_lib::submodule_gitdir::submodule_modules_git_dir(&super_repo.git_dir, top_name);
+    if grit_lib::submodule_gitdir::is_git_directory(&direct) {
+        return Some(direct);
+    }
+    // Nested submodule: descend `modules/<seg>` for each path segment, resolving the top-level
+    // segment's logical name from the superproject `.gitmodules`. Inner segments use the path
+    // component as the name (Git records nested submodules with name == path in the common case).
+    let segments: Vec<&str> = sub_path.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.len() < 2 {
+        return None;
+    }
+    let first = segments[0];
+    let first_name =
+        grit_lib::submodule_config::submodule_name_for_path(&regs, first).unwrap_or(first);
+    let mut gitdir =
+        grit_lib::submodule_gitdir::submodule_modules_git_dir(&super_repo.git_dir, first_name);
+    for seg in &segments[1..] {
+        gitdir = grit_lib::submodule_gitdir::submodule_modules_git_dir(&gitdir, seg);
+    }
     if grit_lib::submodule_gitdir::is_git_directory(&gitdir) {
         Some(gitdir)
     } else {

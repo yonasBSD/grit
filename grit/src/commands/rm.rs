@@ -302,6 +302,9 @@ pub fn run(mut args: Args) -> Result<()> {
             } else {
                 matched_any_eligible = true;
                 for path_str in eligible {
+                    absorb_stage0_submodule_gitdir_before_safety(
+                        &repo, &index, work_tree, &path_str, &args,
+                    )?;
                     match safety_check(
                         &repo,
                         &index,
@@ -460,6 +463,9 @@ pub fn run(mut args: Args) -> Result<()> {
         }
 
         for path_str in eligible {
+            absorb_stage0_submodule_gitdir_before_safety(
+                &repo, &index, work_tree, &path_str, &args,
+            )?;
             match safety_check(
                 &repo,
                 &index,
@@ -582,6 +588,12 @@ pub fn run(mut args: Args) -> Result<()> {
                     .map(|m| m.file_type().is_dir())
                     .unwrap_or(false);
                 if is_real_dir {
+                    if removed_was_gitlink
+                        && unmerged_gitlink(&index, path_str)
+                        && submodule_has_embedded_gitdir(&abs_path)
+                    {
+                        bail!("could not remove '{path_str}'");
+                    }
                     if removed_was_gitlink && !args.force {
                         let abs_cmp = abs_path.canonicalize().unwrap_or_else(|_| abs_path.clone());
                         let candidate_inside = |p: Option<PathBuf>| {
@@ -1004,9 +1016,10 @@ fn submodule_uses_gitfile(sub_dir: &Path) -> bool {
 }
 
 /// Whether a populated submodule has local modifications or untracked content
-/// (Git's `bad_to_remove_submodule` runs `git status --porcelain` inside it).
+/// (Git's `bad_to_remove_submodule` runs `git status --porcelain` inside it;
+/// we run our own binary so no system git is needed).
 fn submodule_status_dirty(sub_dir: &Path) -> bool {
-    let out = std::process::Command::new("git")
+    let out = std::process::Command::new(crate::grit_exe::grit_executable())
         .args(["status", "--porcelain", "--ignore-submodules=none", "-uall"])
         .current_dir(sub_dir)
         .env_remove("GIT_DIR")
@@ -1047,6 +1060,54 @@ fn gitlink_worktree_differs(sub_dir: &Path, index_oid: &grit_lib::objects::Objec
         return true;
     }
     submodule_status_dirty(sub_dir)
+}
+
+fn absorb_stage0_submodule_gitdir_before_safety(
+    repo: &Repository,
+    index: &Index,
+    work_tree: &Path,
+    path_str: &str,
+    args: &Args,
+) -> Result<()> {
+    if args.cached || args.dry_run {
+        return Ok(());
+    }
+    if index
+        .get(path_str.as_bytes(), 0)
+        .is_some_and(|e| e.mode == 0o160000)
+        && submodule_has_embedded_gitdir_recursive(&work_tree.join(path_str))
+    {
+        crate::commands::submodule::absorb_submodule_git_dir_for_rm(repo, path_str, args.quiet)?;
+    }
+    Ok(())
+}
+
+fn unmerged_gitlink(index: &Index, path_str: &str) -> bool {
+    index.get(path_str.as_bytes(), 0).is_none()
+        && index
+            .entries
+            .iter()
+            .any(|e| e.path == path_str.as_bytes() && e.mode == 0o160000 && e.stage() != 0)
+}
+
+fn submodule_has_embedded_gitdir(sub_dir: &Path) -> bool {
+    fs::symlink_metadata(sub_dir.join(".git"))
+        .map(|m| m.file_type().is_dir())
+        .unwrap_or(false)
+}
+
+fn submodule_has_embedded_gitdir_recursive(sub_dir: &Path) -> bool {
+    if submodule_has_embedded_gitdir(sub_dir) {
+        return true;
+    }
+    let Ok(entries) = fs::read_dir(sub_dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
+            && entry.file_name() != ".git"
+            && submodule_has_embedded_gitdir_recursive(&entry.path())
+    })
 }
 
 /// Hash the (rewritten) `.gitmodules` file as a blob and stage it in the index,

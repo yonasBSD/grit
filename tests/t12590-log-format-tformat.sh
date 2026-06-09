@@ -143,9 +143,7 @@ test_expect_success 'format with -n 1 shows single commit' '
 
 test_expect_success 'format with -n 2 shows two commits' '
     (cd repo && grit log -n 2 --format="%s" >../actual) &&
-    wc -l <actual >count &&
-    echo 2 >expect_count &&
-    test_cmp expect_count count
+    test "$(wc -l <actual)" -eq 2
 '
 
 test_expect_success 'format with --reverse' '

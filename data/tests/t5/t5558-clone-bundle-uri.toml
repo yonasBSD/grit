@@ -1,7 +1,7 @@
 in_scope = "yes"
 tests_total = 37
-passed_last = 0
+passed_last = 37
 failing = 0
-fully_passing = false
-status = "timeout"
+fully_passing = true
+status = "ok"
 expect_failure = 0

@@ -43,6 +43,13 @@ pub struct Options {
     pub refs_only: bool,
     /// Annotate symbolic refs (HEAD) with their `ref: <target>` line.
     pub symref: bool,
+    /// When set together with [`Options::symref`], resolve symref targets for
+    /// **all** symbolic refs, not just `HEAD`.
+    ///
+    /// Mirrors protocol v2 `ls-refs`, where every symbolic ref carries a
+    /// `symref-target`. Protocol v0 only advertises the `HEAD` symref via a
+    /// capability, so it leaves this `false`.
+    pub all_symrefs: bool,
     /// If non-empty, only return refs matching one of these patterns.
     ///
     /// A ref matches when it equals the pattern exactly **or** when its name
@@ -112,20 +119,32 @@ pub fn ls_remote(git_dir: &Path, odb: &Odb, opts: &Options) -> Result<Vec<RefEnt
             }
         }
 
-        if opts.heads && !name.starts_with("refs/heads/") {
-            continue;
-        }
-        if opts.tags && !name.starts_with("refs/tags/") {
-            continue;
+        // `--branches`/`--tags` form a union, not an intersection: a ref is
+        // kept when it matches *any* requested category. With neither flag set
+        // every ref is allowed (matching git's `check_ref`).
+        if opts.heads || opts.tags {
+            let is_branch = opts.heads && name.starts_with("refs/heads/");
+            let is_tag = opts.tags && name.starts_with("refs/tags/");
+            if !is_branch && !is_tag {
+                continue;
+            }
         }
         if !pattern_matches(name, &opts.patterns) {
             continue;
         }
 
+        let symref_target = if opts.symref && opts.all_symrefs {
+            crate::refs::read_symbolic_ref(&refs_dir_root, name)
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+
         entries.push(RefEntry {
             name: name.clone(),
             oid: *oid,
-            symref_target: None,
+            symref_target,
         });
 
         if !opts.refs_only && name.starts_with("refs/tags/") {
@@ -176,16 +195,12 @@ fn pattern_matches(refname: &str, patterns: &[String]) -> bool {
     if patterns.is_empty() {
         return true;
     }
+    // Mirror git's `tail_match`: each user pattern is matched as `*/<pattern>`
+    // against `/<refname>` with plain wildmatch semantics (`*` spans `/`).
+    let path = format!("/{refname}");
     patterns.iter().any(|pat| {
-        if pat.contains('*') || pat.contains('?') {
-            // Glob-style matching: '*' matches any sequence, '?' matches one char
-            glob_match(pat, refname)
-        } else {
-            refname == pat
-                || refname
-                    .strip_suffix(pat.as_str())
-                    .is_some_and(|prefix| prefix.ends_with('/'))
-        }
+        let full = format!("*/{pat}");
+        glob_match(&full, &path)
     })
 }
 

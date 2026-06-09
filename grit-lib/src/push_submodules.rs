@@ -132,14 +132,19 @@ fn is_gitlink_mode(mode_str: &str) -> bool {
 /// `git log <tips> --not --remotes=<remote>`, using merge-aware diffs like Git's
 /// `collect_changed_submodules`.
 ///
-/// When `refs/remotes/<remote>/` is empty (path remotes, or before any fetch), pass
-/// `fallback_remote_git_dir` with the push destination repository so we exclude its
-/// `refs/heads/*` tips instead (matches Git's reachable set for fresh remotes).
+/// The negative side is the superproject's `refs/remotes/<remote>/*` tracking refs, exactly like
+/// Git's `find_unpushed_submodules` (`--not --remotes=<name>`). When pushing by URL (or before any
+/// fetch) there are no such tracking refs, so the walk covers the full reachable history and the
+/// per-submodule check ([`submodule_needs_push_to_remote`]) is responsible for excluding gitlink
+/// commits that already exist on the submodule's own remote. We deliberately do **not** prune the
+/// superproject walk by the destination repository's tips: doing so would skip submodule pushes
+/// when the superproject ref is already up to date on the remote but the submodule commit is not
+/// (e.g. `git push --recurse-submodules=on-demand` after a prior `--no-recurse-submodules` push).
 pub fn collect_changed_gitlinks_for_push(
     repo: &Repository,
     commit_tips: &[ObjectId],
     exclude_remote_name: &str,
-    fallback_remote_git_dir: Option<&Path>,
+    _fallback_remote_git_dir: Option<&Path>,
 ) -> Result<HashMap<String, Vec<ObjectId>>> {
     if commit_tips.is_empty() {
         return Ok(HashMap::new());
@@ -147,14 +152,7 @@ pub fn collect_changed_gitlinks_for_push(
 
     let prefix = format!("refs/remotes/{exclude_remote_name}/");
     let remote_refs = refs::list_refs(&repo.git_dir, &prefix)?;
-    let mut negative_hex: Vec<String> = remote_refs.iter().map(|(_, oid)| oid.to_hex()).collect();
-
-    if negative_hex.is_empty() {
-        if let Some(rgd) = fallback_remote_git_dir {
-            let heads = refs::list_refs(rgd, "refs/heads/")?;
-            negative_hex = heads.iter().map(|(_, oid)| oid.to_hex()).collect();
-        }
-    }
+    let negative_hex: Vec<String> = remote_refs.iter().map(|(_, oid)| oid.to_hex()).collect();
 
     let positive_hex: Vec<String> = commit_tips.iter().map(|o| o.to_hex()).collect();
     let options = RevListOptions::default();

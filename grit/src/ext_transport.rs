@@ -119,7 +119,11 @@ fn expand_one_remote_ext_arg(token: &str, service: &str) -> Result<Result<String
 }
 
 /// Parse `ext::...` into argv and optional git:// request fields (`%G` / `%V`).
-pub fn parse_remote_ext_url(url: &str) -> Result<RemoteExtSpec> {
+///
+/// `service` is the git service the helper proxies (e.g. `git-upload-pack` for fetch/ls-remote,
+/// `git-receive-pack` for push). It is substituted into `%s` / `%S` placeholders in the URL, so the
+/// helper receives the correct command (matches `git/builtin/remote-ext.c`).
+pub fn parse_remote_ext_url(url: &str, service: &str) -> Result<RemoteExtSpec> {
     let rest = url
         .strip_prefix("ext::")
         .with_context(|| format!("not an ext:: URL: {url}"))?;
@@ -130,7 +134,7 @@ pub fn parse_remote_ext_url(url: &str) -> Result<RemoteExtSpec> {
     let mut argv: Vec<String> = Vec::new();
     let mut git_repo: Option<String> = None;
     let mut git_vhost: Option<String> = None;
-    let parse_service = "git-upload-pack";
+    let parse_service = service;
 
     let mut cursor = rest;
     while !cursor.is_empty() {
@@ -217,7 +221,7 @@ fn extract_git_upload_pack_args(script: &str) -> Option<&str> {
 /// When an `ext::` URL runs `grit upload-pack <dir>` (or equivalent), return the resolved on-disk
 /// git directory so fetch can compute tag-following `want` lines against the real remote ODB.
 pub fn try_resolve_ext_upload_pack_git_dir(ext_url: &str) -> Option<PathBuf> {
-    let spec = parse_remote_ext_url(ext_url).ok()?;
+    let spec = parse_remote_ext_url(ext_url, "git-upload-pack").ok()?;
     let (prog, child_args) = resolve_ext_child_argv(&spec);
     let grit = grit_executable();
     if prog != grit || child_args.len() != 2 || child_args[0] != "upload-pack" {
@@ -281,7 +285,7 @@ pub fn fetch_via_ext_skipping(
     Option<String>,
     Option<ObjectId>,
 )> {
-    let spec = parse_remote_ext_url(ext_url)?;
+    let spec = parse_remote_ext_url(ext_url, service)?;
     let (prog, child_args) = resolve_ext_child_argv(&spec);
     let grit = grit_executable();
     let mut child = if prog == grit && child_args.len() == 2 && child_args[0] == "upload-pack" {
@@ -415,12 +419,79 @@ pub fn fetch_via_ext_skipping(
     Ok((remote_heads, remote_tags, head_symref, head_advertised_oid))
 }
 
+/// Spawn the `ext::` helper for a push, with stdin/stdout wired as the git wire protocol and the
+/// service advertised as `git-receive-pack`. The returned child speaks the receive-pack protocol;
+/// the caller drives the advertisement read and send-pack stream over its stdio.
+///
+/// When the helper resolves to `grit upload-pack <dir>` (the in-tree fast path used by other
+/// `ext::` tests), it is rewritten to `grit receive-pack <dir>` so push works against a local
+/// repository without an external program.
+pub fn spawn_ext_receive_pack(ext_url: &str) -> Result<std::process::Child> {
+    let service = "git-receive-pack";
+    let spec = parse_remote_ext_url(ext_url, service)?;
+    let (prog, child_args) = resolve_ext_child_argv(&spec);
+    let grit = grit_executable();
+    let mut child = if prog == grit && child_args.len() == 2 && child_args[0] == "upload-pack" {
+        let mut repo = PathBuf::from(&child_args[1]);
+        if repo.as_os_str() == "." {
+            repo = std::env::current_dir()
+                .and_then(|p| p.canonicalize())
+                .unwrap_or(repo);
+        } else if repo.is_relative() {
+            if let Ok(cwd) = std::env::current_dir() {
+                repo = cwd.join(&repo);
+            }
+        }
+        let mut cmd = Command::new(&grit);
+        cmd.arg("receive-pack")
+            .arg(&repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_TRACE_PACKET")
+            .env_remove("GIT_PROTOCOL")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        cmd.spawn().with_context(|| {
+            format!(
+                "failed to spawn receive-pack for ext:: (repo {})",
+                repo.display()
+            )
+        })?
+    } else {
+        let mut cmd = Command::new(&prog);
+        cmd.args(&child_args)
+            .env("GIT_EXT_SERVICE", service)
+            .env("GIT_EXT_SERVICE_NOPREFIX", service_noprefix(service))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        cmd.env_remove("GIT_TRACE_PACKET");
+        cmd.env_remove("GIT_PROTOCOL");
+        cmd.spawn().with_context(|| {
+            format!(
+                "failed to spawn ext:: command {} {:?}",
+                prog.display(),
+                child_args
+            )
+        })?
+    };
+
+    if let Some(ref repo_path) = spec.git_repo_path {
+        let mut stdin = child.stdin.take().context("ext:: stdin")?;
+        write_git_daemon_request(&mut stdin, service, repo_path, spec.git_vhost.as_deref())?;
+        child.stdin = Some(stdin);
+    }
+
+    Ok(child)
+}
+
 /// Query refs from an `ext::` remote without fetching objects.
 pub fn ls_remote_via_ext(
     ext_url: &str,
     service: &str,
 ) -> Result<(Vec<(String, ObjectId)>, Option<String>)> {
-    let spec = parse_remote_ext_url(ext_url)?;
+    let spec = parse_remote_ext_url(ext_url, service)?;
     let (prog, child_args) = resolve_ext_child_argv(&spec);
     let grit = grit_executable();
     let mut child = if prog == grit && child_args.len() == 2 && child_args[0] == "upload-pack" {

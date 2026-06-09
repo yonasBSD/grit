@@ -1,8 +1,9 @@
 //! `git branch --format` subset for t3203: atoms and nested-safe `%(if)...%(then)...%(else)...%(end)`.
 
+use crate::commit_pretty::{message_body, message_subject};
 use crate::config::{parse_color, ConfigSet};
 use crate::merge_base::count_symmetric_ahead_behind;
-use crate::objects::ObjectId;
+use crate::objects::{parse_commit, ObjectId};
 use crate::refs::read_head;
 use crate::repo::Repository;
 use crate::rev_parse::resolve_revision;
@@ -277,6 +278,24 @@ fn expand_atom(
             let (a, b) = count_symmetric_ahead_behind(ctx.repo, ctx.oid, base)
                 .map_err(|e| BranchFormatError::Fatal(e.to_string()))?;
             Ok(format!("{a} {b}"))
+        }
+        "contents" => {
+            let object = ctx
+                .repo
+                .odb
+                .read(&ctx.oid)
+                .map_err(|_| BranchFormatError::Fatal(format!("missing object {}", ctx.oid)))?;
+            let commit = parse_commit(&object.data)
+                .map_err(|_| BranchFormatError::Fatal(format!("failed to parse {}", ctx.oid)))?;
+            match modifier {
+                Some("subject") => Ok(message_subject(&commit.message)),
+                Some("body") => Ok(message_body(&commit.message).to_owned()),
+                Some("size") => Ok(commit.message.len().to_string()),
+                Some("") | None => Ok(commit.message),
+                Some(m) => Err(BranchFormatError::Fatal(format!(
+                    "unsupported contents modifier: {m}"
+                ))),
+            }
         }
         "color" => {
             if !ctx.emit_format_color {

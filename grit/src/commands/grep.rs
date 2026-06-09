@@ -11,6 +11,7 @@ use crate::commands::grep_expr::{
     collect_atom_indices, line_matches_expr, match_expr_eval, CompiledGrep, GrepExpr,
 };
 use crate::commands::grep_pattern::PatternToken;
+use grit_lib::attributes::load_gitattributes_for_diff;
 use grit_lib::attributes::quote_path_for_check_attr;
 use grit_lib::config::ConfigSet;
 use grit_lib::index::{MODE_GITLINK, MODE_TREE};
@@ -21,8 +22,10 @@ use grit_lib::refs::resolve_ref;
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse::{discover_optional, resolve_revision, show_prefix, split_treeish_colon};
 use grit_lib::sparse_checkout::clear_skip_worktree_from_present_files;
+use grit_lib::userdiff::{matcher_for_path_parsed, FuncnameMatcher};
 use grit_lib::wildmatch::wildmatch;
 
+use crate::explicit_exit::ExplicitExit;
 use crate::pathspec::resolve_pathspec;
 
 /// Quoted path for stderr / binary messages: cwd-relative like match lines (t7810 subdir paths).
@@ -114,6 +117,10 @@ pub struct Args {
     #[arg(short = 'W', long = "function-context")]
     pub function_context: bool,
 
+    /// Show the preceding function line.
+    #[arg(short = 'p', long = "show-function")]
+    pub show_function: bool,
+
     /// Limit matches per file.
     #[arg(
         short = 'm',
@@ -199,8 +206,19 @@ pub struct Args {
     pub heading: bool,
 
     /// Use color in output: always, never, auto.
-    #[arg(long = "color", value_name = "WHEN", default_value = "never")]
+    #[arg(
+        long = "color",
+        value_name = "WHEN",
+        default_value = "never",
+        default_missing_value = "always",
+        num_args = 0..=1,
+        require_equals = true
+    )]
     pub color: String,
+
+    /// Effective grep color slots.
+    #[arg(skip)]
+    pub colors: GrepColors,
 
     /// Recurse into submodules.
     #[arg(long = "recurse-submodules")]
@@ -217,6 +235,14 @@ pub struct Args {
     /// Search files not managed by Git (implies --untracked).
     #[arg(long = "no-index")]
     pub no_index: bool,
+
+    /// Honor standard ignore files in filesystem searches.
+    #[arg(long = "exclude-standard")]
+    pub exclude_standard: bool,
+
+    /// Do not honor standard ignore files in filesystem searches.
+    #[arg(long = "no-exclude-standard")]
+    pub no_exclude_standard: bool,
 
     /// Use `diff.<driver>.textconv` when `diff=<driver>` applies (search converted bytes).
     #[arg(long = "textconv")]
@@ -341,18 +367,37 @@ fn run_inner(pattern_tokens: Vec<PatternToken>, mut args: Args) -> Result<()> {
     }
 
     let mut repo: Option<Repository> = None;
+    let mut config = ConfigSet::load(None, true).ok();
     if args.no_index {
         if args.cached {
             bail!("fatal: --cached cannot be used with --no-index");
         }
+        if let Ok(Some(r)) = discover_optional(None) {
+            config = ConfigSet::load(Some(&r.git_dir), true).ok();
+        }
     } else {
-        repo = Some(Repository::discover(None).context("not a git repository")?);
+        match Repository::discover(None) {
+            Ok(r) => {
+                config = ConfigSet::load(Some(&r.git_dir), true).ok();
+                repo = Some(r);
+            }
+            Err(err) => {
+                let fallback = config
+                    .as_ref()
+                    .and_then(|c| {
+                        c.get("grep.fallbacktonoindex")
+                            .or_else(|| c.get("grep.fallbackToNoIndex"))
+                    })
+                    .is_some_and(|v| v == "true" || v == "1" || v == "yes");
+                if fallback {
+                    args.no_index = true;
+                } else {
+                    return Err(err).context("not a git repository");
+                }
+            }
+        }
     }
-
-    let config = match &repo {
-        Some(r) => ConfigSet::load(Some(&r.git_dir), true).ok(),
-        None => ConfigSet::load(None, true).ok(),
-    };
+    args.colors = GrepColors::from_config(config.as_ref());
 
     // Apply grep config settings
     {
@@ -451,6 +496,9 @@ fn run_inner(pattern_tokens: Vec<PatternToken>, mut args: Args) -> Result<()> {
         parse_positional(&args, repo_ref, has_peeled_patterns)?;
     let user_supplied_pathspecs = !pathspecs.is_empty();
     let cwd = std::env::current_dir().context("cannot get current directory")?;
+    if args.no_index {
+        validate_no_index_pathspecs(&cwd, &pathspecs)?;
+    }
     if let Some(r) = repo_ref {
         pathspecs = pathspecs_relative_to_cwd(r, &pathspecs);
     }
@@ -459,7 +507,6 @@ fn run_inner(pattern_tokens: Vec<PatternToken>, mut args: Args) -> Result<()> {
     if pathspecs.is_empty()
         && !args.no_index
         && !args.cached
-        && tree_ish.is_none()
         && repo_ref.and_then(|r| r.work_tree.as_ref()).is_some()
     {
         if let Some(r) = repo_ref {
@@ -845,6 +892,7 @@ fn grep_one_blob_at_revision(
                 &content,
                 compiled,
                 args,
+                None,
                 need_sep,
                 out,
                 open_paths,
@@ -887,6 +935,7 @@ fn grep_one_blob_at_revision(
         &content,
         compiled,
         args,
+        None,
         need_sep,
         out,
         open_paths,
@@ -1011,8 +1060,18 @@ fn grep_cached(
                         binary_override,
                     );
                     let rel = worktree_display_rel(repo, path_prefix, &path_str, args);
+                    let func_matcher = funcname_matcher_for_path(repo, &path_str);
                     if grep_content(
-                        &rel, None, None, &content, compiled, args, need_sep, out, open_paths,
+                        &rel,
+                        None,
+                        None,
+                        &content,
+                        compiled,
+                        args,
+                        func_matcher.as_ref(),
+                        need_sep,
+                        out,
+                        open_paths,
                     )? {
                         found_any = true;
                     }
@@ -1044,8 +1103,18 @@ fn grep_cached(
                     binary_override,
                 );
                 let rel = worktree_display_rel(repo, path_prefix, &path_str, args);
+                let func_matcher = funcname_matcher_for_path(repo, &path_str);
                 if grep_content(
-                    &rel, None, None, &content, compiled, args, need_sep, out, open_paths,
+                    &rel,
+                    None,
+                    None,
+                    &content,
+                    compiled,
+                    args,
+                    func_matcher.as_ref(),
+                    need_sep,
+                    out,
+                    open_paths,
                 )? {
                     found_any = true;
                 }
@@ -1080,8 +1149,18 @@ fn grep_cached(
                     binary_override,
                 );
                 let rel = worktree_display_rel(repo, path_prefix, &path_str, args);
+                let func_matcher = funcname_matcher_for_path(repo, &path_str);
                 if grep_content(
-                    &rel, None, None, &content, compiled, args, need_sep, out, open_paths,
+                    &rel,
+                    None,
+                    None,
+                    &content,
+                    compiled,
+                    args,
+                    func_matcher.as_ref(),
+                    need_sep,
+                    out,
+                    open_paths,
                 )? {
                     found_any = true;
                 }
@@ -1113,8 +1192,18 @@ fn grep_cached(
                 binary_override,
             );
             let rel = worktree_display_rel(repo, path_prefix, &path_str, args);
+            let func_matcher = funcname_matcher_for_path(repo, &path_str);
             if grep_content(
-                &rel, None, None, &content, compiled, args, need_sep, out, open_paths,
+                &rel,
+                None,
+                None,
+                &content,
+                compiled,
+                args,
+                func_matcher.as_ref(),
+                need_sep,
+                out,
+                open_paths,
             )? {
                 found_any = true;
             }
@@ -1245,6 +1334,7 @@ fn grep_worktree(
                         &content_str,
                         compiled,
                         args,
+                        funcname_matcher_for_path(repo, &path_str).as_ref(),
                         need_sep,
                         out,
                         open_paths,
@@ -1274,6 +1364,7 @@ fn grep_worktree(
                     &content_str,
                     compiled,
                     args,
+                    funcname_matcher_for_path(repo, &path_str).as_ref(),
                     need_sep,
                     out,
                     open_paths,
@@ -1332,6 +1423,7 @@ fn grep_worktree(
                         &content_str,
                         compiled,
                         args,
+                        funcname_matcher_for_path(repo, &path_str).as_ref(),
                         need_sep,
                         out,
                         open_paths,
@@ -1373,6 +1465,7 @@ fn grep_worktree(
                     &content_str,
                     compiled,
                     args,
+                    funcname_matcher_for_path(repo, &path_str).as_ref(),
                     need_sep,
                     out,
                     open_paths,
@@ -1411,6 +1504,7 @@ fn grep_worktree(
                     &content_str,
                     compiled,
                     args,
+                    funcname_matcher_for_path(repo, &path_str).as_ref(),
                     need_sep,
                     out,
                     open_paths,
@@ -1440,6 +1534,7 @@ fn grep_worktree(
                 &content_str,
                 compiled,
                 args,
+                funcname_matcher_for_path(repo, &path_str).as_ref(),
                 need_sep,
                 out,
                 open_paths,
@@ -1503,6 +1598,9 @@ fn grep_untracked_worktree_files(
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         if name_str == ".git" {
+            continue;
+        }
+        if args.untracked && !args.no_exclude_standard && name_str == ".gitignore" {
             continue;
         }
         let rel = if rel_from_root.is_empty() {
@@ -1587,6 +1685,7 @@ fn grep_untracked_worktree_files(
                     &content_str,
                     compiled,
                     args,
+                    funcname_matcher_for_path(repo, &rel).as_ref(),
                     need_sep,
                     out,
                     open_paths,
@@ -1615,6 +1714,7 @@ fn grep_untracked_worktree_files(
                 &content_str,
                 compiled,
                 args,
+                funcname_matcher_for_path(repo, &rel).as_ref(),
                 need_sep,
                 out,
                 open_paths,
@@ -1786,8 +1886,14 @@ fn pathspecs_relative_to_cwd(repo: &Repository, pathspecs: &[String]) -> Vec<Str
     pathspecs
         .iter()
         .map(|s| {
-            if Path::new(s).is_absolute() || s.starts_with(':') {
+            if Path::new(s).is_absolute() {
                 s.clone()
+            } else if s.starts_with(':') {
+                // Magic pathspecs (`:(exclude)x`, `:!x`, `:/x`) are cwd-relative unless they
+                // carry `:(top)` / `:/`. Rebase them against the current prefix so e.g. `:!sub/`
+                // from `repo/sub` becomes `:!sub/sub/` (t6132 grep/add/etc. with all-negative
+                // pathspecs run via `-C sub`). `resolve_pathspec` leaves `:(top)`/`:/` intact.
+                resolve_pathspec(s, wt, Some(prefix))
             } else {
                 normalize_repo_rel_path(&format!("{prefix}/{s}"))
             }
@@ -1990,6 +2096,32 @@ fn blob_as_grep_text(
     }
 }
 
+fn validate_no_index_pathspecs(cwd: &Path, pathspecs: &[String]) -> Result<()> {
+    for ps in pathspecs {
+        let path = cwd.join(ps);
+        if !path.exists() {
+            if ps.starts_with("..") {
+                return Err(ExplicitExit {
+                    code: 128,
+                    message: format!("fatal: no such path in the working tree: '{ps}'"),
+                }
+                .into());
+            }
+            continue;
+        }
+        let canonical = path.canonicalize().unwrap_or(path);
+        let cwd_canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        if !canonical.starts_with(&cwd_canonical) {
+            return Err(ExplicitExit {
+                code: 128,
+                message: format!("fatal: '{ps}' is outside the directory tree"),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// Grep the filesystem recursively (--no-index mode).
 fn grep_filesystem(
     dir: &Path,
@@ -2013,6 +2145,9 @@ fn grep_filesystem(
         let name_str = name.to_string_lossy();
         // Skip .git directories
         if name_str == ".git" {
+            continue;
+        }
+        if args.exclude_standard && !args.no_exclude_standard && name_str == ".gitignore" {
             continue;
         }
         let display_path = if prefix.is_empty() {
@@ -2079,6 +2214,7 @@ fn grep_filesystem(
                     &content_str,
                     compiled,
                     args,
+                    None,
                     need_sep,
                     out,
                     open_paths,
@@ -2222,6 +2358,16 @@ fn parse_positional(
         }
         let first = before_sep[0].clone();
         let rest = &before_sep[1..];
+        if sep_pos.is_some() && !rest.is_empty() && !is_revision(repo, &rest[0]) {
+            if args.no_index {
+                if let Ok(Some(r)) = discover_optional(None) {
+                    if is_revision(Some(&r), &rest[0]) {
+                        bail!("grep: --no-index cannot be used with revs");
+                    }
+                }
+            }
+            return Err(anyhow::anyhow!("not a valid revision: '{}'", rest[0]));
+        }
         if !rest.is_empty() && is_revision(repo, &rest[0]) {
             tree_ish = Some(rest[0].clone());
             let mut ps = pathspecs;
@@ -2380,6 +2526,10 @@ fn fix_charclass_escapes(pat: &str) -> String {
 }
 
 fn build_one_regex(pat: &str, args: &Args) -> Result<Regex> {
+    if args.perl_regexp {
+        bail!("fatal: support for the -P option is not compiled in");
+    }
+
     let use_bre = !args.extended_regexp && !args.fixed_strings && !args.perl_regexp;
     // Git ERE does not accept PCRE `\p{...}` / `\P{...}`; Rust's engine does — reject for parity.
     if args.extended_regexp && !args.perl_regexp && !args.fixed_strings {
@@ -2594,16 +2744,79 @@ fn path_allowed_at_max_depth(path: &str, pathspecs: &[String], max_depth: usize)
 }
 
 // Color constants
-const COLOR_FILENAME: &str = "\x1b[35m";
-const COLOR_LINENO: &str = "\x1b[32m";
-const COLOR_COLUMNNO: &str = "\x1b[32m";
-const COLOR_MATCH: &str = "\x1b[1;31m";
-const COLOR_SEP: &str = "\x1b[36m";
 const COLOR_RESET: &str = "\x1b[m";
 
-fn sep_char(ch: char, color: bool) -> String {
+#[derive(Debug, Clone)]
+pub struct GrepColors {
+    filename: String,
+    linenumber: String,
+    column: String,
+    match_selected: String,
+    separator: String,
+}
+
+impl Default for GrepColors {
+    fn default() -> Self {
+        Self {
+            filename: "\x1b[35m".to_string(),
+            linenumber: "\x1b[32m".to_string(),
+            column: "\x1b[32m".to_string(),
+            match_selected: "\x1b[1;31m".to_string(),
+            separator: "\x1b[36m".to_string(),
+        }
+    }
+}
+
+impl GrepColors {
+    fn from_config(config: Option<&ConfigSet>) -> Self {
+        let mut colors = Self::default();
+        let Some(config) = config else {
+            return colors;
+        };
+        if let Some(v) = config.get("color.grep.filename") {
+            colors.filename = color_code(&v);
+        }
+        if let Some(v) = config.get("color.grep.linenumber") {
+            colors.linenumber = color_code(&v);
+        }
+        if let Some(v) = config.get("color.grep.column") {
+            colors.column = color_code(&v);
+        }
+        if let Some(v) = config
+            .get("color.grep.matchselected")
+            .or_else(|| config.get("color.grep.matchSelected"))
+            .or_else(|| config.get("color.grep.match"))
+        {
+            colors.match_selected = color_code(&v);
+        }
+        if let Some(v) = config.get("color.grep.separator") {
+            colors.separator = color_code(&v);
+        }
+        colors
+    }
+}
+
+fn color_code(value: &str) -> String {
+    match value.to_ascii_lowercase().as_str() {
+        "normal" => String::new(),
+        "red" => "\x1b[31m".to_string(),
+        "bold green" => "\x1b[1;32m".to_string(),
+        "black yellow" => "\x1b[30;43m".to_string(),
+        _ => String::new(),
+    }
+}
+
+fn paint(text: &str, code: &str, color: bool) -> String {
+    if color && !code.is_empty() {
+        format!("{code}{text}{COLOR_RESET}")
+    } else {
+        text.to_string()
+    }
+}
+
+fn sep_char(ch: char, color: bool, colors: &GrepColors) -> String {
     if color {
-        format!("{COLOR_SEP}{ch}{COLOR_RESET}")
+        paint(&ch.to_string(), &colors.separator, true)
     } else {
         ch.to_string()
     }
@@ -2613,19 +2826,15 @@ fn sep_out(args: &Args, color: bool, ch: char) -> String {
     if args.null_following_name {
         "\0".to_string()
     } else {
-        sep_char(ch, color)
+        sep_char(ch, color, &args.colors)
     }
 }
 
-fn fmt_name(name: &str, color: bool) -> String {
+fn fmt_name(name: &str, color: bool, colors: &GrepColors) -> String {
     if name.is_empty() {
         return String::new();
     }
-    if color {
-        format!("{COLOR_FILENAME}{name}{COLOR_RESET}")
-    } else {
-        name.to_string()
-    }
+    paint(name, &colors.filename, color)
 }
 
 /// Build the filename prefix with separator. Returns empty pair when name is empty.
@@ -2633,25 +2842,18 @@ fn name_prefix(name: &str, sep: char, color: bool) -> String {
     if name.is_empty() {
         return String::new();
     }
-    let mut s = fmt_name(name, color);
-    s.push_str(&sep_char(sep, color));
+    let colors = GrepColors::default();
+    let mut s = fmt_name(name, color, &colors);
+    s.push_str(&sep_char(sep, color, &colors));
     s
 }
 
-fn fmt_num(n: usize, color: bool) -> String {
-    if color {
-        format!("{COLOR_LINENO}{n}{COLOR_RESET}")
-    } else {
-        n.to_string()
-    }
+fn fmt_num(n: usize, color: bool, colors: &GrepColors) -> String {
+    paint(&n.to_string(), &colors.linenumber, color)
 }
 
-fn fmt_col(n: usize, color: bool) -> String {
-    if color {
-        format!("{COLOR_COLUMNNO}{n}{COLOR_RESET}")
-    } else {
-        n.to_string()
-    }
+fn fmt_col(n: usize, color: bool, colors: &GrepColors) -> String {
+    paint(&n.to_string(), &colors.column, color)
 }
 
 fn line_matches_all_atoms(line: &str, atoms: &[Option<Regex>]) -> bool {
@@ -2681,7 +2883,12 @@ fn column_for_line(line: &str, compiled: &CompiledGrep, invert: bool) -> usize {
     }
 }
 
-fn colorize_line(line: &str, compiled: &CompiledGrep, atom_indices: &[usize]) -> String {
+fn colorize_line(
+    line: &str,
+    compiled: &CompiledGrep,
+    atom_indices: &[usize],
+    colors: &GrepColors,
+) -> String {
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     for &i in atom_indices {
         if let Some(re) = compiled.atoms.get(i).and_then(|x| x.as_ref()) {
@@ -2708,9 +2915,11 @@ fn colorize_line(line: &str, compiled: &CompiledGrep, atom_indices: &[usize]) ->
     let mut pos = 0;
     for (s, e) in merged {
         result.push_str(&line[pos..s]);
-        result.push_str(COLOR_MATCH);
+        result.push_str(&colors.match_selected);
         result.push_str(&line[s..e]);
-        result.push_str(COLOR_RESET);
+        if !colors.match_selected.is_empty() {
+            result.push_str(COLOR_RESET);
+        }
         pos = e;
     }
     result.push_str(&line[pos..]);
@@ -2727,18 +2936,110 @@ fn line_prefix(
 ) -> String {
     let mut s = String::new();
     if !display_name.is_empty() {
-        s.push_str(&fmt_name(display_name, color));
+        s.push_str(&fmt_name(display_name, color, &args.colors));
         s.push_str(&sep_out(args, color, sep));
     }
     if let Some(n) = lno {
-        s.push_str(&fmt_num(n, color));
+        s.push_str(&fmt_num(n, color, &args.colors));
         s.push_str(&sep_out(args, color, sep));
     }
     if let Some(c) = col {
-        s.push_str(&fmt_col(c, color));
+        s.push_str(&fmt_col(c, color, &args.colors));
         s.push_str(&sep_out(args, color, sep));
     }
     s
+}
+
+fn funcname_matcher_for_path(repo: &Repository, rel_path: &str) -> Option<FuncnameMatcher> {
+    let config = ConfigSet::load(Some(&repo.git_dir), true).ok()?;
+    let attrs = load_gitattributes_for_diff(repo).ok()?;
+    matcher_for_path_parsed(&config, &attrs.rules, &attrs.macros, rel_path, false)
+        .ok()
+        .flatten()
+}
+
+fn fallback_function_line(line: &str) -> bool {
+    let trimmed = line.trim_end();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let first = trimmed.as_bytes()[0];
+    first.is_ascii_alphabetic() || first == b'_' || first == b'$'
+}
+
+fn function_line_matches(line: &str, matcher: Option<&FuncnameMatcher>) -> bool {
+    if let Some(matcher) = matcher {
+        return matcher.match_line(line).is_some();
+    }
+    fallback_function_line(line)
+}
+
+fn preceding_function_line(
+    lines: &[&str],
+    match_idx: usize,
+    matcher: Option<&FuncnameMatcher>,
+) -> Option<usize> {
+    let mut i = match_idx;
+    while i > 0 {
+        i -= 1;
+        if function_line_matches(lines[i], matcher) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn function_context_range(
+    lines: &[&str],
+    match_idx: usize,
+    matcher: Option<&FuncnameMatcher>,
+) -> (usize, usize) {
+    if lines.is_empty() {
+        return (0, 0);
+    }
+
+    let start_func = if function_line_matches(lines[match_idx], matcher) {
+        Some(match_idx)
+    } else {
+        preceding_function_line(lines, match_idx, matcher)
+    };
+
+    if let Some(func_idx) = start_func {
+        let start = {
+            let mut s = func_idx;
+            while s > 0 {
+                let prev = lines[s - 1];
+                if prev.trim().is_empty() || function_line_matches(prev, matcher) {
+                    break;
+                }
+                s -= 1;
+            }
+            s
+        };
+        let mut end = match_idx.max(func_idx);
+        let mut i = func_idx + 1;
+        while i < lines.len() {
+            if function_line_matches(lines[i], matcher) {
+                break;
+            }
+            if lines[i].trim().is_empty() {
+                break;
+            }
+            end = i;
+            i += 1;
+        }
+        (start, end)
+    } else {
+        let mut start = match_idx;
+        while start > 0 && !lines[start - 1].trim().is_empty() {
+            start -= 1;
+        }
+        let mut end = match_idx;
+        while end + 1 < lines.len() && !lines[end + 1].trim().is_empty() {
+            end += 1;
+        }
+        (start, end)
+    }
 }
 
 /// Search content of a single file. Returns true if any match found.
@@ -2754,6 +3055,7 @@ fn grep_content(
     content: &str,
     compiled: &CompiledGrep,
     args: &Args,
+    func_matcher: Option<&FuncnameMatcher>,
     need_sep: &mut bool,
     out: &mut (impl Write + ?Sized),
     open_paths: &mut Option<Vec<String>>,
@@ -2778,7 +3080,7 @@ fn grep_content(
     let nlines = lines.len();
     let before = args.before_ctx();
     let after = args.after_ctx();
-    let use_context = args.has_context();
+    let use_context = args.has_context() || args.show_function || args.function_context;
     let col_mode = args.column;
 
     let all_atoms_on_line = args.all_match && compiled.atoms.len() > 1;
@@ -2824,7 +3126,7 @@ fn grep_content(
                 };
                 paths.push(open_full);
             } else {
-                writeln!(out, "{}", fmt_name(&display_name, color))?;
+                writeln!(out, "{}", fmt_name(&display_name, color, &args.colors))?;
             }
         }
         return Ok(has_match);
@@ -2832,7 +3134,7 @@ fn grep_content(
 
     if args.files_without_match {
         if !has_match {
-            writeln!(out, "{}", fmt_name(&display_name, color))?;
+            writeln!(out, "{}", fmt_name(&display_name, color, &args.colors))?;
             return Ok(true);
         }
         return Ok(false);
@@ -2853,10 +3155,11 @@ fn grep_content(
 
     if args.file_break && *need_sep {
         writeln!(out)?;
+        *need_sep = false;
     }
 
     if args.heading && show_name {
-        writeln!(out, "{}", fmt_name(&full_display, color))?;
+        writeln!(out, "{}", fmt_name(&full_display, color, &args.colors))?;
     }
 
     if args.only_matching {
@@ -2882,7 +3185,12 @@ fn grep_content(
                     line_prefix(&display_name, ':', args, color, Some(idx + 1), None)
                 };
                 if color {
-                    writeln!(out, "{prefix}{COLOR_MATCH}{matched_text}{COLOR_RESET}")?;
+                    writeln!(
+                        out,
+                        "{}{}",
+                        prefix,
+                        paint(matched_text, &args.colors.match_selected, true)
+                    )?;
                 } else {
                     writeln!(out, "{prefix}{matched_text}")?;
                 }
@@ -2897,11 +3205,21 @@ fn grep_content(
     if use_context {
         let mut groups: Vec<(usize, usize)> = Vec::new();
         for &idx in &match_indices {
-            let start = idx.saturating_sub(before);
-            let end = if nlines == 0 {
-                0
+            let (mut start, end) = if args.function_context {
+                function_context_range(&lines, idx, func_matcher)
             } else {
-                (idx + after).min(nlines - 1)
+                let start = idx.saturating_sub(before);
+                let end = if nlines == 0 {
+                    0
+                } else {
+                    (idx + after).min(nlines - 1)
+                };
+                (start, end)
+            };
+            if args.show_function {
+                if let Some(func_idx) = preceding_function_line(&lines, idx, func_matcher) {
+                    start = start.min(func_idx);
+                }
             };
             if let Some(last) = groups.last_mut() {
                 if start <= last.1 + 1 {
@@ -2916,13 +3234,34 @@ fn grep_content(
 
         for &(start, end) in &groups {
             if *need_sep {
-                writeln!(out, "--")?;
+                writeln!(out, "{}", paint("--", &args.colors.separator, color))?;
             }
             *need_sep = true;
 
             for i in start..=end {
                 let is_match_line = match_set.contains(&i);
-                let sep = if is_match_line { ':' } else { '-' };
+                let is_function_line = (args.show_function || args.function_context)
+                    && match_indices.iter().any(|&idx| {
+                        (i < idx && preceding_function_line(&lines, idx, func_matcher) == Some(i))
+                            || (args.function_context
+                                && i == idx
+                                && function_line_matches(lines[i], func_matcher))
+                    });
+                if args.show_function
+                    && !args.function_context
+                    && !args.has_context()
+                    && !is_match_line
+                    && !is_function_line
+                {
+                    continue;
+                }
+                let sep = if is_match_line {
+                    ':'
+                } else if is_function_line {
+                    '='
+                } else {
+                    '-'
+                };
                 let col = if args.column && is_match_line {
                     Some(column_for_line(lines[i], compiled, args.invert_match))
                 } else {
@@ -2941,7 +3280,7 @@ fn grep_content(
                         out,
                         "{}{}",
                         prefix,
-                        colorize_line(lines[i], compiled, &atom_indices_all)
+                        colorize_line(lines[i], compiled, &atom_indices_all, &args.colors)
                     )?;
                 } else {
                     writeln!(out, "{}{}", prefix, lines[i])?;
@@ -2967,7 +3306,7 @@ fn grep_content(
                     out,
                     "{}{}",
                     prefix,
-                    colorize_line(line, compiled, &atom_indices_all)
+                    colorize_line(line, compiled, &atom_indices_all, &args.colors)
                 )?;
             } else {
                 writeln!(out, "{prefix}{line}")?;
@@ -3168,7 +3507,16 @@ fn grep_tree(
                 );
                 let rel = cwd_strip_repo_rel(repo, &full_name, args);
                 if grep_content(
-                    &rel, None, tree_name, &content, compiled, args, need_sep, out, open_paths,
+                    &rel,
+                    None,
+                    tree_name,
+                    &content,
+                    compiled,
+                    args,
+                    funcname_matcher_for_path(repo, &full_name).as_ref(),
+                    need_sep,
+                    out,
+                    open_paths,
                 )? {
                     found = true;
                 }

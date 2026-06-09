@@ -509,9 +509,83 @@ impl Repository {
         self.write_index_at(&self.index_path(), index)
     }
 
+    /// Write the index to the default path and pass explicit `post-index-change` hook flags.
+    ///
+    /// Parameters:
+    /// - `index` is the in-memory index to serialize.
+    /// - `updated_workdir` reports that the write is paired with a working-tree update.
+    /// - `updated_skipworktree` reports that skip-worktree related index state changed.
+    ///
+    /// Returns `Ok(())` after the index is written and the hook has been attempted.
+    ///
+    /// Errors when the index cannot be finalized or written.
+    pub fn write_index_with_post_index_change(
+        &self,
+        index: &mut Index,
+        updated_workdir: bool,
+        updated_skipworktree: bool,
+    ) -> Result<()> {
+        self.write_index_at_with_post_index_change(
+            &self.index_path(),
+            index,
+            updated_workdir,
+            updated_skipworktree,
+        )
+    }
+
     /// Like [`Repository::write_index`], but writes to an explicit index file path.
     pub fn write_index_at(&self, path: &std::path::Path, index: &mut Index) -> Result<()> {
         self.write_index_at_split(path, index, WriteSplitIndexRequest::default())
+    }
+
+    /// Whether reading `index` under this repository's config would mark the cache changed solely to
+    /// materialize a split index.
+    ///
+    /// Git's `tweak_split_index` runs after every index read: when `core.splitIndex` is `true` and the
+    /// index is not yet a split index, `add_split_index` sets `SPLIT_INDEX_ORDERED` on `cache_changed`,
+    /// which makes opportunistic writers such as `status` (`repo_update_index_if_able`) rewrite the
+    /// index in split form, creating `.git/sharedindex.<oid>`. This returns `true` exactly when that
+    /// would happen: split index is requested (config `true` or `GIT_TEST_SPLIT_INDEX`) and the
+    /// supplied `index` does not already carry a `link` extension.
+    ///
+    /// Returns `false` when split index is disabled/unset or the index is already split.
+    #[must_use]
+    pub fn split_index_would_force_write(&self, index: &Index) -> bool {
+        if index.split_index_base_oid().is_some() {
+            return false;
+        }
+        let cfg = ConfigSet::load(Some(&self.git_dir), true).unwrap_or_default();
+        matches!(
+            crate::split_index::split_index_config(&cfg),
+            crate::split_index::SplitIndexConfig::Enabled
+        ) || crate::split_index::git_test_split_index_env()
+    }
+
+    /// Like [`Repository::write_index_at`], but passes explicit `post-index-change` hook flags.
+    ///
+    /// Parameters:
+    /// - `path` is the destination index file.
+    /// - `index` is the in-memory index to serialize.
+    /// - `updated_workdir` reports that the write is paired with a working-tree update.
+    /// - `updated_skipworktree` reports that skip-worktree related index state changed.
+    ///
+    /// Returns `Ok(())` after the index is written and the hook has been attempted.
+    ///
+    /// Errors when the index cannot be finalized or written.
+    pub fn write_index_at_with_post_index_change(
+        &self,
+        path: &std::path::Path,
+        index: &mut Index,
+        updated_workdir: bool,
+        updated_skipworktree: bool,
+    ) -> Result<()> {
+        self.write_index_at_split_with_post_index_change(
+            path,
+            index,
+            WriteSplitIndexRequest::default(),
+            updated_workdir,
+            updated_skipworktree,
+        )
     }
 
     /// Write the index to `path`, optionally emitting a split index (shared base + `link` extension).
@@ -521,13 +595,42 @@ impl Repository {
         index: &mut Index,
         split: WriteSplitIndexRequest,
     ) -> Result<()> {
+        self.write_index_at_split_with_post_index_change(path, index, split, false, false)
+    }
+
+    /// Write the index to `path`, optionally emitting a split index, with explicit hook flags.
+    ///
+    /// Parameters:
+    /// - `path` is the destination index file.
+    /// - `index` is the in-memory index to serialize.
+    /// - `split` controls whether a split index should be written.
+    /// - `updated_workdir` reports that the write is paired with a working-tree update.
+    /// - `updated_skipworktree` reports that skip-worktree related index state changed.
+    ///
+    /// Returns `Ok(())` after the index is written and the hook has been attempted.
+    ///
+    /// Errors when the index cannot be finalized or written.
+    pub fn write_index_at_split_with_post_index_change(
+        &self,
+        path: &std::path::Path,
+        index: &mut Index,
+        split: WriteSplitIndexRequest,
+        updated_workdir: bool,
+        updated_skipworktree: bool,
+    ) -> Result<()> {
         self.finalize_sparse_index_if_needed(index)?;
         let cfg = ConfigSet::load(Some(&self.git_dir), true).unwrap_or_default();
         let skip_hash = crate::index::index_skip_hash_for_write(Some(&cfg));
         write_index_file_split(path, &self.git_dir, index, &cfg, split, skip_hash)?;
         // Git `write_locked_index`: `post-index-change` after a successful index write (t1800).
-        // Grit does not yet track `updated_workdir` / `updated_skipworktree`; pass `0` `0`.
-        let _ = run_hook(self, "post-index-change", &["0", "0"], None);
+        let updated_workdir_arg = if updated_workdir { "1" } else { "0" };
+        let updated_skipworktree_arg = if updated_skipworktree { "1" } else { "0" };
+        let _ = run_hook(
+            self,
+            "post-index-change",
+            &[updated_workdir_arg, updated_skipworktree_arg],
+            None,
+        );
         Ok(())
     }
 
@@ -1340,6 +1443,120 @@ fn validate_repository_format(git_dir: &Path) -> Result<()> {
     };
 
     let content = fs::read_to_string(&config_path).map_err(Error::Io)?;
+    let parsed = parse_repository_format(&content, &config_path)?;
+
+    if parsed.repo_version > 1 {
+        return Err(Error::UnsupportedRepositoryFormatVersion(
+            parsed.repo_version,
+        ));
+    }
+
+    if let Some(raw) = parsed.ref_storage.as_deref() {
+        let lower = raw.to_ascii_lowercase();
+        let name = lower
+            .split_once(':')
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(lower.as_str());
+        if !matches!(name, "files" | "reftable") {
+            return Err(Error::Message(format!(
+                "error: invalid value for 'extensions.refstorage': '{raw}'"
+            )));
+        }
+    }
+
+    if let Some(msg) = parsed.format_error_message() {
+        return Err(Error::Message(msg));
+    }
+
+    Ok(())
+}
+
+/// The result of parsing `core.repositoryformatversion` and `extensions.*` from a
+/// repository's `config` file, mirroring git/setup.c `check_repo_format`.
+struct RepositoryFormat {
+    /// Declared `core.repositoryformatversion` (defaults to 0; invalid values ignored).
+    repo_version: u32,
+    /// All extension keys (lowercased) declared under `[extensions]`.
+    extensions: BTreeSet<String>,
+    /// Raw value of `extensions.refstorage`, if present.
+    ref_storage: Option<String>,
+}
+
+impl RepositoryFormat {
+    /// Build git's `verify_repository_format` warning/error message for unsupported
+    /// extension declarations, or `None` if the extensions are all acceptable.
+    ///
+    /// This does not cover the `core.repositoryformatversion > 1` case; callers that
+    /// need the version message handle it separately via
+    /// [`repository_format_warning`].
+    fn format_error_message(&self) -> Option<String> {
+        // Mirror git/setup.c `check_repo_format` / `verify_repository_format`. Extensions
+        // split into:
+        //   * v0-compatible (`handle_extension_v0`): respected even in a v0 repository.
+        //   * v1-only (`handle_extension`): legal only when `core.repositoryformatversion >= 1`.
+        // A v0 repository that declares any v1-only extension is rejected (t0001 #60, #62);
+        // an unknown extension is rejected only in a v1 repository.
+        let mut v1_only_found: Vec<&str> = Vec::new();
+        let mut unknown_found: Vec<&str> = Vec::new();
+        for extension in &self.extensions {
+            match extension.as_str() {
+                // v0-compatible extensions — always allowed.
+                "noop" | "preciousobjects" | "partialclone" | "worktreeconfig" => {}
+                // v1-only extensions — only valid with repository format version >= 1.
+                "noop-v1"
+                | "objectformat"
+                | "compatobjectformat"
+                | "refstorage"
+                | "relativeworktrees"
+                | "submodulepathconfig" => {
+                    if self.repo_version == 0 {
+                        v1_only_found.push(extension);
+                    }
+                }
+                // Unknown extension — rejected only in a v1 repository.
+                _ => {
+                    if self.repo_version >= 1 {
+                        unknown_found.push(extension);
+                    }
+                }
+            }
+        }
+
+        if !unknown_found.is_empty() {
+            let mut msg = if unknown_found.len() == 1 {
+                "unknown repository extension found:".to_owned()
+            } else {
+                "unknown repository extensions found:".to_owned()
+            };
+            for ext in &unknown_found {
+                msg.push_str(&format!("\n\t{ext}"));
+            }
+            return Some(msg);
+        }
+
+        if !v1_only_found.is_empty() {
+            let mut msg = if v1_only_found.len() == 1 {
+                "repo version is 0, but v1-only extension found:".to_owned()
+            } else {
+                "repo version is 0, but v1-only extensions found:".to_owned()
+            };
+            for ext in &v1_only_found {
+                msg.push_str(&format!("\n\t{ext}"));
+            }
+            return Some(msg);
+        }
+
+        None
+    }
+}
+
+/// Parse `core.repositoryformatversion` and `[extensions]` entries out of raw
+/// `config` file contents.
+///
+/// # Errors
+///
+/// Returns [`Error::ConfigError`] if a section header is malformed (no closing `]`).
+fn parse_repository_format(content: &str, config_path: &Path) -> Result<RepositoryFormat> {
     let mut in_core = false;
     let mut in_extensions = false;
     let mut repo_version = 0u32;
@@ -1396,90 +1613,51 @@ fn validate_repository_format(git_dir: &Path) -> Result<()> {
             if key.eq_ignore_ascii_case("refstorage") {
                 ref_storage = value.map(str::to_owned);
             }
-            let key = if let Some((key, _)) = line.split_once('=') {
-                key.trim()
-            } else {
-                line
-            };
             if !key.is_empty() {
                 extensions.insert(key.to_ascii_lowercase());
             }
         }
     }
 
-    if repo_version > 1 {
-        return Err(Error::UnsupportedRepositoryFormatVersion(repo_version));
+    Ok(RepositoryFormat {
+        repo_version,
+        extensions,
+        ref_storage,
+    })
+}
+
+/// Return the warning message git would print for a repository whose `config`
+/// declares an unsupported format, or `None` if the format is acceptable.
+///
+/// This mirrors git/setup.c `check_repository_format_gently` + `verify_repository_format`:
+/// commands that run with `RUN_SETUP_GENTLY` (e.g. `git config`) emit this text as a
+/// `warning:` and then behave as if no repository were present, which makes the command
+/// fail with a non-zero exit. The returned string is the bare message without the
+/// `warning: ` prefix.
+///
+/// `git_dir` is the resolved git directory; its `config` (or the common-dir `config` for
+/// linked worktrees) is parsed. A missing config yields `None` (git treats it as ok).
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if the config file exists but cannot be read, or
+/// [`Error::ConfigError`] if a section header is malformed.
+pub fn repository_format_warning(git_dir: &Path) -> Result<Option<String>> {
+    const GIT_REPO_VERSION_READ: u32 = 1;
+    let Some(config_path) = repository_config_path(git_dir) else {
+        return Ok(None);
+    };
+    let content = fs::read_to_string(&config_path).map_err(Error::Io)?;
+    let parsed = parse_repository_format(&content, &config_path)?;
+
+    if parsed.repo_version > GIT_REPO_VERSION_READ {
+        return Ok(Some(format!(
+            "Expected git repo version <= {GIT_REPO_VERSION_READ}, found {}",
+            parsed.repo_version
+        )));
     }
 
-    if let Some(raw) = ref_storage.as_deref() {
-        let lower = raw.to_ascii_lowercase();
-        let name = lower
-            .split_once(':')
-            .map(|(prefix, _)| prefix)
-            .unwrap_or(lower.as_str());
-        if !matches!(name, "files" | "reftable") {
-            return Err(Error::Message(format!(
-                "error: invalid value for 'extensions.refstorage': '{raw}'"
-            )));
-        }
-    }
-
-    // Mirror git/setup.c `check_repo_format` / `verify_repository_format`. Extensions split into:
-    //   * v0-compatible (`handle_extension_v0`): respected even in a v0 repository.
-    //   * v1-only (`handle_extension`): legal only when `core.repositoryformatversion >= 1`.
-    // A v0 repository that declares any v1-only extension is rejected (t0001 #60, #62); an
-    // unknown extension is rejected only in a v1 repository.
-    let mut v1_only_found: Vec<String> = Vec::new();
-    let mut unknown_found: Vec<String> = Vec::new();
-    for extension in extensions {
-        match extension.as_str() {
-            // v0-compatible extensions — always allowed.
-            "noop" | "preciousobjects" | "partialclone" | "worktreeconfig" => {}
-            // v1-only extensions — only valid with repository format version >= 1.
-            "noop-v1"
-            | "objectformat"
-            | "compatobjectformat"
-            | "refstorage"
-            | "relativeworktrees"
-            | "submodulepathconfig" => {
-                if repo_version == 0 {
-                    v1_only_found.push(extension);
-                }
-            }
-            // Unknown extension — rejected only in a v1 repository.
-            _ => {
-                if repo_version >= 1 {
-                    unknown_found.push(extension);
-                }
-            }
-        }
-    }
-
-    if !unknown_found.is_empty() {
-        let mut msg = if unknown_found.len() == 1 {
-            "unknown repository extension found:".to_owned()
-        } else {
-            "unknown repository extensions found:".to_owned()
-        };
-        for ext in &unknown_found {
-            msg.push_str(&format!("\n\t{ext}"));
-        }
-        return Err(Error::Message(msg));
-    }
-
-    if !v1_only_found.is_empty() {
-        let mut msg = if v1_only_found.len() == 1 {
-            "repo version is 0, but v1-only extension found:".to_owned()
-        } else {
-            "repo version is 0, but v1-only extensions found:".to_owned()
-        };
-        for ext in &v1_only_found {
-            msg.push_str(&format!("\n\t{ext}"));
-        }
-        return Err(Error::Message(msg));
-    }
-
-    Ok(())
+    Ok(parsed.format_error_message())
 }
 
 /// Try to open a repository rooted exactly at `dir`.
@@ -2301,34 +2479,17 @@ pub fn init_repository_separate_git_dir(
         skip_hooks_info,
     )?;
 
-    // Use a relative `gitdir:` path from the work tree (matches C Git). Absolute paths break
-    // nested submodule layouts: the inner clone would keep a `.git` directory instead of a
-    // gitfile, so `.git/modules/<outer>/modules/<inner>` is never created (t1013).
+    // Write an absolute `gitdir:` path, matching C Git's `init_db` →
+    // `set_git_dir(real_git_dir, make_realpath=1)` → `separate_git_dir`, which records the
+    // realpath of the separate git directory (`t5601` "clone separate gitdir: output"). This
+    // path is only used by `git clone --separate-git-dir`; submodule layouts use a different
+    // code path and are unaffected.
     let gitfile = work_tree.join(".git");
-    let rel_git_dir = pathdiff_relative_gitfile(work_tree, git_dir);
-    fs::write(gitfile, format!("gitdir: {rel_git_dir}\n"))?;
+    let abs_git_dir = fs::canonicalize(git_dir).unwrap_or_else(|_| git_dir.to_path_buf());
+    let abs_git_dir = abs_git_dir.to_string_lossy().replace('\\', "/");
+    fs::write(gitfile, format!("gitdir: {abs_git_dir}\n"))?;
 
     Repository::open(git_dir, Some(work_tree))
-}
-
-/// Relative path from `from` to `to` using `..` segments (forward slashes), for gitfile lines.
-fn pathdiff_relative_gitfile(from: &Path, to: &Path) -> String {
-    let from_c = fs::canonicalize(from).unwrap_or_else(|_| from.to_path_buf());
-    let to_c = fs::canonicalize(to).unwrap_or_else(|_| to.to_path_buf());
-    let from_comp: Vec<Component<'_>> = from_c.components().collect();
-    let to_comp: Vec<Component<'_>> = to_c.components().collect();
-    let mut i = 0usize;
-    while i < from_comp.len() && i < to_comp.len() && from_comp[i] == to_comp[i] {
-        i += 1;
-    }
-    let mut out = PathBuf::new();
-    for _ in i..from_comp.len() {
-        out.push("..");
-    }
-    for c in &to_comp[i..] {
-        out.push(c.as_os_str());
-    }
-    out.to_string_lossy().replace('\\', "/")
 }
 
 /// Initialise a **minimal** bare repository directory layout matching `git clone --template= --bare`.

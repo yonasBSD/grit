@@ -18,12 +18,13 @@ use sha1::{Digest, Sha1};
 
 use crate::error::{Error, Result};
 use crate::objects::ObjectId;
-use crate::pack::{read_pack_index, PackIndex};
+use crate::pack::{read_pack_index_no_verify, PackIndex};
 
 const MIDX_SIGNATURE: u32 = 0x4d49_4458;
 const MIDX_VERSION_V1: u8 = 1;
 const MIDX_VERSION_V2: u8 = 2;
 const HASH_VERSION_SHA1: u8 = 1;
+const HASH_VERSION_SHA256: u8 = 2;
 const MIDX_HEADER_SIZE: usize = 12;
 const CHUNK_TOC_ENTRY_SIZE: usize = 12;
 const MIDX_CHUNKID_PACKNAMES: u32 = 0x504e_414d;
@@ -230,6 +231,55 @@ fn read_chain_layer_hashes(pack_dir: &Path) -> Result<Vec<String>> {
 }
 
 /// Resolve the path to the newest MIDX layer (root `multi-pack-index` or last chain entry).
+/// Return the MIDX hash-version byte expected for the repository owning `pack_dir`,
+/// mirroring git's `oid_version(r->hash_algo)` (SHA-1 → 1, SHA-256 → 2).
+///
+/// `pack_dir` is `<gitdir>/objects/pack`; the object format lives in the gitdir's
+/// `config` under `extensions.objectformat`. When the config cannot be read or the
+/// extension is absent, the default SHA-1 version (1) is returned.
+fn repo_midx_hash_version(pack_dir: &Path) -> u8 {
+    // pack_dir = <gitdir>/objects/pack -> gitdir = pack_dir/../..
+    let Some(objects_dir) = pack_dir.parent() else {
+        return HASH_VERSION_SHA1;
+    };
+    repo_midx_hash_version_for_objects_dir(objects_dir)
+}
+
+/// Like [`repo_midx_hash_version`] but starting from the `objects` directory.
+fn repo_midx_hash_version_for_objects_dir(objects_dir: &Path) -> u8 {
+    let Some(gitdir) = objects_dir.parent() else {
+        return HASH_VERSION_SHA1;
+    };
+    let config_path = gitdir.join("config");
+    let Ok(text) = fs::read_to_string(&config_path) else {
+        return HASH_VERSION_SHA1;
+    };
+    // Minimal scan for `[extensions]` ... `objectformat = sha256`. Section and key
+    // names are case-insensitive in git config; values are case-sensitive but git
+    // only accepts the literals "sha1"/"sha256".
+    let mut in_extensions = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            let section = line.trim_start_matches('[').trim_end_matches(']');
+            let name = section.split_whitespace().next().unwrap_or("");
+            in_extensions = name.eq_ignore_ascii_case("extensions");
+            continue;
+        }
+        if !in_extensions {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim().eq_ignore_ascii_case("objectformat")
+                && value.trim().eq_ignore_ascii_case("sha256")
+            {
+                return HASH_VERSION_SHA256;
+            }
+        }
+    }
+    HASH_VERSION_SHA1
+}
+
 pub fn resolve_tip_midx_path(pack_dir: &Path) -> Option<std::path::PathBuf> {
     let root = pack_dir.join("multi-pack-index");
     if root.exists() {
@@ -374,6 +424,34 @@ fn clear_stale_split_layers(pack_dir: &Path, keep: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Remove every incremental MIDX layer file (`multi-pack-index-<hash>.midx`,
+/// `.bitmap`, `.rev`) from `multi-pack-index.d/` and unlink the chain file, but
+/// leave the (now empty) directory in place.
+///
+/// This mirrors git's `clear_incremental_midx_files_ext` plus the chain unlink in
+/// `clear_midx_files` for a non-incremental write: git iterates the directory and
+/// `unlink`s the matching files individually and never `rmdir`s the directory, so
+/// a single-file MIDX write leaves an empty `multi-pack-index.d/` behind rather
+/// than removing it (see t5334 "convert incremental to non-incremental").
+fn clear_incremental_midx_files(pack_dir: &Path) -> Result<()> {
+    let midx_d = midx_d_dir(pack_dir);
+    // Unlink the chain file regardless of whether other entries remain.
+    let _ = fs::remove_file(chain_file_path(pack_dir));
+    if !midx_d.exists() {
+        return Ok(());
+    }
+    for ent in fs::read_dir(&midx_d).map_err(Error::Io)? {
+        let ent = ent.map_err(Error::Io)?;
+        let name = ent.file_name().to_string_lossy().to_string();
+        if name.starts_with("multi-pack-index-")
+            && (name.ends_with(".midx") || name.ends_with(".bitmap") || name.ends_with(".rev"))
+        {
+            let _ = fs::remove_file(ent.path());
+        }
+    }
+    Ok(())
+}
+
 fn pack_mtime_for_midx(idx: &PackIndex) -> std::time::SystemTime {
     fs::metadata(&idx.pack_path)
         .and_then(|m| m.modified())
@@ -420,6 +498,7 @@ fn build_midx_bytes_filtered(
     write_bitmap_placeholders: bool,
     omit_embedded_ridx_chunk: bool,
     version: u8,
+    hash_version: u8,
     exclude_oids: Option<&HashSet<ObjectId>>,
 ) -> Result<(Vec<u8>, Option<Vec<u32>>)> {
     let preferred_pack_idx = preferred_idx.map(|p| p as u32);
@@ -465,14 +544,14 @@ fn build_midx_bytes_filtered(
     let mut entries: Vec<MidxEntry> = best.into_values().collect();
     entries.sort_by_key(|a| a.oid);
 
-    let mut large_offsets: Vec<u64> = Vec::new();
-    for e in &entries {
-        if e.offset > u64::from(u32::MAX) {
-            return Err(Error::CorruptObject(
-                "object offset does not fit in multi-pack-index".to_owned(),
-            ));
-        }
-    }
+    // Decide how object offsets are encoded, mirroring git/midx-write.c.
+    // `large_offsets_needed` becomes true only when some offset cannot fit in a
+    // 32-bit field (> 0xffffffff); in that mode every offset that does not fit in
+    // 31 bits (> 0x7fffffff) is stored in the 64-bit large-offset (LOFF) chunk and
+    // its 32-bit slot is `MIDX_LARGE_OFFSET_NEEDED | slot`. When no offset exceeds
+    // 32 bits, offsets in [2^31, 2^32) are written directly as raw 32-bit values
+    // and no LOFF chunk is emitted.
+    let large_offsets_needed = entries.iter().any(|e| e.offset > u64::from(u32::MAX));
 
     let num_packs = indexes.len() as u32;
 
@@ -500,20 +579,21 @@ fn build_midx_bytes_filtered(
         chunk_oidl.extend_from_slice(e.oid.as_bytes());
     }
 
+    let mut large_offsets: Vec<u64> = Vec::new();
     let mut chunk_ooff = Vec::with_capacity(entries.len() * 8);
     for e in &entries {
         chunk_ooff.extend_from_slice(&e.pack_id.to_be_bytes());
-        let needs_large = e.offset >= u64::from(MIDX_LARGE_OFFSET_NEEDED);
-        let encoded = if needs_large {
+        let encoded = if large_offsets_needed && e.offset >> 31 != 0 {
             let slot = u32::try_from(large_offsets.len()).map_err(|_| {
                 Error::CorruptObject("too many large offsets in multi-pack-index".to_owned())
             })?;
             large_offsets.push(e.offset);
             MIDX_LARGE_OFFSET_NEEDED | slot
         } else {
-            u32::try_from(e.offset).map_err(|_| {
-                Error::CorruptObject("object offset overflow in multi-pack-index".to_owned())
-            })?
+            // When large offsets are not needed, an offset in [2^31, 2^32) is
+            // written verbatim (truncation via `as u32` is exact here because the
+            // value fits in 32 bits).
+            e.offset as u32
         };
         chunk_ooff.extend_from_slice(&encoded.to_be_bytes());
     }
@@ -634,7 +714,7 @@ fn build_midx_bytes_filtered(
     } else {
         MIDX_VERSION_V2
     });
-    out.push(HASH_VERSION_SHA1);
+    out.push(hash_version);
     out.push(num_chunks);
     out.push(0);
     out.extend_from_slice(&num_packs.to_be_bytes());
@@ -858,9 +938,10 @@ pub fn verify_midx(objects_dir: &Path) -> std::result::Result<(), Vec<String>> {
         )]);
     }
     let hash_version = data[5];
-    if hash_version != HASH_VERSION_SHA1 {
+    let expected_hash_version = repo_midx_hash_version_for_objects_dir(objects_dir);
+    if hash_version != expected_hash_version {
         return Err(vec![format!(
-            "multi-pack-index hash version {hash_version} does not match version {HASH_VERSION_SHA1}"
+            "multi-pack-index hash version {hash_version} does not match version {expected_hash_version}"
         )]);
     }
     let hash_len = 20usize;
@@ -972,8 +1053,13 @@ pub fn verify_midx(objects_dir: &Path) -> std::result::Result<(), Vec<String>> {
     // --- load each referenced pack (failed to load pack) ---
     let mut pack_indexes: Vec<Option<PackIndex>> = Vec::with_capacity(num_packs);
     for i in 0..num_packs {
+        // Load the pack idx without verifying its trailing checksum: `git
+        // multi-pack-index verify` uses `open_pack_index`, which only parses the
+        // index header/tables. The 64-bit-offset tests deliberately corrupt a
+        // pack `.idx` (invalidating its checksum) and still expect the MIDX
+        // verify to read recorded offsets out of that idx for comparison.
         let loaded = match names.get(i) {
-            Some(name) => read_pack_index(&pack_dir.join(name)).ok(),
+            Some(name) => read_pack_index_no_verify(&pack_dir.join(name)).ok(),
             None => None,
         };
         if loaded.is_none() {
@@ -1273,6 +1359,7 @@ pub fn format_midx_dump_layer(objects_dir: &Path, checksum: Option<&str>) -> Res
             x if x == MIDX_CHUNKID_OIDFANOUT => "oid-fanout",
             x if x == MIDX_CHUNKID_OIDLOOKUP => "oid-lookup",
             x if x == MIDX_CHUNKID_OBJECTOFFSETS => "object-offsets",
+            x if x == MIDX_CHUNKID_LARGEOFFSETS => "large-offsets",
             x if x == MIDX_CHUNKID_REVINDEX => "revindex",
             x if x == 0x4254_4d50 => "bitmapped-packs",
             _ => "unknown",
@@ -1565,7 +1652,7 @@ pub fn midx_oid_listed_in_tip(objects_dir: &Path, oid: &ObjectId) -> Result<Opti
         oidl_off,
         num_objects,
         ..
-    } = match midx_load_for_read(&data) {
+    } = match midx_load_for_read(&data, repo_midx_hash_version_for_objects_dir(objects_dir)) {
         MidxLoadResult::Ok(v) => v,
         MidxLoadResult::Skip => return Ok(None),
     };
@@ -1646,7 +1733,7 @@ fn midx_die(lines: &[&str]) -> ! {
 /// Validate and load a MIDX image for object reads, mirroring `load_multi_pack_index`
 /// in git/midx.c. Fatal corruptions print `error:`/`fatal:` and exit (Git `die()`);
 /// recoverable corruptions print an `error:`/`warning:` and return [`MidxLoadResult::Skip`].
-fn midx_load_for_read(data: &[u8]) -> MidxLoadResult {
+fn midx_load_for_read(data: &[u8], expected_hash_version: u8) -> MidxLoadResult {
     if data.len() < MIDX_HEADER_SIZE + 20 {
         return MidxLoadResult::Skip;
     }
@@ -1663,11 +1750,12 @@ fn midx_load_for_read(data: &[u8]) -> MidxLoadResult {
         )]);
     }
     let hash_version = data[5];
-    if hash_version != HASH_VERSION_SHA1 {
+    if hash_version != expected_hash_version {
         // `load_multi_pack_index` error()s then `goto cleanup_fail` (returns NULL),
-        // so this is recoverable, not fatal.
+        // so this is recoverable, not fatal. The expected version is the repository's
+        // own `oid_version(hash_algo)` (SHA-1 → 1, SHA-256 → 2).
         midx_warn_once(&format!(
-            "error: multi-pack-index hash version {hash_version} does not match version {HASH_VERSION_SHA1}"
+            "error: multi-pack-index hash version {hash_version} does not match version {expected_hash_version}"
         ));
         return MidxLoadResult::Skip;
     }
@@ -1794,6 +1882,61 @@ fn midx_load_for_read(data: &[u8]) -> MidxLoadResult {
     })
 }
 
+/// Eagerly validate that every pack named by the active MIDX has a readable `.idx`.
+///
+/// Mirrors git/packfile.c `open_pack_index`: when `prepare_packed_git` registers the
+/// packs the MIDX references, a pack whose `.idx` cannot be opened (truncated/corrupt)
+/// triggers `error: packfile <pack> index unavailable`. Git reports this once because the
+/// MIDX/pack store is prepared a single time; this routine reproduces that even when the
+/// object that triggered the read is found loose (so it never reaches the per-object MIDX
+/// lookup). Runs at most once per process per `objects_dir`.
+pub fn validate_midx_referenced_packs(objects_dir: &Path) {
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+    static DONE: OnceLock<Mutex<HashSet<std::path::PathBuf>>> = OnceLock::new();
+    let done = DONE.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut set) = done.lock() {
+        if !set.insert(objects_dir.to_path_buf()) {
+            return;
+        }
+    }
+
+    let pack_dir = objects_dir.join("pack");
+    let Some(midx_path) = resolve_tip_midx_path(&pack_dir) else {
+        return;
+    };
+    let Ok(data) = fs::read(&midx_path) else {
+        return;
+    };
+    let MidxReadView { pack_names, .. } =
+        match midx_load_for_read(&data, repo_midx_hash_version_for_objects_dir(objects_dir)) {
+            MidxLoadResult::Ok(v) => v,
+            MidxLoadResult::Skip => return,
+        };
+    for idx_name in &pack_names {
+        let idx_path = pack_dir.join(idx_name);
+        // A MIDX may name a pack whose files were later deleted; Git skips the missing
+        // pack silently (it is not "unavailable", just gone). Only a present-but-corrupt
+        // idx produces the "index unavailable" error.
+        if !idx_path.exists() {
+            continue;
+        }
+        // Match Git's `open_pack_index`, which parses the idx header/tables but does
+        // not verify the trailing checksum: a structurally valid idx with a stale
+        // checksum (the 64-bit-offset tests corrupt one offset byte in place) loads
+        // fine and must NOT be reported "unavailable". Only an unparseable idx
+        // (e.g. truncated, as in `corrupt idx reports errors`) is unavailable.
+        if crate::pack::read_pack_index_no_verify(&idx_path).is_err() {
+            let mut pack_path = idx_path.clone();
+            pack_path.set_extension("pack");
+            midx_warn_once(&format!(
+                "error: packfile {} index unavailable",
+                pack_path.display()
+            ));
+        }
+    }
+}
+
 /// When `core.multiPackIndex` is enabled, try to read `oid` from the active MIDX in `objects_dir`.
 ///
 /// Returns [`None`] when no MIDX exists or `oid` is not listed. Returns [`Some(Err(..))`] when the
@@ -1818,7 +1961,7 @@ pub fn try_read_object_via_midx(
         loff,
         num_objects,
         pack_names,
-    } = match midx_load_for_read(&data) {
+    } = match midx_load_for_read(&data, repo_midx_hash_version_for_objects_dir(objects_dir)) {
         MidxLoadResult::Ok(v) => v,
         MidxLoadResult::Skip => return Ok(None),
     };
@@ -1879,7 +2022,25 @@ pub fn try_read_object_via_midx(
     if !idx_path.exists() {
         return Ok(None);
     }
-    let idx = crate::pack::read_pack_index(&idx_path)?;
+    // Mirror git/packfile.c `open_pack_index`: when a pack's idx cannot be read
+    // (e.g. truncated/corrupt), Git emits `error: packfile <pack> index unavailable`,
+    // marks the pack invalid, and continues to other object sources. The object
+    // may still be found loose or in another pack, so fall through rather than
+    // surfacing the parse error as fatal. Use the non-verifying parse to match
+    // `open_pack_index`, which does not validate the trailing checksum (a pack
+    // `.idx` with a stale checksum but valid structure must still be usable).
+    let idx = match crate::pack::read_pack_index_no_verify(&idx_path) {
+        Ok(idx) => idx,
+        Err(_) => {
+            let mut pack_path = idx_path.clone();
+            pack_path.set_extension("pack");
+            midx_warn_once(&format!(
+                "error: packfile {} index unavailable",
+                pack_path.display()
+            ));
+            return Ok(None);
+        }
+    };
     crate::pack::read_object_from_pack(&idx, oid).map(Some)
 }
 
@@ -2163,6 +2324,7 @@ pub fn write_multi_pack_index_with_options(
         bitmap_placeholders,
         omit_embedded_ridx,
         opts.version.unwrap_or(MIDX_VERSION_V2),
+        repo_midx_hash_version(pack_dir),
         exclude,
     )?;
 
@@ -2218,8 +2380,11 @@ pub fn write_multi_pack_index_with_options(
             }
         }
     } else {
-        // A non-incremental write replaces any prior split layout entirely; Git
-        // leaves no `multi-pack-index.d/` directory behind for a single-file MIDX.
+        // A non-incremental write replaces any prior split layout. Git removes the
+        // individual incremental layer files inside `multi-pack-index.d/` and
+        // unlinks the chain file, but never `rmdir`s the directory itself, so an
+        // empty `multi-pack-index.d/` is left behind (t5334 expects
+        // `test_dir_is_empty $midxdir` after the conversion).
         let dest = pack_dir.join("multi-pack-index");
 
         // Git's `midx_needs_update`: if the new MIDX is byte-identical to the one
@@ -2227,7 +2392,10 @@ pub fn write_multi_pack_index_with_options(
         // untouched so its mtime is preserved (t5319 `test_midx_is_retained`).
         let bitmap_path = pack_dir.join(format!("multi-pack-index-{hash_hex}.bitmap"));
         let bitmap_ok = !opts.write_bitmap_placeholders || bitmap_path.exists();
-        if bitmap_ok && !midx_d_dir(pack_dir).exists() {
+        // Only short-circuit when there is no active incremental chain to collapse;
+        // an empty leftover `multi-pack-index.d/` (from a prior conversion) must not
+        // defeat the retention optimization, so key off the chain file, not the dir.
+        if bitmap_ok && !chain_file_path(pack_dir).exists() {
             if let Ok(existing) = fs::read(&dest) {
                 if existing == out {
                     return Ok(());
@@ -2235,11 +2403,7 @@ pub fn write_multi_pack_index_with_options(
             }
         }
 
-        let midx_d = midx_d_dir(pack_dir);
-        if midx_d.exists() {
-            let _ = fs::remove_dir_all(&midx_d);
-        }
-        let _ = fs::remove_file(chain_file_path(pack_dir));
+        clear_incremental_midx_files(pack_dir)?;
 
         fs::write(&dest, &out).map_err(Error::Io)?;
 
@@ -2438,6 +2602,7 @@ pub fn compact_multi_pack_index(
         write_bitmaps,
         write_rev,
         version.unwrap_or(MIDX_VERSION_V2),
+        repo_midx_hash_version(pack_dir),
         exclude,
     )?;
 

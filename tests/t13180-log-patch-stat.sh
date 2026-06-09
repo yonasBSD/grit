@@ -129,7 +129,7 @@ test_expect_success 'log --graph produces output' '
 '
 
 test_expect_success 'log --oneline shows HEAD decoration' '
-	(cd repo && grit log --oneline -n 1 >../actual) &&
+	(cd repo && grit log --oneline --decorate -n 1 >../actual) &&
 	grep "HEAD" actual
 '
 

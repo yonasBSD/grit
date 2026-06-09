@@ -83,6 +83,10 @@ pub struct Args {
     )]
     pub pretty: Option<String>,
 
+    /// Re-code commit messages to the given encoding, or `none` for raw bytes.
+    #[arg(long = "encoding", value_name = "ENCODING")]
+    pub encoding: Option<String>,
+
     /// Expand tabs in commit log message to spaces (`--expand-tabs` is `--expand-tabs=8`).
     #[arg(long = "expand-tabs", value_name = "N", require_equals = true)]
     pub expand_tabs: Option<String>,
@@ -340,6 +344,15 @@ pub fn run(mut args: Args) -> Result<()> {
     // captures everything after the first positional into `objects`, so pull
     // any such formatting options back out and apply them, mirroring git's
     // `setup_revisions` interleaving of options and revisions.
+    // `--grep`/pattern-flavor flags interspersed in the trailing args (`git show`
+    // shares `git log`'s revision walker) are pulled out here and applied as a
+    // message filter on the shown commits, honoring `grep.patternType`.
+    let mut grep_patterns: Vec<String> = Vec::new();
+    let mut grep_fixed = false;
+    let mut grep_basic = false;
+    let mut grep_extended = false;
+    let mut grep_perl = false;
+    let mut grep_ignore_case = false;
     {
         let mut kept: Vec<String> = Vec::with_capacity(args.objects.len());
         let mut iter = args.objects.iter().peekable();
@@ -359,12 +372,52 @@ pub fn run(mut args: Args) -> Result<()> {
                 }
             } else if tok == "-s" || tok == "--no-patch" {
                 args.no_patch = true;
+            } else if let Some(v) = tok.strip_prefix("--encoding=") {
+                args.encoding = Some(v.to_owned());
+            } else if tok == "--encoding" {
+                if let Some(v) = iter.peek() {
+                    args.encoding = Some((*v).clone());
+                    iter.next();
+                }
+            } else if let Some(v) = tok.strip_prefix("--grep=") {
+                grep_patterns.push(v.to_owned());
+            } else if tok == "--grep" {
+                if let Some(v) = iter.peek() {
+                    grep_patterns.push((*v).clone());
+                    iter.next();
+                }
+            } else if tok == "--fixed-strings" {
+                grep_fixed = true;
+            } else if tok == "--basic-regexp" {
+                // NB: do not alias `-G` here — in `git show` `-G` is the pickaxe
+                // (`-G<regex>`), so only the long form selects basic-regexp grep.
+                grep_basic = true;
+            } else if tok == "--extended-regexp" {
+                grep_extended = true;
+            } else if tok == "--perl-regexp" {
+                grep_perl = true;
+            } else if tok == "--regexp-ignore-case" {
+                grep_ignore_case = true;
             } else {
                 kept.push(tok.clone());
             }
         }
         args.objects = kept;
     }
+    let grep_res = if grep_patterns.is_empty() {
+        Vec::new()
+    } else {
+        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        crate::commands::log::compile_command_grep_regexes(
+            &grep_patterns,
+            grep_fixed,
+            grep_basic,
+            grep_extended,
+            grep_perl,
+            grep_ignore_case,
+            &cfg,
+        )?
+    };
 
     // `--root` forces a root commit's diff against the empty tree even when
     // `log.showroot=false`. It is not a real object, so strip it from the list.
@@ -449,10 +502,16 @@ pub fn run(mut args: Args) -> Result<()> {
     // emits no blank line between them, like `--format=%s`.
     let oneline_compact = (args.oneline || args.format.as_deref() == Some("oneline"))
         && (args.quiet || args.no_patch);
-    let compact_multi_subject = ((args.quiet || args.no_patch)
-        && args.format.as_deref() == Some("%s"))
-        || user_format_name_listing
-        || oneline_compact;
+    let custom_format_compact = args.format.as_deref().is_some_and(|f| {
+        f.starts_with("format:")
+            || f.starts_with("tformat:")
+            || !matches!(
+                f,
+                "medium" | "short" | "full" | "fuller" | "reference" | "oneline" | "raw" | "email"
+            )
+    });
+    let compact_multi_subject =
+        custom_format_compact || user_format_name_listing || oneline_compact;
 
     let notes_map = load_notes_map(&repo);
 
@@ -714,6 +773,14 @@ pub fn run(mut args: Args) -> Result<()> {
 
         let obj = repo.odb.read(&oid).context("reading object")?;
 
+        // `--grep` limits `git show` to commits whose message matches.
+        if !grep_res.is_empty() && obj.kind == ObjectKind::Commit {
+            let commit = parse_commit(&obj.data).context("parsing commit")?;
+            if !grep_res.iter().any(|re| re.is_match(&commit.message)) {
+                continue;
+            }
+        }
+
         if shown && !compact_multi_subject {
             writeln!(out)?;
         }
@@ -897,6 +964,89 @@ fn write_formatted_line(out: &mut impl Write, formatted: &str) -> Result<()> {
     Ok(())
 }
 
+enum ShowOutputEncoding {
+    Utf8,
+    Reencode(String),
+    Raw,
+}
+
+fn resolve_show_output_encoding(config: &ConfigSet, args: &Args) -> ShowOutputEncoding {
+    let explicit = args
+        .encoding
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if explicit.is_some_and(|label| label.eq_ignore_ascii_case("none")) {
+        return ShowOutputEncoding::Raw;
+    }
+    let label = explicit
+        .map(str::to_owned)
+        .or_else(|| {
+            config
+                .get("i18n.logOutputEncoding")
+                .or_else(|| config.get("i18n.logoutputencoding"))
+        })
+        .or_else(|| {
+            config
+                .get("i18n.commitEncoding")
+                .or_else(|| config.get("i18n.commitencoding"))
+        });
+    match label {
+        Some(label)
+            if !(label.eq_ignore_ascii_case("utf-8") || label.eq_ignore_ascii_case("utf8")) =>
+        {
+            ShowOutputEncoding::Reencode(label)
+        }
+        _ => ShowOutputEncoding::Utf8,
+    }
+}
+
+fn write_medium_message_lines(
+    out: &mut impl Write,
+    commit: &grit_lib::objects::CommitData,
+    expand_tabs_in_log: usize,
+    output_encoding: &ShowOutputEncoding,
+) -> Result<()> {
+    if matches!(output_encoding, ShowOutputEncoding::Raw) {
+        let raw = commit
+            .raw_message
+            .as_deref()
+            .unwrap_or_else(|| commit.message.as_bytes());
+        return write_indented_raw_message(out, raw);
+    }
+
+    for line in commit.message.lines() {
+        let line = grit_lib::tab_expand::indent_and_expand_tabs(line, 4, expand_tabs_in_log);
+        match output_encoding {
+            ShowOutputEncoding::Utf8 | ShowOutputEncoding::Raw => {
+                writeln!(out, "{line}")?;
+            }
+            ShowOutputEncoding::Reencode(label) => {
+                out.write_all(b"    ")?;
+                let unindented = line.strip_prefix("    ").unwrap_or(&line);
+                let bytes = grit_lib::commit_encoding::encode_header_text(label, unindented)
+                    .unwrap_or_else(|| unindented.as_bytes().to_vec());
+                out.write_all(&bytes)?;
+                out.write_all(b"\n")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_indented_raw_message(out: &mut impl Write, raw: &[u8]) -> Result<()> {
+    let mut lines = raw.split(|b| *b == b'\n').peekable();
+    while let Some(line) = lines.next() {
+        if line.is_empty() && lines.peek().is_none() {
+            break;
+        }
+        out.write_all(b"    ")?;
+        out.write_all(line)?;
+        out.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
 /// Git porcelain (`show`, `log -p`) splits a blob↔symlink type change into a delete hunk plus an add
 /// hunk so textconv applies only to the deleted regular file (t4030-diff-textconv).
 fn expand_typechange_entries_for_porcelain(entries: Vec<DiffEntry>) -> Vec<DiffEntry> {
@@ -1032,6 +1182,7 @@ fn show_commit(
     let odb = &repo.odb;
     let commit = parse_commit(data).context("parsing commit")?;
     let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let output_encoding = resolve_show_output_encoding(&config, args);
     let hex = oid.to_hex();
 
     // `--show-signature` (or `log.showSignature`) emits the GPG verification
@@ -1078,11 +1229,11 @@ fn show_commit(
         } else {
             String::new()
         };
-        let first_line = commit.message.lines().next().unwrap_or("");
+        let first_line = grit_lib::commit_pretty::message_subject(&commit.message);
         let first_line = if expand_tabs_in_log > 0 {
-            grit_lib::tab_expand::expand_tabs_in_line(first_line, expand_tabs_in_log)
+            grit_lib::tab_expand::expand_tabs_in_line(&first_line, expand_tabs_in_log)
         } else {
-            first_line.to_owned()
+            first_line
         };
         if args.remerge_diff && !(args.quiet || args.no_patch) && commit.parents.len() == 2 {
             use crate::commands::remerge_diff::{write_remerge_diff, RemergeDiffOptions};
@@ -1133,12 +1284,14 @@ fn show_commit(
 
     // A root commit with no diff to show (no `--root` and `log.showroot=false`) prints only
     // the header/message — without the trailing blank that normally separates message and diff.
-    let root_diff_shown = !commit.parents.is_empty()
-        || want_root
-        || config
-            .get_bool("log.showroot")
-            .and_then(|r| r.ok())
-            .unwrap_or(true);
+    let root_diff_shown = !args.quiet
+        && !args.no_patch
+        && (!commit.parents.is_empty()
+            || want_root
+            || config
+                .get_bool("log.showroot")
+                .and_then(|r| r.ok())
+                .unwrap_or(true));
 
     // Git's `log-tree.c` rule: when a verbose header is followed by BOTH a diffstat
     // and a patch (`--patch-with-stat`), it emits a `---` line (no extra blank)
@@ -1261,7 +1414,12 @@ fn show_commit(
                     grit_lib::tab_expand::indent_and_expand_tabs(line, 4, expand_tabs_in_log)
                 )?;
             }
-            writeln!(out)?;
+            // The blank line separating the message from the diff is only emitted when a diff
+            // follows (Git's `log-tree.c`). Under `-s`/`--no-patch` the entry ends at the message,
+            // matching `git log --pretty=full` (one trailing newline).
+            if root_diff_shown {
+                writeln!(out)?;
+            }
         }
         Some("fuller") => {
             writeln!(out, "commit {hex}")?;
@@ -1281,12 +1439,14 @@ fn show_commit(
                     grit_lib::tab_expand::indent_and_expand_tabs(line, 4, expand_tabs_in_log)
                 )?;
             }
-            writeln!(out)?;
+            if root_diff_shown {
+                writeln!(out)?;
+            }
         }
         Some("reference") => {
-            let subject = commit.message.lines().next().unwrap_or("");
+            let subject = grit_lib::commit_pretty::message_subject(&commit.message);
             let line =
-                grit_lib::commit_pretty::format_reference_line(oid, subject, &commit.committer, 7);
+                grit_lib::commit_pretty::format_reference_line(oid, &subject, &commit.committer, 7);
             writeln!(out, "{line}")?;
         }
         Some("medium") | None => {
@@ -1306,13 +1466,7 @@ fn show_commit(
             writeln!(out, "Author: {}", format_ident_display(&commit.author))?;
             writeln!(out, "Date:   {}", format_date(&commit.author))?;
             writeln!(out)?;
-            for line in commit.message.lines() {
-                writeln!(
-                    out,
-                    "{}",
-                    grit_lib::tab_expand::indent_and_expand_tabs(line, 4, expand_tabs_in_log)
-                )?;
-            }
+            write_medium_message_lines(out, &commit, expand_tabs_in_log, &output_encoding)?;
             if show_notes_display_enabled() {
                 if let Some(note_data) = notes_map.get(oid) {
                     let note_text = String::from_utf8_lossy(note_data);
@@ -1340,11 +1494,11 @@ fn show_commit(
             writeln!(out, "From {} Mon Sep 17 00:00:00 2001", hex)?;
             writeln!(out, "From: {}", format_ident_display(&commit.author))?;
             writeln!(out, "Date: {}", format_date(&commit.author))?;
-            let subject = commit.message.lines().next().unwrap_or("");
+            let subject = grit_lib::commit_pretty::message_subject(&commit.message);
             let subject = if expand_tabs_in_log > 0 {
-                grit_lib::tab_expand::expand_tabs_in_line(subject, expand_tabs_in_log)
+                grit_lib::tab_expand::expand_tabs_in_line(&subject, expand_tabs_in_log)
             } else {
-                subject.to_owned()
+                subject
             };
             writeln!(out, "Subject: [PATCH] {}", subject)?;
             writeln!(out)?;
@@ -1374,7 +1528,9 @@ fn show_commit(
                     grit_lib::tab_expand::indent_and_expand_tabs(line, 4, expand_tabs_in_log)
                 )?;
             }
-            writeln!(out)?;
+            if root_diff_shown {
+                writeln!(out)?;
+            }
         }
         Some(other) if other.starts_with("format:") || other.starts_with("tformat:") => {
             // Already handled above — unreachable
@@ -1383,7 +1539,7 @@ fn show_commit(
             let note_bytes = notes_map.get(oid).map(|v| v.as_slice());
             let formatted =
                 apply_format_string(other, oid, &commit, note_bytes, expand_tabs_in_log);
-            write_formatted_line(out, &formatted)?;
+            writeln!(out, "{formatted}")?;
         }
     }
 
@@ -1735,7 +1891,7 @@ fn show_commit(
 
         if args.diff_merges {
             let subject_isolated = args.format.as_deref() == Some("%s");
-            let subject = commit.message.lines().next().unwrap_or("");
+            let subject = grit_lib::commit_pretty::message_subject(&commit.message);
             for (pi, ptree) in parent_trees.iter().enumerate() {
                 for entry in &diff_entries {
                     if let Some(patch) = format_parent_patch(
@@ -2118,6 +2274,7 @@ fn write_diffstat(
     let opts = DiffstatOptions {
         total_width: stat_width.unwrap_or_else(terminal_columns),
         line_prefix: "",
+        width_prefix: "",
         subtract_prefix_from_terminal: false,
         stat_name_width: eff_name_width,
         stat_graph_width: eff_graph_width,
@@ -2434,14 +2591,14 @@ pub(crate) fn apply_format_string(
                 }
                 Some('s') => {
                     chars.next();
-                    let subj = info.message.lines().next().unwrap_or("");
+                    let subj = grit_lib::commit_pretty::message_subject(info.message);
                     if expand_tabs_in_log > 0 {
                         result.push_str(&grit_lib::tab_expand::expand_tabs_in_line(
-                            subj,
+                            &subj,
                             expand_tabs_in_log,
                         ));
                     } else {
-                        result.push_str(subj);
+                        result.push_str(&subj);
                     }
                 }
                 Some('B') => {
@@ -2463,14 +2620,14 @@ pub(crate) fn apply_format_string(
                 }
                 Some('b') => {
                     chars.next();
-                    let raw_body = info.message.lines().skip(2).collect::<Vec<_>>().join("\n");
+                    let raw_body = grit_lib::commit_pretty::message_body(info.message);
                     let body = if expand_tabs_in_log > 0 {
                         grit_lib::tab_expand::expand_tabs_in_multiline_message(
-                            &raw_body,
+                            raw_body,
                             expand_tabs_in_log,
                         )
                     } else {
-                        raw_body
+                        raw_body.to_owned()
                     };
                     if !body.is_empty() {
                         result.push_str(&body);
@@ -2501,6 +2658,37 @@ pub(crate) fn apply_format_string(
                 Some('%') => {
                     chars.next();
                     result.push('%');
+                }
+                Some('(') => {
+                    // Extended placeholder, e.g. `%(trailers:...)`. Capture the balanced
+                    // `(...)` payload and delegate trailer formatting to the shared engine.
+                    let mut look = chars.clone();
+                    look.next(); // consume '('
+                    let mut inner = String::new();
+                    let mut closed = false;
+                    for c in look.by_ref() {
+                        if c == ')' {
+                            closed = true;
+                            break;
+                        }
+                        inner.push(c);
+                    }
+                    if !closed {
+                        result.push('%');
+                    } else if let Some(rest) = inner.strip_prefix("trailers") {
+                        if let Some(opts) = crate::commands::log::parse_trailers_opts(rest) {
+                            chars = look;
+                            let formatted =
+                                grit_lib::commit_trailers::format_trailers(info.message, &opts);
+                            result.push_str(&formatted);
+                        } else {
+                            // Invalid option: emit the leading `%` and reparse `(...)` as text.
+                            result.push('%');
+                        }
+                    } else {
+                        // Unhandled extended placeholder: emit literally.
+                        result.push('%');
+                    }
                 }
                 _ => result.push('%'),
             }

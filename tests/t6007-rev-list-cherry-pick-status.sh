@@ -81,7 +81,9 @@ test_expect_success 'rev-list --left-right shows direction markers' '
 
 test_expect_success 'rev-list --left-right count with --count' '
 	git rev-list --left-right --count left...right >actual &&
-	echo "2	2	0" >expect &&
+	# 3rd column (count_same) only appears with --cherry-mark;
+	# plain --left-right --count emits 2 columns (matches git 2.52.0)
+	echo "2	2" >expect &&
 	test_cmp expect actual
 '
 

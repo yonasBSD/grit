@@ -660,11 +660,17 @@ pub fn run(args: Args, global_bare: bool) -> Result<()> {
     // per-source: an explicit `--ref-format`/`GIT_DEFAULT_REF_FORMAT` value that is unknown is a
     // fatal error, but a bad `init.defaultRefFormat` only warns and is ignored.
     let existing_ref_format = is_reinit.then(|| detect_ref_format(&real_git_dir));
-    let env_ref_format = std::env::var("GIT_DEFAULT_REF_FORMAT")
+    // Upstream's test harness (git/t/test-lib.sh) does
+    // `GIT_DEFAULT_REF_FORMAT="${GIT_TEST_DEFAULT_REF_FORMAT:-files}"`, i.e. the test-only
+    // `GIT_TEST_DEFAULT_REF_FORMAT` override takes precedence over `GIT_DEFAULT_REF_FORMAT`.
+    // Honor that ordering here so tests that opt into the reftable backend (e.g. t0610/t0614)
+    // create reftable repositories even when the harness has already exported
+    // `GIT_DEFAULT_REF_FORMAT=files`.
+    let env_ref_format = std::env::var("GIT_TEST_DEFAULT_REF_FORMAT")
         .ok()
         .filter(|value| !value.is_empty())
         .or_else(|| {
-            std::env::var("GIT_TEST_DEFAULT_REF_FORMAT")
+            std::env::var("GIT_DEFAULT_REF_FORMAT")
                 .ok()
                 .filter(|value| !value.is_empty())
         });
@@ -956,16 +962,27 @@ fn create_git_dir(git_dir: &Path, opts: CreateGitDirOptions<'_>) -> Result<()> {
         work_tree,
     } = opts;
 
-    // Create core directories
-    for sub in &[
+    // `hooks/`, `info/`, and `description` are *template* content in upstream Git
+    // (git/setup.c `create_default_files` only copies them via `copy_templates`). When templates
+    // are skipped entirely — `git init --template=` (empty) or `TEST_CREATE_REPO_NO_TEMPLATE` with
+    // no explicit `--template` — none of these are created, so a later `mkdir .git/hooks` in the
+    // harness's `mk_empty` succeeds (t5516). Only the built-in default-template branch below
+    // recreates `info/exclude`.
+    let has_template_content = template_dir.is_some() || !skip_default_templates;
+
+    // Create core directories (git/setup.c always creates objects/refs; `hooks` only from templates).
+    let mut core_dirs: Vec<&str> = vec![
         "objects",
         "objects/info",
         "objects/pack",
-        "hooks",
         "refs",
         "refs/heads",
         "refs/tags",
-    ] {
+    ];
+    if has_template_content {
+        core_dirs.push("hooks");
+    }
+    for sub in &core_dirs {
         fs::create_dir_all(git_dir.join(sub))?;
     }
 
@@ -1072,13 +1089,15 @@ fn create_git_dir(git_dir: &Path, opts: CreateGitDirOptions<'_>) -> Result<()> {
         cfg.write()?;
     }
 
-    // Write description (only on fresh init)
-    let desc_path = git_dir.join("description");
-    if !desc_path.exists() {
-        fs::write(
-            &desc_path,
-            "Unnamed repository; edit this file 'description' to name the repository.\n",
-        )?;
+    // Write description (template content; skipped when templates are skipped — t5516 `mk_empty`).
+    if has_template_content {
+        let desc_path = git_dir.join("description");
+        if !desc_path.exists() {
+            fs::write(
+                &desc_path,
+                "Unnamed repository; edit this file 'description' to name the repository.\n",
+            )?;
+        }
     }
 
     Ok(())

@@ -10,12 +10,13 @@ use clap::Args as ClapArgs;
 use grit_lib::attributes::{parse_gitattributes_file_content, validate_rules_for_add};
 use grit_lib::config::ConfigSet;
 use grit_lib::crlf::{self, ConversionConfig, GitAttributes};
+use grit_lib::diff::{diff_index_to_worktree, DiffStatus};
 use grit_lib::error::Error;
 use grit_lib::ignore::{path_in_sparse_checkout as path_in_sparse_checkout_lines, IgnoreMatcher};
-use grit_lib::index::{entry_from_metadata, normalize_mode, Index, IndexEntry};
+use grit_lib::index::{entry_from_metadata, normalize_mode, Index, IndexEntry, MODE_TREE};
 #[allow(unused_imports)]
 use grit_lib::objects::ObjectId;
-use grit_lib::objects::ObjectKind;
+use grit_lib::objects::{parse_commit, parse_tree, ObjectKind};
 use grit_lib::odb::Odb;
 use grit_lib::refs;
 use grit_lib::repo::Repository;
@@ -209,7 +210,7 @@ fn run_add_edit(repo: &Repository, pathspecs: &[String]) -> Result<()> {
 
 /// Resolve the number of context lines for `git add -p`: the `-U`/`--unified` flag wins (when
 /// `>= 0`); otherwise `diff.context` (rejecting negatives like Git's `add-patch.c`); default 3.
-fn resolve_patch_context(unified: Option<i32>, config: &ConfigSet) -> Result<usize> {
+pub(crate) fn resolve_patch_context(unified: Option<i32>, config: &ConfigSet) -> Result<usize> {
     if let Some(n) = unified {
         if n >= 0 {
             return Ok(n as usize);
@@ -228,7 +229,7 @@ fn resolve_patch_context(unified: Option<i32>, config: &ConfigSet) -> Result<usi
 
 /// Resolve the inter-hunk context for `git add -p`: `--inter-hunk-context` flag wins (when
 /// `>= 0`); otherwise `diff.interhunkcontext`; default 0.
-fn resolve_patch_interhunk(inter: Option<i32>, config: &ConfigSet) -> Result<usize> {
+pub(crate) fn resolve_patch_interhunk(inter: Option<i32>, config: &ConfigSet) -> Result<usize> {
     if let Some(n) = inter {
         if n >= 0 {
             return Ok(n as usize);
@@ -243,6 +244,44 @@ fn resolve_patch_interhunk(inter: Option<i32>, config: &ConfigSet) -> Result<usi
         }
     }
     Ok(0)
+}
+
+/// Validate the interactive context options (`-U`/`--unified`, `--inter-hunk-context`) shared by
+/// the patch-capable commands (`add`/`checkout`/`restore`/`reset`/`commit`/`stash`). Mirrors Git's
+/// `parse_opt_unified`/`add-interactive` checks: a value below the `-1` "unset" sentinel is
+/// rejected as negative, and outside `-p`/`-i` the options are an error.
+pub(crate) fn validate_patch_context_options(
+    unified: Option<i32>,
+    inter_hunk_context: Option<i32>,
+    interactive: bool,
+) -> Result<()> {
+    if let Some(n) = unified {
+        if n < -1 {
+            bail!("'{}' cannot be negative", "--unified");
+        }
+    }
+    if let Some(n) = inter_hunk_context {
+        if n < -1 {
+            bail!("'{}' cannot be negative", "--inter-hunk-context");
+        }
+    }
+    if !interactive {
+        if unified.is_some() {
+            bail!(
+                "the option '{}' requires '{}'",
+                "--unified",
+                "--interactive/--patch"
+            );
+        }
+        if inter_hunk_context.is_some() {
+            bail!(
+                "the option '{}' requires '{}'",
+                "--inter-hunk-context",
+                "--interactive/--patch"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Arguments for `grit add`.
@@ -480,13 +519,6 @@ pub fn run(mut args: Args) -> Result<()> {
         return Ok(());
     }
 
-    // Interactive mode is not implemented; `--patch` falls through so scripted
-    // `git add -p -- <pathspec>` can update the index non-interactively (t6132-pathspec-exclude).
-    if args.interactive {
-        eprintln!("warning: -i/--interactive mode is not yet implemented; doing nothing");
-        return Ok(());
-    }
-
     let repo = Repository::discover(None).context("not a git repository")?;
     let work_tree = repo
         .work_tree
@@ -523,10 +555,20 @@ pub fn run(mut args: Args) -> Result<()> {
         }
     }
     let idx_exists = index_path.exists();
+    // Resolve the on-disk index format exactly once, matching Git's
+    // `get_index_format_default` (otherwise `GIT_INDEX_VERSION`/`index.version`
+    // warnings would be emitted twice). For a fresh index, `raw_index` is only an
+    // empty sparse-index baseline, so it reuses the already-resolved version
+    // instead of re-reading the environment.
     let mut index = if idx_exists {
         repo.load_index_at(&index_path)?
     } else {
         Index::new_from_config(&config)
+    };
+    let raw_index = if idx_exists {
+        Index::load(&index_path).unwrap_or_else(|_| Index::empty(index.version))
+    } else {
+        Index::empty(index.version)
     };
 
     let odb = &repo.odb;
@@ -578,8 +620,15 @@ pub fn run(mut args: Args) -> Result<()> {
         return super::add_patch::run_add_patch(&repo, &args.pathspec, &add_cfg, &patch_opts);
     }
     if args.interactive {
-        eprintln!("warning: -i/--interactive mode is not yet implemented; doing nothing");
-        return Ok(());
+        maybe_emit_interactive_add_sparse_index_trace(&repo, &raw_index, &index, work_tree)?;
+        return super::add_interactive::run_add_i(
+            &repo,
+            index,
+            work_tree,
+            &config,
+            &add_cfg,
+            &args.pathspec,
+        );
     }
 
     let _dry_stdout_guard =
@@ -607,6 +656,7 @@ pub fn run(mut args: Args) -> Result<()> {
             prefix.as_deref(),
             &args,
             &sparse_state,
+            &config,
         );
     }
 
@@ -988,6 +1038,43 @@ impl AddSparseState {
     }
 }
 
+fn maybe_emit_interactive_add_sparse_index_trace(
+    repo: &Repository,
+    raw_index: &Index,
+    index: &Index,
+    work_tree: &Path,
+) -> Result<()> {
+    let entries = diff_index_to_worktree(&repo.odb, index, work_tree, false, false)?;
+    if entries.iter().any(|entry| {
+        entry.status != DiffStatus::Unmerged && path_under_sparse_index_dir(raw_index, entry.path())
+    }) {
+        emit_index_trace_region("ensure_full_index");
+    }
+    Ok(())
+}
+
+fn path_under_sparse_index_dir(index: &Index, path: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    index
+        .entries
+        .iter()
+        .filter(|entry| entry.stage() == 0 && entry.mode == MODE_TREE)
+        .filter_map(|entry| std::str::from_utf8(&entry.path).ok())
+        .map(|prefix| prefix.trim_end_matches('/'))
+        .any(|prefix| {
+            let prefix_slash = format!("{prefix}/");
+            path == prefix || path.starts_with(&prefix_slash)
+        })
+}
+
+fn emit_index_trace_region(label: &str) {
+    if let Ok(trace2_event) = std::env::var("GIT_TRACE2_EVENT") {
+        if !trace2_event.trim().is_empty() {
+            let _ = crate::trace2_region_json(&trace2_event, "index", label);
+        }
+    }
+}
+
 /// Match a user pathspec against an index path (Git `ce_path_match` semantics for `.` and globs).
 fn pathspec_matches_index_path(spec: &str, resolved_under_cwd: &str, index_path: &str) -> bool {
     if spec == "." {
@@ -1303,6 +1390,23 @@ pub(crate) fn stage_pathspecs_for_commit(
     let ctx = StageFileContext::for_commit();
 
     let mut matched_paths = HashSet::new();
+    let head_paths = commit_head_tree_paths(repo)?;
+
+    let is_known_to_index = |idx: &Index, path: &[u8]| -> bool {
+        if path.is_empty() || path == b"." {
+            return !idx.entries.is_empty() || !head_paths.is_empty();
+        }
+        idx.get(path, 0).is_some()
+            || head_paths.contains(path)
+            || idx.entries.iter().any(|entry| {
+                entry.stage() == 0
+                    && entry.path.starts_with(path)
+                    && entry.path.get(path.len()) == Some(&b'/')
+            })
+            || head_paths
+                .iter()
+                .any(|known| known.starts_with(path) && known.get(path.len()) == Some(&b'/'))
+    };
 
     let remove_path_and_descendants = |idx: &mut Index, path: &[u8]| -> Vec<Vec<u8>> {
         let removed: Vec<Vec<u8>> = idx
@@ -1379,18 +1483,13 @@ pub(crate) fn stage_pathspecs_for_commit(
     }
 
     for spec in pathspecs {
-        let resolved = match crate::pathspec::resolve_pathspec_in_worktree(
-            spec,
-            spec,
-            work_tree,
-            prefix.as_deref(),
-        ) {
-            Ok(r) => r,
-            Err(e) => bail!("{e}"),
-        };
+        let resolved = crate::pathspec::resolve_pathspec(spec, work_tree, prefix.as_deref());
 
         if !grit_lib::pathspec::has_glob_chars(&resolved) {
             reject_skip_worktree(&index, resolved.as_bytes())?;
+            if !is_known_to_index(&index, resolved.as_bytes()) {
+                bail!("pathspec '{spec}' did not match any file(s) known to git");
+            }
             let abs_path = work_tree.join(&resolved);
             let meta = match fs::symlink_metadata(&abs_path) {
                 Ok(m) => m,
@@ -1423,6 +1522,11 @@ pub(crate) fn stage_pathspecs_for_commit(
                     add_cfg.precompose_unicode,
                 )?;
                 for (rel, file_abs) in rels {
+                    if index.get(rel.as_bytes(), 0).is_none()
+                        && !head_paths.contains(rel.as_bytes())
+                    {
+                        continue;
+                    }
                     reject_skip_worktree(&index, rel.as_bytes())?;
                     stage_file(
                         odb, &mut index, work_tree, &rel, &file_abs, repo, &ctx, add_cfg,
@@ -1488,6 +1592,9 @@ pub(crate) fn stage_pathspecs_for_commit(
         }
 
         for rel in matched_rels {
+            if index.get(rel.as_bytes(), 0).is_none() && !head_paths.contains(rel.as_bytes()) {
+                continue;
+            }
             reject_skip_worktree(&index, rel.as_bytes())?;
             let abs_path = work_tree.join(&rel);
             if fs::symlink_metadata(&abs_path).is_ok() {
@@ -1506,6 +1613,41 @@ pub(crate) fn stage_pathspecs_for_commit(
 
     repo.write_index_at(&index_path, &mut index)?;
     Ok(matched_paths)
+}
+
+fn commit_head_tree_paths(repo: &Repository) -> Result<HashSet<Vec<u8>>> {
+    let head = resolve_head(&repo.git_dir)?;
+    let Some(head_oid) = head.oid() else {
+        return Ok(HashSet::new());
+    };
+    let obj = repo.odb.read(head_oid)?;
+    let commit = parse_commit(&obj.data)?;
+    let mut paths = HashSet::new();
+    collect_tree_paths_for_commit(repo, commit.tree, "", &mut paths)?;
+    Ok(paths)
+}
+
+fn collect_tree_paths_for_commit(
+    repo: &Repository,
+    tree_oid: ObjectId,
+    prefix: &str,
+    out: &mut HashSet<Vec<u8>>,
+) -> Result<()> {
+    let obj = repo.odb.read(&tree_oid)?;
+    for entry in parse_tree(&obj.data)? {
+        let name = String::from_utf8_lossy(&entry.name);
+        let path = if prefix.is_empty() {
+            name.into_owned()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if entry.mode == MODE_TREE {
+            collect_tree_paths_for_commit(repo, entry.oid, &path, out)?;
+        } else {
+            out.insert(path.into_bytes());
+        }
+    }
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -1532,18 +1674,53 @@ impl From<anyhow::Error> for AddPathError {
 }
 
 /// Run --refresh: update stat info in the index.
+/// Refresh a single stage-0 index entry's cached stat data from the work tree.
+///
+/// Mirrors Git's `refresh_index` for one entry: updates ctime/mtime/dev/ino/uid/gid/size
+/// from `fs::symlink_metadata`. Returns `true` when the work-tree file existed and the
+/// entry was refreshed.
+fn refresh_index_entry(ie: &mut IndexEntry, abs_path: &Path) -> bool {
+    let Ok(meta) = fs::symlink_metadata(abs_path) else {
+        return false;
+    };
+    ie.ctime_sec = meta.ctime() as u32;
+    ie.ctime_nsec = meta.ctime_nsec() as u32;
+    ie.mtime_sec = meta.mtime() as u32;
+    ie.mtime_nsec = meta.mtime_nsec() as u32;
+    ie.dev = meta.dev() as u32;
+    ie.ino = meta.ino() as u32;
+    ie.uid = meta.uid();
+    ie.gid = meta.gid();
+    ie.size = meta.len() as u32;
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_refresh(
     repo: &Repository,
     index: &mut Index,
     work_tree: &Path,
     prefix: Option<&str>,
     args: &Args,
-    _sparse: &AddSparseState,
+    sparse: &AddSparseState,
+    config: &ConfigSet,
 ) -> Result<()> {
+    // Git's `refresh()` passes `REFRESH_IGNORE_SKIP_WORKTREE`: `refresh_index` itself only
+    // skips entries with the skip-worktree bit set (an out-of-cone path whose work-tree file
+    // exists is still refreshed and counts as "seen"). Afterwards, any pathspec that matched
+    // no refreshed entry but does match a skip-worktree or out-of-cone path triggers the
+    // sparse-path advice and a non-zero exit without touching cached stat data. `--sparse`
+    // disables both guards.
+    let include_sparse = args.sparse;
+
     if args.pathspec.is_empty() {
         // Refresh all entries
         for ie in &mut index.entries {
             if ie.stage() != 0 {
+                continue;
+            }
+            // REFRESH_IGNORE_SKIP_WORKTREE: never refresh skip-worktree entries.
+            if !include_sparse && ie.skip_worktree() {
                 continue;
             }
             let path_str = String::from_utf8_lossy(&ie.path).to_string();
@@ -1553,54 +1730,60 @@ fn run_refresh(
                 }
             }
             let abs_path = work_tree.join(&path_str);
-            if let Ok(meta) = fs::symlink_metadata(&abs_path) {
-                ie.ctime_sec = meta.ctime() as u32;
-                ie.ctime_nsec = meta.ctime_nsec() as u32;
-                ie.mtime_sec = meta.mtime() as u32;
-                ie.mtime_nsec = meta.mtime_nsec() as u32;
-                ie.dev = meta.dev() as u32;
-                ie.ino = meta.ino() as u32;
-                ie.uid = meta.uid();
-                ie.gid = meta.gid();
-                ie.size = meta.len() as u32;
-            }
+            refresh_index_entry(ie, &abs_path);
         }
     } else {
+        let mut only_match_sparse: Vec<String> = Vec::new();
         for pathspec in &args.pathspec {
-            let mut matched_any = false;
-            let mut refreshed = false;
+            // Did the pathspec match an entry that `refresh_index` actually refreshed?
+            let mut seen = false;
+            // Did it match a skip-worktree or out-of-cone path we declined to update?
+            let mut matched_sparse = false;
             for ie in &mut index.entries {
                 if ie.stage() != 0 {
                     continue;
                 }
-                let path_str = String::from_utf8_lossy(&ie.path);
-                if !grit_lib::pathspec::pathspec_matches(pathspec, path_str.as_ref()) {
+                let path_str = String::from_utf8_lossy(&ie.path).to_string();
+                if !grit_lib::pathspec::pathspec_matches(pathspec, &path_str) {
                     continue;
                 }
-                matched_any = true;
-                let abs_path = work_tree.join(path_str.as_ref());
-                if let Ok(meta) = fs::symlink_metadata(&abs_path) {
-                    ie.ctime_sec = meta.ctime() as u32;
-                    ie.ctime_nsec = meta.ctime_nsec() as u32;
-                    ie.mtime_sec = meta.mtime() as u32;
-                    ie.mtime_nsec = meta.mtime_nsec() as u32;
-                    ie.dev = meta.dev() as u32;
-                    ie.ino = meta.ino() as u32;
-                    ie.uid = meta.uid();
-                    ie.gid = meta.gid();
-                    ie.size = meta.len() as u32;
-                    refreshed = true;
+                // REFRESH_IGNORE_SKIP_WORKTREE: skip-worktree entries are never refreshed.
+                if !include_sparse && ie.skip_worktree() {
+                    matched_sparse = true;
+                    continue;
+                }
+                // An out-of-cone path with no work-tree file cannot be refreshed; classify
+                // it as sparse (mirrors `!path_in_sparse_checkout` in Git's `refresh()`).
+                if !include_sparse && sparse.add_update_blocked(false, Some(ie), &path_str) {
+                    matched_sparse = true;
+                }
+                let abs_path = work_tree.join(&path_str);
+                if refresh_index_entry(ie, &abs_path) {
+                    seen = true;
                 }
             }
-            if !matched_any && !args.ignore_missing {
+            if seen {
+                continue;
+            }
+            if matched_sparse {
+                only_match_sparse.push(pathspec.clone());
+            } else if !args.ignore_missing {
                 // Git's `refresh()` dies with this exact wording (builtin/add.c).
                 eprintln!("fatal: pathspec '{}' did not match any files", pathspec);
                 std::process::exit(128);
             }
-            if matched_any && !refreshed && !args.ignore_missing {
-                eprintln!("fatal: pathspec '{}' did not match any files", pathspec);
-                std::process::exit(128);
+        }
+
+        if !only_match_sparse.is_empty() {
+            only_match_sparse.sort();
+            only_match_sparse.dedup();
+            emit_sparse_path_advice(&mut std::io::stderr(), config, &only_match_sparse)?;
+            // The cached stat data of sparse entries is left untouched; the index may still
+            // need rewriting for any non-sparse entries we did refresh.
+            if !args.dry_run {
+                write_index_or_lock_err(repo, index, &resolved_env_index_path(repo))?;
             }
+            std::process::exit(1);
         }
     }
 
@@ -1767,9 +1950,19 @@ fn pathspecs_are_all_exclude(pathspecs: &[String]) -> bool {
 }
 
 fn pathspecs_need_match_walk(pathspecs: &[String]) -> bool {
-    pathspecs
-        .iter()
-        .any(|s| pathspec_uses_long_magic(s) && !grit_lib::pathspec::pathspec_is_exclude(s))
+    pathspecs.iter().any(|s| {
+        if grit_lib::pathspec::pathspec_is_exclude(s) {
+            return false;
+        }
+        if pathspec_uses_long_magic(s) {
+            return true;
+        }
+        // A wildcard pathspec like `*.c` matches at any directory depth (git uses wildmatch without
+        // `WM_PATHNAME`, so `*` crosses `/`). The shallow `expand_glob_pathspec` only reads one
+        // directory level, so route any wildcard spec through the recursive worktree walk +
+        // `matches_pathspec_list` matcher instead (t3701 "add -p handles globs").
+        grit_lib::pathspec::has_glob_chars(s)
+    })
 }
 
 fn pathspecs_use_attr_magic(pathspecs: &[String]) -> bool {
@@ -1921,6 +2114,7 @@ fn add_all(
     };
 
     let mut skipped_outside_sparse = false;
+    let mut matched_any = false;
     let mut paths: Vec<(String, PathBuf)> = Vec::new();
     walk_directory(
         &scan_root,
@@ -1965,19 +2159,13 @@ fn add_all(
                 } else {
                     return Err(e);
                 }
+            } else {
+                matched_any = true;
             }
         }
         if add_cfg.ignore_errors && ignored_some {
             return Ok((true, chmod_err));
         }
-    }
-
-    if args.pathspec.iter().any(|s| s == ".")
-        && prefix.map(|p| p.is_empty()).unwrap_or(true)
-        && skipped_outside_sparse
-        && !add_cfg.include_sparse
-    {
-        sparse_advice_paths.push(".".to_string());
     }
 
     // Build a set of worktree paths for fast deletion detection
@@ -2011,6 +2199,7 @@ fn add_all(
         .collect();
 
     for path in removed {
+        matched_any = true;
         if args.verbose {
             let path_str = String::from_utf8_lossy(&path);
             eprintln!("remove '{path_str}'");
@@ -2018,6 +2207,15 @@ fn add_all(
         if !args.dry_run {
             index.remove(&path);
         }
+    }
+
+    if !matched_any
+        && args.pathspec.iter().any(|s| s == ".")
+        && prefix.map(|p| p.is_empty()).unwrap_or(true)
+        && skipped_outside_sparse
+        && !add_cfg.include_sparse
+    {
+        sparse_advice_paths.push(".".to_string());
     }
 
     if args.dry_run {

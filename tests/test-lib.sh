@@ -561,11 +561,15 @@ _x05='[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
 _x35="$_x05$_x05$_x05$_x05$_x05$_x05$_x05"
 _x40="$_x35$_x05"
 OID_REGEX="$_x40"
+# Loose-object path regex (e.g. ab/cdef…): the object id with a "/" after the
+# first two hex digits and every hex nibble turned into a character class.
+# Mirrors upstream test-lib.sh OIDPATH_REGEX (test_oid_to_path $ZERO_OID | sed …).
+OIDPATH_REGEX=$(echo "$ZERO_OID" | sed -e 's,^\(..\),\1/,' -e 's/0/[0-9a-f]/g')
 # Canonical SHA-1 empty tree (matches `git hash-object -t tree --stdin </dev/null`).
 EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
 EMPTY_BLOB=e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 u200c=$(printf '\342\200\214')
-export OID_REGEX _x05 _x35 _x40 ZERO_OID EMPTY_TREE EMPTY_BLOB u200c
+export OID_REGEX OIDPATH_REGEX _x05 _x35 _x40 ZERO_OID EMPTY_TREE EMPTY_BLOB u200c
 
 # Hash algorithm for test_oid (sha1 / sha256); overridden by test_set_hash / test_detect_hash.
 test_hash_algo=

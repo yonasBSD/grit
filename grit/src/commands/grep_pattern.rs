@@ -45,6 +45,14 @@ fn grep_option_takes_value(flag: &str) -> bool {
 /// Copy one grep option (and its `=value` or following argument) to `out`. Returns new index.
 fn copy_option(out: &mut Vec<String>, rest: &[String], i: usize) -> usize {
     let flag = rest[i].as_str();
+    if flag == "--color" {
+        out.push(rest[i].clone());
+        if i + 1 < rest.len() && matches!(rest[i + 1].as_str(), "always" | "never" | "auto") {
+            out.push(rest[i + 1].clone());
+            return i + 2;
+        }
+        return i + 1;
+    }
     if grep_option_takes_value(flag) {
         if flag.contains('=') {
             out.push(rest[i].clone());

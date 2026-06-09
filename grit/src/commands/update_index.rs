@@ -2,12 +2,14 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
+use std::collections::BTreeSet;
 use std::env;
 use std::io::{self, BufRead};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Component;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use grit_lib::config::ConfigSet;
 use grit_lib::crlf;
@@ -113,6 +115,10 @@ pub struct Args {
     /// Like --refresh but ignores assume-unchanged bit.
     #[arg(long = "really-refresh")]
     pub really_refresh: bool,
+
+    /// Write the index after refresh even when only validity bits changed.
+    #[arg(long = "force-write-index")]
+    pub force_write_index: bool,
 
     /// Like --refresh but only on entries that have changed.
     #[arg(long)]
@@ -413,6 +419,16 @@ fn index_path_for_update(repo: &Repository) -> Result<PathBuf> {
     Ok(repo.index_path())
 }
 
+fn write_update_index(
+    repo: &Repository,
+    index_path: &Path,
+    index: &mut Index,
+    split_write: WriteSplitIndexRequest,
+) -> Result<()> {
+    repo.write_index_at_split_with_post_index_change(index_path, index, split_write, false, true)?;
+    Ok(())
+}
+
 /// Run `grit update-index`.
 pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
     let repo = Repository::discover(None).context("not a git repository")?;
@@ -477,15 +493,13 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
         } else {
             index.untracked_cache = Some(UntrackedCache::new_shell(flags, ident));
         }
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
         return Ok(());
     }
 
     if args.no_untracked_cache {
         index.untracked_cache = None;
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
     } else if args.untracked_cache {
         let flags = untracked_cache::dir_flags_from_config(&config);
         let ident = untracked_cache::untracked_cache_ident(work_tree);
@@ -495,8 +509,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
         } else {
             index.untracked_cache = Some(UntrackedCache::new_shell(flags, ident));
         }
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
     }
 
     if args.fsmonitor && args.no_fsmonitor {
@@ -516,8 +529,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
         if index.fsmonitor_last_update.is_none() {
             index.fsmonitor_last_update = Some("builtin:fake".to_string());
         }
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
     } else if args.no_fsmonitor {
         index.fsmonitor_last_update = None;
         for entry in &mut index.entries {
@@ -525,8 +537,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
                 entry.set_fsmonitor_valid(false);
             }
         }
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
     }
 
     if !args.fsmonitor_valid.is_empty() || !args.no_fsmonitor_valid.is_empty() {
@@ -547,8 +558,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
                 e.set_fsmonitor_valid(false);
             }
         }
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
     }
 
     if args.show_index_version {
@@ -562,8 +572,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
             println!("index-version: was {old_ver}, set to {ver}");
         }
         index.version = ver;
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
         return Ok(());
     }
 
@@ -573,8 +582,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
 
     if args.clear_resolve_undo {
         index.clear_resolve_undo();
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
         return Ok(());
     }
 
@@ -707,8 +715,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
             let rel_bytes = path_to_bytes(&rel_path)?;
             let _ = index.unmerge_path_from_resolve_undo(&rel_bytes);
         }
-        repo.write_index_at_split(&index_path, &mut index, split_write)
-            .context("writing index")?;
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
         return Ok(());
     }
 
@@ -1099,6 +1106,8 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
 
     if args.refresh || args.really_refresh {
         let (index_mtime_sec, index_mtime_nsec) = index_file_mtime_pair(&index_path);
+        let (fsmonitor_token_changed, fsmonitor_reported) =
+            query_update_index_fsmonitor_paths(work_tree, &config, &mut index);
         // Re-stat all entries; exit 1 if any files need updating.
         let (uptodate, index_modified) = refresh_index(
             &mut index,
@@ -1107,28 +1116,42 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
             args.unmerged,
             args.ignore_missing,
             args.ignore_submodules,
+            fsmonitor_reported.as_ref(),
+            args.quiet,
         )?;
         // Match Git: skip rewriting the index when nothing changed and no entry is racy
         // relative to the index file's mtime at read time (see `has_racy_timestamp` in
         // `read-cache.c` / `repo_update_index_if_able`). This preserves intentional index
         // mtimes (e.g. t2108 `--refresh has no racy timestamps to fix`).
-        let need_write =
-            index_modified || has_racy_timestamp(&index, index_mtime_sec, index_mtime_nsec);
+        let need_write = args.force_write_index
+            || fsmonitor_token_changed
+            || index_modified
+            || has_racy_timestamp(&index, index_mtime_sec, index_mtime_nsec);
         if need_write {
-            repo.write_index_at_split(&index_path, &mut index, split_write)
+            write_update_index(&repo, &index_path, &mut index, split_write)
                 .context("writing index")?;
         }
-        // Git `builtin/update-index.c`: the command always `return has_errors ? 1 : 0`
-        // regardless of `-q`. `-q`/quiet only suppresses the per-file diagnostic output
-        // inside refresh_index, NOT the exit status (t4002 diff-files preconditions).
+        // Git `builtin/update-index.c` `return has_errors ? 1 : 0`. `-q` (REFRESH_QUIET)
+        // suppresses both the per-file `needs update` diagnostic AND the `has_errors` flag for an
+        // entry that merely needs a content refresh but has valid stat data (read-cache.c
+        // `refresh_index`: `if (quiet) continue;`). It does NOT suppress entries left without real
+        // stat by `read-tree --reset` / `--cacheinfo` (t4002 `update-index --refresh -q` is
+        // `test_must_fail`); `refresh_index` already keeps `all_uptodate=false` for those. So this
+        // exit-1 now only fires for genuine hard errors even under `-q` (t5516 push-to-checkout).
         if !uptodate {
             std::process::exit(1);
         }
         return Ok(());
     }
 
-    repo.write_index_at_split(&index_path, &mut index, split_write)
-        .context("writing index")?;
+    let needs_final_write = args.split_index
+        || args.no_split_index
+        || !args.files.is_empty()
+        || !args.cacheinfo.is_empty()
+        || !args.chmod.is_empty();
+    if needs_final_write {
+        write_update_index(&repo, &index_path, &mut index, split_write).context("writing index")?;
+    }
     Ok(())
 }
 
@@ -1218,9 +1241,77 @@ fn run_index_info(
         }
     }
 
-    repo.write_index_at_split(index_path, index, split_write)
-        .context("writing index")?;
+    write_update_index(repo, index_path, index, split_write).context("writing index")?;
     Ok(())
+}
+
+fn query_update_index_fsmonitor_paths(
+    work_tree: &Path,
+    config: &ConfigSet,
+    index: &mut Index,
+) -> (bool, Option<BTreeSet<Vec<u8>>>) {
+    let old_token = index.fsmonitor_last_update.clone().unwrap_or_default();
+    let last_update_token = (!old_token.is_empty()).then_some(old_token.as_str());
+    let query =
+        crate::commands::status::query_status_fsmonitor_paths(work_tree, config, last_update_token)
+            .or_else(|| query_legacy_fsmonitor_paths(work_tree, config, last_update_token));
+
+    let Some((new_token, reported)) = query else {
+        return (false, None);
+    };
+    let changed = old_token != new_token;
+    index.fsmonitor_last_update = Some(new_token);
+    (changed, Some(reported))
+}
+
+fn query_legacy_fsmonitor_paths(
+    work_tree: &Path,
+    config: &ConfigSet,
+    last_update_token: Option<&str>,
+) -> Option<(String, BTreeSet<Vec<u8>>)> {
+    let raw = config.get("core.fsmonitor")?;
+    let lower = raw.to_ascii_lowercase();
+    if matches!(lower.as_str(), "false" | "0" | "no" | "off")
+        || matches!(lower.as_str(), "true" | "1" | "yes" | "on")
+    {
+        return None;
+    }
+    let hook_path = {
+        let p = Path::new(&raw);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            work_tree.join(p)
+        }
+    };
+    let output = Command::new(&hook_path)
+        .current_dir(work_tree)
+        .arg("1")
+        .arg(last_update_token.unwrap_or(""))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let paths: BTreeSet<Vec<u8>> = output
+        .stdout
+        .split(|b| *b == 0 || *b == b'\n')
+        .filter(|p| !p.is_empty())
+        .map(|p| p.to_vec())
+        .collect();
+    Some((current_unix_seconds_u32().to_string(), paths))
+}
+
+fn set_refresh_fsmonitor_valid(
+    entry: &mut IndexEntry,
+    fsmonitor_enabled: bool,
+    value: bool,
+    index_modified: &mut bool,
+) {
+    if fsmonitor_enabled && entry.fsmonitor_valid() != value {
+        entry.set_fsmonitor_valid(value);
+        *index_modified = true;
+    }
 }
 
 /// Re-stat all tracked files, updating mtime/ctime/size.
@@ -1231,6 +1322,8 @@ fn refresh_index(
     allow_unmerged: bool,
     ignore_missing: bool,
     ignore_submodules: bool,
+    fsmonitor_reported: Option<&BTreeSet<Vec<u8>>>,
+    quiet: bool,
 ) -> Result<(bool, bool)> {
     // Returns (all_uptodate, index_modified)
     // all_uptodate: true if no files need updating
@@ -1250,6 +1343,7 @@ fn refresh_index(
 
     let mut all_uptodate = true;
     let mut index_modified = false;
+    let fsmonitor_enabled = index.fsmonitor_last_update.is_some();
     for entry in &mut index.entries {
         if entry.stage() != 0 {
             continue;
@@ -1266,13 +1360,28 @@ fn refresh_index(
                 None => true, // uninitialized / no checkout — do not block refresh (matches Git)
             };
             if !submodule_matches {
-                println!("{path_str2}: needs update");
-                all_uptodate = false;
+                if !quiet {
+                    println!("{path_str2}: needs update");
+                }
+                if !quiet || entry_stat_is_zeroed(entry) {
+                    all_uptodate = false;
+                }
+                set_refresh_fsmonitor_valid(entry, fsmonitor_enabled, false, &mut index_modified);
+            } else {
+                set_refresh_fsmonitor_valid(entry, fsmonitor_enabled, true, &mut index_modified);
             }
             continue;
         }
         let path_str = std::str::from_utf8(&entry.path)
             .map_err(|_| anyhow::anyhow!("non-UTF-8 path in index"))?;
+        if fsmonitor_enabled
+            && entry.fsmonitor_valid()
+            && fsmonitor_reported.is_some_and(|reported| {
+                !crate::commands::status::fsmonitor_reported_path_matches(path_str, reported)
+            })
+        {
+            continue;
+        }
         let path = std::path::Path::new(path_str);
         let abs = work_tree.join(path);
         match std::fs::symlink_metadata(&abs) {
@@ -1288,11 +1397,34 @@ fn refresh_index(
                     );
                     let stat_changed = !stat_matches_refresh(entry, &meta, trust_ctime);
                     if actual_oid != entry.oid {
-                        println!("{path_str}: needs update");
-                        all_uptodate = false;
+                        if !quiet {
+                            println!("{path_str}: needs update");
+                        }
+                        if !quiet || entry_stat_is_zeroed(entry) {
+                            all_uptodate = false;
+                        }
+                        set_refresh_fsmonitor_valid(
+                            entry,
+                            fsmonitor_enabled,
+                            false,
+                            &mut index_modified,
+                        );
                     } else if stat_changed {
                         refresh_entry_stat(entry, &meta);
                         index_modified = true;
+                        set_refresh_fsmonitor_valid(
+                            entry,
+                            fsmonitor_enabled,
+                            true,
+                            &mut index_modified,
+                        );
+                    } else {
+                        set_refresh_fsmonitor_valid(
+                            entry,
+                            fsmonitor_enabled,
+                            true,
+                            &mut index_modified,
+                        );
                     }
                     continue;
                 }
@@ -1307,12 +1439,28 @@ fn refresh_index(
                         true
                     };
                     if content_changed {
-                        println!("{path_str}: needs update");
-                        all_uptodate = false;
+                        if !quiet {
+                            println!("{path_str}: needs update");
+                        }
+                        if !quiet || entry_stat_is_zeroed(entry) {
+                            all_uptodate = false;
+                        }
+                        set_refresh_fsmonitor_valid(
+                            entry,
+                            fsmonitor_enabled,
+                            false,
+                            &mut index_modified,
+                        );
                     } else {
                         // Update stat info
                         refresh_entry_stat(entry, &meta);
                         index_modified = true;
+                        set_refresh_fsmonitor_valid(
+                            entry,
+                            fsmonitor_enabled,
+                            true,
+                            &mut index_modified,
+                        );
                     }
                 } else if let Ok(data) = std::fs::read(&abs) {
                     let actual_oid = grit_lib::odb::Odb::hash_object_data(
@@ -1320,21 +1468,65 @@ fn refresh_index(
                         &data,
                     );
                     if actual_oid != entry.oid {
-                        println!("{path_str}: needs update");
-                        all_uptodate = false;
+                        if !quiet {
+                            println!("{path_str}: needs update");
+                        }
+                        if !quiet || entry_stat_is_zeroed(entry) {
+                            all_uptodate = false;
+                        }
+                        set_refresh_fsmonitor_valid(
+                            entry,
+                            fsmonitor_enabled,
+                            false,
+                            &mut index_modified,
+                        );
+                    } else {
+                        set_refresh_fsmonitor_valid(
+                            entry,
+                            fsmonitor_enabled,
+                            true,
+                            &mut index_modified,
+                        );
                     }
                 }
             }
             Err(_) => {
                 // File missing
                 if !ignore_missing {
-                    println!("{path_str}: does not exist and --remove not set");
-                    all_uptodate = false;
+                    if !quiet {
+                        println!("{path_str}: does not exist and --remove not set");
+                    }
+                    if !quiet || entry_stat_is_zeroed(entry) {
+                        all_uptodate = false;
+                    }
+                    set_refresh_fsmonitor_valid(
+                        entry,
+                        fsmonitor_enabled,
+                        false,
+                        &mut index_modified,
+                    );
                 }
             }
         }
     }
     Ok((all_uptodate, index_modified))
+}
+
+/// Whether an index entry has never had real `lstat(2)` stat data populated — the state left by
+/// `read-tree --reset` / `update-index --cacheinfo`, where ctime/mtime/dev/ino are all zero.
+///
+/// Git's `ie_modified()` (read-cache.c) treats a content-mismatched entry as a hard "needs update"
+/// error that `update-index -q --refresh` does NOT suppress only for such never-stat'd entries
+/// (t4002 `update-index --refresh -q` after `read-tree --reset` is `test_must_fail`). For an entry
+/// with valid stat data, `-q` suppresses both the message and the non-zero exit (t5516
+/// `updateInstead with push-to-checkout hook`, whose hook relies on `update-index -q --refresh &&`).
+fn entry_stat_is_zeroed(entry: &IndexEntry) -> bool {
+    entry.ctime_sec == 0
+        && entry.ctime_nsec == 0
+        && entry.mtime_sec == 0
+        && entry.mtime_nsec == 0
+        && entry.dev == 0
+        && entry.ino == 0
 }
 
 fn refresh_entry_stat(entry: &mut IndexEntry, meta: &std::fs::Metadata) {
@@ -1691,8 +1883,7 @@ fn run_update_index_again(
         }
     }
 
-    repo.write_index_at_split(index_path, index, split_write)
-        .context("writing index")?;
+    write_update_index(repo, index_path, index, split_write).context("writing index")?;
     Ok(())
 }
 
@@ -1825,9 +2016,23 @@ pub fn run_refresh_quiet(repo: &Repository) -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("cannot update-index in bare repository"))?;
     let (index_mtime_sec, index_mtime_nsec) = index_file_mtime_pair(&index_path);
-    let (_uptodate, index_modified) =
-        refresh_index(&mut index, work_tree, &repo.odb, false, false, false)?;
-    if index_modified || has_racy_timestamp(&index, index_mtime_sec, index_mtime_nsec) {
+    let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let (fsmonitor_token_changed, fsmonitor_reported) =
+        query_update_index_fsmonitor_paths(work_tree, &config, &mut index);
+    let (_uptodate, index_modified) = refresh_index(
+        &mut index,
+        work_tree,
+        &repo.odb,
+        false,
+        false,
+        false,
+        fsmonitor_reported.as_ref(),
+        true,
+    )?;
+    if fsmonitor_token_changed
+        || index_modified
+        || has_racy_timestamp(&index, index_mtime_sec, index_mtime_nsec)
+    {
         repo.write_index_at_split(&index_path, &mut index, WriteSplitIndexRequest::default())
             .context("writing index")?;
     }

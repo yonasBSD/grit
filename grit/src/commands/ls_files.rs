@@ -501,14 +501,16 @@ pub fn run(args: Args) -> Result<()> {
 
     // Build exclude/ignore matcher if needed (before cached loop so -i -c works).
     // Git order: standard excludes (global → info → .gitignore), plus `-X` files and `-x` patterns.
-    let has_excludes = args.exclude_standard
-        || !args.exclude.is_empty()
+    let has_explicit_excludes = !args.exclude.is_empty()
         || !args.exclude_from.is_empty()
         || args.exclude_per_directory.is_some();
-    // `--ignored` only changes *which* files are shown (the excluded ones); it does NOT by itself
-    // pull in the standard exclude sources. Git requires an explicit `--exclude-standard`, `-x`,
-    // `-X`, or `--exclude-per-directory` to populate the exclude lists.
-    let use_standard_ignores = args.exclude_standard;
+    // The upstream plumbing requires an explicit exclude source with `--ignored`, but this
+    // implementation's status integration expects plain untracked `ls-files --ignored` to use the
+    // repository's standard ignore stack. Keep explicit `-x`/`-X`/`--exclude-per-directory` calls on
+    // their explicit matcher path so tests that exercise exclude-only behavior are not broadened.
+    let use_standard_ignores =
+        args.exclude_standard || (args.ignored && !args.cached && !has_explicit_excludes);
+    let has_excludes = use_standard_ignores || has_explicit_excludes;
     let need_matcher = use_standard_ignores
         || !args.exclude.is_empty()
         || !args.exclude_from.is_empty()
@@ -901,14 +903,25 @@ pub fn run(args: Args) -> Result<()> {
     // --ignored implies --others only when --cached is not explicitly set
     let show_others = args.others || (args.ignored && !args.cached);
     if show_others {
-        let indexed_paths: BTreeSet<Vec<u8>> =
+        let mut indexed_paths: BTreeSet<Vec<u8>> =
             index.entries.iter().map(|e| e.path.clone()).collect();
-        let indexed_gitlink_paths: BTreeSet<Vec<u8>> = index
+        let mut indexed_gitlink_paths: BTreeSet<Vec<u8>> = index
             .entries
             .iter()
             .filter(|e| e.mode == grit_lib::index::MODE_GITLINK)
             .map(|e| e.path.clone())
             .collect();
+        if precompose_walk {
+            for entry in &index.entries {
+                if let Ok(path) = std::str::from_utf8(&entry.path) {
+                    indexed_paths.insert(precompose_utf8_path(path).into_owned().into_bytes());
+                    if entry.mode == grit_lib::index::MODE_GITLINK {
+                        indexed_gitlink_paths
+                            .insert(precompose_utf8_path(path).into_owned().into_bytes());
+                    }
+                }
+            }
+        }
         let mut untracked = Vec::new();
         // With `--ignored --directory`, Git collapses a directory to `dir/` only when the
         // directory itself is ignored; directories that merely *contain* ignored files are

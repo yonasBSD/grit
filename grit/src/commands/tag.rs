@@ -14,6 +14,12 @@ use grit_lib::repo::Repository;
 use grit_lib::rev_parse::resolve_revision;
 
 use crate::porcelain_rev::{resolve_porcelain_commitish_filter, resolve_porcelain_points_at};
+use grit_lib::porcelain::tag::{
+    compare_version, creator_date, get_tag_annotation, strip_comments, tag_contains, tag_points_at,
+};
+// Re-exported so existing `crate::commands::tag::glob_matches` callers (e.g.
+// `commands/describe.rs`) keep resolving after the move into grit-lib.
+pub use grit_lib::porcelain::tag::glob_matches;
 use grit_lib::state::resolve_head;
 use std::fs;
 use std::io::{self, Write};
@@ -71,6 +77,10 @@ pub struct Args {
     /// Sort by key (e.g. `version:refname`, `creatordate`).
     #[arg(long = "sort")]
     pub sort: Option<String>,
+
+    /// Format to use when listing tags.
+    #[arg(long = "format")]
+    pub format: Option<String>,
 
     /// List only tags that contain the specified commit (defaults to HEAD).
     #[arg(long = "contains", num_args = 0..=1, default_missing_value = "HEAD")]
@@ -179,6 +189,7 @@ pub fn run(args: Args) -> Result<()> {
             args.contains.as_deref(),
             args.no_contains.as_deref(),
             args.points_at.as_deref(),
+            args.format.as_deref(),
         );
     }
 
@@ -414,6 +425,7 @@ fn list_tags(
     contains: Option<&str>,
     no_contains: Option<&str>,
     points_at: Option<&str>,
+    format: Option<&str>,
 ) -> Result<()> {
     let mut tags: Vec<(String, ObjectId)> = grit_lib::refs::list_refs(&repo.git_dir, "refs/tags/")
         .map_err(|e| anyhow::anyhow!("{e}"))?
@@ -463,7 +475,10 @@ fn list_tags(
     let mut out = stdout.lock();
 
     for (name, oid) in &tags {
-        if let Some(n) = lines {
+        if let Some(format) = format {
+            let line = format_tag_line(repo, name, oid, format)?;
+            writeln!(out, "{line}")?;
+        } else if let Some(n) = lines {
             let annotation = get_tag_annotation(repo, oid, n);
             // When -n is specified, always pad name to 15 chars (git behavior)
             if let Some(ann) = annotation {
@@ -482,116 +497,63 @@ fn list_tags(
     Ok(())
 }
 
-/// Get annotation text for a tag (up to `n` lines).
-///
-/// Returns `None` if the tag has no annotation (lightweight) or n==0.
-fn get_tag_annotation(repo: &Repository, oid: &ObjectId, n: u32) -> Option<String> {
-    if n == 0 {
-        return None;
-    }
-    let obj = repo.odb.read(oid).ok()?;
-    let tag = parse_tag(&obj.data).ok()?;
-    if tag.message.trim().is_empty() {
-        return None;
-    }
-    let lines: Vec<&str> = tag
-        .message
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .take(n as usize)
-        .collect();
-    if lines.is_empty() {
-        return None;
-    }
-    Some(lines.join(" "))
-}
-
-/// Check if a tag contains (has reachable ancestry from) a commit.
-///
-/// Peels the tag ref to a commit, then walks ancestors.
-fn tag_contains(repo: &Repository, tag_oid: &ObjectId, target: &ObjectId) -> bool {
-    // Peel to commit
-    let commit_oid = match peel_to_commit(repo, tag_oid) {
-        Some(oid) => oid,
-        None => return false,
-    };
-
-    if &commit_oid == target {
-        return true;
-    }
-
-    // BFS/DFS walk
-    let mut visited = std::collections::HashSet::new();
-    let mut queue = std::collections::VecDeque::new();
-    queue.push_back(commit_oid);
-
-    while let Some(oid) = queue.pop_front() {
-        if !visited.insert(oid) {
+fn format_tag_line(repo: &Repository, name: &str, oid: &ObjectId, format: &str) -> Result<String> {
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < format.len() {
+        if let Some(rest) = format[i..].strip_prefix("%%") {
+            out.push('%');
+            i = format.len() - rest.len();
             continue;
         }
-        if &oid == target {
-            return true;
+        if let Some(rest) = format[i..].strip_prefix("%(") {
+            let Some(close) = rest.find(')') else {
+                bail!("unterminated format atom");
+            };
+            let atom = &rest[..close];
+            out.push_str(&expand_tag_atom(repo, name, oid, atom)?);
+            i += 2 + close + 1;
+            continue;
         }
-        if let Ok(obj) = repo.odb.read(&oid) {
-            if obj.kind == ObjectKind::Commit {
-                if let Ok(commit) = parse_commit(&obj.data) {
-                    for parent in commit.parents {
-                        if !visited.contains(&parent) {
-                            queue.push_back(parent);
-                        }
-                    }
-                }
-            }
-        }
+        let ch = format[i..].chars().next().unwrap_or_default();
+        out.push(ch);
+        i += ch.len_utf8();
     }
-
-    false
+    Ok(out)
 }
 
-/// Check if a tag points at (or peels to) a given object.
-fn tag_points_at(repo: &Repository, tag_oid: &ObjectId, target: &ObjectId) -> bool {
-    if tag_oid == target {
-        return true;
-    }
-    // Peel through tag objects
-    let mut current = *tag_oid;
-    for _ in 0..10 {
-        let obj = match repo.odb.read(&current) {
-            Ok(o) => o,
-            Err(_) => return false,
-        };
-        match obj.kind {
-            ObjectKind::Tag => {
-                let tag = match parse_tag(&obj.data) {
-                    Ok(t) => t,
-                    Err(_) => return false,
-                };
-                if &tag.object == target {
-                    return true;
-                }
-                current = tag.object;
+fn expand_tag_atom(repo: &Repository, name: &str, oid: &ObjectId, atom: &str) -> Result<String> {
+    let (base, modifier) = atom
+        .find(':')
+        .map(|p| (&atom[..p], Some(&atom[p + 1..])))
+        .unwrap_or((atom, None));
+    match base {
+        "refname" => match modifier {
+            Some("short") | None => Ok(name.to_owned()),
+            Some(m) => bail!("unrecognized %(refname) argument: {m}"),
+        },
+        "objectname" => match modifier {
+            None => Ok(oid.to_hex()),
+            Some("short") => Ok(oid.to_hex()[..7.min(oid.to_hex().len())].to_owned()),
+            Some(m) => bail!("unrecognized %(objectname) argument: {m}"),
+        },
+        "contents" => {
+            let obj = repo.odb.read(oid)?;
+            let message = match obj.kind {
+                ObjectKind::Tag => parse_tag(&obj.data)?.message,
+                ObjectKind::Commit => parse_commit(&obj.data)?.message,
+                _ => String::new(),
+            };
+            match modifier {
+                Some("subject") => Ok(grit_lib::commit_pretty::message_subject(&message)),
+                Some("body") => Ok(grit_lib::commit_pretty::message_body(&message).to_owned()),
+                Some("size") => Ok(message.len().to_string()),
+                Some("") | None => Ok(message),
+                Some(m) => bail!("unsupported contents modifier: {m}"),
             }
-            _ => return false,
         }
+        _ => bail!("unsupported format atom: {base}"),
     }
-    false
-}
-
-/// Peel an object to a commit OID (following tags).
-fn peel_to_commit(repo: &Repository, oid: &ObjectId) -> Option<ObjectId> {
-    let mut current = *oid;
-    for _ in 0..10 {
-        let obj = repo.odb.read(&current).ok()?;
-        match obj.kind {
-            ObjectKind::Commit => return Some(current),
-            ObjectKind::Tag => {
-                let tag = parse_tag(&obj.data).ok()?;
-                current = tag.object;
-            }
-            _ => return None,
-        }
-    }
-    None
 }
 
 /// Sort tags by the requested key.
@@ -667,112 +629,7 @@ fn sort_tags(
     }
 }
 
-/// Extract the "creator date" for a tag object.
-///
-/// For annotated tags, this is the tagger date.  For lightweight tags
-/// (which point directly at a commit), this is the committer date.
-/// Returns 0 if the date cannot be determined.
-fn creator_date(repo: &Repository, oid: &ObjectId) -> i64 {
-    let obj = match repo.odb.read(oid) {
-        Ok(o) => o,
-        Err(_) => return 0,
-    };
-    match obj.kind {
-        ObjectKind::Tag => {
-            // Parse tagger line for epoch
-            if let Ok(tag) = parse_tag(&obj.data) {
-                if let Some(ref tagger) = tag.tagger {
-                    return parse_epoch_from_ident(tagger);
-                }
-            }
-            0
-        }
-        ObjectKind::Commit => {
-            if let Ok(commit) = parse_commit(&obj.data) {
-                parse_epoch_from_ident(&commit.committer)
-            } else {
-                0
-            }
-        }
-        _ => 0,
-    }
-}
-
-/// Extract the epoch timestamp from a Git identity string.
-///
-/// Format: `Name <email> <epoch> <offset>`
-fn parse_epoch_from_ident(ident: &str) -> i64 {
-    // The epoch is the second-to-last token
-    let parts: Vec<&str> = ident.rsplitn(3, ' ').collect();
-    if parts.len() >= 2 {
-        parts[1].parse().unwrap_or(0)
-    } else {
-        0
-    }
-}
-
-/// Compare two tag names as version strings (for `version:refname`).
-///
-/// Splits each name on `.` and `-` boundaries, comparing numeric segments
-/// numerically and non-numeric segments lexicographically.  This matches
-/// the behaviour of `git tag --sort=version:refname` (strverscmp-like).
-fn compare_version(a: &str, b: &str) -> std::cmp::Ordering {
-    let seg_a = version_segments(a);
-    let seg_b = version_segments(b);
-    for (sa, sb) in seg_a.iter().zip(seg_b.iter()) {
-        let ord = match (sa.parse::<u64>(), sb.parse::<u64>()) {
-            (Ok(na), Ok(nb)) => na.cmp(&nb),
-            _ => sa.cmp(sb),
-        };
-        if ord != std::cmp::Ordering::Equal {
-            return ord;
-        }
-    }
-    seg_a.len().cmp(&seg_b.len())
-}
-
-/// Split a version string into segments at `.` and `-` boundaries.
-fn version_segments(s: &str) -> Vec<&str> {
-    // Split on `.` and `-` keeping non-empty pieces
-    s.split(['.', '-']).filter(|seg| !seg.is_empty()).collect()
-}
-
 /// Build the tag message from CLI args.
-/// Strip #comment lines from a message and normalize whitespace.
-/// Also: strip trailing whitespace from each line, collapse multiple blank lines to one.
-fn strip_comments(s: &str) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    for line in s.lines() {
-        if line.starts_with('#') {
-            continue;
-        }
-        lines.push(line.trim_end().to_string());
-    }
-    // Remove leading blank lines
-    while lines.first().map(|l| l.is_empty()).unwrap_or(false) {
-        lines.remove(0);
-    }
-    // Remove trailing blank lines
-    while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
-        lines.pop();
-    }
-    if lines.is_empty() {
-        return String::new();
-    }
-    // Collapse multiple consecutive blank lines to at most one
-    let mut result = Vec::new();
-    let mut last_blank = false;
-    for line in &lines {
-        let is_blank = line.is_empty();
-        if is_blank && last_blank {
-            continue; // skip extra blank lines
-        }
-        result.push(line.clone());
-        last_blank = is_blank;
-    }
-    result.join("\n") + "\n"
-}
-
 fn build_tag_message(args: &Args) -> Result<String> {
     if !args.message.is_empty() {
         let msg = args.message.join("\n\n");
@@ -821,53 +678,11 @@ fn resolve_tagger(config: &ConfigSet, now: OffsetDateTime) -> Result<String> {
 
     let date_str = std::env::var("GIT_COMMITTER_DATE").ok();
     let timestamp = match date_str {
-        Some(d) => crate::commands::commit::parse_date_to_git_timestamp(&d).unwrap_or(d),
-        None => format_git_timestamp(now),
+        Some(d) => grit_lib::commit::parse_date_to_git_timestamp(&d).unwrap_or(d),
+        None => grit_lib::commit::format_git_timestamp(now),
     };
 
     Ok(format!("{name} <{email}> {timestamp}"))
-}
-
-/// Format a timestamp in Git's format: `<epoch> <offset>`.
-fn format_git_timestamp(dt: OffsetDateTime) -> String {
-    let epoch = dt.unix_timestamp();
-    let offset = dt.offset();
-    let hours = offset.whole_hours();
-    let minutes = offset.minutes_past_hour().unsigned_abs();
-    format!("{epoch} {hours:+03}{minutes:02}")
-}
-
-/// Simple glob pattern matching for tag names.
-///
-/// Supports `*` (matches any sequence) and `?` (matches any single character).
-pub fn glob_matches(pattern: &str, name: &str) -> bool {
-    glob_match_bytes(pattern.as_bytes(), name.as_bytes())
-}
-
-/// Recursive glob matcher.
-fn glob_match_bytes(pat: &[u8], text: &[u8]) -> bool {
-    match (pat.first(), text.first()) {
-        (None, None) => true,
-        (Some(&b'*'), _) => {
-            // Skip consecutive stars
-            let pat_rest = pat
-                .iter()
-                .position(|&b| b != b'*')
-                .map_or(&pat[pat.len()..], |i| &pat[i..]);
-            if pat_rest.is_empty() {
-                return true;
-            }
-            for i in 0..=text.len() {
-                if glob_match_bytes(pat_rest, &text[i..]) {
-                    return true;
-                }
-            }
-            false
-        }
-        (Some(&b'?'), Some(_)) => glob_match_bytes(&pat[1..], &text[1..]),
-        (Some(p), Some(t)) if p == t => glob_match_bytes(&pat[1..], &text[1..]),
-        _ => false,
-    }
 }
 
 /// Resolve HEAD to the current commit OID, if any.

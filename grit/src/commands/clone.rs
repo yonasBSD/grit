@@ -34,7 +34,7 @@ use crate::commands::submodule::{
 use crate::trace_run_command_git_invocation;
 use grit_lib::submodule_gitdir::{
     ensure_submodule_gitdir_config, submodule_gitdir_outer_conflict, submodule_path_config_enabled,
-    validate_submodule_path,
+    validate_submodule_path, write_submodule_gitfile,
 };
 
 fn expand_tilde_path(value: &str) -> String {
@@ -51,7 +51,12 @@ fn expand_tilde_path(value: &str) -> String {
 
 fn effective_template_dir(args: &Args) -> Option<PathBuf> {
     match &args.template {
-        Some(t) if t.is_empty() => None,
+        // `--template=` (explicit empty) means "use no template". Upstream Git's clone treats this
+        // as an empty template directory: `hooks/`, `info/`, `description`, and `branches/` are NOT
+        // created (they are template content), so a later `mkdir .git/info` in the harness succeeds
+        // (t1090). Return an empty path so `init_repository*`'s `skip_hooks_info` guard fires; the
+        // empty path is never `is_dir()`, so no template copy is attempted.
+        Some(t) if t.is_empty() => Some(PathBuf::new()),
         Some(t) => Some(PathBuf::from(t)),
         None => {
             if let Ok(tdir) = std::env::var("GIT_TEMPLATE_DIR") {
@@ -554,6 +559,12 @@ fn checkout_index_into_clone_worktree(repo: &Repository) -> Result<()> {
 }
 
 pub fn run(mut args: Args) -> Result<()> {
+    // `git clone` always sets `TRANS_OPT_KEEP` (builtin/clone.c), so fetch-pack keeps the
+    // received pack as a real `.pack` file instead of unpacking it into loose objects — the
+    // `transfer.unpackLimit` heuristic only applies to plain `git fetch`. Mirror this so a
+    // `--no-local` clone leaves objects under `objects/pack/` (`t5710` moves `pack-*` around).
+    std::env::set_var("GRIT_FETCH_KEEP_PACK", "1");
+
     // `git clone --mirror` is a bare clone into `<name>.git` with a full ref mirror;
     // the object store must live at `<repo>/objects/...`, not `<repo>/.git/objects/...`.
     if args.mirror {
@@ -743,9 +754,15 @@ pub fn run(mut args: Args) -> Result<()> {
         filter_spec.as_deref(),
         Some("blob:limit=0") | Some("blob:size=0")
     );
+    // The source's own promisor filter is only inherited when the client did NOT pass an explicit
+    // `--filter`; an explicit filter (e.g. `--filter=blob:limit=5k`) takes precedence and must not
+    // be silently downgraded to the source's `blob:none` (`t5710`: a `blob:limit` clone of a server
+    // whose LOP remote is recorded as `blob:none` must still keep small blobs).
+    let inherited_blob_none = args.filter.is_empty()
+        && inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
     let partial_blob_none = matches!(filter_spec.as_deref(), Some("blob:none"))
         || (partial_blob_limit_zero && uploadpack_filter_allowed(&source.git_dir))
-        || inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
+        || inherited_blob_none;
     let pack_filter_active = clone_pack_filter_active(&args, Some(&source.git_dir));
 
     let remote_name = resolve_remote_name(&args)?;
@@ -759,6 +776,7 @@ pub fn run(mut args: Args) -> Result<()> {
         let upload_cmd = args.upload_pack.as_deref().filter(|s| !s.trim().is_empty());
         let bundle_cli = args.bundle_uri.is_some();
         let request_bundle = crate::file_upload_pack_v2::transfer_bundle_uri_enabled();
+        let reference_object_dirs = resolve_reference_object_dirs(&args);
         let preflight_head = crate::fetch_transport::with_packet_trace_identity("clone", || {
             crate::file_upload_pack_v2::clone_preflight_file_v2_if_needed(
                 &source.git_dir,
@@ -766,15 +784,25 @@ pub fn run(mut args: Args) -> Result<()> {
                 request_bundle,
                 bundle_cli,
                 &server_options,
+                &reference_object_dirs,
             )
         })
         .context("file:// protocol v2 clone preflight")?;
         file_v2_preflight_head = Some(preflight_head);
     }
 
+    // `--branch <name>` may name a branch (refs/heads/<name>) or a tag (refs/tags/<name>):
+    // upstream's `find_remote_branch` tries heads first, then tags. A tag target makes the clone
+    // check out a detached HEAD at the tag and (under `--single-branch`) fetch only that tag.
+    let mut branch_is_tag = false;
     if let Some(branch) = args.branch.as_deref() {
         let remote_branch = format!("refs/heads/{branch}");
-        if !clone_ref_file_exists(&source.git_dir, &remote_branch) {
+        let remote_tag = format!("refs/tags/{branch}");
+        if clone_ref_file_exists(&source.git_dir, &remote_branch) {
+            // ordinary branch
+        } else if clone_ref_file_exists(&source.git_dir, &remote_tag) {
+            branch_is_tag = true;
+        } else {
             bail!("Remote branch {branch} not found in upstream {remote_name}");
         }
     }
@@ -835,10 +863,14 @@ pub fn run(mut args: Args) -> Result<()> {
         } else {
             args.repository.clone()
         }
-    } else if let Ok(abs) = source_path.canonicalize() {
-        abs.to_string_lossy().to_string()
     } else {
-        source_path.to_string_lossy().to_string()
+        // Git stores the remote URL as the *absolute* form of the literal path the user gave
+        // (builtin/clone.c `get_repo_path` -> `absolute_pathdup`): it prepends the cwd when the
+        // path is relative but does NOT normalize `.`/`..`/`./` away. So `git clone .` yields
+        // `<cwd>/.` and `git clone $pwd/submodule` yields `$pwd/submodule` verbatim. We mirror
+        // this so a later `git fetch`'s `From <url>` header matches Git (e.g. t5526 expects the
+        // superproject's `From <pwd>/.` but a submodule's `From <pwd>/submodule` with no `/.`).
+        absolute_clone_source_url(&source_path)
     };
 
     let use_upload_for_protocol_v1 = protocol_wire::effective_client_protocol_version() == 1
@@ -852,7 +884,17 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     // Branch to checkout: explicit -b/--branch, else guess from remote HEAD (Git semantics).
-    let head_branch = if args.branch.is_some() {
+    // When `--branch` names a tag, there is no local branch to create — HEAD is detached at the
+    // tag's target object.
+    let head_branch = if branch_is_tag {
+        if let Some(tag) = args.branch.as_deref() {
+            if let Some(oid) = ref_oid_hex_in_repo(&source.git_dir, &format!("refs/tags/{tag}")) {
+                source_head_symref = None;
+                source_head_oid = Some(oid);
+            }
+        }
+        None
+    } else if args.branch.is_some() {
         determine_head_branch(&source.git_dir, args.branch.as_deref())?
     } else if use_upload_for_protocol_v1 {
         None
@@ -875,6 +917,14 @@ pub fn run(mut args: Args) -> Result<()> {
     let template_dir = effective_template_dir(&args);
 
     let git_work_tree_env = std::env::var_os("GIT_WORK_TREE").filter(|v| !v.is_empty());
+
+    // Whether the `--separate-git-dir` target already existed (as an empty directory) before the
+    // clone. Mirrors upstream Git's `real_dest_exists`: if it pre-existed, a failed clone only
+    // clears its contents instead of removing the directory the user created.
+    let real_dest_exists = args
+        .separate_git_dir
+        .as_ref()
+        .is_some_and(|sep_git| sep_git.exists());
 
     let dest = if let Some(ref sep_git) = args.separate_git_dir {
         if sep_git.exists() && sep_git.read_dir()?.next().is_some() {
@@ -934,6 +984,34 @@ pub fn run(mut args: Args) -> Result<()> {
         .with_context(|| format!("failed to initialize '{}'", target_path.display()))?
     };
 
+    // Arm the cleanup guard now that the destination directories exist. On any later failure
+    // (object fetch, checkout, submodule clone, …) Drop removes what we wrote, matching upstream
+    // Git's `atexit(remove_junk)`. The git dir is the separate git dir, the bare target, or the
+    // work tree's `.git`; the work tree (when not bare) is the target directory. Pre-existing empty
+    // directories keep their top level (only their contents are cleaned).
+    let mut junk_guard = {
+        let work_tree = if args.bare {
+            None
+        } else {
+            dest.work_tree.clone().or_else(|| Some(target_path.clone()))
+        };
+        let git_dir = Some(dest.git_dir.clone());
+        // The separate git dir keeps its top level when it pre-existed; otherwise the rule follows
+        // whether the destination/work-tree directory pre-existed (empty_dir_ok).
+        let git_dir_keep_toplevel = if args.separate_git_dir.is_some() {
+            real_dest_exists
+        } else {
+            empty_dir_ok
+        };
+        JunkGuard {
+            work_tree,
+            work_tree_keep_toplevel: empty_dir_ok,
+            git_dir,
+            git_dir_keep_toplevel,
+            mode: JunkMode::LeaveNone,
+        }
+    };
+
     let mut head_branch = head_branch;
     let upload_pack_shallow_options = crate::fetch_transport::UploadPackShallowOptions {
         depth: args.depth,
@@ -943,6 +1021,16 @@ pub fn run(mut args: Args) -> Result<()> {
         unshallow: false,
     };
     let pack_filter_spec = filter_spec.as_deref().filter(|s| !s.trim().is_empty());
+
+    // Apply clone `-c key=value` overrides to the new repo's config *before* fetching. Git writes
+    // these into the destination config early so the fetch sees them; in particular the
+    // `promisor-remote` protocol capability needs `promisor.acceptFromServer` and the
+    // `remote.<lop>.{promisor,url,...}` entries already present when negotiating (`t5710`).
+    let mut clone_config_applied = false;
+    if !args.config.is_empty() {
+        apply_clone_config(&dest.git_dir, &args.config).context("applying -c config")?;
+        clone_config_applied = true;
+    }
 
     if let Some(ref bu) = args.bundle_uri {
         crate::bundle_uri::apply_bundle_uri(&dest.git_dir, bu, &target_name, true)?;
@@ -1103,7 +1191,8 @@ pub fn run(mut args: Args) -> Result<()> {
                 }
             }
             Err(e) => {
-                let _ = fs::remove_dir_all(&target_path);
+                // `junk_guard` (armed above) removes the partially created destination on return,
+                // honoring keep-toplevel for pre-existing empty directories.
                 return Err(e).context("clone via upload-pack (protocol.version=1) failed");
             }
         }
@@ -1114,6 +1203,18 @@ pub fn run(mut args: Args) -> Result<()> {
         // `--no-local` always negotiates via upload-pack. A shallow source (including an empty
         // `.git/shallow` file) disables Git's local clone optimization; use upload-pack instead of
         // copying objects / alternates (`t0411-clone-from-partial`, `t5605`).
+        //
+        // Set up `--reference` alternates *before* the fetch so the negotiation can borrow the
+        // reference's objects (Git records the alternate, then fetch-pack's `everything_local`
+        // skips wanting objects the reference already has). Without this an `--no-local
+        // --reference=P` clone would fetch the reference's objects too, so removing P later would
+        // not corrupt the clone (`t5604` "clone and dissociate from reference").
+        append_reference_alternates(
+            &dest.git_dir.join("objects"),
+            &args.reference,
+            &args.reference_if_able,
+        )
+        .context("adding --reference alternates")?;
         let upload_cmd = args.upload_pack.as_deref().filter(|s| !s.trim().is_empty());
         match crate::fetch_transport::with_packet_trace_identity("clone", || {
             crate::fetch_transport::fetch_via_upload_pack_skipping(
@@ -1136,7 +1237,8 @@ pub fn run(mut args: Args) -> Result<()> {
                 propagate_extensions_object_format(&source.git_dir, &dest.git_dir)?;
             }
             Err(e) => {
-                let _ = fs::remove_dir_all(&target_path);
+                // `junk_guard` (armed above) removes the partially created destination on return,
+                // honoring keep-toplevel for pre-existing empty directories.
                 return Err(e).context("clone via upload-pack (--no-local) failed");
             }
         }
@@ -1152,7 +1254,12 @@ pub fn run(mut args: Args) -> Result<()> {
     } else {
         let has_reference = !args.reference.is_empty() || !args.reference_if_able.is_empty();
         let try_hardlink_objects = !args.no_hardlinks && !args.repository.starts_with("file://");
-        if !has_reference {
+        // A genuine local-path clone (`git clone --reference G F H`, F a plain path) still copies
+        // the source's objects via `copy_or_link_directory`; `--reference` only adds an *extra*
+        // alternate. Only a `file://` clone borrows-without-copying when a reference is given
+        // (it fetches via upload-pack and the reference satisfies the wants — `t5604` test 8 vs 19).
+        let copy_source_objects = !has_reference || !is_file_url;
+        if copy_source_objects {
             copy_objects(&source.git_dir, &dest.git_dir, try_hardlink_objects)
                 .context("copying objects")?;
             merge_alternates_from_source_objects(&source.git_dir, &dest.git_dir.join("objects"))
@@ -1240,8 +1347,91 @@ pub fn run(mut args: Args) -> Result<()> {
                         format!("ref: refs/heads/{branch}\n"),
                     )?;
                 } else if let Some(ref oid) = source_head_oid {
+                    // A detached HEAD writes a raw OID. Upstream updates HEAD via
+                    // `UPDATE_REFS_DIE_ON_ERR` (no skip-verification), so the target object must
+                    // exist; if the source object store is missing it (e.g. a corrupted source),
+                    // the clone fails and `junk_guard` removes the partial destination. Branch
+                    // (symref) HEADs are written via an INITIAL transaction upstream, which skips
+                    // object verification, so only the detached case is checked here.
+                    verify_detached_head_object_present(&dest, oid)
+                        .context("setting detached HEAD")?;
                     fs::write(dest.git_dir.join("HEAD"), format!("{oid}\n"))?;
                 }
+            }
+        } else if branch_is_tag {
+            // `--branch <tag>`: HEAD is detached at the tag's target object. Per upstream
+            // `write_refspec_config`, only a `--single-branch` clone narrows the fetch
+            // refspec to `+refs/tags/<tag>:refs/tags/<tag>` and copies just the followed
+            // tags; a normal (multi-branch) clone keeps the default `+refs/heads/*` refspec
+            // and copies all branches as remote-tracking refs (`t5601` "checking out a tag").
+            let tag = args.branch.as_deref().unwrap_or_default();
+            if args.single_branch {
+                copy_followed_tags_for_tag_clone(&source.git_dir, &dest.git_dir, args.no_tags)
+                    .context("copying tags")?;
+            } else {
+                copy_refs_as_remote_filtered(
+                    &source.git_dir,
+                    &dest.git_dir,
+                    &remote_name,
+                    args.no_tags,
+                    None,
+                )
+                .context("copying refs")?;
+            }
+
+            let refspec = if args.single_branch {
+                format!("+refs/tags/{tag}:refs/tags/{tag}")
+            } else {
+                format!("+refs/heads/*:refs/remotes/{remote_name}/*")
+            };
+            if is_file_url {
+                setup_origin_remote_url(
+                    &dest.git_dir,
+                    remote_url_for_config.as_str(),
+                    &remote_name,
+                    &refspec,
+                )
+                .context("setting up origin remote")?;
+            } else {
+                setup_origin_remote(&dest.git_dir, &source_path, &remote_name, &refspec)
+                    .context("setting up origin remote")?;
+            }
+            setup_remote_tracking_head(
+                &dest.git_dir,
+                &remote_name,
+                &source.git_dir,
+                source_head_symref.as_deref(),
+                source_head_oid.as_deref(),
+            )?;
+
+            if let Some(ref oid) = source_head_oid {
+                verify_detached_head_object_present(&dest, oid).context("setting detached HEAD")?;
+                fs::write(dest.git_dir.join("HEAD"), format!("{oid}\n"))?;
+            }
+        } else if args.single_branch
+            && head_branch.is_none()
+            && source_head_symref.is_none()
+            && source_head_oid.is_some()
+        {
+            // `--single-branch` from a detached source HEAD: upstream's `guess_remote_head` cannot
+            // pick a branch to follow, so it writes no fetch refspec and no remote-tracking ref.
+            // Only the (object-present) tags are followed, and HEAD is detached at the source OID.
+            copy_followed_tags_for_tag_clone(&source.git_dir, &dest.git_dir, args.no_tags)
+                .context("copying tags")?;
+            if is_file_url {
+                setup_origin_remote_bare_url(
+                    &dest.git_dir,
+                    remote_url_for_config.as_str(),
+                    &remote_name,
+                )
+                .context("setting up origin remote")?;
+            } else {
+                setup_origin_remote_bare(&dest.git_dir, &source_path, &remote_name)
+                    .context("setting up origin remote")?;
+            }
+            if let Some(ref oid) = source_head_oid {
+                verify_detached_head_object_present(&dest, oid).context("setting detached HEAD")?;
+                fs::write(dest.git_dir.join("HEAD"), format!("{oid}\n"))?;
             }
         } else {
             // Non-bare clone: copy refs as remote-tracking refs
@@ -1339,7 +1529,9 @@ pub fn run(mut args: Args) -> Result<()> {
 
     apply_default_submodule_path_config_from_global(&dest.git_dir)?;
     // Apply -c config values (overrides global defaults such as submodulePathConfig).
-    if !args.config.is_empty() {
+    // These were already applied before the fetch (see `clone_config_applied`); re-applying would
+    // duplicate multi-valued entries (e.g. fetch refspecs), so only apply here if not done yet.
+    if !args.config.is_empty() && !clone_config_applied {
         apply_clone_config(&dest.git_dir, &args.config).context("applying -c config")?;
     }
     copy_configured_remote_fetch_refspecs(&source.git_dir, &dest.git_dir, &remote_name)
@@ -1385,6 +1577,15 @@ pub fn run(mut args: Args) -> Result<()> {
             .context("materializing tree:0 partial-clone object layout")?;
         initialize_partial_clone_state_from_missing(&dest, &remote_name, filter_spec, omitted)
             .context("initializing tree:0 partial-clone promisor state")?;
+    } else if let Some(spec) = filter_spec.as_deref().filter(|s| !s.trim().is_empty()) {
+        // Any other `--filter` clone (e.g. `blob:limit=<n>`): the server already omitted the
+        // filtered objects from the pack, so we don't materialize anything — we just register the
+        // clone remote as a promisor with this filter (Git's `partial_clone_register`), so a later
+        // checkout / `git diff` can lazily fetch the omitted blobs from the clone remote when the
+        // accepted LOP cannot serve them (`t5710` KnownName-missing-URL / KnownUrl-reject cases).
+        let omitted = collect_reachable_missing_oids_in_dest(&dest)?;
+        initialize_partial_clone_state_from_missing(&dest, &remote_name, spec, omitted)
+            .context("initializing filtered partial-clone promisor state")?;
     }
 
     // `materialize_blob_none_partial_layout` removes `objects/info/alternates`, so blobs
@@ -1479,6 +1680,12 @@ pub fn run(mut args: Args) -> Result<()> {
     let sparse_partial_skip =
         partial_blob_none && matches!(filter_spec.as_deref(), Some("blob:none")) && args.sparse;
 
+    // The repository (git dir + objects) is now fully populated. From here on a failure must leave
+    // the partial repo on disk so the user can inspect and retry, matching upstream Git's
+    // `junk_mode = JUNK_LEAVE_REPO` immediately before `checkout()` (builtin/clone.c). In
+    // particular, a checkout failure from a corrupt object keeps `<dest>/.git` (t1060).
+    junk_guard.leave_repo();
+
     // Checkout working tree unless --bare or --no-checkout.
     // Sparse partial clones already materialize tip files via promisor hydration.
     if !args.bare && !args.no_checkout && !sparse_partial_skip {
@@ -1537,6 +1744,13 @@ pub fn run(mut args: Args) -> Result<()> {
         }
     }
 
+    // Record the fetched remote-tracking refs in `packed-refs` (initial ref transaction), so a
+    // later up-to-date push does not re-create a loose tracking ref (t5516 'push preserves
+    // up-to-date packed refs'). Best-effort: a packing failure must not fail the clone.
+    let _ = crate::commands::pack_refs::pack_clone_tracking_refs(&dest.git_dir);
+
+    // Clone succeeded: keep the directories we created (upstream `junk_mode = JUNK_LEAVE_ALL`).
+    junk_guard.disarm();
     Ok(())
 }
 
@@ -2558,6 +2772,22 @@ fn initialize_partial_clone_state_http(
     Ok(())
 }
 
+/// Compute the local directory name for a clone, matching Git's `git clone` behavior.
+///
+/// When `--directory` / a positional target is given, Git strips trailing slashes from it;
+/// otherwise it guesses a "humanish" name from the raw repository URL via `git_url_basename`
+/// (`git/dir.c`). The `--bare` clone appends a `.git` suffix unless `--mirror` is also set
+/// (mirror clones keep the guessed name without the suffix), so we pass `is_bare` only when
+/// `args.bare && !args.mirror`.
+fn clone_target_dir_name(args: &Args) -> Result<String> {
+    if let Some(ref d) = args.directory {
+        return Ok(d.trim_end_matches('/').to_string());
+    }
+    let is_bare = args.bare && !args.mirror;
+    grit_lib::transport_path::git_url_basename(&args.repository, false, is_bare)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 /// Check whether a URL looks like an SSH-style `host:/path` address.
 ///
 /// Returns `false` for local paths, `file://` URLs, or URLs containing `://`.
@@ -2607,9 +2837,15 @@ fn run_ssh_clone(args: Args) -> Result<()> {
         filter_spec.as_deref(),
         Some("blob:limit=0") | Some("blob:size=0")
     );
+    // The source's own promisor filter is only inherited when the client did NOT pass an explicit
+    // `--filter`; an explicit filter (e.g. `--filter=blob:limit=5k`) takes precedence and must not
+    // be silently downgraded to the source's `blob:none` (`t5710`: a `blob:limit` clone of a server
+    // whose LOP remote is recorded as `blob:none` must still keep small blobs).
+    let inherited_blob_none = args.filter.is_empty()
+        && inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
     let partial_blob_none = matches!(filter_spec.as_deref(), Some("blob:none"))
         || (partial_blob_limit_zero && uploadpack_filter_allowed(&source.git_dir))
-        || inherited_partial_clone_filter_spec(&source.git_dir).as_deref() == Some("blob:none");
+        || inherited_blob_none;
     let pack_filter_active = clone_pack_filter_active(&args, Some(&source.git_dir));
 
     if effective_reject_shallow(&args) && source_repo_is_shallow(&source.git_dir) {
@@ -2623,26 +2859,7 @@ fn run_ssh_clone(args: Args) -> Result<()> {
     let server_options = effective_clone_server_options(&args, &remote_name)?;
     let ref_storage = resolved_clone_ref_storage(&args)?;
 
-    let path_for_basename = PathBuf::from(&spec.path);
-    let target_name = if let Some(ref d) = args.directory {
-        d.trim_end_matches('/').to_string()
-    } else {
-        let base = path_for_basename
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let base = base
-            .strip_suffix(".git")
-            .unwrap_or(&base)
-            .trim_end_matches('/')
-            .to_string();
-        if args.bare && !args.mirror {
-            format!("{base}.git")
-        } else {
-            base
-        }
-    };
+    let target_name = clone_target_dir_name(&args)?;
 
     let target_path = PathBuf::from(&target_name);
     let empty_dir_ok = path_is_empty_directory(&target_path);
@@ -3262,24 +3479,7 @@ fn run_ssh_network_clone(args: Args, spec: &crate::ssh_transport::SshUrl) -> Res
     }
 
     let remote_name = resolve_remote_name(&args)?;
-    let path_for_basename = PathBuf::from(&spec.path);
-    let target_name = args.directory.clone().unwrap_or_else(|| {
-        let base = path_for_basename
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let base = base
-            .strip_suffix(".git")
-            .unwrap_or(&base)
-            .trim_end_matches('/')
-            .to_string();
-        if args.bare && !args.mirror {
-            format!("{base}.git")
-        } else {
-            base
-        }
-    });
+    let target_name = clone_target_dir_name(&args)?;
     let target_path = PathBuf::from(&target_name);
     if target_path.exists() && !path_is_empty_directory(&target_path) {
         bail!(
@@ -3814,6 +4014,11 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                 &j.modules_dir,
                 &j.sub_dest,
             );
+            // Rewrite the absolute `gitdir:` left by `clone --separate-git-dir` into a relative
+            // gitlink (C Git's `connect_work_tree_and_git_dir`), so a copied/moved superproject
+            // keeps its submodule pointing at the copy's git dir (t7406).
+            write_submodule_gitfile(&j.sub_dest, &j.modules_dir)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             if let Some(strategy) = j.alternate_strategy.as_deref() {
                 crate::commands::submodule::write_submodule_alternate_inheritance_config(
                     &j.modules_dir,
@@ -3861,6 +4066,9 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                                 &j.modules_dir,
                                 &j.sub_dest,
                             );
+                            // Relative gitlink (see single-worker branch / C `connect_work_tree_and_git_dir`).
+                            write_submodule_gitfile(&j.sub_dest, &j.modules_dir)
+                                .map_err(|e| e.to_string())?;
                             if let Some(strategy) = j.alternate_strategy.as_deref() {
                                 crate::commands::submodule::write_submodule_alternate_inheritance_config(
                                     &j.modules_dir,
@@ -4182,6 +4390,119 @@ fn path_is_empty_directory(path: &Path) -> bool {
             .unwrap_or(false)
 }
 
+/// Recursively remove the contents of `dir` but keep `dir` itself.
+///
+/// Mirrors `remove_dir_recursively(..., REMOVE_DIR_KEEP_TOPLEVEL)` from upstream Git: every entry
+/// inside `dir` (files and nested directories) is deleted, but the top-level directory is left in
+/// place. Used when a clone fails into a directory the user created beforehand — Git only removes
+/// what it wrote, leaving the pre-existing (empty) directory behind.
+fn remove_dir_contents_keep_toplevel(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_dir = entry
+            .file_type()
+            .map(|ft| ft.is_dir())
+            .unwrap_or_else(|_| path.is_dir());
+        if is_dir {
+            let _ = fs::remove_dir_all(&path);
+        } else {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+/// Remove a junk path created during a failed clone.
+///
+/// When `keep_toplevel` is true the directory itself is preserved and only its contents are
+/// removed (the directory pre-existed, so the user owns it); otherwise the whole path is deleted.
+fn remove_junk_path(path: &Path, keep_toplevel: bool) {
+    if keep_toplevel {
+        remove_dir_contents_keep_toplevel(path);
+    } else {
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
+/// What a [`JunkGuard`] removes when dropped, mirroring upstream Git's `enum junk_mode`
+/// (builtin/clone.c).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JunkMode {
+    /// Remove both the git dir and work tree (the default while the repo is still being set up).
+    LeaveNone,
+    /// Leave the partially populated repository on disk; only warn the user. Git switches to this
+    /// mode immediately before the worktree checkout, so a checkout failure (e.g. a corrupt object)
+    /// keeps `<dest>/.git` and the index around for inspection instead of deleting everything.
+    LeaveRepo,
+    /// Leave everything in place (the clone succeeded). Equivalent to disarming the guard.
+    LeaveAll,
+}
+
+/// RAII cleanup guard mirroring upstream Git's `remove_junk` (builtin/clone.c).
+///
+/// On a failed clone, Git removes the git dir and work tree it created so the user does not have to
+/// clean up manually before retrying. If those directories already existed (empty) before the
+/// clone, only their contents are removed — the pre-existing directory is preserved.
+///
+/// The guard runs cleanup when dropped while in [`JunkMode::LeaveNone`]. Once the clone reaches the
+/// worktree checkout phase, [`JunkGuard::leave_repo`] switches it to [`JunkMode::LeaveRepo`] so a
+/// checkout failure leaves the repository intact (matching Git's `junk_mode = JUNK_LEAVE_REPO`).
+/// On success [`JunkGuard::disarm`] selects [`JunkMode::LeaveAll`] (Git's `JUNK_LEAVE_ALL`).
+struct JunkGuard {
+    /// Work tree directory to remove (absent for bare clones).
+    work_tree: Option<PathBuf>,
+    /// Keep the work tree's top-level directory (it pre-existed and was empty).
+    work_tree_keep_toplevel: bool,
+    /// Git directory to remove (e.g. `<dir>/.git`, the bare `<dir>`, or the separate git dir).
+    git_dir: Option<PathBuf>,
+    /// Keep the git dir's top-level directory (it pre-existed and was empty).
+    git_dir_keep_toplevel: bool,
+    /// Current cleanup mode. See [`JunkMode`].
+    mode: JunkMode,
+}
+
+impl JunkGuard {
+    /// Disarm the guard so dropping it performs no cleanup (the clone succeeded).
+    fn disarm(&mut self) {
+        self.mode = JunkMode::LeaveAll;
+    }
+
+    /// Switch to "leave the repo" cleanup: a later failure keeps the partial repository on disk and
+    /// only warns. Called before the worktree checkout so a corrupt-object checkout failure does not
+    /// delete `<dest>/.git` (upstream `junk_mode = JUNK_LEAVE_REPO`, t1060).
+    fn leave_repo(&mut self) {
+        self.mode = JunkMode::LeaveRepo;
+    }
+}
+
+impl Drop for JunkGuard {
+    fn drop(&mut self) {
+        match self.mode {
+            JunkMode::LeaveAll => return,
+            JunkMode::LeaveRepo => {
+                eprintln!(
+                    "warning: Clone succeeded, but checkout failed.\n\
+                     You can inspect what was checked out with 'git status'\n\
+                     and retry with 'git restore --source=HEAD :/'"
+                );
+                return;
+            }
+            JunkMode::LeaveNone => {}
+        }
+        // Upstream removes the git dir first, then the work tree. For a normal (non-separate)
+        // clone the git dir lives inside the work tree, so removing the work tree afterwards
+        // (keeping its top level when it pre-existed) also clears the leftover `.git` directory.
+        if let Some(ref git_dir) = self.git_dir {
+            remove_junk_path(git_dir, self.git_dir_keep_toplevel);
+        }
+        if let Some(ref work_tree) = self.work_tree {
+            remove_junk_path(work_tree, self.work_tree_keep_toplevel);
+        }
+    }
+}
+
 fn uploadpack_filter_allowed(git_dir: &Path) -> bool {
     let set = ConfigSet::load(Some(git_dir), true).unwrap_or_default();
     matches!(
@@ -4235,6 +4556,82 @@ fn transfer_fsck_objects_enabled() -> bool {
             .or_else(|| config.get_bool("transfer.fsckObjects")),
         Some(Ok(true))
     )
+}
+
+/// Whether a bundle-source fetch/clone should fsck its objects.
+///
+/// Mirrors git's `fetch_pack_fsck_objects`: `fetch.fsckObjects` wins when set,
+/// otherwise `transfer.fsckObjects`, defaulting to off. (`fetch.fsckObjects=false`
+/// therefore overrides `transfer.fsckObjects=true`.)
+fn bundle_fetch_fsck_enabled() -> bool {
+    let config = ConfigSet::load(None, true).unwrap_or_default();
+    let fetch = config
+        .get_bool("fetch.fsckobjects")
+        .or_else(|| config.get_bool("fetch.fsckObjects"));
+    if let Some(Ok(v)) = fetch {
+        return v;
+    }
+    matches!(
+        config
+            .get_bool("transfer.fsckobjects")
+            .or_else(|| config.get_bool("transfer.fsckObjects")),
+        Some(Ok(true))
+    )
+}
+
+/// Read per-message fsck severity overrides from `fetch.fsck.<msg-id>`.
+///
+/// Returns a lowercase-keyed map of message id to severity string (e.g.
+/// `"missingemail" -> "ignore"`). Mirrors git's `fetch.fsck.*` handling: a value
+/// of `ignore` demotes the check, anything else (`warn`, `error`, …) keeps it
+/// fatal for our purposes (we only distinguish ignore vs. not).
+fn bundle_fetch_fsck_severities() -> std::collections::HashMap<String, String> {
+    let config = ConfigSet::load(None, true).unwrap_or_default();
+    let mut map = std::collections::HashMap::new();
+    for entry in config.entries() {
+        if let Some(msg_id) = entry.key.strip_prefix("fetch.fsck.") {
+            if msg_id == "skiplist" {
+                continue;
+            }
+            if let Some(value) = entry.value.as_deref() {
+                map.insert(msg_id.to_ascii_lowercase(), value.to_ascii_lowercase());
+            }
+        }
+    }
+    map
+}
+
+/// fsck every object in a bundle's pack and fail on the first non-ignored issue.
+///
+/// `index-pack --fsck-objects` reports `error: object <oid>: <id>: <detail>` for a
+/// malformed object and exits non-zero; the t5607 test only requires the message
+/// id (e.g. `missingEmail`) to appear on stderr. A `fetch.fsck.<id>=ignore`
+/// override demotes the matching check so the clone still succeeds.
+fn bundle_clone_fsck_pack(pack_data: &[u8], odb: &grit_lib::odb::Odb) -> Result<()> {
+    let objects = grit_lib::unpack_objects::pack_bytes_to_object_map(pack_data, odb)
+        .map_err(|e| anyhow::anyhow!("unbundle failed: {e}"))?;
+    let severities = bundle_fetch_fsck_severities();
+
+    // Sort by oid for deterministic reporting order.
+    let mut entries: Vec<_> = objects.iter().collect();
+    entries.sort_by(|a, b| a.0.to_hex().cmp(&b.0.to_hex()));
+
+    for (oid, obj) in entries {
+        if let Err(err) = grit_lib::fsck_standalone::fsck_object(obj.kind, &obj.data) {
+            // A severity override of `ignore` demotes this specific check.
+            if severities
+                .get(&err.id.to_ascii_lowercase())
+                .map(String::as_str)
+                == Some("ignore")
+            {
+                continue;
+            }
+            eprintln!("error: object {}: {}", oid.to_hex(), err.report_line());
+            eprintln!("fatal: fsck error in pack objects");
+            return Err(crate::explicit_exit::SilentNonZeroExit { code: 128 }.into());
+        }
+    }
+    Ok(())
 }
 fn clone_filter_omits_root_trees(filter_spec: Option<&str>) -> bool {
     let Some(spec) = filter_spec.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -4340,6 +4737,20 @@ fn object_store_git_dir(git_dir: &Path) -> PathBuf {
 }
 
 /// Open a source repository (bare or non-bare).
+/// Resolve every `--reference` / `--reference-if-able` repo to its `objects` directory. Missing
+/// optional references are skipped; missing required references are skipped here too (the later
+/// `append_reference_alternates` reports the hard error) — this list is only used to suppress
+/// `want`s for objects the reference already holds.
+fn resolve_reference_object_dirs(args: &Args) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for reference in args.reference.iter().chain(args.reference_if_able.iter()) {
+        if let Ok(repo) = open_source_repo(&PathBuf::from(reference)) {
+            dirs.push(repo.git_dir.join("objects"));
+        }
+    }
+    dirs
+}
+
 fn open_source_repo(path: &Path) -> Result<Repository> {
     if path.is_file() {
         let work_tree = path.parent().map(Path::to_path_buf);
@@ -4583,47 +4994,91 @@ fn copy_objects(src_git_dir: &Path, dst_git_dir: &Path, try_hardlink: bool) -> R
     let src_objects = object_store_git_dir(src_git_dir).join("objects");
     let dst_objects = dst_git_dir.join("objects");
 
-    // Copy loose objects
-    if src_objects.is_dir() {
-        copy_dir_contents(&src_objects, &dst_objects, &["info", "pack"], try_hardlink)?;
-    }
-
-    // Copy pack files
-    let src_pack = src_objects.join("pack");
-    let dst_pack = dst_objects.join("pack");
-    if src_pack.is_dir() {
-        fs::create_dir_all(&dst_pack)?;
-        for entry in fs::read_dir(&src_pack)? {
-            let entry = entry?;
-            let src_file = entry.path();
-            if src_file.is_file() {
-                let dst_file = dst_pack.join(entry.file_name());
-                if dst_file.exists() {
-                    continue;
-                }
-                if try_hardlink && fs::hard_link(&src_file, &dst_file).is_ok() {
-                    continue;
-                }
-                // A concurrent `git maintenance`/repack on the source can remove a pack file
-                // between the directory scan and this copy. Treat a vanished source file as a
-                // skip rather than aborting the whole clone (Git's local clone is similarly
-                // robust to maintenance running on the source).
-                copy_skip_vanished_source(&src_file, &dst_file)?;
-            }
+    // Mirror Git's `copy_or_link_directory`: refuse to clone locally when the source's
+    // `objects` directory is itself a symlink (an adversary could point it at a sensitive
+    // directory). `lstat` the path before recursing.
+    if let Ok(meta) = fs::symlink_metadata(&src_objects) {
+        if meta.file_type().is_symlink() {
+            bail!(
+                "'{}' is a symlink, refusing to clone with --local",
+                src_objects.display()
+            );
         }
     }
 
-    // Copy objects/info if it exists (alternates, packs list, etc.)
-    let src_info = src_objects.join("info");
-    let dst_info = dst_objects.join("info");
-    if src_info.is_dir() {
-        fs::create_dir_all(&dst_info)?;
-        for entry in fs::read_dir(&src_info)? {
-            let entry = entry?;
-            if entry.path().is_file() {
-                let dst_file = dst_info.join(entry.file_name());
-                copy_skip_vanished_source(&entry.path(), &dst_file)?;
-            }
+    if src_objects.is_dir() {
+        fs::create_dir_all(&dst_objects)?;
+        copy_or_link_objects_tree(&src_objects, &dst_objects, Path::new(""), try_hardlink)?;
+    }
+
+    Ok(())
+}
+
+/// Recursively copy/hardlink the entire `objects` tree, faithfully replicating Git's
+/// `copy_or_link_directory` (builtin/clone.c). Every file and directory — including hidden,
+/// unknown, and garbage entries — is reproduced. Encountering any symlink aborts the clone
+/// with Git's "refusing to clone with --local" error; `info/alternates` is special-cased and
+/// resolved by the caller (`merge_alternates_from_source_objects`) rather than copied verbatim.
+fn copy_or_link_objects_tree(src: &Path, dst: &Path, rel: &Path, try_hardlink: bool) -> Result<()> {
+    let read = match fs::read_dir(src) {
+        Ok(rd) => rd,
+        // A concurrent repack can remove a whole fan-out directory while we walk it; treat a
+        // vanished source directory as nothing to copy rather than aborting the clone.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+
+    for entry in read {
+        let entry = entry?;
+        let name = entry.file_name();
+        let src_path = entry.path();
+        let dst_path = dst.join(&name);
+        let entry_rel = rel.join(&name);
+
+        let meta = match fs::symlink_metadata(&src_path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let ftype = meta.file_type();
+
+        if ftype.is_symlink() {
+            bail!(
+                "symlink '{}' exists, refusing to clone with --local",
+                entry_rel.display()
+            );
+        }
+
+        if ftype.is_dir() {
+            fs::create_dir_all(&dst_path)?;
+            copy_or_link_objects_tree(&src_path, &dst_path, &entry_rel, try_hardlink)?;
+            continue;
+        }
+
+        // `info/alternates` is resolved (relative paths rebased onto the source) by the caller
+        // rather than copied byte-for-byte; skip it here, matching Git's `copy_alternates`.
+        if entry_rel == Path::new("info/alternates") {
+            continue;
+        }
+
+        if dst_path.exists() {
+            continue;
+        }
+        if try_hardlink && fs::hard_link(&src_path, &dst_path).is_ok() {
+            continue;
+        }
+        // A concurrent `git maintenance`/repack on the source can remove a file between the
+        // directory scan and this copy. Treat a vanished source file as a skip rather than
+        // aborting the whole clone (Git's local clone is similarly robust).
+        copy_skip_vanished_source(&src_path, &dst_path)?;
+
+        // Git's local clone copies content but the destination takes the umask-default mode,
+        // not the source's possibly read-only 0444. Tests rely on being able to corrupt
+        // these files (e.g. commit-graph layers under `info/commit-graphs/`).
+        #[cfg(unix)]
+        if entry_rel.starts_with("info/commit-graphs") {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&dst_path, fs::Permissions::from_mode(0o644));
         }
     }
 
@@ -4646,45 +5101,6 @@ fn copy_skip_vanished_source(src: &Path, dst: &Path) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.into()),
     }
-}
-
-/// Copy directory contents recursively, skipping named subdirectories.
-fn copy_dir_contents(src: &Path, dst: &Path, skip_dirs: &[&str], try_hardlink: bool) -> Result<()> {
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-
-        if entry.file_type()?.is_dir() {
-            if skip_dirs.contains(&name_str.as_ref()) {
-                continue;
-            }
-            // This is a loose object fan-out directory (2-char hex prefix)
-            let dst_dir = dst.join(&*name);
-            fs::create_dir_all(&dst_dir)?;
-            // A concurrent repack can remove a whole fan-out directory while we walk it; treat a
-            // vanished source directory as nothing to copy rather than aborting the clone.
-            let inner_rd = match fs::read_dir(entry.path()) {
-                Ok(rd) => rd,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.into()),
-            };
-            for inner in inner_rd {
-                let inner = inner?;
-                if inner.file_type()?.is_file() {
-                    let dst_file = dst_dir.join(inner.file_name());
-                    if dst_file.exists() {
-                        continue;
-                    }
-                    if try_hardlink && fs::hard_link(inner.path(), &dst_file).is_ok() {
-                        continue;
-                    }
-                    copy_skip_vanished_source(&inner.path(), &dst_file)?;
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Fail early when the source has obviously corrupt ref files under `refs/heads` or `refs/tags`,
@@ -4898,6 +5314,32 @@ fn match_refspec_glob<'a>(refname: &'a str, prefix: &str, suffix: &str) -> Optio
     refname
         .strip_prefix(prefix)
         .and_then(|rest| rest.strip_suffix(suffix))
+}
+
+/// Write source tags into the destination for a `--branch <tag>` clone.
+///
+/// Mirrors upstream `write_followtags`: every tag whose target object was transferred (for a local
+/// clone, the whole object store is copied, so all tags qualify) is written under `refs/tags/`.
+/// With `--no-tags`, no tags are written here (the explicit `+refs/tags/<tag>:refs/tags/<tag>`
+/// refspec still fetches the named tag on a subsequent `git fetch`).
+fn copy_followed_tags_for_tag_clone(
+    src_git_dir: &Path,
+    dst_git_dir: &Path,
+    no_tags: bool,
+) -> Result<()> {
+    if no_tags {
+        return Ok(());
+    }
+    let dst_odb = grit_lib::odb::Odb::new(&dst_git_dir.join("objects"));
+    let tags =
+        grit_lib::refs::list_refs(src_git_dir, "refs/tags/").map_err(|e| anyhow::anyhow!("{e}"))?;
+    for (refname, oid) in &tags {
+        if !dst_odb.exists(oid) {
+            continue;
+        }
+        clone_write_direct_ref(dst_git_dir, refname, &oid.to_hex())?;
+    }
+    Ok(())
 }
 
 /// Copy refs from source into remote-tracking refs in the destination.
@@ -5156,6 +5598,28 @@ fn copy_refs_direct(src_git_dir: &Path, dst_git_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Write the default `remote.<name>.fetch` refspec without clobbering one that `clone -c`
+/// already supplied.
+///
+/// `git clone -c remote.<name>.fetch=<spec>` writes the user's refspec into the destination
+/// config *before* the clone machinery records the default tracking refspec. Upstream Git appends
+/// the default with `git_config_set_multivar_in_file_gently` (see `write_followtags`/
+/// `write_refspec_config` in `builtin/clone.c`), so the result is multi-valued: the user's spec
+/// first, then the default. Mirror that — only overwrite when no fetch entry exists yet.
+fn write_default_remote_fetch(
+    config: &mut ConfigFile,
+    remote_name: &str,
+    refspec: &str,
+) -> Result<()> {
+    let key = format!("remote.{remote_name}.fetch");
+    if config.get(&key).is_some() {
+        config.add_value(&key, refspec)?;
+    } else {
+        config.set(&key, refspec)?;
+    }
+    Ok(())
+}
+
 /// Set up the "origin" remote in the destination config (non-bare).
 fn setup_origin_remote(
     git_dir: &Path,
@@ -5169,13 +5633,10 @@ fn setup_origin_remote(
         None => ConfigFile::parse(&config_path, "", ConfigScope::Local)?,
     };
 
-    let abs_source = source_path
-        .canonicalize()
-        .unwrap_or_else(|_| source_path.to_path_buf());
-    let url = abs_source.to_string_lossy().to_string();
+    let url = absolute_clone_source_url(source_path);
 
     config.set(&format!("remote.{remote_name}.url"), &url)?;
-    config.set(&format!("remote.{remote_name}.fetch"), refspec)?;
+    write_default_remote_fetch(&mut config, remote_name, refspec)?;
     config.write().context("writing config")?;
 
     Ok(())
@@ -5189,15 +5650,28 @@ fn setup_origin_remote_bare(git_dir: &Path, source_path: &Path, remote_name: &st
         None => ConfigFile::parse(&config_path, "", ConfigScope::Local)?,
     };
 
-    let abs_source = source_path
-        .canonicalize()
-        .unwrap_or_else(|_| source_path.to_path_buf());
-    let url = abs_source.to_string_lossy().to_string();
+    let url = absolute_clone_source_url(source_path);
 
     config.set(&format!("remote.{remote_name}.url"), &url)?;
     config.write().context("writing config")?;
 
     Ok(())
+}
+
+/// Absolute form of a local clone source path, matching Git's `absolute_pathdup`: prepend the
+/// current directory when relative, but leave `.`/`..`/`./` components untouched (no
+/// normalization). Symlinks in the *parent* of the source are resolved (Git resolves the cwd via
+/// `getcwd`) by canonicalizing the existing directory portion and re-appending the literal final
+/// component, so `git clone .` yields `<cwd>/.` while `git clone /abs/submodule` stays verbatim.
+fn absolute_clone_source_url(source_path: &Path) -> String {
+    if source_path.is_absolute() {
+        return source_path.to_string_lossy().to_string();
+    }
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c.canonicalize().unwrap_or(c),
+        Err(_) => return source_path.to_string_lossy().to_string(),
+    };
+    cwd.join(source_path).to_string_lossy().to_string()
 }
 
 fn setup_origin_remote_bare_url(git_dir: &Path, remote_url: &str, remote_name: &str) -> Result<()> {
@@ -5223,7 +5697,7 @@ fn setup_origin_remote_url(
         None => ConfigFile::parse(&config_path, "", ConfigScope::Local)?,
     };
     config.set(&format!("remote.{remote_name}.url"), remote_url)?;
-    config.set(&format!("remote.{remote_name}.fetch"), refspec)?;
+    write_default_remote_fetch(&mut config, remote_name, refspec)?;
     config.write().context("writing config")?;
     Ok(())
 }
@@ -5567,6 +6041,32 @@ fn promisor_ref_list(repo: &Repository) -> Result<String> {
 /// remote), which upstream tolerates ("tolerate server not sending target of tag"). It only fails
 /// when a ref itself points directly at an object the server neither sent nor promised — Git's
 /// "did not send all necessary objects" ("upon cloning, check that all refs point to objects").
+/// Verify that the object a detached HEAD will point to exists in the destination object store.
+///
+/// Mirrors upstream Git, which writes a detached HEAD via `refs_update_ref(..., REF_NO_DEREF,
+/// UPDATE_REFS_DIE_ON_ERR)` — an update that verifies the target object is present. A bare local
+/// clone of a source whose object store is missing the HEAD commit (e.g. corrupted source) must
+/// therefore fail rather than silently produce a dangling HEAD.
+///
+/// Promisor (partially cloned) objects are treated as present, matching upstream's allowance for
+/// objects the promisor remote will lazily provide.
+///
+/// # Errors
+/// Returns an error when `oid_hex` is not a valid object id, or when the object is absent from the
+/// destination object store and is not a promised (promisor) object.
+fn verify_detached_head_object_present(dest: &Repository, oid_hex: &str) -> Result<()> {
+    let oid = ObjectId::from_hex(oid_hex)
+        .with_context(|| format!("invalid HEAD object id '{oid_hex}'"))?;
+    if dest.odb.read(&oid).is_ok() {
+        return Ok(());
+    }
+    let promised = grit_lib::promisor::promisor_pack_object_ids(&dest.git_dir.join("objects"));
+    if promised.contains(&oid) {
+        return Ok(());
+    }
+    bail!("unable to update HEAD: object {oid_hex} is missing")
+}
+
 fn check_clone_ref_tip_connectivity(dest: &Repository) -> Result<()> {
     let promised = grit_lib::promisor::promisor_pack_object_ids(&dest.git_dir.join("objects"));
 
@@ -5862,6 +6362,72 @@ fn collect_reachable_blob_oids_from_dest_refs(
     Ok(blobs)
 }
 
+/// Walk `HEAD`'s commit/tree graph in `dest` and collect blob OIDs reachable but **not present**
+/// in the destination ODB — i.e. the objects the server omitted for a `--filter` clone. Used to
+/// seed the promisor "missing" marker so a later checkout / diff lazily fetches them (`t5710`).
+fn collect_reachable_missing_oids_in_dest(dest: &Repository) -> Result<HashSet<ObjectId>> {
+    let mut missing = HashSet::new();
+    let mut seen_commits = HashSet::new();
+    let mut seen_trees = HashSet::new();
+    let mut seen_tags = HashSet::new();
+    let mut queue = VecDeque::new();
+
+    for refname in ["HEAD"] {
+        if let Ok(oid) = grit_lib::refs::resolve_ref(&dest.git_dir, refname) {
+            queue.push_back(oid);
+        }
+    }
+
+    while let Some(oid) = queue.pop_front() {
+        let obj = match dest.odb.read(&oid) {
+            Ok(obj) => obj,
+            Err(_) => {
+                // A reachable object we don't have locally: record it as missing.
+                missing.insert(oid);
+                continue;
+            }
+        };
+        match obj.kind {
+            ObjectKind::Commit => {
+                if !seen_commits.insert(oid) {
+                    continue;
+                }
+                let commit = parse_commit(&obj.data)?;
+                for p in &commit.parents {
+                    queue.push_back(*p);
+                }
+                queue.push_back(commit.tree);
+            }
+            ObjectKind::Tree => {
+                if !seen_trees.insert(oid) {
+                    continue;
+                }
+                for entry in parse_tree(&obj.data)? {
+                    if entry.mode == 0o160000 {
+                        continue;
+                    }
+                    if (entry.mode & 0o170000) == 0o040000 {
+                        queue.push_back(entry.oid);
+                    } else if !dest.odb.exists(&entry.oid) {
+                        missing.insert(entry.oid);
+                    }
+                }
+            }
+            ObjectKind::Tag => {
+                if !seen_tags.insert(oid) {
+                    continue;
+                }
+                if let Ok(tag) = parse_tag(&obj.data) {
+                    queue.push_back(tag.object);
+                }
+            }
+            ObjectKind::Blob => {}
+        }
+    }
+
+    Ok(missing)
+}
+
 /// Run `post-checkout` after clone: null old OID, new HEAD commit, branch flag `1`.
 fn run_post_checkout_after_clone(repo: &Repository) -> Result<()> {
     let head_content = fs::read_to_string(repo.git_dir.join("HEAD")).context("reading HEAD")?;
@@ -5911,6 +6477,24 @@ fn determine_head_branch(src_git_dir: &Path, requested: Option<&str>) -> Result<
 
 /// Read source `HEAD` as either a symref target or a raw object id.
 fn read_source_head_info(src_git_dir: &Path) -> (Option<String>, Option<String>) {
+    // Under `GIT_NAMESPACE`, a local clone must choose HEAD from the namespaced
+    // `refs/namespaces/<ns>/HEAD` (Git resolves this through the namespace-aware transport). The
+    // advertised symref target is the namespace-stripped logical ref (t5509 clone chooses HEAD).
+    if grit_lib::ref_namespace::ref_storage_prefix().is_some() {
+        match grit_lib::refs::read_symbolic_ref(src_git_dir, "HEAD") {
+            Ok(Some(target)) => {
+                let logical = grit_lib::ref_namespace::strip_namespace_prefix(&target).into_owned();
+                return (Some(logical), None);
+            }
+            _ => {
+                // No namespaced HEAD symref: fall back to a detached OID if HEAD resolves.
+                if let Ok(oid) = grit_lib::refs::resolve_ref(src_git_dir, "HEAD") {
+                    return (None, Some(oid.to_hex()));
+                }
+                return (None, None);
+            }
+        }
+    }
     let head_path = src_git_dir.join("HEAD");
     let Ok(content) = fs::read_to_string(&head_path) else {
         return (None, None);
@@ -6435,11 +7019,21 @@ fn run_bundle_clone(args: Args) -> Result<()> {
     // Unbundle pack data
     let pack_data = &data[pos..];
     if pack_data.len() >= 12 + 20 {
+        // Git's bundle-fetch transport runs `index-pack --fsck-objects` when
+        // fetch/transfer.fsckObjects is set (transport.c `fetch_refs_from_bundle`),
+        // so a bundle carrying malformed objects aborts the clone. Reproduce that
+        // content fsck before writing anything to the ODB.
+        if bundle_fetch_fsck_enabled() {
+            bundle_clone_fsck_pack(pack_data, &dest.odb)?;
+        }
         let opts = grit_lib::unpack_objects::UnpackOptions {
             strict: false,
             dry_run: false,
             quiet: true,
+            allowed_missing: Default::default(),
+            allow_promisor_missing_references: false,
             max_input_bytes: None,
+            ..Default::default()
         };
         grit_lib::unpack_objects::unpack_objects(&mut &pack_data[..], &dest.odb, &opts)
             .map_err(|e| anyhow::anyhow!("unbundle failed: {e}"))?;

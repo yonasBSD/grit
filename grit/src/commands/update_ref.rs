@@ -434,6 +434,7 @@ fn run_batch(repo: &Repository, args: &Args) -> Result<()> {
             repo,
             args,
             &parts,
+            line,
             &mut transaction_active,
             &mut transaction_prepared,
             &mut staged,
@@ -453,13 +454,15 @@ fn run_batch(repo: &Repository, args: &Args) -> Result<()> {
 }
 
 fn run_implicit_stdin_batch(repo: &Repository, args: &Args, text: &str) -> Result<()> {
+    // Only mutating commands claim a ref for the duration of the transaction;
+    // two mutations targeting the same ref are rejected ("multiple updates for
+    // ref"). A `verify` is a read-only precondition check, so it may coexist
+    // with a later mutation of the same ref (e.g. `verify X <old>` followed by
+    // `update X <new> <old>`) — the verify simply runs first.
     let mut seen_refs = HashSet::new();
     for line in text.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if matches!(
-            parts.first().copied(),
-            Some("update" | "create" | "delete" | "verify")
-        ) {
+        if matches!(parts.first().copied(), Some("update" | "create" | "delete")) {
             if let Some(refname) = parts.get(1) {
                 if !seen_refs.insert((*refname).to_owned()) {
                     return Err(anyhow::Error::from(GritError::Message(format!(
@@ -490,6 +493,7 @@ fn run_implicit_stdin_batch(repo: &Repository, args: &Args, text: &str) -> Resul
             repo,
             args,
             &parts,
+            line,
             &mut transaction_active,
             &mut transaction_prepared,
             &mut staged,
@@ -734,16 +738,19 @@ fn queue_or_apply(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_batch_command(
     repo: &Repository,
     args: &Args,
     parts: &[&str],
+    raw_line: &str,
     transaction_active: &mut bool,
     transaction_prepared: &mut bool,
     staged: &mut Vec<(bool, BatchOp)>,
     pending_option_no_deref: &mut bool,
     implicit_one_shot: bool,
 ) -> Result<()> {
+    validate_batch_refname(parts[0], raw_line, args.null_terminated)?;
     match parts[0] {
         "update" => {
             let nd = take_batch_no_deref(args, pending_option_no_deref);
@@ -994,17 +1001,39 @@ fn process_batch_command(
     Ok(())
 }
 
+/// Split `-z` stdin into logical command lines.
+///
+/// Grit treats `-z` purely as a *line terminator*: NUL replaces the newline
+/// that separates whole commands, but the fields **within** a command are still
+/// whitespace-separated (e.g. `create refs/heads/x <oid>\0`). This differs from
+/// upstream `builtin/update-ref.c`, whose `-z` mode puts the command word, the
+/// refname, and each value in their own NUL-terminated fields. Grit's own ported
+/// suites (t10620, t11290) encode the line-terminator form, so we mirror that
+/// here and reuse the same whitespace tokenizer as the non-`-z` path.
+fn split_nul_lines(input: &[u8]) -> Result<Vec<String>> {
+    let mut lines = Vec::new();
+    for chunk in input.split(|b| *b == 0) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let line = std::str::from_utf8(chunk).context("invalid utf-8 in stdin")?;
+        lines.push(line.to_owned());
+    }
+    Ok(lines)
+}
+
 fn run_batch_nul(repo: &Repository, args: &Args, input: &[u8]) -> Result<()> {
+    let lines = split_nul_lines(input)?;
+
     if !stdin_chunks_explicit_transaction(input)? {
         let mut staged: Vec<(bool, BatchOp)> = Vec::new();
         let mut pending_option_no_deref = false;
         let mut transaction_active = false;
         let mut transaction_prepared = false;
-        for chunk in input.split(|b| *b == 0) {
-            if chunk.is_empty() {
+        for line in &lines {
+            if line.trim().is_empty() {
                 continue;
             }
-            let line = std::str::from_utf8(chunk).context("invalid utf-8 in stdin")?;
             if line.chars().next().is_some_and(|c| c.is_whitespace()) {
                 bail!("whitespace before command: {line}");
             }
@@ -1016,6 +1045,7 @@ fn run_batch_nul(repo: &Repository, args: &Args, input: &[u8]) -> Result<()> {
                 repo,
                 args,
                 &parts,
+                line,
                 &mut transaction_active,
                 &mut transaction_prepared,
                 &mut staged,
@@ -1034,11 +1064,10 @@ fn run_batch_nul(repo: &Repository, args: &Args, input: &[u8]) -> Result<()> {
     let mut staged: Vec<(bool, BatchOp)> = Vec::new();
     let mut pending_option_no_deref = false;
 
-    for chunk in input.split(|b| *b == 0) {
-        if chunk.is_empty() {
+    for line in &lines {
+        if line.trim().is_empty() {
             continue;
         }
-        let line = std::str::from_utf8(chunk).context("invalid utf-8 in stdin")?;
         if line.chars().next().is_some_and(|c| c.is_whitespace()) {
             bail!("whitespace before command: {line}");
         }
@@ -1050,6 +1079,7 @@ fn run_batch_nul(repo: &Repository, args: &Args, input: &[u8]) -> Result<()> {
             repo,
             args,
             &parts,
+            line,
             &mut transaction_active,
             &mut transaction_prepared,
             &mut staged,
@@ -1198,19 +1228,139 @@ fn validate_update_refname(refname: &str) -> Result<()> {
     .map_err(|_| anyhow::anyhow!("invalid ref format: {refname}"))
 }
 
-fn validate_delete_refname(refname: &str) -> Result<()> {
-    if validate_update_refname(refname).is_ok() {
+/// Commands whose first argument is a reference name and which must reject a
+/// badly formatted name with `fatal: invalid ref format: <ref>`, mirroring the
+/// `parse_refname()`/`check_refname_format()` check in `builtin/update-ref.c`.
+fn batch_command_takes_refname(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "update"
+            | "create"
+            | "delete"
+            | "verify"
+            | "symref-update"
+            | "symref-create"
+            | "symref-delete"
+            | "symref-verify"
+    )
+}
+
+/// Extract the raw reference name from the remainder of a stdin command line,
+/// matching `parse_refname()` in `builtin/update-ref.c`.
+///
+/// Without `-z` (`null_terminated == false`) the refname is the first
+/// whitespace-delimited argument, honoring backslash C-quoting. With `-z` the
+/// refname is everything up to the end of the field, preserving any trailing
+/// whitespace.
+fn extract_raw_refname(rest: &str, null_terminated: bool) -> Option<String> {
+    if null_terminated {
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(rest.to_owned());
+    }
+
+    let mut chars = rest.chars().peekable();
+    // Skip nothing: the caller has already trimmed the single delimiter space.
+    let mut out = String::new();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            break;
+        }
+        chars.next();
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                chars.next();
+                out.push(next);
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// Validate the reference name carried by a stdin batch command, emitting the
+/// `fatal: invalid ref format: <ref>` error Git produces for a bad name.
+fn validate_batch_refname(cmd: &str, raw_line: &str, null_terminated: bool) -> Result<()> {
+    if !batch_command_takes_refname(cmd) {
         return Ok(());
     }
-    let safe_namespace = refname == "HEAD" || refname.starts_with("refs/");
-    let unsafe_path = Path::new(refname).is_absolute()
-        || Path::new(refname).components().any(|component| {
-            matches!(
-                component,
-                std::path::Component::ParentDir | std::path::Component::CurDir
-            )
-        });
-    if safe_namespace && !unsafe_path {
+    // The refname follows the command word and a single delimiter character.
+    let rest = match raw_line.strip_prefix(cmd) {
+        Some(r) => r.strip_prefix(' ').unwrap_or(r),
+        None => return Ok(()),
+    };
+    // Mirror `parse_refname()` in `builtin/update-ref.c`: without `-z` the
+    // refname is the first whitespace-delimited (C-quoted) argument, but with
+    // `-z` the refname is *everything* up to the end of the current
+    // NUL-terminated field, including any trailing whitespace. The latter is why
+    // `create ~a \0refs/heads/main\0` reports the bad name as `~a ` (with the
+    // trailing space) rather than `~a`.
+    let Some(refname) = extract_raw_refname(rest, null_terminated) else {
+        return Ok(());
+    };
+    if check_refname_format(
+        &refname,
+        &RefNameOptions {
+            allow_onelevel: true,
+            refspec_pattern: false,
+            normalize: false,
+        },
+    )
+    .is_err()
+    {
+        return Err(anyhow::Error::from(GritError::Message(format!(
+            "fatal: invalid ref format: {refname}"
+        ))));
+    }
+    Ok(())
+}
+
+/// Port of `refname_is_safe()` from `refs.c`: a delete may target a ref that no
+/// longer passes `check_refname_format` (e.g. a broken name), but only if the
+/// name is "safe" — either it lives under `refs/` without escaping that prefix,
+/// or it is a root-style ref made solely of uppercase letters and underscores
+/// (e.g. `HEAD`).
+fn refname_is_safe(refname: &str) -> bool {
+    if let Some(rest) = refname.strip_prefix("refs/") {
+        if rest.is_empty() || rest.starts_with('/') || rest.ends_with('/') {
+            return false;
+        }
+        // The refname must not escape `refs/` once normalized.
+        return normalize_path_copy(rest).as_deref() == Some(rest);
+    }
+
+    if refname.is_empty() {
+        return false;
+    }
+    refname.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
+}
+
+/// Minimal port of `normalize_path_copy()` (collapse `.`/`..`/`//`). Returns
+/// `None` when the path tries to escape above its root (a leading `..`).
+fn normalize_path_copy(path: &str) -> Option<String> {
+    let mut out: Vec<&str> = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "" | "." => continue,
+            ".." => {
+                if out.pop().is_none() {
+                    return None;
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    Some(out.join("/"))
+}
+
+fn validate_delete_refname(refname: &str) -> Result<()> {
+    if refname_is_safe(refname) {
         Ok(())
     } else {
         bail!("refusing to update ref with bad name '{refname}'")

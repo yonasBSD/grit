@@ -119,6 +119,7 @@ pub fn run(args: Args) -> Result<()> {
         .as_deref()
         .map(|s| s.trim_end_matches('/'))
         .filter(|s| !s.is_empty());
+    let had_explicit_pathspec = !args.pathspec.is_empty();
     let pathspecs: Vec<String> = args
         .pathspec
         .iter()
@@ -141,16 +142,24 @@ pub fn run(args: Args) -> Result<()> {
     let pathspecs =
         grit_lib::pathspec::extend_pathspec_list_implicit_cwd(&pathspecs, cwd_for_resolve);
     let walk_root = if pathspecs.is_empty() {
-        match &cwd_prefix {
-            Some(p) if !p.is_empty() => work_tree.join(p),
-            _ => work_tree.clone(),
+        if had_explicit_pathspec {
+            work_tree.clone()
+        } else {
+            match &cwd_prefix {
+                Some(p) if !p.is_empty() => work_tree.join(p),
+                _ => work_tree.clone(),
+            }
         }
     } else {
         work_tree.clone()
     };
 
     let walk_prefix_for_specs = if pathspecs.is_empty() {
-        cwd_prefix.as_deref()
+        if had_explicit_pathspec {
+            None
+        } else {
+            cwd_prefix.as_deref()
+        }
     } else {
         None
     };
@@ -174,11 +183,7 @@ pub fn run(args: Args) -> Result<()> {
         &mut to_remove,
     )?;
 
-    to_remove.sort_by(|a, b| {
-        let depth_a = a.0.bytes().filter(|c| *c == b'/').count();
-        let depth_b = b.0.bytes().filter(|c| *c == b'/').count();
-        depth_b.cmp(&depth_a).then_with(|| a.0.cmp(&b.0))
-    });
+    sort_clean_targets_for_removal(&mut to_remove);
 
     // Apply `--exclude` (Git `-e`): glob match on path / basename only — do not use directory-prefix
     // semantics here (those affect what gets collected via `should_include_path_for_clean`, not
@@ -199,11 +204,12 @@ pub fn run(args: Args) -> Result<()> {
 
     if args.interactive
         && !args.dry_run
-        && !run_interactive_clean(&mut out, &args, &cwd, &work_tree, &to_remove)?
+        && !run_interactive_clean(&mut out, &args, &cwd, &work_tree, &mut to_remove)?
     {
         out.flush()?;
         return Ok(());
     }
+    sort_clean_targets_for_removal(&mut to_remove);
 
     for (path, is_dir) in &to_remove {
         if !args.quiet {
@@ -260,27 +266,96 @@ fn run_interactive_clean(
     args: &Args,
     cwd: &Path,
     work_tree: &Path,
-    to_remove: &[(String, bool)],
+    to_remove: &mut Vec<(String, bool)>,
 ) -> Result<bool> {
     if args.quiet {
         return Ok(true);
     }
-    writeln!(out, "Would remove the following items:")?;
-    if !to_remove.is_empty() {
-        write!(out, " ")?;
-        for (i, (path, is_dir)) in to_remove.iter().enumerate() {
-            if i > 0 {
-                write!(out, "  ")?;
+
+    let mut candidates = clean_targets_in_display_order(cwd, work_tree, to_remove);
+
+    loop {
+        print_interactive_clean_menu(out, cwd, work_tree, &candidates)?;
+        let Some(line) = read_interactive_clean_line() else {
+            writeln!(out, "Bye.")?;
+            return Ok(false);
+        };
+        let t = line.trim();
+        if t.is_empty() {
+            writeln!(out, "Bye.")?;
+            return Ok(false);
+        }
+        match parse_interactive_clean_command(t) {
+            Some(InteractiveCleanCommand::Clean) => {
+                *to_remove = candidates;
+                return Ok(true);
             }
-            let disp = path_for_clean_display(cwd, work_tree, path);
-            if *is_dir {
-                write!(out, "{disp}/")?;
-            } else {
-                write!(out, "{disp}")?;
+            Some(InteractiveCleanCommand::Filter) => {
+                run_interactive_clean_filter(out, cwd, work_tree, &mut candidates)?;
+            }
+            Some(InteractiveCleanCommand::Select) => {
+                run_interactive_clean_select(out, cwd, work_tree, &mut candidates)?;
+            }
+            Some(InteractiveCleanCommand::AskEach) => {
+                *to_remove = run_interactive_clean_ask(out, cwd, work_tree, &candidates)?;
+                return Ok(true);
+            }
+            Some(InteractiveCleanCommand::Quit) | None => {
+                writeln!(out, "Bye.")?;
+                return Ok(false);
+            }
+            Some(InteractiveCleanCommand::Help) => {
+                writeln!(
+                    out,
+                    "Prompt help: choose clean, filter, select, ask, quit, or help."
+                )?;
             }
         }
-        writeln!(out)?;
     }
+}
+
+#[derive(Clone, Copy)]
+enum InteractiveCleanCommand {
+    Clean,
+    Filter,
+    Select,
+    AskEach,
+    Quit,
+    Help,
+}
+
+fn parse_interactive_clean_command(input: &str) -> Option<InteractiveCleanCommand> {
+    match input {
+        "1" => Some(InteractiveCleanCommand::Clean),
+        "2" => Some(InteractiveCleanCommand::Filter),
+        "3" => Some(InteractiveCleanCommand::Select),
+        "4" => Some(InteractiveCleanCommand::AskEach),
+        "5" => Some(InteractiveCleanCommand::Quit),
+        "6" => Some(InteractiveCleanCommand::Help),
+        _ if "clean".starts_with(input) => Some(InteractiveCleanCommand::Clean),
+        _ if "filter by pattern".starts_with(input) || input == "f" => {
+            Some(InteractiveCleanCommand::Filter)
+        }
+        _ if "select by numbers".starts_with(input) || input == "s" => {
+            Some(InteractiveCleanCommand::Select)
+        }
+        _ if "ask each".starts_with(input) || input == "a" => {
+            Some(InteractiveCleanCommand::AskEach)
+        }
+        _ if "quit".starts_with(input) || input == "q" => Some(InteractiveCleanCommand::Quit),
+        _ if "help".starts_with(input) || input == "h" => Some(InteractiveCleanCommand::Help),
+        _ => None,
+    }
+}
+
+fn print_interactive_clean_menu(
+    out: &mut dyn Write,
+    cwd: &Path,
+    work_tree: &Path,
+    candidates: &[(String, bool)],
+) -> Result<()> {
+    writeln!(out, "Would remove the following items:")?;
+    print_interactive_clean_items(out, cwd, work_tree, candidates)?;
     writeln!(out, "*** Commands ***")?;
     writeln!(
         out,
@@ -292,23 +367,306 @@ fn run_interactive_clean(
     )?;
     write!(out, "What now> ")?;
     out.flush()?;
+    Ok(())
+}
 
+fn print_interactive_clean_items(
+    out: &mut dyn Write,
+    cwd: &Path,
+    work_tree: &Path,
+    candidates: &[(String, bool)],
+) -> Result<()> {
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    write!(out, " ")?;
+    for (i, (path, is_dir)) in candidates.iter().enumerate() {
+        if i > 0 {
+            write!(out, "  ")?;
+        }
+        write!(out, "{}", clean_display_item(cwd, work_tree, path, *is_dir))?;
+    }
+    writeln!(out)?;
+    Ok(())
+}
+
+fn read_interactive_clean_line() -> Option<String> {
     let mut line = String::new();
     let n = io::stdin().read_line(&mut line).unwrap_or(0);
-    let t = line.trim();
-    if n == 0 || t.is_empty() {
-        writeln!(out, "Bye.")?;
-        return Ok(false);
+    if n == 0 || line.contains('\u{4}') {
+        return None;
     }
-    let proceed = t == "1"
-        || t.eq_ignore_ascii_case("clean")
-        || t.starts_with('c')
-        || t.eq_ignore_ascii_case("cl");
-    if !proceed {
-        writeln!(out, "Bye.")?;
-        return Ok(false);
+    Some(line.trim_end_matches(['\n', '\r']).to_string())
+}
+
+fn run_interactive_clean_filter(
+    out: &mut dyn Write,
+    cwd: &Path,
+    work_tree: &Path,
+    candidates: &mut Vec<(String, bool)>,
+) -> Result<()> {
+    loop {
+        print_interactive_clean_items(out, cwd, work_tree, candidates)?;
+        write!(out, "Input ignore patterns>> ")?;
+        out.flush()?;
+        let Some(line) = read_interactive_clean_line() else {
+            return Ok(());
+        };
+        let patterns: Vec<&str> = line.split_whitespace().collect();
+        if patterns.is_empty() {
+            return Ok(());
+        }
+        candidates.retain(|(path, is_dir)| clean_filter_keeps_candidate(path, *is_dir, &patterns));
     }
-    Ok(true)
+}
+
+fn clean_filter_keeps_candidate(path: &str, is_dir: bool, patterns: &[&str]) -> bool {
+    let mut keep = true;
+    for pattern in patterns {
+        let (negated, pattern) = pattern
+            .strip_prefix('!')
+            .map_or((false, *pattern), |p| (true, p));
+        if pattern.is_empty() {
+            continue;
+        }
+        if interactive_clean_pattern_matches(path, is_dir, pattern) {
+            keep = negated;
+        }
+    }
+    keep
+}
+
+fn interactive_clean_pattern_matches(path: &str, is_dir: bool, pattern: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    let basename = path.rsplit('/').next().unwrap_or(path);
+    if matches_exclude_glob_only(path, pattern) {
+        return true;
+    }
+    let plain = pattern.trim_end_matches('/');
+    !has_glob_meta(plain)
+        && !plain.is_empty()
+        && (path == plain
+            || basename == plain
+            || path.starts_with(&format!("{plain}/"))
+            || (is_dir && plain.starts_with(path)))
+}
+
+fn run_interactive_clean_select(
+    out: &mut dyn Write,
+    cwd: &Path,
+    work_tree: &Path,
+    candidates: &mut Vec<(String, bool)>,
+) -> Result<()> {
+    let original = candidates.clone();
+    let mut selected = BTreeSet::new();
+    loop {
+        print_interactive_clean_numbered_items(out, cwd, work_tree, &original, &selected)?;
+        write!(out, "Select items to delete>> ")?;
+        out.flush()?;
+        let Some(line) = read_interactive_clean_line() else {
+            candidates.clear();
+            return Ok(());
+        };
+        if line.trim().is_empty() {
+            break;
+        }
+        for token in line.split(|c: char| c.is_whitespace() || c == ',') {
+            apply_interactive_clean_selection_token(
+                token,
+                cwd,
+                work_tree,
+                &original,
+                &mut selected,
+            );
+        }
+    }
+    *candidates = original
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, item)| selected.contains(&i).then_some(item))
+        .collect();
+    Ok(())
+}
+
+fn print_interactive_clean_numbered_items(
+    out: &mut dyn Write,
+    cwd: &Path,
+    work_tree: &Path,
+    candidates: &[(String, bool)],
+    selected: &BTreeSet<usize>,
+) -> Result<()> {
+    for (i, (path, is_dir)) in candidates.iter().enumerate() {
+        let mark = if selected.contains(&i) { "*" } else { " " };
+        writeln!(
+            out,
+            "{:>3}:{} {}",
+            i + 1,
+            mark,
+            clean_display_item(cwd, work_tree, path, *is_dir)
+        )?;
+    }
+    Ok(())
+}
+
+fn apply_interactive_clean_selection_token(
+    token: &str,
+    cwd: &Path,
+    work_tree: &Path,
+    candidates: &[(String, bool)],
+    selected: &mut BTreeSet<usize>,
+) {
+    let token = token.trim();
+    if token.is_empty() {
+        return;
+    }
+    let (remove, selector) = token
+        .strip_prefix('-')
+        .map_or((false, token), |s| (true, s));
+    if selector.is_empty() {
+        return;
+    }
+    for idx in resolve_interactive_clean_selector(selector, cwd, work_tree, candidates) {
+        if remove {
+            selected.remove(&idx);
+        } else {
+            selected.insert(idx);
+        }
+    }
+}
+
+fn resolve_interactive_clean_selector(
+    selector: &str,
+    cwd: &Path,
+    work_tree: &Path,
+    candidates: &[(String, bool)],
+) -> Vec<usize> {
+    if selector == "*" {
+        return (0..candidates.len()).collect();
+    }
+    if let Some((start, end)) = selector.split_once('-') {
+        if let Ok(start) = start.parse::<usize>() {
+            if start == 0 {
+                return Vec::new();
+            }
+            let end = if end.is_empty() {
+                candidates.len()
+            } else if let Ok(end) = end.parse::<usize>() {
+                end
+            } else {
+                return Vec::new();
+            };
+            return (start..=end.min(candidates.len())).map(|n| n - 1).collect();
+        }
+    }
+    if let Ok(n) = selector.parse::<usize>() {
+        return (n > 0 && n <= candidates.len())
+            .then_some(n - 1)
+            .into_iter()
+            .collect();
+    }
+    resolve_interactive_clean_name_selector(selector, cwd, work_tree, candidates)
+}
+
+fn resolve_interactive_clean_name_selector(
+    selector: &str,
+    cwd: &Path,
+    work_tree: &Path,
+    candidates: &[(String, bool)],
+) -> Vec<usize> {
+    let selector = selector.trim_end_matches('/');
+    if selector.is_empty() {
+        return Vec::new();
+    }
+
+    let exact: Vec<usize> = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (path, is_dir))| {
+            let display = clean_display_item(cwd, work_tree, path, *is_dir);
+            let display = display.trim_end_matches('/');
+            let basename = path.rsplit('/').next().unwrap_or(path);
+            (path == selector || display == selector || basename == selector).then_some(i)
+        })
+        .collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+
+    let prefix: Vec<usize> = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (path, is_dir))| {
+            let display = clean_display_item(cwd, work_tree, path, *is_dir);
+            let display = display.trim_end_matches('/');
+            let basename = path.rsplit('/').next().unwrap_or(path);
+            (path.starts_with(&format!("{selector}/"))
+                || display.starts_with(&format!("{selector}/"))
+                || basename.starts_with(selector)
+                || path.starts_with(selector)
+                || display.starts_with(selector))
+            .then_some(i)
+        })
+        .collect();
+    if prefix.len() == 1 {
+        prefix
+    } else {
+        Vec::new()
+    }
+}
+
+fn run_interactive_clean_ask(
+    out: &mut dyn Write,
+    cwd: &Path,
+    work_tree: &Path,
+    candidates: &[(String, bool)],
+) -> Result<Vec<(String, bool)>> {
+    let mut selected = Vec::new();
+    for (path, is_dir) in candidates {
+        write!(
+            out,
+            "Remove {} [y/N]? ",
+            clean_display_item(cwd, work_tree, path, *is_dir)
+        )?;
+        out.flush()?;
+        let Some(line) = read_interactive_clean_line() else {
+            break;
+        };
+        let answer = line.trim();
+        if answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes") {
+            selected.push((path.clone(), *is_dir));
+        }
+    }
+    Ok(selected)
+}
+
+fn clean_targets_in_display_order(
+    cwd: &Path,
+    work_tree: &Path,
+    to_remove: &[(String, bool)],
+) -> Vec<(String, bool)> {
+    let mut candidates = to_remove.to_vec();
+    candidates.sort_by(|a, b| {
+        clean_display_item(cwd, work_tree, &a.0, a.1)
+            .cmp(&clean_display_item(cwd, work_tree, &b.0, b.1))
+    });
+    candidates
+}
+
+fn clean_display_item(cwd: &Path, work_tree: &Path, path: &str, is_dir: bool) -> String {
+    let display = path_for_clean_display(cwd, work_tree, path);
+    if is_dir {
+        format!("{display}/")
+    } else {
+        display
+    }
+}
+
+fn sort_clean_targets_for_removal(to_remove: &mut [(String, bool)]) {
+    to_remove.sort_by(|a, b| {
+        let depth_a = a.0.bytes().filter(|c| *c == b'/').count();
+        let depth_b = b.0.bytes().filter(|c| *c == b'/').count();
+        depth_b.cmp(&depth_a).then_with(|| a.0.cmp(&b.0))
+    });
 }
 
 fn trace2_perf_now() -> String {

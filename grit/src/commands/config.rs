@@ -490,7 +490,21 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     // Resolve which file to operate on
-    let git_dir = resolve_git_dir();
+    let mut git_dir = resolve_git_dir();
+
+    // Mirror git/setup.c `check_repository_format_gently`: `git config` runs with
+    // `RUN_SETUP_GENTLY`, so when setup discovers a repository whose `config` declares an
+    // unsupported format version (or unsupported extensions), git prints the message as a
+    // `warning:` and then proceeds as if no repository were present (`have_repository = 0`).
+    // Operations that read/write the local repo config therefore fail (exit 1), while
+    // `--file`/`--global`/`--system` operations still succeed using their explicit files.
+    if let Some(ref gd) = git_dir {
+        if let Ok(Some(message)) = grit_lib::repo::repository_format_warning(gd) {
+            eprintln!("warning: {message}");
+            git_dir = None;
+        }
+    }
+
     let (scope, file_path) = resolve_config_file(&args, git_dir.as_deref())?;
 
     // Handle subcommands first

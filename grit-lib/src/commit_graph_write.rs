@@ -250,6 +250,7 @@ pub fn build_commit_graph_bytes(
     max_new_filters: Option<u32>,
     existing_filters: &HashMap<ObjectId, Vec<u8>>,
     upgraded_filters: &HashMap<ObjectId, Vec<u8>>,
+    write_generation_data: bool,
 ) -> crate::error::Result<(Vec<u8>, BloomWriteStats)> {
     let base_count: u32 = base_chain.map(CommitGraphChain::total_commits).unwrap_or(0);
 
@@ -405,9 +406,11 @@ pub fn build_commit_graph_bytes(
     chunks.push((CHUNK_OID_FANOUT, fanout));
     chunks.push((CHUNK_OID_LOOKUP, oid_lookup));
     chunks.push((CHUNK_COMMIT_DATA, cdat));
-    chunks.push((CHUNK_GENERATION_DATA, gda2));
-    if !generation_overflow.is_empty() {
-        chunks.push((CHUNK_GENERATION_DATA_OVERFLOW, generation_overflow));
+    if write_generation_data {
+        chunks.push((CHUNK_GENERATION_DATA, gda2));
+        if !generation_overflow.is_empty() {
+            chunks.push((CHUNK_GENERATION_DATA_OVERFLOW, generation_overflow));
+        }
     }
     if !extra_edges.is_empty() {
         chunks.push((CHUNK_EXTRA_EDGES, extra_edges));

@@ -65,5 +65,7 @@ pub fn run(args: Args) -> Result<()> {
         no_progress: false,
         receive_pack: None,
         upload_pack: None,
+        thin: true,
+        no_thin: false,
     })
 }

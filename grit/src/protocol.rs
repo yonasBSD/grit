@@ -90,25 +90,12 @@ fn check_git_config_env(key: &str) -> Option<String> {
         }
     }
 
-    // Check GIT_CONFIG_PARAMETERS (format: 'key=value' 'key=value' ...)
+    // Check GIT_CONFIG_PARAMETERS (set by `git -c key=value`). The payload uses Git's
+    // single-quoted encoding (`'protocol.ext.allow'='always'`), so delegate to the canonical
+    // parser rather than a hand-rolled split. Keys are compared case-insensitively / canonicalized.
     if let Ok(params) = std::env::var("GIT_CONFIG_PARAMETERS") {
-        // Parse entries like 'protocol.file.allow=never'
-        let mut result = None;
-        for entry in params.split('\'') {
-            let entry = entry.trim();
-            if entry.is_empty() {
-                continue;
-            }
-            if let Some(eq_pos) = entry.find('=') {
-                let k = &entry[..eq_pos];
-                let v = &entry[eq_pos + 1..];
-                if k.eq_ignore_ascii_case(key) {
-                    result = Some(v.to_string());
-                }
-            }
-        }
-        if result.is_some() {
-            return result;
+        if let Some(val) = grit_lib::config::git_config_parameters_last_value(&params, key) {
+            return Some(val);
         }
     }
 

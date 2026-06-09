@@ -407,7 +407,7 @@ pub fn run(args: Args) -> Result<()> {
             && args.no_merged.is_empty()
         {
             // Reject invalid branch names (Git `check_branch_ref` / `die` + advice.refSyntax hint).
-            validate_new_branch_name_or_die(&repo, name);
+            validate_new_branch_name_or_die(&repo, name, 1);
             if branch_creation_recurse_submodules(&repo, &args) {
                 return create_branch_recursing_submodules(
                     &repo,
@@ -2540,8 +2540,9 @@ fn create_branch(
 }
 
 /// Validate a new branch name (`git check-ref-format refs/heads/<name>` with onelevel allowed).
-/// On failure, prints Git's `fatal:` line plus the `advice.refSyntax` hints and exits 128.
-fn validate_new_branch_name_or_die(repo: &Repository, name: &str) {
+/// On failure, prints Git's `fatal:` line plus the `advice.refSyntax` hints and exits with
+/// `exit_code`.
+fn validate_new_branch_name_or_die(repo: &Repository, name: &str, exit_code: i32) {
     use grit_lib::check_ref_format::{check_refname_format, RefNameOptions};
 
     let refname = format!("refs/heads/{name}");
@@ -2565,7 +2566,7 @@ fn validate_new_branch_name_or_die(repo: &Repository, name: &str) {
         eprintln!("hint: See 'git help check-ref-format'");
         eprintln!("hint: Disable this message with \"git config set advice.refSyntax false\"");
     }
-    std::process::exit(128);
+    std::process::exit(exit_code);
 }
 
 /// Mirror Git's `branch.autosetuprebase` config validation (`environment.c`): a missing value or a
@@ -2910,8 +2911,14 @@ fn delete_branch(repo: &Repository, head: &HeadState, args: &Args, name_input: &
         return Ok(());
     }
 
-    let resolved_ref =
-        symbolic_full_name(repo, name_input).filter(|full| full.starts_with("refs/heads/"));
+    // Git's `branch -d` expands `@{-N}`/`@{upstream}` but treats a literal
+    // "HEAD" as the branch name `refs/heads/HEAD` rather than dereferencing the
+    // symbolic HEAD (t1430 "branch -d can remove refs/heads/HEAD").
+    let resolved_ref = if name_input == "HEAD" {
+        None
+    } else {
+        symbolic_full_name(repo, name_input).filter(|full| full.starts_with("refs/heads/"))
+    };
     let (name, refname) = if let Some(full) = resolved_ref {
         (
             full.strip_prefix("refs/heads/")
@@ -2953,6 +2960,18 @@ fn delete_branch(repo: &Repository, head: &HeadState, args: &Args, name_input: &
             "cannot delete branch '{}' used by worktree at '{}'",
             name,
             wt_path
+        );
+    }
+
+    // Git's `branch_checked_out()` also reports a branch as in-use when a worktree (including the
+    // current one) is mid-rebase or mid-bisect on it: there the worktree HEAD is detached, so the
+    // checks above miss it. Refuse the delete with the same message (t2400 "not allow to delete a
+    // branch under rebase").
+    if let Some(path) = crate::commands::worktree_refs::branch_occupied_any_worktree(repo, &name) {
+        bail!(
+            "cannot delete branch '{}' used by worktree at '{}'",
+            name,
+            path
         );
     }
 
@@ -3102,7 +3121,7 @@ fn rename_branch(repo: &Repository, head: &HeadState, args: &Args) -> Result<()>
     if old_name == new_name {
         return Ok(());
     }
-    validate_new_branch_name_or_die(repo, new_name);
+    validate_new_branch_name_or_die(repo, new_name, 128);
 
     let force = args.force_rename || args.force;
     let old_ref = format!("refs/heads/{old_name}");
@@ -3764,7 +3783,7 @@ fn collect_branches(dir: &Path, prefix: &str, out: &mut Vec<(String, ObjectId)>)
 fn commit_subject(odb: &grit_lib::odb::Odb, oid: &ObjectId) -> Option<String> {
     let obj = odb.read(oid).ok()?;
     let commit = parse_commit(&obj.data).ok()?;
-    commit.message.lines().next().map(String::from)
+    Some(grit_lib::commit_pretty::message_subject(&commit.message))
 }
 
 /// Extract committer timestamp from a commit for sorting.

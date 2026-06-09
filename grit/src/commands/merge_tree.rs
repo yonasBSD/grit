@@ -833,7 +833,7 @@ fn write_merge_tree_stdout_to(
                             .as_deref()
                             .unwrap_or(d.subject_path.as_str())],
                     )
-                } else if d.kind == "rename/add" {
+                } else if d.kind == "rename/add" || d.kind == "add/add" {
                     (
                         "CONFLICT (contents)".to_string(),
                         format!("CONFLICT (add/add): {}", d.body),

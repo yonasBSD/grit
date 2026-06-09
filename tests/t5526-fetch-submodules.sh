@@ -197,7 +197,6 @@ test_expect_success "submodule.recurse option triggers recursive fetch" '
 '
 
 test_expect_success "fetch --recurse-submodules -j2 has the same output behaviour" '
-	(
 	test_when_finished "rm -f trace.out" &&
 	add_submodule_commits &&
 	(
@@ -207,7 +206,6 @@ test_expect_success "fetch --recurse-submodules -j2 has the same output behaviou
 	test_must_be_empty actual.out &&
 	verify_fetch_result actual.err &&
 	grep "2 tasks" trace.out
-	)
 '
 
 test_expect_success "fetch alone only fetches superproject" '
@@ -592,7 +590,6 @@ test_expect_success 'setup downstream branch with other submodule' '
 '
 
 test_expect_success "'--recurse-submodules' should fetch submodule commits in changed submodules and the index" '
-	(
 	test_when_finished "rm expect.err.sub2" &&
 	# Create new commit in origin/super
 	add_submodule_commits &&
@@ -626,7 +623,6 @@ test_expect_success "'--recurse-submodules' should fetch submodule commits in ch
 	   OLD_HEAD..$super_sub2_only_head  super-sub2-only -> origin/super-sub2-only
 	EOF
 	verify_fetch_result actual.err
-	)
 '
 
 test_expect_success "'--recurse-submodules=on-demand' stops when no new submodule commits are found in the superproject (and ignores config)" '
@@ -1285,7 +1281,6 @@ test_expect_success 'fetch --recurse-submodules updates name-conflicted, unpopul
 '
 
 test_expect_success 'fetch --all with --recurse-submodules' '
-	(
 	test_when_finished "rm -fr src_clone" &&
 	git clone --recurse-submodules src src_clone &&
 	(
@@ -1296,11 +1291,9 @@ test_expect_success 'fetch --all with --recurse-submodules' '
 	) &&
 	grep "^Fetching submodule sub$" fetch-log >fetch-subs &&
 	test_line_count = 1 fetch-subs
-	)
 '
 
 test_expect_success 'fetch --all with --recurse-submodules with multiple' '
-	(
 	test_when_finished "rm -fr src_clone" &&
 	git clone --recurse-submodules src src_clone &&
 	(
@@ -1312,11 +1305,9 @@ test_expect_success 'fetch --all with --recurse-submodules with multiple' '
 	) &&
 	grep "Fetching submodule sub" fetch-log >fetch-subs &&
 	test_line_count = 2 fetch-subs
-	)
 '
 
 test_expect_success "fetch --all with --no-recurse-submodules only fetches superproject" '
-	(
 	test_when_finished "rm -rf src_clone" &&
 
 	git clone --recurse-submodules src src_clone &&
@@ -1327,7 +1318,6 @@ test_expect_success "fetch --all with --no-recurse-submodules only fetches super
 		git fetch --all --no-recurse-submodules 2>../fetch-log
 	) &&
 	! grep "Fetching submodule" fetch-log
-	)
 '
 
 test_done

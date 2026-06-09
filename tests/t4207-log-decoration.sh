@@ -10,7 +10,7 @@ HEAD, and the --decorate=full/short/auto and --no-decorate flags.'
 
 test_expect_success 'setup: repo with branches and tags' '
 	(
-	git init repo &&
+	git init -b master repo &&
 	cd repo &&
 	git config user.name "Test User" &&
 	git config user.email "test@test.com" &&
@@ -25,10 +25,10 @@ test_expect_success 'setup: repo with branches and tags' '
 
 # ── Default decoration ───────────────────────────────────────────────────────
 
-test_expect_success 'log --oneline shows decorations by default' '
+test_expect_success 'log --decorate shows decorations' '
 	(
 	cd repo &&
-	git log --oneline -n 1 >out &&
+	git log --decorate --oneline -n 1 >out &&
 	grep "HEAD" out
 	)
 '
@@ -36,7 +36,7 @@ test_expect_success 'log --oneline shows decorations by default' '
 test_expect_success 'decorations include branch name' '
 	(
 	cd repo &&
-	git log --oneline -n 1 >out &&
+	git log --decorate --oneline -n 1 >out &&
 	grep "master" out
 	)
 '
@@ -44,15 +44,15 @@ test_expect_success 'decorations include branch name' '
 test_expect_success 'decorations include lightweight tag' '
 	(
 	cd repo &&
-	git log --oneline -n 1 >out &&
+	git log --decorate --oneline -n 1 >out &&
 	grep "lightweight-tag" out
 	)
 '
 
-test_expect_success 'decorations include annotated tag (not yet shown)' '
+test_expect_success 'decorations include annotated tag' '
 	(
 	cd repo &&
-	git log --oneline -n 1 >out &&
+	git log --decorate --oneline -n 1 >out &&
 	grep "annotated-tag" out
 	)
 '
@@ -60,7 +60,7 @@ test_expect_success 'decorations include annotated tag (not yet shown)' '
 test_expect_success 'decorations include feature branch' '
 	(
 	cd repo &&
-	git log --oneline -n 1 >out &&
+	git log --decorate --oneline -n 1 >out &&
 	grep "feature" out
 	)
 '
@@ -68,7 +68,7 @@ test_expect_success 'decorations include feature branch' '
 test_expect_success 'decoration uses parentheses' '
 	(
 	cd repo &&
-	git log --oneline -n 1 >out &&
+	git log --decorate --oneline -n 1 >out &&
 	grep "(" out &&
 	grep ")" out
 	)
@@ -157,7 +157,7 @@ test_expect_success 'no decoration on undecorated commits' '
 test_expect_success 'decoration only on commit that has refs' '
 	(
 	cd repo &&
-	git log --oneline >out &&
+	git log --decorate --oneline >out &&
 	# Only first line (HEAD) should be decorated
 	head -1 out | grep "(" &&
 	tail -1 out >lastline &&
@@ -178,7 +178,7 @@ test_expect_success 'setup: tag on older commit' '
 test_expect_success 'older commit shows its tag in decoration' '
 	(
 	cd repo &&
-	git log --oneline >out &&
+	git log --decorate --oneline >out &&
 	grep "old-tag" out
 	)
 '
@@ -186,7 +186,7 @@ test_expect_success 'older commit shows its tag in decoration' '
 test_expect_success 'old-tag appears on correct commit line' '
 	(
 	cd repo &&
-	git log --oneline >out &&
+	git log --decorate --oneline >out &&
 	grep "old-tag" out | grep "first"
 	)
 '
@@ -203,7 +203,7 @@ test_expect_success 'setup: multiple branches on HEAD' '
 test_expect_success 'multiple branches shown in decoration' '
 	(
 	cd repo &&
-	git log --oneline -n 1 >out &&
+	git log --decorate --oneline -n 1 >out &&
 	grep "master" out &&
 	grep "feature" out &&
 	grep "another-branch" out

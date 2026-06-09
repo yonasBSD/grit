@@ -30,6 +30,7 @@ use grit_lib::merge_trees::{
 use grit_lib::objects::{
     parse_commit, parse_tree, serialize_commit, CommitData, ObjectId, ObjectKind,
 };
+use grit_lib::porcelain::revert::{merge_commit_message_for_revert, revision_set_newest_first};
 use grit_lib::refs::append_reflog;
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse::resolve_revision;
@@ -559,60 +560,6 @@ fn expand_revert_specs(repo: &Repository, specs: &[String]) -> Result<Vec<String
     Ok(ordered.into_iter().map(|o| o.to_hex()).collect())
 }
 
-/// Commits reachable from `include` tips but not from `exclude` tips, newest-first.
-///
-/// Mirrors `git rev-list <include> --not <exclude>` ordering for revert: a first-parent
-/// reachability walk collecting commits whose ancestry is not pruned by an excluded tip,
-/// returned in descending committer-date order (newest first), matching how `git revert`
-/// replays a range.
-fn revision_set_newest_first(
-    repo: &Repository,
-    include: &[ObjectId],
-    exclude: &[ObjectId],
-) -> Result<Vec<ObjectId>> {
-    // Closure of all ancestors of the excluded tips (these commits are NOT reverted).
-    let mut excluded: HashSet<ObjectId> = HashSet::new();
-    let mut stack: Vec<ObjectId> = exclude.to_vec();
-    while let Some(oid) = stack.pop() {
-        if !excluded.insert(oid) {
-            continue;
-        }
-        if let Ok(obj) = repo.odb.read(&oid) {
-            if let Ok(commit) = parse_commit(&obj.data) {
-                stack.extend(commit.parents.iter().copied());
-            }
-        }
-    }
-
-    // Closure of ancestors of the included tips, minus the excluded set.
-    let mut seen: HashSet<ObjectId> = HashSet::new();
-    let mut collected: Vec<(i64, ObjectId)> = Vec::new();
-    let mut stack: Vec<ObjectId> = include.to_vec();
-    while let Some(oid) = stack.pop() {
-        if excluded.contains(&oid) || !seen.insert(oid) {
-            continue;
-        }
-        let obj = repo.odb.read(&oid)?;
-        let commit = parse_commit(&obj.data)?;
-        let ts = committer_timestamp(&commit.committer);
-        collected.push((ts, oid));
-        stack.extend(commit.parents.iter().copied());
-    }
-
-    // Newest first: descending committer timestamp (stable on ties).
-    collected.sort_by(|a, b| b.0.cmp(&a.0));
-    Ok(collected.into_iter().map(|(_, oid)| oid).collect())
-}
-
-/// Parse the unix timestamp from an ident string (`Name <email> <ts> <tz>`).
-fn committer_timestamp(ident: &str) -> i64 {
-    ident
-        .rsplitn(3, ' ')
-        .nth(1)
-        .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(0)
-}
-
 /// Walk commits reachable from `tip` but not from `base`, oldest first.
 fn walk_commit_range(repo: &Repository, base: ObjectId, tip: ObjectId) -> Result<Vec<ObjectId>> {
     let mut result = Vec::new();
@@ -660,44 +607,6 @@ fn should_use_reference_format(git_dir: &Path, args: &Args) -> Result<bool> {
     }
     let config = ConfigSet::load(Some(git_dir), true)?;
     Ok(config.get_bool("revert.reference") == Some(Ok(true)))
-}
-
-fn merge_commit_message_for_revert(
-    commit: &CommitData,
-    commit_oid: ObjectId,
-    use_reference: bool,
-    comment_char: char,
-) -> (String, String) {
-    let subject_line = commit.message.lines().next().unwrap_or("");
-    let oid_full = commit_oid.to_hex();
-
-    if use_reference {
-        let title = format!("{comment_char} *** SAY WHY WE ARE REVERTING ON THE TITLE LINE ***");
-        let ref_line = grit_lib::commit_pretty::format_reference_line(
-            &commit_oid,
-            subject_line,
-            &commit.committer,
-            7,
-        );
-        // Trailing blank line matches the template file `git revert --edit` presents
-        // (see t3501 "git revert --reference with core.commentChar").
-        let body = format!("This reverts commit {ref_line}.\n\n");
-        return (title, body);
-    }
-
-    let body = format!("This reverts commit {oid_full}.\n");
-
-    if let Some(rest) = subject_line.strip_prefix("Revert \"") {
-        if let Some(orig) = rest.strip_suffix('"') {
-            if !orig.starts_with("Revert \"") {
-                let title = format!("Reapply \"{orig}\"\n");
-                return (title, body);
-            }
-        }
-    }
-
-    let title = format!("Revert \"{subject_line}\"\n");
-    (title, body)
 }
 
 fn merge_conflict_advice_enabled(git_dir: &Path) -> bool {
@@ -986,6 +895,7 @@ fn revert_one_commit(repo: &Repository, spec: &str, args: &Args) -> Result<()> {
         parent_tree_oid,
         favor,
         ws_opts,
+        None,
         TreeMergeConflictPresentation {
             label_ours: "HEAD",
             label_theirs: TheirsConflictLabel::Fixed(label_theirs.as_str()),
@@ -1486,7 +1396,7 @@ fn format_ident(ident: &(String, String), now: time::OffsetDateTime) -> String {
     .ok();
 
     let timestamp = date_str
-        .map(|d| super::commit::parse_date_to_git_timestamp(&d).unwrap_or(d))
+        .map(|d| grit_lib::commit::parse_date_to_git_timestamp(&d).unwrap_or(d))
         .unwrap_or_else(|| format!("{epoch} {hours:+03}{minutes:02}"));
     format!("{name} <{email}> {timestamp}")
 }

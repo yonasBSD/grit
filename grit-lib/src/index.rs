@@ -167,9 +167,9 @@ impl IndexEntry {
     /// In-memory and on-disk compatibility bit for fsmonitor validity (`git ls-files -f`).
     const FLAG_EXT_FSMONITOR_VALID: u16 = 0x1000;
     /// Extended flags Git persists in index v3 (`CE_EXTENDED_FLAGS` in `read-cache-ll.h`).
-    const FLAG_EXT_ON_DISK: u16 = 0x2000 | 0x4000;
+    const FLAG_EXT_ON_DISK: u16 = Self::FLAG_EXT_FSMONITOR_VALID | 0x2000 | 0x4000;
 
-    /// Extended flag bits safe to write to a Git-compatible on-disk index (excludes fsmonitor).
+    /// Extended flag bits safe to write to a Git-compatible on-disk index.
     fn disk_flags_extended(fe: u16) -> u16 {
         fe & Self::FLAG_EXT_ON_DISK
     }
@@ -504,6 +504,28 @@ impl Index {
     #[must_use]
     pub fn new() -> Self {
         let version = get_index_format_from_env().unwrap_or(2);
+        Self {
+            version,
+            entries: Vec::new(),
+            sparse_directories: false,
+            untracked_cache: None,
+            fsmonitor_last_update: None,
+            resolve_undo: None,
+            split_link: None,
+            cache_tree_root: None,
+            cache_tree: None,
+        }
+    }
+
+    /// Create a new, empty index at a fixed version without consulting
+    /// `GIT_INDEX_VERSION` or config.
+    ///
+    /// Unlike [`Self::new`], this never reads the environment and therefore never
+    /// emits the "GIT_INDEX_VERSION set, but the value is invalid" warning. Use it
+    /// for throwaway baseline indexes (e.g. sparse-index diff references) where the
+    /// version is irrelevant and Git resolves the format only once per operation.
+    #[must_use]
+    pub fn empty(version: u32) -> Self {
         Self {
             version,
             entries: Vec::new(),
@@ -1232,6 +1254,16 @@ impl Index {
             return false;
         };
         self.install_unmerged_from_resolve_undo(path, &record);
+        // Git's `unmerge_index_entry` swaps the resolved stage-0 entry for unmerged
+        // stages 1/2/3 via `remove_index_entry_at` + `add_index_entry`, both of which
+        // call `cache_tree_invalidate_path`. After committing the resolution the index
+        // carries a valid TREE extension whose stage-0 entry for `path` no longer
+        // matches; without invalidating it, the next write-tree trips
+        // `verify_cache_tree` ("corrupted cache-tree has entries not present in index").
+        if let Ok(p) = std::str::from_utf8(path) {
+            self.invalidate_untracked_cache_for_path(p);
+        }
+        self.invalidate_cache_tree_for_path(path);
         true
     }
 
@@ -1324,28 +1356,46 @@ impl Index {
     }
 
     /// Mark cache-tree nodes affected by an index path change as invalid.
+    ///
+    /// Mirrors Git's `do_invalidate_path` (`cache-tree.c`): each ancestor node along `path`
+    /// is invalidated (`entry_count = -1`), and when the final path component names an existing
+    /// **subtree** node, that subtree is removed entirely. The removal is essential for the
+    /// directory→file transition (e.g. tracked dir `a/b/` replaced by file `a/b`): without it,
+    /// stale descendant nodes (`a/b/c`, …) keep their positive `entry_count` and later trip
+    /// [`crate::write_tree::verify_cache_tree`] with "corrupted cache-tree has entries not present
+    /// in index".
     pub fn invalidate_cache_tree_for_path(&mut self, path: &[u8]) {
         let Some(root) = self.cache_tree.as_mut() else {
             self.cache_tree_root = None;
             return;
         };
-        root.invalidate();
         self.cache_tree_root = None;
+        Self::do_invalidate_cache_tree_path(root, path);
+    }
 
-        let mut current = root;
-        for component in path.split(|&b| b == b'/') {
-            if component.is_empty() {
-                break;
+    /// Recursive worker for [`Self::invalidate_cache_tree_for_path`], mirroring
+    /// Git's `do_invalidate_path`.
+    fn do_invalidate_cache_tree_path(node: &mut CacheTreeNode, path: &[u8]) {
+        node.invalidate();
+        let slash = path.iter().position(|&b| b == b'/');
+        match slash {
+            // Final component: drop the matching subtree node, if any.
+            None => {
+                if !path.is_empty() {
+                    node.children.retain(|child| child.name != path);
+                }
             }
-            let Some(child) = current
-                .children
-                .iter_mut()
-                .find(|child| child.name == component)
-            else {
-                break;
-            };
-            child.invalidate();
-            current = child;
+            // Interior component: descend into the named subtree and recurse on the rest.
+            Some(idx) => {
+                let (component, rest) = (&path[..idx], &path[idx + 1..]);
+                if let Some(child) = node
+                    .children
+                    .iter_mut()
+                    .find(|child| child.name == component)
+                {
+                    Self::do_invalidate_cache_tree_path(child, rest);
+                }
+            }
         }
     }
 
@@ -1389,6 +1439,27 @@ impl Index {
     pub fn sort(&mut self) {
         self.entries
             .sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.stage().cmp(&b.stage())));
+    }
+
+    /// Collapse duplicate `(path, stage)` entries, keeping the **last** one in current order.
+    ///
+    /// A valid Git index never holds two entries with the same path and stage; `add_index_entry`
+    /// replaces an existing same-name entry in place. When grit builds an index by flattening a
+    /// tree that has duplicate path entries (see `t4058-diff-duplicates`), the naive flatten yields
+    /// several identical-path entries. This restores Git's invariant by keeping the last entry for
+    /// each `(path, stage)` — matching `add_index_entry`'s replace-on-collision semantics where the
+    /// final tree entry for a path wins.
+    pub fn dedup_paths_keep_last(&mut self) {
+        let mut seen: std::collections::HashSet<(Vec<u8>, u8)> = std::collections::HashSet::new();
+        let mut kept: Vec<IndexEntry> = Vec::with_capacity(self.entries.len());
+        // Walk in reverse so the *last* occurrence of each (path, stage) is the one retained.
+        for entry in self.entries.iter().rev() {
+            if seen.insert((entry.path.clone(), entry.stage())) {
+                kept.push(entry.clone());
+            }
+        }
+        kept.reverse();
+        self.entries = kept;
     }
 
     /// OID of the shared index when this index uses split-index mode (`link` extension).

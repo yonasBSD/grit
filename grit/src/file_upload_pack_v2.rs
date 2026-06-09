@@ -159,22 +159,9 @@ pub(crate) fn read_v2_capability_block(stdout: &mut impl Read) -> Result<Vec<Str
     Ok(caps)
 }
 
-pub(crate) fn server_advertises_bundle_uri(caps: &[String]) -> bool {
-    caps.iter()
-        .any(|c| c == "bundle-uri" || c.starts_with("bundle-uri="))
-}
+pub(crate) use grit_lib::protocol_v2::server_advertises_bundle_uri;
 
-pub(crate) fn cap_lines_for_bundle_request(caps: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in caps {
-        if line.starts_with("agent=") {
-            out.push(line.clone());
-        } else if let Some(fmt) = line.strip_prefix("object-format=") {
-            out.push(format!("object-format={fmt}"));
-        }
-    }
-    out
-}
+pub(crate) use grit_lib::protocol_v2::cap_lines_for_command_request as cap_lines_for_bundle_request;
 
 pub(crate) fn write_bundle_uri_command(stdin: &mut impl Write, cap_send: &[String]) -> Result<()> {
     trace_packet_git('>', "command=bundle-uri");
@@ -263,7 +250,7 @@ fn write_ls_refs_request_for_ls_remote(
         pkt_line::write_line(stdin, "peel")?;
         trace_packet_git('>', "peel");
     }
-    if args.heads {
+    if args.branches {
         pkt_line::write_line(stdin, "ref-prefix refs/heads/")?;
         trace_packet_git('>', "ref-prefix refs/heads/");
     }
@@ -320,13 +307,17 @@ fn collect_clone_ls_refs_metadata(
             crate::commands::ls_remote::parse_ls_refs_v2_line(&pkt)?;
         let name = name.trim().to_owned();
         if name == "HEAD" {
-            head_oid = Some(oid.to_hex());
+            // An unborn HEAD is advertised with the null OID (`unborn` token); it names no object,
+            // only a symref target, so leave `head_oid` unset and let the symref drive checkout.
+            if !oid.is_zero() {
+                head_oid = Some(oid.to_hex());
+            }
             if let Some(target) = symref_target {
                 head_symref = Some(target);
             }
             continue;
         }
-        if name.starts_with("refs/heads/") || name.starts_with("refs/tags/") {
+        if !oid.is_zero() && (name.starts_with("refs/heads/") || name.starts_with("refs/tags/")) {
             wants.push(oid);
         }
     }
@@ -352,18 +343,18 @@ fn should_use_source_head_symref_fallback(source_git_dir: &Path) -> bool {
     !unborn.eq_ignore_ascii_case("ignore")
 }
 
-/// True when the server's `fetch=` capability advertises `sideband-all`.
-pub(crate) fn v2_fetch_supports_sideband_all(caps: &[String]) -> bool {
-    caps.iter().any(|c| {
-        c.strip_prefix("fetch=")
-            .is_some_and(|rest| rest.split_whitespace().any(|w| w == "sideband-all"))
-    })
-}
+pub(crate) use grit_lib::protocol_v2::fetch_supports_sideband_all as v2_fetch_supports_sideband_all;
 
+pub(crate) use grit_lib::protocol_v2::fetch_supports_ref_in_want as v2_fetch_supports_ref_in_want;
+
+pub(crate) use grit_lib::protocol_v2::fetch_supports_filter as v2_fetch_supports_filter;
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_v2_fetch_request(
     stdin: &mut impl Write,
     object_format: &str,
     wants: &[ObjectId],
+    haves: &[ObjectId],
     sideband_all: bool,
     include_tag: bool,
     deepen_relative: bool,
@@ -375,6 +366,9 @@ pub(crate) fn write_v2_fetch_request(
     shallow_since: Option<&str>,
     shallow_exclude: &[String],
     unshallow: bool,
+    promisor_remote_reply: Option<&str>,
+    want_refs: &[String],
+    send_done: bool,
 ) -> Result<()> {
     trace_packet_git('>', "command=fetch");
     pkt_line::write_line(stdin, "command=fetch")?;
@@ -384,8 +378,24 @@ pub(crate) fn write_v2_fetch_request(
     let of = format!("object-format={object_format}");
     trace_packet_git('>', &of);
     pkt_line::write_line(stdin, &of)?;
+    // `session-id` is a v2 capability (serve.c lists it with a `.receive` handler), so it belongs
+    // in the request's capability list — before the `0001` delimiter — alongside agent and
+    // object-format, not among the per-command fetch arguments (`t5705`).
+    if let Some(sid) = session_id_on_wire {
+        let esc = crate::trace2_transfer::json_escape_trace_value(sid);
+        let line = format!("session-id={esc}");
+        trace_packet_git('>', &line);
+        pkt_line::write_line(stdin, &line)?;
+    }
     for opt in server_options {
         let line = format!("server-option={opt}");
+        trace_packet_git('>', &line);
+        pkt_line::write_line(stdin, &line)?;
+    }
+    // `promisor-remote` is a v2 capability (connect.c `send_capabilities`): the client's accepted
+    // reply belongs in the request capability list, before the `0001` delimiter (`t5710`).
+    if let Some(reply) = promisor_remote_reply.filter(|r| !r.is_empty()) {
+        let line = format!("promisor-remote={reply}");
         trace_packet_git('>', &line);
         pkt_line::write_line(stdin, &line)?;
     }
@@ -407,20 +417,27 @@ pub(crate) fn write_v2_fetch_request(
         pkt_line::write_line(stdin, "include-tag")?;
     }
 
-    if let Some(sid) = session_id_on_wire {
-        let esc = crate::trace2_transfer::json_escape_trace_value(sid);
-        let line = format!("session-id={esc}");
-        trace_packet_git('>', &line);
-        pkt_line::write_line(stdin, &line)?;
-    }
     for w in wants {
         let line = format!("want {}", w.to_hex());
         trace_packet_git('>', line.trim_end());
         wire_trace::trace_packet_upload_pack('<', line.trim_end());
         pkt_line::write_line(stdin, &line)?;
     }
+    // Refs requested by name (not exact OID) go out as `want-ref <refname>` when the server
+    // advertised the `ref-in-want` feature (matches `fetch-pack.c` `add_wants`). The server resolves
+    // them in a `wanted-refs` section in its response.
+    for r in want_refs {
+        let line = format!("want-ref {r}");
+        trace_packet_git('>', line.trim_end());
+        wire_trace::trace_packet_upload_pack('<', line.trim_end());
+        pkt_line::write_line(stdin, &line)?;
+    }
     if let Some(spec) = filter_spec.map(str::trim).filter(|s| !s.is_empty()) {
-        let line = format!("filter {spec}");
+        // Send the canonical/expanded filter spec on the wire, matching Git's
+        // `expand_list_objects_filter_spec` (e.g. `blob:limit=1k` -> `blob:limit=1024`).
+        let expanded = grit_lib::rev_list::expand_object_filter_for_protocol(spec)
+            .unwrap_or_else(|_| spec.to_owned());
+        let line = format!("filter {expanded}");
         trace_packet_git('>', &line);
         pkt_line::write_line(stdin, &line)?;
     }
@@ -442,7 +459,10 @@ pub(crate) fn write_v2_fetch_request(
         pkt_line::write_line(stdin, &line)?;
     }
     if let Some(since) = shallow_since {
-        let line = format!("deepen-since {since}");
+        // Send the Unix timestamp `approxidate` produces, not the raw date: `upload-pack` parses
+        // `deepen-since` with `parse_timestamp` and rejects trailing text (t5539 fetch shallow since).
+        let value = grit_lib::git_date::approx::approxidate_careful(since.trim(), None).to_string();
+        let line = format!("deepen-since {value}");
         trace_packet_git('>', &line);
         pkt_line::write_line(stdin, &line)?;
     }
@@ -451,8 +471,20 @@ pub(crate) fn write_v2_fetch_request(
         trace_packet_git('>', &line);
         pkt_line::write_line(stdin, &line)?;
     }
-    trace_packet_git('>', "done");
-    pkt_line::write_line(stdin, "done")?;
+    // Send the locally-available tips as `have` lines so the server can build a thin pack and so a
+    // bundle-uri clone advertises the bundle tips during negotiation (t5558 `negotiation:` cases).
+    // We send them all in this single round and immediately follow with `done`, so the server skips
+    // the `acknowledgments` exchange and streams the pack directly.
+    for h in haves {
+        let line = format!("have {}", h.to_hex());
+        trace_packet_git('>', line.trim_end());
+        wire_trace::trace_packet_upload_pack('<', line.trim_end());
+        pkt_line::write_line(stdin, &line)?;
+    }
+    if send_done {
+        trace_packet_git('>', "done");
+        pkt_line::write_line(stdin, "done")?;
+    }
     pkt_line::write_flush(stdin)?;
     trace_packet_git('>', "0000");
     stdin.flush()?;
@@ -609,12 +641,18 @@ pub(crate) fn ls_remote_file_v2(
 }
 
 /// Optional v2 handshake + bundle-uri + fetch for `file://` clone tests (discards pack).
+///
+/// `reference_object_dirs` lists the `objects` directories of any `--reference` repos. Wants that
+/// are already present in one of those alternates are dropped from the fetch request, matching
+/// Git's `everything_local()` — so a `--reference` clone of a ref the reference already has sends
+/// no `want` at all (`t5604` "fetched no objects").
 pub(crate) fn clone_preflight_file_v2_if_needed(
     source_git_dir: &Path,
     upload_pack_cmd: Option<&str>,
     request_bundle_uri: bool,
     bundle_uri_cli_override: bool,
     server_options: &[String],
+    reference_object_dirs: &[PathBuf],
 ) -> Result<(Option<String>, Option<String>)> {
     if !client_wants_protocol_v2() {
         return Ok((None, None));
@@ -643,11 +681,30 @@ pub(crate) fn clone_preflight_file_v2_if_needed(
     let mut ls_buf = Vec::new();
     read_pkt_lines_until_flush(&mut stdout, &mut ls_buf, 512 * 1024)
         .context("read ls-refs for clone preflight")?;
-    let (wants, mut head_symref, head_oid) = collect_clone_ls_refs_metadata(&ls_buf)?;
+    let (mut wants, mut head_symref, head_oid) = collect_clone_ls_refs_metadata(&ls_buf)?;
     if head_symref.is_none() && should_use_source_head_symref_fallback(source_git_dir) {
         // `serve-v2 ls-refs` can omit unborn HEAD metadata. For file:// clone parity, preserve
         // source HEAD's symbolic target unless the repository explicitly disables unborn ads.
         head_symref = source_head_symref_from_repo_head_file(source_git_dir);
+    }
+    // Drop wants already available via a `--reference` alternate (Git's `everything_local`): the
+    // server need not (and must not, per `t5604`) be asked for objects we can already borrow.
+    if !reference_object_dirs.is_empty() && !wants.is_empty() {
+        let reference_repos: Vec<Repository> = reference_object_dirs
+            .iter()
+            .filter_map(|obj_dir| {
+                obj_dir
+                    .parent()
+                    .and_then(|git_dir| Repository::open(git_dir, None).ok())
+            })
+            .collect();
+        if !reference_repos.is_empty() {
+            wants.retain(|oid| {
+                !reference_repos
+                    .iter()
+                    .any(|repo| repo.odb.read(oid).is_ok())
+            });
+        }
     }
     if wants.is_empty() {
         // Close stdin so upload-pack exits; otherwise it stays in serve-loop waiting for the
@@ -663,14 +720,12 @@ pub(crate) fn clone_preflight_file_v2_if_needed(
         return Ok((head_symref, head_oid));
     }
 
-    let fetch_supports_sideband_all = caps.iter().any(|c| {
-        c.strip_prefix("fetch=")
-            .is_some_and(|rest| rest.split_whitespace().any(|w| w == "sideband-all"))
-    });
+    let fetch_supports_sideband_all = v2_fetch_supports_sideband_all(&caps);
     write_v2_fetch_request(
         &mut stdin,
         &default_hash,
         &wants,
+        &[],
         fetch_supports_sideband_all,
         true,
         false,
@@ -682,6 +737,9 @@ pub(crate) fn clone_preflight_file_v2_if_needed(
         None,
         &[],
         false,
+        None,
+        &[],
+        true,
     )?;
     drop(stdin);
     drain_v2_fetch_response(&mut stdout, fetch_supports_sideband_all)?;

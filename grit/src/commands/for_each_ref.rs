@@ -2111,12 +2111,9 @@ fn atom_value(
                 ObjectKind::Commit => {
                     let body = extract_commit_message(&object.data);
                     match modifier {
-                        Some("subject") => Ok(body.lines().next().unwrap_or("").to_owned()),
+                        Some("subject") => Ok(grit_lib::commit_pretty::message_subject(&body)),
                         Some("body") => {
-                            let mut lines = body.lines();
-                            lines.next();
-                            let rest: String = lines.collect::<Vec<_>>().join("\n");
-                            let rest = rest.trim_start_matches('\n');
+                            let rest = grit_lib::commit_pretty::message_body(&body);
                             Ok(body_with_single_trailing_lf(rest))
                         }
                         Some("signature") => {
@@ -2477,20 +2474,12 @@ fn unquote_describe_pattern(value: &str) -> &str {
 
 /// Tag subject: first paragraph with inner newlines replaced by spaces (matches Git `ref-filter`).
 fn tag_subject_paragraph(message: &str) -> String {
-    let first_para = message.split("\n\n").next().unwrap_or("");
-    first_para
-        .lines()
-        .map(str::trim_end)
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+    grit_lib::commit_pretty::message_subject(message)
 }
 
 /// Tag body: message after the first blank-line-separated paragraph.
 fn tag_body_after_first_para(message: &str) -> String {
-    let mut paras = message.splitn(2, "\n\n");
-    let _first = paras.next().unwrap_or("");
-    paras.next().unwrap_or("").to_owned()
+    grit_lib::commit_pretty::message_body(message).to_owned()
 }
 
 fn body_with_single_trailing_lf(body: &str) -> String {
@@ -2760,7 +2749,7 @@ fn subject_for_oid(
             let commit = parse_commit(&object.data).map_err(|_| {
                 FormatError::Other(format!("failed to parse commit object for {}", entry.name))
             })?;
-            Ok(commit.message.lines().next().unwrap_or("").to_owned())
+            Ok(grit_lib::commit_pretty::message_subject(&commit.message))
         }
         ObjectKind::Tag => {
             let tag = parse_tag(&object.data).map_err(|_| {
@@ -2781,14 +2770,7 @@ fn body_for_oid(repo: &Repository, entry: &RefEntry, oid: ObjectId) -> Result<St
             let commit = parse_commit(&object.data).map_err(|_| {
                 FormatError::Other(format!("failed to parse commit for {}", entry.name))
             })?;
-            // body is everything after the first line
-            let mut lines = commit.message.splitn(2, '\n');
-            lines.next(); // skip subject
-            Ok(lines
-                .next()
-                .unwrap_or("")
-                .trim_start_matches('\n')
-                .to_owned())
+            Ok(grit_lib::commit_pretty::message_body(&commit.message).to_owned())
         }
         ObjectKind::Tag => {
             let tag = parse_tag(&object.data).map_err(|_| {

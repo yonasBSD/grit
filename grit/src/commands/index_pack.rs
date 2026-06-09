@@ -121,6 +121,7 @@ pub fn parse_argv(mut argv: Vec<String>) -> Result<Args> {
         max_input_size: None,
         rev_index: false,
         no_rev_index: false,
+        pack_header: None,
     };
 
     let mut i = 0usize;
@@ -200,6 +201,16 @@ pub fn parse_argv(mut argv: Vec<String>) -> Result<Args> {
             }
             _ if arg.starts_with("--max-input-size=") => {
                 args.max_input_size = Some(arg["--max-input-size=".len()..].to_owned());
+            }
+            "--pack_header" => {
+                i += 1;
+                let Some(value) = argv.get(i) else {
+                    bail!("--pack_header requires a value");
+                };
+                args.pack_header = Some(value.clone());
+            }
+            _ if arg.starts_with("--pack_header=") => {
+                args.pack_header = Some(arg["--pack_header=".len()..].to_owned());
             }
             _ if arg.starts_with('-') => bail!("unsupported option: {arg}"),
             _ => {
@@ -295,6 +306,11 @@ pub struct Args {
     /// Do not write a `.rev` reverse index (overrides `pack.writeReverseIndex` when set).
     #[arg(long = "no-rev-index", conflicts_with = "rev_index")]
     pub no_rev_index: bool,
+
+    /// Pack header (`<version>,<nr>`) supplied by `fetch-pack` after it has already consumed the
+    /// 12-byte stream header; the body on stdin then lacks the leading `PACK`/version/count.
+    #[arg(long = "pack_header", value_name = "HEADER", hide = true)]
+    pub pack_header: Option<String>,
 }
 
 /// A resolved pack object.
@@ -334,6 +350,14 @@ pub fn run(args: Args) -> Result<()> {
 
     let pack_raw = if args.stdin {
         let mut buf = Vec::new();
+        // `fetch-pack`/`receive-pack` may already have consumed the 12-byte pack stream header
+        // and pass it back via `--pack_header=<version>,<nr>`; reconstruct it before the body.
+        if let Some(raw_header) = args.pack_header.as_deref() {
+            let (version, count) = parse_pack_header_arg(raw_header)?;
+            buf.extend_from_slice(b"PACK");
+            buf.extend_from_slice(&version.to_be_bytes());
+            buf.extend_from_slice(&count.to_be_bytes());
+        }
         io::stdin().lock().read_to_end(&mut buf)?;
         buf
     } else if let Some(ref path) = args.pack_file {
@@ -645,6 +669,20 @@ fn parse_max_input_size_bytes(raw: &str) -> Result<u64> {
         bail!("max-input-size must be non-negative");
     }
     Ok(v as u64)
+}
+
+/// Parse a `--pack_header=<version>,<nr>` value into `(version, object_count)`.
+fn parse_pack_header_arg(raw: &str) -> Result<(u32, u32)> {
+    let (version, count) = raw
+        .split_once(',')
+        .ok_or_else(|| anyhow::anyhow!("invalid --pack_header value '{raw}'"))?;
+    let version = version
+        .parse::<u32>()
+        .with_context(|| format!("invalid --pack_header version '{version}'"))?;
+    let count = count
+        .parse::<u32>()
+        .with_context(|| format!("invalid --pack_header count '{count}'"))?;
+    Ok((version, count))
 }
 
 fn parse_byte_suffix(s: &str) -> Option<u64> {

@@ -86,6 +86,48 @@ pub fn indent_and_expand_tabs(line: &str, indent: usize, tab_width: usize) -> St
     out
 }
 
+/// Byte-level twin of [`indent_and_expand_tabs`] that preserves commit bodies verbatim.
+///
+/// Git's `pp_handle_indent`/`strbuf_add_tabexpand` (pretty.c) operate on raw bytes: the message
+/// body is emitted exactly as stored when `i18n.commitEncoding` names an encoding Git cannot
+/// decode (e.g. the test's `non-utf-8`, which makes `logmsg_reencode` a no-op), so invalid-UTF-8
+/// bytes must round-trip unchanged. This returns the indented, optionally tab-expanded line as a
+/// byte vector without lossy UTF-8 conversion.
+///
+/// - `line` — a single body line (no trailing newline) as raw bytes.
+/// - `indent` — leading ASCII spaces.
+/// - `tab_width` — tab stop distance; `0` disables tab expansion (line copied verbatim).
+#[must_use]
+pub fn indent_and_expand_tabs_bytes(line: &[u8], indent: usize, tab_width: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(indent + line.len());
+    out.extend(std::iter::repeat_n(b' ', indent));
+    if tab_width == 0 {
+        out.extend_from_slice(line);
+        return out;
+    }
+    // Port of `strbuf_add_tabexpand`: for each tab, align to the next multiple of `tab_width`
+    // using the display width of the preceding bytes. If that segment is not well-formed UTF-8
+    // (`pp_utf8_width` returns < 0), give up aligning and copy the remainder verbatim.
+    let mut rest = line;
+    while let Some(pos) = rest.iter().position(|&b| b == b'\t') {
+        let prefix = &rest[..pos];
+        match std::str::from_utf8(prefix)
+            .ok()
+            .and_then(utf8_display_width)
+        {
+            Some(width) => {
+                out.extend_from_slice(prefix);
+                let spaces = tab_width - (width % tab_width);
+                out.extend(std::iter::repeat_n(b' ', spaces));
+                rest = &rest[pos + 1..];
+            }
+            None => break,
+        }
+    }
+    out.extend_from_slice(rest);
+    out
+}
+
 /// Default tab-expansion width for a named `--pretty` format (Git `cmt_fmt_map.expand_tabs_in_log`).
 ///
 /// `format` is the resolved pretty name (`None` means Git's default, i.e. `medium`).
@@ -159,5 +201,30 @@ mod tests {
     fn indent_without_expand_preserves_tabs() {
         let s = indent_and_expand_tabs("\tx", 4, 0);
         assert_eq!(s, "    \tx");
+    }
+
+    #[test]
+    fn bytes_preserve_invalid_utf8_verbatim() {
+        // Invalid UTF-8 bytes (e.g. a body stored under `i18n.commitEncoding=non-utf-8`) must
+        // round-trip unchanged, not become U+FFFD.
+        let line = b"Th\xf8\x9d\x84\x9es";
+        let out = indent_and_expand_tabs_bytes(line, 6, 0);
+        assert_eq!(out, b"      Th\xf8\x9d\x84\x9es");
+    }
+
+    #[test]
+    fn bytes_expand_tabs_match_string_path() {
+        // For valid UTF-8 the byte path aligns tabs identically to the string path.
+        let out = indent_and_expand_tabs_bytes(b"abcd\tx", 4, 8);
+        assert_eq!(out, indent_and_expand_tabs("abcd\tx", 4, 8).as_bytes());
+    }
+
+    #[test]
+    fn bytes_give_up_alignment_after_invalid_utf8_before_tab() {
+        // Git stops aligning once the segment before a tab is not well-formed UTF-8 and copies
+        // the remainder (including the tab) verbatim.
+        let line = b"\xf8\tx";
+        let out = indent_and_expand_tabs_bytes(line, 0, 8);
+        assert_eq!(out, b"\xf8\tx");
     }
 }

@@ -71,6 +71,12 @@ pub enum Error {
     #[error("index error: {0}")]
     IndexError(String),
 
+    /// The cache-tree extension references more entries than the index contains. Git emits this
+    /// (verbatim, prefixed with `error: `) when a tree with duplicate path entries is read into the
+    /// index (`t4058-diff-duplicates`).
+    #[error("corrupted cache-tree has entries not present in index")]
+    CacheTreeCorrupt,
+
     /// A reference name or value is invalid.
     #[error("invalid ref: {0}")]
     InvalidRef(String),

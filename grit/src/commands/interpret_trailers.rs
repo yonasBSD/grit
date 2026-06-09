@@ -64,6 +64,13 @@ pub fn parse_interpret_trailers_argv(args: &[String]) -> Result<ParsedCli> {
                 cli_where = parse_where_value(v)?;
                 i += 2;
             }
+            x if x.starts_with("--where=") => {
+                let v = x
+                    .strip_prefix("--where=")
+                    .ok_or_else(|| anyhow::anyhow!("option '--where' requires a value"))?;
+                cli_where = parse_where_value(v)?;
+                i += 1;
+            }
             "--no-where" => {
                 cli_where = TrailerWhere::Default;
                 i += 1;
@@ -75,6 +82,13 @@ pub fn parse_interpret_trailers_argv(args: &[String]) -> Result<ParsedCli> {
                 cli_if_exists = parse_if_exists_value(v)?;
                 i += 2;
             }
+            x if x.starts_with("--if-exists=") => {
+                let v = x
+                    .strip_prefix("--if-exists=")
+                    .ok_or_else(|| anyhow::anyhow!("option '--if-exists' requires a value"))?;
+                cli_if_exists = parse_if_exists_value(v)?;
+                i += 1;
+            }
             "--no-if-exists" => {
                 cli_if_exists = TrailerIfExists::Default;
                 i += 1;
@@ -85,6 +99,13 @@ pub fn parse_interpret_trailers_argv(args: &[String]) -> Result<ParsedCli> {
                     .ok_or_else(|| anyhow::anyhow!("option '--if-missing' requires a value"))?;
                 cli_if_missing = parse_if_missing_value(v)?;
                 i += 2;
+            }
+            x if x.starts_with("--if-missing=") => {
+                let v = x
+                    .strip_prefix("--if-missing=")
+                    .ok_or_else(|| anyhow::anyhow!("option '--if-missing' requires a value"))?;
+                cli_if_missing = parse_if_missing_value(v)?;
+                i += 1;
             }
             "--no-if-missing" => {
                 cli_if_missing = TrailerIfMissing::Default;
@@ -101,6 +122,18 @@ pub fn parse_interpret_trailers_argv(args: &[String]) -> Result<ParsedCli> {
                     if_missing: cli_if_missing,
                 });
                 i += 2;
+            }
+            x if x.starts_with("--trailer=") => {
+                let v = x
+                    .strip_prefix("--trailer=")
+                    .ok_or_else(|| anyhow::anyhow!("option '--trailer' requires a value"))?;
+                out.trailer_specs.push(NewTrailerArg {
+                    text: v.to_string(),
+                    where_: cli_where,
+                    if_exists: cli_if_exists,
+                    if_missing: cli_if_missing,
+                });
+                i += 1;
             }
             "--" => {
                 out.files.extend(args[i + 1..].iter().cloned());

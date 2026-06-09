@@ -14,7 +14,7 @@ use grit_lib::rev_list::{self, ObjectFilter};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use grit_lib::index::MODE_SYMLINK;
+use grit_lib::index::{Index, MODE_SYMLINK};
 use grit_lib::objects::{parse_commit, parse_tree, Object, ObjectId, ObjectKind};
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse;
@@ -209,6 +209,7 @@ pub fn run(args: Args) -> Result<()> {
     };
 
     let transform_mode = args.textconv || args.filters;
+    maybe_emit_index_path_sparse_expansion_trace(&repo, obj_str);
     let (oid, blob_mode_for_transform) = match if transform_mode {
         resolve_object_with_mode_lib(&repo, obj_str)
     } else {
@@ -712,8 +713,12 @@ fn collect_all_loose_object_ids(objects_dir: &Path, oids: &mut BTreeSet<ObjectId
 }
 
 fn collect_pack_object_ids(objects_dir: &Path, oids: &mut BTreeSet<ObjectId>) -> Result<()> {
-    for idx in pack::read_local_pack_indexes(objects_dir)? {
-        for e in idx.entries {
+    // Enumerate via the cached (non-verifying) pack-index reader, matching Git's
+    // `open_pack_index`: object enumeration does not require a valid trailing
+    // checksum. The 64-bit-offset tests deliberately corrupt a pack `.idx`
+    // (invalidating its checksum) yet still expect its objects to be listed.
+    for idx in pack::read_local_pack_indexes_cached(objects_dir)? {
+        for e in &idx.entries {
             if e.oid.len() == 20 {
                 if let Ok(oid) = ObjectId::from_bytes(&e.oid) {
                     oids.insert(oid);
@@ -1517,6 +1522,7 @@ fn print_batch_entry(
     out: &mut impl Write,
 ) -> Result<()> {
     let (obj_str, rest) = parse_batch_input(object_spec, format);
+    maybe_emit_index_path_sparse_expansion_trace(repo, obj_str);
     let eol: &[u8] = if nul_output { b"\0" } else { b"\n" };
     let batch_transform = opts.batch_textconv || opts.batch_filters;
 
@@ -1851,6 +1857,59 @@ fn resolve_object(repo: &Repository, obj_str: &str) -> Result<ObjectId> {
 
 fn resolve_object_lib(repo: &Repository, obj_str: &str) -> LibResult<ObjectId> {
     rev_parse::resolve_revision(repo, obj_str)
+}
+
+fn maybe_emit_index_path_sparse_expansion_trace(repo: &Repository, obj_str: &str) {
+    let Some(path) = index_path_from_cat_file_spec(obj_str) else {
+        return;
+    };
+    let index_path = if let Ok(raw) = std::env::var("GIT_INDEX_FILE") {
+        let p = PathBuf::from(raw);
+        if p.is_absolute() {
+            p
+        } else if let Ok(cwd) = std::env::current_dir() {
+            cwd.join(p)
+        } else {
+            p
+        }
+    } else {
+        repo.index_path()
+    };
+    let Ok(index) = Index::load(&index_path) else {
+        return;
+    };
+    if !path_under_sparse_index_dir(&index, path) {
+        return;
+    }
+    if let Ok(trace2_event) = std::env::var("GIT_TRACE2_EVENT") {
+        if !trace2_event.trim().is_empty() {
+            let _ = crate::trace2_region_json(&trace2_event, "index", "ensure_full_index");
+        }
+    }
+}
+
+fn index_path_from_cat_file_spec(spec: &str) -> Option<&str> {
+    let rest = spec.strip_prefix(':')?;
+    let bytes = rest.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_digit() && bytes[1] == b':' {
+        Some(&rest[2..])
+    } else {
+        Some(rest)
+    }
+}
+
+fn path_under_sparse_index_dir(index: &Index, path: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    index
+        .entries
+        .iter()
+        .filter(|entry| entry.stage() == 0 && entry.is_sparse_directory_placeholder())
+        .filter_map(|entry| std::str::from_utf8(&entry.path).ok())
+        .map(|prefix| prefix.trim_end_matches('/'))
+        .any(|prefix| {
+            let prefix_slash = format!("{prefix}/");
+            path == prefix || path.starts_with(&prefix_slash)
+        })
 }
 
 /// Emit `--textconv` / `--filters` output for a single object (non-batch).

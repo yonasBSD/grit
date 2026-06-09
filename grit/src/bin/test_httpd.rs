@@ -522,6 +522,7 @@ fn handle_connection(mut stream: TcpStream, config: &Config) -> Result<(), Strin
     if req.path.starts_with("/smart/") {
         if std::env::var("BUNDLE_URI_PROTOCOL").ok().as_deref() == Some("http")
             || smart_reftable_upload_pack(&req, config, "/smart")
+            || smart_sha256_upload_pack(&req, config, "/smart")
         {
             let r = handle_smart_http_grit_upload_pack(&mut stream, &req, config, "/smart");
             log_access(
@@ -586,6 +587,35 @@ fn smart_reftable_upload_pack(req: &Request, config: &Config, prefix: &str) -> b
         return false;
     };
     repo_path.join("reftable").join("tables.list").is_file()
+}
+
+/// Route SHA-256 repositories through grit's own `upload-pack` for the smart-HTTP ref
+/// advertisement.
+///
+/// The harness wires the CGI `git-upload-pack --advertise-refs` step to the host's system git
+/// (see `lib-httpd.sh`), which on older builds does not advertise the `object-format` capability
+/// for an *empty* SHA-256 repository (its v0 info/refs body is just two flushes). Grit's
+/// `upload-pack` advertises `object-format=sha256` correctly in both protocol v0 and v2, so
+/// serving the advertisement from grit lets clients detect the object format and record it during
+/// clone (t5551 "clone empty SHA-256 repository").
+///
+/// Detection reads `extensions.objectformat = sha256` from the repository's `config` file rather
+/// than parsing full config semantics: the smart-HTTP advertisement only needs the hash width.
+fn smart_sha256_upload_pack(req: &Request, config: &Config, prefix: &str) -> bool {
+    if !(req.path.contains("git-upload-pack") || req.query.contains("service=git-upload-pack")) {
+        return false;
+    }
+    let Ok(repo_path) = smart_repo_path(req, config, prefix) else {
+        return false;
+    };
+    let Ok(contents) = fs::read_to_string(repo_path.join("config")) else {
+        return false;
+    };
+    contents.lines().any(|line| {
+        let line = line.trim();
+        line.eq_ignore_ascii_case("objectformat = sha256")
+            || line.eq_ignore_ascii_case("objectFormat = sha256")
+    })
 }
 
 fn check_auth(req: &Request, expected_user: &str, expected_pass: &str) -> bool {
@@ -982,6 +1012,22 @@ fn handle_smart_http_grit_upload_pack(
         let err = String::from_utf8_lossy(&output.stderr);
         return Err(format!("grit upload-pack failed: {}", err.trim()));
     }
+    let body = if discovery_get {
+        // The GET info/refs response that `git-http-backend` returns is prefixed with a
+        // `# service=git-upload-pack` pkt-line followed by a flush; `grit upload-pack
+        // --http-backend-info-refs` emits only the bare advertisement, so prepend the banner
+        // here so real-git clients (e.g. the SHA-256 clone subtests) accept the response. Grit's
+        // own client tolerates the banner being present or absent.
+        let mut banner = Vec::new();
+        let line = b"# service=git-upload-pack\n";
+        banner.extend_from_slice(format!("{:04x}", line.len() + 4).as_bytes());
+        banner.extend_from_slice(line);
+        banner.extend_from_slice(b"0000");
+        banner.extend_from_slice(&output.stdout);
+        banner
+    } else {
+        output.stdout
+    };
     send_response(
         stream,
         200,
@@ -994,7 +1040,7 @@ fn handle_smart_http_grit_upload_pack(
                 "application/x-git-upload-pack-result"
             },
         )],
-        &output.stdout,
+        &body,
     )
 }
 

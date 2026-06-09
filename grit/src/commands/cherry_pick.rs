@@ -26,9 +26,7 @@ use grit_lib::merge_trees::{
     merge_trees_three_way, TheirsConflictLabel, TreeMergeConflictPresentation,
     WhitespaceMergeOptions,
 };
-use grit_lib::objects::{
-    parse_commit, parse_tree, serialize_commit, CommitData, ObjectId, ObjectKind,
-};
+use grit_lib::objects::{parse_commit, serialize_commit, CommitData, ObjectId, ObjectKind};
 use grit_lib::odb::Odb;
 use grit_lib::reflog::read_reflog;
 use grit_lib::refs::append_reflog;
@@ -184,19 +182,18 @@ use super::sequencer::{
     write_abort_safety_file,
 };
 
+use grit_lib::porcelain::cherry_pick::{
+    directory_renames_from_file_renames, parse_strategy_options, path_has_unmerged_entry,
+    remap_path_by_directory_renames, same_blob, same_blob_renames, stage_entry_at,
+    WhitespaceStrategyOptions,
+};
+use grit_lib::porcelain::merge::{tree_to_index_entries, tree_to_map};
+
 /// Result of a three-way merge: the index plus any conflict content for working tree.
 struct MergeResult {
     index: Index,
     /// For conflicted paths, the merged content with conflict markers (OID of blob).
     conflict_content: BTreeMap<Vec<u8>, ObjectId>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct WhitespaceStrategyOptions {
-    ignore_all_space: bool,
-    ignore_space_change: bool,
-    ignore_space_at_eol: bool,
-    ignore_cr_at_eol: bool,
 }
 
 /// How to handle a cherry-pick whose resulting tree matches `HEAD`.
@@ -768,27 +765,95 @@ fn walk_first_parent_filtered(
     Ok(matches)
 }
 
-/// Commits reachable from `tip` along first-parent edges until `base` is hit, oldest first.
+/// Commits reachable from `tip` but not from `base`, in topological order (oldest first).
 ///
-/// Matches Git's `A..B` for cherry-pick: walk from `B` toward roots; stop when `A` is reached
-/// (so `A` is excluded). This differs from walking only the first-parent chain from `B` to root.
+/// Matches Git's `A..B` for cherry-pick: `git rev-list --reverse A..B` selects every commit
+/// reachable from `B` that is *not* reachable from `A`. Unlike a naive first-parent walk (which
+/// would never stop when `A` is off the first-parent chain, e.g. `A` is a merge commit whose
+/// second parent introduced shared history), this walks ALL parents and excludes the entire
+/// ancestor closure of `A`, then emits the survivors oldest-first (git applies picks oldest-first).
 fn walk_commit_range(repo: &Repository, base: ObjectId, tip: ObjectId) -> Result<Vec<ObjectId>> {
-    let mut chain = Vec::new();
-    let mut current = tip;
-    loop {
-        if current == base {
-            break;
+    // Everything reachable from `base` (inclusive) is excluded.
+    let excluded = grit_lib::merge_base::ancestor_closure(repo, base)?;
+
+    // Collect commits reachable from `tip` that are not in `excluded`, recording each commit's
+    // generation depth (max distance to any selected root) so we can emit them oldest-first.
+    let mut selected: HashSet<ObjectId> = HashSet::new();
+    let mut order: Vec<ObjectId> = Vec::new();
+    let mut stack = vec![tip];
+    let mut parents_of: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    while let Some(current) = stack.pop() {
+        if excluded.contains(&current) || !selected.insert(current) {
+            continue;
         }
-        chain.push(current);
+        order.push(current);
         let obj = repo.odb.read(&current)?;
         let commit = parse_commit(&obj.data)?;
-        let Some(p) = commit.parents.first().copied() else {
-            break;
-        };
-        current = p;
+        let parents: Vec<ObjectId> = commit
+            .parents
+            .iter()
+            .copied()
+            .filter(|p| !excluded.contains(p))
+            .collect();
+        for &p in &parents {
+            stack.push(p);
+        }
+        parents_of.insert(current, parents);
     }
-    chain.reverse();
-    Ok(chain)
+
+    // Topological sort (Kahn): a commit may be applied only after all its selected ancestors.
+    // Emit oldest-first. Ties broken by commit date (newer applied later) to match git's
+    // rev-list ordering closely enough for cherry-pick replay.
+    let mut indegree: HashMap<ObjectId, usize> = HashMap::new();
+    let mut children: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    for oid in &order {
+        indegree.entry(*oid).or_insert(0);
+        for &p in parents_of.get(oid).map(|v| v.as_slice()).unwrap_or(&[]) {
+            *indegree.entry(*oid).or_insert(0) += 1;
+            children.entry(p).or_default().push(*oid);
+        }
+    }
+    // Ready set: commits whose selected parents are all already emitted (start with roots).
+    let mut ready: Vec<ObjectId> = order
+        .iter()
+        .copied()
+        .filter(|o| indegree.get(o).copied().unwrap_or(0) == 0)
+        .collect();
+    let mut result = Vec::with_capacity(order.len());
+    let mut emitted: HashSet<ObjectId> = HashSet::new();
+    while !ready.is_empty() {
+        // Pick the ready commit with the oldest commit date so the apply order is oldest-first.
+        ready.sort_by_key(|o| commit_date_for(repo, *o).unwrap_or(i64::MAX));
+        let next = ready.remove(0);
+        if !emitted.insert(next) {
+            continue;
+        }
+        result.push(next);
+        if let Some(kids) = children.get(&next) {
+            for &k in kids {
+                let e = indegree.get_mut(&k).expect("child has indegree");
+                *e -= 1;
+                if *e == 0 {
+                    ready.push(k);
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Committer date (seconds since epoch) for ordering selected commits oldest-first.
+fn commit_date_for(repo: &Repository, oid: ObjectId) -> Option<i64> {
+    let obj = repo.odb.read(&oid).ok()?;
+    let commit = parse_commit(&obj.data).ok()?;
+    let committer = &commit.committer;
+    // `Name <email> <secs> <tz>`: the timestamp is the second-to-last whitespace token.
+    let toks: Vec<&str> = committer.split_whitespace().collect();
+    if toks.len() >= 2 {
+        toks[toks.len() - 2].parse::<i64>().ok()
+    } else {
+        None
+    }
 }
 
 fn cherry_pick_one_commit(
@@ -945,7 +1010,10 @@ fn cherry_pick_one_commit(
         }
     }
 
-    let (favor, ws_opts) = parse_strategy_options(&args.strategy_option);
+    let (favor, ws_opts, mut diff_algorithm) = parse_strategy_options(&args.strategy_option);
+    if diff_algorithm.is_none() {
+        diff_algorithm = config.get("diff.algorithm");
+    }
     let ws_merge = WhitespaceMergeOptions {
         ignore_all_space: ws_opts.ignore_all_space,
         ignore_space_change: ws_opts.ignore_space_change,
@@ -987,6 +1055,7 @@ fn cherry_pick_one_commit(
         commit_tree_oid,
         favor,
         ws_merge,
+        diff_algorithm.as_deref(),
         TreeMergeConflictPresentation {
             label_ours: "HEAD",
             label_theirs: TheirsConflictLabel::Fixed(label_theirs.as_str()),
@@ -1826,6 +1895,11 @@ pub(crate) fn abort_cherry_pick_or_revert() -> Result<()> {
             no_refresh: false,
             refresh: true,
             patch: false,
+            unified: None,
+            inter_hunk_context: None,
+            no_auto_advance: false,
+            pathspec_from_file: None,
+            pathspec_file_nul: false,
             recurse_submodules: None,
             no_recurse_submodules: false,
             rest: vec![stored_oid.to_hex()],
@@ -1849,6 +1923,11 @@ pub(crate) fn abort_cherry_pick_or_revert() -> Result<()> {
         no_refresh: false,
         refresh: true,
         patch: false,
+        unified: None,
+        inter_hunk_context: None,
+        no_auto_advance: false,
+        pathspec_from_file: None,
+        pathspec_file_nul: false,
         recurse_submodules: None,
         no_recurse_submodules: false,
         rest: vec!["HEAD".to_owned()],
@@ -2401,7 +2480,7 @@ fn resolve_committer_ident(config: &ConfigSet, now: time::OffsetDateTime) -> Res
     let minutes = offset.minutes_past_hour().unsigned_abs();
 
     let timestamp = std::env::var("GIT_COMMITTER_DATE")
-        .map(|d| super::commit::parse_date_to_git_timestamp(&d).unwrap_or(d))
+        .map(|d| grit_lib::commit::parse_date_to_git_timestamp(&d).unwrap_or(d))
         .unwrap_or_else(|_| format!("{epoch} {hours:+03}{minutes:02}"));
 
     Ok(format!("{name} <{email}> {timestamp}"))
@@ -2459,61 +2538,6 @@ fn update_head(git_dir: &Path, head: &HeadState, commit_oid: &ObjectId) -> Resul
 }
 
 // ── Tree → index helpers ────────────────────────────────────────────
-
-fn tree_to_index_entries(
-    repo: &Repository,
-    oid: &ObjectId,
-    prefix: &str,
-) -> Result<Vec<IndexEntry>> {
-    let obj = repo.odb.read(oid)?;
-    if obj.kind != ObjectKind::Tree {
-        bail!("expected tree, got {}", obj.kind);
-    }
-    let entries = parse_tree(&obj.data)?;
-    let mut result = Vec::new();
-
-    for te in entries {
-        let name = String::from_utf8_lossy(&te.name).into_owned();
-        let path = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{prefix}/{name}")
-        };
-
-        if te.mode == 0o040000 {
-            let sub = tree_to_index_entries(repo, &te.oid, &path)?;
-            result.extend(sub);
-        } else {
-            let path_bytes = path.into_bytes();
-            result.push(IndexEntry {
-                ctime_sec: 0,
-                ctime_nsec: 0,
-                mtime_sec: 0,
-                mtime_nsec: 0,
-                dev: 0,
-                ino: 0,
-                mode: te.mode,
-                uid: 0,
-                gid: 0,
-                size: 0,
-                oid: te.oid,
-                flags: path_bytes.len().min(0xFFF) as u16,
-                flags_extended: None,
-                path: path_bytes,
-                base_index_pos: 0,
-            });
-        }
-    }
-    Ok(result)
-}
-
-fn tree_to_map(entries: Vec<IndexEntry>) -> HashMap<Vec<u8>, IndexEntry> {
-    let mut out = HashMap::new();
-    for e in entries {
-        out.insert(e.path.clone(), e);
-    }
-    out
-}
 
 fn path_has_tree_descendant(map: &HashMap<Vec<u8>, IndexEntry>, path: &[u8]) -> bool {
     map.keys()
@@ -2604,10 +2628,6 @@ pub(crate) fn bail_if_df_merge_would_remove_cwd(
     Ok(())
 }
 
-fn same_blob(a: &IndexEntry, b: &IndexEntry) -> bool {
-    a.oid == b.oid && a.mode == b.mode
-}
-
 fn clear_skip_worktree_for_changed_entries(
     index: &mut Index,
     ours_entries: &HashMap<Vec<u8>, IndexEntry>,
@@ -2624,127 +2644,6 @@ fn clear_skip_worktree_for_changed_entries(
             entry.set_skip_worktree(false);
         }
     }
-}
-
-fn parent_dir(path: &[u8]) -> Vec<u8> {
-    path.iter()
-        .rposition(|b| *b == b'/')
-        .map_or_else(Vec::new, |pos| path[..pos].to_vec())
-}
-
-fn remap_path_by_directory_renames(
-    path: &[u8],
-    dir_renames: &HashMap<Vec<u8>, Vec<u8>>,
-) -> Option<Vec<u8>> {
-    let mut best: Option<(&Vec<u8>, &Vec<u8>)> = None;
-    for (old_dir, new_dir) in dir_renames {
-        let matches = if old_dir.is_empty() {
-            !path.contains(&b'/')
-        } else {
-            path.len() > old_dir.len()
-                && path.starts_with(old_dir)
-                && path.get(old_dir.len()) == Some(&b'/')
-        };
-        if !matches {
-            continue;
-        }
-        if best.is_none_or(|(best_old, _)| old_dir.len() > best_old.len()) {
-            best = Some((old_dir, new_dir));
-        }
-    }
-
-    let (old_dir, new_dir) = best?;
-    let suffix = if old_dir.is_empty() {
-        path
-    } else {
-        &path[old_dir.len() + 1..]
-    };
-    let mut remapped = new_dir.clone();
-    if !remapped.is_empty() && !suffix.is_empty() {
-        remapped.push(b'/');
-    }
-    remapped.extend_from_slice(suffix);
-    Some(remapped)
-}
-
-fn same_blob_renames(
-    base: &HashMap<Vec<u8>, IndexEntry>,
-    side: &HashMap<Vec<u8>, IndexEntry>,
-) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let added: Vec<(&Vec<u8>, &IndexEntry)> = side
-        .iter()
-        .filter(|(path, _)| !base.contains_key(*path))
-        .collect();
-    let mut renames = Vec::new();
-    for (old_path, base_entry) in base.iter().filter(|(path, _)| !side.contains_key(*path)) {
-        if let Some((new_path, _)) = added
-            .iter()
-            .find(|(_, side_entry)| same_blob(base_entry, side_entry))
-        {
-            renames.push((old_path.clone(), (*new_path).clone()));
-        }
-    }
-    renames
-}
-
-fn directory_renames_from_file_renames(
-    renames: &[(Vec<u8>, Vec<u8>)],
-) -> HashMap<Vec<u8>, Vec<u8>> {
-    let mut counts: HashMap<Vec<u8>, HashMap<Vec<u8>, usize>> = HashMap::new();
-    for (old_path, new_path) in renames {
-        let old_dir = parent_dir(old_path);
-        let new_dir = parent_dir(new_path);
-        if old_dir == new_dir {
-            continue;
-        }
-        *counts
-            .entry(old_dir)
-            .or_default()
-            .entry(new_dir)
-            .or_default() += 1;
-    }
-
-    let mut dir_renames = HashMap::new();
-    for (old_dir, destinations) in counts {
-        let mut best: Option<(Vec<u8>, usize)> = None;
-        let mut tied = false;
-        for (new_dir, count) in destinations {
-            match best {
-                None => {
-                    best = Some((new_dir, count));
-                    tied = false;
-                }
-                Some((_, best_count)) if count > best_count => {
-                    best = Some((new_dir, count));
-                    tied = false;
-                }
-                Some((_, best_count)) if count == best_count => {
-                    tied = true;
-                }
-                _ => {}
-            }
-        }
-        if !tied {
-            if let Some((new_dir, _)) = best {
-                dir_renames.insert(old_dir, new_dir);
-            }
-        }
-    }
-    dir_renames
-}
-
-fn stage_entry_at(index: &mut Index, path: &[u8], src: &IndexEntry, stage: u8) {
-    let mut entry = src.clone();
-    entry.path = path.to_vec();
-    entry.flags = (path.len().min(0x0FFF) as u16) | ((stage as u16) << 12);
-    index.entries.push(entry);
-}
-
-fn path_has_unmerged_entry(index: &Index, path: &[u8]) -> bool {
-    index
-        .entries
-        .iter()
-        .any(|entry| entry.path == path && entry.stage() != 0)
 }
 
 fn apply_transitive_file_location_conflicts(
@@ -2818,24 +2717,6 @@ fn stage_entry(index: &mut Index, src: &IndexEntry, stage: u8) {
     let mut e = src.clone();
     e.flags = (e.flags & 0x0FFF) | ((stage as u16) << 12);
     index.entries.push(e);
-}
-
-/// Parse strategy options into a merge favor and whitespace options.
-fn parse_strategy_options(strategy_options: &[String]) -> (MergeFavor, WhitespaceStrategyOptions) {
-    let mut favor = MergeFavor::None;
-    let mut ws = WhitespaceStrategyOptions::default();
-    for opt in strategy_options {
-        match opt.as_str() {
-            "theirs" => favor = MergeFavor::Theirs,
-            "ours" => favor = MergeFavor::Ours,
-            "ignore-all-space" => ws.ignore_all_space = true,
-            "ignore-space-change" => ws.ignore_space_change = true,
-            "ignore-space-at-eol" => ws.ignore_space_at_eol = true,
-            "ignore-cr-at-eol" => ws.ignore_cr_at_eol = true,
-            _ => {}
-        }
-    }
-    (favor, ws)
 }
 
 /// Three-way merge with content-level merging.

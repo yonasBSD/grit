@@ -13,11 +13,12 @@
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
 use std::collections::{HashMap, HashSet};
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::Path;
 use std::process::Command;
 
 use grit_lib::config::ConfigSet;
+use grit_lib::ignore::path_in_sparse_checkout as path_in_sparse_checkout_lines;
 use grit_lib::ignore::IgnoreMatcher;
 use grit_lib::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_SYMLINK};
 use grit_lib::objects::{parse_commit, parse_tree, ObjectId, ObjectKind};
@@ -29,10 +30,14 @@ use grit_lib::rev_parse::{
     resolve_revision_as_commit_without_index_dwim, revision_spec_contains_ancestry_navigation,
     split_treeish_colon,
 };
+use grit_lib::sparse_checkout::{
+    effective_cone_mode_for_sparse_file, parse_sparse_checkout_file,
+    path_in_sparse_checkout_patterns,
+};
 use grit_lib::state::{resolve_head, HeadState};
 use grit_lib::submodule_gitdir::submodule_modules_git_dir;
 use grit_lib::unicode_normalization::precompose_utf8_path;
-use grit_lib::write_tree::build_cache_tree_from_index;
+use grit_lib::write_tree::{build_cache_tree_from_index, build_cache_tree_from_tree};
 use similar::{Algorithm, TextDiff};
 
 use crate::commands::update_ref;
@@ -185,6 +190,27 @@ pub(crate) fn preserve_index_cache_flags_from(old: &Index, new: &mut Index) {
     }
 }
 
+fn sparse_index_was_partially_expanded(index: &Index) -> bool {
+    let sparse_roots: HashSet<Vec<u8>> = index
+        .entries
+        .iter()
+        .filter(|entry| entry.is_sparse_directory_placeholder())
+        .filter_map(|entry| first_path_component(&entry.path))
+        .collect();
+    !sparse_roots.is_empty()
+        && index.entries.iter().any(|entry| {
+            entry.stage() == 0
+                && !entry.is_sparse_directory_placeholder()
+                && first_path_component(&entry.path)
+                    .is_some_and(|root| sparse_roots.contains(root.as_slice()))
+        })
+}
+
+fn first_path_component(path: &[u8]) -> Option<Vec<u8>> {
+    let slash = path.iter().position(|b| *b == b'/')?;
+    Some(path[..slash].to_vec())
+}
+
 /// The reset mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum ResetMode {
@@ -251,6 +277,26 @@ pub struct Args {
     #[arg(short = 'p', long = "patch")]
     pub patch: bool,
 
+    /// Lines of context for `--patch` (validated to require `-p`).
+    #[arg(long = "unified", short = 'U', allow_hyphen_values = true)]
+    pub unified: Option<i32>,
+
+    /// Context lines between adjacent `--patch` hunks (validated to require `-p`).
+    #[arg(long = "inter-hunk-context", allow_hyphen_values = true)]
+    pub inter_hunk_context: Option<i32>,
+
+    /// Disable auto-advance in interactive patch mode (validated to require `-p`).
+    #[arg(long = "no-auto-advance")]
+    pub no_auto_advance: bool,
+
+    /// Read pathspecs from a file, or from stdin when the value is `-`.
+    #[arg(long = "pathspec-from-file", value_name = "FILE")]
+    pub pathspec_from_file: Option<String>,
+
+    /// Treat `--pathspec-from-file` input as NUL-delimited.
+    #[arg(long = "pathspec-file-nul")]
+    pub pathspec_file_nul: bool,
+
     /// After updating the working tree, run `submodule update --init --recursive` (Git-compatible
     /// bool-ish values when `=VALUE` is given).
     #[arg(
@@ -310,10 +356,11 @@ pub fn filter_args(raw_args: &[String]) -> Vec<String> {
 }
 
 /// Pull mode / misc flags out of `rest` when they appear after the commit (Git-compatible argv).
-fn normalize_reset_trailing_args(args: &mut Args) {
+fn normalize_reset_trailing_args(args: &mut Args) -> Result<()> {
     let mut i = 0usize;
     while i < args.rest.len() {
-        match args.rest[i].as_str() {
+        let current = args.rest[i].clone();
+        match current.as_str() {
             "--soft" => {
                 args.soft = true;
                 args.rest.remove(i);
@@ -362,23 +409,79 @@ fn normalize_reset_trailing_args(args: &mut Args) {
                 }
                 args.rest.remove(i);
             }
+            "--pathspec-file-nul" => {
+                args.pathspec_file_nul = true;
+                args.rest.remove(i);
+            }
+            "--pathspec-from-file" => {
+                args.rest.remove(i);
+                if i >= args.rest.len() {
+                    bail!("option '--pathspec-from-file' requires a value");
+                }
+                args.pathspec_from_file = Some(args.rest.remove(i));
+            }
+            s if s.starts_with("--pathspec-from-file=") => {
+                args.pathspec_from_file = Some(s["--pathspec-from-file=".len()..].to_owned());
+                args.rest.remove(i);
+            }
             _ => {
                 i += 1;
             }
         }
     }
+    Ok(())
+}
+
+/// Read pathspec entries for `git reset --pathspec-from-file`.
+fn read_reset_pathspecs_from_file(source: &str, nul_terminated: bool) -> Result<Vec<String>> {
+    let data = if source == "-" {
+        let mut buf = Vec::new();
+        std::io::stdin().read_to_end(&mut buf)?;
+        buf
+    } else {
+        std::fs::read(source).with_context(|| format!("reading pathspecs from '{source}'"))?
+    };
+
+    if nul_terminated {
+        return Ok(data
+            .split(|b| *b == 0)
+            .filter(|chunk| !chunk.is_empty())
+            .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+            .collect());
+    }
+
+    grit_lib::pathspec::parse_pathspecs_from_source(&data, false).map_err(Into::into)
 }
 
 /// Run `grit reset`.
 pub fn run(mut args: Args) -> Result<()> {
     // Git accepts `reset <commit> --hard`; clap's `trailing_var_arg` collects `--hard` into
     // `rest` so it is never parsed as a flag. Strip known options from `rest` first.
-    normalize_reset_trailing_args(&mut args);
+    normalize_reset_trailing_args(&mut args)?;
+
+    crate::commands::add::validate_patch_context_options(
+        args.unified,
+        args.inter_hunk_context,
+        args.patch,
+    )?;
+    if args.no_auto_advance && !args.patch {
+        bail!(
+            "the option '{}' requires '{}'",
+            "--no-auto-advance",
+            "--interactive/--patch"
+        );
+    }
 
     let mode = parse_mode(&args)?;
 
     let repo = Repository::discover(None).context("not a git repository")?;
 
+    if args.pathspec_file_nul && args.pathspec_from_file.is_none() {
+        bail!("the option '--pathspec-file-nul' requires '--pathspec-from-file'");
+    }
+    if args.pathspec_from_file.is_some() && args.patch {
+        bail!("options '--pathspec-from-file' and '--patch' cannot be used together");
+    }
     if args.recurse_submodules.is_some() && args.patch {
         bail!("options '--recurse-submodules' and '--patch' cannot be used together");
     }
@@ -388,12 +491,24 @@ pub fn run(mut args: Args) -> Result<()> {
 
     // Handle -p (patch mode): interactive partial unstaging / index application vs a treeish.
     if args.patch {
-        return reset_patch(&repo, &args.rest);
+        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        let context = crate::commands::add::resolve_patch_context(args.unified, &cfg)?;
+        let inter_hunk =
+            crate::commands::add::resolve_patch_interhunk(args.inter_hunk_context, &cfg)?;
+        return reset_patch(&repo, &args.rest, context, inter_hunk);
     }
 
     // Split positional args into (commit_spec, paths).
-    let (commit_spec, paths, mut paths_explicit) = split_commit_and_paths(&repo, &args.rest);
+    let (commit_spec, mut paths, mut paths_explicit) = split_commit_and_paths(&repo, &args.rest);
     paths_explicit |= args.raw_argv_had_path_separator;
+    let paths_from_file = args.pathspec_from_file.is_some();
+    if let Some(source) = args.pathspec_from_file.as_deref() {
+        if !paths.is_empty() || paths_explicit {
+            bail!("'--pathspec-from-file' and pathspec arguments cannot be used together");
+        }
+        paths = read_reset_pathspecs_from_file(source, args.pathspec_file_nul)?;
+        paths_explicit = true;
+    }
 
     // Track whether the user explicitly passed a commit-ish (e.g. `reset HEAD`)
     // vs relying on the implicit default (e.g. bare `reset`). On an unborn branch,
@@ -410,7 +525,7 @@ pub fn run(mut args: Args) -> Result<()> {
     if !paths.is_empty() {
         // Pathspec reset: only update index entries, HEAD stays put.
         if mode != ResetMode::Mixed {
-            bail!("Cannot do --{} reset with paths.", mode.name());
+            bail!("fatal: Cannot do {} reset with paths", mode.name());
         }
         if !paths_explicit
             && paths.len() == 1
@@ -425,7 +540,14 @@ Use '--' to separate paths from revisions, like this:\n\
                 paths[0]
             );
         }
-        return reset_paths(&repo, &commit_spec, &paths, args.quiet, args.intent_to_add);
+        return reset_paths(
+            &repo,
+            &commit_spec,
+            &paths,
+            args.quiet,
+            args.intent_to_add,
+            paths_from_file,
+        );
     }
 
     reset_commit(
@@ -838,7 +960,12 @@ fn validate_reset_patch_treeish(repo: &Repository, treeish_spec: &str) -> Result
 }
 
 /// Interactive patch-mode reset (`git reset -p`): partial index updates toward `treeish`.
-fn reset_patch(repo: &Repository, rest: &[String]) -> Result<()> {
+fn reset_patch(
+    repo: &Repository,
+    rest: &[String],
+    context: usize,
+    inter_hunk_context: usize,
+) -> Result<()> {
     use std::io::{self, BufRead, Write};
 
     let work_tree = repo
@@ -861,6 +988,7 @@ fn reset_patch(repo: &Repository, rest: &[String]) -> Result<()> {
         .collect();
 
     let index_path = repo.index_path();
+    let raw_index = Index::load(&index_path).unwrap_or_else(|_| Index::new());
     let mut index = repo.load_index_at(&index_path).context("loading index")?;
 
     let mut staged_paths: Vec<Vec<u8>> = Vec::new();
@@ -882,6 +1010,16 @@ fn reset_patch(repo: &Repository, rest: &[String]) -> Result<()> {
         }
     }
     for path in target_map.keys() {
+        // An unmerged path (conflict stages 1/2/3, no stage 0) is a no-op for `reset -p`: git skips
+        // it entirely rather than offering to unstage the tree side (t3701 "reset -p with unmerged
+        // files"). Without this guard such a path is re-added below because it has no stage-0 entry.
+        let is_unmerged = index
+            .entries
+            .iter()
+            .any(|e| e.path == *path && e.stage() != 0);
+        if is_unmerged {
+            continue;
+        }
         if !index
             .entries
             .iter()
@@ -897,6 +1035,14 @@ fn reset_patch(repo: &Repository, rest: &[String]) -> Result<()> {
 
     if staged_paths.is_empty() {
         return Ok(());
+    }
+
+    if staged_paths.iter().any(|path| {
+        let path_str = String::from_utf8_lossy(path);
+        path_under_sparse_index_dir_bytes(&raw_index, path)
+            || path_outside_sparse_definition(repo, path_str.as_ref())
+    }) {
+        emit_index_trace_region("ensure_full_index");
     }
 
     staged_paths.sort();
@@ -974,12 +1120,13 @@ fn reset_patch(repo: &Repository, rest: &[String]) -> Result<()> {
 
             let display_idx = hunk_cursor + 1;
             let (s, e) = hunk_ranges[hunk_cursor];
-            let hunk_only = crate::commands::stash::partial_unified_for_op_range(
+            let hunk_only = crate::commands::stash::partial_unified_for_op_range_interhunk(
                 path_str.as_str(),
                 &tree_bytes,
                 &index_bytes,
                 &ops[s..e],
-                3,
+                context,
+                inter_hunk_context,
                 true,
             );
 
@@ -1150,6 +1297,50 @@ fn emit_index_trace_region(label: &str) {
     }
 }
 
+fn path_under_sparse_index_dir_bytes(index: &Index, path: &[u8]) -> bool {
+    let path = String::from_utf8_lossy(path);
+    let path = path.trim_end_matches('/');
+    index
+        .entries
+        .iter()
+        .filter(|entry| entry.stage() == 0 && entry.is_sparse_directory_placeholder())
+        .filter_map(|entry| std::str::from_utf8(&entry.path).ok())
+        .map(|prefix| prefix.trim_end_matches('/'))
+        .any(|prefix| {
+            let prefix_slash = format!("{prefix}/");
+            path == prefix || path.starts_with(&prefix_slash)
+        })
+}
+
+fn path_outside_sparse_definition(repo: &Repository, path: &str) -> bool {
+    let Ok(config) = ConfigSet::load(Some(&repo.git_dir), true) else {
+        return false;
+    };
+    let sparse_enabled = config
+        .get("core.sparseCheckout")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !sparse_enabled {
+        return false;
+    }
+    let patterns = std::fs::read_to_string(repo.git_dir.join("info").join("sparse-checkout"))
+        .map(|content| parse_sparse_checkout_file(&content))
+        .unwrap_or_default();
+    if patterns.is_empty() {
+        return false;
+    }
+    let cone_cfg = config
+        .get("core.sparseCheckoutCone")
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(true);
+    let in_sparse = if effective_cone_mode_for_sparse_file(cone_cfg, &patterns) {
+        path_in_sparse_checkout_patterns(path, &patterns, true)
+    } else {
+        path_in_sparse_checkout_lines(path, &patterns, repo.work_tree.as_deref())
+    };
+    !in_sparse
+}
+
 fn reset_paths_require_sparse_index_expansion(index_path: &Path, paths: &[String]) -> bool {
     if paths.len() != 1 || !paths[0].contains('/') || paths[0].ends_with('/') {
         return false;
@@ -1172,6 +1363,7 @@ fn reset_paths(
     paths: &[String],
     _quiet: bool,
     intent_to_add: bool,
+    allow_unmatched_pathspecs: bool,
 ) -> Result<()> {
     if repo.is_bare() {
         bail!("fatal: mixed reset is not allowed in a bare repository");
@@ -1273,6 +1465,9 @@ fn reset_paths(
         let mut out: Vec<String> = set.into_iter().collect();
         out.sort();
         if out.is_empty() {
+            if allow_unmatched_pathspecs {
+                return Ok(());
+            }
             if commit_spec != "HEAD" && commit_spec != "@" {
                 return Ok(());
             }
@@ -1522,6 +1717,7 @@ Use '--' to separate paths from revisions, like this:\n\
     // Git updates the index before moving HEAD for mixed/hard/keep/merge (`reset_index` runs
     // before `reset_refs` in builtin/reset.c).
     let index_path = repo.index_path();
+    let old_index_raw = Index::load(&index_path).unwrap_or_else(|_| Index::new());
     let old_index = repo
         .load_index_at(&index_path)
         .context("loading old index")?;
@@ -1573,6 +1769,9 @@ Use '--' to separate paths from revisions, like this:\n\
             let mut idx = Index::new();
             idx.entries = tree_entries;
             idx.sort();
+            // A duplicate-entry tree (t4058) flattens to several identical-path entries; Git's
+            // index keeps only one per path. Restore that invariant.
+            idx.dedup_paths_keep_last();
             idx
         }
     };
@@ -1580,6 +1779,8 @@ Use '--' to separate paths from revisions, like this:\n\
 
     let needs_worktree_checkout =
         mode == ResetMode::Hard || mode == ResetMode::Keep || mode == ResetMode::Merge;
+    let preserve_partial_sparse_index =
+        needs_worktree_checkout && sparse_index_was_partially_expanded(&old_index_raw);
 
     if mode == ResetMode::Mixed && extra.intent_to_add {
         let new_paths: HashSet<Vec<u8>> =
@@ -1751,12 +1952,35 @@ Use '--' to separate paths from revisions, like this:\n\
     new_index.clear_resolve_undo();
     if new_index.entries.iter().any(|entry| entry.oid.is_zero()) {
         new_index.clear_cache_tree();
+    } else if matches!(mode, ResetMode::Mixed | ResetMode::Hard) {
+        // Plain reset to a single commit primes the cache-tree from that commit's tree (Git's
+        // `prime_cache_tree`), so its entry counts reflect the raw tree. For a duplicate-entry tree
+        // (t4058) this exceeds the deduplicated index, which a verified write reports as corrupt.
+        let tree_oid = commit_to_tree(repo, &target_oid)?;
+        let cache_tree = build_cache_tree_from_tree(&repo.odb, &tree_oid)?;
+        new_index.set_cache_tree(cache_tree);
     } else {
         let cache_tree = build_cache_tree_from_index(&repo.odb, &new_index)?;
         new_index.set_cache_tree(cache_tree);
     }
-    repo.write_index_at(&index_path, &mut new_index)
+    let (updated_workdir, updated_skipworktree) = if needs_worktree_checkout {
+        (true, false)
+    } else if mode == ResetMode::Mixed {
+        (false, true)
+    } else {
+        (false, false)
+    };
+    if preserve_partial_sparse_index {
+        new_index.write(&index_path).context("writing index")?;
+    } else {
+        repo.write_index_at_with_post_index_change(
+            &index_path,
+            &mut new_index,
+            updated_workdir,
+            updated_skipworktree,
+        )
         .context("writing index")?;
+    }
     // For MIXED (and SOFT) resets, do NOT re-apply sparse-checkout. Git's `reset`
     // only copies the existing entry's skip-worktree bit and never deletes
     // worktree files or re-runs sparse application (git/builtin/reset.c).
@@ -1768,7 +1992,7 @@ Use '--' to separate paths from revisions, like this:\n\
     // into the worktree without honoring skip-worktree, so they still need the
     // sparse re-apply to prune excluded paths back out (t1091 "cone mode: match
     // patterns").
-    if needs_worktree_checkout {
+    if needs_worktree_checkout && !preserve_partial_sparse_index {
         crate::commands::sparse_checkout::reapply_sparse_checkout_if_configured(repo)?;
     }
 
@@ -2692,7 +2916,7 @@ fn commit_to_tree(repo: &Repository, commit_oid: &ObjectId) -> Result<ObjectId> 
 }
 
 /// Recursively flatten a tree object into a list of [`IndexEntry`] values.
-fn tree_to_flat_entries(
+pub(crate) fn tree_to_flat_entries(
     repo: &Repository,
     tree_oid: &ObjectId,
     prefix: &str,

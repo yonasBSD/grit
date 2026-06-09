@@ -357,7 +357,7 @@ test_expect_success 'log -n limits output' '
 	(
 	cd repo &&
 	git log --oneline -n 3 >out &&
-	test "$(wc -l <out)" = "3"
+	test "$(wc -l <out)" -eq 3
 	)
 '
 

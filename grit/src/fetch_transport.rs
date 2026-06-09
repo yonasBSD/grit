@@ -10,22 +10,22 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use grit_lib::config::ConfigSet;
+use grit_lib::config::{ConfigFile, ConfigScope, ConfigSet};
 use grit_lib::diff::zero_oid;
 use grit_lib::fetch_negotiator::SkippingNegotiator;
-use grit_lib::objects::ObjectId;
+use grit_lib::objects::{parse_tag, ObjectId, ObjectKind};
 use grit_lib::odb::Odb;
 use grit_lib::refs;
 use grit_lib::repo::Repository;
-use grit_lib::rev_parse::{peel_to_commit_for_merge_base, resolve_revision};
+use grit_lib::rev_parse::{resolve_revision, try_peel_to_commit_for_merge_base};
 use grit_lib::unpack_objects::{unpack_objects, UnpackOptions};
 
 use crate::commands::index_pack;
 use crate::file_upload_pack_v2::{
     cap_lines_for_bundle_request, drain_bundle_uri_response, read_pkt_lines_until_flush,
     read_v2_capability_block, server_advertises_bundle_uri, skip_v2_section_until_boundary,
-    transfer_bundle_uri_enabled, v2_fetch_supports_sideband_all, write_bundle_uri_command,
-    write_v2_fetch_request,
+    transfer_bundle_uri_enabled, v2_fetch_supports_filter, v2_fetch_supports_ref_in_want,
+    v2_fetch_supports_sideband_all, write_bundle_uri_command, write_v2_fetch_request,
 };
 use crate::grit_exe::{grit_executable, strip_trace2_env};
 use crate::protocol_wire;
@@ -52,11 +52,146 @@ thread_local! {
     static PACKET_TRACE_IDENTITY: Cell<&'static str> = const { Cell::new("fetch") };
 }
 
-fn peel_commit_oid_for_negotiation(repo: &Repository, oid: ObjectId) -> Result<ObjectId> {
-    peel_to_commit_for_merge_base(repo, oid).map_err(|e| match e {
+/// Peel a ref tip to the commit used for fetch negotiation, returning `None` when the tip peels
+/// to a non-commit object (e.g. a tag pointing at a tree or blob, like t5515's `tag-one-tree`).
+///
+/// Git's negotiation (`mark_complete`, `everything_local`) silently ignores refs that do not
+/// resolve to commits rather than treating them as fatal, so we mirror that by skipping them.
+fn peel_commit_oid_for_negotiation(repo: &Repository, oid: ObjectId) -> Result<Option<ObjectId>> {
+    try_peel_to_commit_for_merge_base(repo, oid).map_err(|e| match e {
         grit_lib::error::Error::InvalidRef(msg) => anyhow::anyhow!(msg),
         other => other.into(),
     })
+}
+
+/// Collect the local tips usable as `have` lines for a v2 fetch negotiation: refs under
+/// `refs/bundles/` (applied by `--bundle-uri`), `refs/heads/`, `refs/tags/`, and `HEAD`. Each tip
+/// is peeled to a commit and kept only if its object is present locally; `wants` are excluded.
+///
+/// When `negotiation_tip_oids` is `Some`, the haves are restricted to those tips (matching the
+/// `--negotiation-tip` semantics applied by the v1 negotiation path) so that
+/// `git fetch --negotiation-tip=...` limits the advertised `have` lines. Returns a deterministic,
+/// deduplicated list.
+fn local_negotiation_haves(
+    local_git_dir: &Path,
+    wants: &[ObjectId],
+    negotiation_tip_oids: Option<&[ObjectId]>,
+) -> Vec<ObjectId> {
+    // The `noop` negotiator advertises no `have` lines at all (`git/negotiator/noop.c`), so the
+    // client never offers any common base and the server streams a full pack (t5554).
+    if fetch_negotiation_is_noop(local_git_dir) {
+        return Vec::new();
+    }
+    let Ok(repo) = Repository::open(local_git_dir, None) else {
+        return Vec::new();
+    };
+    let want_set: HashSet<ObjectId> = wants.iter().copied().collect();
+
+    // `--negotiation-tip`: restrict the `have` set to the peeled tip commits the caller named.
+    let tip_filter: Option<HashSet<ObjectId>> = negotiation_tip_oids.map(|tips| {
+        tips.iter()
+            .filter_map(|tip| peel_commit_oid_for_negotiation(&repo, *tip).ok().flatten())
+            .collect()
+    });
+
+    let mut haves: Vec<ObjectId> = Vec::new();
+    let mut seen: HashSet<ObjectId> = HashSet::new();
+
+    let consider = |oid: ObjectId, haves: &mut Vec<ObjectId>, seen: &mut HashSet<ObjectId>| {
+        if repo.odb.read(&oid).is_err() {
+            return;
+        }
+        let Ok(Some(peeled)) = peel_commit_oid_for_negotiation(&repo, oid) else {
+            return;
+        };
+        if want_set.contains(&peeled) {
+            return;
+        }
+        if tip_filter
+            .as_ref()
+            .is_some_and(|filter| !filter.contains(&peeled))
+        {
+            return;
+        }
+        if seen.insert(peeled) {
+            haves.push(peeled);
+        }
+    };
+
+    for prefix in ["refs/bundles/", "refs/heads/", "refs/tags/"] {
+        if let Ok(entries) = refs::list_refs(local_git_dir, prefix) {
+            for (name, oid) in entries {
+                let tip = resolve_revision(&repo, &name).unwrap_or(oid);
+                consider(tip, &mut haves, &mut seen);
+            }
+        }
+    }
+    if let Ok(h) = refs::resolve_ref(local_git_dir, "HEAD") {
+        consider(h, &mut haves, &mut seen);
+    }
+
+    // Expand the ref tips into a full commit walk in committer-date order (newest first), matching
+    // `fetch-pack.c`'s negotiator. The negotiation loop sends these in batches (`INITIAL_FLUSH`
+    // first), so a real multi-round have/ACK exchange happens when the server cannot satisfy the
+    // wants from the first batch (t5703 `total_rounds=2`). Without this, only the ref tips were
+    // offered and a single round always sufficed.
+    date_ordered_have_walk(&repo, haves, &want_set)
+}
+
+/// Walk `tips`' ancestry in committer-date order (newest first), returning commit OIDs to offer as
+/// `have` lines. Stops descending into the wanted commits themselves. Bounded to avoid unbounded
+/// work on pathological histories (`MAX_HAVES`), like Git's `MAX_IN_VAIN` budget.
+fn date_ordered_have_walk(
+    repo: &Repository,
+    tips: Vec<ObjectId>,
+    want_set: &HashSet<ObjectId>,
+) -> Vec<ObjectId> {
+    use std::collections::BinaryHeap;
+
+    const MAX_HAVES: usize = 1024;
+
+    // Max-heap on committer time, so we always pop the newest commit next.
+    let mut heap: BinaryHeap<(i64, ObjectId)> = BinaryHeap::new();
+    let mut queued: HashSet<ObjectId> = HashSet::new();
+    let mut out: Vec<ObjectId> = Vec::new();
+
+    let commit_time = |repo: &Repository, oid: &ObjectId| -> Option<(i64, Vec<ObjectId>)> {
+        let obj = repo.odb.read(oid).ok()?;
+        if obj.kind != ObjectKind::Commit {
+            return None;
+        }
+        let c = grit_lib::objects::parse_commit(&obj.data).ok()?;
+        let t = grit_lib::ident::committer_timestamp_for_until_filter(&c.committer);
+        Some((t, c.parents))
+    };
+
+    for tip in tips {
+        if queued.insert(tip) {
+            if let Some((t, _)) = commit_time(repo, &tip) {
+                heap.push((t, tip));
+            }
+        }
+    }
+
+    while let Some((_, oid)) = heap.pop() {
+        if out.len() >= MAX_HAVES {
+            break;
+        }
+        if !want_set.contains(&oid) {
+            out.push(oid);
+        }
+        if let Some((_, parents)) = commit_time(repo, &oid) {
+            for p in parents {
+                if queued.insert(p) {
+                    if let Some((t, _)) = commit_time(repo, &p) {
+                        heap.push((t, p));
+                    }
+                }
+            }
+        }
+    }
+
+    out
 }
 
 /// Split a simple upload-pack command string into leading `VAR=value` tokens (shell-style, no
@@ -359,6 +494,19 @@ pub(crate) fn read_advertisement(
                             head_symref = Some(target.to_string());
                         }
                     }
+                }
+                // `0{40} capabilities^{}` is the no-refs capability carrier (an empty repo or empty
+                // namespace), not an advertised ref — never record it (t5509 empty namespace).
+                if refname == "capabilities^{}" {
+                    continue;
+                }
+                // A protocol v0/v1 ref advertisement emits a `<peeled-oid> <refname>^{}` line after
+                // each annotated tag (the peeled object). These `^{}` lines are not refs and must
+                // never be recorded as fetchable/trackable refs — otherwise a v0 fetch would write
+                // bogus `refs/tags/<name>^{}` refs and FETCH_HEAD lines (t5515 with
+                // GIT_TEST_PROTOCOL_VERSION=0). The real ref already preceded this peeled line.
+                if refname.ends_with("^{}") {
+                    continue;
                 }
                 out.push((refname, oid));
             }
@@ -713,6 +861,100 @@ pub(crate) fn collect_wants_cli(
     Ok(wants)
 }
 
+/// Classify CLI refspec sources for a `ref-in-want`-capable v2 fetch.
+///
+/// Returns `(want_refs, exact_oids)`:
+/// - `want_refs`: full ref names to request as `want-ref <name>` — every named source (incl.
+///   wildcard expansions) that resolves to an advertised ref. Mirrors `fetch-pack.c` `add_wants`,
+///   which sends `want-ref` for any want that is not an `exact_oid`.
+/// - `exact_oids`: the OIDs of `<oid>:<dst>` sources, which always go out as plain `want <oid>`.
+///
+/// `advertised` is the (name, oid) ref map the server advertised this session.
+fn cli_want_refs_and_oids(
+    advertised: &[(String, ObjectId)],
+    cli_refspecs: &[String],
+) -> (Vec<String>, Vec<ObjectId>) {
+    fn refspec_src(spec: &str) -> &str {
+        let spec_clean = spec.strip_prefix('+').unwrap_or(spec);
+        spec_clean
+            .split_once(':')
+            .map(|(a, _)| a)
+            .unwrap_or(spec_clean)
+    }
+    fn pattern_matches(pattern: &str, refname: &str) -> bool {
+        match pattern.find('*') {
+            None => pattern == refname,
+            Some(star) => {
+                let prefix = &pattern[..star];
+                let suffix = &pattern[star + 1..];
+                refname.len() >= prefix.len() + suffix.len()
+                    && refname.starts_with(prefix)
+                    && refname.ends_with(suffix)
+            }
+        }
+    }
+    // Candidate full ref names for a bare source, in Git's DWIM order.
+    fn candidates(src: &str) -> Vec<String> {
+        if src.is_empty() || src == "HEAD" {
+            return vec!["HEAD".to_owned()];
+        }
+        if src.starts_with("refs/") {
+            return vec![src.to_owned()];
+        }
+        vec![
+            format!("refs/{src}"),
+            format!("refs/tags/{src}"),
+            format!("refs/heads/{src}"),
+            format!("refs/remotes/{src}"),
+            format!("refs/remotes/{src}/HEAD"),
+        ]
+    }
+
+    let mut want_refs: Vec<String> = Vec::new();
+    let mut exact_oids: Vec<ObjectId> = Vec::new();
+    for spec in cli_refspecs {
+        if spec.starts_with('^') {
+            continue;
+        }
+        let src = refspec_src(spec);
+        if src.is_empty() {
+            continue;
+        }
+        // Exact OID source -> plain want.
+        if src.len() == 40 && src.chars().all(|c| c.is_ascii_hexdigit()) {
+            if let Ok(oid) = ObjectId::from_hex(src) {
+                exact_oids.push(oid);
+            }
+            continue;
+        }
+        if src.contains('*') {
+            // Expand the wildcard against the advertised refs; each match becomes a want-ref.
+            let prefix = src.starts_with("refs/");
+            for (name, _) in advertised {
+                let pat = if prefix {
+                    src.to_owned()
+                } else {
+                    format!("refs/heads/{src}")
+                };
+                if pattern_matches(&pat, name) && !want_refs.iter().any(|w| w == name) {
+                    want_refs.push(name.clone());
+                }
+            }
+            continue;
+        }
+        // Bare named source: resolve to the first advertised candidate.
+        let resolved = candidates(src)
+            .into_iter()
+            .find(|cand| advertised.iter().any(|(n, _)| n == cand));
+        if let Some(name) = resolved {
+            if !want_refs.iter().any(|w| w == &name) {
+                want_refs.push(name);
+            }
+        }
+    }
+    (want_refs, exact_oids)
+}
+
 /// Tests invoke `git-upload-pack`; use grit to serve grit-created object stores.
 ///
 /// `client_proto` is passed to [`protocol_wire::merge_git_protocol_env_for_child`] (use `0` when
@@ -933,6 +1175,36 @@ pub(crate) fn read_pkt_payload_raw(r: &mut impl Read) -> std::io::Result<Option<
     }
 }
 
+/// Whether an I/O error chain is a broken pipe (the upload-pack child closed its stdin after
+/// rejecting our request). Used to convert a mid-negotiation EPIPE into a clean fatal error.
+fn is_broken_pipe_io(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+    })
+}
+
+/// After a broken-pipe write to upload-pack, read whatever it sent on stdout for an `ERR` packet
+/// (e.g. `ERR upload-pack: not our ref <oid>`) and surface it as a fatal error. Falls back to a
+/// generic message when no ERR packet is found. Always returns `Err`.
+fn fail_with_upload_pack_err(stdout: &mut impl Read) -> anyhow::Error {
+    loop {
+        match pkt_line::read_packet(stdout) {
+            Ok(Some(pkt_line::Packet::Data(ln))) => {
+                let line = ln.trim_end();
+                trace_packet_fetch('<', line);
+                if let Some(msg) = line.strip_prefix("ERR ") {
+                    return anyhow::anyhow!("fatal: remote error: {}", msg.trim_end());
+                }
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => break,
+        }
+    }
+    anyhow::anyhow!("fatal: the remote end hung up unexpectedly")
+}
+
 fn read_sideband_pack_until_done(r: &mut impl Read, out: &mut Vec<u8>) -> Result<()> {
     let mut seen_pack = false;
     // Progress and pack data share side-band channel 1; the `PACK` magic may start mid-chunk or
@@ -987,6 +1259,10 @@ fn read_v2_fetch_pack_response(stdout: &mut impl Read, out: &mut Vec<u8>) -> Res
             Some(other) => bail!("unexpected v2 fetch response: {other:?}"),
         };
         trace_packet_fetch('<', hdr.trim_end());
+        if let Some(msg) = hdr.strip_prefix("ERR ") {
+            // Server rejected the request (e.g. `not our ref`). Surface as `fatal: remote error:`.
+            bail!("fatal: remote error: {}", msg.trim_end());
+        }
         match hdr.as_str() {
             "acknowledgments" | "wanted-refs" | "shallow-info" | "packfile-uris" => {
                 skip_v2_section_until_boundary(stdout)?;
@@ -1002,6 +1278,69 @@ fn read_v2_fetch_pack_response(stdout: &mut impl Read, out: &mut Vec<u8>) -> Res
             other => bail!("unexpected v2 fetch section: {other}"),
         }
     }
+}
+
+/// Outcome of reading one protocol-v2 `acknowledgments` section during multi-round negotiation.
+struct V2AckRound {
+    /// Server emitted `ready`: the packfile (and any `wanted-refs`/`shallow-info`) follows in the
+    /// SAME response after a delimiter — the caller must read the pack now without sending more.
+    ready: bool,
+    /// At least one `ACK <oid>` was seen (a common commit was found).
+    seen_ack: bool,
+}
+
+/// Read a protocol-v2 `acknowledgments` section header and its ACK/NAK/ready lines.
+///
+/// Mirrors `fetch-pack.c` `process_ack`: a section terminated by a flush (no `ready`) means the
+/// negotiation continues with another round; a delim after `ready` means the pack follows. Returns
+/// `None` if the server instead started the packfile directly (e.g. it had nothing to ACK and
+/// jumped to sending the pack), in which case the caller proceeds to read the pack.
+fn read_v2_acknowledgments(stdout: &mut impl Read) -> Result<Option<V2AckRound>> {
+    let hdr = match pkt_line::read_packet(stdout)? {
+        Some(pkt_line::Packet::Data(s)) => s,
+        Some(pkt_line::Packet::Flush) => {
+            return Ok(Some(V2AckRound {
+                ready: false,
+                seen_ack: false,
+            }))
+        }
+        None => return Ok(None),
+        Some(other) => bail!("unexpected v2 fetch response: {other:?}"),
+    };
+    trace_packet_fetch('<', hdr.trim_end());
+    if let Some(msg) = hdr.strip_prefix("ERR ") {
+        bail!("fatal: remote error: {}", msg.trim_end());
+    }
+    if hdr != "acknowledgments" {
+        // Not an acknowledgments section (server went straight to pack / shallow / wanted-refs).
+        // Signal the caller to handle this header itself.
+        return Ok(None);
+    }
+    let mut ready = false;
+    let mut seen_ack = false;
+    loop {
+        match pkt_line::read_packet(stdout)? {
+            Some(pkt_line::Packet::Data(ln)) => {
+                let ln = ln.trim_end();
+                trace_packet_fetch('<', ln);
+                if ln == "NAK" {
+                    continue;
+                }
+                if ln == "ready" {
+                    ready = true;
+                    continue;
+                }
+                if ln.starts_with("ACK ") {
+                    seen_ack = true;
+                    continue;
+                }
+                bail!("unexpected acknowledgment line: '{ln}'");
+            }
+            Some(pkt_line::Packet::Delim) | Some(pkt_line::Packet::Flush) | None => break,
+            Some(other) => bail!("unexpected acknowledgments packet: {other:?}"),
+        }
+    }
+    Ok(Some(V2AckRound { ready, seen_ack }))
 }
 
 /// Fetch via `upload-pack` using explicit object IDs (e.g. lazy promisor fetch).
@@ -1103,7 +1442,7 @@ pub fn fetch_via_upload_pack_skipping(
     if !has_cli_refspecs {
         merge_remote_refs_into_upload_pack_advertisement(remote_repo_path, &mut advertised)?;
     }
-    let wants = compute_wants(&advertised)?;
+    let wants = filter_wants_already_local(local_git_dir, compute_wants(&advertised)?);
     if has_hide_refs_for_fetch_connectivity(local_git_dir) {
         crate::trace_run_command_git_invocation(&[
             "rev-list",
@@ -1116,6 +1455,15 @@ pub fn fetch_via_upload_pack_skipping(
     if wants.is_empty() {
         // No pack to transfer (either already up-to-date or refspecs selected no refs), but we
         // still return advertised heads/tags so callers can perform ref/prune bookkeeping.
+        //
+        // The protocol-v2 `promisor-remote` capability is part of the handshake, not the pack
+        // round: Git applies `promisor.storeFields` (persisting advertised filter/token into local
+        // config) whenever the server advertises promisor remotes the client accepts, even when no
+        // objects are wanted. Evaluate it here so a `git fetch` against an up-to-date server whose
+        // advertised filter changed still updates the local config (t5710 storeFields).
+        if let Some(caps) = v2_caps.as_ref() {
+            evaluate_promisor_remote_advertisement(local_git_dir, caps, filter_spec)?;
+        }
         drop(stdin);
         let _ = drain_child_stdout_to_eof(&mut stdout);
         let status = child.wait()?;
@@ -1159,6 +1507,30 @@ pub fn fetch_via_upload_pack_skipping(
         let caps = v2_caps.context("internal: missing v2 capability list")?;
         let default_hash = std::env::var("GIT_DEFAULT_HASH").unwrap_or_else(|_| "sha1".to_owned());
         let sideband_all = v2_fetch_supports_sideband_all(&caps);
+
+        // Promisor-remote capability (protocol v2): if the server advertised promisor remotes,
+        // evaluate `promisor.acceptFromServer` and reply with the accepted names. Accepting also
+        // resolves `--filter=auto` to the combined advertised filters and may store advertised
+        // fields locally (`promisor.storeFields`).
+        let promisor_outcome =
+            evaluate_promisor_remote_advertisement(local_git_dir, &caps, filter_spec)?;
+        let promisor_reply = promisor_outcome.reply.clone();
+        let effective_filter_spec = promisor_outcome.effective_filter_spec.as_deref();
+        // Only request object filtering when the server advertised the `filter` feature. Matches
+        // `fetch-pack.c` `send_filter`: a promisor remote without `uploadpack.allowFilter` does not
+        // advertise it, so the client warns and fetches unfiltered instead of sending a `filter`
+        // line the server rejects as "unexpected line" (t0410 "fetching from another promisor
+        // remote", where a lazily registered `partialclonefilter=blob:none` would otherwise leak
+        // into a plain `git fetch` against a non-filtering remote).
+        let requested_filter = effective_filter_spec.or(filter_spec);
+        let wire_filter_spec = if v2_fetch_supports_filter(&caps) {
+            requested_filter
+        } else {
+            if requested_filter.is_some_and(|s| !s.trim().is_empty()) {
+                eprintln!("warning: filtering not recognized by server, ignoring");
+            }
+            None
+        };
         let client_sid = trace2_transfer::transfer_advertise_sid_enabled(local_git_dir)
             .then(trace2_transfer::trace2_session_id_wire_once);
         let (shallow_oids, depth, deepen_relative, shallow_since, shallow_exclude, unshallow) =
@@ -1174,27 +1546,145 @@ pub fn fetch_via_upload_pack_skipping(
             } else {
                 (Vec::new(), None, false, None, &[][..], false)
             };
-        write_v2_fetch_request(
-            &mut stdin,
-            &default_hash,
-            &wants,
-            sideband_all,
-            include_tag,
-            deepen_relative,
-            client_sid.as_deref(),
-            &[],
-            filter_spec,
-            &shallow_oids,
-            depth,
-            shallow_since,
-            shallow_exclude,
-            unshallow,
-        )?;
-        // Close stdin so `upload-pack` v2 sees EOF after this fetch; otherwise `serve_loop`
-        // blocks for the next command while we block reading the pack response (deadlock).
-        drop(stdin);
+        // Advertise locally-available tips (bundle refs applied via `--bundle-uri`, plus existing
+        // heads/tags/HEAD) as `have` lines so the server can build a thin pack and skip objects we
+        // already obtained from the bundle (t5558 `negotiation:` cases require the bundle tip to be
+        // sent as `have`). Skipped during a shallow/deepening request, where the local objects do
+        // not form a usable negotiation base. Note `shallow_options` is `Some` for every clone, so
+        // gate on an actual shallow/deepen request rather than its presence.
+        let shallow_request = depth.is_some()
+            || shallow_since.is_some()
+            || !shallow_exclude.is_empty()
+            || unshallow
+            || !shallow_oids.is_empty();
+        let haves: Vec<ObjectId> = if shallow_request {
+            Vec::new()
+        } else {
+            local_negotiation_haves(local_git_dir, &wants, negotiation_tip_oids)
+        };
+
+        // When the server advertised `ref-in-want` and the user named refs on the command line,
+        // request those refs by name (`want-ref <name>`) instead of resolving them to OIDs
+        // client-side, mirroring `fetch-pack.c` `add_wants`. The named refs' OIDs are dropped from
+        // the plain `want` list; exact-OID sources and follow-tag wants stay as `want <oid>`.
+        let (want_refs, plain_wants): (Vec<String>, Vec<ObjectId>) = if has_cli_refspecs
+            && v2_fetch_supports_ref_in_want(&caps)
+            && !shallow_request
+        {
+            let (refs, _exact) = cli_want_refs_and_oids(&advertised, refspecs);
+            if refs.is_empty() {
+                (Vec::new(), wants.clone())
+            } else {
+                let want_ref_oids: HashSet<ObjectId> = refs
+                    .iter()
+                    .filter_map(|name| advertised.iter().find(|(n, _)| n == name).map(|(_, o)| *o))
+                    .collect();
+                let remaining: Vec<ObjectId> = wants
+                    .iter()
+                    .copied()
+                    .filter(|o| !want_ref_oids.contains(o))
+                    .collect();
+                (refs, remaining)
+            }
+        } else {
+            (Vec::new(), wants.clone())
+        };
+
+        // Multi-round negotiation (matches `fetch-pack.c` `do_fetch_pack_v2`): when we have local
+        // `have`s to offer and this is not a shallow request, send wants + a first batch of haves
+        // *without* `done`, read the `acknowledgments` section, then (if the server is not yet
+        // `ready`) send the remaining haves + `done` and read the pack. Records
+        // `negotiation_v2.total_rounds` so trace2 consumers (t5703) see the real round count.
+        let multi_round = !haves.is_empty() && !shallow_request;
         let mut buf = Vec::new();
-        read_v2_fetch_pack_response(&mut stdout, &mut buf)?;
+        if multi_round {
+            let first_batch = haves.len().min(INITIAL_FLUSH);
+            // Round 1: wants/want-refs + first batch of haves, no `done`.
+            write_v2_fetch_request(
+                &mut stdin,
+                &default_hash,
+                &plain_wants,
+                &haves[..first_batch],
+                sideband_all,
+                include_tag,
+                deepen_relative,
+                client_sid.as_deref(),
+                &[],
+                wire_filter_spec,
+                &shallow_oids,
+                depth,
+                shallow_since,
+                shallow_exclude,
+                unshallow,
+                promisor_reply.as_deref(),
+                &want_refs,
+                false,
+            )?;
+            let mut total_rounds = 1usize;
+            let ack = read_v2_acknowledgments(&mut stdout)?;
+            let server_ready = ack.as_ref().map(|a| a.ready).unwrap_or(false);
+            if server_ready {
+                // Server is `ready`: the pack follows in the same response after a delim.
+                read_v2_fetch_pack_response(&mut stdout, &mut buf)?;
+                drop(stdin);
+            } else if ack.is_none() {
+                // Server skipped acknowledgments and went straight to the pack (already handled the
+                // header inside the reader): nothing more to send.
+                read_v2_fetch_pack_response(&mut stdout, &mut buf)?;
+                drop(stdin);
+            } else {
+                // Round 2: remaining haves + `done`, then read the pack.
+                total_rounds = 2;
+                write_v2_fetch_request(
+                    &mut stdin,
+                    &default_hash,
+                    &plain_wants,
+                    &haves[first_batch..],
+                    sideband_all,
+                    include_tag,
+                    deepen_relative,
+                    client_sid.as_deref(),
+                    &[],
+                    wire_filter_spec,
+                    &shallow_oids,
+                    depth,
+                    shallow_since,
+                    shallow_exclude,
+                    unshallow,
+                    promisor_reply.as_deref(),
+                    &want_refs,
+                    true,
+                )?;
+                drop(stdin);
+                read_v2_fetch_pack_response(&mut stdout, &mut buf)?;
+            }
+            crate::trace2_emit_data_intmax("negotiation_v2", "total_rounds", total_rounds as i64);
+        } else {
+            write_v2_fetch_request(
+                &mut stdin,
+                &default_hash,
+                &plain_wants,
+                &haves,
+                sideband_all,
+                include_tag,
+                deepen_relative,
+                client_sid.as_deref(),
+                &[],
+                wire_filter_spec,
+                &shallow_oids,
+                depth,
+                shallow_since,
+                shallow_exclude,
+                unshallow,
+                promisor_reply.as_deref(),
+                &want_refs,
+                true,
+            )?;
+            // Close stdin so `upload-pack` v2 sees EOF after this fetch; otherwise `serve_loop`
+            // blocks for the next command while we block reading the pack response (deadlock).
+            drop(stdin);
+            read_v2_fetch_pack_response(&mut stdout, &mut buf)?;
+        }
         buf
     } else {
         let buf = fetch_upload_pack_negotiate_pack_bytes_with_streams(
@@ -1227,10 +1717,245 @@ pub fn fetch_via_upload_pack_skipping(
     Ok((remote_heads, remote_tags, head_symref, head_advertised_oid))
 }
 
+/// Git's `everything_local`: a wanted ref tip need not be requested when its object — and its full
+/// reachable closure — is already available in the local object store (which includes `--reference`
+/// / alternate object directories). Dropping such wants is what keeps a `--reference` clone or a
+/// fetch into a repo with an alternate from asking the server for objects it can already borrow
+/// (`t5604` "fetched no objects" / "fetch with incomplete alternates").
+fn want_is_locally_complete(repo: &Repository, oid: &ObjectId) -> bool {
+    let Ok(obj) = repo.odb.read(oid) else {
+        return false;
+    };
+    match obj.kind {
+        ObjectKind::Commit => {
+            grit_lib::connectivity::push_tip_objects_exist(repo, *oid).unwrap_or(false)
+        }
+        ObjectKind::Tag => {
+            // A tag is complete only if its (possibly chained) target's closure is present.
+            match parse_tag(&obj.data) {
+                Ok(tag) => want_is_locally_complete(repo, &tag.object),
+                Err(_) => false,
+            }
+        }
+        // A tree or blob ref tip is complete once the object itself is present.
+        ObjectKind::Tree | ObjectKind::Blob => true,
+    }
+}
+
+/// Drop wants already satisfied locally (see [`want_is_locally_complete`]). Returns the surviving
+/// wants. Never removes everything-vs-nothing distinctions the caller relies on: an empty result
+/// means the fetch needs no pack, which callers already handle.
+fn filter_wants_already_local(local_git_dir: &Path, wants: Vec<ObjectId>) -> Vec<ObjectId> {
+    if wants.is_empty() {
+        return wants;
+    }
+    let Ok(repo) = Repository::open(local_git_dir, None) else {
+        return wants;
+    };
+    // Only filter when there is at least one alternate / borrowable store; otherwise a normal
+    // clone (empty local ODB) keeps all wants and the check is pure overhead.
+    wants
+        .into_iter()
+        .filter(|oid| !want_is_locally_complete(&repo, oid))
+        .collect()
+}
+
 fn fetch_negotiation_algorithm(local_git_dir: &Path) -> Option<String> {
     ConfigSet::load(Some(local_git_dir), true)
         .ok()
         .and_then(|cfg| cfg.get("fetch.negotiationalgorithm"))
+}
+
+/// True when `fetch.negotiationAlgorithm` selects the `noop` negotiator.
+///
+/// The noop negotiator (`git/negotiator/noop.c`) makes `add_tip`, `known_common`, and `next` all
+/// no-ops, so the client advertises no `have` lines at all and the server always sends a full pack.
+/// Used by both the v0/v1 and v2 fetch paths to suppress the entire have/ACK exchange (t5554).
+fn fetch_negotiation_is_noop(local_git_dir: &Path) -> bool {
+    fetch_negotiation_algorithm(local_git_dir)
+        .is_some_and(|value| value.eq_ignore_ascii_case("noop"))
+}
+
+/// Result of evaluating a server's `promisor-remote` advertisement on the client.
+struct PromisorRemoteOutcome {
+    /// `promisor-remote=<names>` reply value, or `None` to send nothing.
+    reply: Option<String>,
+    /// When the request filter was `auto`, the combined filter from accepted remotes to send on
+    /// the wire in its place; otherwise `None` (use the original filter spec).
+    effective_filter_spec: Option<String>,
+}
+
+/// Client-side handling of the server's protocol-v2 `promisor-remote` capability.
+///
+/// Parses the advertisement out of `server_caps`, applies `promisor.acceptFromServer` /
+/// `promisor.checkFields`, stores advertised fields per `promisor.storeFields` (emitting the
+/// upstream "Storing new ..." messages on stderr), and — when `request_filter_spec` is `auto` —
+/// resolves the combined filter to send on the wire from the accepted remotes' advertised filters.
+fn evaluate_promisor_remote_advertisement(
+    local_git_dir: &Path,
+    server_caps: &[String],
+    request_filter_spec: Option<&str>,
+) -> Result<PromisorRemoteOutcome> {
+    let none = PromisorRemoteOutcome {
+        reply: None,
+        effective_filter_spec: None,
+    };
+
+    let Some(info) = server_caps
+        .iter()
+        .find_map(|l| l.strip_prefix("promisor-remote="))
+    else {
+        return Ok(none);
+    };
+
+    let cfg = ConfigSet::load(Some(local_git_dir), true).unwrap_or_default();
+    let outcome = grit_lib::promisor_remote::promisor_remote_reply(&cfg, info);
+
+    if outcome.accepted.is_empty() {
+        return Ok(none);
+    }
+
+    // promisor.storeFields: persist accepted remotes' advertised fields into local config.
+    store_promisor_fields(local_git_dir, &cfg, info)?;
+
+    // --filter=auto: replace "auto" on the wire with the combined advertised filters of the
+    // accepted remotes. Only a single accepted remote with one filter is exercised by the tests,
+    // for which the combined spec is just that filter.
+    let effective_filter_spec = if request_filter_spec.map(str::trim) == Some("auto") {
+        construct_combined_filter(&outcome.accepted_filters)
+    } else {
+        None
+    };
+
+    Ok(PromisorRemoteOutcome {
+        reply: outcome.reply,
+        effective_filter_spec,
+    })
+}
+
+/// Build the combined filter spec from accepted remotes' advertised filters (Git's
+/// `promisor_remote_construct_filter`). For a single filter the result is that filter verbatim;
+/// for multiple, a `combine:` spec joining the url-encoded subfilters.
+fn construct_combined_filter(accepted_filters: &[(String, String)]) -> Option<String> {
+    let filters: Vec<&str> = accepted_filters
+        .iter()
+        .map(|(_, f)| f.as_str())
+        .filter(|f| !f.is_empty())
+        .collect();
+    match filters.len() {
+        0 => None,
+        1 => Some(filters[0].to_string()),
+        _ => Some(
+            filters
+                .iter()
+                .map(|f| grit_lib::rev_list::url_encode_object_filter_subspec(f))
+                .collect::<Vec<_>>()
+                .join("+"),
+        ),
+    }
+}
+
+/// Apply `promisor.storeFields`: for each accepted, already-configured remote, store the
+/// advertised `partialCloneFilter` / `token` into local config when it differs, printing the
+/// upstream notification on stderr. Returns once all fields are processed.
+fn store_promisor_fields(local_git_dir: &Path, cfg: &ConfigSet, info: &str) -> Result<()> {
+    let store_fields_raw = cfg.get("promisor.storeFields").unwrap_or_default();
+    let mut store_filter = false;
+    let mut store_token = false;
+    for f in store_fields_raw
+        .split([',', ' ', '\t'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if f.eq_ignore_ascii_case("partialclonefilter") {
+            store_filter = true;
+        } else if f.eq_ignore_ascii_case("token") {
+            store_token = true;
+        }
+    }
+    if !store_filter && !store_token {
+        return Ok(());
+    }
+
+    // Re-evaluate which remotes are accepted (need each advertised remote's full field set).
+    let accept = grit_lib::promisor_remote::promisor_remote_reply(cfg, info);
+    if accept.accepted.is_empty() {
+        return Ok(());
+    }
+    let accepted_set: std::collections::HashSet<&str> =
+        accept.accepted.iter().map(String::as_str).collect();
+
+    let advertised = grit_lib::promisor_remote::parse_advertisement(info);
+
+    let config_path = local_git_dir.join("config");
+    let mut changed = false;
+    let mut file = match ConfigFile::from_path(&config_path, ConfigScope::Local)? {
+        Some(f) => f,
+        None => ConfigFile::parse(&config_path, "", ConfigScope::Local)?,
+    };
+
+    for adv in &advertised {
+        if !accepted_set.contains(adv.name.as_str()) {
+            continue;
+        }
+        // Only store for remotes already configured locally (Git refuses to create new remotes).
+        if cfg.get(&format!("remote.{}.url", adv.name)).is_none()
+            && cfg.get(&format!("remote.{}.promisor", adv.name)).is_none()
+        {
+            continue;
+        }
+        if store_filter {
+            if let Some(new_filter) = adv.filter.as_deref().filter(|f| !f.is_empty()) {
+                if valid_filter(new_filter) {
+                    let key = format!("remote.{}.partialCloneFilter", adv.name);
+                    let current = cfg.get(&key);
+                    if current.as_deref() != Some(new_filter) {
+                        eprintln!(
+                            "Storing new filter from server for remote '{}'.\n    '{}' -> '{}'",
+                            adv.name,
+                            current.as_deref().unwrap_or(""),
+                            new_filter
+                        );
+                        file.set(&key, new_filter)?;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if store_token {
+            if let Some(new_token) = adv.token.as_deref().filter(|t| !t.is_empty()) {
+                if valid_token(new_token) {
+                    let key = format!("remote.{}.token", adv.name);
+                    let current = cfg.get(&key);
+                    if current.as_deref() != Some(new_token) {
+                        eprintln!(
+                            "Storing new token from server for remote '{}'.\n    '{}' -> '{}'",
+                            adv.name,
+                            current.as_deref().unwrap_or(""),
+                            new_token
+                        );
+                        file.set(&key, new_token)?;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if changed {
+        file.write().context("storing promisor fields")?;
+    }
+    Ok(())
+}
+
+/// A filter is storable only if it parses (matches Git's `valid_filter`).
+fn valid_filter(spec: &str) -> bool {
+    grit_lib::rev_list::ObjectFilter::parse(spec).is_ok()
+}
+
+/// A token is storable only if it contains no control characters (Git's `valid_token`).
+fn valid_token(token: &str) -> bool {
+    !token.chars().any(|c| c.is_control())
 }
 
 /// Store a received pack from `upload-pack` into the local ODB.
@@ -1400,27 +2125,42 @@ fn fetch_upload_pack_negotiate_pack_bytes(
         }
         let default_hash = std::env::var("GIT_DEFAULT_HASH").unwrap_or_else(|_| "sha1".to_owned());
         let sideband_all = v2_fetch_supports_sideband_all(&caps);
+        // Drop the filter line when the server does not advertise `filter` (see `send_filter` in
+        // `fetch-pack.c`): sending it to a non-filtering server is a fatal "unexpected line".
+        let wire_filter_spec = if v2_fetch_supports_filter(&caps) {
+            filter_spec
+        } else {
+            None
+        };
         let client_sid = trace2_transfer::transfer_advertise_sid_enabled(local_git_dir)
             .then(trace2_transfer::trace2_session_id_wire_once);
         write_v2_fetch_request(
             &mut stdin,
             &default_hash,
             wants,
+            &[],
             sideband_all,
             false,
             false,
             client_sid.as_deref(),
             &[],
-            filter_spec,
+            wire_filter_spec,
             &[],
             None,
             None,
             &[],
             false,
+            None,
+            &[],
+            true,
         )?;
         drop(stdin);
         let mut out = Vec::new();
         read_v2_fetch_pack_response(&mut stdout, &mut out)?;
+        // Explicit-OID lazy fetches negotiate in a single round (a lone `want ... done`); record
+        // `total_rounds`=1 like upstream `fetch-pack.c` so partial-clone checkout traces match
+        // (t5601 #108).
+        crate::trace2_emit_data_intmax("negotiation_v2", "total_rounds", 1);
         out
     } else {
         let (advertised, _head_symref, saw_v1, saw_v2, server_sid) =
@@ -1444,6 +2184,9 @@ fn fetch_upload_pack_negotiate_pack_bytes(
             filter_spec,
         )?;
         drop(stdin);
+        // Explicit-OID lazy fetches negotiate in a single round; record `total_rounds`=1 like
+        // upstream `fetch-pack.c` (t5601 #108).
+        crate::trace2_emit_data_intmax("negotiation_v0_v1", "total_rounds", 1);
         out
     };
 
@@ -1533,7 +2276,11 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
             pkt_line::write_line_to_vec(&mut req, &line)?;
         }
         if let Some(since) = opts.shallow_since.as_deref() {
-            let line = format!("deepen-since {since}");
+            // `upload-pack` parses `deepen-since` with `parse_timestamp`; send the integer
+            // `approxidate` yields rather than the raw date string (t5539 fetch shallow since).
+            let value =
+                grit_lib::git_date::approx::approxidate_careful(since.trim(), None).to_string();
+            let line = format!("deepen-since {value}");
             trace_packet_fetch('>', line.as_str());
             pkt_line::write_line_to_vec(&mut req, &line)?;
         }
@@ -1544,7 +2291,11 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
         }
     }
     if let Some(spec) = filter_spec.map(str::trim).filter(|s| !s.is_empty()) {
-        let line = format!("filter {spec}");
+        // Send the canonical/expanded filter spec on the wire, matching Git's
+        // `expand_list_objects_filter_spec` (e.g. `blob:limit=1k` -> `blob:limit=1024`).
+        let expanded = grit_lib::rev_list::expand_object_filter_for_protocol(spec)
+            .unwrap_or_else(|_| spec.to_owned());
+        let line = format!("filter {expanded}");
         trace_packet_fetch('>', line.as_str());
         pkt_line::write_line_to_vec(&mut req, &line)?;
     }
@@ -1552,7 +2303,41 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
     stdin.write_all(&req).context("write wants")?;
     stdin.flush()?;
 
-    let suppress_haves = negotiation_tip_oids.is_some_and(|tips| tips.is_empty());
+    // For a deepen/shallow request the server replies with a shallow-info section (terminated by a
+    // flush) *before* expecting `have` lines. Read it now so a rejected `want` (the server sends
+    // `ERR upload-pack: not our ref` and exits) is surfaced as a clean fatal error instead of an
+    // EPIPE abort when we go on to write `have`/`done` into the closed pipe
+    // (t5516 'deny fetch unreachable SHA1' / 'shallow fetch reachable SHA1').
+    let deepen_requested = shallow_options.is_some_and(|o| {
+        o.depth.is_some()
+            || o.deepen.is_some()
+            || o.shallow_since.is_some()
+            || !o.shallow_exclude.is_empty()
+            || o.unshallow
+    });
+    if deepen_requested {
+        loop {
+            match pkt_line::read_packet(stdout)? {
+                Some(pkt_line::Packet::Flush) | None => break,
+                Some(pkt_line::Packet::Data(ln)) => {
+                    let line = ln.trim_end();
+                    trace_packet_fetch('<', line);
+                    if let Some(msg) = line.strip_prefix("ERR ") {
+                        bail!("fatal: remote error: {}", msg.trim_end());
+                    }
+                    // `shallow <oid>` / `unshallow <oid>` lines are consumed here; the local shallow
+                    // boundary is (re)computed from the fetched heads after the pack is applied.
+                }
+                Some(other) => bail!("unexpected upload-pack shallow-info response: {other:?}"),
+            }
+        }
+    }
+
+    // The `noop` negotiator (`git/negotiator/noop.c`) emits no `have` lines, so skip the entire
+    // have/ACK exchange and go straight to `done` (t5554). An empty `--negotiation-tip` list
+    // likewise suppresses haves.
+    let suppress_haves = negotiation_tip_oids.is_some_and(|tips| tips.is_empty())
+        || fetch_negotiation_is_noop(local_git_dir);
     let mut negotiator = SkippingNegotiator::new(local_repo);
 
     if !suppress_haves {
@@ -1564,8 +2349,9 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
                     oid
                 };
                 if negotiator.repo().odb.read(&t).is_ok() {
-                    let c = peel_commit_oid_for_negotiation(negotiator.repo(), t)?;
-                    negotiator.add_tip(c)?;
+                    if let Some(c) = peel_commit_oid_for_negotiation(negotiator.repo(), t)? {
+                        negotiator.add_tip(c)?;
+                    }
                 }
             }
         }
@@ -1574,8 +2360,9 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
     if !suppress_haves {
         for w in wants {
             if negotiator.repo().odb.read(w).is_ok() {
-                let c = peel_commit_oid_for_negotiation(negotiator.repo(), *w)?;
-                negotiator.add_tip(c)?;
+                if let Some(c) = peel_commit_oid_for_negotiation(negotiator.repo(), *w)? {
+                    negotiator.add_tip(c)?;
+                }
             }
         }
     }
@@ -1585,8 +2372,9 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
     if let Some(tips) = negotiation_tip_oids {
         let mut set = HashSet::new();
         for tip in tips {
-            let peeled = peel_commit_oid_for_negotiation(negotiator.repo(), *tip)?;
-            set.insert(peeled);
+            if let Some(peeled) = peel_commit_oid_for_negotiation(negotiator.repo(), *tip)? {
+                set.insert(peeled);
+            }
         }
         tip_filter = Some(set);
     }
@@ -1603,7 +2391,10 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
                     if negotiator.repo().odb.read(&tip).is_err() {
                         continue;
                     }
-                    let peeled = peel_commit_oid_for_negotiation(negotiator.repo(), tip)?;
+                    let Some(peeled) = peel_commit_oid_for_negotiation(negotiator.repo(), tip)?
+                    else {
+                        continue;
+                    };
                     if tip_filter
                         .as_ref()
                         .is_some_and(|filter| !filter.contains(&peeled))
@@ -1616,19 +2407,23 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
         }
         if let Ok(h) = refs::resolve_ref(local_git_dir, "HEAD") {
             if negotiator.repo().odb.read(&h).is_ok() {
-                let peeled = peel_commit_oid_for_negotiation(negotiator.repo(), h)?;
-                if !tip_filter
-                    .as_ref()
-                    .is_some_and(|filter| !filter.contains(&peeled))
-                {
-                    tips.push(peeled);
+                if let Some(peeled) = peel_commit_oid_for_negotiation(negotiator.repo(), h)? {
+                    if !tip_filter
+                        .as_ref()
+                        .is_some_and(|filter| !filter.contains(&peeled))
+                    {
+                        tips.push(peeled);
+                    }
                 }
             }
         }
         for sym in ["HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
             if let Ok(oid) = resolve_revision(negotiator.repo(), sym) {
                 if negotiator.repo().odb.read(&oid).is_ok() {
-                    let peeled = peel_commit_oid_for_negotiation(negotiator.repo(), oid)?;
+                    let Some(peeled) = peel_commit_oid_for_negotiation(negotiator.repo(), oid)?
+                    else {
+                        continue;
+                    };
                     if tip_filter
                         .as_ref()
                         .is_some_and(|filter| !filter.contains(&peeled))
@@ -1660,8 +2455,9 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
                 continue;
             }
             if negotiator.repo().odb.read(oid).is_ok() {
-                let c = peel_commit_oid_for_negotiation(negotiator.repo(), *oid)?;
-                negotiator.known_common(c)?;
+                if let Some(c) = peel_commit_oid_for_negotiation(negotiator.repo(), *oid)? {
+                    negotiator.known_common(c)?;
+                }
             }
         }
     }
@@ -1679,8 +2475,16 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
         count += 1;
         if flush_at <= count {
             pending.extend_from_slice(b"0000");
-            stdin.write_all(&pending).context("write have flush")?;
-            stdin.flush()?;
+            if let Err(e) = stdin
+                .write_all(&pending)
+                .and_then(|()| stdin.flush())
+                .context("write have flush")
+            {
+                if is_broken_pipe_io(&e) {
+                    return Err(fail_with_upload_pack_err(stdout));
+                }
+                return Err(e);
+            }
             pending.clear();
             flush_at = next_flush_count(stateless_rpc, count);
             flushes += 1;
@@ -1697,8 +2501,16 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
 
     if !pending.is_empty() {
         pending.extend_from_slice(b"0000");
-        stdin.write_all(&pending).context("final have flush")?;
-        stdin.flush()?;
+        if let Err(e) = stdin
+            .write_all(&pending)
+            .and_then(|()| stdin.flush())
+            .context("final have flush")
+        {
+            if is_broken_pipe_io(&e) {
+                return Err(fail_with_upload_pack_err(stdout));
+            }
+            return Err(e);
+        }
         flushes += 1;
     }
 
@@ -1713,8 +2525,16 @@ pub(crate) fn fetch_upload_pack_negotiate_pack_bytes_with_streams(
     let mut tail = Vec::new();
     pkt_line::write_line_to_vec(&mut tail, "done")?;
     trace_packet_fetch('>', "done");
-    stdin.write_all(&tail).context("write done")?;
-    stdin.flush()?;
+    if let Err(e) = stdin
+        .write_all(&tail)
+        .and_then(|()| stdin.flush())
+        .context("write done")
+    {
+        if is_broken_pipe_io(&e) {
+            return Err(fail_with_upload_pack_err(stdout));
+        }
+        return Err(e);
+    }
 
     // `upload-pack` responds to `done` with `ACK <oid>` or `NAK` before streaming the pack.
     match pkt_line::read_packet(stdout)? {
@@ -1940,6 +2760,7 @@ pub fn fetch_via_git_protocol_skipping(
             &mut stream_w,
             &default_hash,
             &wants,
+            &[],
             false,
             true,
             false,
@@ -1951,6 +2772,9 @@ pub fn fetch_via_git_protocol_skipping(
             None,
             &[],
             false,
+            None,
+            &[],
+            true,
         )?;
         let mut buf = Vec::new();
         read_v2_fetch_pack_response(&mut stream, &mut buf)?;
@@ -2060,6 +2884,7 @@ pub fn fetch_via_ssh_upload_pack_skipping(
             &mut stdin,
             &default_hash,
             &wants,
+            &[],
             false,
             true,
             false,
@@ -2071,6 +2896,9 @@ pub fn fetch_via_ssh_upload_pack_skipping(
             None,
             &[],
             false,
+            None,
+            &[],
+            true,
         )?;
         drop(stdin);
         let mut buf = Vec::new();

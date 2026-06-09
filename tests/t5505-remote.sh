@@ -7,7 +7,25 @@ export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 . ./test-lib.sh
 
+# Upstream's test_tick is a shell-local variable, so the two parallel
+# setup_repository invocations below each start from the same baseline and
+# produce byte-identical "Initial"/"Second" commits (a prerequisite for the
+# 'show' push-status expectations). This harness's test_tick instead persists
+# its counter to $TRASH_DIRECTORY/.git/.test_tick, which leaks the first
+# repository's advanced tick into the second subshell and gives the two repos
+# different commit timestamps (hence different SHAs). Restore upstream's
+# subshell-local semantics by snapshotting and resetting the persisted tick
+# around each invocation, so both repositories are created with identical
+# timestamps just as they are upstream.
 setup_repository () {
+	_saved_tick="${test_tick-}" &&
+	_saved_tick_file="" &&
+	if test -f "$_TICK_FILE"
+	then
+		_saved_tick_file="$(cat "$_TICK_FILE")"
+	fi &&
+	unset -v test_tick &&
+	rm -f "$_TICK_FILE" &&
 	mkdir "$1" && (
 	cd "$1" &&
 	git init -b main &&
@@ -21,7 +39,19 @@ setup_repository () {
 	test_tick &&
 	git commit -m "Second" &&
 	git checkout main
-	)
+	) &&
+	if test -n "$_saved_tick"
+	then
+		test_tick="$_saved_tick"
+	else
+		unset -v test_tick
+	fi &&
+	if test -n "$_saved_tick_file"
+	then
+		echo "$_saved_tick_file" >"$_TICK_FILE"
+	else
+		rm -f "$_TICK_FILE"
+	fi
 }
 
 tokens_match () {

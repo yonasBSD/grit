@@ -126,6 +126,49 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Pack the remote-tracking refs (`refs/remotes/*`) a fresh clone just wrote into `packed-refs`,
+/// removing the loose copies. Mirrors `git clone`, which records the fetched tracking refs via an
+/// *initial* ref transaction that the files backend writes straight to `packed-refs` (the local
+/// branch and the symbolic `refs/remotes/<remote>/HEAD` created afterwards stay loose). Without this
+/// a later up-to-date push would re-create a loose `refs/remotes/<remote>/<branch>`
+/// (t5516 'push preserves up-to-date packed refs').
+///
+/// No-op for reftable repositories (they have no `packed-refs`). Symbolic tracking refs (e.g.
+/// `refs/remotes/origin/HEAD`) are left loose, exactly as `packed-refs` cannot store symrefs.
+pub fn pack_clone_tracking_refs(git_dir: &Path) -> Result<()> {
+    if grit_lib::reftable::is_reftable_repo(git_dir) {
+        return Ok(());
+    }
+    let odb = Odb::new(&git_dir.join("objects"));
+    let mut packed = read_existing_packed_refs(git_dir)?;
+    let mut newly_packed: Vec<String> = Vec::new();
+    walk_loose_under_refs(git_dir, "refs/remotes/", &mut |refname, path| {
+        match read_ref_file(path).context(format!("reading {refname}"))? {
+            Ref::Symbolic(_) => {}
+            Ref::Direct(oid) => {
+                let peeled = peel_to_non_tag(&odb, &oid);
+                packed.insert(
+                    refname.to_owned(),
+                    PackedRef {
+                        oid: oid.to_string(),
+                        peeled,
+                    },
+                );
+                newly_packed.push(refname.to_owned());
+            }
+        }
+        Ok(())
+    })?;
+    if newly_packed.is_empty() {
+        return Ok(());
+    }
+    write_packed_refs(git_dir, &packed).context("failed to write packed-refs")?;
+    for refname in &newly_packed {
+        prune_loose_ref(git_dir, refname);
+    }
+    Ok(())
+}
+
 fn pack_reftable_refs(git_dir: &Path, auto: bool) -> Result<()> {
     let config = ConfigSet::load(Some(git_dir), true).unwrap_or_else(|_| ConfigSet::new());
     if let Some(raw) = config.get("reftable.blockSize") {

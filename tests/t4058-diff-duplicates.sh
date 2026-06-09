@@ -152,7 +152,11 @@ test_expect_success 'reset --hard does not segfault' '
 
 test_expect_success 'git diff HEAD does not segfault' '
 	git checkout base &&
-	GIT_TEST_CHECK_CACHE_TREE=false &&
+	# Upstream relies on test-lib.sh having pre-exported
+	# GIT_TEST_CHECK_CACHE_TREE so that this reassignment propagates to
+	# the git subprocesses below; the ported test-lib.sh omits that
+	# export, so we must export it here for the override to take effect.
+	export GIT_TEST_CHECK_CACHE_TREE=false &&
 	git reset --hard &&
 	test_must_fail git diff HEAD 2>err &&
 	test_grep "error: corrupted cache-tree has entries not present in index" err

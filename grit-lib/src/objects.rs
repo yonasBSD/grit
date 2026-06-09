@@ -411,7 +411,7 @@ pub fn parse_commit(data: &[u8]) -> Result<CommitData> {
     let mut parents = Vec::new();
     let mut author_raw: Option<Vec<u8>> = None;
     let mut committer_raw: Option<Vec<u8>> = None;
-    let mut encoding = None;
+    let mut encoding: Option<String> = None;
     let mut cont = Continuation::Ignore;
 
     while pos < data.len() {
@@ -428,9 +428,15 @@ pub fn parse_commit(data: &[u8]) -> Result<CommitData> {
             // Preserve the exact message tail: Git allows commits whose log ends without a
             // final newline (`commit-tree` from a file). `serialize_commit` appends `\n` when
             // only `message` is set, so keep raw bytes when the body is not LF-terminated.
+            let has_non_utf8_encoding = encoding.as_deref().is_some_and(|label| {
+                !label.eq_ignore_ascii_case("utf-8") && !label.eq_ignore_ascii_case("utf8")
+            });
             let raw_message = if body.is_empty() {
                 None
-            } else if std::str::from_utf8(body).is_err() || !body.ends_with(b"\n") {
+            } else if has_non_utf8_encoding
+                || std::str::from_utf8(body).is_err()
+                || !body.ends_with(b"\n")
+            {
                 Some(body.to_vec())
             } else {
                 None

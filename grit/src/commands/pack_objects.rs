@@ -5,6 +5,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
+use filetime::FileTime;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use grit_lib::config::{parse_config_parameters, ConfigSet};
@@ -20,7 +21,8 @@ use grit_lib::pack_rev::{
     build_pack_rev_bytes_from_index_order_offsets_and_checksum, rev_path_for_index,
 };
 use grit_lib::rev_list::{
-    rev_list, shallow_boundary_oids, MissingAction, ObjectFilter, RevListOptions,
+    rev_list, shallow_boundary_oids, url_encode_object_filter_subspec, MissingAction, ObjectFilter,
+    RevListOptions,
 };
 use sha1::{Digest as Sha1Digest, Sha1};
 use sha2::{Digest as Sha256Digest, Sha256};
@@ -173,6 +175,15 @@ pub struct Args {
     /// Do not write bitmap index (accepted for compat).
     #[arg(long = "no-write-bitmap-index")]
     pub no_write_bitmap_index: bool,
+
+    /// Prefer a reachability bitmap when enumerating objects (accepted for compat; grit produces
+    /// the same object set with or without bitmaps).
+    #[arg(long = "use-bitmap-index")]
+    pub use_bitmap_index: bool,
+
+    /// Do not use a reachability bitmap when enumerating objects (accepted for compat).
+    #[arg(long = "no-use-bitmap-index")]
+    pub no_use_bitmap_index: bool,
 
     /// Filter specification (accepted for compat).
     #[arg(long = "filter", action = clap::ArgAction::Append)]
@@ -653,12 +664,28 @@ pub fn run(mut args: Args) -> Result<()> {
     let pack_hash_bytes = pack_trailer_bytes_for_repo(&repo.git_dir);
 
     validate_filter_specs()?;
+    let effective_filter = effective_filter_spec(args.filter.last().map(String::as_str))?;
     // Collect object IDs.
-    let mut pack_list = collect_oids(&repo, &args)?;
+    let mut pack_list = if args.all
+        && effective_filter
+            .as_deref()
+            .is_some_and(filter_needs_rev_list_walk)
+    {
+        PackObjectList {
+            oids: collect_filtered_all_objects_via_rev_list(
+                &repo,
+                effective_filter.as_deref().unwrap_or_default(),
+            )?,
+            force_include: Vec::new(),
+            thin_blob_deltas: Vec::new(),
+            rev_list_stdin: true,
+        }
+    } else {
+        collect_oids(&repo, &args)?
+    };
     if args.include_tag {
         include_annotated_tags_for_packed_commits(&repo, &mut pack_list.oids)?;
     }
-    let effective_filter = effective_filter_spec(args.filter.last().map(String::as_str))?;
     omit_prefiltered_blobs(&repo, &mut pack_list.oids, effective_filter.as_deref())?;
 
     // Git shows this progress title when progress is enabled. Tests set `GIT_PROGRESS_DELAY` and
@@ -688,14 +715,58 @@ pub fn run(mut args: Args) -> Result<()> {
         // cleanup;`), it never errors. A `repack --geometric --exclude-promisor-objects`
         // on a partial clone can legitimately enumerate zero non-promisor objects
         // (t5616 "after fetching descendants of non-promisor commits, gc works").
-        if !args.stdout && !args.quiet {
+        //
+        // Without `--non-empty`, writing to a file still produces an empty pack and
+        // prints its name: `git pack-objects <base> </dev/null` is used to manufacture
+        // an empty pack (t5319 "preferred packs must be non-empty").
+        if !args.non_empty && !args.stdout {
+            if let Some(base) = args.base_name.as_ref() {
+                write_empty_pack_to_file(&repo, base, pack_hash_bytes)?;
+                if !args.quiet {
+                    eprintln!("Total 0 (delta 0), reused 0 (delta 0)");
+                }
+                if args.unpack_unreachable.is_some() {
+                    loosen_unused_packed_objects(
+                        &repo,
+                        &HashSet::new(),
+                        &[],
+                        args.honor_pack_keep,
+                        unpack_unreachable_threshold(args.unpack_unreachable.as_deref()),
+                    )?;
+                }
+                return Ok(());
+            }
+        }
+        if args.stdout {
+            // Git's `write_pack_file()` is always called (unless `--non-empty`), so an
+            // empty enumeration still streams a valid 32-byte empty pack to stdout. The
+            // protocol-v2 `fetch` "want-ref with ref we already have commit for" case
+            // (t5703) relies on this: the client already has every wanted object, so the
+            // pack is empty but `index-pack` must still accept it.
+            if !args.quiet {
+                eprintln!("Total 0 (delta 0), reused 0 (delta 0)");
+            }
+            let pack_bytes = build_pack(&[], false, pack_hash_bytes, Compression::default())?;
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            out.write_all(&pack_bytes)?;
+            out.flush()?;
+            return Ok(());
+        }
+        if !args.quiet {
             eprintln!("Total 0 (delta 0), reused 0 (delta 0)");
         }
         // `--unpack-unreachable` (repack -A) must still run the loosen pass and
         // emit its trace even when no pack is written (Git runs
         // `loosen_unused_packed_objects` during object enumeration).
         if args.unpack_unreachable.is_some() {
-            loosen_unused_packed_objects(&repo, &HashSet::new(), &[], args.honor_pack_keep)?;
+            loosen_unused_packed_objects(
+                &repo,
+                &HashSet::new(),
+                &[],
+                args.honor_pack_keep,
+                unpack_unreachable_threshold(args.unpack_unreachable.as_deref()),
+            )?;
         }
         return Ok(());
     }
@@ -710,7 +781,13 @@ pub fn run(mut args: Args) -> Result<()> {
         } {
             Ok(obj) => obj,
             Err(_) if args.missing.as_deref() == Some("allow-any") => continue,
-            Err(err) => return Err(err),
+            // An object that survived enumeration (its OID was discovered via a tree entry) but is
+            // unreadable during the write phase mirrors Git's `pack-objects.c` `die("unable to
+            // read %s")`. Enumeration-time failures (a bad/unparsable tree) already surface as
+            // "bad tree object" from the walk. Distinguishing them lets upload-pack report the
+            // upstream wording: a missing blob -> "unable to read", a corrupt tree -> "bad tree
+            // object" (t5530 packing vs. enumeration errors).
+            Err(_) => bail!("unable to read {}", oid.to_hex()),
         };
         let mut pack_id = hash_object_bytes(obj.kind, &obj.data, pack_hash_bytes)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -776,7 +853,13 @@ pub fn run(mut args: Args) -> Result<()> {
         // when the filtered object set turns out empty.
         if args.unpack_unreachable.is_some() {
             let packed: HashSet<ObjectId> = pack_list.oids.iter().copied().collect();
-            loosen_unused_packed_objects(&repo, &packed, &[], args.honor_pack_keep)?;
+            loosen_unused_packed_objects(
+                &repo,
+                &packed,
+                &[],
+                args.honor_pack_keep,
+                unpack_unreachable_threshold(args.unpack_unreachable.as_deref()),
+            )?;
         }
         return Ok(());
     }
@@ -1000,6 +1083,21 @@ pub fn run(mut args: Args) -> Result<()> {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no base name"))?;
 
+        // When writing bitmaps, Git's bitmap writer reads `pack.preferbitmaptips` as a
+        // multi-valued string (`pack-bitmap.c:bitmap_preferred_tips`). A value-less key
+        // (`[pack]\n\tpreferBitmapTips`) makes `repo_config_get_string_multi` fail via
+        // `config_error_nonbool`, which prints `error: missing value for '<key>'` to stderr.
+        // Emit the same diagnostic once before writing the placeholder bitmap.
+        if !args.no_write_bitmap_index
+            && (args.write_bitmap_index || args.write_bitmap_index_quiet)
+            && config
+                .get_all_raw("pack.preferBitmapTips")
+                .iter()
+                .any(|v| v.is_none())
+        {
+            eprintln!("error: missing value for 'pack.preferbitmaptips'");
+        }
+
         let mut pack_hashes: Vec<String> = Vec::new();
         for chunk in &chunks {
             let pack_bytes = build_pack(chunk, use_ofs_delta, pack_hash_bytes, zlib_compression)?;
@@ -1035,7 +1133,18 @@ pub fn run(mut args: Args) -> Result<()> {
             }
 
             println!("{pack_hash}");
-            if !args.quiet {
+            // Git only prints the final "Total ..." summary when progress is enabled, which
+            // defaults to `isatty(2)` (`builtin/pack-objects.c`: `progress = isatty(2)` and the
+            // summary is guarded by `if (progress)`). For the file-output path (`repack`), honor
+            // that gating: tests that redirect stderr to a file (e.g. t5310 pack.preferBitmapTips)
+            // expect this progress line to be suppressed. `--progress`/`--all-progress-implied`
+            // and GIT_PROGRESS_DELAY still force it on.
+            let show_total = !args.quiet
+                && (io::stderr().is_terminal()
+                    || args.progress
+                    || args.all_progress_implied
+                    || progress_delay_env.is_some());
+            if show_total {
                 eprintln!(
                     "Total {} (delta {}), reused 0 (delta {})",
                     chunk.len(),
@@ -1084,7 +1193,13 @@ pub fn run(mut args: Args) -> Result<()> {
                     PackWriteEntry::ReusedSlice { oid, .. } => *oid,
                 })
                 .collect();
-            loosen_unused_packed_objects(&repo, &packed, &pack_hashes, args.honor_pack_keep)?;
+            loosen_unused_packed_objects(
+                &repo,
+                &packed,
+                &pack_hashes,
+                args.honor_pack_keep,
+                unpack_unreachable_threshold(args.unpack_unreachable.as_deref()),
+            )?;
             prune_stale_loose_after_unpack_unreachable(
                 &repo,
                 &packed,
@@ -1133,10 +1248,10 @@ fn reachable_objects_for_full_repack(repo: &Repository, args: &Args) -> Result<V
     let mut opts = RevListOptions::default();
     opts.objects = true;
     opts.all_refs = true;
-    // `git pack-objects --all --reflog` still packs the ref closure only; `--reflog` does not add
-    // reflog-only commits as extra roots (see `git verify-pack` on the first pack vs grit before
-    // this fix — t6500 cruft relies on foo/bar commits staying out of the main pack).
-    opts.include_reflog_entries = false;
+    // Ordinary full repacks keep reflog-only commits out of the main pack; cruft handling relies on
+    // those objects being separated later. The `repack -A` path passes `--unpack-unreachable`,
+    // though, and Git includes reflog tips in the pack until reflog expiry makes them truly stale.
+    opts.include_reflog_entries = args.reflog && args.unpack_unreachable.is_some();
     opts.include_indexed_objects = args.indexed_objects;
     opts.missing_action = MissingAction::Allow;
     opts.exclude_promisor_objects = args.exclude_promisor_objects;
@@ -1421,6 +1536,44 @@ fn recent_objects_hook_oids(repo: &Repository) -> Result<Vec<ObjectId>> {
     Ok(out)
 }
 
+fn recent_objects_hook_closure(repo: &Repository) -> Result<HashSet<ObjectId>> {
+    let mut keep = HashSet::new();
+    let mut queue: VecDeque<ObjectId> = recent_objects_hook_oids(repo)?.into();
+    while let Some(oid) = queue.pop_front() {
+        if !keep.insert(oid) {
+            continue;
+        }
+        let Ok(obj) = read_object_from_repo(repo, &oid) else {
+            continue;
+        };
+        match obj.kind {
+            ObjectKind::Commit => {
+                if let Ok(commit) = parse_commit(&obj.data) {
+                    queue.push_back(commit.tree);
+                    queue.extend(commit.parents);
+                }
+            }
+            ObjectKind::Tree => {
+                if let Ok(entries) = parse_tree(&obj.data) {
+                    queue.extend(
+                        entries
+                            .into_iter()
+                            .filter(|entry| entry.mode != MODE_GITLINK)
+                            .map(|entry| entry.oid),
+                    );
+                }
+            }
+            ObjectKind::Tag => {
+                if let Ok(tag) = parse_tag(&obj.data) {
+                    queue.push_back(tag.object);
+                }
+            }
+            ObjectKind::Blob => {}
+        }
+    }
+    Ok(keep)
+}
+
 fn cruft_expiration_threshold(raw: Option<&str>) -> Option<u32> {
     let raw = raw.map(str::trim).filter(|s| !s.is_empty())?;
     if raw.eq_ignore_ascii_case("never") {
@@ -1604,7 +1757,12 @@ fn warn_pack_threads(args: &Args) {
 }
 
 fn pack_delta_depth_limit(args: &Args) -> Option<usize> {
-    let _ = (args.path_walk, args.no_path_walk);
+    let _ = (
+        args.path_walk,
+        args.no_path_walk,
+        args.use_bitmap_index,
+        args.no_use_bitmap_index,
+    );
     let from_extra = || {
         for a in &args.extra {
             if let Some(rest) = a.strip_prefix("--depth=") {
@@ -1864,6 +2022,110 @@ pub fn build_thin_push_pack(
         return Ok(Vec::new());
     }
 
+    let have_roots = local_push_have_roots(local_repo, remote_git_dir)?;
+    build_thin_push_pack_from_have_set(local_repo, push_tips, &have_roots)
+}
+
+/// Build a thin push pack whose negative (`--not`) boundary is restricted to the objects reachable
+/// from the receiver's *advertised* refs (i.e. excluding any ref hidden by
+/// `transfer.hideRefs` / `receive.hideRefs`).
+///
+/// Mirrors real Git's wire push: receive-pack advertises only non-hidden refs, so a non-negotiating
+/// pusher can only treat the advertised ref tips as "have". Objects that live in the receiver's
+/// object store but are reachable solely from a hidden ref are therefore *re-sent*. The
+/// direct-object-membership shortcut in [`build_thin_push_pack`] would wrongly exclude them
+/// (t5516 'push without negotiation').
+pub fn build_thin_push_pack_excluding_hidden(
+    local_repo: &Repository,
+    push_tips: &[ObjectId],
+    remote_git_dir: &Path,
+    hidden: &grit_lib::ref_exclusions::RefExclusions,
+) -> Result<Vec<u8>> {
+    if push_tips.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // The advertised ref tips define the negative boundary. Marking just these OIDs as `--not`
+    // roots makes pack-objects walk their reachable closure and exclude exactly those objects,
+    // which is what a real (non-negotiating) push computes from the advertisement.
+    let mut have_roots: BTreeSet<ObjectId> = BTreeSet::new();
+    if let Ok(empty_tree) = ObjectId::from_hex("4b825dc642cb6eb9a060e54bf8d69288fbee4904") {
+        have_roots.insert(empty_tree);
+    }
+    if let Ok(remote_refs) = refs::list_refs(remote_git_dir, "refs/") {
+        for (refname, oid) in remote_refs {
+            if hidden.ref_excluded(Some(&refname), &refname) {
+                continue;
+            }
+            // Only refs whose closure we actually have locally can serve as a thin-pack base.
+            if have_root_closure_is_local(local_repo, &oid) {
+                have_roots.insert(oid);
+            }
+        }
+    }
+    // receive-pack also advertises `.have` lines for the tips of the receiver's *alternate*
+    // object stores (`for_each_alternate_ref`): when the receiver shares an alternate with the
+    // pusher (e.g. `git clone --reference`), those commits are common and a non-negotiating push
+    // must exclude them. Without this boundary every object reachable from the shared history is
+    // re-sent (t5501 'pushing into a repository with the same alternate').
+    for oid in remote_alternate_have_roots(remote_git_dir) {
+        if have_root_closure_is_local(local_repo, &oid) {
+            have_roots.insert(oid);
+        }
+    }
+    build_thin_push_pack_from_have_set(local_repo, push_tips, &have_roots)
+}
+
+/// Collect the object IDs the receiver's `receive-pack` would advertise as `.have` lines for its
+/// *alternate* object stores: the ref tips of each alternate repository whose `.git` directory has a
+/// `refs/` tree (mirrors `collect_alternate_have_oids` in the receive-pack advertisement, and Git's
+/// `for_each_alternate_ref`).
+///
+/// `remote_git_dir` is the receiver's git directory. Failures (unreadable alternates, malformed
+/// `info/alternates`) yield an empty set so a push never aborts on alternate discovery.
+fn remote_alternate_have_roots(remote_git_dir: &Path) -> BTreeSet<ObjectId> {
+    let mut out: BTreeSet<ObjectId> = BTreeSet::new();
+    let remote_objects = remote_git_dir.join("objects");
+    let Ok(alternates) = grit_lib::pack::read_alternates_recursive(&remote_objects) else {
+        return out;
+    };
+    for alt_objects in alternates {
+        let Some(alt_git_dir) = alt_objects.parent() else {
+            continue;
+        };
+        if !alt_git_dir.join("refs").is_dir() {
+            continue;
+        }
+        if let Ok(alt_refs) = refs::list_refs(alt_git_dir, "refs/") {
+            for (_, oid) in alt_refs {
+                out.insert(oid);
+            }
+        }
+    }
+    out
+}
+
+/// Compute the set of object IDs the local-push receiver already has (the `--not`/negative side of
+/// a thin push pack), restricted to those whose closure is also present locally.
+///
+/// Mirrors the have-set computation in [`build_thin_push_pack`] so callers (e.g. progress
+/// enumeration) can reuse the exact same boundary the pack was built against.
+pub fn local_push_have_roots(
+    local_repo: &Repository,
+    remote_git_dir: &Path,
+) -> Result<BTreeSet<ObjectId>> {
+    let mut have_roots = local_push_remote_object_ids(remote_git_dir)?;
+    have_roots.retain(|oid| have_root_closure_is_local(local_repo, oid));
+    Ok(have_roots)
+}
+
+/// Collect every object ID the receiver already has (loose objects, pack-index entries, and any
+/// alternates), without restricting to objects whose closure is local.
+///
+/// Unlike [`local_push_have_roots`], this keeps boundary objects (e.g. a shallow-clone tip whose
+/// own parents are absent locally) so callers that only need the receiver's *object membership*
+/// (such as preferred-base / delta enumeration for progress) see the full set.
+fn local_push_remote_object_ids(remote_git_dir: &Path) -> Result<BTreeSet<ObjectId>> {
     let remote_objects = remote_git_dir.join("objects");
     let mut have_roots: BTreeSet<ObjectId> = BTreeSet::new();
     if let Ok(empty_tree) = ObjectId::from_hex("4b825dc642cb6eb9a060e54bf8d69288fbee4904") {
@@ -1875,9 +2137,7 @@ pub fn build_thin_push_pack(
             collect_objects_dir_have_roots(&alternate, &mut have_roots)?;
         }
     }
-    have_roots.retain(|oid| have_root_closure_is_local(local_repo, oid));
-
-    build_thin_push_pack_from_have_set(local_repo, push_tips, &have_roots)
+    Ok(have_roots)
 }
 
 fn have_root_closure_is_local(local_repo: &Repository, oid: &ObjectId) -> bool {
@@ -1946,18 +2206,41 @@ pub fn build_thin_push_pack_from_remote_oids(
     push_tips: &[ObjectId],
     remote_have_oids: &[ObjectId],
 ) -> Result<Vec<u8>> {
+    build_push_pack_from_remote_oids(local_repo, push_tips, remote_have_oids, true)
+}
+
+/// Like [`build_thin_push_pack_from_remote_oids`] but lets the caller request a self-contained
+/// (non-thin) pack for `git push --no-thin` (t5516 'push --no-thin must produce non-thin pack').
+pub fn build_push_pack_from_remote_oids(
+    local_repo: &Repository,
+    push_tips: &[ObjectId],
+    remote_have_oids: &[ObjectId],
+    thin: bool,
+) -> Result<Vec<u8>> {
     let have_roots: BTreeSet<ObjectId> = remote_have_oids
         .iter()
         .copied()
         .filter(|oid| local_repo.odb.read(oid).is_ok())
         .collect();
-    build_thin_push_pack_from_have_set(local_repo, push_tips, &have_roots)
+    build_push_pack_from_have_set(local_repo, push_tips, &have_roots, thin)
 }
 
 fn build_thin_push_pack_from_have_set(
     local_repo: &Repository,
     push_tips: &[ObjectId],
     have_roots: &BTreeSet<ObjectId>,
+) -> Result<Vec<u8>> {
+    build_push_pack_from_have_set(local_repo, push_tips, have_roots, true)
+}
+
+/// Like [`build_thin_push_pack_from_have_set`] but lets the caller choose a thin or self-contained
+/// pack. `git push --no-thin` (and a receiver that rejects thin packs) requires `thin = false`,
+/// which omits `--thin` so every delta base is included in the pack (t5516 'push --no-thin').
+fn build_push_pack_from_have_set(
+    local_repo: &Repository,
+    push_tips: &[ObjectId],
+    have_roots: &BTreeSet<ObjectId>,
+    thin: bool,
 ) -> Result<Vec<u8>> {
     if push_tips.is_empty() {
         return Ok(Vec::new());
@@ -1969,15 +2252,26 @@ fn build_thin_push_pack_from_have_set(
         .unwrap_or(&local_repo.git_dir);
     let mut cmd = Command::new(grit_exe::grit_executable());
     crate::grit_exe::strip_trace2_env(&mut cmd);
+    // Pin pack generation to the pushing repository's object store. Without an explicit GIT_DIR
+    // the spawned pack-objects re-discovers a repository from `work_dir`/the environment, which
+    // can resolve to the wrong repo when a stray GIT_DIR is inherited (t5400 .have de-dup push,
+    // where the negotiating push runs alongside `git -C fork`/`git -C shared` invocations).
+    let git_dir_abs = local_repo
+        .git_dir
+        .canonicalize()
+        .unwrap_or_else(|_| local_repo.git_dir.clone());
     cmd.current_dir(work_dir)
+        .env("GIT_DIR", &git_dir_abs)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .arg("pack-objects")
         .arg("--revs")
-        .arg("--thin")
         .arg("--stdout")
         .arg("-q");
+    if thin {
+        cmd.arg("--thin");
+    }
     let mut child = cmd.spawn().context("spawn pack-objects for local push")?;
     {
         let mut stdin = child.stdin.take().context("pack-objects stdin")?;
@@ -1996,6 +2290,286 @@ fn build_thin_push_pack_from_have_set(
         bail!("pack-objects failed with status {}", out.status);
     }
     Ok(out.stdout)
+}
+
+/// Count the objects a thin push pack-objects run would *enumerate* (`nr_seen` in
+/// `builtin/pack-objects.c`), which is what the "Enumerating objects: N, done." progress line
+/// reports.
+///
+/// For a thin pack this exceeds the number of objects actually written: in addition to every
+/// interesting commit/tree/blob, Git counts the "preferred base" (delta-base) objects it pulls in
+/// from the boundary trees the receiver already has. Concretely, for each distinct tree path that
+/// appears among the interesting tree/blob objects, Git adds the same-path object from each boundary
+/// (`--not`) commit's tree (the root tree for the empty path), incrementing `nr_seen` once per
+/// added entry. See `add_preferred_base` / `add_preferred_base_object` / `show_object`.
+///
+/// `push_tips` are the positive tips being sent; `remote_git_dir` is the receiver's git dir whose
+/// object membership defines the negative/`--not` side. Returns the enumerated object count; on any
+/// traversal error it returns the supplied `fallback` so progress output never blocks a push.
+pub fn count_thin_push_enumerated_objects(
+    repo: &Repository,
+    push_tips: &[ObjectId],
+    remote_git_dir: &Path,
+    fallback: usize,
+) -> usize {
+    count_thin_push_enumerated_objects_inner(repo, push_tips, remote_git_dir).unwrap_or(fallback)
+}
+
+fn count_thin_push_enumerated_objects_inner(
+    repo: &Repository,
+    push_tips: &[ObjectId],
+    remote_git_dir: &Path,
+) -> Result<usize> {
+    // Every object the receiver already has. This is the *unfiltered* membership set (a shallow
+    // boundary commit whose parents are absent locally still counts), so its trees/blobs exclude
+    // interesting objects and seed the preferred-base lookup.
+    let remote_oids = local_push_remote_object_ids(remote_git_dir)?;
+    let uninteresting_set: HashSet<ObjectId> = remote_oids.iter().copied().collect();
+
+    // Receiver commits readable locally: their trees become candidate preferred-base trees. We only
+    // need the boundary commits actually crossed, identified below from interesting commits'
+    // parents; this set lets us recognize a parent as uninteresting.
+    let mut commit_uninteresting: HashSet<ObjectId> = HashSet::new();
+    for oid in &remote_oids {
+        if let Ok(obj) = read_object_from_repo(repo, oid) {
+            if obj.kind == ObjectKind::Commit {
+                commit_uninteresting.insert(*oid);
+            }
+        }
+    }
+
+    // Walk the interesting closure (commits-first) gathering the interesting object set and, for
+    // each interesting commit, recording the boundary commits it is delta-based against.
+    let mut interesting: BTreeSet<ObjectId> = BTreeSet::new();
+    let mut commit_seen: HashSet<ObjectId> = HashSet::new();
+    let mut boundary_commits: BTreeSet<ObjectId> = BTreeSet::new();
+    for tip in push_tips {
+        collect_interesting_with_boundaries(
+            repo,
+            *tip,
+            &uninteresting_set,
+            &commit_uninteresting,
+            &mut interesting,
+            &mut commit_seen,
+            &mut boundary_commits,
+        )?;
+    }
+
+    // Build the preferred-base trees: each distinct boundary commit's tree, as a path->oid map plus
+    // its root tree OID (Git caches up to `window` of these; the test cases use one).
+    let mut pbase_path_to_oid: HashMap<Vec<u8>, Vec<ObjectId>> = HashMap::new();
+    let mut pbase_root_trees: Vec<ObjectId> = Vec::new();
+    let mut pbase_tree_seen: HashSet<ObjectId> = HashSet::new();
+    for bc in &boundary_commits {
+        let Ok(obj) = read_object_from_repo(repo, bc) else {
+            continue;
+        };
+        if obj.kind != ObjectKind::Commit {
+            continue;
+        }
+        let Ok(commit) = parse_commit(&obj.data) else {
+            continue;
+        };
+        if !pbase_tree_seen.insert(commit.tree) {
+            continue;
+        }
+        pbase_root_trees.push(commit.tree);
+        let mut paths: HashMap<Vec<u8>, ObjectId> = HashMap::new();
+        let _ = collect_tree_path_oids(repo, &commit.tree, &[], &mut paths);
+        for (path, oid) in paths {
+            pbase_path_to_oid.entry(path).or_default().push(oid);
+        }
+    }
+
+    // Replicate `nr_seen`: every interesting object is seen once; in addition, for each distinct
+    // tree path encountered among the interesting tree/blob objects, the matching preferred-base
+    // objects are seen once.
+    let mut nr_seen: usize = interesting.len();
+    let mut seen_paths: HashSet<Vec<u8>> = HashSet::new();
+
+    // Re-walk the interesting trees to recover each object's path name (the empty path is the root
+    // tree). Commits carry no path and trigger no preferred base.
+    let mut path_names: BTreeSet<Vec<u8>> = BTreeSet::new();
+    for oid in &interesting {
+        let Ok(obj) = read_object_from_repo(repo, oid) else {
+            continue;
+        };
+        if obj.kind != ObjectKind::Commit {
+            continue;
+        }
+        let Ok(commit) = parse_commit(&obj.data) else {
+            continue;
+        };
+        collect_interesting_object_paths(
+            repo,
+            &commit.tree,
+            &[],
+            &uninteresting_set,
+            &interesting,
+            &mut path_names,
+        );
+    }
+
+    for name in &path_names {
+        if !seen_paths.insert(name.clone()) {
+            continue;
+        }
+        if name.is_empty() {
+            // Root-tree path: each preferred-base tree contributes its root tree.
+            nr_seen += pbase_root_trees.len();
+        } else if let Some(oids) = pbase_path_to_oid.get(name) {
+            nr_seen += oids.len();
+        }
+    }
+
+    Ok(nr_seen)
+}
+
+/// Walk the interesting commit closure from `tip`, collecting interesting objects and the boundary
+/// commits (uninteresting parents) that interesting commits delta against.
+#[allow(clippy::too_many_arguments)]
+fn collect_interesting_with_boundaries(
+    repo: &Repository,
+    tip: ObjectId,
+    uninteresting: &HashSet<ObjectId>,
+    commit_uninteresting: &HashSet<ObjectId>,
+    interesting: &mut BTreeSet<ObjectId>,
+    commit_seen: &mut HashSet<ObjectId>,
+    boundary_commits: &mut BTreeSet<ObjectId>,
+) -> Result<()> {
+    let mut queue: VecDeque<ObjectId> = VecDeque::new();
+    queue.push_back(tip);
+    while let Some(cid) = queue.pop_front() {
+        if commit_uninteresting.contains(&cid) || uninteresting.contains(&cid) {
+            continue;
+        }
+        if !commit_seen.insert(cid) {
+            continue;
+        }
+        let obj = read_object_from_repo(repo, &cid)?;
+        if obj.kind != ObjectKind::Commit {
+            continue;
+        }
+        let commit = parse_commit(&obj.data).map_err(|e| anyhow::anyhow!("{e}"))?;
+        interesting.insert(cid);
+        collect_interesting_tree_objects(repo, &commit.tree, uninteresting, interesting)?;
+        for p in &commit.parents {
+            if commit_uninteresting.contains(p) || uninteresting.contains(p) {
+                boundary_commits.insert(*p);
+            } else {
+                queue.push_back(*p);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Insert every tree/blob object reachable from `tree_oid` that is not in the uninteresting set.
+fn collect_interesting_tree_objects(
+    repo: &Repository,
+    tree_oid: &ObjectId,
+    uninteresting: &HashSet<ObjectId>,
+    interesting: &mut BTreeSet<ObjectId>,
+) -> Result<()> {
+    if uninteresting.contains(tree_oid) || !interesting.insert(*tree_oid) {
+        return Ok(());
+    }
+    let obj = read_object_from_repo(repo, tree_oid)?;
+    if obj.kind != ObjectKind::Tree {
+        return Ok(());
+    }
+    for e in parse_tree(&obj.data).map_err(|e| anyhow::anyhow!("{e}"))? {
+        if e.mode == MODE_GITLINK {
+            continue;
+        }
+        if e.mode == 0o040000 {
+            collect_interesting_tree_objects(repo, &e.oid, uninteresting, interesting)?;
+        } else if !uninteresting.contains(&e.oid) {
+            interesting.insert(e.oid);
+        }
+    }
+    Ok(())
+}
+
+/// Record the tree-path name of every interesting tree/blob object reachable from `tree_oid`. The
+/// root tree has the empty path. Matches the `name` passed to Git's `show_object`.
+fn collect_interesting_object_paths(
+    repo: &Repository,
+    tree_oid: &ObjectId,
+    prefix: &[u8],
+    uninteresting: &HashSet<ObjectId>,
+    interesting: &BTreeSet<ObjectId>,
+    path_names: &mut BTreeSet<Vec<u8>>,
+) {
+    if uninteresting.contains(tree_oid) || !interesting.contains(tree_oid) {
+        return;
+    }
+    // The tree object itself is shown under `prefix` (root tree => empty path). Recording is
+    // idempotent; we always recurse so deeper new paths are captured.
+    path_names.insert(prefix.to_vec());
+    let Ok(obj) = read_object_from_repo(repo, tree_oid) else {
+        return;
+    };
+    if obj.kind != ObjectKind::Tree {
+        return;
+    }
+    let Ok(entries) = parse_tree(&obj.data) else {
+        return;
+    };
+    for e in entries {
+        if e.mode == MODE_GITLINK {
+            continue;
+        }
+        let mut path = prefix.to_vec();
+        if !path.is_empty() {
+            path.push(b'/');
+        }
+        path.extend_from_slice(&e.name);
+        if e.mode == 0o040000 {
+            collect_interesting_object_paths(
+                repo,
+                &e.oid,
+                &path,
+                uninteresting,
+                interesting,
+                path_names,
+            );
+        } else if !uninteresting.contains(&e.oid) && interesting.contains(&e.oid) {
+            path_names.insert(path);
+        }
+    }
+}
+
+/// Recursively map every tree-path (files and subtrees) under `tree_oid` to its OID, including
+/// subtree paths (used to find same-path preferred-base objects). The root tree itself is not
+/// included (it is handled via the empty-path special case).
+fn collect_tree_path_oids(
+    repo: &Repository,
+    tree_oid: &ObjectId,
+    prefix: &[u8],
+    out: &mut HashMap<Vec<u8>, ObjectId>,
+) -> Result<()> {
+    let obj = read_object_from_repo(repo, tree_oid)?;
+    if obj.kind != ObjectKind::Tree {
+        return Ok(());
+    }
+    for e in parse_tree(&obj.data).map_err(|e| anyhow::anyhow!("{e}"))? {
+        if e.mode == MODE_GITLINK {
+            continue;
+        }
+        let mut path = prefix.to_vec();
+        if !path.is_empty() {
+            path.push(b'/');
+        }
+        path.extend_from_slice(&e.name);
+        if e.mode == 0o040000 {
+            out.entry(path.clone()).or_insert(e.oid);
+            collect_tree_path_oids(repo, &e.oid, &path, out)?;
+        } else {
+            out.entry(path).or_insert(e.oid);
+        }
+    }
+    Ok(())
 }
 
 /// Apply `git pack-objects --filter=<spec>` (subset: `blob:none` for `gc.repackFilter` tests).
@@ -2068,8 +2642,26 @@ fn omit_prefiltered_blobs(
         return Ok(());
     };
 
+    // On a partial-clone server (promisor packs / `remote.*.promisor=true`), some enumerated
+    // objects may be locally missing — they live only on a promisor remote. When `upload-pack`
+    // serves a `--filter` request to a client that accepted the advertised promisor remote
+    // (`promisor-remote` protocol capability), the server must NOT lazily fetch such an object
+    // just to measure it: the client will fetch it directly from the promisor remote, so the
+    // server omits it without back-filling its own ODB. `GRIT_OMIT_MISSING_PROMISOR` is set by the
+    // upload-pack fetch handler in that case (`t5710`). Without it, the legacy behavior (fetch and
+    // serve) is preserved so clients that did not accept still get a complete pack.
+    let omit_missing_promisor = std::env::var_os("GRIT_OMIT_MISSING_PROMISOR").is_some() && {
+        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        repo_treats_promisor_packs(&repo.git_dir, &cfg)
+    };
+
     let mut keep = Vec::with_capacity(oids.len());
     for oid in oids.iter().copied() {
+        if omit_missing_promisor && repo.odb.read(&oid).is_err() {
+            // Absent from the local ODB and lazily fetchable by the client from its accepted
+            // promisor remote: drop it without fetching.
+            continue;
+        }
         let obj = read_object_from_repo_unverified(repo, &oid)?;
         if obj.kind != ObjectKind::Blob || !object_filter_omits_blob(&filter, obj.data.len() as u64)
         {
@@ -2147,20 +2739,18 @@ fn effective_filter_spec(default: Option<&str>) -> Result<Option<String>> {
     if specs.is_empty() {
         return Ok(None);
     }
-    let mut blob_limit: Option<u64> = None;
-    let mut chosen = None;
-    for spec in specs {
-        let parsed = ObjectFilter::parse(&spec).map_err(|e| anyhow::anyhow!("{e}"))?;
-        if let ObjectFilter::BlobLimit(n) = parsed {
-            blob_limit = Some(blob_limit.map_or(n, |old| old.min(n)));
-        } else if matches!(parsed, ObjectFilter::BlobNone) {
-            chosen = Some(spec);
-        }
+    for spec in &specs {
+        ObjectFilter::parse(spec).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
-    if let Some(n) = blob_limit {
-        return Ok(Some(format!("blob:limit={n}")));
+    if specs.len() == 1 {
+        return Ok(Some(specs[0].clone()));
     }
-    Ok(chosen.or_else(|| default.map(str::to_string)))
+    let combined = specs
+        .iter()
+        .map(|spec| url_encode_object_filter_subspec(spec))
+        .collect::<Vec<_>>()
+        .join("+");
+    Ok(Some(format!("combine:{combined}")))
 }
 
 /// Whether `--filter=<spec>` needs the reachability-aware `rev-list` object walk rather than the
@@ -2204,6 +2794,34 @@ fn collect_filtered_objects_via_rev_list(
     opts.filter = Some(filter);
     let r = rev_list(repo, positive, negative, &opts)
         .map_err(|e| anyhow::anyhow!("rev-list for pack-objects --filter: {e}"))?;
+    let mut seen: HashSet<ObjectId> = HashSet::new();
+    let mut out: Vec<ObjectId> = Vec::new();
+    for c in &r.commits {
+        if seen.insert(*c) {
+            out.push(*c);
+        }
+    }
+    for (o, _) in &r.objects {
+        if seen.insert(*o) {
+            out.push(*o);
+        }
+    }
+    Ok(out)
+}
+
+fn collect_filtered_all_objects_via_rev_list(
+    repo: &Repository,
+    filter_spec: &str,
+) -> Result<Vec<ObjectId>> {
+    let filter = ObjectFilter::parse(filter_spec)
+        .map_err(|e| anyhow::anyhow!("invalid filter spec '{filter_spec}': {e}"))?;
+    let mut opts = RevListOptions::default();
+    opts.objects = true;
+    opts.all_refs = true;
+    opts.missing_action = MissingAction::Allow;
+    opts.filter = Some(filter);
+    let r = rev_list(repo, &[], &[], &opts)
+        .map_err(|e| anyhow::anyhow!("rev-list for pack-objects --all --filter: {e}"))?;
     let mut seen: HashSet<ObjectId> = HashSet::new();
     let mut out: Vec<ObjectId> = Vec::new();
     for c in &r.commits {
@@ -2368,8 +2986,15 @@ fn add_children_by_path_for_sparse(
     uninteresting: &mut HashSet<ObjectId>,
     map: &mut HashMap<Vec<u8>, HashSet<ObjectId>>,
 ) -> Result<()> {
-    let obj = read_object_from_repo(repo, tree_oid)
-        .map_err(|_| anyhow::anyhow!("bad tree object {}", tree_oid.to_hex()))?;
+    // Git's `mark_tree_uninteresting` reads boundary trees gently: a missing tree on the
+    // uninteresting (boundary) side is tolerated, because its children cannot be in the
+    // interesting set anyway. A genuinely-missing interesting tree is still caught later by the
+    // positive-side walk (`walk_reachable_commits_first`). This lets `pack with missing tree`
+    // (t5310) succeed when an excluded object is absent.
+    let obj = match read_object_from_repo(repo, tree_oid) {
+        Ok(obj) => obj,
+        Err(_) => return Ok(()),
+    };
     if obj.kind != ObjectKind::Tree {
         return Ok(());
     }
@@ -2504,7 +3129,11 @@ fn collect_revs_pack_objects_sparse(
                 continue;
             }
             commit_uninteresting.insert(cid);
-            let obj = read_object_from_repo(repo, &cid)?;
+            // A missing commit on the uninteresting side is tolerated (its ancestors cannot be in
+            // the interesting set): lets `pack with missing parent` (t5310) succeed.
+            let Ok(obj) = read_object_from_repo(repo, &cid) else {
+                continue;
+            };
             if obj.kind != ObjectKind::Commit {
                 continue;
             }
@@ -2537,7 +3166,11 @@ fn collect_revs_pack_objects_sparse(
             uninteresting.insert(c.tree);
         }
         for p in &c.parents {
-            let pobj = read_object_from_repo(repo, p)?;
+            // A missing parent commit (e.g. an excluded boundary whose ancestor was pruned) is
+            // tolerated: its root tree simply does not join the edge set.
+            let Ok(pobj) = read_object_from_repo(repo, p) else {
+                continue;
+            };
             if pobj.kind != ObjectKind::Commit {
                 continue;
             }
@@ -2573,6 +3206,116 @@ fn collect_revs_pack_objects_sparse(
         }
     }
     Ok(oids)
+}
+
+/// Build the set of candidate OIDs that `pack-objects` must omit because of the locality flags
+/// `--local`, `--honor-pack-keep`, and `--incremental`, mirroring `want_found_object` /
+/// `want_object_in_pack_mtime` in `git/builtin/pack-objects.c`.
+///
+/// Semantics (only objects in `candidates` are inspected, since that is all that can be packed):
+/// - `--incremental`: omit any object already present in **any** pack (local or alternate).
+/// - `--local`: omit objects that are loose in a non-local (alternate) object dir, or that appear
+///   in a non-local pack. Objects whose only copy is local are kept.
+/// - `--honor-pack-keep`: omit objects present in a pack marked with a `.keep` file.
+///
+/// Returns the union of OIDs to exclude. When no locality flag is set, the result is empty.
+fn pack_objects_locality_excludes(
+    repo: &Repository,
+    args: &Args,
+    candidates: &BTreeSet<ObjectId>,
+) -> Result<HashSet<ObjectId>> {
+    let mut excludes: HashSet<ObjectId> = HashSet::new();
+    if !args.local && !args.honor_pack_keep && !args.incremental {
+        return Ok(excludes);
+    }
+    if candidates.is_empty() {
+        return Ok(excludes);
+    }
+
+    let local_objects_dir = repo.odb.objects_dir().to_path_buf();
+
+    // Local packs, optionally filtered to those marked with a `.keep` sidecar.
+    let local_indexes = grit_lib::pack::read_local_pack_indexes(&local_objects_dir)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    for idx in &local_indexes {
+        let keep = idx.idx_path.with_extension("keep").is_file();
+        for entry in &idx.entries {
+            if entry.oid.len() != 20 {
+                continue;
+            }
+            let Ok(oid) = ObjectId::from_bytes(&entry.oid) else {
+                continue;
+            };
+            if !candidates.contains(&oid) {
+                continue;
+            }
+            if args.incremental || (args.honor_pack_keep && keep) {
+                excludes.insert(oid);
+            }
+        }
+    }
+
+    if args.local || args.incremental || args.honor_pack_keep {
+        let alternates = grit_lib::pack::read_alternates_recursive(&local_objects_dir)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        for alt_dir in &alternates {
+            // Loose objects in a non-local source exclude under `--local`.
+            if args.local {
+                let mut alt_loose = HashSet::new();
+                collect_all_loose_in_dir(alt_dir, &mut alt_loose)?;
+                for oid in &alt_loose {
+                    if candidates.contains(oid) {
+                        excludes.insert(*oid);
+                    }
+                }
+            }
+            let alt_indexes = grit_lib::pack::read_local_pack_indexes(alt_dir)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            for idx in &alt_indexes {
+                let keep = idx.idx_path.with_extension("keep").is_file();
+                for entry in &idx.entries {
+                    if entry.oid.len() != 20 {
+                        continue;
+                    }
+                    let Ok(oid) = ObjectId::from_bytes(&entry.oid) else {
+                        continue;
+                    };
+                    if !candidates.contains(&oid) {
+                        continue;
+                    }
+                    if args.incremental || args.local || (args.honor_pack_keep && keep) {
+                        excludes.insert(oid);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(excludes)
+}
+
+/// Apply `--local` / `--honor-pack-keep` / `--incremental` exclusions to a `--revs` pack object
+/// list, dropping any OID that one of the locality flags says we must omit. Both the walked object
+/// list and any explicitly force-included OIDs (raw OID args, e.g. `for-each-ref | pack-objects
+/// --revs`) are filtered, since a kept/non-local/already-packed object must be omitted even when it
+/// was named directly.
+fn apply_locality_excludes(
+    repo: &Repository,
+    args: &Args,
+    ordered: &mut Vec<ObjectId>,
+    force_include: &mut Vec<ObjectId>,
+) -> Result<()> {
+    if !args.local && !args.honor_pack_keep && !args.incremental {
+        return Ok(());
+    }
+    let mut candidates: BTreeSet<ObjectId> = ordered.iter().copied().collect();
+    candidates.extend(force_include.iter().copied());
+    let excludes = pack_objects_locality_excludes(repo, args, &candidates)?;
+    if !excludes.is_empty() {
+        ordered.retain(|o| !excludes.contains(o));
+        force_include.retain(|o| !excludes.contains(o));
+    }
+    Ok(())
 }
 
 fn collect_pack_objects_from_rev_stdin_lines(
@@ -2708,7 +3451,7 @@ fn collect_pack_objects_from_rev_stdin_lines(
         if !skip_full_exclude_subtract {
             let mut exclude = BTreeSet::new();
             for root in &exclude_roots {
-                walk_reachable(repo, root, &mut exclude, &shallow_grafts)?;
+                walk_reachable_lenient(repo, root, &mut exclude, &shallow_grafts)?;
             }
             for oid in &exclude {
                 oids.remove(oid);
@@ -2734,9 +3477,12 @@ fn collect_pack_objects_from_rev_stdin_lines(
             Vec::new()
         };
 
+        let mut force_include = force_include.clone();
+        apply_locality_excludes(repo, args, &mut ordered, &mut force_include)?;
+
         return Ok(PackObjectList {
             oids: ordered,
-            force_include: force_include.clone(),
+            force_include,
             thin_blob_deltas,
             rev_list_stdin: true,
         });
@@ -2747,7 +3493,7 @@ fn collect_pack_objects_from_rev_stdin_lines(
     for neg in &negative {
         let oid =
             resolve_revision(repo, neg).with_context(|| format!("cannot resolve ref '{neg}'"))?;
-        walk_reachable(repo, &oid, &mut exclude, &shallow_grafts)?;
+        walk_reachable_lenient(repo, &oid, &mut exclude, &shallow_grafts)?;
     }
     for pos in &positive {
         let oid =
@@ -2795,6 +3541,9 @@ fn collect_pack_objects_from_rev_stdin_lines(
     } else {
         Vec::new()
     };
+
+    let mut force_include = force_include;
+    apply_locality_excludes(repo, args, &mut ordered, &mut force_include)?;
 
     Ok(PackObjectList {
         oids: ordered,
@@ -2899,6 +3648,17 @@ fn collect_oids(repo: &Repository, args: &Args) -> Result<PackObjectList> {
         return collect_incremental_repack_oids(repo, args);
     }
 
+    if args.pack_loose_unreachable {
+        let mut loose = BTreeSet::new();
+        collect_all_loose(&repo.odb, &mut loose)?;
+        return Ok(PackObjectList {
+            oids: loose.into_iter().collect(),
+            force_include: Vec::new(),
+            thin_blob_deltas: Vec::new(),
+            rev_list_stdin: false,
+        });
+    }
+
     if args.cruft && !args.incremental {
         return collect_cruft_pack_stdin_oids(repo, args);
     }
@@ -2954,7 +3714,9 @@ fn collect_oids(repo: &Repository, args: &Args) -> Result<PackObjectList> {
             // `--keep-unreachable` (Git `repack -k`) folds unreachable objects into
             // the same pack instead of leaving them loose / in a separate pack.
             if args.keep_unreachable {
-                let all = pack_objects_all_enumeration(repo, args)?;
+                let mut all = BTreeSet::new();
+                collect_all_loose(&repo.odb, &mut all)?;
+                all.extend(packed_object_ids(repo)?);
                 oids.extend(all);
             }
         } else {
@@ -3147,7 +3909,7 @@ fn collect_stdin_packs_oids(
                         if !exclude.contains(&oid) && seen_result.insert(oid) {
                             oids.push(oid);
                         }
-                    } else {
+                    } else if !exclude.contains(&oid) {
                         oids.push(oid);
                     }
                 }
@@ -3293,7 +4055,13 @@ fn collect_incremental_repack_oids(repo: &Repository, args: &Args) -> Result<Pac
         }
     }
 
-    if args.no_write_bitmap_index {
+    // `--incremental` (`git pack-objects --incremental`): "an object already in a pack is ignored
+    // even if it would have otherwise been packed." The `rev-list --objects --unpacked` walk emits
+    // the full object closure of unpacked commits (including tree/blob objects that already live in
+    // a pack), so without this filter an incremental `repack -d` re-packs already-packed objects
+    // and produces packs with the wrong object membership (t5319 BTMP chunk: each per-commit pack
+    // must hold exactly its 3 new objects, not parent blobs/trees).
+    if args.incremental {
         let packed = packed_object_ids(repo)?;
         ordered.retain(|oid| !packed.contains(oid));
     }
@@ -3314,6 +4082,16 @@ fn collect_incremental_repack_oids(repo: &Repository, args: &Args) -> Result<Pac
             let promisor = promisor_pack_object_ids(&repo.git_dir.join("objects"));
             ordered.retain(|o| !promisor.contains(o));
         }
+    }
+
+    // `pack-objects --local` packs only objects in the local object store, never objects that
+    // live in an alternate ODB (git/pack-objects.c `want_object_in_pack` honors `local`). The
+    // `--unpacked` walk treats alternate-packed objects as "unpacked" (they are not in a *local*
+    // pack), so without this filter `git repack --local` would copy the alternate's objects into
+    // a new local pack (t5319 "multi-pack-index in an alternate").
+    if args.local {
+        let alt_oids = alternate_object_ids(repo)?;
+        ordered.retain(|o| !alt_oids.contains(o));
     }
 
     Ok(PackObjectList {
@@ -3403,7 +4181,11 @@ fn prune_stale_loose_after_unpack_unreachable(
     enumeration: &[ObjectId],
     expire_before: Option<u32>,
 ) -> Result<()> {
-    let keep: HashSet<ObjectId> = enumeration.iter().copied().collect();
+    let Some(cutoff) = expire_before else {
+        return Ok(());
+    };
+    let mut keep: HashSet<ObjectId> = enumeration.iter().copied().collect();
+    keep.extend(recent_objects_hook_closure(repo)?);
     let mut loose = BTreeSet::new();
     collect_all_loose(&repo.odb, &mut loose)?;
     for oid in loose {
@@ -3411,13 +4193,11 @@ fn prune_stale_loose_after_unpack_unreachable(
             continue;
         }
         let path = repo.odb.object_path(&oid);
-        if let Some(cutoff) = expire_before {
-            if file_mtime_u32(&path)
-                .map(|mtime| mtime >= cutoff)
-                .unwrap_or(false)
-            {
-                continue;
-            }
+        if file_mtime_u32(&path)
+            .map(|mtime| mtime >= cutoff)
+            .unwrap_or(false)
+        {
+            continue;
         }
         if path.is_file() {
             let _ = std::fs::remove_file(path);
@@ -3435,6 +4215,7 @@ fn loosen_unused_packed_objects(
     packed: &HashSet<ObjectId>,
     new_pack_hashes: &[String],
     honor_pack_keep: bool,
+    expire_before: Option<u32>,
 ) -> Result<()> {
     let objects_dir = repo.git_dir.join("objects");
     let pack_dir = objects_dir.join("pack");
@@ -3445,6 +4226,11 @@ fn loosen_unused_packed_objects(
     };
     let indexes = grit_lib::pack::read_local_pack_indexes(&objects_dir)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let recent = if expire_before.is_some() {
+        recent_objects_hook_closure(repo)?
+    } else {
+        HashSet::new()
+    };
     let mut loosened_objects_nr: i64 = 0;
     for idx in indexes {
         let name = idx
@@ -3468,6 +4254,16 @@ fn loosen_unused_packed_objects(
         if honor_pack_keep && pack_dir.join(format!("{stem}.keep")).is_file() {
             continue;
         }
+        let source_pack_is_old = expire_before.is_some_and(|cutoff| {
+            file_mtime_u32(&idx.pack_path)
+                .map(|mtime| mtime < cutoff)
+                .unwrap_or(false)
+        });
+        let pack_mtime = idx
+            .pack_path
+            .metadata()
+            .ok()
+            .map(|meta| FileTime::from_last_modification_time(&meta));
         for e in &idx.entries {
             if e.oid.len() != 20 {
                 continue;
@@ -3481,11 +4277,17 @@ fn loosen_unused_packed_objects(
             if honor_pack_keep && kept_oids.contains(&oid) {
                 continue;
             }
-            if repo.odb.exists(&oid) {
+            if source_pack_is_old && !recent.contains(&oid) {
+                continue;
+            }
+            if repo.odb.object_path(&oid).is_file() {
                 continue;
             }
             let obj = read_object_from_repo(repo, &oid)?;
-            repo.odb.write(obj.kind, &obj.data)?;
+            repo.odb.write_loose_materialize(obj.kind, &obj.data)?;
+            if let Some(mtime) = pack_mtime {
+                let _ = filetime::set_file_mtime(repo.odb.object_path(&oid), mtime);
+            }
             loosened_objects_nr += 1;
         }
     }
@@ -3684,11 +4486,41 @@ fn walk_reachable(
     oids: &mut BTreeSet<ObjectId>,
     shallow_grafts: &HashSet<ObjectId>,
 ) -> Result<()> {
+    walk_reachable_inner(repo, oid, oids, shallow_grafts, false)
+}
+
+/// Walk reachability from `oid` like [`walk_reachable`], but silently skip objects whose content
+/// cannot be read instead of failing.
+///
+/// Git's `pack-objects --revs` boundary (exclude) traversal does not require the *content* of the
+/// uninteresting closure to be present: with bitmaps the closure comes from the bitmap, and without
+/// them missing objects in the uninteresting set are simply ignored (they cannot also be in the
+/// interesting set). Using this for the negative side lets `pack with missing blob/tree/parent`
+/// (t5310) succeed when an excluded object is absent.
+fn walk_reachable_lenient(
+    repo: &Repository,
+    oid: &ObjectId,
+    oids: &mut BTreeSet<ObjectId>,
+    shallow_grafts: &HashSet<ObjectId>,
+) -> Result<()> {
+    walk_reachable_inner(repo, oid, oids, shallow_grafts, true)
+}
+
+fn walk_reachable_inner(
+    repo: &Repository,
+    oid: &ObjectId,
+    oids: &mut BTreeSet<ObjectId>,
+    shallow_grafts: &HashSet<ObjectId>,
+    lenient: bool,
+) -> Result<()> {
     if !oids.insert(*oid) {
         return Ok(()); // already visited
     }
-    let obj = read_object_from_repo(repo, oid)
-        .map_err(|_| anyhow::anyhow!("bad tree object {}", oid.to_hex()))?;
+    let obj = match read_object_from_repo(repo, oid) {
+        Ok(obj) => obj,
+        Err(_) if lenient => return Ok(()),
+        Err(_) => return Err(anyhow::anyhow!("bad tree object {}", oid.to_hex())),
+    };
     match obj.kind {
         ObjectKind::Commit => {
             // Parse tree and parent lines.
@@ -3696,12 +4528,18 @@ fn walk_reachable(
                 for line in text.lines() {
                     if let Some(tree_hex) = line.strip_prefix("tree ") {
                         if let Ok(tree_oid) = ObjectId::from_hex(tree_hex.trim()) {
-                            walk_reachable(repo, &tree_oid, oids, shallow_grafts)?;
+                            walk_reachable_inner(repo, &tree_oid, oids, shallow_grafts, lenient)?;
                         }
                     } else if let Some(parent_hex) = line.strip_prefix("parent ") {
                         if !shallow_grafts.contains(oid) {
                             if let Ok(parent_oid) = ObjectId::from_hex(parent_hex.trim()) {
-                                walk_reachable(repo, &parent_oid, oids, shallow_grafts)?;
+                                walk_reachable_inner(
+                                    repo,
+                                    &parent_oid,
+                                    oids,
+                                    shallow_grafts,
+                                    lenient,
+                                )?;
                             }
                         }
                     } else if line.is_empty() {
@@ -3718,7 +4556,7 @@ fn walk_reachable(
                 if entry.mode == MODE_GITLINK {
                     continue;
                 }
-                walk_reachable(repo, &entry.oid, oids, shallow_grafts)?;
+                walk_reachable_inner(repo, &entry.oid, oids, shallow_grafts, lenient)?;
             }
         }
         ObjectKind::Tag => {
@@ -3727,7 +4565,7 @@ fn walk_reachable(
                 if let Some(first_line) = text.lines().next() {
                     if let Some(obj_hex) = first_line.strip_prefix("object ") {
                         if let Ok(target_oid) = ObjectId::from_hex(obj_hex.trim()) {
-                            walk_reachable(repo, &target_oid, oids, shallow_grafts)?;
+                            walk_reachable_inner(repo, &target_oid, oids, shallow_grafts, lenient)?;
                         }
                     }
                 }
@@ -4035,6 +4873,15 @@ fn optimize_blob_deltas(
                 if delta_target_to_base.contains_key(&t.oid) {
                     continue;
                 }
+                // The empty blob has no content to delta. Any non-empty base trivially has it as a
+                // prefix, so the size-prefix heuristic below would pick a base and emit a degenerate
+                // delta (`src_size N`, `dst_size 0`, no ops). Git never deltifies a zero-length
+                // object, and such a delta is rejected by `git unpack-objects` ("failed to apply
+                // delta"), breaking thin pushes (t5541 push --all/--mirror/--atomic). Keep the empty
+                // blob a full object.
+                if t.data.is_empty() {
+                    continue;
+                }
                 let mut best_base: Option<&PackEntry> = None;
                 let mut best_common = 0usize;
                 for b in &blobs {
@@ -4313,6 +5160,39 @@ fn encode_pack_object_header(buf: &mut Vec<u8>, type_code: u8, payload_len: usiz
 }
 
 /// Build a PACK v2 byte stream (full objects and optional delta blobs).
+/// Write an empty pack (header + trailer, zero objects) to `<base>-<hash>.pack`/`.idx`
+/// and print its hash to stdout, mirroring Git's `pack-objects <base> </dev/null`.
+///
+/// Git always writes a pack file (even with no objects) and reports its name unless
+/// `--non-empty` is in effect; `multi-pack-index write --preferred-pack=<empty>` relies on
+/// the empty pack existing so the writer can reject it with "with no objects".
+fn write_empty_pack_to_file(
+    repo: &Repository,
+    base: &str,
+    pack_hash_bytes: usize,
+) -> Result<String> {
+    let pack_bytes = build_pack(&[], false, pack_hash_bytes, Compression::default())?;
+    let pack_hash = hex::encode(&pack_bytes[pack_bytes.len() - pack_hash_bytes..]);
+    let pack_path = format!("{base}-{pack_hash}.pack");
+    let idx_path = format!("{base}-{pack_hash}.idx");
+    std::fs::write(&pack_path, &pack_bytes)?;
+    let (idx_bytes, idx_order_offsets) =
+        build_idx_for_pack(&pack_bytes, &[], pack_hash_bytes, None)?;
+    std::fs::write(&idx_path, &idx_bytes)?;
+
+    let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let idx_pb = Path::new(&idx_path);
+    if cfg.pack_write_reverse_index_default() {
+        let rev_bytes = build_pack_rev_bytes_from_index_order_offsets_and_checksum(
+            &idx_order_offsets,
+            &pack_bytes[pack_bytes.len() - pack_hash_bytes..],
+        );
+        std::fs::write(rev_path_for_index(idx_pb), rev_bytes)?;
+    }
+    println!("{pack_hash}");
+    Ok(pack_hash)
+}
+
 fn build_pack(
     entries: &[PackWriteEntry],
     use_ofs_delta: bool,

@@ -9,7 +9,7 @@ use clap::Args as ClapArgs;
 use grit_lib::config::{ConfigFile, ConfigScope, ConfigSet};
 use grit_lib::git_date::parse::parse_date_basic;
 use grit_lib::merge_base;
-use grit_lib::objects::{self, parse_commit, ObjectId, ObjectKind};
+use grit_lib::objects::{self, parse_commit, parse_tag, parse_tree, ObjectId, ObjectKind};
 use grit_lib::refs;
 use grit_lib::repo::Repository;
 use grit_lib::rev_parse::resolve_revision;
@@ -43,6 +43,8 @@ pub struct ServerCaps {
     advertise_bundle_uri: bool,
     advertise_session_id: bool,
     session_id_value: String,
+    /// Value of the `promisor-remote=<info>` capability to advertise, if any (`promisor.advertise`).
+    promisor_remote_info: Option<String>,
 }
 
 impl ServerCaps {
@@ -51,6 +53,10 @@ impl ServerCaps {
         let agent = serve_agent_capability();
 
         let object_format = read_object_format(git_dir);
+
+        let promisor_remote_info = grit_lib::config::ConfigSet::load(Some(git_dir), true)
+            .ok()
+            .and_then(|cfg| grit_lib::promisor_remote::promisor_remote_info(&cfg));
 
         let advertise_object_info = read_config_bool(git_dir, "transfer.advertiseObjectInfo");
         let advertise_bundle_uri = read_config_bool(git_dir, "uploadpack.advertiseBundleURIs");
@@ -76,6 +82,7 @@ impl ServerCaps {
             advertise_bundle_uri,
             advertise_session_id,
             session_id_value,
+            promisor_remote_info,
         }
     }
 
@@ -105,6 +112,9 @@ impl ServerCaps {
         }
         if self.advertise_session_id {
             pkt_line::write_line(w, &format!("session-id={}", self.session_id_value))?;
+        }
+        if let Some(info) = &self.promisor_remote_info {
+            pkt_line::write_line(w, &format!("promisor-remote={info}"))?;
         }
         pkt_line::write_flush(w)?;
         w.flush()
@@ -167,7 +177,7 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     if args.stateless_rpc {
-        let _ = process_one_v2_request(&mut io::stdin().lock(), &git_dir, &caps)?;
+        let _ = process_one_v2_request(&mut io::stdin().lock(), &git_dir, &caps, true)?;
         return Ok(());
     }
 
@@ -180,9 +190,13 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 /// Read requests from `input` until EOF or a headerless flush (client hang-up).
+///
+/// This is the stateful (file/ssh local) transport: a single persistent connection carries the
+/// whole exchange, so once the server is `ready` it streams the packfile in the same response
+/// without reading a follow-up request.
 pub fn serve_loop(input: &mut impl Read, git_dir: &Path, caps: &ServerCaps) -> Result<()> {
     loop {
-        if process_one_v2_request(input, git_dir, caps)? {
+        if process_one_v2_request(input, git_dir, caps, false)? {
             break;
         }
     }
@@ -191,11 +205,17 @@ pub fn serve_loop(input: &mut impl Read, git_dir: &Path, caps: &ServerCaps) -> R
 
 /// Process a single protocol v2 request from `input`.
 ///
+/// `stateless_rpc` is true for the smart-HTTP transport, where each negotiation round is a separate
+/// request/response: when the server becomes `ready` it ends the response after the
+/// `acknowledgments` section and the client sends a follow-up request (with `done`) to receive the
+/// pack. In stateful mode (`false`) the server instead falls through to stream the pack inline.
+///
 /// Returns `Ok(true)` when the client ended the session (EOF or flush with no keys).
 pub fn process_one_v2_request(
     input: &mut impl Read,
     git_dir: &Path,
     caps: &ServerCaps,
+    stateless_rpc: bool,
 ) -> Result<bool> {
     let (header_lines, terminator) = pkt_line::read_until_flush_or_delim(input)?;
 
@@ -206,6 +226,7 @@ pub fn process_one_v2_request(
     let mut command: Option<String> = None;
     let mut client_object_format: Option<String> = None;
     let mut client_session_id: Option<String> = None;
+    let mut accepted_promisor_remotes: Option<String> = None;
 
     for line in &header_lines {
         if let Some(cmd) = line.strip_prefix("command=") {
@@ -217,6 +238,10 @@ pub fn process_one_v2_request(
             client_object_format = Some(fmt.to_owned());
         } else if let Some(sid) = line.strip_prefix("session-id=") {
             client_session_id = Some(sid.to_owned());
+        } else if let Some(remotes) = line.strip_prefix("promisor-remote=") {
+            // The client accepted these advertised promisor remotes; it will lazily fetch the
+            // omitted objects from them, so the server must NOT back-fill and serve them.
+            accepted_promisor_remotes = Some(remotes.to_owned());
         } else if caps.is_valid_capability(line) {
         } else {
             bail!("unknown capability '{line}'");
@@ -267,7 +292,14 @@ pub fn process_one_v2_request(
 
     match cmd.as_str() {
         "ls-refs" => cmd_ls_refs(git_dir, &args, &mut out)?,
-        "fetch" => cmd_fetch(git_dir, &args, &mut out, caps)?,
+        "fetch" => cmd_fetch(
+            git_dir,
+            &args,
+            &mut out,
+            caps,
+            accepted_promisor_remotes.as_deref(),
+            stateless_rpc,
+        )?,
         "object-info" => cmd_object_info(git_dir, &args, &mut out)?,
         "bundle-uri" => cmd_bundle_uri(git_dir, &args, &mut out)?,
         _ => bail!("invalid command '{cmd}'"),
@@ -282,6 +314,7 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
     let mut prefixes: Vec<String> = Vec::new();
     let mut peel = false;
     let mut symrefs = false;
+    let mut unborn = false;
 
     for arg in args {
         if let Some(prefix) = arg.strip_prefix("ref-prefix ") {
@@ -291,7 +324,10 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
         } else if arg == "symrefs" {
             symrefs = true;
         } else if arg == "unborn" {
-            // Accepted but we don't send unborn HEAD
+            // The `unborn` feature (advertised as `ls-refs=unborn`) asks the server to report HEAD
+            // even when it points at an unborn branch (empty repository). `lsrefs.unborn` defaults
+            // to "advertise", so honour the request unconditionally.
+            unborn = true;
         } else {
             bail!("unexpected line: '{arg}'");
         }
@@ -300,36 +336,68 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
     // If too many prefixes (>= 65536), ignore them all (list everything).
     let use_prefixes = prefixes.len() < 65536;
 
+    // `transfer.hideRefs` / `uploadpack.hideRefs`: hidden refs are not advertised. Patterns prefixed
+    // `^` match the full storage name, otherwise the namespace-stripped advertised name.
+    let cfg = ConfigSet::load(Some(git_dir), false).unwrap_or_default();
+    let hide = grit_lib::hide_refs::hide_ref_patterns_uploadpack(&cfg);
+
     // Collect all refs.
     let mut entries: Vec<RefInfo> = Vec::new();
 
-    // HEAD
+    // HEAD (resolved relative to the active namespace). Its symref-target is the namespace-stripped
+    // logical ref so a clone under `GIT_NAMESPACE` selects the namespaced HEAD branch (t5509).
     if let Ok(head_oid) = refs::resolve_ref(git_dir, "HEAD") {
         let symref_target = if symrefs {
-            refs::read_symbolic_ref(git_dir, "HEAD").ok().flatten()
+            refs::read_symbolic_ref(git_dir, "HEAD")
+                .ok()
+                .flatten()
+                .map(|t| grit_lib::ref_namespace::strip_namespace_prefix(&t).into_owned())
         } else {
             None
         };
         entries.push(RefInfo {
             name: "HEAD".to_owned(),
-            oid: head_oid,
+            oid: Some(head_oid),
             symref_target,
             peeled: None,
         });
+    } else if unborn && symrefs {
+        // HEAD points at an unborn branch (empty repository): there is no OID, but when both the
+        // `unborn` and `symrefs` features were requested we still report it as
+        // `unborn HEAD symref-target:<target>` so the client can discover the default branch and,
+        // crucially, the negotiated object format for an empty SHA-256 clone (`t5551`,
+        // mirroring upstream `send_possibly_unborn_head`).
+        if let Ok(Some(target)) = refs::read_symbolic_ref(git_dir, "HEAD") {
+            let symref_target =
+                grit_lib::ref_namespace::strip_namespace_prefix(&target).into_owned();
+            entries.push(RefInfo {
+                name: "HEAD".to_owned(),
+                oid: None,
+                symref_target: Some(symref_target),
+                peeled: None,
+            });
+        }
     }
 
-    // All refs under refs/
+    // All refs under refs/ (logical/stripped names when a namespace is active).
     for prefix in &["refs/heads/", "refs/tags/", "refs/remotes/", "refs/notes/"] {
         if let Ok(ref_list) = refs::list_refs(git_dir, prefix) {
             for (name, oid) in ref_list {
+                let full = grit_lib::ref_namespace::storage_ref_name(&name);
+                if grit_lib::hide_refs::ref_is_hidden(&name, &full, &hide) {
+                    continue;
+                }
                 let mut info = RefInfo {
                     name: name.clone(),
-                    oid,
+                    oid: Some(oid),
                     symref_target: None,
                     peeled: None,
                 };
                 if symrefs {
-                    info.symref_target = refs::read_symbolic_ref(git_dir, &name).ok().flatten();
+                    info.symref_target = refs::read_symbolic_ref(git_dir, &name)
+                        .ok()
+                        .flatten()
+                        .map(|t| grit_lib::ref_namespace::strip_namespace_prefix(&t).into_owned());
                 }
                 if peel && name.starts_with("refs/tags/") {
                     info.peeled = peel_to_commit(git_dir, &oid);
@@ -347,9 +415,14 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
     // Sort by ref name
     entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-    // Write output
+    // Write output. An unborn HEAD has no OID and is emitted as the literal `unborn` token
+    // (gitprotocol-v2 `obj-id-or-unborn`).
     for entry in &entries {
-        let mut line = format!("{} {}", entry.oid.to_hex(), entry.name);
+        let oid_field = match entry.oid {
+            Some(oid) => oid.to_hex(),
+            None => "unborn".to_owned(),
+        };
+        let mut line = format!("{oid_field} {}", entry.name);
         if let Some(ref peeled) = entry.peeled {
             line.push_str(&format!(" peeled:{}", peeled.to_hex()));
         }
@@ -364,7 +437,8 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
 
 struct RefInfo {
     name: String,
-    oid: grit_lib::objects::ObjectId,
+    /// `None` marks an unborn HEAD (empty repository), emitted as the literal `unborn` token.
+    oid: Option<grit_lib::objects::ObjectId>,
     symref_target: Option<String>,
     peeled: Option<grit_lib::objects::ObjectId>,
 }
@@ -390,13 +464,22 @@ fn cmd_fetch(
     args: &[String],
     out: &mut impl Write,
     caps: &ServerCaps,
+    accepted_promisor_remotes: Option<&str>,
+    stateless_rpc: bool,
 ) -> Result<()> {
     let repo = Repository::open(git_dir, None)
         .with_context(|| format!("could not open repository at '{}'", git_dir.display()))?;
     let config = ConfigSet::load(Some(git_dir), true).unwrap_or_default();
     grit_lib::upload_filter::validate_upload_filter_config(&config)?;
 
+    let hide_ref_patterns = grit_lib::hide_refs::hide_ref_patterns_uploadpack(&config);
+
     let mut wants: Vec<ObjectId> = Vec::new();
+    // `want-ref` lines, in first-seen order, resolved to `(logical refname, oid)`.
+    // Emitted back to the client as the `wanted-refs` section (matches
+    // `upload-pack.c` `send_wanted_ref_info`).
+    let mut wanted_refs: Vec<(String, ObjectId)> = Vec::new();
+    let mut wanted_ref_names: HashSet<String> = HashSet::new();
     let mut have_oids: Vec<ObjectId> = Vec::new();
     let mut client_shallow_oids: HashSet<ObjectId> = HashSet::new();
     let mut depth_request: Option<usize> = None;
@@ -462,7 +545,47 @@ fn cmd_fetch(
                     deepen_not.push(oid);
                 }
             }
-            s if s.starts_with("want-ref ") => {}
+            s if s.starts_with("want-ref ") => {
+                if !caps.advertise_ref_in_want {
+                    bail!("unexpected line: '{s}'");
+                }
+                let refname = s.strip_prefix("want-ref ").unwrap_or("").trim().to_owned();
+                // Resolve the ref relative to the active namespace and reject it when
+                // hidden or absent (matches `upload-pack.c` `parse_want_ref`, which
+                // forms `<namespace><refname>` then checks `ref_is_hidden` and
+                // `refs_read_ref`). On failure the server writes a pkt-line error and
+                // dies, which the client surfaces as "unknown ref <refname>".
+                let storage = grit_lib::ref_namespace::storage_ref_name(&refname);
+                let hidden =
+                    grit_lib::hide_refs::ref_is_hidden(&refname, &storage, &hide_ref_patterns);
+                // Resolve the *storage* refname exactly (no DWIM, no fallback to the
+                // non-namespaced name). `parse_want_ref` reads `<namespace><refname>`
+                // directly, so `want-ref refs/heads/ns-no` under `GIT_NAMESPACE=ns` must
+                // not silently fall back to a top-level `refs/heads/ns-no` (t5703 "with
+                // namespace: want-ref outside namespace is unknown").
+                let resolved = if hidden {
+                    None
+                } else {
+                    refs::resolve_ref(git_dir, &storage).ok()
+                };
+                let oid = match resolved {
+                    Some(oid) => oid,
+                    None => {
+                        pkt_line::write_line(out, &format!("ERR unknown ref {refname}"))?;
+                        out.flush()?;
+                        eprintln!("fatal: unknown ref {refname}");
+                        std::process::exit(128);
+                    }
+                };
+                if !wanted_ref_names.insert(refname.clone()) {
+                    pkt_line::write_line(out, &format!("ERR duplicate want-ref {refname}"))?;
+                    out.flush()?;
+                    eprintln!("fatal: duplicate want-ref {refname}");
+                    std::process::exit(128);
+                }
+                wanted_refs.push((refname, oid));
+                wants.push(oid);
+            }
             s if s.starts_with("filter ") => {
                 if !caps.advertise_filter {
                     bail!("unexpected line: '{s}'");
@@ -484,6 +607,22 @@ fn cmd_fetch(
         }
     }
 
+    // Validate every `want <oid>` line before serving. In protocol v2, `upload-pack.c`'s `parse_want`
+    // only verifies that the wanted object is *present* locally (`parse_object_with_flags` returns
+    // non-NULL); it does NOT apply the v0 `check_non_tip` / `allow{Tip,Reachable,Any}SHA1InWant`
+    // gating. The non-tip rejection is explicitly a v0-only behavior, so a v2 client may legitimately
+    // `want` any object the server holds — e.g. a shallow boundary commit that is not a ref tip
+    // (t5537 `fetch --update-shallow <shallow-point>:refs/heads/...`). A `want` for an object we do
+    // not have still draws an `ERR upload-pack: not our ref <oid>` packet and a fatal exit, which is
+    // what makes a fetch fail when an advertised ref changed under the client mid-negotiation (t5703
+    // change-while-negotiating). `want-ref` OIDs always resolve to one of our refs, so they pass here.
+    for w in &wants {
+        if repo.odb.read(w).is_err() {
+            // Object not present at all — never our ref.
+            return serve_reject_not_our_ref(out, w);
+        }
+    }
+
     if wants.is_empty() && !wait_for_done {
         pkt_line::write_flush(out)?;
         return Ok(());
@@ -491,24 +630,61 @@ fn cmd_fetch(
 
     let want_set: HashSet<ObjectId> = wants.iter().copied().collect();
     let mut have_commits: Vec<ObjectId> = Vec::new();
+    // `acknowledgments` ACKs every `have` the server already has, de-duplicated and in first-seen
+    // order (matching `upload-pack.c` `do_got_oid`: each object's `THEY_HAVE` flag is set once, so a
+    // repeated `have` for the same object is ACKed only once). Non-commit `have` objects (trees,
+    // blobs) are ACKed too — they just do not contribute ancestor history.
+    let mut acks: Vec<ObjectId> = Vec::new();
+    let mut acked: HashSet<ObjectId> = HashSet::new();
     for h in &have_oids {
         if let Ok(obj) = repo.odb.read(h) {
             if obj.kind == ObjectKind::Commit {
                 have_commits.push(*h);
+            }
+            if acked.insert(*h) {
+                acks.push(*h);
             }
         }
     }
 
     if !have_oids.is_empty() && !seen_done {
         pkt_line::write_line(out, "acknowledgments")?;
-        pkt_line::write_line(out, "NAK")?;
+        if acks.is_empty() {
+            pkt_line::write_line(out, "NAK")?;
+        }
+        for oid in &acks {
+            pkt_line::write_line(out, &format!("ACK {}", oid.to_hex()))?;
+        }
         if ok_to_give_up_v2(&repo, &want_set, &have_commits) {
             pkt_line::write_line(out, "ready")?;
             pkt_line::write_delim(out)?;
+            if stateless_rpc {
+                // Smart-HTTP: end the response after `ready`; the client sends a follow-up request
+                // (with `done`) to receive the pack.
+                out.flush()?;
+                return Ok(());
+            }
+            // Stateful transport: the `acknowledgments` section is followed in the SAME response by
+            // the `packfile` section. Matches `upload-pack.c`'s state machine, where
+            // `UPLOAD_SEND_ACKS` transitions to `UPLOAD_SEND_PACK` without reading another request.
+            // A stateful client does not send a follow-up after `ready`, so returning here would
+            // deadlock the connection. Fall through to send wanted-refs / shallow-info / packfile.
         } else {
+            // Not ready yet: end the round with a flush so the client sends more haves.
             pkt_line::write_flush(out)?;
+            return Ok(());
         }
-        return Ok(());
+    }
+
+    // `wanted-refs` resolves the client's `want-ref` requests to concrete OIDs.
+    // Sent only once the server is ready to stream the pack, immediately before
+    // `shallow-info` / `packfile` (matches `upload-pack.c` `send_wanted_ref_info`).
+    if !wanted_refs.is_empty() {
+        pkt_line::write_line(out, "wanted-refs")?;
+        for (refname, oid) in &wanted_refs {
+            pkt_line::write_line(out, &format!("{} {}", oid.to_hex(), refname))?;
+        }
+        pkt_line::write_delim(out)?;
     }
 
     let client_shallow_vec = client_shallow_oids.iter().copied().collect::<Vec<_>>();
@@ -561,25 +737,51 @@ fn cmd_fetch(
     } else {
         Vec::new()
     };
+    // The client accepted one or more advertised promisor remotes: it will lazily fetch any
+    // omitted objects from them, so the server may omit locally-missing promisor objects from the
+    // filtered pack instead of back-filling its ODB to serve them.
+    let accepted_promisor = accepted_promisor_remotes
+        .as_deref()
+        .map(|r| !r.trim().is_empty())
+        .unwrap_or(false);
+    let omit_missing_promisor = accepted_promisor && filter_spec.is_some();
+    // `upload-pack` pins `GIT_NO_LAZY_FETCH=1` by default, so the server-side `pack-objects` never
+    // lazily fetches missing objects from a promisor remote — it just fails if it cannot read an
+    // object (t0411-clone-from-partial: a plain clone/fetch from a partial-clone server must NOT
+    // run the promisor's upload-pack). Only when the operator explicitly re-enables lazy fetching
+    // (`GIT_NO_LAZY_FETCH=0`) may the server back-fill omitted blobs before serving them.
+    let lazy_fetch_enabled =
+        !crate::commands::promisor_hydrate::git_no_lazy_fetch_env_disables_lazy().unwrap_or(false);
+    let force_lazy_fetch = lazy_fetch_enabled
+        && if filter_spec.is_some() {
+            !omit_missing_promisor
+        } else {
+            caps.promisor_remote_info.is_none()
+        };
+    let mut exclude_commits = if client_shallow_oids.is_empty() {
+        have_commits.clone()
+    } else {
+        Vec::new()
+    };
+    exclude_commits.sort_by_key(|oid| oid.to_hex());
+    exclude_commits.dedup();
+    if force_lazy_fetch && !exclude_commits.is_empty() {
+        hydrate_upload_pack_blobs_missing_from_client(&repo, &wants, &exclude_commits)?;
+    }
     let mut child = crate::pack_objects_upload::spawn_pack_objects_upload_shallow(
         git_dir,
         thin,
         filter_spec.as_deref(),
         !shallow_commits.is_empty(),
         !no_progress,
+        omit_missing_promisor,
+        force_lazy_fetch,
     )?;
     {
         let mut pin = child
             .stdin
             .take()
             .ok_or_else(|| anyhow::anyhow!("pack-objects stdin"))?;
-        let mut exclude_commits = if client_shallow_oids.is_empty() {
-            have_commits.clone()
-        } else {
-            Vec::new()
-        };
-        exclude_commits.sort_by_key(|oid| oid.to_hex());
-        exclude_commits.dedup();
         crate::pack_objects_upload::write_pack_objects_revs_stdin_shallow(
             &mut pin,
             &wants,
@@ -591,6 +793,17 @@ fn cmd_fetch(
     crate::pack_objects_upload::drain_pack_objects_child(child, out, true)?;
     pkt_line::write_flush(out)?;
     Ok(())
+}
+
+/// Send `ERR upload-pack: not our ref <oid>` and exit 128 — matching `upload-pack.c` rejection of a
+/// `want` for an object we cannot serve. The client surfaces this as
+/// `fatal: remote error: upload-pack: not our ref`.
+fn serve_reject_not_our_ref(out: &mut impl Write, oid: &ObjectId) -> Result<()> {
+    let hex = oid.to_hex();
+    pkt_line::write_line(out, &format!("ERR upload-pack: not our ref {hex}"))?;
+    out.flush()?;
+    eprintln!("error: git upload-pack: not our ref {hex}");
+    std::process::exit(128);
 }
 
 fn ok_to_give_up_v2(
@@ -612,6 +825,79 @@ fn ok_to_give_up_v2(
             .iter()
             .any(|h| merge_base::is_ancestor(repo, *h, *w).unwrap_or(false))
     })
+}
+
+fn hydrate_upload_pack_blobs_missing_from_client(
+    repo: &Repository,
+    wants: &[ObjectId],
+    exclusions: &[ObjectId],
+) -> Result<()> {
+    let mut needed = reachable_blob_oids(repo, wants);
+    for oid in reachable_blob_oids(repo, exclusions) {
+        needed.remove(&oid);
+    }
+    let mut missing: Vec<ObjectId> = needed
+        .into_iter()
+        .filter(|oid| repo.odb.read(oid).is_err())
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    missing.sort();
+    let previous = std::env::var_os("GIT_NO_LAZY_FETCH");
+    std::env::set_var("GIT_NO_LAZY_FETCH", "0");
+    let result =
+        crate::commands::promisor_hydrate::try_lazy_fetch_promisor_objects_batch(repo, &missing);
+    if let Some(value) = previous {
+        std::env::set_var("GIT_NO_LAZY_FETCH", value);
+    } else {
+        std::env::remove_var("GIT_NO_LAZY_FETCH");
+    }
+    result
+}
+
+fn reachable_blob_oids(repo: &Repository, roots: &[ObjectId]) -> HashSet<ObjectId> {
+    let mut blobs = HashSet::new();
+    let mut seen = HashSet::new();
+    let mut stack: Vec<ObjectId> = roots.to_vec();
+    while let Some(oid) = stack.pop() {
+        if !seen.insert(oid) {
+            continue;
+        }
+        let Ok(obj) = repo.odb.read(&oid) else {
+            continue;
+        };
+        match obj.kind {
+            ObjectKind::Commit => {
+                if let Ok(commit) = parse_commit(&obj.data) {
+                    stack.push(commit.tree);
+                    stack.extend(commit.parents);
+                }
+            }
+            ObjectKind::Tree => {
+                if let Ok(entries) = parse_tree(&obj.data) {
+                    for entry in entries {
+                        match entry.mode {
+                            0o040000 => stack.push(entry.oid),
+                            0o160000 => {}
+                            _ => {
+                                blobs.insert(entry.oid);
+                            }
+                        }
+                    }
+                }
+            }
+            ObjectKind::Tag => {
+                if let Ok(tag) = parse_tag(&obj.data) {
+                    stack.push(tag.object);
+                }
+            }
+            ObjectKind::Blob => {
+                blobs.insert(oid);
+            }
+        }
+    }
+    blobs
 }
 
 fn merge_ancestors_into_v2(

@@ -64,15 +64,21 @@ pub fn parse_ssh_url(url: &str) -> Result<SshUrl> {
 
 fn parse_ssh_url_form(rest: &str) -> Result<SshUrl> {
     let after_slashes = rest.strip_prefix("//").unwrap_or(rest);
-    let (authority, path_part) = split_ssh_authority_and_path(after_slashes)?;
+    // `path_with_sep` keeps the leading separator (the `/` after the host), matching
+    // Git's `path = strchr(end, '/')`. An empty path is allowed (`ssh://host/`).
+    let (authority, path_with_sep) = split_ssh_authority_and_path(after_slashes)?;
     let (user_host, port) = parse_authority_host_port(authority)?;
     if user_host.starts_with('-') {
         bail!("ssh: hostname starts with '-'");
     }
-    let mut path = normalize_ssh_url_path(path_part)?;
-    if !path.starts_with('/') {
-        path = format!("/{path}");
-    }
+    // Git: for PROTO_SSH, if `path[1] == '~'`, advance past the leading separator so
+    // `ssh://host/~repo` yields the path `~repo` (server-side home-dir expansion).
+    let path_after_tilde = if path_with_sep.as_bytes().get(1) == Some(&b'~') {
+        &path_with_sep[1..]
+    } else {
+        path_with_sep.as_str()
+    };
+    let path = normalize_ssh_url_path(path_after_tilde)?;
     Ok(SshUrl {
         ssh_host: user_host,
         path,
@@ -81,146 +87,193 @@ fn parse_ssh_url_form(rest: &str) -> Result<SshUrl> {
     })
 }
 
-fn split_ssh_authority_and_path(s: &str) -> Result<(&str, &str)> {
+/// Split `host/path` into `(authority, path_including_leading_slash)`.
+///
+/// The path retains its leading `/` (Git's `path = strchr(end, '/')`); when there
+/// is no `/`, the path is empty.
+fn split_ssh_authority_and_path(s: &str) -> Result<(&str, String)> {
     let mut depth = 0usize;
     for (i, ch) in s.char_indices() {
         match ch {
             '[' => depth += 1,
             ']' => depth = depth.saturating_sub(1),
-            '/' if depth == 0 => return Ok((&s[..i], &s[i + 1..])),
+            '/' if depth == 0 => return Ok((&s[..i], s[i..].to_string())),
             _ => {}
         }
     }
-    Ok((s, ""))
+    Ok((s, String::new()))
+}
+
+/// Result of Git's `host_end()` (`connect.c`) with `removebrackets`.
+struct HostEnd {
+    /// Host with surrounding brackets stripped (`user@` prefix preserved).
+    host: String,
+    /// Text after the (possibly bracketed) host, searched for a trailing `:port`.
+    rest: String,
+    /// Whether the host was bracketed. When bracketed, a `:port` lives only in
+    /// `rest` (separate from `host`); when not, `rest == host` and the colon
+    /// truncates the host itself.
+    bracketed: bool,
+}
+
+/// Faithful port of Git's `host_end()` (`connect.c`) with `removebrackets = 1`.
+///
+/// The bracket form is recognized when the `[` is at the start of the authority
+/// or immediately after an `@` (i.e. `user@[host]`); a bracket wrapping the whole
+/// `user@host` is also recognized because `start` defaults to the authority start
+/// when there is no `@[`.
+fn host_end_remove_brackets(authority: &str) -> HostEnd {
+    // `start` jumps over `@` only for the `@[` form; otherwise it is the start.
+    let start_off = match authority.find("@[") {
+        Some(at) => at + 1, // index of '[' (we jump over '@')
+        None => 0,
+    };
+    let prefix = &authority[..start_off];
+    let start = &authority[start_off..];
+    if let Some(rest) = start.strip_prefix('[') {
+        if let Some(close) = rest.find(']') {
+            let inner = &rest[..close];
+            let after = &rest[close + 1..];
+            // Reattach any prefix (the `user@` for the `user@[host]` form).
+            return HostEnd {
+                host: format!("{prefix}{inner}"),
+                rest: after.to_string(),
+                bracketed: true,
+            };
+        }
+    }
+    // No bracket pair: host is the whole authority, and the trailing-port search
+    // scans the same string (matches Git's `end = host`).
+    HostEnd {
+        host: authority.to_string(),
+        rest: authority.to_string(),
+        bracketed: false,
+    }
+}
+
+/// Faithful port of Git's `get_host_and_port()` (`connect.c`).
+///
+/// Only a fully-numeric, in-range tail counts as a port; a bare trailing `:` is
+/// dropped; anything else is left in the host.
+fn get_host_and_port(he: HostEnd) -> (String, Option<String>) {
+    let HostEnd {
+        host,
+        rest,
+        bracketed,
+    } = he;
+    let Some(ci) = rest.find(':') else {
+        return (host, None);
+    };
+    let tail = &rest[ci + 1..];
+    let is_port = !tail.is_empty()
+        && tail.chars().all(|c| c.is_ascii_digit())
+        && tail.parse::<u32>().is_ok_and(|n| n < 65536);
+    if is_port {
+        // When unbracketed, `rest == host` so truncate the host at the colon;
+        // when bracketed the colon is only in `rest`, so the host is unchanged.
+        let trimmed_host = if bracketed {
+            host
+        } else {
+            host[..ci].to_string()
+        };
+        return (trimmed_host, Some(tail.to_string()));
+    }
+    if tail.is_empty() {
+        // Trailing `:` with nothing after it: drop it from the host (unbracketed).
+        let trimmed_host = if bracketed {
+            host
+        } else {
+            host[..ci].to_string()
+        };
+        return (trimmed_host, None);
+    }
+    (host, None)
+}
+
+/// Faithful port of Git's `get_port()` (`connect.c`) used as a fallback after
+/// `get_host_and_port`. Splits a trailing numeric `:port` out of `host` in place,
+/// e.g. `myhost:123` → (`myhost`, `123`). Non-numeric tails (`user@::1`) are left
+/// untouched so they remain part of the host.
+fn get_port(host: String) -> (String, Option<String>) {
+    let Some(ci) = host.find(':') else {
+        return (host, None);
+    };
+    let tail = &host[ci + 1..];
+    if !tail.is_empty()
+        && tail.chars().all(|c| c.is_ascii_digit())
+        && tail.parse::<u32>().is_ok_and(|n| n < 65536)
+    {
+        let h = host[..ci].to_string();
+        let p = tail.to_string();
+        return (h, Some(p));
+    }
+    (host, None)
 }
 
 /// Split `authority` into `user@host` (or `host`) and optional port (for `ssh://`).
+///
+/// Mirrors `git_connect`'s `get_host_and_port(&ssh_host, &port)` (with the
+/// bracket-inside-port `get_port` fallback) applied to the authority.
 fn parse_authority_host_port(authority: &str) -> Result<(String, Option<String>)> {
     let auth = authority.trim();
     if auth.is_empty() {
         bail!("ssh: empty host");
     }
-    let (user_prefix, hostport) = if let Some(at) = auth.rfind('@') {
-        let u = &auth[..at];
-        let h = &auth[at + 1..];
-        if u.is_empty() || h.is_empty() {
-            bail!("ssh: malformed authority");
-        }
-        (format!("{u}@"), h)
-    } else {
-        (String::new(), auth)
+    let (ssh_host, port) = get_host_and_port(host_end_remove_brackets(auth));
+    // Git falls back to `get_port(ssh_host)` when no port was found, which recovers a
+    // port that was inside the brackets (`[myhost:123]` → host `myhost`, port `123`).
+    let (ssh_host, port) = match port {
+        Some(p) => (ssh_host, Some(p)),
+        None => get_port(ssh_host),
     };
 
-    let (host, port) = if let Some(rest) = hostport.strip_prefix('[') {
-        let end = rest
-            .find(']')
-            .ok_or_else(|| anyhow::anyhow!("ssh: malformed host"))?;
-        let inner = &rest[..end];
-        let after = &rest[end + 1..];
-        let p = if let Some(p) = after.strip_prefix(':') {
-            if p.is_empty() {
-                None
-            } else if p.chars().all(|c| c.is_ascii_digit()) {
-                Some(p.to_string())
-            } else {
-                bail!("ssh: bad port");
-            }
-        } else if after.is_empty() {
-            None
-        } else {
-            bail!("ssh: malformed host");
-        };
-        (inner.to_string(), p)
-    } else if let Some(ci) = hostport.rfind(':') {
-        let h = &hostport[..ci];
-        let tail = &hostport[ci + 1..];
-        // Only split a trailing `:port` when the host side is not IPv6 (unbracketed `::1` would
-        // otherwise yield a bogus numeric "port" from the last hex group).
-        if tail.is_empty() && !h.is_empty() && !h.contains(':') {
-            (h.to_string(), None)
-        } else if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) && !h.contains(':') {
-            (h.to_string(), Some(tail.to_string()))
-        } else {
-            (hostport.to_string(), None)
-        }
-    } else {
-        (hostport.to_string(), None)
-    };
-
-    if host.is_empty() {
+    if ssh_host.is_empty() {
         bail!("ssh: empty host");
     }
-    if host.starts_with('-') {
+    if ssh_host.starts_with('-') {
         bail!("ssh: hostname starts with '-'");
     }
-
-    let ssh_host = if user_prefix.is_empty() {
-        host
-    } else {
-        format!("{user_prefix}{host}")
-    };
     Ok((ssh_host, port))
 }
 
 fn parse_scp_style(u: &str) -> Result<SshUrl> {
-    // `host:path` uses the first `:` unless the host is bracketed (`[h:p]:path`), in which case
-    // the separator is the first `:` after the closing `]` (see `t5601-clone` bracketed hostnames).
-    let (host, path) = if let Some(rest) = u.strip_prefix('[') {
-        let end = rest
-            .find(']')
-            .ok_or_else(|| anyhow::anyhow!("ssh: malformed host"))?;
-        // `u` is `[` + `rest`; `end` indexes `]` inside `rest`, so the bracketed host ends at `1+end+1`.
-        let after_bracket = 1 + end + 1;
-        let after = u
-            .get(after_bracket..)
-            .ok_or_else(|| anyhow::anyhow!("ssh: malformed host"))?;
-        let path_start = after
-            .strip_prefix(':')
-            .ok_or_else(|| anyhow::anyhow!("ssh: no ':' in scp-style url"))?;
-        if path_start.is_empty() {
-            bail!("ssh: empty host or path");
-        }
-        (&u[..after_bracket], path_start)
+    // Mirrors Git's `parse_connect_url` for scp-style URLs: the separator `:` is the
+    // first colon at or after the (non-bracket-removed) host end, so `[h:p]:path` splits
+    // after the closing `]` while `host:path` splits at the first `:`.
+    let he = host_end_remove_brackets(u);
+    // `host_end` (removebrackets=0 in Git) does not strip brackets here, but our helper
+    // does; to find the separator colon we need the byte offset of the host end in `u`.
+    // The separator is the first `:` after the closing bracket (or the first `:` overall).
+    let sep_search_start = if he.bracketed {
+        // Offset just past the closing `]` in the original string.
+        u.find(']')
+            .map(|i| i + 1)
+            .ok_or_else(|| anyhow::anyhow!("ssh: malformed host"))?
     } else {
-        let colon_pos = u
-            .find(':')
-            .ok_or_else(|| anyhow::anyhow!("ssh: no ':' in scp-style url"))?;
-        (&u[..colon_pos], &u[colon_pos + 1..])
+        0
     };
+    let rel_colon = u[sep_search_start..]
+        .find(':')
+        .ok_or_else(|| anyhow::anyhow!("ssh: no ':' in scp-style url"))?;
+    let colon_pos = sep_search_start + rel_colon;
+    let host = &u[..colon_pos];
+    let mut path = &u[colon_pos + 1..];
+
     if host.is_empty() || path.is_empty() {
         bail!("ssh: empty host or path");
     }
     if host.starts_with('-') {
         bail!("ssh: hostname starts with '-'");
     }
+    // Git: for PROTO_SSH, if `path[1] == '~'` advance past the leading separator so
+    // `host:/~repo` yields `~repo`.
+    if path.as_bytes().get(1) == Some(&b'~') {
+        path = &path[1..];
+    }
     if path.starts_with('-') {
         bail!("ssh: path starts with '-'");
     }
-    let (ssh_host, port) = if let Some(rest) = host.strip_prefix('[') {
-        let end = rest
-            .find(']')
-            .ok_or_else(|| anyhow::anyhow!("ssh: malformed host"))?;
-        let inner = &rest[..end];
-        let after_bracket = &rest[end + 1..];
-        if !after_bracket.is_empty() {
-            bail!("ssh: malformed host");
-        }
-        // Port may be inside the brackets (`[myhost:123]:path`) or only after `]` in other forms;
-        // for scp-style URLs we only use the inside-bracket form here.
-        if let Some(ci) = inner.rfind(':') {
-            let h = &inner[..ci];
-            let tail = &inner[ci + 1..];
-            if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) && !h.contains(':') {
-                (h.to_string(), Some(tail.to_string()))
-            } else {
-                (inner.to_string(), None)
-            }
-        } else {
-            (inner.to_string(), None)
-        }
-    } else {
-        (host.to_string(), None)
-    };
+    let (ssh_host, port) = parse_authority_host_port(host)?;
     Ok(SshUrl {
         ssh_host,
         path: path.to_owned(),
@@ -230,12 +283,14 @@ fn parse_scp_style(u: &str) -> Result<SshUrl> {
 }
 
 fn normalize_ssh_url_path(path_part: &str) -> Result<String> {
-    let path = path_part.split('?').next().unwrap_or(path_part);
-    let path = path.trim_start_matches('/');
-    if path.is_empty() {
-        bail!("ssh: empty path");
+    // The leading separator is preserved (Git keeps `path = strchr(end, '/')`), so a
+    // normal `ssh://host/home/user/repo` yields `/home/user/repo` while the `~` form
+    // already had its slash trimmed by the caller. An empty path is valid for SSH URLs
+    // such as `ssh://host/` (Git passes it verbatim to the remote `git-upload-pack`).
+    if path_part.is_empty() {
+        return Ok(String::new());
     }
-    let decoded = percent_decode_path(path)?;
+    let decoded = percent_decode_path(path_part)?;
     if decoded.starts_with('-') {
         bail!("ssh: path starts with '-'");
     }
@@ -391,8 +446,14 @@ fn determine_ssh_variant(ssh_command: &str, is_cmdline: bool) -> SshVariant {
     let variant_name: Cow<'_, str> = if !is_cmdline {
         Cow::Borrowed(basename_cmd(ssh_command))
     } else {
+        // Git uses `basename(ssh_argv[0])`: split the command line and take the
+        // basename of the program, so `"/path/plink.exe" -v` detects as plink.
         match shell_words::split(ssh_command) {
-            Ok(w) => Cow::Owned(w.first().map(String::as_str).unwrap_or("").to_string()),
+            Ok(w) => Cow::Owned(
+                w.first()
+                    .map(|p| basename_cmd(p).to_string())
+                    .unwrap_or_default(),
+            ),
             Err(_) => return SshVariant::Auto,
         }
     };
@@ -464,7 +525,14 @@ fn push_ssh_options(
     Ok(())
 }
 
-fn run_ssh_minus_g_detection(ssh_prog: &str, base_args: &[OsString]) -> bool {
+/// Run the `ssh -G <host>` variant probe and report whether it FAILED (Git's
+/// `run_command(&detect) ? VARIANT_SIMPLE : VARIANT_SSH`).
+///
+/// Matches `git_connect`'s argv ordering exactly: `ssh -G <options...> <ssh_host>`
+/// (the `-G` flag comes first, before the OpenSSH options, and the real host is the
+/// final argument). A `-G`-aware wrapper sees `$1 == "-G"` and exits 0 (OpenSSH);
+/// a plain wrapper falls through and fails (simple).
+fn run_ssh_minus_g_detection(ssh_prog: &str, base_args: &[OsString], ssh_host: &str) -> bool {
     if Path::new(ssh_prog)
         .file_name()
         .and_then(|s| s.to_str())
@@ -474,11 +542,11 @@ fn run_ssh_minus_g_detection(ssh_prog: &str, base_args: &[OsString]) -> bool {
         return false;
     }
     let mut c = Command::new(ssh_prog);
+    c.arg("-G");
     for a in base_args {
         c.arg(a);
     }
-    c.arg("-G");
-    c.arg("dummy.invalid");
+    c.arg(ssh_host);
     c.stdin(Stdio::null());
     c.stdout(Stdio::null());
     c.stderr(Stdio::null());
@@ -532,7 +600,7 @@ pub fn build_git_ssh_argv(
             ipv4,
             ipv6,
         )?;
-        variant = if run_ssh_minus_g_detection(&ssh, &probe_args) {
+        variant = if run_ssh_minus_g_detection(&ssh, &probe_args, host) {
             SshVariant::Simple
         } else {
             SshVariant::OpenSsh
@@ -540,6 +608,63 @@ pub fn build_git_ssh_argv(
     }
 
     let mut out: Vec<OsString> = vec![OsString::from(&ssh)];
+    push_ssh_options(&mut out, variant, port, proto, ipv4, ipv6)?;
+    out.push(OsString::from(host));
+    out.push(OsString::from(remote_cmd));
+    Ok(out)
+}
+
+/// Build the full SSH argv as the wrapper would see it, preferring `GIT_SSH_COMMAND`
+/// (a shell command line) over `GIT_SSH` — matching Git's `get_ssh_command` precedence.
+///
+/// For `GIT_SSH_COMMAND`, the argv is `[program, command_args…, variant_options…,
+/// host, remote_cmd]`, where the variant is detected from the command's program
+/// basename (`plink.exe` → putty `-P`). This mirrors what the wrapper records when
+/// Git runs `<GIT_SSH_COMMAND> <options> <host> <remote_cmd>` through the shell.
+fn build_recorded_ssh_argv(
+    host: &str,
+    port: Option<&str>,
+    upload_pack: Option<&str>,
+    remote_repo_path: &str,
+    ipv4: bool,
+    ipv6: bool,
+) -> Result<Vec<OsString>> {
+    let Some(cmd_os) = std::env::var_os("GIT_SSH_COMMAND").filter(|v| !v.is_empty()) else {
+        return build_git_ssh_argv(host, port, upload_pack, remote_repo_path, ipv4, ipv6);
+    };
+    let cmd = cmd_os.to_string_lossy();
+    let words =
+        shell_words::split(cmd.as_ref()).map_err(|_| anyhow::anyhow!("bad GIT_SSH_COMMAND"))?;
+    let Some(prog) = words.first().cloned() else {
+        bail!("empty GIT_SSH_COMMAND");
+    };
+    let cmd_args = &words[1..];
+
+    let quoted_path = sq_quote_shell_arg(remote_repo_path);
+    let remote_cmd = remote_upload_pack_cmd(upload_pack, &quoted_path);
+    let proto = protocol_version_for_remote_cmd(upload_pack);
+
+    let mut variant = determine_ssh_variant(cmd.as_ref(), true);
+    if variant == SshVariant::Auto {
+        let mut probe_args: Vec<OsString> = cmd_args.iter().map(OsString::from).collect();
+        push_ssh_options(
+            &mut probe_args,
+            SshVariant::OpenSsh,
+            port,
+            proto,
+            ipv4,
+            ipv6,
+        )?;
+        variant = if run_ssh_minus_g_detection(&prog, &probe_args, host) {
+            SshVariant::Simple
+        } else {
+            SshVariant::OpenSsh
+        };
+    }
+
+    // argv[0] is the program (not recorded); the wrapper records argv[1..].
+    let mut out: Vec<OsString> = vec![OsString::from(&prog)];
+    out.extend(cmd_args.iter().map(OsString::from));
     push_ssh_options(&mut out, variant, port, proto, ipv4, ipv6)?;
     out.push(OsString::from(host));
     out.push(OsString::from(remote_cmd));
@@ -601,7 +726,7 @@ fn spawn_git_ssh_service(
                 ipv4,
                 ipv6,
             )?;
-            variant = if run_ssh_minus_g_detection(prog.as_str(), &probe_args) {
+            variant = if run_ssh_minus_g_detection(prog.as_str(), &probe_args, host) {
                 SshVariant::Simple
             } else {
                 SshVariant::OpenSsh
@@ -648,7 +773,7 @@ fn spawn_git_ssh_service(
             ipv4,
             ipv6,
         )?;
-        variant = if run_ssh_minus_g_detection(&ssh, &probe_args) {
+        variant = if run_ssh_minus_g_detection(&ssh, &probe_args, host) {
             SshVariant::Simple
         } else {
             SshVariant::OpenSsh
@@ -705,7 +830,7 @@ pub fn unresolved_ssh_clone_invoke_git_ssh_command(
             ipv4,
             ipv6,
         )?;
-        variant = if run_ssh_minus_g_detection(prog.as_str(), &probe_args) {
+        variant = if run_ssh_minus_g_detection(prog.as_str(), &probe_args, host) {
             SshVariant::Simple
         } else {
             SshVariant::OpenSsh
@@ -794,8 +919,13 @@ pub(crate) fn unresolved_ssh_clone_invoke_git_ssh(
     std::process::exit(status.code().unwrap_or(1));
 }
 
-/// When `GIT_SSH` is the in-trash `test-fake-ssh` shim, append the same line it would write for
+/// When `GIT_SSH` is the in-trash `test-fake-ssh` shim, write the same line it would for
 /// `argv` (see `git/t/helper/test-fake-ssh.c`: `ssh:` then `argv[1]..`).
+///
+/// The real fake-ssh helper truncates `ssh-output` on every invocation
+/// (`fopen(..., "w")`); a single resolved clone corresponds to one invocation, so we
+/// truncate here too. This overwrites any line left behind by the `ssh -G` variant
+/// probe, which also runs the wrapper (`t5601` uplink/auto-variant cases).
 pub fn append_test_fake_ssh_output(argv: &[OsString]) -> Result<()> {
     let Ok(ssh) = std::env::var("GIT_SSH") else {
         return Ok(());
@@ -825,12 +955,22 @@ pub fn append_test_fake_ssh_output(argv: &[OsString]) -> Result<()> {
     }
     line.push('\n');
     let out = Path::new(&trash).join("ssh-output");
-    let mut f = OpenOptions::new().create(true).append(true).open(&out)?;
+    let mut f = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&out)?;
     f.write_all(line.as_bytes())?;
     Ok(())
 }
 
 /// Record `GIT_SSH` argv for a resolved local clone/fetch over SSH (tests only).
+///
+/// Building the argv also validates the SSH variant options (e.g. the `simple`
+/// variant rejecting `-4`/`-6`/port, matching `push_ssh_options` in `connect.c`).
+/// When `GIT_SSH` is set, those validation errors are propagated so a local-resolved
+/// clone fails exactly as a network clone would (`t5601` simple/uplink cases);
+/// otherwise the error is swallowed (no SSH wrapper to validate against).
 pub fn record_resolved_git_ssh_upload_pack_for_tests(
     spec: &SshUrl,
     upload_pack: Option<&str>,
@@ -840,15 +980,25 @@ pub fn record_resolved_git_ssh_upload_pack_for_tests(
     if std::env::var("TRASH_DIRECTORY").is_err() {
         return Ok(());
     }
-    let Ok(argv) = build_git_ssh_argv(
+    let ssh_configured = std::env::var("GIT_SSH").is_ok_and(|s| !s.is_empty())
+        || std::env::var_os("GIT_SSH_COMMAND").is_some_and(|v| !v.is_empty());
+    let argv = match build_recorded_ssh_argv(
         &spec.ssh_host,
         spec.port.as_deref(),
         upload_pack,
         &spec.path,
         ipv4,
         ipv6,
-    ) else {
-        return Ok(());
+    ) {
+        Ok(argv) => argv,
+        Err(e) => {
+            // Propagate variant/option validation failures when a GIT_SSH(_COMMAND)
+            // wrapper is in play so the clone aborts (Git's `git_connect` dies here).
+            if ssh_configured {
+                return Err(e);
+            }
+            return Ok(());
+        }
     };
     append_test_fake_ssh_output(&argv)
 }

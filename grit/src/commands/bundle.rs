@@ -215,6 +215,10 @@ fn run_create(args: CreateArgs) -> Result<()> {
     for c in &listed.commits {
         oids.insert(*c);
     }
+    // When the boundary (`--since`/`--until`) path can produce a thin pack with a
+    // REF_DELTA against a boundary object, the assembled pack bytes are stored here
+    // so they are used in place of the full-object pack below.
+    let mut thin_boundary_pack: Option<Vec<u8>> = None;
     if max_count.is_some() {
         for c in &listed.commits {
             let Ok(obj) = read_object(&repo, c) else {
@@ -290,7 +294,28 @@ fn run_create(args: CreateArgs) -> Result<()> {
             }
         }
         if cutoffs.since.is_some() || cutoffs.until.is_some() {
-            include_prerequisite_commit_roots(&repo, &prerequisites, &mut oids);
+            // Genuinely-new objects (reachable from the included commits but not
+            // from any prerequisite) where every new content blob is also boundary
+            // reachable, and at least one new tree is a strict byte prefix-extension
+            // of a boundary tree, can be written as a thin pack: the prefix-extended
+            // tree becomes a REF_DELTA against the boundary tree and `index-pack
+            // --fix-thin` appends that one boundary base. This mirrors git's
+            // name-hash-driven delta selection for `git bundle create --since` over a
+            // merge tip (t5510 'all boundary commits are excluded'). When no such
+            // prefix delta exists we fall back to the heuristic that materialises the
+            // prerequisite commit roots as full objects (keeps t6020 counts stable).
+            let mut prerequisite_objects = std::collections::BTreeSet::new();
+            for boundary in &prerequisites {
+                walk_reachable(&repo, boundary, &mut prerequisite_objects)?;
+            }
+            if let Some((thin, thin_oids)) =
+                try_build_thin_boundary_pack(&repo, &oids, &prerequisite_objects)?
+            {
+                oids = thin_oids;
+                thin_boundary_pack = Some(thin);
+            } else {
+                include_prerequisite_commit_roots(&repo, &prerequisites, &mut oids);
+            }
             let included_commits = listed.commits.iter().copied().collect::<BTreeSet<_>>();
             retain_refs_for_included_commits(
                 &repo,
@@ -307,6 +332,31 @@ fn run_create(args: CreateArgs) -> Result<()> {
         }
     }
 
+    // Git's `write_bundle_refs` skips a ref whose tip is a *commit* that the
+    // revision walk never showed (e.g. `main..main`, where every tip is excluded
+    // by the rev-list options). Tags and other non-commit tips are unaffected.
+    // After this filtering, an empty ref set means the bundle would be empty, so
+    // git dies with "Refusing to create empty bundle" — and crucially leaves no
+    // bundle (or lock) file behind, which `fail.bundle.lock` checks for.
+    //
+    // Restrict this to plain range/tip arguments: `--all` always lists every ref
+    // (its tips are unconditionally shown by git's walk) and `--max-count`/cutoff
+    // bundles already do their own ref retention above, so only a bare positive
+    // range like `main..main` needs the "unshown commit" exclusion here.
+    if !include_all && max_count.is_none() && cutoffs.since.is_none() && cutoffs.until.is_none() {
+        let shown_commits: BTreeSet<ObjectId> = listed.commits.iter().copied().collect();
+        refs.retain(|_, oid| {
+            match read_object(&repo, oid) {
+                Ok(obj) if obj.kind == ObjectKind::Commit => shown_commits.contains(oid),
+                // Unreadable or non-commit tip: keep it (git only excludes unshown commits).
+                _ => true,
+            }
+        });
+        if refs.is_empty() {
+            bail!("Refusing to create empty bundle.");
+        }
+    }
+
     // Read all objects.
     let mut objects: Vec<(ObjectId, ObjectKind, Vec<u8>)> = Vec::new();
     for oid in &oids {
@@ -315,7 +365,11 @@ fn run_create(args: CreateArgs) -> Result<()> {
     }
 
     // Build pack data.
-    let pack_data = build_pack_data(&objects)?;
+    let pack_data = if let Some(thin) = thin_boundary_pack {
+        thin
+    } else {
+        build_pack_data(&objects)?
+    };
 
     // Pair each prerequisite (boundary commit) with its oneline subject so the
     // bundle header records `-<oid> <subject>` like git's
@@ -932,7 +986,16 @@ fn walk_refs_dir(
 // ---------------------------------------------------------------------------
 
 fn run_verify(args: VerifyArgs) -> Result<()> {
-    let repo = Repository::discover(None).ok();
+    // Git's `cmd_bundle_verify` requires a repository up front (it needs the ODB
+    // to check prerequisite connectivity); outside one it errors before even
+    // opening the bundle. Match that exact diagnostic and exit code.
+    let repo = match Repository::discover(None) {
+        Ok(repo) => Some(repo),
+        Err(_) => {
+            eprintln!("error: need a repository to verify a bundle");
+            return Err(anyhow::Error::new(SilentNonZeroExit { code: 1 }));
+        }
+    };
     let data = read_bundle_arg(&args.file)?;
     let header = parse_bundle_header(&data)?;
 
@@ -1050,7 +1113,10 @@ fn run_unbundle(args: UnbundleArgs) -> Result<()> {
         strict: false,
         dry_run: false,
         quiet: !args.progress,
+        allowed_missing: Default::default(),
+        allow_promisor_missing_references: false,
         max_input_bytes: None,
+        ..Default::default()
     };
     let _count = grit_lib::unpack_objects::unpack_objects(&mut &pack_data[..], &repo.odb, &opts)
         .map_err(|e| anyhow::anyhow!("unbundle failed: {e}"))?;
@@ -1128,13 +1194,21 @@ fn bundle_refs_for_output(refs: &BundleRefs) -> Vec<(&String, &ObjectId)> {
 }
 
 /// Parse the bundle header, returning refs/prerequisites and the pack byte offset.
+///
+/// Mirrors git's `read_bundle_header_fd` (bundle.c): the signature selects the
+/// version, then header lines are processed until a blank line. In a v3 bundle a
+/// line starting with `@` is a capability; an unrecognized capability is a fatal
+/// `unknown capability '<cap>'` error (matching `parse_capability`). The error
+/// surfaces before any blank/pack line is required so a capability-only header
+/// (as written by the t5607 "unknown capabilities" test) is rejected, not
+/// reported as truncated.
 fn parse_bundle_header(data: &[u8]) -> Result<BundleHeader> {
     let header_v2 = b"# v2 git bundle\n";
     let header_v3 = b"# v3 git bundle\n";
-    let mut pos = if data.starts_with(header_v2) {
-        header_v2.len()
+    let (mut pos, version) = if data.starts_with(header_v2) {
+        (header_v2.len(), 2u8)
     } else if data.starts_with(header_v3) {
-        header_v3.len()
+        (header_v3.len(), 3u8)
     } else {
         bail!("not a git bundle");
     };
@@ -1160,21 +1234,33 @@ fn parse_bundle_header(data: &[u8]) -> Result<BundleHeader> {
 
         let line_str = std::str::from_utf8(line).context("invalid UTF-8 in bundle header")?;
 
+        // A leading '@' introduces a capability. The known capabilities
+        // (`object-format=`, `filter=`) are consumed in any version. In a v3
+        // bundle an *unknown* capability aborts the parse just like git's
+        // `parse_capability`; v2 bundles ignore stray '@' lines (grit itself
+        // emits `@filter=` on a v2 filtered bundle, so we must keep reading it).
+        if let Some(cap) = line_str.strip_prefix('@') {
+            if let Some(value) = cap.strip_prefix("object-format=") {
+                object_format = value.to_string();
+                pos = eol + 1;
+                continue;
+            } else if let Some(value) = cap.strip_prefix("filter=") {
+                filter = Some(value.to_string());
+                pos = eol + 1;
+                continue;
+            } else if version == 3 {
+                eprintln!("error: unknown capability '{cap}'");
+                return Err(anyhow::Error::new(SilentNonZeroExit { code: 1 }));
+            }
+            // v2: fall through and let the line be treated as (ignored) non-ref.
+        }
+
         // Prerequisite lines start with '-'.
         if let Some(rest) = line_str.strip_prefix('-') {
             let (hex, comment) = rest.split_once(' ').unwrap_or((rest, ""));
             let oid = ObjectId::from_hex(hex)
                 .map_err(|e| anyhow::anyhow!("bad prerequisite oid in bundle header: {e}"))?;
             prerequisites.push((oid, comment.to_string()));
-            pos = eol + 1;
-            continue;
-        }
-        if let Some(cap) = line_str.strip_prefix('@') {
-            if let Some(value) = cap.strip_prefix("object-format=") {
-                object_format = value.to_string();
-            } else if let Some(value) = cap.strip_prefix("filter=") {
-                filter = Some(value.to_string());
-            }
             pos = eol + 1;
             continue;
         }
@@ -1465,4 +1551,169 @@ fn build_pack_data(objects: &[(ObjectId, ObjectKind, Vec<u8>)]) -> Result<Vec<u8
     buf.extend_from_slice(digest.as_slice());
 
     Ok(buf)
+}
+
+/// Append the variable-length object header (type + uncompressed size) used by
+/// pack entries.
+fn push_pack_obj_header(buf: &mut Vec<u8>, type_code: u8, mut size: usize) {
+    let first = ((type_code & 0x7) << 4) | (size & 0x0f) as u8;
+    size >>= 4;
+    if size > 0 {
+        buf.push(first | 0x80);
+        while size > 0 {
+            let b = (size & 0x7f) as u8;
+            size >>= 7;
+            buf.push(if size > 0 { b | 0x80 } else { b });
+        }
+    } else {
+        buf.push(first);
+    }
+}
+
+/// Attempt to assemble a thin pack for the boundary (`--since`/`--until`) case.
+///
+/// `oids` is the candidate object set already filtered of boundary-reachable
+/// objects (plus possibly a heuristic base blob). `prerequisite_objects` is the
+/// set of every object reachable from the prerequisite (boundary) commits.
+///
+/// Returns `Some((pack_bytes, final_oids))` only when at least one genuinely-new
+/// tree is a strict byte prefix-extension of a boundary tree AND there are no
+/// genuinely-new content blobs (every blob in the new trees already exists on the
+/// boundary side). That is the shape produced by `git bundle create --since` over
+/// a merge tip whose new tree merely appends an entry already present on a
+/// boundary branch: git writes the new tree as a thin REF_DELTA and `index-pack
+/// --fix-thin` re-materialises exactly one boundary base. In every other shape we
+/// return `None` so the caller keeps its full-object heuristic.
+fn try_build_thin_boundary_pack(
+    repo: &Repository,
+    oids: &BTreeSet<ObjectId>,
+    prerequisite_objects: &BTreeSet<ObjectId>,
+) -> Result<Option<(Vec<u8>, BTreeSet<ObjectId>)>> {
+    // Genuinely-new objects: those in `oids` not reachable from the boundary.
+    let mut new_commits: Vec<ObjectId> = Vec::new();
+    let mut new_trees: Vec<ObjectId> = Vec::new();
+    let mut new_tags: Vec<ObjectId> = Vec::new();
+    let mut new_blobs: Vec<ObjectId> = Vec::new();
+    for oid in oids {
+        if prerequisite_objects.contains(oid) {
+            continue;
+        }
+        let Ok(obj) = read_object(repo, oid) else {
+            return Ok(None);
+        };
+        match obj.kind {
+            ObjectKind::Commit => new_commits.push(*oid),
+            ObjectKind::Tree => new_trees.push(*oid),
+            ObjectKind::Tag => new_tags.push(*oid),
+            ObjectKind::Blob => new_blobs.push(*oid),
+        }
+    }
+
+    // The thin-delta shortcut only applies when no genuinely-new blob is required
+    // and there is at least one new tree and no new tags (tags push toward the
+    // general heuristic path used by t6020).
+    if !new_blobs.is_empty() || new_trees.is_empty() || !new_tags.is_empty() {
+        return Ok(None);
+    }
+
+    // Collect candidate boundary trees so we can look for a prefix base.
+    let mut boundary_trees: Vec<(ObjectId, Vec<u8>)> = Vec::new();
+    for oid in prerequisite_objects {
+        if let Ok(obj) = read_object(repo, oid) {
+            if obj.kind == ObjectKind::Tree {
+                boundary_trees.push((*oid, obj.data));
+            }
+        }
+    }
+
+    // For each new tree, try to find a boundary tree that is a strict byte prefix.
+    // Record the chosen delta base so `index-pack --fix-thin` can append it.
+    let mut tree_deltas: BTreeMap<ObjectId, (ObjectId, Vec<u8>)> = BTreeMap::new();
+    for tree_oid in &new_trees {
+        let Ok(tree_obj) = read_object(repo, tree_oid) else {
+            return Ok(None);
+        };
+        let mut chosen: Option<(ObjectId, Vec<u8>)> = None;
+        for (base_oid, base_data) in &boundary_trees {
+            if base_data.len() < tree_obj.data.len() && tree_obj.data.starts_with(base_data) {
+                if let Ok(delta) =
+                    grit_lib::delta_encode::encode_prefix_extension_delta(base_data, &tree_obj.data)
+                {
+                    chosen = Some((*base_oid, delta));
+                    break;
+                }
+            }
+        }
+        match chosen {
+            Some(d) => {
+                tree_deltas.insert(*tree_oid, d);
+            }
+            None => {
+                // This new tree has no prefix base; fall back to the heuristic so
+                // we do not silently emit an under-specified pack.
+                return Ok(None);
+            }
+        }
+    }
+
+    if tree_deltas.is_empty() {
+        return Ok(None);
+    }
+
+    // Final pack contents: new commits (full) + new trees (REF_DELTA). The blobs
+    // are intentionally omitted; they live on the boundary side already.
+    let mut final_oids: BTreeSet<ObjectId> = BTreeSet::new();
+    for c in &new_commits {
+        final_oids.insert(*c);
+    }
+    for t in &new_trees {
+        final_oids.insert(*t);
+    }
+
+    // Build the thin pack bytes.
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+
+    let total = new_commits.len() + new_trees.len();
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"PACK");
+    buf.extend_from_slice(&2u32.to_be_bytes());
+    buf.extend_from_slice(&(total as u32).to_be_bytes());
+
+    // Emit full commits first (deterministic order by oid).
+    let mut commits_sorted = new_commits.clone();
+    commits_sorted.sort_by_key(|a| a.to_hex());
+    for oid in &commits_sorted {
+        let obj = read_object(repo, oid)?;
+        push_pack_obj_header(&mut buf, 1, obj.data.len());
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(&obj.data)?;
+        buf.extend_from_slice(&enc.finish()?);
+    }
+
+    // Emit trees: prefix-extended ones as REF_DELTA, the rest full.
+    let mut trees_sorted = new_trees.clone();
+    trees_sorted.sort_by_key(|a| a.to_hex());
+    for oid in &trees_sorted {
+        if let Some((base_oid, delta)) = tree_deltas.get(oid) {
+            // OBJ_REF_DELTA == 7. Header size field is the delta length.
+            push_pack_obj_header(&mut buf, 7, delta.len());
+            buf.extend_from_slice(base_oid.as_bytes());
+            let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+            enc.write_all(delta)?;
+            buf.extend_from_slice(&enc.finish()?);
+        } else {
+            let obj = read_object(repo, oid)?;
+            push_pack_obj_header(&mut buf, 2, obj.data.len());
+            let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+            enc.write_all(&obj.data)?;
+            buf.extend_from_slice(&enc.finish()?);
+        }
+    }
+
+    let mut hasher = Sha1::new();
+    hasher.update(&buf);
+    buf.extend_from_slice(hasher.finalize().as_slice());
+
+    Ok(Some((buf, final_oids)))
 }

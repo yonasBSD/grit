@@ -6,10 +6,15 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read};
+use std::path::PathBuf;
+
+use std::collections::HashSet;
+use std::path::Path;
 
 use grit_lib::config::{parse_i64, ConfigSet};
-use grit_lib::objects::ObjectKind;
+use grit_lib::objects::{ObjectId, ObjectKind};
+use grit_lib::promisor::{promisor_expanded_object_ids, repo_treats_promisor_packs};
 use grit_lib::repo::Repository;
 use grit_lib::unpack_objects::{unpack_objects, UnpackOptions};
 
@@ -33,6 +38,11 @@ pub struct Args {
     #[arg(long = "max-input-size", value_name = "SIZE")]
     pub max_input_size: Option<String>,
 
+    /// File listing shallow boundary commits (grafts) whose parents must not be required during the
+    /// `--strict` connectivity walk. Mirrors `unpack-objects --shallow-file` in `receive-pack`.
+    #[arg(long = "shallow-file", value_name = "FILE")]
+    pub shallow_file: Option<std::path::PathBuf>,
+
     /// Pack header supplied by receive-pack after it has already parsed the stream header.
     #[arg(long = "pack_header", value_name = "HEADER", hide = true)]
     pub pack_header: Option<String>,
@@ -40,7 +50,12 @@ pub struct Args {
 
 /// Run `grit unpack-objects`.
 pub fn run(args: Args) -> Result<()> {
-    let repo = Repository::discover(None).context("not a git repository")?;
+    let repo = if let Some(git_dir) = std::env::var_os("GIT_DIR").filter(|v| !v.is_empty()) {
+        let git_dir = PathBuf::from(git_dir);
+        Repository::open(&git_dir, None).context("not a git repository")?
+    } else {
+        Repository::discover(None).context("not a git repository")?
+    };
 
     let max_input_bytes = if let Some(raw) = args.max_input_size.as_deref() {
         let v = parse_i64(raw.trim()).map_err(|e| anyhow::anyhow!(e))?;
@@ -58,11 +73,31 @@ pub fn run(args: Args) -> Result<()> {
 
     enforce_alloc_limit_for_non_streaming_large_objects(&repo, args.dry_run)?;
 
+    let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let allow_promisor_missing_references = args.strict
+        && (repo_treats_promisor_packs(&repo.git_dir, &cfg)
+            || std::env::var_os("GRIT_ALLOW_PROMISOR_MISSING_REFERENCES").is_some());
+    let allowed_missing = if allow_promisor_missing_references {
+        promisor_expanded_object_ids(&repo).unwrap_or_default()
+    } else {
+        Default::default()
+    };
+
+    let shallow_boundaries = match args.shallow_file.as_deref() {
+        Some(path) => read_shallow_file_oids(path),
+        None => Default::default(),
+    };
+
+    let quiet = args.quiet || !io::stderr().is_terminal();
+
     let opts = UnpackOptions {
         dry_run: args.dry_run,
-        quiet: args.quiet,
+        quiet,
         strict: args.strict,
+        allowed_missing,
+        allow_promisor_missing_references,
         max_input_bytes,
+        shallow_boundaries,
     };
 
     let count = if let Some(raw_header) = args.pack_header.as_deref() {
@@ -91,7 +126,7 @@ pub fn run(args: Args) -> Result<()> {
         let _ = repo.odb.write_loose_materialize(ObjectKind::Tree, b"");
     }
 
-    if !args.quiet {
+    if !quiet {
         eprintln!("Unpacking objects: done ({count} objects)");
     }
     maybe_emit_unpack_fsync_counters();
@@ -148,6 +183,24 @@ fn enforce_alloc_limit_for_non_streaming_large_objects(
         bail!("fatal: attempting to allocate");
     }
     Ok(())
+}
+
+/// Read commit OIDs (one per line) from a shallow boundary file, ignoring blank/unparsable lines.
+fn read_shallow_file_oids(path: &Path) -> HashSet<ObjectId> {
+    let mut set = HashSet::new();
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return set;
+    };
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(oid) = line.parse::<ObjectId>() {
+            set.insert(oid);
+        }
+    }
+    set
 }
 
 fn parse_pack_header_arg(raw: &str) -> Result<(u32, u32)> {

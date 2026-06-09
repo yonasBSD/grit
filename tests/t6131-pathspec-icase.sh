@@ -4,6 +4,19 @@ test_description='test case insensitive pathspec limiting'
 
 . ./test-lib.sh
 
+# grit's test-lib.sh does not define the CASE_INSENSITIVE_FS lazy prereq that
+# upstream git/t/test-lib.sh provides, so define it locally here (same probe as
+# upstream) to keep this test-body self-contained. These case-sensitive
+# pathspec tests cannot run on a case-insensitive file system (e.g. default
+# macOS APFS): test_commit creates tags bar/bAr/BAR whose loose ref files
+# collide on such a FS -- real git 2.52.0 fails identically with
+# "tag 'bAr' already exists". The skip below matches upstream's behavior.
+test_lazy_prereq CASE_INSENSITIVE_FS '
+	echo good >CamelCase &&
+	echo bad >camelcase &&
+	test "$(cat CamelCase)" != good
+'
+
 if test_have_prereq CASE_INSENSITIVE_FS
 then
 	skip_all='skipping case sensitive tests - case insensitive file system'

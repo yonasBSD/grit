@@ -194,6 +194,9 @@ pub(crate) fn read_receive_pack_advertisement<R: Read>(
             Some(pkt_line::Packet::Delim | pkt_line::Packet::ResponseEnd) => break,
             Some(pkt_line::Packet::Data(line)) => {
                 let line = line.trim_end_matches('\n');
+                // Trace the advertisement we read so `GIT_TRACE_PACKET` captures the server's ref
+                // advertisement on the push client side (t5509 receive-pack hideRefs trace).
+                crate::wire_trace::trace_packet_push('<', &line.replace('\0', "\\0"));
                 if !saw_first {
                     saw_first = true;
                     if line == "version 2" {
