@@ -2,7 +2,6 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::collections::BTreeSet;
-use std::ffi::CStr;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -504,17 +503,9 @@ pub fn parse_untracked_extension(data: &[u8]) -> Option<UntrackedCache> {
 
 pub fn untracked_cache_ident(work_tree: &Path) -> Vec<u8> {
     #[cfg(unix)]
-    let sysname = {
-        let mut uts: libc::utsname = unsafe { std::mem::zeroed() };
-        unsafe {
-            if libc::uname(&mut uts) == 0 {
-                CStr::from_ptr(uts.sysname.as_ptr())
-                    .to_string_lossy()
-                    .into_owned()
-            } else {
-                "unknown".to_string()
-            }
-        }
+    let sysname = match nix::sys::utsname::uname() {
+        Ok(uts) => uts.sysname().to_string_lossy().into_owned(),
+        Err(_) => "unknown".to_string(),
     };
     #[cfg(not(unix))]
     let sysname = "unknown".to_string();

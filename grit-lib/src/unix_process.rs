@@ -5,5 +5,7 @@
 /// On success of `kill`, the process exists (or we lack permission; treated as alive).
 #[must_use]
 pub fn pid_is_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    // `kill(pid, None)` performs the existence check without sending a signal,
+    // exactly like `kill(pid, 0)`; `Ok` mirrors the C call returning 0.
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok()
 }

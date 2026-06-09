@@ -340,22 +340,16 @@ fn resolve_mailmap_path(base: &Path, value: &str) -> PathBuf {
 fn read_mailmap_file_nofollow(path: &Path) -> Result<String> {
     #[cfg(unix)]
     {
-        use std::ffi::CString;
-        use std::os::unix::io::FromRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
 
-        let path_str = path
-            .to_str()
-            .ok_or_else(|| GustError::PathError(path.display().to_string()))?;
-        let c_path =
-            CString::new(path_str).map_err(|_| GustError::PathError(path.display().to_string()))?;
-        let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_NOFOLLOW, 0) };
-        if fd < 0 {
-            return Err(GustError::PathError(format!(
-                "unable to open mailmap at {}",
-                path.display()
-            )));
-        }
-        let mut file = unsafe { fs::File::from_raw_fd(fd) };
+        // `O_NOFOLLOW` makes `open` fail rather than traverse a final symlink.
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|_| {
+                GustError::PathError(format!("unable to open mailmap at {}", path.display()))
+            })?;
         let mut s = String::new();
         file.read_to_string(&mut s)
             .map_err(|e| GustError::PathError(format!("reading {}: {e}", path.display())))?;

@@ -7,7 +7,6 @@ use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::fs::FileTypeExt;
-use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -223,40 +222,33 @@ pub fn ipc_client_send_command(
 }
 
 fn block_sigpipe() {
-    unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, libc::SIGPIPE);
-        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
-    }
+    use nix::sys::signal::{pthread_sigmask, SigSet, SigmaskHow, Signal};
+    let mut set = SigSet::empty();
+    set.add(Signal::SIGPIPE);
+    let _ = pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&set), None);
 }
 
 fn wait_for_io_start(stream: &UnixStream, server_shutdown: &AtomicBool) -> io::Result<()> {
-    let fd = stream.as_raw_fd();
+    use nix::poll::{poll, PollFd, PollFlags};
+    use std::os::fd::AsFd;
     loop {
         if server_shutdown.load(Ordering::SeqCst) {
             return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "shutdown"));
         }
-        let mut pfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let n = unsafe { libc::poll(&mut pfd, 1, 10) };
-        if n < 0 {
-            let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            return Err(err);
+        let mut fds = [PollFd::new(stream.as_fd(), PollFlags::POLLIN)];
+        match poll(&mut fds, 10u16) {
+            Ok(_) => {}
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(e) => return Err(io::Error::from_raw_os_error(e as i32)),
         }
-        if pfd.revents & libc::POLLHUP != 0 {
+        let revents = fds[0].revents().unwrap_or_else(PollFlags::empty);
+        if revents.contains(PollFlags::POLLHUP) {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
                 "client hangup",
             ));
         }
-        if pfd.revents & libc::POLLIN != 0 {
+        if revents.contains(PollFlags::POLLIN) {
             return Ok(());
         }
     }
@@ -444,37 +436,29 @@ pub fn ipc_server_run(path: &Path, nr_threads: usize, app: AppCb) -> Result<(), 
     }
 
     block_sigpipe();
-    let l_fd = listener.as_raw_fd();
-    let s_fd = shutdown_rx.as_raw_fd();
+    use nix::poll::{poll, PollFd, PollFlags};
+    use std::os::fd::AsFd;
 
     loop {
         if server_shutdown.load(Ordering::SeqCst) {
             break;
         }
+        // fds[0] = shutdown pipe, fds[1] = listening socket.
         let mut fds = [
-            libc::pollfd {
-                fd: s_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: l_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            },
+            PollFd::new(shutdown_rx.as_fd(), PollFlags::POLLIN),
+            PollFd::new(listener.as_fd(), PollFlags::POLLIN),
         ];
-        let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, 60_000) };
-        if n < 0 {
-            let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
+        match poll(&mut fds, 60_000u16) {
+            Ok(_) => {}
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(_) => break,
+        }
+        let revents0 = fds[0].revents().unwrap_or_else(PollFlags::empty);
+        let revents1 = fds[1].revents().unwrap_or_else(PollFlags::empty);
+        if revents0.contains(PollFlags::POLLIN) {
             break;
         }
-        if fds[0].revents & libc::POLLIN != 0 {
-            break;
-        }
-        if fds[1].revents & libc::POLLIN != 0 {
+        if revents1.contains(PollFlags::POLLIN) {
             loop {
                 match listener.accept() {
                     Ok((stream, _)) => {

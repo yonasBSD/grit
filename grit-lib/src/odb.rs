@@ -17,7 +17,6 @@
 //! let odb = Odb::new(Path::new(".git/objects"));
 //! ```
 
-use std::ffi::CString;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -827,20 +826,9 @@ fn loose_store_bytes_header_valid(raw: &[u8]) -> bool {
 
 /// Update `path`'s mtime to "now" (Git `utime(path, NULL)`), returning whether it succeeded.
 fn touch_path_mtime(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
-            return false;
-        };
-        // SAFETY: `utimes` with NULL `times` sets atime and mtime to the current time.
-        unsafe { libc::utimes(c_path.as_ptr(), std::ptr::null()) == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        false
-    }
+    // `utime(path, NULL)` sets both atime and mtime to the current time.
+    let now = filetime::FileTime::now();
+    filetime::set_file_times(path, now, now).is_ok()
 }
 
 fn freshen_object_in_objects_dir(objects_dir: &Path, oid: &ObjectId) -> bool {

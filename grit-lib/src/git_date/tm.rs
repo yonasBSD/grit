@@ -69,15 +69,11 @@ pub fn gm_time_t(mut time: u64, tz: TzHhmm) -> Option<u64> {
 }
 
 /// `time_to_tm` — UTC `tm` for display with explicit `tz` offset metadata.
-pub unsafe fn time_to_tm(time: u64, tz: TzHhmm, out: *mut tm) -> Option<*mut tm> {
-    let t = gm_time_t(time, tz)?;
-    let tt = t as time_t;
-    let p = compat::gmtime_r(&tt, out);
-    if p.is_null() {
-        None
-    } else {
-        Some(p)
-    }
+pub fn time_to_tm(time: u64, tz: TzHhmm, out: &mut tm) -> bool {
+    let Some(t) = gm_time_t(time, tz) else {
+        return false;
+    };
+    compat::gmtime(t as time_t, out)
 }
 
 /// `time_to_tm_local` — `localtime_r` for the current `TZ` environment.

@@ -1902,7 +1902,7 @@ fn ensure_valid_ownership(
 
     fn owned_by_effective_user(path: &Path) -> std::io::Result<bool> {
         let st_uid = path_lstat_uid(path)?;
-        let mut euid = unsafe { libc::geteuid() };
+        let mut euid = nix::unistd::geteuid().as_raw();
         if euid == ROOT_UID {
             if st_uid == ROOT_UID {
                 return Ok(true);

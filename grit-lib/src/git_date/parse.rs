@@ -2,10 +2,9 @@
 
 use super::compat::{self, time_t, tm};
 use super::tm::{
-    get_time_sec, init_tm_unknown, is_date_known, match_string, maybeiso8601, nodate,
+    empty_tm, get_time_sec, init_tm_unknown, is_date_known, match_string, maybeiso8601, nodate,
     parse_timestamp_prefix, skip_alpha, tm_to_time_t, TIMESTAMP_MAX,
 };
-use std::mem::MaybeUninit;
 
 struct TzName {
     name: &'static str,
@@ -558,15 +557,11 @@ pub(crate) fn match_multi_number(
         }
         b'-' | b'/' | b'.' => {
             let now = if now_in == 0 { get_time_sec() } else { now_in };
-            let mut now_tm_uninit = MaybeUninit::<tm>::uninit();
-            let refuse_future: Option<&tm> = unsafe {
-                let tt = now as time_t;
-                let p = compat::gmtime_r(&tt, now_tm_uninit.as_mut_ptr());
-                if p.is_null() {
-                    None
-                } else {
-                    Some(&*now_tm_uninit.as_ptr())
-                }
+            let mut now_tm = empty_tm();
+            let refuse_future: Option<&tm> = if compat::gmtime(now as time_t, &mut now_tm) {
+                Some(&now_tm)
+            } else {
+                None
             };
 
             let y = num as i32;
@@ -655,9 +650,7 @@ fn match_digit(date: &[u8], tm: &mut tm, offset: &mut i32, tm_gmt: &mut i32) -> 
     let end = n;
 
     if num >= 100_000_000 && nodate(tm) {
-        let tt = num as time_t;
-        let p = unsafe { compat::gmtime_r(&tt, tm) };
-        if !p.is_null() {
+        if compat::gmtime(num as time_t, tm) {
             *tm_gmt = 1;
             return end;
         }

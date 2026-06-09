@@ -30,23 +30,29 @@ pub struct tm {
     pub tm_isdst: i32,
 }
 
-// ── gmtime_r ───────────────────────────────────────────────────────
+// ── gmtime ─────────────────────────────────────────────────────────
 
-#[cfg(unix)]
-pub unsafe fn gmtime_r(time: *const time_t, result: *mut tm) -> *mut tm {
-    libc::gmtime_r(time, result)
-}
-
-#[cfg(not(unix))]
-pub unsafe fn gmtime_r(time: *const time_t, result: *mut tm) -> *mut tm {
-    unsafe extern "C" {
-        fn _gmtime64_s(result: *mut tm, time: *const i64) -> i32;
-    }
-    if unsafe { _gmtime64_s(result, time) } == 0 {
-        result
-    } else {
-        std::ptr::null_mut()
-    }
+/// Pure-Rust replacement for `gmtime_r`: fill `out` with the UTC broken-down
+/// time for `time` (seconds since the epoch). Returns `false` when `time` is
+/// outside the representable range (matching `gmtime_r` returning `NULL`).
+///
+/// Only the standard `struct tm` fields are written; `tm_gmtoff`/`tm_zone`
+/// (where present) are left untouched. Callers route `%z`/`%Z`/`%s` through
+/// `strbuf_addftime` before reaching `strftime`, so those fields are never read.
+pub fn gmtime(time: time_t, out: &mut tm) -> bool {
+    let Ok(dt) = ::time::OffsetDateTime::from_unix_timestamp(time as i64) else {
+        return false;
+    };
+    out.tm_sec = i32::from(dt.second());
+    out.tm_min = i32::from(dt.minute());
+    out.tm_hour = i32::from(dt.hour());
+    out.tm_mday = i32::from(dt.day());
+    out.tm_mon = i32::from(u8::from(dt.month())) - 1;
+    out.tm_year = dt.year() - 1900;
+    out.tm_wday = i32::from(dt.weekday().number_days_from_sunday());
+    out.tm_yday = i32::from(dt.ordinal()) - 1;
+    out.tm_isdst = 0;
+    true
 }
 
 // ── localtime_r ────────────────────────────────────────────────────

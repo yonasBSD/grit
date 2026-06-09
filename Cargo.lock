@@ -517,6 +517,7 @@ dependencies = [
  "imara-diff",
  "libc",
  "merge3",
+ "nix",
  "regex",
  "sha1",
  "sha2",

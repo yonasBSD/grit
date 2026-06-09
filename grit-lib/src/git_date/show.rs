@@ -419,12 +419,10 @@ pub fn show_date(time: u64, mut tz: TzHhmm, mode: &mut DateMode) -> String {
     let ok = if mode.local {
         unsafe { time_to_tm_local(time, &mut tmbuf).is_some() }
     } else {
-        unsafe { time_to_tm(time, tz, &mut tmbuf).is_some() }
+        time_to_tm(time, tz, &mut tmbuf)
     };
     if !ok {
-        unsafe {
-            time_to_tm(0, 0, &mut tmbuf);
-        }
+        time_to_tm(0, 0, &mut tmbuf);
         tz = 0;
     }
 

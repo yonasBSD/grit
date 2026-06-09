@@ -7,8 +7,7 @@ use crate::config::ConfigSet;
 pub fn current_uid() -> u32 {
     #[cfg(unix)]
     {
-        // SAFETY: getuid() is always safe; it cannot fail and has no side effects.
-        unsafe { libc::getuid() }
+        nix::unistd::getuid().as_raw()
     }
     #[cfg(not(unix))]
     {
@@ -32,33 +31,16 @@ pub fn ident_default_name(config: &ConfigSet) -> String {
 
 #[cfg(unix)]
 fn passwd_short_username() -> String {
-    // SAFETY: `getpwuid_r` writes through `buf` for the duration of the call; `pwd` is stack-local.
-    let uid = unsafe { libc::getuid() };
-    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
-    let mut result: *mut libc::passwd = std::ptr::null_mut();
-    let mut buf = vec![0u8; 16_384];
-    let rv = unsafe {
-        libc::getpwuid_r(
-            uid,
-            &mut pwd,
-            buf.as_mut_ptr().cast(),
-            buf.len(),
-            &mut result,
-        )
-    };
-    if rv != 0 || result.is_null() {
-        return std::env::var("USER")
+    fn env_fallback() -> String {
+        std::env::var("USER")
             .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_else(|_| "unknown".to_owned());
+            .unwrap_or_else(|_| "unknown".to_owned())
     }
-    let name_ptr = pwd.pw_name;
-    if name_ptr.is_null() {
-        return std::env::var("USER")
-            .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_else(|_| "unknown".to_owned());
+    // `User::from_uid` wraps `getpwuid_r`; the short name is its `pw_name`.
+    match nix::unistd::User::from_uid(nix::unistd::Uid::current()) {
+        Ok(Some(user)) => user.name,
+        _ => env_fallback(),
     }
-    let cstr = unsafe { std::ffi::CStr::from_ptr(name_ptr) };
-    cstr.to_string_lossy().into_owned()
 }
 
 #[cfg(not(unix))]
