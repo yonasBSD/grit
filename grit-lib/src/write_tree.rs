@@ -82,6 +82,95 @@ pub fn build_cache_tree_from_index(odb: &Odb, index: &Index) -> Result<CacheTree
     build_cache_tree_node(odb, b"", Vec::new(), &entries)
 }
 
+/// Build a cache-tree directly from a **tree object**, preserving Git's raw `entry_count`
+/// semantics. Unlike [`build_cache_tree_from_index`], the per-node `entry_count` is the recursive
+/// number of non-tree entries *as recorded in the tree* — duplicate path entries are counted
+/// separately, exactly as upstream Git's cache-tree does after reading such a tree into the index.
+///
+/// This is the cache-tree real Git attaches after `read-tree`/`reset`/`checkout` populate the index
+/// from a tree. For a tree with duplicate entries (`t4058-diff-duplicates`) the resulting
+/// `entry_count` exceeds the number of (deduplicated) index entries, so [`verify_cache_tree`] later
+/// reports "corrupted cache-tree has entries not present in index".
+pub fn build_cache_tree_from_tree(odb: &Odb, tree_oid: &ObjectId) -> Result<CacheTreeNode> {
+    build_cache_tree_from_tree_named(odb, tree_oid, Vec::new())
+}
+
+fn build_cache_tree_from_tree_named(
+    odb: &Odb,
+    tree_oid: &ObjectId,
+    name: Vec<u8>,
+) -> Result<CacheTreeNode> {
+    let obj = odb.read(tree_oid)?;
+    let entries = parse_tree(&obj.data)?;
+
+    let mut entry_count: i32 = 0;
+    let mut children: Vec<CacheTreeNode> = Vec::new();
+    for te in entries {
+        if te.mode == MODE_TREE {
+            let child = build_cache_tree_from_tree_named(odb, &te.oid, te.name.clone())?;
+            entry_count = entry_count.saturating_add(child.entry_count.max(0));
+            children.push(child);
+        } else {
+            entry_count = entry_count.saturating_add(1);
+        }
+    }
+    // Cache-tree children are stored sorted by name (plain byte order, no tree/dir suffix rule).
+    children.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(CacheTreeNode::valid(name, entry_count, *tree_oid, children))
+}
+
+/// Walk a cache-tree against `index`, mirroring Git's `verify_one` / `cache_tree_verify`.
+///
+/// Returns an error describing the first inconsistency. The only condition exercised by
+/// `t4058-diff-duplicates` is a node whose `entry_count` runs past the end of the index
+/// (`entry_count + pos > cache_nr`), which yields the exact upstream message
+/// "corrupted cache-tree has entries not present in index".
+///
+/// This is gated by callers behind `GIT_TEST_CHECK_CACHE_TREE`, matching upstream's
+/// `write_locked_index`.
+pub fn verify_cache_tree(index: &Index) -> Result<()> {
+    let Some(root) = index.cache_tree.as_ref() else {
+        return Ok(());
+    };
+    // Stage-0, non-tree entries in canonical (path) order — the layout the cache-tree indexes.
+    let mut cache: Vec<&IndexEntry> = index
+        .entries
+        .iter()
+        .filter(|e| e.stage() == 0 && e.mode != MODE_TREE)
+        .collect();
+    cache.sort_by(|a, b| a.path.cmp(&b.path));
+    verify_cache_tree_one(root, &cache, &mut Vec::new())
+}
+
+fn verify_cache_tree_one(
+    node: &CacheTreeNode,
+    cache: &[&IndexEntry],
+    path: &mut Vec<u8>,
+) -> Result<()> {
+    let len = path.len();
+    for child in &node.children {
+        path.extend_from_slice(&child.name);
+        path.push(b'/');
+        verify_cache_tree_one(child, cache, path)?;
+        path.truncate(len);
+    }
+
+    if node.entry_count < 0 {
+        return Ok(());
+    }
+
+    // Position of the first cache entry whose path is at/under this node's directory prefix.
+    let pos = match cache.binary_search_by(|e| e.path.as_slice().cmp(path.as_slice())) {
+        Ok(p) => p,
+        Err(p) => p,
+    };
+
+    if (node.entry_count as usize).saturating_add(pos) > cache.len() {
+        return Err(crate::error::Error::CacheTreeCorrupt);
+    }
+    Ok(())
+}
+
 fn build_tree(odb: &Odb, entries: &[&IndexEntry], dir_prefix: &[u8]) -> Result<ObjectId> {
     let mut children: BTreeMap<Vec<u8>, ChildKind> = BTreeMap::new();
 

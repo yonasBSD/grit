@@ -56,7 +56,7 @@ test_expect_success 'cat-file --batch content matches cat-file -p' '
 	blob=$(git rev-parse HEAD:file.txt) &&
 	git cat-file -p "$blob" >expected &&
 	echo "$blob" | git cat-file --batch >batch_out &&
-	tail -n +2 batch_out | head -n -1 >actual &&
+	tail -n +2 batch_out | sed "\$d" >actual &&
 	test_cmp expected actual
 	)
 '

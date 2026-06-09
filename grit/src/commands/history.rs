@@ -726,23 +726,16 @@ fn fill_split_commit_message(
     Ok(cleanup_edited_commit_message(&edited, "#"))
 }
 
-fn resolve_committer_for_split(repo: &Repository) -> Result<String> {
+/// Resolve the committer identity line for a split-out commit.
+///
+/// Delegates to [`crate::commands::commit::resolve_committer`] so the split-out commits use the
+/// same identity/date resolution as `git commit`. In particular this honours `GIT_COMMITTER_DATE`
+/// (set by the test harness's `test_tick`) instead of always using the wall-clock time, matching
+/// upstream `git history split` which passes `NULL` committer info to `commit_tree_extended` and so
+/// lets `git_committer_info()` pick up the environment date.
+fn resolve_committer_for_split(repo: &Repository, now: OffsetDateTime) -> Result<String> {
     let config = ConfigSet::load(Some(&repo.git_dir), true)?;
-    let now = OffsetDateTime::now_utc();
-    let name = std::env::var("GIT_COMMITTER_NAME")
-        .ok()
-        .or_else(|| config.get("user.name"))
-        .unwrap_or_else(|| "Unknown".to_owned());
-    let email = std::env::var("GIT_COMMITTER_EMAIL")
-        .ok()
-        .or_else(|| config.get("user.email"))
-        .unwrap_or_default();
-    let epoch = now.unix_timestamp();
-    let offset = now.offset();
-    let hours = offset.whole_hours();
-    let minutes = offset.minutes_past_hour().unsigned_abs();
-    let timestamp = format!("{epoch} {hours:+03}{minutes:02}");
-    Ok(format!("{name} <{email}> {timestamp}"))
+    crate::commands::commit::resolve_committer(&config, now)
 }
 
 fn commit_split_out(
@@ -764,7 +757,7 @@ fn commit_split_out(
         body.push('\n');
     }
 
-    let committer = resolve_committer_for_split(repo)?;
+    let committer = resolve_committer_for_split(repo, OffsetDateTime::now_utc())?;
 
     let commit = CommitData {
         tree: *new_tree,

@@ -371,7 +371,9 @@ run_one() {
         ${git_test_allow_sudo:+GIT_TEST_ALLOW_SUDO=$git_test_allow_sudo} \
         GUST_BIN="$BIN" \
         PERL_PATH="$perl_abs" \
+        SHELL_PATH="${SHELL_PATH:-/bin/sh}" \
         GIT_TEST_BUILTIN_HASH=sha1 \
+        GIT_TEST_MAINT_AUTO_DETACH=false \
         GIT_DEFAULT_REF_FORMAT="${GIT_TEST_DEFAULT_REF_FORMAT:-files}" \
         GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main \
         GIT_SOURCE_DIR="$REPO/git" \

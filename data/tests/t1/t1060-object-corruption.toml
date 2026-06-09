@@ -1,5 +1,5 @@
 in_scope = "yes"
-tests_total = 16
+tests_total = 17
 passed_last = 16
 failing = 0
 fully_passing = true

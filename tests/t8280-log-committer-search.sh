@@ -151,11 +151,11 @@ test_expect_success 'log --committer matches email domain' '
 	)
 '
 
-test_expect_success 'log --committer is case-insensitive' '
+test_expect_success 'log -i --committer is case-insensitive' '
 	(
 	cd repo &&
-	git log --committer=dana --format="%cn" >lower &&
-	git log --committer=DANA --format="%cn" >upper &&
+	git log -i --committer=dana --format="%cn" >lower &&
+	git log -i --committer=DANA --format="%cn" >upper &&
 	test_cmp lower upper
 	)
 '

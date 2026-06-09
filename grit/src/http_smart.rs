@@ -401,17 +401,7 @@ fn trace_http_v0_v1_negotiated(client: &crate::http_client::HttpClientContext) {
     }
 }
 
-fn cap_lines_for_client_request(caps: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in caps {
-        if line.starts_with("agent=") {
-            out.push(line.clone());
-        } else if let Some(fmt) = line.strip_prefix("object-format=") {
-            out.push(format!("object-format={fmt}"));
-        }
-    }
-    out
-}
+use grit_lib::protocol_v2::cap_lines_for_command_request as cap_lines_for_client_request;
 
 fn skip_to_flush(r: &mut Cursor<&[u8]>) -> Result<()> {
     loop {
@@ -419,6 +409,42 @@ fn skip_to_flush(r: &mut Cursor<&[u8]>) -> Result<()> {
             None => return Ok(()),
             Some(pkt_line::Packet::Flush) => return Ok(()),
             Some(pkt_line::Packet::Data(_)) => {}
+            Some(_) => {}
+        }
+    }
+}
+
+/// Read a v2 `wanted-refs` section (`<oid> <refname>` lines, delim/flush terminated) and override
+/// the OID of matching entries in `heads`, `tags`, and `advertised`. The server resolves `want-ref`
+/// against its current state, so this is the authoritative OID when the advertised value was stale
+/// (t5703 change-while-negotiating). Overriding `advertised` too is essential: the fetch caller
+/// builds its ref-update map from the advertised list, so a stale advertised OID would otherwise win.
+fn apply_wanted_refs_section(
+    r: &mut Cursor<&[u8]>,
+    heads: &mut [LsRefEntry],
+    tags: &mut [LsRefEntry],
+    advertised: &mut [LsRefEntry],
+) -> Result<()> {
+    loop {
+        match pkt_line::read_packet(r)? {
+            None | Some(pkt_line::Packet::Flush) | Some(pkt_line::Packet::Delim) => return Ok(()),
+            Some(pkt_line::Packet::Data(line)) => {
+                let line = line.trim_end();
+                if let Some((hex, name)) = line.split_once(' ') {
+                    if let Ok(oid) = ObjectId::from_hex(hex.trim()) {
+                        let name = name.trim();
+                        for e in heads
+                            .iter_mut()
+                            .chain(tags.iter_mut())
+                            .chain(advertised.iter_mut())
+                        {
+                            if e.name == name {
+                                e.oid = oid;
+                            }
+                        }
+                    }
+                }
+            }
             Some(_) => {}
         }
     }
@@ -497,23 +523,69 @@ fn append_fetch_request_extensions_v0_v1(
         if let Some(filter_spec) = options.filter_spec.as_deref() {
             let filter_spec = filter_spec.trim();
             if !filter_spec.is_empty() {
-                pkt_line::write_line_to_vec(req, &format!("filter {filter_spec}"))?;
+                // Send the canonical/expanded filter spec (Git's
+                // `expand_list_objects_filter_spec`, e.g. `blob:limit=1k` -> `blob:limit=1024`).
+                let expanded = grit_lib::rev_list::expand_object_filter_for_protocol(filter_spec)
+                    .unwrap_or_else(|_| filter_spec.to_owned());
+                pkt_line::write_line_to_vec(req, &format!("filter {expanded}"))?;
             }
         }
     }
     Ok(())
 }
 
-fn v2_fetch_features(caps: &[String]) -> std::collections::HashSet<String> {
-    let mut features = std::collections::HashSet::new();
-    for line in caps {
-        if let Some(rest) = line.strip_prefix("fetch=") {
-            for feature in rest.split_whitespace() {
-                features.insert(feature.to_string());
-            }
+use grit_lib::protocol_v2::fetch_features as v2_fetch_features;
+
+/// Split a v2-over-HTTP fetch's wants into `(want_ref_names, plain_want_oids)` when the server
+/// advertised `ref-in-want`.
+///
+/// Mirrors `fetch-pack.c add_wants`: a sought ref that resolves to a named advertised ref is
+/// requested as `want-ref <name>` (the server re-resolves it against its current state, which is
+/// what handles the advertised ref changing mid-negotiation); an exact-OID source stays a plain
+/// `want <oid>`. For the default/configured wildcard fetch (`refspecs` empty), every advertised
+/// head/tag we want becomes a `want-ref`.
+fn http_want_refs_and_plain_wants(
+    advertised: &[LsRefEntry],
+    refspecs: &[String],
+    wants: &[ObjectId],
+) -> (Vec<String>, Vec<ObjectId>) {
+    let want_set: HashSet<ObjectId> = wants.iter().copied().collect();
+
+    // Names of exact-OID refspec sources must NOT be turned into want-ref (they have no ref name).
+    let exact_oids: HashSet<ObjectId> = refspecs
+        .iter()
+        .filter(|s| !s.starts_with('^'))
+        .filter_map(|s| {
+            let clean = s.strip_prefix('+').unwrap_or(s);
+            let src = clean.split_once(':').map(|(a, _)| a).unwrap_or(clean);
+            ObjectId::from_hex(src).ok()
+        })
+        .collect();
+
+    let mut want_refs: Vec<String> = Vec::new();
+    let mut covered: HashSet<ObjectId> = HashSet::new();
+    for e in advertised {
+        if !want_set.contains(&e.oid) || exact_oids.contains(&e.oid) {
+            continue;
         }
+        // Only request real, fetchable refs by name (heads, tags, and explicit refs/*). Skip the
+        // synthetic `HEAD` advertisement and pseudo-refs.
+        if !(e.name.starts_with("refs/heads/") || e.name.starts_with("refs/tags/")) {
+            continue;
+        }
+        if want_refs.iter().any(|w| w == &e.name) {
+            continue;
+        }
+        want_refs.push(e.name.clone());
+        covered.insert(e.oid);
     }
-    features
+
+    let plain_wants: Vec<ObjectId> = wants
+        .iter()
+        .copied()
+        .filter(|o| !covered.contains(o))
+        .collect();
+    (want_refs, plain_wants)
 }
 
 fn append_fetch_request_extensions_v2(
@@ -550,7 +622,11 @@ fn append_fetch_request_extensions_v2(
         if let Some(filter_spec) = options.filter_spec.as_deref() {
             let filter_spec = filter_spec.trim();
             if !filter_spec.is_empty() {
-                pkt_line::write_line_to_vec(req, &format!("filter {filter_spec}"))?;
+                // Send the canonical/expanded filter spec (Git's
+                // `expand_list_objects_filter_spec`, e.g. `blob:limit=1k` -> `blob:limit=1024`).
+                let expanded = grit_lib::rev_list::expand_object_filter_for_protocol(filter_spec)
+                    .unwrap_or_else(|_| filter_spec.to_owned());
+                pkt_line::write_line_to_vec(req, &format!("filter {expanded}"))?;
             }
         }
     }
@@ -918,8 +994,17 @@ fn match_glob_pattern<'a>(pattern: &str, refname: &'a str) -> Option<&'a str> {
 
 fn build_fetch_caps_v0(caps: &std::collections::HashSet<String>) -> String {
     let mut enabled = Vec::new();
+    let multi_ack_detailed = caps.contains("multi_ack_detailed");
+    if multi_ack_detailed {
+        enabled.push("multi_ack_detailed");
+    }
+    // `no-done` (mirrors `fetch-pack.c`: requested only alongside `multi_ack_detailed`) lets the
+    // stateless-RPC server stream the pack right after `ACK <oid> ready`, so the client never has
+    // to send `done` (t5539 "no shallow lines after receiving ACK ready").
+    if multi_ack_detailed && caps.contains("no-done") {
+        enabled.push("no-done");
+    }
     for want in [
-        "multi_ack_detailed",
         "side-band-64k",
         "thin-pack",
         "no-progress",
@@ -935,6 +1020,15 @@ fn build_fetch_caps_v0(caps: &std::collections::HashSet<String>) -> String {
     } else {
         format!(" {}", enabled.join(" "))
     }
+}
+
+/// Emit one `GIT_TRACE_PACKET` line with the `fetch-pack` identity for v0/v1 HTTP negotiation.
+///
+/// Git's HTTP fetch drives the `fetch-pack` machinery (`packet_trace_identity("fetch-pack")`), so
+/// the negotiation pkt-lines are traced as `packet:   fetch-pack> …` / `fetch-pack< …`. Tests grep
+/// these (t5539 asserts `fetch-pack< ACK .* ready` is present and `fetch-pack> done` is absent).
+fn trace_fetch_pack_packet(direction: char, payload: &str) {
+    crate::wire_trace::trace_packet_line_ident("fetch-pack", direction, payload);
 }
 
 fn fetch_pack_v0_v1_stateless_http(
@@ -1046,145 +1140,146 @@ fn fetch_pack_v0_v1_stateless_http(
     };
 
     let local_shallow_oids = read_local_shallow_oids(local_git_dir)?;
-    let mut req = Vec::new();
-    let first = wants[0];
-    pkt_line::write_line_to_vec(&mut req, &format!("want {}{}", first.to_hex(), fetch_caps))?;
-    for w in wants.iter().skip(1) {
-        pkt_line::write_line_to_vec(&mut req, &format!("want {}", w.to_hex()))?;
-    }
-    append_fetch_request_extensions_v0_v1(&mut req, caps, options, &local_shallow_oids)?;
-    // Protocol v0/v1 request framing: terminate the `want` section before `have` / `done`.
-    pkt_line::write_flush(&mut req)?;
-    if let Some(negotiator) = negotiator.as_mut() {
-        while let Some(oid) = negotiator.next_have()? {
-            pkt_line::write_line_to_vec(&mut req, &format!("have {}", oid.to_hex()))?;
-        }
-    }
-    pkt_line::write_line_to_vec(&mut req, "done")?;
-    pkt_line::write_flush(&mut req)?;
-
-    let wants_missing_locally = {
-        let repo = Repository::open(local_git_dir, None)
-            .with_context(|| format!("open {}", local_git_dir.display()))?;
-        wants.iter().any(|oid| repo.odb.read(oid).is_err())
-    };
-
+    let sideband = caps.contains("side-band-64k");
+    let multi_ack_detailed = caps.contains("multi_ack_detailed");
+    let no_done = multi_ack_detailed && caps.contains("no-done");
+    let depth_requested = requested_depth(options).is_some()
+        || options.shallow_since.is_some()
+        || !options.shallow_exclude.is_empty()
+        || !local_shallow_oids.is_empty();
     let post_url = format!("{base}/{SERVICE}");
-    let resp = http_post_discovery(
-        client,
-        &post_url,
-        &format!("application/x-{SERVICE}-request"),
-        &format!("application/x-{SERVICE}-result"),
-        &req,
-        None,
-    )?;
 
-    let mut cur = Cursor::new(resp.as_slice());
-    let mut first_pkt = None::<String>;
-    let mut pack_buf = Vec::new();
-    if caps.contains("side-band-64k") {
-        // Do not consume an initial pkt-line with `pkt_line::read_packet()` here: when the
-        // server starts streaming channel-1 data immediately, that first packet is binary pack
-        // data and must be fed to the side-band reader.
-        read_sideband_pack_until_done(&mut cur, &mut pack_buf)?;
-    } else {
-        if let Some(pkt_line::Packet::Data(line)) = pkt_line::read_packet(&mut cur)? {
-            let line = line.trim_end_matches('\n').to_string();
-            if line.starts_with("ERR ") {
-                bail!(
-                    "remote upload-pack error: {}",
-                    line.trim_start_matches("ERR ")
-                );
+    // Persistent request prefix replayed on every stateless RPC: the `want` lines (capabilities on
+    // the first), shallow/deepen extensions, and the terminating flush. Mirrors `fetch-pack.c`
+    // `find_common`, where `state_len` marks the bytes re-sent each round.
+    let mut state = Vec::new();
+    let first = wants[0];
+    let want_first = format!("want {}{}", first.to_hex(), fetch_caps);
+    pkt_line::write_line_to_vec(&mut state, &want_first)?;
+    trace_fetch_pack_packet('>', &want_first);
+    for w in wants.iter().skip(1) {
+        let line = format!("want {}", w.to_hex());
+        pkt_line::write_line_to_vec(&mut state, &line)?;
+        trace_fetch_pack_packet('>', &line);
+    }
+    append_fetch_request_extensions_v0_v1(&mut state, caps, options, &local_shallow_oids)?;
+    pkt_line::write_flush(&mut state)?;
+
+    let mut pack_buf: Vec<u8> = Vec::new();
+    let mut got_ready = false;
+    let mut got_pack = false;
+    let mut shallow_applied = false;
+
+    // Multi-round stateless negotiation (mirrors `fetch-pack.c` `find_common` for `stateless_rpc`):
+    // batch `have` lines, POST `state + haves + flush`, read ACK responses, and replay still-uncommon
+    // haves on the next RPC. When the server replies `ACK <oid> ready` (and `no-done` was negotiated)
+    // it streams the pack in that same response, so the client never sends `done` (t5539 test 3).
+    const INITIAL_FLUSH: usize = 16;
+    let mut count: usize = 0;
+    let mut flush_at: usize = INITIAL_FLUSH;
+    if let Some(negotiator) = negotiator.as_mut() {
+        let mut round = Vec::new();
+        loop {
+            let Some(oid) = negotiator.next_have()? else {
+                break;
+            };
+            let line = format!("have {}", oid.to_hex());
+            pkt_line::write_line_to_vec(&mut round, &line)?;
+            trace_fetch_pack_packet('>', &line);
+            count += 1;
+            if count < flush_at {
+                continue;
             }
-            first_pkt = Some(line);
-        }
-        let pos = cur.position() as usize;
-        if pos < resp.len() {
-            pack_buf.extend_from_slice(&resp[pos..]);
+            flush_at = next_flush_v0_stateless(count);
+
+            let mut req = state.clone();
+            req.extend_from_slice(&round);
+            pkt_line::write_flush(&mut req)?;
+            round.clear();
+
+            let resp = http_post_discovery(
+                client,
+                &post_url,
+                &format!("application/x-{SERVICE}-request"),
+                &format!("application/x-{SERVICE}-result"),
+                &req,
+                None,
+            )?;
+            let round_result =
+                read_v0_stateless_response(&resp, sideband, depth_requested, &mut pack_buf)?;
+            if depth_requested && !shallow_applied {
+                apply_shallow_updates(
+                    local_git_dir,
+                    &round_result.shallow,
+                    &round_result.unshallow,
+                )?;
+                shallow_applied = true;
+            }
+            for ack in &round_result.acks {
+                // `ACK <oid> common/ready/continue` update the negotiator (a bare `ACK <oid>`
+                // ends a round). For stateless RPC, an `ACK common` whose commit was not already
+                // marked common must have its `have` replayed on the next RPC so the server keeps
+                // it in the common set (`fetch-pack.c` ACK_common replay).
+                if matches!(ack.kind, V0AckKind::Bare) {
+                    continue;
+                }
+                let was_common = negotiator.ack(ack.oid)?;
+                if matches!(ack.kind, V0AckKind::Common) && !was_common {
+                    let line = format!("have {}", ack.oid.to_hex());
+                    pkt_line::write_line_to_vec(&mut state, &line)?;
+                }
+                if matches!(ack.kind, V0AckKind::Ready) {
+                    got_ready = true;
+                }
+            }
+            if round_result.got_pack {
+                got_pack = true;
+                break;
+            }
+            if got_ready {
+                break;
+            }
         }
     }
 
-    if pack_buf.is_empty() && wants_missing_locally {
-        // Some protocol-v1 stateless endpoints answer the first round with ACK/NAK only when
-        // haves are present. Retry once without have-lines to force a full transfer.
-        let mut retry_req = Vec::new();
-        let first = wants[0];
-        pkt_line::write_line_to_vec(
-            &mut retry_req,
-            &format!("want {}{}", first.to_hex(), fetch_caps),
-        )?;
-        for w in wants.iter().skip(1) {
-            pkt_line::write_line_to_vec(&mut retry_req, &format!("want {}", w.to_hex()))?;
-        }
-        append_fetch_request_extensions_v0_v1(&mut retry_req, caps, options, &local_shallow_oids)?;
-        pkt_line::write_flush(&mut retry_req)?;
-        pkt_line::write_line_to_vec(&mut retry_req, "done")?;
-        pkt_line::write_flush(&mut retry_req)?;
+    // Send `done` unless the server became `ready` and `no-done` was negotiated. In the no-done case
+    // the pack already arrived alongside `ACK <oid> ready`; otherwise issue a final RPC ending in
+    // `done` to trigger pack generation (`fetch-pack.c`: `if (!got_ready || !no_done) send done`).
+    if !(got_pack || got_ready && no_done) {
+        let mut req = state.clone();
+        let done = "done";
+        pkt_line::write_line_to_vec(&mut req, done)?;
+        trace_fetch_pack_packet('>', done);
+        pkt_line::write_flush(&mut req)?;
 
-        let retry_resp = http_post_discovery(
+        let resp = http_post_discovery(
             client,
             &post_url,
             &format!("application/x-{SERVICE}-request"),
             &format!("application/x-{SERVICE}-result"),
-            &retry_req,
+            &req,
             None,
         )?;
-        let mut retry_cur = Cursor::new(retry_resp.as_slice());
-        let mut retry_first_pkt = None::<String>;
-        let mut retry_pack = Vec::new();
-        if caps.contains("side-band-64k") {
-            read_sideband_pack_until_done(&mut retry_cur, &mut retry_pack)?;
-        } else {
-            if let Some(pkt_line::Packet::Data(line)) = pkt_line::read_packet(&mut retry_cur)? {
-                let line = line.trim_end_matches('\n').to_string();
-                if line.starts_with("ERR ") {
-                    bail!(
-                        "remote upload-pack error: {}",
-                        line.trim_start_matches("ERR ")
-                    );
-                }
-                retry_first_pkt = Some(line);
-            }
-            let pos = retry_cur.position() as usize;
-            if pos < retry_resp.len() {
-                retry_pack.extend_from_slice(&retry_resp[pos..]);
-            }
-        }
-        if !retry_pack.is_empty() {
-            if retry_pack.len() < 12 || &retry_pack[0..4] != b"PACK" {
-                bail!("did not receive a pack file from HTTP v0/v1 fetch");
-            }
-            crate::fetch_transport::unpack_upload_pack_bytes(
+        let round_result =
+            read_v0_stateless_response(&resp, sideband, depth_requested, &mut pack_buf)?;
+        if depth_requested && !shallow_applied {
+            apply_shallow_updates(
                 local_git_dir,
-                &retry_pack,
-                filter_active,
+                &round_result.shallow,
+                &round_result.unshallow,
             )?;
-            return Ok(HttpFetchResult {
-                heads: remote_heads,
-                tags: remote_tags,
-                all_advertised,
-                object_format,
-            });
+            shallow_applied = true;
         }
-        if let Some(line) = retry_first_pkt {
-            let normalized = line.trim();
-            if normalized != "NAK" && !normalized.starts_with("ACK ") {
-                bail!("unexpected v0/v1 fetch response: {normalized}");
-            }
-        }
-        bail!("did not receive a pack file from HTTP v0/v1 fetch");
+        got_pack = round_result.got_pack;
     }
+
+    let _ = (shallow_applied, got_pack);
 
     if !pack_buf.is_empty() {
         if pack_buf.len() < 12 || &pack_buf[0..4] != b"PACK" {
             bail!("did not receive a pack file from HTTP v0/v1 fetch");
         }
         crate::fetch_transport::unpack_upload_pack_bytes(local_git_dir, &pack_buf, filter_active)?;
-    } else if let Some(line) = first_pkt {
-        let normalized = line.trim();
-        if normalized != "NAK" && !normalized.starts_with("ACK ") {
-            bail!("unexpected v0/v1 fetch response: {normalized}");
-        }
     }
 
     Ok(HttpFetchResult {
@@ -1193,6 +1288,154 @@ fn fetch_pack_v0_v1_stateless_http(
         all_advertised,
         object_format,
     })
+}
+
+/// Next stateless-RPC `have` batch size (mirrors `fetch-pack.c` `next_flush` with `stateless_rpc`).
+fn next_flush_v0_stateless(count: usize) -> usize {
+    const LARGE_FLUSH: usize = 16384;
+    if count < LARGE_FLUSH {
+        count * 2
+    } else {
+        count * 11 / 10
+    }
+}
+
+/// Kind of `ACK` status suffix in a v0 negotiation response.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum V0AckKind {
+    /// `ACK <oid>` with no status (ends a round / post-`done`).
+    Bare,
+    Common,
+    Continue,
+    Ready,
+}
+
+/// One parsed `ACK <oid> [status]` line.
+struct V0Ack {
+    oid: ObjectId,
+    kind: V0AckKind,
+}
+
+/// Parsed result of one stateless-RPC negotiation response.
+struct V0StatelessResponse {
+    shallow: Vec<ObjectId>,
+    unshallow: Vec<ObjectId>,
+    acks: Vec<V0Ack>,
+    got_pack: bool,
+}
+
+/// Parse one v0 stateless-RPC `git-upload-pack` response.
+///
+/// The response begins with an optional shallow-info section (when a depth/since/exclude was
+/// requested), terminated by a flush; then plain `ACK`/`NAK` negotiation pkt-lines; then, if the
+/// server is generating a pack, the packfile (side-band-multiplexed when `side-band-64k` was
+/// negotiated). Pack bytes are appended to `pack_buf`. Each negotiation line is traced as
+/// `fetch-pack< …` so tests grepping `GIT_TRACE_PACKET` match (t5539).
+fn read_v0_stateless_response(
+    resp: &[u8],
+    sideband: bool,
+    expect_shallow: bool,
+    pack_buf: &mut Vec<u8>,
+) -> Result<V0StatelessResponse> {
+    let mut cur = Cursor::new(resp);
+    let mut shallow = Vec::new();
+    let mut unshallow = Vec::new();
+    let mut acks = Vec::new();
+    let mut got_pack = false;
+
+    if expect_shallow {
+        // Shallow-info section: `shallow`/`unshallow` lines terminated by a flush. A server that has
+        // nothing to report still emits the trailing flush (t5537/t5539 deepen).
+        loop {
+            let start = cur.position() as usize;
+            match pkt_line::read_packet(&mut cur)? {
+                None | Some(pkt_line::Packet::Flush) => break,
+                Some(pkt_line::Packet::Data(line)) => {
+                    let line = line.trim_end_matches('\n');
+                    if let Some(rest) = line.strip_prefix("shallow ") {
+                        trace_fetch_pack_packet('<', line);
+                        if let Ok(oid) = ObjectId::from_hex(rest.trim()) {
+                            shallow.push(oid);
+                        }
+                    } else if let Some(rest) = line.strip_prefix("unshallow ") {
+                        trace_fetch_pack_packet('<', line);
+                        if let Ok(oid) = ObjectId::from_hex(rest.trim()) {
+                            unshallow.push(oid);
+                        }
+                    } else {
+                        // Not a shallow-info line: this response had no shallow section. Rewind and
+                        // fall through to negotiation parsing.
+                        cur.set_position(start as u64);
+                        break;
+                    }
+                }
+                Some(_) => break,
+            }
+        }
+    }
+
+    // Negotiation / pack section. Read plain pkt-lines until the pack begins. Pack data is detected
+    // by the `PACK` magic (side-band channel 1, or raw) and handed to the side-band/raw reader.
+    loop {
+        let start = cur.position() as usize;
+        let Some(payload) = crate::fetch_transport::read_pkt_payload_raw(&mut cur)? else {
+            // Flush / delim / EOF: end of a negotiation-only response.
+            break;
+        };
+        if payload.is_empty() {
+            continue;
+        }
+        let is_pack =
+            (sideband && payload.first() == Some(&1) && payload.get(1..5) == Some(b"PACK"))
+                || payload.starts_with(b"PACK");
+        if is_pack {
+            got_pack = true;
+            cur.set_position(start as u64);
+            if sideband {
+                read_sideband_pack_until_done(&mut cur, pack_buf)?;
+            } else {
+                pack_buf.extend_from_slice(&resp[start..]);
+            }
+            break;
+        }
+        let text = String::from_utf8_lossy(&payload);
+        let line = text.trim_end_matches('\n');
+        if let Some(err) = line.strip_prefix("ERR ") {
+            bail!("remote upload-pack error: {err}");
+        }
+        trace_fetch_pack_packet('<', line);
+        if line == "NAK" {
+            continue;
+        }
+        if let Some(ack) = parse_v0_ack(line) {
+            acks.push(ack);
+        }
+    }
+
+    Ok(V0StatelessResponse {
+        shallow,
+        unshallow,
+        acks,
+        got_pack,
+    })
+}
+
+/// Parse an `ACK <oid> [common|continue|ready]` line into a [`V0Ack`].
+fn parse_v0_ack(line: &str) -> Option<V0Ack> {
+    let rest = line.strip_prefix("ACK ")?;
+    let hex = rest.split_whitespace().next()?;
+    let oid = ObjectId::from_hex(hex).ok()?;
+    let tail = rest.strip_prefix(hex).unwrap_or("").trim();
+    let kind = if tail.contains("continue") {
+        V0AckKind::Continue
+    } else if tail.contains("common") {
+        V0AckKind::Common
+    } else if tail.contains("ready") {
+        V0AckKind::Ready
+    } else {
+        V0AckKind::Bare
+    };
+    Some(V0Ack { oid, kind })
 }
 
 fn trace_clone_negotiation_line(line: &str) {
@@ -1362,18 +1605,27 @@ pub fn http_fetch_pack(
     };
 
     let wants = collect_wants_from_advertised(&advertised, refspecs)?;
-    let all_advertised = advertised.clone();
-    let remote_heads: Vec<_> = advertised
+    // When the server advertised `ref-in-want`, request named refs by name so the server resolves
+    // them against its current state (handles the advertised ref changing under us mid-negotiation;
+    // t5703). Otherwise send only plain `want <oid>` lines.
+    let ref_in_want = v2_fetch_features(&caps).contains("ref-in-want");
+    let (want_refs, plain_wants) = if ref_in_want {
+        http_want_refs_and_plain_wants(&advertised, refspecs, &wants)
+    } else {
+        (Vec::new(), wants.clone())
+    };
+    let mut all_advertised = advertised.clone();
+    let mut remote_heads: Vec<_> = advertised
         .iter()
         .filter(|e| e.name.starts_with("refs/heads/"))
         .cloned()
         .collect();
-    let remote_tags: Vec<_> = advertised
+    let mut remote_tags: Vec<_> = advertised
         .iter()
         .filter(|e| e.name.starts_with("refs/tags/"))
         .cloned()
         .collect();
-    if wants.is_empty() {
+    if wants.is_empty() && want_refs.is_empty() {
         // An empty repository (or a fully-excluded refspec) advertises no fetchable refs. The
         // clone/fetch still succeeds with nothing to download; the caller persists the
         // negotiated `object_format` so an empty SHA-256 repo is recorded as SHA-256 (`t5551`).
@@ -1487,11 +1739,35 @@ pub fn http_fetch_pack(
             pkt_line::write_line_to_vec(&mut req, line)?;
         }
         pkt_line::write_delim(&mut req)?;
-        for w in &wants {
+        let mut first_line = true;
+        for w in &plain_wants {
             // Trace the sent `want` line (matches Git's `packet: fetch> want <oid>`); tests grep the
             // packet trace to assert which objects were requested (t5616 REF_DELTA lazy fetch).
             crate::trace_packet::trace_packet_git('>', &format!("want {}", w.to_hex()));
-            pkt_line::write_line_to_vec(&mut req, &format!("want {} {}", w.to_hex(), fetch_caps))?;
+            // Carry the fetch capabilities on the first request line (the server reads the leading
+            // OID and ignores trailing text), matching the existing v2-over-HTTP framing.
+            if first_line {
+                pkt_line::write_line_to_vec(
+                    &mut req,
+                    &format!("want {} {}", w.to_hex(), fetch_caps),
+                )?;
+                first_line = false;
+            } else {
+                pkt_line::write_line_to_vec(&mut req, &format!("want {}", w.to_hex()))?;
+            }
+        }
+        // `want-ref <name>` lines (ref-in-want). Sent clean — no trailing caps, which would corrupt
+        // the refname. The recognized fetch features (thin-pack/ofs-delta/no-progress) are emitted
+        // as standalone argument lines when no plain `want` line carried them; v2 always streams the
+        // pack in side-band-64k regardless.
+        if first_line && !want_refs.is_empty() {
+            for feat in ["thin-pack", "no-progress", "ofs-delta"] {
+                pkt_line::write_line_to_vec(&mut req, feat)?;
+            }
+        }
+        for name in &want_refs {
+            crate::trace_packet::trace_packet_git('>', &format!("want-ref {name}"));
+            pkt_line::write_line_to_vec(&mut req, &format!("want-ref {name}"))?;
         }
         append_fetch_request_extensions_v2(&mut req, &caps, options, &local_shallow_oids)?;
         for h in &pending_haves {
@@ -1533,8 +1809,19 @@ pub fn http_fetch_pack(
                 Some(pkt_line::Packet::Data(s)) => s,
                 Some(other) => bail!("unexpected fetch response: {other:?}"),
             };
-            if pkt == "acknowledgments" {
+            if let Some(msg) = pkt.strip_prefix("ERR ") {
+                // Server rejected the request (e.g. `not our ref` when the advertised ref changed
+                // mid-negotiation). Surface it as `fatal: remote error: <msg>` (t5703).
+                bail!("fatal: remote error: {}", msg.trim_end());
+            } else if pkt == "acknowledgments" {
                 skip_to_flush(&mut cur)?;
+            } else if pkt == "wanted-refs" {
+                apply_wanted_refs_section(
+                    &mut cur,
+                    &mut remote_heads,
+                    &mut remote_tags,
+                    &mut all_advertised,
+                )?;
             } else if pkt == "shallow-info" {
                 let (shallow, unshallow) = read_shallow_info_section(&mut cur)?;
                 apply_shallow_updates(local_git_dir, &shallow, &unshallow)?;
@@ -1571,8 +1858,17 @@ pub fn http_fetch_pack(
             Some(pkt_line::Packet::Data(s)) => s,
             Some(other) => bail!("unexpected fetch response: {other:?}"),
         };
-        if pkt == "acknowledgments" {
+        if let Some(msg) = pkt.strip_prefix("ERR ") {
+            bail!("fatal: remote error: {}", msg.trim_end());
+        } else if pkt == "acknowledgments" {
             skip_to_flush(&mut cur)?;
+        } else if pkt == "wanted-refs" {
+            apply_wanted_refs_section(
+                &mut cur,
+                &mut remote_heads,
+                &mut remote_tags,
+                &mut all_advertised,
+            )?;
         } else if pkt == "shallow-info" {
             let (shallow, unshallow) = read_shallow_info_section(&mut cur)?;
             apply_shallow_updates(local_git_dir, &shallow, &unshallow)?;

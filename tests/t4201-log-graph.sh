@@ -4,6 +4,9 @@ test_description='grit log --graph, --first-parent, --reverse, --skip
 Tests the graph display mode and commit traversal options for the log
 command, including combinations of flags.'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 # ── Setup ────────────────────────────────────────────────────────────────────
@@ -133,12 +136,11 @@ test_expect_success 'log --first-parent on linear history shows all' '
 
 # ── Combinations ─────────────────────────────────────────────────────────────
 
-test_expect_success 'log --graph --reverse shows graph in reverse' '
+test_expect_success 'log --graph --reverse is rejected' '
 	(
 	cd linear &&
-	git log --graph --reverse --oneline >out &&
-	head -1 out | grep "first" &&
-	tail -1 out | grep "fifth"
+	test_must_fail git log --graph --reverse --oneline >out 2>err &&
+	grep "reverse.*graph\|graph.*reverse" err
 	)
 '
 

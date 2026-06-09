@@ -210,7 +210,7 @@ fn run_add_edit(repo: &Repository, pathspecs: &[String]) -> Result<()> {
 
 /// Resolve the number of context lines for `git add -p`: the `-U`/`--unified` flag wins (when
 /// `>= 0`); otherwise `diff.context` (rejecting negatives like Git's `add-patch.c`); default 3.
-fn resolve_patch_context(unified: Option<i32>, config: &ConfigSet) -> Result<usize> {
+pub(crate) fn resolve_patch_context(unified: Option<i32>, config: &ConfigSet) -> Result<usize> {
     if let Some(n) = unified {
         if n >= 0 {
             return Ok(n as usize);
@@ -229,7 +229,7 @@ fn resolve_patch_context(unified: Option<i32>, config: &ConfigSet) -> Result<usi
 
 /// Resolve the inter-hunk context for `git add -p`: `--inter-hunk-context` flag wins (when
 /// `>= 0`); otherwise `diff.interhunkcontext`; default 0.
-fn resolve_patch_interhunk(inter: Option<i32>, config: &ConfigSet) -> Result<usize> {
+pub(crate) fn resolve_patch_interhunk(inter: Option<i32>, config: &ConfigSet) -> Result<usize> {
     if let Some(n) = inter {
         if n >= 0 {
             return Ok(n as usize);
@@ -244,6 +244,44 @@ fn resolve_patch_interhunk(inter: Option<i32>, config: &ConfigSet) -> Result<usi
         }
     }
     Ok(0)
+}
+
+/// Validate the interactive context options (`-U`/`--unified`, `--inter-hunk-context`) shared by
+/// the patch-capable commands (`add`/`checkout`/`restore`/`reset`/`commit`/`stash`). Mirrors Git's
+/// `parse_opt_unified`/`add-interactive` checks: a value below the `-1` "unset" sentinel is
+/// rejected as negative, and outside `-p`/`-i` the options are an error.
+pub(crate) fn validate_patch_context_options(
+    unified: Option<i32>,
+    inter_hunk_context: Option<i32>,
+    interactive: bool,
+) -> Result<()> {
+    if let Some(n) = unified {
+        if n < -1 {
+            bail!("'{}' cannot be negative", "--unified");
+        }
+    }
+    if let Some(n) = inter_hunk_context {
+        if n < -1 {
+            bail!("'{}' cannot be negative", "--inter-hunk-context");
+        }
+    }
+    if !interactive {
+        if unified.is_some() {
+            bail!(
+                "the option '{}' requires '{}'",
+                "--unified",
+                "--interactive/--patch"
+            );
+        }
+        if inter_hunk_context.is_some() {
+            bail!(
+                "the option '{}' requires '{}'",
+                "--inter-hunk-context",
+                "--interactive/--patch"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Arguments for `grit add`.
@@ -517,15 +555,20 @@ pub fn run(mut args: Args) -> Result<()> {
         }
     }
     let idx_exists = index_path.exists();
-    let raw_index = if idx_exists {
-        Index::load(&index_path).unwrap_or_else(|_| Index::new())
-    } else {
-        Index::new()
-    };
+    // Resolve the on-disk index format exactly once, matching Git's
+    // `get_index_format_default` (otherwise `GIT_INDEX_VERSION`/`index.version`
+    // warnings would be emitted twice). For a fresh index, `raw_index` is only an
+    // empty sparse-index baseline, so it reuses the already-resolved version
+    // instead of re-reading the environment.
     let mut index = if idx_exists {
         repo.load_index_at(&index_path)?
     } else {
         Index::new_from_config(&config)
+    };
+    let raw_index = if idx_exists {
+        Index::load(&index_path).unwrap_or_else(|_| Index::empty(index.version))
+    } else {
+        Index::empty(index.version)
     };
 
     let odb = &repo.odb;
@@ -578,8 +621,14 @@ pub fn run(mut args: Args) -> Result<()> {
     }
     if args.interactive {
         maybe_emit_interactive_add_sparse_index_trace(&repo, &raw_index, &index, work_tree)?;
-        eprintln!("warning: -i/--interactive mode is not yet implemented; doing nothing");
-        return Ok(());
+        return super::add_interactive::run_add_i(
+            &repo,
+            index,
+            work_tree,
+            &config,
+            &add_cfg,
+            &args.pathspec,
+        );
     }
 
     let _dry_stdout_guard =
@@ -607,6 +656,7 @@ pub fn run(mut args: Args) -> Result<()> {
             prefix.as_deref(),
             &args,
             &sparse_state,
+            &config,
         );
     }
 
@@ -1624,18 +1674,53 @@ impl From<anyhow::Error> for AddPathError {
 }
 
 /// Run --refresh: update stat info in the index.
+/// Refresh a single stage-0 index entry's cached stat data from the work tree.
+///
+/// Mirrors Git's `refresh_index` for one entry: updates ctime/mtime/dev/ino/uid/gid/size
+/// from `fs::symlink_metadata`. Returns `true` when the work-tree file existed and the
+/// entry was refreshed.
+fn refresh_index_entry(ie: &mut IndexEntry, abs_path: &Path) -> bool {
+    let Ok(meta) = fs::symlink_metadata(abs_path) else {
+        return false;
+    };
+    ie.ctime_sec = meta.ctime() as u32;
+    ie.ctime_nsec = meta.ctime_nsec() as u32;
+    ie.mtime_sec = meta.mtime() as u32;
+    ie.mtime_nsec = meta.mtime_nsec() as u32;
+    ie.dev = meta.dev() as u32;
+    ie.ino = meta.ino() as u32;
+    ie.uid = meta.uid();
+    ie.gid = meta.gid();
+    ie.size = meta.len() as u32;
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_refresh(
     repo: &Repository,
     index: &mut Index,
     work_tree: &Path,
     prefix: Option<&str>,
     args: &Args,
-    _sparse: &AddSparseState,
+    sparse: &AddSparseState,
+    config: &ConfigSet,
 ) -> Result<()> {
+    // Git's `refresh()` passes `REFRESH_IGNORE_SKIP_WORKTREE`: `refresh_index` itself only
+    // skips entries with the skip-worktree bit set (an out-of-cone path whose work-tree file
+    // exists is still refreshed and counts as "seen"). Afterwards, any pathspec that matched
+    // no refreshed entry but does match a skip-worktree or out-of-cone path triggers the
+    // sparse-path advice and a non-zero exit without touching cached stat data. `--sparse`
+    // disables both guards.
+    let include_sparse = args.sparse;
+
     if args.pathspec.is_empty() {
         // Refresh all entries
         for ie in &mut index.entries {
             if ie.stage() != 0 {
+                continue;
+            }
+            // REFRESH_IGNORE_SKIP_WORKTREE: never refresh skip-worktree entries.
+            if !include_sparse && ie.skip_worktree() {
                 continue;
             }
             let path_str = String::from_utf8_lossy(&ie.path).to_string();
@@ -1645,54 +1730,60 @@ fn run_refresh(
                 }
             }
             let abs_path = work_tree.join(&path_str);
-            if let Ok(meta) = fs::symlink_metadata(&abs_path) {
-                ie.ctime_sec = meta.ctime() as u32;
-                ie.ctime_nsec = meta.ctime_nsec() as u32;
-                ie.mtime_sec = meta.mtime() as u32;
-                ie.mtime_nsec = meta.mtime_nsec() as u32;
-                ie.dev = meta.dev() as u32;
-                ie.ino = meta.ino() as u32;
-                ie.uid = meta.uid();
-                ie.gid = meta.gid();
-                ie.size = meta.len() as u32;
-            }
+            refresh_index_entry(ie, &abs_path);
         }
     } else {
+        let mut only_match_sparse: Vec<String> = Vec::new();
         for pathspec in &args.pathspec {
-            let mut matched_any = false;
-            let mut refreshed = false;
+            // Did the pathspec match an entry that `refresh_index` actually refreshed?
+            let mut seen = false;
+            // Did it match a skip-worktree or out-of-cone path we declined to update?
+            let mut matched_sparse = false;
             for ie in &mut index.entries {
                 if ie.stage() != 0 {
                     continue;
                 }
-                let path_str = String::from_utf8_lossy(&ie.path);
-                if !grit_lib::pathspec::pathspec_matches(pathspec, path_str.as_ref()) {
+                let path_str = String::from_utf8_lossy(&ie.path).to_string();
+                if !grit_lib::pathspec::pathspec_matches(pathspec, &path_str) {
                     continue;
                 }
-                matched_any = true;
-                let abs_path = work_tree.join(path_str.as_ref());
-                if let Ok(meta) = fs::symlink_metadata(&abs_path) {
-                    ie.ctime_sec = meta.ctime() as u32;
-                    ie.ctime_nsec = meta.ctime_nsec() as u32;
-                    ie.mtime_sec = meta.mtime() as u32;
-                    ie.mtime_nsec = meta.mtime_nsec() as u32;
-                    ie.dev = meta.dev() as u32;
-                    ie.ino = meta.ino() as u32;
-                    ie.uid = meta.uid();
-                    ie.gid = meta.gid();
-                    ie.size = meta.len() as u32;
-                    refreshed = true;
+                // REFRESH_IGNORE_SKIP_WORKTREE: skip-worktree entries are never refreshed.
+                if !include_sparse && ie.skip_worktree() {
+                    matched_sparse = true;
+                    continue;
+                }
+                // An out-of-cone path with no work-tree file cannot be refreshed; classify
+                // it as sparse (mirrors `!path_in_sparse_checkout` in Git's `refresh()`).
+                if !include_sparse && sparse.add_update_blocked(false, Some(ie), &path_str) {
+                    matched_sparse = true;
+                }
+                let abs_path = work_tree.join(&path_str);
+                if refresh_index_entry(ie, &abs_path) {
+                    seen = true;
                 }
             }
-            if !matched_any && !args.ignore_missing {
+            if seen {
+                continue;
+            }
+            if matched_sparse {
+                only_match_sparse.push(pathspec.clone());
+            } else if !args.ignore_missing {
                 // Git's `refresh()` dies with this exact wording (builtin/add.c).
                 eprintln!("fatal: pathspec '{}' did not match any files", pathspec);
                 std::process::exit(128);
             }
-            if matched_any && !refreshed && !args.ignore_missing {
-                eprintln!("fatal: pathspec '{}' did not match any files", pathspec);
-                std::process::exit(128);
+        }
+
+        if !only_match_sparse.is_empty() {
+            only_match_sparse.sort();
+            only_match_sparse.dedup();
+            emit_sparse_path_advice(&mut std::io::stderr(), config, &only_match_sparse)?;
+            // The cached stat data of sparse entries is left untouched; the index may still
+            // need rewriting for any non-sparse entries we did refresh.
+            if !args.dry_run {
+                write_index_or_lock_err(repo, index, &resolved_env_index_path(repo))?;
             }
+            std::process::exit(1);
         }
     }
 
@@ -1859,9 +1950,19 @@ fn pathspecs_are_all_exclude(pathspecs: &[String]) -> bool {
 }
 
 fn pathspecs_need_match_walk(pathspecs: &[String]) -> bool {
-    pathspecs
-        .iter()
-        .any(|s| pathspec_uses_long_magic(s) && !grit_lib::pathspec::pathspec_is_exclude(s))
+    pathspecs.iter().any(|s| {
+        if grit_lib::pathspec::pathspec_is_exclude(s) {
+            return false;
+        }
+        if pathspec_uses_long_magic(s) {
+            return true;
+        }
+        // A wildcard pathspec like `*.c` matches at any directory depth (git uses wildmatch without
+        // `WM_PATHNAME`, so `*` crosses `/`). The shallow `expand_glob_pathspec` only reads one
+        // directory level, so route any wildcard spec through the recursive worktree walk +
+        // `matches_pathspec_list` matcher instead (t3701 "add -p handles globs").
+        grit_lib::pathspec::has_glob_chars(s)
+    })
 }
 
 fn pathspecs_use_attr_magic(pathspecs: &[String]) -> bool {

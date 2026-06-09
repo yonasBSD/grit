@@ -150,6 +150,13 @@ case "$*" in
 	case "$*" in *http.proxy*) _http=0 ;; esac
 	;;
 esac
+# Empty SHA-256 clone over smart HTTP (t5551): the platform's system git (e.g. Apple Git 2.39)
+# records an empty SHA-256 clone as SHA-1, so route these to Grit's HTTP client, which honours the
+# advertised `object-format=sha256` (Grit's upload-pack also emits the `unborn HEAD symref-target`
+# ls-refs line a conformant client needs).
+case "$*" in
+*clone*sha256*) _http=0 ;;
+esac
 if test "$_http" = 1; then
 	exec "$REAL_GIT" "$@"
 fi

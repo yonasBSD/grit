@@ -1,6 +1,6 @@
 //! `grit test-tool ref-store` support used by upstream ref-store tests.
 
-#![allow(dead_code)] // ref-store harness not yet dispatched from main
+#![allow(dead_code)] // some helper paths are exercised only by specific subcommands
 
 use anyhow::{bail, Context, Result};
 use grit_lib::objects::ObjectId;

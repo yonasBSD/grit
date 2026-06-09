@@ -502,10 +502,21 @@ impl<'r> CommitGraphCache<'r> {
         if let Some(parents) = self.parents.get(&oid) {
             return Ok(parents.clone());
         }
-        let commit_oid = peel_to_commit_for_merge_base(self.repo, oid).map_err(|e| match e {
-            Error::InvalidRef(msg) => Error::CorruptObject(msg),
-            other => other,
-        })?;
+        let commit_oid = match peel_to_commit_for_merge_base(self.repo, oid) {
+            Ok(c) => c,
+            // A parent that is absent from the local object store is a shallow boundary (or a
+            // missing promisor object): treat it as a root with no parents rather than erroring,
+            // matching Git's graph walk over a shallow clone. Without this, ancestry checks over a
+            // shallow-fetched repo fail at the boundary commit's missing parent (t5537
+            // `fetch --update-shallow` could not follow an annotated tag pointing into the
+            // shallow history).
+            Err(Error::ObjectNotFound(_)) => {
+                self.parents.insert(oid, Vec::new());
+                return Ok(Vec::new());
+            }
+            Err(Error::InvalidRef(msg)) => return Err(Error::CorruptObject(msg)),
+            Err(other) => return Err(other),
+        };
         let object = match self.repo.odb.read(&commit_oid) {
             Ok(o) => o,
             Err(Error::ObjectNotFound(_)) => {

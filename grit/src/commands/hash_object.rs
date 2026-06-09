@@ -40,17 +40,29 @@ pub struct Args {
     #[arg(long)]
     pub literally: bool,
 
+    /// Hash object as if it had this path, for attribute (filter) selection.
+    #[arg(long = "path", value_name = "file")]
+    pub path: Option<PathBuf>,
+
     /// File(s) to hash.
     pub files: Vec<PathBuf>,
 }
 
 /// Run `grit hash-object`.
 pub fn run(args: Args) -> Result<()> {
-    if args.stdin && args.stdin_paths {
-        bail!("options '--stdin' and '--stdin-paths' cannot be used together");
+    if args.stdin_paths {
+        if args.stdin {
+            bail!("Can't use --stdin-paths with --stdin");
+        }
+        if !args.files.is_empty() {
+            bail!("Can't specify files with --stdin-paths");
+        }
+        if args.path.is_some() {
+            bail!("Can't use --stdin-paths with --path");
+        }
     }
-    if args.stdin_paths && !args.files.is_empty() {
-        bail!("can't pass filenames with --stdin-paths");
+    if args.path.is_some() && args.no_filters {
+        bail!("Can't use --path with --no-filters");
     }
 
     let kind = ObjectKind::from_str(&args.object_type)
@@ -76,17 +88,43 @@ pub fn run(args: Args) -> Result<()> {
         None
     };
 
+    // `--path=<file>` overrides which path's attributes drive the clean filter. Git resolves it
+    // relative to the prefix (subdirectory), i.e. into a work-tree-relative path, exactly like a
+    // regular file argument (builtin/hash-object.c: `prefix_filename(prefix, vpath)`).
+    let vpath = args.path.as_deref().map(|p| {
+        filter_relative_path(
+            p,
+            filter_context
+                .as_ref()
+                .and_then(|c| c.repo.work_tree.as_deref()),
+        )
+    });
+
     if args.stdin {
         let mut data = Vec::new();
         std::io::stdin()
             .read_to_end(&mut data)
             .context("reading stdin")?;
+        // With --stdin, the only attribute path available is --path (Git passes `vpath` to
+        // hash_fd); without it, no filter applies.
+        let data = if args.no_filters {
+            data
+        } else if let (Some(Some(rel)), Some(ctx)) = (vpath.as_ref(), filter_context.as_ref()) {
+            convert_with_attrs(&data, rel, ctx)?
+        } else {
+            data
+        };
         validate_object_data(kind, &data, args.literally)?;
         let oid = hash_and_maybe_write(kind, &data, odb.as_ref())?;
         println!("{oid}");
         for path in &args.files {
-            let file_data =
-                read_file_for_hash(path, kind, args.no_filters, filter_context.as_ref())?;
+            let file_data = read_file_for_hash(
+                path,
+                kind,
+                args.no_filters,
+                filter_context.as_ref(),
+                vpath.as_ref(),
+            )?;
             validate_object_data(kind, &file_data, args.literally)?;
             let file_oid = hash_and_maybe_write(kind, &file_data, odb.as_ref())?;
             println!("{file_oid}");
@@ -101,14 +139,21 @@ pub fn run(args: Args) -> Result<()> {
                 continue;
             }
             let path = PathBuf::from(line);
-            let data = read_file_for_hash(&path, kind, args.no_filters, filter_context.as_ref())?;
+            let data =
+                read_file_for_hash(&path, kind, args.no_filters, filter_context.as_ref(), None)?;
             validate_object_data(kind, &data, args.literally)?;
             let oid = hash_and_maybe_write(kind, &data, odb.as_ref())?;
             println!("{oid}");
         }
     } else {
         for path in &args.files {
-            let data = read_file_for_hash(path, kind, args.no_filters, filter_context.as_ref())?;
+            let data = read_file_for_hash(
+                path,
+                kind,
+                args.no_filters,
+                filter_context.as_ref(),
+                vpath.as_ref(),
+            )?;
             validate_object_data(kind, &data, args.literally)?;
             let oid = hash_and_maybe_write(kind, &data, odb.as_ref())?;
             println!("{oid}");
@@ -158,6 +203,7 @@ fn read_file_for_hash(
     kind: ObjectKind,
     no_filters: bool,
     filter_context: Option<&HashObjectFilterContext<'_>>,
+    vpath: Option<&Option<String>>,
 ) -> Result<Vec<u8>> {
     let raw = std::fs::read(path).with_context(|| format!("cannot read '{}'", path.display()))?;
     if kind != ObjectKind::Blob || no_filters {
@@ -166,12 +212,27 @@ fn read_file_for_hash(
     let Some(ctx) = filter_context else {
         return Ok(raw);
     };
-    let Some(rel_path) = filter_relative_path(path, ctx.repo.work_tree.as_deref()) else {
-        return Ok(raw);
+    // When `--path` is given, attribute lookup uses that virtual path instead of the file's own
+    // path (builtin/hash-object.c passes `vpath` to convert). `Some(None)` means `--path` was set
+    // but lies outside the work tree, so no attributes apply.
+    let rel_path = match vpath {
+        Some(Some(rel)) => rel.clone(),
+        Some(None) => return Ok(raw),
+        None => match filter_relative_path(path, ctx.repo.work_tree.as_deref()) {
+            Some(rel) => rel,
+            None => return Ok(raw),
+        },
     };
-    let file_attrs = crlf::get_file_attrs(&ctx.attrs, &rel_path, false, &ctx.config);
-    crlf::convert_to_git(&raw, &rel_path, &ctx.conv, &file_attrs)
-        .map_err(|msg| anyhow::anyhow!(msg))
+    convert_with_attrs(&raw, &rel_path, ctx)
+}
+
+fn convert_with_attrs(
+    raw: &[u8],
+    rel_path: &str,
+    ctx: &HashObjectFilterContext<'_>,
+) -> Result<Vec<u8>> {
+    let file_attrs = crlf::get_file_attrs(&ctx.attrs, rel_path, false, &ctx.config);
+    crlf::convert_to_git(raw, rel_path, &ctx.conv, &file_attrs).map_err(|msg| anyhow::anyhow!(msg))
 }
 
 fn filter_relative_path(path: &Path, work_tree: Option<&Path>) -> Option<String> {

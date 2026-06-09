@@ -1729,6 +1729,7 @@ fn print_compact_summary_from_diff_entries(
     let opts = DiffstatOptions {
         total_width: terminal_columns(),
         line_prefix: "",
+        width_prefix: "",
         subtract_prefix_from_terminal: false,
         stat_name_width,
         stat_graph_width,
@@ -1964,11 +1965,17 @@ fn read_worktree_info_fast(
     }
 
     if meta.file_type().is_symlink() {
+        // Reached only when the symlink's lstat did *not* match the index (the
+        // clean-stat case returns `Unchanged` above). Git's `run_diff_files`
+        // reports a stat-dirty entry as modified even when re-hashing the target
+        // would yield the same OID; it never re-hashes to clear the change. Hand
+        // the hashed OID back as `Modified` and let `collect_changes` suppress it
+        // only when the on-disk stat is both trusted and agrees with the index
+        // (the racy-clean case). Returning `Unchanged` here on a content match
+        // would wrongly hide symlinks after a `read-tree` that zeroed the stat
+        // (t0000 diff-files for a known cache/work tree state).
         let target = fs::read_link(abs_path)?;
         let oid = Odb::hash_object_data(ObjectKind::Blob, target.as_os_str().as_bytes());
-        if oid == index_entry.oid && canonicalize_mode(index_entry.mode) == MODE_SYMLINK {
-            return Ok(WorktreeStatus::Unchanged);
-        }
         return Ok(WorktreeStatus::Modified(MODE_SYMLINK, oid));
     }
 

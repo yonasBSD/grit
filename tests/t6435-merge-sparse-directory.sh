@@ -12,36 +12,40 @@ cd "$(dirname "$0")" || exit 1
 
 test_expect_success 'setup: merge with directory additions on both sides' '
 	git init merge-dirs &&
-	cd merge-dirs &&
-	git config user.name "Test" &&
-	git config user.email "t@t.com" &&
+	(
+		cd merge-dirs &&
+		git config user.name "Test" &&
+		git config user.email "t@t.com" &&
 
-	echo base >base &&
-	git add base &&
-	git commit -m "initial" &&
+		echo base >base &&
+		git add base &&
+		git commit -m "initial" &&
 
-	git branch sideA &&
-	git branch sideB &&
+		git branch sideA &&
+		git branch sideB &&
 
-	git checkout sideA &&
-	mkdir dirA &&
-	echo "file in dirA" >dirA/file &&
-	git add dirA/file &&
-	git commit -m "add dirA" &&
+		git checkout sideA &&
+		mkdir dirA &&
+		echo "file in dirA" >dirA/file &&
+		git add dirA/file &&
+		git commit -m "add dirA" &&
 
-	git checkout sideB &&
-	mkdir dirB &&
-	echo "file in dirB" >dirB/file &&
-	git add dirB/file &&
-	git commit -m "add dirB"
+		git checkout sideB &&
+		mkdir dirB &&
+		echo "file in dirB" >dirB/file &&
+		git add dirB/file &&
+		git commit -m "add dirB"
+	)
 '
 
 test_expect_success 'merge brings in both directories' '
-	cd merge-dirs &&
-	git checkout sideA &&
-	git merge sideB -m "merge sideB" &&
-	test_path_is_file dirA/file &&
-	test_path_is_file dirB/file
+	(
+		cd merge-dirs &&
+		git checkout sideA &&
+		git merge sideB -m "merge sideB" &&
+		test_path_is_file dirA/file &&
+		test_path_is_file dirB/file
+	)
 '
 
 test_done

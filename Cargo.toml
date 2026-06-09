@@ -1,9 +1,10 @@
 [workspace]
-members = ["grit", "grit-lib", "grit-protocol", "grit-http-server", "grit-simple", "grit-utils"]
+members = ["grit", "grit-lib", "grit-protocol", "grit-http-server", "grit-simple", "grit-utils", "grit-examples"]
+default-members = ["grit", "grit-lib", "grit-protocol", "grit-simple"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.94"
+version = "0.3.99"
 edition = "2021"
 repository = "https://github.com/schacon/grit"
 

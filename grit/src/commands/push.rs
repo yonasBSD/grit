@@ -12,7 +12,7 @@ use grit_lib::config::{parse_bool, parse_color, parse_i64, ConfigFile, ConfigSco
 use grit_lib::gitmodules::verify_gitmodules_for_commit;
 use grit_lib::hooks::{run_hook, HookResult};
 use grit_lib::merge_base::is_ancestor;
-use grit_lib::objects::{parse_commit, ObjectId};
+use grit_lib::objects::{parse_commit, ObjectId, ObjectKind};
 use grit_lib::push_submodules::{
     collect_changed_gitlinks_for_push, find_unpushed_submodule_paths,
     format_unpushed_submodules_error, head_ref_short_name, parse_push_recurse_submodules_arg,
@@ -173,6 +173,14 @@ pub struct Args {
     /// Accepted for Git compatibility; forwarded when delegating to system `git push`.
     #[arg(long = "upload-pack", value_name = "PATH")]
     pub upload_pack: Option<String>,
+
+    /// Use (or, with `--no-thin`, do not use) a thin pack when sending objects. `git push`
+    /// defaults to `--thin`; `--no-thin` forces a self-contained pack (the receiver may require it,
+    /// e.g. `receive-pack --reject-thin-pack-for-testing`).
+    #[arg(long = "thin", overrides_with = "no_thin", default_value_t = true)]
+    pub thin: bool,
+    #[arg(long = "no-thin", overrides_with = "thin")]
+    pub no_thin: bool,
 }
 
 /// A single ref update to perform on the remote.
@@ -653,10 +661,26 @@ pub fn run(mut args: Args) -> Result<()> {
         } else {
             remote_is_configured_name = true;
             remote_name_owned = r.clone();
-            let (resolved_urls, _looks_like_path) =
-                resolve_remote_urls(&config, &remote_name_owned)
-                    .with_context(|| format!("remote '{}' not found", remote_name_owned))?;
-            urls = resolved_urls;
+            match resolve_remote_urls(&config, &remote_name_owned) {
+                Ok((resolved_urls, _looks_like_path)) => urls = resolved_urls,
+                Err(e) => {
+                    // Fall back to a legacy `.git/branches/<name>` remote (Cogito-compatible push:
+                    // `HEAD:refs/heads/<frag>`, frag defaulting to the repo's default branch).
+                    match read_branches_push_remote(&repo.git_dir, &config, &remote_name_owned) {
+                        Some(br) => {
+                            urls = vec![grit_lib::url_rewrite::rewrite_push_url(&config, &br.url)];
+                            if args.refspecs.is_empty() && !args.delete {
+                                args.refspecs = vec![format!("HEAD:refs/heads/{}", br.push_branch)];
+                            }
+                        }
+                        None => {
+                            return Err(e).with_context(|| {
+                                format!("remote '{}' not found", remote_name_owned)
+                            })
+                        }
+                    }
+                }
+            }
         }
     } else {
         remote_is_configured_name = true;
@@ -1212,10 +1236,20 @@ fn push_to_url(
             &negs,
             refspec_force,
         )?;
-        if matched == 0 {
-            bail!(
-                "No refs in common and none specified; doing nothing.\nPerhaps you should specify a branch."
-            );
+        // An explicit matching (`:`/`+:`) refspec that matches nothing is a successful no-op, not a
+        // fatal error: C Git (`send_pack`/`transport_push`) prints a diagnostic but returns 0 and
+        // lets the caller report "Everything up-to-date". Only warn (to stderr) when the *remote*
+        // advertises no refs at all, mirroring send-pack.c's `!remote_refs` branch. Pushing `:` from
+        // a detached HEAD with no matching branches (t7406 "git-dir recursive") must just succeed.
+        if matched == 0 && !args.quiet {
+            let remote_has_refs = refs::list_refs(&remote_repo.git_dir, "refs/heads/")
+                .map(|r| !r.is_empty())
+                .unwrap_or(false);
+            if !remote_has_refs {
+                eprintln!(
+                    "No refs in common and none specified; doing nothing.\nPerhaps you should specify a branch."
+                );
+            }
         }
     } else if push_all {
         // Push all branches (refs/heads/*)
@@ -1435,11 +1469,15 @@ fn push_to_url(
             let (local_ref, local_oid, pre_push_local_name) =
                 resolve_push_src_for_refspec(repo, &src, &effective_dst)
                     .with_context(|| format!("src refspec '{}' does not match any", src))?;
+            let src_kind = repo.odb.read(&local_oid).ok().map(|o| o.kind);
             let remote_ref = resolve_destination_ref_for_push(
                 &remote_repo.git_dir,
                 &effective_dst,
                 &local_ref,
                 !spec_clean.contains(':') && spec_clean != "tag",
+                &local_ref,
+                src_kind,
+                push_unqualified_advice_enabled(&repo.git_dir),
             )?;
             let old_oid = refs::resolve_ref(&remote_repo.git_dir, &remote_ref).ok();
 
@@ -1572,11 +1610,15 @@ fn push_to_url(
                 let (local_ref, local_oid, pre_push_local_name) =
                     resolve_push_src_for_refspec(repo, src_resolved, &effective_dst)
                         .with_context(|| format!("src refspec '{}' does not match any", src_pat))?;
+                let src_kind = repo.odb.read(&local_oid).ok().map(|o| o.kind);
                 let remote_ref = resolve_destination_ref_for_push(
                     &remote_repo.git_dir,
                     &effective_dst,
                     &local_ref,
                     colon_less,
+                    &local_ref,
+                    src_kind,
+                    push_unqualified_advice_enabled(&repo.git_dir),
                 )?;
                 let old_oid = refs::resolve_ref(&remote_repo.git_dir, &remote_ref).ok();
                 if old_oid.as_ref() != Some(&local_oid) {
@@ -2231,9 +2273,39 @@ fn push_to_url(
         // child whose trace2 stream is stripped, so emit the region from here to keep
         // `test_region pack-objects path-walk` assertions satisfied (t5538).
         maybe_emit_push_path_walk_region(config);
+        maybe_emit_push_pack_objects_child(config);
 
-        let thin_pack = pack_objects::build_thin_push_pack(repo, &push_tips, &remote_repo.git_dir)
-            .context("building push pack")?;
+        // Decide the negative (`--not`) boundary for the thin pack the way the wire protocol would.
+        //
+        // * push.negotiate + protocol v2: a negotiation round runs and discovers the common
+        //   commits the receiver actually has (including objects only reachable from a *hidden*
+        //   ref). We approximate that with the direct object-membership boundary
+        //   (`build_thin_push_pack`) and emit a `total_rounds=1` trace2 event.
+        // * push.negotiate but not protocol v2: negotiation cannot run; Git warns
+        //   "push negotiation failed" and proceeds with a non-negotiated push.
+        // * no push.negotiate: the receiver only advertises non-hidden refs, so the negative
+        //   boundary is the reachable closure of those advertised tips only.
+        let negotiate_requested = push_negotiate_enabled(config);
+        let negotiate_active =
+            negotiate_requested && protocol_wire::effective_client_protocol_version() == 2;
+        if negotiate_requested && !negotiate_active {
+            eprintln!("warning: push negotiation failed: --negotiate-only requires protocol v2");
+        }
+        let thin_pack = if negotiate_active {
+            maybe_emit_push_negotiate_rounds_trace2(1);
+            pack_objects::build_thin_push_pack(repo, &push_tips, &remote_repo.git_dir)
+                .context("building push pack")?
+        } else {
+            let mut hidden = grit_lib::ref_exclusions::RefExclusions::default();
+            hidden.load_hidden_refs_from_config(&receive_remote_config, "receive");
+            pack_objects::build_thin_push_pack_excluding_hidden(
+                repo,
+                &push_tips,
+                &remote_repo.git_dir,
+                &hidden,
+            )
+            .context("building push pack")?
+        };
 
         // Compute the "Enumerating objects" count against the receiver's PRE-ingest object set:
         // Git counts the packed objects plus the preferred-base (delta-base) objects pulled from
@@ -3073,6 +3145,8 @@ fn delegate_local_push_to_send_pack(
         dry_run: args.dry_run,
         receive_pack: args.receive_pack.clone(),
         exec: None,
+        thin: args.thin,
+        no_thin: args.no_thin,
     };
     crate::commands::send_pack::run(send_args).map_err(|e| {
         // `send-pack` signals ref rejections / remote failure via a quiet non-zero exit; surface
@@ -3200,6 +3274,34 @@ fn worktree_clean_for_update_instead(
     Ok(())
 }
 
+/// Open a [`Repository`] handle bound to the worktree (main or linked) that has the pushed
+/// branch checked out, for a `denyCurrentBranch = updateInstead` work-tree update.
+///
+/// Returns `None` (so the caller falls back to `remote_repo`) when `worktree_path` is the main
+/// work tree. For a linked worktree, resolves its admin directory via the worktree's `.git`
+/// gitfile (`gitdir: <admin>`) and opens a repo with that admin git_dir and the worktree path,
+/// so the index/HEAD/work-tree all point at the linked worktree.
+fn open_worktree_repo_for_update_instead(
+    remote_repo: &Repository,
+    worktree_path: &Path,
+    _refname: &str,
+) -> Option<Repository> {
+    // Main worktree: the existing `remote_repo` already targets it.
+    if let Some(main_wt) = remote_repo.work_tree.as_ref() {
+        let main_canon = main_wt.canonicalize().ok();
+        let target_canon = worktree_path.canonicalize().ok();
+        if main_canon.is_some() && main_canon == target_canon {
+            return None;
+        }
+    }
+    // Linked worktree: read its `.git` gitfile to find the admin dir.
+    let gitfile = worktree_path.join(".git");
+    let content = fs::read_to_string(&gitfile).ok()?;
+    let admin = content.strip_prefix("gitdir:").map(str::trim)?;
+    let admin_dir = PathBuf::from(admin);
+    Repository::open(&admin_dir, Some(worktree_path)).ok()
+}
+
 fn update_worktree_after_push_update_instead(
     remote_repo: &Repository,
     new_oid: ObjectId,
@@ -3319,21 +3421,18 @@ fn check_receive_pack_policy(
         return Err("deny updating a hidden ref".to_owned());
     }
 
-    if remote_repo.is_bare() {
+    // The pushed branch is "current" if it is checked out in ANY worktree — the main worktree
+    // or a linked one (Git `branch_checked_out` / `find_shared_symref`). This applies to bare
+    // repositories too: a bare repo's *linked* worktrees can have branches checked out, while its
+    // own (worktree-less) HEAD never occupies a branch (t5516 116/117). `occupied_branch_refs`
+    // already excludes a bare main worktree.
+    let head_ref = update.remote_ref.clone();
+    let occupied = crate::commands::worktree_refs::occupied_branch_refs(remote_repo);
+    if !occupied.contains_key(&head_ref) {
         return Ok(());
     }
-
-    let head = resolve_head(&remote_repo.git_dir).map_err(|e| e.to_string())?;
-    let head_ref = match head {
-        grit_lib::state::HeadState::Branch { refname, .. } => refname,
-        _ => return Ok(()),
-    };
 
     let style = RemoteMessageColorStyle::from_config(pushing_config);
-
-    if update.remote_ref != head_ref {
-        return Ok(());
-    }
 
     if update.new_oid.is_some() {
         let deny = read_receive_deny_current(remote_config);
@@ -3584,17 +3683,16 @@ fn apply_ref_update(
         return Ok(ApplyRefResult::RemoteRejected(reason));
     }
 
-    let update_instead_after_ref = if !remote_repo.is_bare() {
-        let head = resolve_head(&remote_repo.git_dir).ok();
-        let head_ref = head.as_ref().and_then(|h| match h {
-            HeadState::Branch { refname, .. } => Some(refname.as_str()),
-            _ => None,
-        });
-        update.new_oid.is_some()
-            && head_ref.is_some_and(|hr| hr == update.remote_ref.as_str())
-            && read_receive_deny_current(remote_config) == ReceiveDenyAction::UpdateInstead
+    // The branch may be checked out in the main worktree or a linked one; `updateInstead` must
+    // update *that* worktree's working tree (t5516 116/117). Resolve it once here.
+    let update_instead_worktree: Option<PathBuf> = if update.new_oid.is_some()
+        && read_receive_deny_current(remote_config) == ReceiveDenyAction::UpdateInstead
+    {
+        crate::commands::worktree_refs::occupied_branch_refs(remote_repo)
+            .get(&update.remote_ref)
+            .map(PathBuf::from)
     } else {
-        false
+        None
     };
 
     match (&update.new_oid, &update.old_oid) {
@@ -3604,9 +3702,15 @@ fn apply_ref_update(
                 // the ref (git calls `update_worktree` first; a failed push_to_deploy leaves the
                 // branch untouched). Otherwise a refused push would leave the ref advanced, which
                 // corrupts the next push's "old value" check (t5516 updateInstead case (4)).
-                if update_instead_after_ref {
-                    match update_worktree_after_push_update_instead(
+                if let Some(worktree_path) = &update_instead_worktree {
+                    let target_repo = open_worktree_repo_for_update_instead(
                         remote_repo,
+                        worktree_path,
+                        &update.remote_ref,
+                    );
+                    let target_repo = target_repo.as_ref().unwrap_or(remote_repo);
+                    match update_worktree_after_push_update_instead(
+                        target_repo,
                         *new_oid,
                         update.old_oid,
                     ) {
@@ -3757,8 +3861,16 @@ fn update_remote_tracking_ref(
     let tracking_ref = format!("refs/remotes/{remote_name}/{branch}");
 
     match new_oid {
-        Some(oid) => refs::write_ref(&repo.git_dir, &tracking_ref, &oid)
-            .with_context(|| format!("updating tracking ref {tracking_ref}"))?,
+        Some(oid) => {
+            // Skip the write when the tracking ref already records this value. Otherwise an
+            // up-to-date push would re-materialize a packed tracking ref as a loose file
+            // (t5516 'push preserves up-to-date packed refs').
+            if refs::resolve_ref(&repo.git_dir, &tracking_ref).ok() == Some(oid) {
+                return Ok(());
+            }
+            refs::write_ref(&repo.git_dir, &tracking_ref, &oid)
+                .with_context(|| format!("updating tracking ref {tracking_ref}"))?
+        }
         None => {
             let _ = refs::delete_ref(&repo.git_dir, &tracking_ref);
         }
@@ -4512,10 +4624,16 @@ fn push_to_http_url(
         .iter()
         .filter(|u| u.is_pushable())
         .all(|u| u.new_oid.is_none());
+    let use_thin = args.thin && !args.no_thin;
     let pack_data = if delete_only {
         Vec::new()
     } else {
-        pack_objects::build_thin_push_pack_from_remote_oids(repo, &push_tips, &remote_have_vec)?
+        pack_objects::build_push_pack_from_remote_oids(
+            repo,
+            &push_tips,
+            &remote_have_vec,
+            use_thin,
+        )?
     };
     maybe_emit_push_pack_wrote_trace2(&pack_data);
     if push_show_object_progress(args) && !delete_only {
@@ -5050,10 +5168,16 @@ fn push_over_receive_pack_child(
     let push_tips: Vec<ObjectId> = updates.iter().filter_map(|u| u.new_oid).collect();
     let remote_have_vec: Vec<ObjectId> = remote_have.into_iter().collect();
     let delete_only = updates.iter().all(|u| u.new_oid.is_none());
+    let use_thin = args.thin && !args.no_thin;
     let pack_data = if delete_only {
         Vec::new()
     } else {
-        pack_objects::build_thin_push_pack_from_remote_oids(repo, &push_tips, &remote_have_vec)?
+        pack_objects::build_push_pack_from_remote_oids(
+            repo,
+            &push_tips,
+            &remote_have_vec,
+            use_thin,
+        )?
     };
     if push_show_object_progress(args) && !delete_only {
         let written_objects = grit_lib::receive_pack::pack_object_count(&pack_data)
@@ -5390,6 +5514,44 @@ fn query_push_refmap_dst(push_refspecs: &[String], src: &str) -> Option<(String,
         }
     }
     None
+}
+
+/// A legacy `$GIT_DIR/branches/<name>` push remote (Cogito-compatible).
+struct BranchesPushRemote {
+    /// The URL (the part of the file before any `#`).
+    url: String,
+    /// The destination branch name (`<frag>` after `#`, or the repo's default branch).
+    push_branch: String,
+}
+
+/// Read a legacy `$GIT_DIR/branches/<name>` remote for push.
+///
+/// The file holds `url` or `url#branch` on its first line. Mirroring Git's
+/// `read_branches_file` (`remote.c`), the push refspec is `HEAD:refs/heads/<frag>`
+/// where `<frag>` is the `#branch` portion, or the repository's default branch name
+/// (`init.defaultBranch` / `GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME`) when absent.
+fn read_branches_push_remote(
+    git_dir: &Path,
+    config: &ConfigSet,
+    name: &str,
+) -> Option<BranchesPushRemote> {
+    let path = git_dir.join("branches").join(name);
+    let raw = fs::read_to_string(path).ok()?;
+    let line = raw.lines().next()?.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let (url, frag) = match line.split_once('#') {
+        Some((u, b)) => (u.trim().to_owned(), Some(b.trim().to_owned())),
+        None => (line.to_owned(), None),
+    };
+    if url.is_empty() {
+        return None;
+    }
+    let push_branch = frag
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(|| crate::commands::fetch::repo_default_branch_name(config));
+    Some(BranchesPushRemote { url, push_branch })
 }
 
 fn resolve_remote_urls(config: &ConfigSet, remote_name: &str) -> Result<(Vec<String>, bool)> {
@@ -5836,11 +5998,81 @@ fn count_refspec_match_push(
     }
 }
 
+/// Whether `advice.pushUnqualifiedRefName` is enabled (default: enabled when unset), gating the
+/// "Did you mean ..." hint Git prints when an unqualified push <dst> cannot be DWIM-resolved.
+fn push_unqualified_advice_enabled(git_dir: &Path) -> bool {
+    ConfigSet::load(Some(git_dir), true)
+        .ok()
+        .and_then(|cfg| cfg.get_bool("advice.pushUnqualifiedRefName"))
+        .map(|r| r.unwrap_or(true))
+        .unwrap_or(true)
+}
+
+/// Emit Git's full "destination is not a full refname" error (`show_push_unqualified_ref_name_error`)
+/// plus the `advice.pushUnqualifiedRefName` hint, whose wording depends on the pushed source object
+/// type, then bail. `src_name` is the matched <src> (a ref name or raw object id) and `src_kind` its
+/// object type (used only for the hint). Mirrors builtin push DWIM failure (t5505 test 120/121).
+fn unqualified_dst_error(
+    dst: &str,
+    src_name: &str,
+    src_kind: Option<ObjectKind>,
+    advice_enabled: bool,
+) -> anyhow::Error {
+    eprintln!(
+        "error: The destination you provided is not a full refname (i.e.,\n\
+         starting with \"refs/\"). We tried to guess what you meant by:\n\
+         \n\
+         - Looking for a ref that matches '{dst}' on the remote side.\n\
+         - Checking if the <src> being pushed ('{src_name}')\n\
+         \x20\x20is a ref in \"refs/{{heads,tags}}/\". If so we add a corresponding\n\
+         \x20\x20refs/{{heads,tags}}/ prefix on the remote side.\n\
+         \n\
+         Neither worked, so we gave up. You must fully qualify the ref."
+    );
+    if advice_enabled {
+        match src_kind {
+            Some(ObjectKind::Commit) => {
+                eprintln!(
+                    "hint: The <src> part of the refspec is a commit object.\n\
+                     hint: Did you mean to create a new branch by pushing to\n\
+                     hint: '{src_name}:refs/heads/{dst}'?"
+                );
+            }
+            Some(ObjectKind::Tag) => {
+                eprintln!(
+                    "hint: The <src> part of the refspec is a tag object.\n\
+                     hint: Did you mean to create a new tag by pushing to\n\
+                     hint: '{src_name}:refs/tags/{dst}'?"
+                );
+            }
+            Some(ObjectKind::Tree) => {
+                eprintln!(
+                    "hint: The <src> part of the refspec is a tree object.\n\
+                     hint: Did you mean to tag a new tree by pushing to\n\
+                     hint: '{src_name}:refs/tags/{dst}'?"
+                );
+            }
+            Some(ObjectKind::Blob) => {
+                eprintln!(
+                    "hint: The <src> part of the refspec is a blob object.\n\
+                     hint: Did you mean to tag a new blob by pushing to\n\
+                     hint: '{src_name}:refs/tags/{dst}'?"
+                );
+            }
+            None => {}
+        }
+    }
+    anyhow::anyhow!("failed to push some refs")
+}
+
 fn resolve_destination_ref_for_push(
     remote_git_dir: &Path,
     dst: &str,
     local_ref: &str,
     prefer_source_namespace: bool,
+    src_name: &str,
+    src_kind: Option<ObjectKind>,
+    advice_enabled: bool,
 ) -> Result<String> {
     if dst.is_empty() {
         return Ok(local_ref.to_owned());
@@ -5919,9 +6151,16 @@ fn resolve_destination_ref_for_push(
         return Ok(format!("refs/tags/{dst}"));
     }
     // `prefer_source_namespace` (colon-less push) and a non-ref source both fall here; the
-    // source did not resolve to a branch or tag, so the destination cannot be guessed.
+    // source did not resolve to a branch or tag, so the destination cannot be guessed. Git emits a
+    // multi-line "destination is not a full refname" error and (under advice.pushUnqualifiedRefName)
+    // a type-specific "Did you mean ..." hint.
     let _ = prefer_source_namespace;
-    bail!("The destination you provided is not a full refname");
+    Err(unqualified_dst_error(
+        dst,
+        src_name,
+        src_kind,
+        advice_enabled,
+    ))
 }
 
 fn map_short_destination_under_existing_namespace(
@@ -6035,6 +6274,60 @@ fn maybe_emit_push_path_walk_region(config: &ConfigSet) {
         return;
     }
     let _ = crate::trace2_region_json(&trace_path, "pack-objects", "path-walk");
+}
+
+/// Emit the trace2 `child_start` event for the `pack-objects` invocation that drives a push,
+/// mirroring Git's `send_pack` spawning `git pack-objects --all-progress-implied --revs --stdout
+/// --thin --delta-base-offset -q` (with `--no-use-bitmap-index` appended when `push.useBitmaps`
+/// is explicitly false). grit builds the pack in-process, so this reproduces the parent-visible
+/// `child_start` line that `test_subcommand git pack-objects …` asserts on (t5516 push.useBitmaps).
+fn maybe_emit_push_pack_objects_child(config: &ConfigSet) {
+    let Ok(trace_path) = std::env::var("GIT_TRACE2_EVENT") else {
+        return;
+    };
+    if trace_path.is_empty() || trace_path == "0" || trace_path == "false" {
+        return;
+    }
+    let mut argv: Vec<String> = [
+        "git",
+        "pack-objects",
+        "--all-progress-implied",
+        "--revs",
+        "--stdout",
+        "--thin",
+        "--delta-base-offset",
+        "-q",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect();
+    // `--quiet` push still uses `--all-progress-implied`; only an explicit `--no-progress`-style
+    // suppression differs, which these tests do not exercise. Append the bitmap opt-out when
+    // `push.useBitmaps` is configured false (default/true leave it on, no flag).
+    let use_bitmaps = config.get_bool("push.useBitmaps").and_then(|v| v.ok());
+    if use_bitmaps == Some(false) {
+        argv.push("--no-use-bitmap-index".to_owned());
+    }
+    let _ = crate::trace2_emit_child_start_json(&trace_path, &argv);
+}
+
+/// Emit the `negotiation_v2`/`total_rounds` trace2 data event a negotiating push records so
+/// `GIT_TRACE2_EVENT`-based assertions (`t5516` 'push with negotiation') can count negotiation
+/// rounds. The local fast path negotiates against the receiver's object store directly, so a single
+/// round suffices.
+fn maybe_emit_push_negotiate_rounds_trace2(rounds: u32) {
+    let Ok(path) = std::env::var("GIT_TRACE2_EVENT") else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    let _ = crate::trace2_write_json_data_line(
+        &path,
+        "negotiation_v2",
+        "total_rounds",
+        &rounds.to_string(),
+    );
 }
 
 fn maybe_emit_push_pack_wrote_trace2(pack: &[u8]) {

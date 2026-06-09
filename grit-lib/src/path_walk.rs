@@ -204,7 +204,8 @@ pub fn walk_objects_by_path(
 
     setup_pending_objects(repo, &object_roots, &extra_tag_ref_targets, opts, &mut ctx)?;
 
-    let ordered_commits = date_order_walk(&mut graph, &interesting_commits, false)?;
+    // No user-supplied tip order here; equal-date ties fall through to the OID tiebreak.
+    let ordered_commits = date_order_walk(&mut graph, &interesting_commits, &[], false)?;
 
     let mut commit_oids: Vec<ObjectId> = Vec::new();
     for c in ordered_commits {

@@ -229,7 +229,7 @@ test_expect_success 'count: --count larger than total returns all' '
 	(
 	cd repo &&
 	git for-each-ref >all &&
-	total=$(wc -l <all) &&
+	total=$(wc -l <all | tr -d " ") &&
 	git for-each-ref --count=100 >out &&
 	test_line_count = "$total" out
 	)

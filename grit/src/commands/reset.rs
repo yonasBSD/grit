@@ -37,7 +37,7 @@ use grit_lib::sparse_checkout::{
 use grit_lib::state::{resolve_head, HeadState};
 use grit_lib::submodule_gitdir::submodule_modules_git_dir;
 use grit_lib::unicode_normalization::precompose_utf8_path;
-use grit_lib::write_tree::build_cache_tree_from_index;
+use grit_lib::write_tree::{build_cache_tree_from_index, build_cache_tree_from_tree};
 use similar::{Algorithm, TextDiff};
 
 use crate::commands::update_ref;
@@ -277,6 +277,18 @@ pub struct Args {
     #[arg(short = 'p', long = "patch")]
     pub patch: bool,
 
+    /// Lines of context for `--patch` (validated to require `-p`).
+    #[arg(long = "unified", short = 'U', allow_hyphen_values = true)]
+    pub unified: Option<i32>,
+
+    /// Context lines between adjacent `--patch` hunks (validated to require `-p`).
+    #[arg(long = "inter-hunk-context", allow_hyphen_values = true)]
+    pub inter_hunk_context: Option<i32>,
+
+    /// Disable auto-advance in interactive patch mode (validated to require `-p`).
+    #[arg(long = "no-auto-advance")]
+    pub no_auto_advance: bool,
+
     /// Read pathspecs from a file, or from stdin when the value is `-`.
     #[arg(long = "pathspec-from-file", value_name = "FILE")]
     pub pathspec_from_file: Option<String>,
@@ -447,6 +459,19 @@ pub fn run(mut args: Args) -> Result<()> {
     // `rest` so it is never parsed as a flag. Strip known options from `rest` first.
     normalize_reset_trailing_args(&mut args)?;
 
+    crate::commands::add::validate_patch_context_options(
+        args.unified,
+        args.inter_hunk_context,
+        args.patch,
+    )?;
+    if args.no_auto_advance && !args.patch {
+        bail!(
+            "the option '{}' requires '{}'",
+            "--no-auto-advance",
+            "--interactive/--patch"
+        );
+    }
+
     let mode = parse_mode(&args)?;
 
     let repo = Repository::discover(None).context("not a git repository")?;
@@ -466,7 +491,11 @@ pub fn run(mut args: Args) -> Result<()> {
 
     // Handle -p (patch mode): interactive partial unstaging / index application vs a treeish.
     if args.patch {
-        return reset_patch(&repo, &args.rest);
+        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        let context = crate::commands::add::resolve_patch_context(args.unified, &cfg)?;
+        let inter_hunk =
+            crate::commands::add::resolve_patch_interhunk(args.inter_hunk_context, &cfg)?;
+        return reset_patch(&repo, &args.rest, context, inter_hunk);
     }
 
     // Split positional args into (commit_spec, paths).
@@ -931,7 +960,12 @@ fn validate_reset_patch_treeish(repo: &Repository, treeish_spec: &str) -> Result
 }
 
 /// Interactive patch-mode reset (`git reset -p`): partial index updates toward `treeish`.
-fn reset_patch(repo: &Repository, rest: &[String]) -> Result<()> {
+fn reset_patch(
+    repo: &Repository,
+    rest: &[String],
+    context: usize,
+    inter_hunk_context: usize,
+) -> Result<()> {
     use std::io::{self, BufRead, Write};
 
     let work_tree = repo
@@ -976,6 +1010,16 @@ fn reset_patch(repo: &Repository, rest: &[String]) -> Result<()> {
         }
     }
     for path in target_map.keys() {
+        // An unmerged path (conflict stages 1/2/3, no stage 0) is a no-op for `reset -p`: git skips
+        // it entirely rather than offering to unstage the tree side (t3701 "reset -p with unmerged
+        // files"). Without this guard such a path is re-added below because it has no stage-0 entry.
+        let is_unmerged = index
+            .entries
+            .iter()
+            .any(|e| e.path == *path && e.stage() != 0);
+        if is_unmerged {
+            continue;
+        }
         if !index
             .entries
             .iter()
@@ -1076,12 +1120,13 @@ fn reset_patch(repo: &Repository, rest: &[String]) -> Result<()> {
 
             let display_idx = hunk_cursor + 1;
             let (s, e) = hunk_ranges[hunk_cursor];
-            let hunk_only = crate::commands::stash::partial_unified_for_op_range(
+            let hunk_only = crate::commands::stash::partial_unified_for_op_range_interhunk(
                 path_str.as_str(),
                 &tree_bytes,
                 &index_bytes,
                 &ops[s..e],
-                3,
+                context,
+                inter_hunk_context,
                 true,
             );
 
@@ -1724,6 +1769,9 @@ Use '--' to separate paths from revisions, like this:\n\
             let mut idx = Index::new();
             idx.entries = tree_entries;
             idx.sort();
+            // A duplicate-entry tree (t4058) flattens to several identical-path entries; Git's
+            // index keeps only one per path. Restore that invariant.
+            idx.dedup_paths_keep_last();
             idx
         }
     };
@@ -1904,6 +1952,13 @@ Use '--' to separate paths from revisions, like this:\n\
     new_index.clear_resolve_undo();
     if new_index.entries.iter().any(|entry| entry.oid.is_zero()) {
         new_index.clear_cache_tree();
+    } else if matches!(mode, ResetMode::Mixed | ResetMode::Hard) {
+        // Plain reset to a single commit primes the cache-tree from that commit's tree (Git's
+        // `prime_cache_tree`), so its entry counts reflect the raw tree. For a duplicate-entry tree
+        // (t4058) this exceeds the deduplicated index, which a verified write reports as corrupt.
+        let tree_oid = commit_to_tree(repo, &target_oid)?;
+        let cache_tree = build_cache_tree_from_tree(&repo.odb, &tree_oid)?;
+        new_index.set_cache_tree(cache_tree);
     } else {
         let cache_tree = build_cache_tree_from_index(&repo.odb, &new_index)?;
         new_index.set_cache_tree(cache_tree);
@@ -2861,7 +2916,7 @@ fn commit_to_tree(repo: &Repository, commit_oid: &ObjectId) -> Result<ObjectId> 
 }
 
 /// Recursively flatten a tree object into a list of [`IndexEntry`] values.
-fn tree_to_flat_entries(
+pub(crate) fn tree_to_flat_entries(
     repo: &Repository,
     tree_oid: &ObjectId,
     prefix: &str,

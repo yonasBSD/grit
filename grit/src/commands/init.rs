@@ -660,11 +660,17 @@ pub fn run(args: Args, global_bare: bool) -> Result<()> {
     // per-source: an explicit `--ref-format`/`GIT_DEFAULT_REF_FORMAT` value that is unknown is a
     // fatal error, but a bad `init.defaultRefFormat` only warns and is ignored.
     let existing_ref_format = is_reinit.then(|| detect_ref_format(&real_git_dir));
-    let env_ref_format = std::env::var("GIT_DEFAULT_REF_FORMAT")
+    // Upstream's test harness (git/t/test-lib.sh) does
+    // `GIT_DEFAULT_REF_FORMAT="${GIT_TEST_DEFAULT_REF_FORMAT:-files}"`, i.e. the test-only
+    // `GIT_TEST_DEFAULT_REF_FORMAT` override takes precedence over `GIT_DEFAULT_REF_FORMAT`.
+    // Honor that ordering here so tests that opt into the reftable backend (e.g. t0610/t0614)
+    // create reftable repositories even when the harness has already exported
+    // `GIT_DEFAULT_REF_FORMAT=files`.
+    let env_ref_format = std::env::var("GIT_TEST_DEFAULT_REF_FORMAT")
         .ok()
         .filter(|value| !value.is_empty())
         .or_else(|| {
-            std::env::var("GIT_TEST_DEFAULT_REF_FORMAT")
+            std::env::var("GIT_DEFAULT_REF_FORMAT")
                 .ok()
                 .filter(|value| !value.is_empty())
         });

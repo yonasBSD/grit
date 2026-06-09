@@ -151,11 +151,11 @@ test_expect_success 'log --author with partial email match' '
 	)
 '
 
-test_expect_success 'log --author is case-insensitive by default' '
+test_expect_success 'log --author with -i is case-insensitive' '
 	(
 	cd repo &&
-	git log --author=alice --format="%an" >actual_lower &&
-	git log --author=ALICE --format="%an" >actual_upper &&
+	git log -i --author=alice --format="%an" >actual_lower &&
+	git log -i --author=ALICE --format="%an" >actual_upper &&
 	test_cmp actual_lower actual_upper
 	)
 '

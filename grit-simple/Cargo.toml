@@ -1,6 +1,6 @@
 [package]
 name = "grit-simple"
-version = "0.3.94-1"
+version.workspace = true
 edition.workspace = true
 license = "MIT"
 description = "A simplified alternative CLI for Grit"

@@ -159,22 +159,9 @@ pub(crate) fn read_v2_capability_block(stdout: &mut impl Read) -> Result<Vec<Str
     Ok(caps)
 }
 
-pub(crate) fn server_advertises_bundle_uri(caps: &[String]) -> bool {
-    caps.iter()
-        .any(|c| c == "bundle-uri" || c.starts_with("bundle-uri="))
-}
+pub(crate) use grit_lib::protocol_v2::server_advertises_bundle_uri;
 
-pub(crate) fn cap_lines_for_bundle_request(caps: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in caps {
-        if line.starts_with("agent=") {
-            out.push(line.clone());
-        } else if let Some(fmt) = line.strip_prefix("object-format=") {
-            out.push(format!("object-format={fmt}"));
-        }
-    }
-    out
-}
+pub(crate) use grit_lib::protocol_v2::cap_lines_for_command_request as cap_lines_for_bundle_request;
 
 pub(crate) fn write_bundle_uri_command(stdin: &mut impl Write, cap_send: &[String]) -> Result<()> {
     trace_packet_git('>', "command=bundle-uri");
@@ -320,13 +307,17 @@ fn collect_clone_ls_refs_metadata(
             crate::commands::ls_remote::parse_ls_refs_v2_line(&pkt)?;
         let name = name.trim().to_owned();
         if name == "HEAD" {
-            head_oid = Some(oid.to_hex());
+            // An unborn HEAD is advertised with the null OID (`unborn` token); it names no object,
+            // only a symref target, so leave `head_oid` unset and let the symref drive checkout.
+            if !oid.is_zero() {
+                head_oid = Some(oid.to_hex());
+            }
             if let Some(target) = symref_target {
                 head_symref = Some(target);
             }
             continue;
         }
-        if name.starts_with("refs/heads/") || name.starts_with("refs/tags/") {
+        if !oid.is_zero() && (name.starts_with("refs/heads/") || name.starts_with("refs/tags/")) {
             wants.push(oid);
         }
     }
@@ -352,15 +343,12 @@ fn should_use_source_head_symref_fallback(source_git_dir: &Path) -> bool {
     !unborn.eq_ignore_ascii_case("ignore")
 }
 
-/// True when the server's `fetch=` capability advertises `sideband-all`.
-pub(crate) fn v2_fetch_supports_sideband_all(caps: &[String]) -> bool {
-    caps.iter().any(|c| {
-        c.strip_prefix("fetch=")
-            .is_some_and(|rest| rest.split_whitespace().any(|w| w == "sideband-all"))
-    })
-}
+pub(crate) use grit_lib::protocol_v2::fetch_supports_sideband_all as v2_fetch_supports_sideband_all;
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) use grit_lib::protocol_v2::fetch_supports_ref_in_want as v2_fetch_supports_ref_in_want;
+
+pub(crate) use grit_lib::protocol_v2::fetch_supports_filter as v2_fetch_supports_filter;
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_v2_fetch_request(
     stdin: &mut impl Write,
@@ -379,6 +367,8 @@ pub(crate) fn write_v2_fetch_request(
     shallow_exclude: &[String],
     unshallow: bool,
     promisor_remote_reply: Option<&str>,
+    want_refs: &[String],
+    send_done: bool,
 ) -> Result<()> {
     trace_packet_git('>', "command=fetch");
     pkt_line::write_line(stdin, "command=fetch")?;
@@ -433,8 +423,21 @@ pub(crate) fn write_v2_fetch_request(
         wire_trace::trace_packet_upload_pack('<', line.trim_end());
         pkt_line::write_line(stdin, &line)?;
     }
+    // Refs requested by name (not exact OID) go out as `want-ref <refname>` when the server
+    // advertised the `ref-in-want` feature (matches `fetch-pack.c` `add_wants`). The server resolves
+    // them in a `wanted-refs` section in its response.
+    for r in want_refs {
+        let line = format!("want-ref {r}");
+        trace_packet_git('>', line.trim_end());
+        wire_trace::trace_packet_upload_pack('<', line.trim_end());
+        pkt_line::write_line(stdin, &line)?;
+    }
     if let Some(spec) = filter_spec.map(str::trim).filter(|s| !s.is_empty()) {
-        let line = format!("filter {spec}");
+        // Send the canonical/expanded filter spec on the wire, matching Git's
+        // `expand_list_objects_filter_spec` (e.g. `blob:limit=1k` -> `blob:limit=1024`).
+        let expanded = grit_lib::rev_list::expand_object_filter_for_protocol(spec)
+            .unwrap_or_else(|_| spec.to_owned());
+        let line = format!("filter {expanded}");
         trace_packet_git('>', &line);
         pkt_line::write_line(stdin, &line)?;
     }
@@ -478,8 +481,10 @@ pub(crate) fn write_v2_fetch_request(
         wire_trace::trace_packet_upload_pack('<', line.trim_end());
         pkt_line::write_line(stdin, &line)?;
     }
-    trace_packet_git('>', "done");
-    pkt_line::write_line(stdin, "done")?;
+    if send_done {
+        trace_packet_git('>', "done");
+        pkt_line::write_line(stdin, "done")?;
+    }
     pkt_line::write_flush(stdin)?;
     trace_packet_git('>', "0000");
     stdin.flush()?;
@@ -715,10 +720,7 @@ pub(crate) fn clone_preflight_file_v2_if_needed(
         return Ok((head_symref, head_oid));
     }
 
-    let fetch_supports_sideband_all = caps.iter().any(|c| {
-        c.strip_prefix("fetch=")
-            .is_some_and(|rest| rest.split_whitespace().any(|w| w == "sideband-all"))
-    });
+    let fetch_supports_sideband_all = v2_fetch_supports_sideband_all(&caps);
     write_v2_fetch_request(
         &mut stdin,
         &default_hash,
@@ -736,6 +738,8 @@ pub(crate) fn clone_preflight_file_v2_if_needed(
         &[],
         false,
         None,
+        &[],
+        true,
     )?;
     drop(stdin);
     drain_v2_fetch_response(&mut stdout, fetch_supports_sideband_all)?;

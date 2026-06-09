@@ -397,15 +397,28 @@ pub(crate) fn try_lazy_fetch_promisor_objects_batch(
         match &src {
             PromisorSource::Local(odb) => {
                 if !promisor_local_lazy_fetch_prefers_upload_pack() {
-                    let mut copied = false;
+                    let mut copied_oids: Vec<ObjectId> = Vec::new();
                     for oid in &need {
                         if let Ok(obj) = odb.read(oid) {
-                            let _ = repo.odb.write(obj.kind, &obj.data);
-                            copied = true;
+                            if repo.odb.write(obj.kind, &obj.data).is_ok() {
+                                copied_oids.push(*oid);
+                            }
                         }
                     }
-                    if copied {
-                        need.retain(|o| !repo.odb.exists_local(o));
+                    if !copied_oids.is_empty() {
+                        // Objects fetched from a promisor remote are promisor objects: record
+                        // them in a `.promisor`-marked pack (like the single-object path) so a
+                        // later `gc`/`repack --exclude-promisor-objects` keeps them in the
+                        // promisor pack instead of dropping them. Writing them only as loose
+                        // objects made them indistinguishable from local commits and a partial
+                        // clone's gc would silently delete the freshly fetched blob (t5616
+                        // "manual prefetch of missing objects"). Do NOT register a default
+                        // partial-clone filter here: a plain (unfiltered) promisor remote must
+                        // not gain a `blob:none` filter just because we lazily copied an object
+                        // (t0410 "fetching from another promisor remote").
+                        write_promisor_pack_for_local_oids(repo, &copied_oids)
+                            .with_context(|| "writing promisor pack for lazily fetched objects")?;
+                        need.retain(|o| !repo.odb.exists(o));
                         if need.is_empty() {
                             return Ok(());
                         }

@@ -63,6 +63,18 @@ pub struct Args {
     #[arg(short = 'p', long = "patch")]
     pub patch: bool,
 
+    /// Lines of context for `--patch` (validated to require `-p`).
+    #[arg(long = "unified", short = 'U', allow_hyphen_values = true)]
+    pub unified: Option<i32>,
+
+    /// Context lines between adjacent `--patch` hunks (validated to require `-p`).
+    #[arg(long = "inter-hunk-context", allow_hyphen_values = true)]
+    pub inter_hunk_context: Option<i32>,
+
+    /// Disable auto-advance in interactive patch mode (validated to require `-p`).
+    #[arg(long = "no-auto-advance")]
+    pub no_auto_advance: bool,
+
     /// Read pathspec from file.
     #[arg(long = "pathspec-from-file")]
     pub pathspec_from_file: Option<String>,
@@ -78,6 +90,18 @@ pub struct Args {
 
 /// Run the `restore` command.
 pub fn run(args: Args) -> Result<()> {
+    crate::commands::add::validate_patch_context_options(
+        args.unified,
+        args.inter_hunk_context,
+        args.patch,
+    )?;
+    if args.no_auto_advance && !args.patch {
+        bail!(
+            "the option '{}' requires '{}'",
+            "--no-auto-advance",
+            "--interactive/--patch"
+        );
+    }
     if args.pathspec_file_nul && args.pathspec_from_file.is_none() {
         bail!("the option '--pathspec-file-nul' requires '--pathspec-from-file'");
     }
@@ -118,7 +142,17 @@ pub fn run(args: Args) -> Result<()> {
         }
         let repo = Repository::discover(None).context("not a git repository")?;
         let source = args.source.as_deref();
-        return crate::commands::checkout::restore_patch_worktree_only(&repo, source, &pathspecs);
+        let cfg = grit_lib::config::ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        let context = crate::commands::add::resolve_patch_context(args.unified, &cfg)?;
+        let inter_hunk_context =
+            crate::commands::add::resolve_patch_interhunk(args.inter_hunk_context, &cfg)?;
+        return crate::commands::checkout::restore_patch_worktree_only(
+            &repo,
+            source,
+            &pathspecs,
+            context,
+            inter_hunk_context,
+        );
     }
 
     let repo = Repository::discover(None).context("not a git repository")?;

@@ -128,6 +128,7 @@ pub fn merge(input: &MergeInput<'_>) -> Result<MergeOutput> {
     // Zealous diff3 (`adjust_zealous_hunks`) assumes the raw `compute_hunks` sequence.
     if !matches!(input.style, ConflictStyle::ZealousDiff3) {
         hunks = merge_adjacent_replace_and_trailing_insert_conflicts(hunks);
+        hunks = fold_adjacent_inserts_into_conflict(hunks);
         hunks = merge_adjacent_one_sided_line_changes_to_conflict(hunks);
     }
     // Match `git merge-file` (`XDL_MERGE_ZEALOUS_ALNUM`): refine then simplify conflicts.
@@ -460,6 +461,13 @@ fn strip_line_terminator(line: &[u8]) -> &[u8] {
 /// Compare two lines ignoring trailing newline / CR conventions (matches git `xdl_recmatch` for EOL).
 fn merge_line_equal(a: &[u8], b: &[u8]) -> bool {
     strip_line_terminator(a) == strip_line_terminator(b)
+}
+
+/// Compare two line sequences line-by-line, ignoring trailing-newline conventions on each line.
+/// Mirrors git `xdl_merge_cmp_lines`, used to auto-resolve a both-sides-changed region when the
+/// two postimages are textually identical.
+fn merge_lines_equal(a: &[Vec<u8>], b: &[Vec<u8>]) -> bool {
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| merge_line_equal(x, y))
 }
 
 fn common_prefix_suffix_merge_lines(ours: &[Vec<u8>], theirs: &[Vec<u8>]) -> (usize, usize) {
@@ -821,13 +829,23 @@ fn compute_hunks(
             (true, true) => {
                 let o = collect_new_lines(ours_ops, ours, pos, end);
                 let t = collect_new_lines(theirs_ops, theirs, pos, end);
-                // Git reports a conflict when both sides touch the same base region, even if the
-                // resulting lines are textually identical (see `t4108-apply-threeway`).
-                hunks.push(Hunk::Conflict {
-                    base: base[pos..end].to_vec(),
-                    ours: o,
-                    theirs: t,
-                });
+                // Git's `xdl_merge` auto-resolves a both-sides-changed region when both sides
+                // produce textually identical content (`xdl_merge_cmp_lines` over the two
+                // postimages): the change is taken once instead of conflicting. Only a genuine
+                // textual difference becomes a conflict (see t3424 `--empty=keep`, where a commit
+                // whose change is already present in upstream merges cleanly and becomes empty).
+                if merge_lines_equal(&o, &t) {
+                    hunks.push(Hunk::OnlyOurs {
+                        base: base[pos..end].to_vec(),
+                        ours: o,
+                    });
+                } else {
+                    hunks.push(Hunk::Conflict {
+                        base: base[pos..end].to_vec(),
+                        ours: o,
+                        theirs: t,
+                    });
+                }
             }
             (false, false) => {
                 // Should not happen, but treat as unchanged.
@@ -933,11 +951,20 @@ fn emit_inserts_at(
         let theirs_tail = t_lines[common_prefix..t_lines.len() - common_suffix].to_vec();
 
         if !ours_tail.is_empty() || !theirs_tail.is_empty() {
-            hunks.push(Hunk::Conflict {
-                base: Vec::new(),
-                ours: ours_tail,
-                theirs: theirs_tail,
-            });
+            // Identical insertions on both sides auto-resolve to a single copy (git
+            // `xdl_merge`); only a genuine textual difference conflicts.
+            if merge_lines_equal(&ours_tail, &theirs_tail) {
+                hunks.push(Hunk::OnlyOurs {
+                    base: Vec::new(),
+                    ours: ours_tail,
+                });
+            } else {
+                hunks.push(Hunk::Conflict {
+                    base: Vec::new(),
+                    ours: ours_tail,
+                    theirs: theirs_tail,
+                });
+            }
         }
 
         if common_suffix > 0 {
@@ -1163,6 +1190,51 @@ fn merge_adjacent_replace_and_trailing_insert_conflicts(hunks: Vec<Hunk>) -> Vec
         } else {
             out.push(hunks[i].clone());
             i += 1;
+        }
+    }
+    out
+}
+
+/// Fold a one-sided pure insertion (`Only* { base: [] }`) that sits *immediately
+/// adjacent* to a `Conflict` into that conflict's matching side.
+///
+/// Git's `xdl_merge` attaches an insertion to a neighbouring change region when
+/// they touch (`xdl_append_merge`: `i1 <= m->i1 + m->chg1`). After
+/// `merge_adjacent_replace_and_trailing_insert_conflicts` has turned a
+/// leading-insert + modify into a `Conflict`, a *trailing* one-sided insert that
+/// directly follows the conflict (empty base ⇒ no intervening base line) is part
+/// of the same region and must be absorbed. This is what makes a previously
+/// committed conflict (whose `>>>>>>>` marker line is inserted right after the
+/// contested base line) re-conflict correctly — e.g. t4200 "rerere with inner
+/// conflict markers", where base `bar`, ours `<<<\nfoo\n===\nbar\n>>>`,
+/// theirs `baz` must yield a single conflict containing all of `ours` vs `baz`.
+fn fold_adjacent_inserts_into_conflict(hunks: Vec<Hunk>) -> Vec<Hunk> {
+    let mut out: Vec<Hunk> = Vec::with_capacity(hunks.len());
+    for hunk in hunks {
+        match hunk {
+            // A pure insertion directly following a conflict joins that conflict's
+            // matching side.
+            Hunk::OnlyOurs { ref base, ref ours } if base.is_empty() => {
+                if let Some(Hunk::Conflict { ours: c_ours, .. }) = out.last_mut() {
+                    c_ours.extend(ours.iter().cloned());
+                    continue;
+                }
+                out.push(hunk);
+            }
+            Hunk::OnlyTheirs {
+                ref base,
+                ref theirs,
+            } if base.is_empty() => {
+                if let Some(Hunk::Conflict {
+                    theirs: c_theirs, ..
+                }) = out.last_mut()
+                {
+                    c_theirs.extend(theirs.iter().cloned());
+                    continue;
+                }
+                out.push(hunk);
+            }
+            other => out.push(other),
         }
     }
     out

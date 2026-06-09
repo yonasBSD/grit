@@ -314,6 +314,7 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
     let mut prefixes: Vec<String> = Vec::new();
     let mut peel = false;
     let mut symrefs = false;
+    let mut unborn = false;
 
     for arg in args {
         if let Some(prefix) = arg.strip_prefix("ref-prefix ") {
@@ -323,7 +324,10 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
         } else if arg == "symrefs" {
             symrefs = true;
         } else if arg == "unborn" {
-            // Accepted but we don't send unborn HEAD
+            // The `unborn` feature (advertised as `ls-refs=unborn`) asks the server to report HEAD
+            // even when it points at an unborn branch (empty repository). `lsrefs.unborn` defaults
+            // to "advertise", so honour the request unconditionally.
+            unborn = true;
         } else {
             bail!("unexpected line: '{arg}'");
         }
@@ -353,10 +357,26 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
         };
         entries.push(RefInfo {
             name: "HEAD".to_owned(),
-            oid: head_oid,
+            oid: Some(head_oid),
             symref_target,
             peeled: None,
         });
+    } else if unborn && symrefs {
+        // HEAD points at an unborn branch (empty repository): there is no OID, but when both the
+        // `unborn` and `symrefs` features were requested we still report it as
+        // `unborn HEAD symref-target:<target>` so the client can discover the default branch and,
+        // crucially, the negotiated object format for an empty SHA-256 clone (`t5551`,
+        // mirroring upstream `send_possibly_unborn_head`).
+        if let Ok(Some(target)) = refs::read_symbolic_ref(git_dir, "HEAD") {
+            let symref_target =
+                grit_lib::ref_namespace::strip_namespace_prefix(&target).into_owned();
+            entries.push(RefInfo {
+                name: "HEAD".to_owned(),
+                oid: None,
+                symref_target: Some(symref_target),
+                peeled: None,
+            });
+        }
     }
 
     // All refs under refs/ (logical/stripped names when a namespace is active).
@@ -369,7 +389,7 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
                 }
                 let mut info = RefInfo {
                     name: name.clone(),
-                    oid,
+                    oid: Some(oid),
                     symref_target: None,
                     peeled: None,
                 };
@@ -395,9 +415,14 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
     // Sort by ref name
     entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-    // Write output
+    // Write output. An unborn HEAD has no OID and is emitted as the literal `unborn` token
+    // (gitprotocol-v2 `obj-id-or-unborn`).
     for entry in &entries {
-        let mut line = format!("{} {}", entry.oid.to_hex(), entry.name);
+        let oid_field = match entry.oid {
+            Some(oid) => oid.to_hex(),
+            None => "unborn".to_owned(),
+        };
+        let mut line = format!("{oid_field} {}", entry.name);
         if let Some(ref peeled) = entry.peeled {
             line.push_str(&format!(" peeled:{}", peeled.to_hex()));
         }
@@ -412,7 +437,8 @@ fn cmd_ls_refs(git_dir: &Path, args: &[String], out: &mut impl Write) -> Result<
 
 struct RefInfo {
     name: String,
-    oid: grit_lib::objects::ObjectId,
+    /// `None` marks an unborn HEAD (empty repository), emitted as the literal `unborn` token.
+    oid: Option<grit_lib::objects::ObjectId>,
     symref_target: Option<String>,
     peeled: Option<grit_lib::objects::ObjectId>,
 }
@@ -581,6 +607,22 @@ fn cmd_fetch(
         }
     }
 
+    // Validate every `want <oid>` line before serving. In protocol v2, `upload-pack.c`'s `parse_want`
+    // only verifies that the wanted object is *present* locally (`parse_object_with_flags` returns
+    // non-NULL); it does NOT apply the v0 `check_non_tip` / `allow{Tip,Reachable,Any}SHA1InWant`
+    // gating. The non-tip rejection is explicitly a v0-only behavior, so a v2 client may legitimately
+    // `want` any object the server holds — e.g. a shallow boundary commit that is not a ref tip
+    // (t5537 `fetch --update-shallow <shallow-point>:refs/heads/...`). A `want` for an object we do
+    // not have still draws an `ERR upload-pack: not our ref <oid>` packet and a fatal exit, which is
+    // what makes a fetch fail when an advertised ref changed under the client mid-negotiation (t5703
+    // change-while-negotiating). `want-ref` OIDs always resolve to one of our refs, so they pass here.
+    for w in &wants {
+        if repo.odb.read(w).is_err() {
+            // Object not present at all — never our ref.
+            return serve_reject_not_our_ref(out, w);
+        }
+    }
+
     if wants.is_empty() && !wait_for_done {
         pkt_line::write_flush(out)?;
         return Ok(());
@@ -703,11 +745,19 @@ fn cmd_fetch(
         .map(|r| !r.trim().is_empty())
         .unwrap_or(false);
     let omit_missing_promisor = accepted_promisor && filter_spec.is_some();
-    let force_lazy_fetch = if filter_spec.is_some() {
-        !omit_missing_promisor
-    } else {
-        caps.promisor_remote_info.is_none()
-    };
+    // `upload-pack` pins `GIT_NO_LAZY_FETCH=1` by default, so the server-side `pack-objects` never
+    // lazily fetches missing objects from a promisor remote — it just fails if it cannot read an
+    // object (t0411-clone-from-partial: a plain clone/fetch from a partial-clone server must NOT
+    // run the promisor's upload-pack). Only when the operator explicitly re-enables lazy fetching
+    // (`GIT_NO_LAZY_FETCH=0`) may the server back-fill omitted blobs before serving them.
+    let lazy_fetch_enabled =
+        !crate::commands::promisor_hydrate::git_no_lazy_fetch_env_disables_lazy().unwrap_or(false);
+    let force_lazy_fetch = lazy_fetch_enabled
+        && if filter_spec.is_some() {
+            !omit_missing_promisor
+        } else {
+            caps.promisor_remote_info.is_none()
+        };
     let mut exclude_commits = if client_shallow_oids.is_empty() {
         have_commits.clone()
     } else {
@@ -743,6 +793,17 @@ fn cmd_fetch(
     crate::pack_objects_upload::drain_pack_objects_child(child, out, true)?;
     pkt_line::write_flush(out)?;
     Ok(())
+}
+
+/// Send `ERR upload-pack: not our ref <oid>` and exit 128 — matching `upload-pack.c` rejection of a
+/// `want` for an object we cannot serve. The client surfaces this as
+/// `fatal: remote error: upload-pack: not our ref`.
+fn serve_reject_not_our_ref(out: &mut impl Write, oid: &ObjectId) -> Result<()> {
+    let hex = oid.to_hex();
+    pkt_line::write_line(out, &format!("ERR upload-pack: not our ref {hex}"))?;
+    out.flush()?;
+    eprintln!("error: git upload-pack: not our ref {hex}");
+    std::process::exit(128);
 }
 
 fn ok_to_give_up_v2(

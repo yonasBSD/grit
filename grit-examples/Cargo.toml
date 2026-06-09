@@ -1,0 +1,23 @@
+[package]
+name = "grit-examples"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+description = "Standalone example binaries demonstrating grit-lib usage"
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "gritx-hash-object"
+path = "src/bin/gritx-hash-object.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+grit-lib = { path = "../grit-lib" }
+
+[dev-dependencies]
+tempfile.workspace = true

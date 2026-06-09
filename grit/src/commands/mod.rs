@@ -3,6 +3,7 @@
 //! Each submodule corresponds to one plumbing subcommand.
 
 pub mod add;
+mod add_interactive;
 mod add_patch;
 pub mod am;
 pub mod annotate;
@@ -147,8 +148,11 @@ pub mod submodule_helper;
 pub mod switch;
 pub mod symbolic_ref;
 pub mod tag;
+#[cfg(feature = "test-tools")]
 pub mod test_tool_reach;
+#[cfg(feature = "test-tools")]
 pub mod test_tool_ref_store;
+#[cfg(feature = "test-tools")]
 pub mod test_tool_rot13_filter;
 pub mod unpack_file;
 pub mod unpack_objects;

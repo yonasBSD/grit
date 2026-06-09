@@ -143,6 +143,287 @@ fn histogram_unified_body_raw(
     out
 }
 
+/// Build the unified-diff body (no `---`/`+++` header) using Git's histogram
+/// algorithm, but applying `--ignore-blank-lines` / `-I` semantics through a
+/// faithful port of Git's xdiff change-record machinery
+/// (`xdl_mark_ignorable_lines` + `xdl_get_hunk` + `xdl_emit_diff`).
+///
+/// `is_ignorable_change` is called with the slices of removed and added lines
+/// for one change record (each item is the line text without its trailing
+/// newline); it returns `true` when the whole change is ignorable (Git's
+/// `xch->ignore`). Ignorable changes that are far from substantive changes are
+/// dropped, and hunk boundaries are computed with Git's `max_ignorable`
+/// distance rules so the line numbers and surviving context match Git exactly.
+///
+/// Returns the body only; an empty string means no substantive change survives.
+/// Optional `--function-context` (`-W`) hunk expansion is applied *after*
+/// ignorable change-record pruning so the boundaries/funcname header match Git.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn histogram_unified_body_ignore_fc<F>(
+    old_content: &str,
+    new_content: &str,
+    context_lines: usize,
+    inter_hunk_context: usize,
+    function_context: bool,
+    funcname_matcher: Option<&FuncnameMatcher>,
+    is_ignorable_change: F,
+) -> String
+where
+    F: Fn(&[&str], &[&str]) -> bool,
+{
+    use imara_diff::{Algorithm, Diff, Hunk, InternedInput};
+    use std::fmt::Write as _;
+
+    let input = InternedInput::new(old_content, new_content);
+    let mut diff = Diff::compute(Algorithm::Histogram, &input);
+    diff.postprocess_lines(&input);
+
+    let raw_hunks: Vec<Hunk> = diff.hunks().collect();
+    if raw_hunks.is_empty() {
+        return String::new();
+    }
+
+    let before_len = input.before.len() as i64;
+    let after_len = input.after.len() as i64;
+    let ctxlen = context_lines as i64;
+    let interhunk = inter_hunk_context as i64;
+    // Git's xdl_get_hunk fuse limit: 2*ctxlen + interhunkctxlen.
+    let max_common = ctxlen.saturating_add(ctxlen).saturating_add(interhunk);
+    let max_ignorable = ctxlen;
+
+    // A change record mirrors Git's xdchange_t.
+    struct Change {
+        i1: i64,
+        chg1: i64,
+        i2: i64,
+        chg2: i64,
+        ignore: bool,
+    }
+
+    let mut changes: Vec<Change> = Vec::with_capacity(raw_hunks.len());
+    for h in &raw_hunks {
+        let i1 = h.before.start as i64;
+        let chg1 = (h.before.end - h.before.start) as i64;
+        let i2 = h.after.start as i64;
+        let chg2 = (h.after.end - h.after.start) as i64;
+        let removed: Vec<&str> = input.before[h.before.start as usize..h.before.end as usize]
+            .iter()
+            .map(|&t| input.interner[t])
+            .collect();
+        let added: Vec<&str> = input.after[h.after.start as usize..h.after.end as usize]
+            .iter()
+            .map(|&t| input.interner[t])
+            .collect();
+        let ignore = is_ignorable_change(&removed, &added);
+        changes.push(Change {
+            i1,
+            chg1,
+            i2,
+            chg2,
+            ignore,
+        });
+    }
+
+    // Helper to fetch a line of either side (token interner over lines).
+    let before_line = |idx: i64| -> &str { input.interner[input.before[idx as usize]] };
+    let after_line = |idx: i64| -> &str { input.interner[input.after[idx as usize]] };
+
+    // Port of xdl_get_hunk: starting at change index `start`, return
+    // `(new_start, last)` — the possibly-advanced first change index (leading
+    // ignorable changes dropped) and the index of the last change to include in
+    // this hunk — or `None` when the leading ignorable changes are all dropped
+    // and nothing remains.
+    let get_hunk = |start: usize| -> Option<(usize, usize)> {
+        // Remove ignorable changes that are too far before other changes.
+        // Faithful port of xdl_get_hunk's leading loop: walk every leading
+        // ignorable change; whenever its successor is absent or far enough away
+        // (>= max_ignorable), advance the hunk start past it. `scr` is the new
+        // start index, or `changes.len()` when everything is dropped.
+        let mut scr = start;
+        let mut xchp = start;
+        while xchp < changes.len() && changes[xchp].ignore {
+            let next = xchp + 1;
+            if next >= changes.len()
+                || changes[next].i1 - (changes[xchp].i1 + changes[xchp].chg1) >= max_ignorable
+            {
+                scr = next;
+            }
+            xchp = next;
+        }
+        if scr >= changes.len() {
+            return None;
+        }
+
+        let mut lxch = scr;
+        let mut ignored: i64 = 0;
+        let mut xchp = scr;
+        let mut idx = scr + 1;
+        while idx < changes.len() {
+            let xch = &changes[idx];
+            let prev = &changes[xchp];
+            let distance = xch.i1 - (prev.i1 + prev.chg1);
+            if distance > max_common {
+                break;
+            }
+            if distance < max_ignorable && (!xch.ignore || lxch == xchp) {
+                lxch = idx;
+                ignored = 0;
+            } else if distance < max_ignorable && xch.ignore {
+                ignored += xch.chg2;
+            } else if lxch != xchp
+                && xch.i1 + ignored - (changes[lxch].i1 + changes[lxch].chg1) > max_common
+            {
+                break;
+            } else if !xch.ignore {
+                lxch = idx;
+                ignored = 0;
+            } else {
+                ignored += xch.chg2;
+            }
+            xchp = idx;
+            idx += 1;
+        }
+        Some((scr, lxch))
+    };
+
+    fn push_line(out: &mut String, prefix: char, text: &str) {
+        out.push(prefix);
+        out.push_str(text);
+        if !text.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+
+    // Git hunk header range (xdl_emit_hunk_hdr): `,count` part omitted when 1.
+    fn fmt_side(start: i64, count: i64) -> String {
+        if count == 1 {
+            format!("{start}")
+        } else {
+            format!("{start},{count}")
+        }
+    }
+
+    let mut out = String::new();
+    let mut cursor = 0usize;
+    while cursor < changes.len() {
+        let Some((xch_idx, xche_idx)) = get_hunk(cursor) else {
+            break;
+        };
+        let xch = &changes[xch_idx];
+        let xche = &changes[xche_idx];
+
+        // pre-context
+        let mut s1 = (xch.i1 - ctxlen).max(0);
+        let mut s2 = (xch.i2 - ctxlen).max(0);
+        // post-context (clamped so it does not run past either side's EOF).
+        let mut lctx = ctxlen;
+        lctx = lctx.min(before_len - (xche.i1 + xche.chg1));
+        lctx = lctx.min(after_len - (xche.i2 + xche.chg2));
+        let mut e1 = xche.i1 + xche.chg1 + lctx;
+        let mut e2 = xche.i2 + xche.chg2 + lctx;
+
+        // `--function-context`: expand the hunk up to the enclosing function's
+        // header and down to the line before the next function (Git's
+        // XDL_EMIT_FUNCCONTEXT in xemit.c), using the already ignore-pruned
+        // change boundaries.
+        if function_context {
+            // Upward: find the function line at or before xch.i1, then climb to
+            // the start of that function (past non-empty non-func lines).
+            let mut fs1 = xch.i1;
+            while fs1 >= 0 && !is_func_line(before_line(fs1), funcname_matcher) {
+                fs1 -= 1;
+            }
+            while fs1 > 0
+                && before_line(fs1 - 1).trim().is_empty() == false
+                && !is_func_line(before_line(fs1 - 1), funcname_matcher)
+            {
+                fs1 -= 1;
+            }
+            if fs1 < 0 {
+                fs1 = 0;
+            }
+            if fs1 < s1 {
+                s2 = (s2 - (s1 - fs1)).max(0);
+                s1 = fs1;
+            }
+            // Downward: find the next function line after the hunk end, climb up
+            // past trailing empty lines, and extend e1/e2 to it.
+            let end1 = xche.i1 + xche.chg1;
+            let mut fe1 = end1;
+            while fe1 < before_len && !is_func_line(before_line(fe1), funcname_matcher) {
+                fe1 += 1;
+            }
+            while fe1 > 0 && before_line(fe1 - 1).trim().is_empty() {
+                fe1 -= 1;
+            }
+            if fe1 > before_len {
+                fe1 = before_len;
+            }
+            if fe1 > e1 {
+                e2 = (e2 + (fe1 - e1)).min(after_len);
+                e1 = fe1;
+            }
+        }
+
+        let _ = writeln!(
+            out,
+            "@@ -{} +{} @@",
+            fmt_side(s1 + 1, e1 - s1),
+            fmt_side(s2 + 1, e2 - s2)
+        );
+
+        // Emit pre-context from the new side.
+        let mut s2c = s2;
+        while s2c < xch.i2 {
+            push_line(&mut out, ' ', after_line(s2c));
+            s2c += 1;
+        }
+
+        // Emit each change record and the context between merged records.
+        let mut s1c = xch.i1;
+        let mut s2c = xch.i2;
+        let mut k = xch_idx;
+        loop {
+            let c = &changes[k];
+            // Context between previous and current change atom.
+            while s1c < c.i1 && s2c < c.i2 {
+                push_line(&mut out, ' ', after_line(s2c));
+                s1c += 1;
+                s2c += 1;
+            }
+            // Removed lines from old side.
+            let mut r = c.i1;
+            while r < c.i1 + c.chg1 {
+                push_line(&mut out, '-', before_line(r));
+                r += 1;
+            }
+            // Added lines from new side.
+            let mut a = c.i2;
+            while a < c.i2 + c.chg2 {
+                push_line(&mut out, '+', after_line(a));
+                a += 1;
+            }
+            if k == xche_idx {
+                break;
+            }
+            s1c = c.i1 + c.chg1;
+            s2c = c.i2 + c.chg2;
+            k += 1;
+        }
+
+        // Post-context.
+        let mut s2p = xche.i2 + xche.chg2;
+        while s2p < e2 {
+            push_line(&mut out, ' ', after_line(s2p));
+            s2p += 1;
+        }
+
+        cursor = xche_idx + 1;
+    }
+
+    out
+}
+
 /// Unified diff hunks for Git's histogram algorithm (no `---` / `+++` lines).
 ///
 /// Used by `--no-index` when whitespace normalization is off so the patch matches upstream Git.
@@ -174,6 +455,102 @@ pub fn unified_diff_histogram_with_prefix_and_funcname(
 
     let body =
         histogram_unified_body_raw(old_content, new_content, context_lines, inter_hunk_context);
+
+    let mut output = String::new();
+    if old_path == "/dev/null" {
+        output.push_str("--- /dev/null\n");
+    } else if src_prefix.is_empty() {
+        output.push_str(&format!("--- {old_path}\n"));
+    } else {
+        output.push_str("--- ");
+        output.push_str(&format_diff_path_with_prefix(
+            src_prefix,
+            old_path,
+            quote_path_fully,
+        ));
+        output.push('\n');
+    }
+    if new_path == "/dev/null" {
+        output.push_str("+++ /dev/null\n");
+    } else if dst_prefix.is_empty() {
+        output.push_str(&format!("+++ {new_path}\n"));
+    } else {
+        output.push_str("+++ ");
+        output.push_str(&format_diff_path_with_prefix(
+            dst_prefix,
+            new_path,
+            quote_path_fully,
+        ));
+        output.push('\n');
+    }
+
+    let old_lines: Vec<&str> = old_content.lines().collect();
+    for hunk_str in imara_unified_hunk_slices(&body) {
+        if hunk_str.is_empty() {
+            continue;
+        }
+        if let Some(first_newline) = hunk_str.find('\n') {
+            let header_line = &hunk_str[..first_newline];
+            let rest = &hunk_str[first_newline..];
+            if let Some(func_ctx) =
+                extract_function_context(header_line, &old_lines, funcname_matcher)
+            {
+                output.push_str(header_line);
+                output.push(' ');
+                output.push_str(&func_ctx);
+                output.push_str(rest);
+            } else {
+                output.push_str(hunk_str);
+            }
+        } else {
+            output.push_str(hunk_str);
+        }
+    }
+
+    output
+}
+
+/// Full unified diff (`---` / `+++` / hunks) using Git's histogram algorithm,
+/// applying `--ignore-blank-lines` / `-I` change-record suppression
+/// ([`histogram_unified_body_ignore`]) and then attaching function-name hunk
+/// headers exactly like [`unified_diff_histogram_with_prefix_and_funcname`].
+///
+/// `is_ignorable_change` is given the removed/added line slices (without
+/// trailing newlines) of one change record and returns whether the whole change
+/// is ignorable. Returns an empty string when no substantive change survives so
+/// the caller can hide the file entry.
+#[allow(clippy::too_many_arguments)]
+pub fn unified_diff_histogram_ignore_with_prefix_and_funcname<F>(
+    old_content: &str,
+    new_content: &str,
+    old_path: &str,
+    new_path: &str,
+    context_lines: usize,
+    inter_hunk_context: usize,
+    src_prefix: &str,
+    dst_prefix: &str,
+    funcname_matcher: Option<&FuncnameMatcher>,
+    quote_path_fully: bool,
+    function_context: bool,
+    is_ignorable_change: F,
+) -> String
+where
+    F: Fn(&[&str], &[&str]) -> bool,
+{
+    use crate::quote_path::format_diff_path_with_prefix;
+
+    let body = histogram_unified_body_ignore_fc(
+        old_content,
+        new_content,
+        context_lines,
+        inter_hunk_context,
+        function_context,
+        funcname_matcher,
+        is_ignorable_change,
+    );
+    if body.is_empty() {
+        return String::new();
+    }
 
     let mut output = String::new();
     if old_path == "/dev/null" {
@@ -275,69 +652,644 @@ pub fn parse_indent_heuristic_cli_flags(argv: &[String]) -> (bool, bool) {
     (indent_heuristic, no_indent_heuristic)
 }
 
-/// Diff two token streams with imara's Myers implementation (Git's default xdiff engine) and
-/// return the result as `similar::DiffOp`s. Used by the word-diff machinery, where matching
-/// Git's exact LCS tie-breaking matters (`similar`'s Myers picks different — but equally
-/// minimal — alignments, mismatching Git's reference output for e.g. the `ada` driver).
+// ---------------------------------------------------------------------------
+// Faithful port of Git's xdiff Myers engine (xdiff/xdiffi.c + xprepare.c),
+// restricted to what the word-diff path needs (no rename/ignore-whitespace
+// flags). Git's word diff runs the *default* xdiff Myers over the per-word
+// token streams; matching Git's exact change-record selection requires
+// reproducing its preprocessing (record classification + `xdl_cleanup_records`
+// + `xdl_trim_ends`) and its divide-and-conquer split, because `imara-diff`
+// (and `similar`) pick different — but equally minimal — alignments for inputs
+// with many repeated tokens (e.g. the `{`/`}`/`,` in the `bibtex` driver).
+mod git_xdiff {
+    const XDL_MAX_COST_MIN: i64 = 256;
+    const XDL_HEUR_MIN_COST: i64 = 256;
+    const XDL_SNAKE_CNT: i64 = 20;
+    const XDL_K_HEUR: i64 = 4;
+    const XDL_LINE_MAX: i64 = i64::MAX;
+    const XDL_KPDIS_RUN: i64 = 4;
+    const XDL_MAX_EQLIMIT: i64 = 1024;
+    const XDL_SIMSCAN_WINDOW: i64 = 100;
+
+    // record-classification actions (xprepare.c)
+    const DISCARD: u8 = 0;
+    const KEEP: u8 = 1;
+    const INVESTIGATE: u8 = 2;
+
+    /// Classical integer square root approximation using shifts (`xdl_bogosqrt`).
+    fn bogosqrt(mut n: i64) -> i64 {
+        let mut i: i64 = 1;
+        while n > 0 {
+            i <<= 1;
+            n >>= 2;
+        }
+        i
+    }
+
+    struct XdAlgoEnv {
+        mxcost: i64,
+        snake_cnt: i64,
+        heur_min: i64,
+    }
+
+    struct XdpSplit {
+        i1: i64,
+        i2: i64,
+        min_lo: bool,
+        min_hi: bool,
+    }
+
+    /// A single side of the diff: token ids plus the `changed` flags and the
+    /// `reference_index` mapping from effective record -> original record.
+    struct XdFile<'a> {
+        ids: &'a [u32],
+        changed: Vec<bool>,
+        reference_index: Vec<usize>,
+        dstart: i64,
+        dend: i64,
+        nreff: i64,
+    }
+
+    /// Hash/id lookup over the *effective* records: index into `reference_index`.
+    #[inline]
+    fn get_id(xdf: &XdFile<'_>, idx: i64) -> u32 {
+        xdf.ids[xdf.reference_index[idx as usize]]
+    }
+
+    /// Faithful port of `xdl_split` (the middle-snake finder). `kvdf`/`kvdb` are
+    /// the forward/backward k-vectors, offset so index 0 maps to diagonal 0.
+    #[allow(clippy::too_many_arguments)]
+    fn xdl_split(
+        xdf1: &XdFile<'_>,
+        off1: i64,
+        lim1: i64,
+        xdf2: &XdFile<'_>,
+        off2: i64,
+        lim2: i64,
+        kvdf: &mut [i64],
+        kvdb: &mut [i64],
+        koff: i64,
+        need_min: bool,
+        spl: &mut XdpSplit,
+        xenv: &XdAlgoEnv,
+    ) -> i64 {
+        let dmin = off1 - lim2;
+        let dmax = lim1 - off2;
+        let fmid = off1 - off2;
+        let bmid = lim1 - lim2;
+        let odd = ((fmid - bmid) & 1) != 0;
+        let mut fmin = fmid;
+        let mut fmax = fmid;
+        let mut bmin = bmid;
+        let mut bmax = bmid;
+
+        let kf = |k: i64| -> usize { (k + koff) as usize };
+
+        kvdf[kf(fmid)] = off1;
+        kvdb[kf(bmid)] = lim1;
+
+        let mut ec: i64 = 1;
+        loop {
+            let mut got_snake = false;
+
+            if fmin > dmin {
+                fmin -= 1;
+                kvdf[kf(fmin - 1)] = -1;
+            } else {
+                fmin += 1;
+            }
+            if fmax < dmax {
+                fmax += 1;
+                kvdf[kf(fmax + 1)] = -1;
+            } else {
+                fmax -= 1;
+            }
+
+            let mut d = fmax;
+            while d >= fmin {
+                let mut i1 = if kvdf[kf(d - 1)] >= kvdf[kf(d + 1)] {
+                    kvdf[kf(d - 1)] + 1
+                } else {
+                    kvdf[kf(d + 1)]
+                };
+                let prev1 = i1;
+                let mut i2 = i1 - d;
+                while i1 < lim1 && i2 < lim2 && get_id(xdf1, i1) == get_id(xdf2, i2) {
+                    i1 += 1;
+                    i2 += 1;
+                }
+                if i1 - prev1 > xenv.snake_cnt {
+                    got_snake = true;
+                }
+                kvdf[kf(d)] = i1;
+                if odd && bmin <= d && d <= bmax && kvdb[kf(d)] <= i1 {
+                    spl.i1 = i1;
+                    spl.i2 = i2;
+                    spl.min_lo = true;
+                    spl.min_hi = true;
+                    return ec;
+                }
+                d -= 2;
+            }
+
+            if bmin > dmin {
+                bmin -= 1;
+                kvdb[kf(bmin - 1)] = XDL_LINE_MAX;
+            } else {
+                bmin += 1;
+            }
+            if bmax < dmax {
+                bmax += 1;
+                kvdb[kf(bmax + 1)] = XDL_LINE_MAX;
+            } else {
+                bmax -= 1;
+            }
+
+            let mut d = bmax;
+            while d >= bmin {
+                let mut i1 = if kvdb[kf(d - 1)] < kvdb[kf(d + 1)] {
+                    kvdb[kf(d - 1)]
+                } else {
+                    kvdb[kf(d + 1)] - 1
+                };
+                let prev1 = i1;
+                let mut i2 = i1 - d;
+                while i1 > off1 && i2 > off2 && get_id(xdf1, i1 - 1) == get_id(xdf2, i2 - 1) {
+                    i1 -= 1;
+                    i2 -= 1;
+                }
+                if prev1 - i1 > xenv.snake_cnt {
+                    got_snake = true;
+                }
+                kvdb[kf(d)] = i1;
+                if !odd && fmin <= d && d <= fmax && i1 <= kvdf[kf(d)] {
+                    spl.i1 = i1;
+                    spl.i2 = i2;
+                    spl.min_lo = true;
+                    spl.min_hi = true;
+                    return ec;
+                }
+                d -= 2;
+            }
+
+            if need_min {
+                ec += 1;
+                continue;
+            }
+
+            if got_snake && ec > xenv.heur_min {
+                let mut best = 0i64;
+                let mut d = fmax;
+                while d >= fmin {
+                    let dd = if d > fmid { d - fmid } else { fmid - d };
+                    let i1 = kvdf[kf(d)];
+                    let i2 = i1 - d;
+                    let v = (i1 - off1) + (i2 - off2) - dd;
+                    if v > XDL_K_HEUR * ec
+                        && v > best
+                        && off1 + xenv.snake_cnt <= i1
+                        && i1 < lim1
+                        && off2 + xenv.snake_cnt <= i2
+                        && i2 < lim2
+                    {
+                        let mut k = 1i64;
+                        while get_id(xdf1, i1 - k) == get_id(xdf2, i2 - k) {
+                            if k == xenv.snake_cnt {
+                                best = v;
+                                spl.i1 = i1;
+                                spl.i2 = i2;
+                                break;
+                            }
+                            k += 1;
+                        }
+                    }
+                    d -= 2;
+                }
+                if best > 0 {
+                    spl.min_lo = true;
+                    spl.min_hi = false;
+                    return ec;
+                }
+
+                let mut best = 0i64;
+                let mut d = bmax;
+                while d >= bmin {
+                    let dd = if d > bmid { d - bmid } else { bmid - d };
+                    let i1 = kvdb[kf(d)];
+                    let i2 = i1 - d;
+                    let v = (lim1 - i1) + (lim2 - i2) - dd;
+                    if v > XDL_K_HEUR * ec
+                        && v > best
+                        && off1 < i1
+                        && i1 <= lim1 - xenv.snake_cnt
+                        && off2 < i2
+                        && i2 <= lim2 - xenv.snake_cnt
+                    {
+                        let mut k = 0i64;
+                        while get_id(xdf1, i1 + k) == get_id(xdf2, i2 + k) {
+                            if k == xenv.snake_cnt - 1 {
+                                best = v;
+                                spl.i1 = i1;
+                                spl.i2 = i2;
+                                break;
+                            }
+                            k += 1;
+                        }
+                    }
+                    d -= 2;
+                }
+                if best > 0 {
+                    spl.min_lo = false;
+                    spl.min_hi = true;
+                    return ec;
+                }
+            }
+
+            if ec >= xenv.mxcost {
+                let mut fbest = -1i64;
+                let mut fbest1 = -1i64;
+                let mut d = fmax;
+                while d >= fmin {
+                    let mut i1 = kvdf[kf(d)].min(lim1);
+                    let mut i2 = i1 - d;
+                    if lim2 < i2 {
+                        i1 = lim2 + d;
+                        i2 = lim2;
+                    }
+                    if fbest < i1 + i2 {
+                        fbest = i1 + i2;
+                        fbest1 = i1;
+                    }
+                    d -= 2;
+                }
+
+                let mut bbest = XDL_LINE_MAX;
+                let mut bbest1 = XDL_LINE_MAX;
+                let mut d = bmax;
+                while d >= bmin {
+                    let mut i1 = off1.max(kvdb[kf(d)]);
+                    let mut i2 = i1 - d;
+                    if i2 < off2 {
+                        i1 = off2 + d;
+                        i2 = off2;
+                    }
+                    if i1 + i2 < bbest {
+                        bbest = i1 + i2;
+                        bbest1 = i1;
+                    }
+                    d -= 2;
+                }
+
+                if (lim1 + lim2) - bbest < fbest - (off1 + off2) {
+                    spl.i1 = fbest1;
+                    spl.i2 = fbest - fbest1;
+                    spl.min_lo = true;
+                    spl.min_hi = false;
+                } else {
+                    spl.i1 = bbest1;
+                    spl.i2 = bbest - bbest1;
+                    spl.min_lo = false;
+                    spl.min_hi = true;
+                }
+                return ec;
+            }
+
+            ec += 1;
+        }
+    }
+
+    /// Faithful port of `xdl_recs_cmp` (divide & conquer). Marks `changed` flags.
+    #[allow(clippy::too_many_arguments)]
+    fn xdl_recs_cmp(
+        xdf1: &mut XdFile<'_>,
+        mut off1: i64,
+        mut lim1: i64,
+        xdf2: &mut XdFile<'_>,
+        mut off2: i64,
+        mut lim2: i64,
+        kvdf: &mut [i64],
+        kvdb: &mut [i64],
+        koff: i64,
+        need_min: bool,
+        xenv: &XdAlgoEnv,
+    ) {
+        while off1 < lim1 && off2 < lim2 && get_id(xdf1, off1) == get_id(xdf2, off2) {
+            off1 += 1;
+            off2 += 1;
+        }
+        while off1 < lim1 && off2 < lim2 && get_id(xdf1, lim1 - 1) == get_id(xdf2, lim2 - 1) {
+            lim1 -= 1;
+            lim2 -= 1;
+        }
+
+        if off1 == lim1 {
+            while off2 < lim2 {
+                let r = xdf2.reference_index[off2 as usize];
+                xdf2.changed[r] = true;
+                off2 += 1;
+            }
+        } else if off2 == lim2 {
+            while off1 < lim1 {
+                let r = xdf1.reference_index[off1 as usize];
+                xdf1.changed[r] = true;
+                off1 += 1;
+            }
+        } else {
+            let mut spl = XdpSplit {
+                i1: 0,
+                i2: 0,
+                min_lo: false,
+                min_hi: false,
+            };
+            xdl_split(
+                xdf1, off1, lim1, xdf2, off2, lim2, kvdf, kvdb, koff, need_min, &mut spl, xenv,
+            );
+            xdl_recs_cmp(
+                xdf1, off1, spl.i1, xdf2, off2, spl.i2, kvdf, kvdb, koff, spl.min_lo, xenv,
+            );
+            xdl_recs_cmp(
+                xdf1, spl.i1, lim1, xdf2, spl.i2, lim2, kvdf, kvdb, koff, spl.min_hi, xenv,
+            );
+        }
+    }
+
+    /// `xdl_clean_mmatch`: decide whether a multimatch record should be discarded.
+    fn clean_mmatch(action: &[u8], i: i64, mut s: i64, mut e: i64) -> bool {
+        if i - s > XDL_SIMSCAN_WINDOW {
+            s = i - XDL_SIMSCAN_WINDOW;
+        }
+        if e - i > XDL_SIMSCAN_WINDOW {
+            e = i + XDL_SIMSCAN_WINDOW;
+        }
+
+        let mut rdis0 = 0i64;
+        let mut rpdis0 = 1i64;
+        let mut r = 1i64;
+        while i - r >= s {
+            match action[(i - r) as usize] {
+                DISCARD => rdis0 += 1,
+                INVESTIGATE => rpdis0 += 1,
+                _ => break, // KEEP
+            }
+            r += 1;
+        }
+        if rdis0 == 0 {
+            return false;
+        }
+        let mut rdis1 = 0i64;
+        let mut rpdis1 = 1i64;
+        let mut r = 1i64;
+        while i + r <= e {
+            match action[(i + r) as usize] {
+                DISCARD => rdis1 += 1,
+                INVESTIGATE => rpdis1 += 1,
+                _ => break, // KEEP
+            }
+            r += 1;
+        }
+        if rdis1 == 0 {
+            return false;
+        }
+        rdis1 += rdis0;
+        rpdis1 += rpdis0;
+        rpdis1 * XDL_KPDIS_RUN < (rpdis1 + rdis1)
+    }
+
+    /// Build the `changed` flags for both token streams using Git's xdiff Myers
+    /// pipeline. `ids1`/`ids2` are interned token ids (equal id <=> equal token).
+    /// Returns `(changed1, changed2)`, one bool per original token.
+    pub fn changed_flags(ids1: &[u32], ids2: &[u32]) -> (Vec<bool>, Vec<bool>) {
+        let nrec1 = ids1.len();
+        let nrec2 = ids2.len();
+
+        // Per-token occurrence counts on each side (class len1/len2).
+        use std::collections::HashMap;
+        let mut count1: HashMap<u32, i64> = HashMap::new();
+        let mut count2: HashMap<u32, i64> = HashMap::new();
+        for &id in ids1 {
+            *count1.entry(id).or_insert(0) += 1;
+        }
+        for &id in ids2 {
+            *count2.entry(id).or_insert(0) += 1;
+        }
+
+        let mut xdf1 = XdFile {
+            ids: ids1,
+            changed: vec![false; nrec1],
+            reference_index: Vec::new(),
+            dstart: 0,
+            dend: nrec1 as i64 - 1,
+            nreff: 0,
+        };
+        let mut xdf2 = XdFile {
+            ids: ids2,
+            changed: vec![false; nrec2],
+            reference_index: Vec::new(),
+            dstart: 0,
+            dend: nrec2 as i64 - 1,
+            nreff: 0,
+        };
+
+        // xdl_trim_ends: trim leading/trailing matching records.
+        let lim = nrec1.min(nrec2) as i64;
+        let mut i = 0i64;
+        while i < lim && ids1[i as usize] == ids2[i as usize] {
+            i += 1;
+        }
+        xdf1.dstart = i;
+        xdf2.dstart = i;
+        let mut j = 0i64;
+        let rem = lim - i;
+        while j < rem && ids1[nrec1 - 1 - j as usize] == ids2[nrec2 - 1 - j as usize] {
+            j += 1;
+        }
+        xdf1.dend = nrec1 as i64 - j - 1;
+        xdf2.dend = nrec2 as i64 - j - 1;
+
+        // xdl_cleanup_records: classify and reduce to effective records.
+        let mut action1 = vec![0u8; nrec1 + 1];
+        let mut action2 = vec![0u8; nrec2 + 1];
+
+        let mut mlim = bogosqrt(nrec1 as i64);
+        if mlim > XDL_MAX_EQLIMIT {
+            mlim = XDL_MAX_EQLIMIT;
+        }
+        let mut idx = xdf1.dstart;
+        while idx <= xdf1.dend {
+            let id = ids1[idx as usize];
+            let nm = *count2.get(&id).unwrap_or(&0);
+            action1[idx as usize] = if nm == 0 {
+                DISCARD
+            } else if nm >= mlim {
+                INVESTIGATE
+            } else {
+                KEEP
+            };
+            idx += 1;
+        }
+
+        let mut mlim = bogosqrt(nrec2 as i64);
+        if mlim > XDL_MAX_EQLIMIT {
+            mlim = XDL_MAX_EQLIMIT;
+        }
+        let mut idx = xdf2.dstart;
+        while idx <= xdf2.dend {
+            let id = ids2[idx as usize];
+            let nm = *count1.get(&id).unwrap_or(&0);
+            action2[idx as usize] = if nm == 0 {
+                DISCARD
+            } else if nm >= mlim {
+                INVESTIGATE
+            } else {
+                KEEP
+            };
+            idx += 1;
+        }
+
+        let mut idx = xdf1.dstart;
+        while idx <= xdf1.dend {
+            let a = action1[idx as usize];
+            if a == KEEP
+                || (a == INVESTIGATE && !clean_mmatch(&action1, idx, xdf1.dstart, xdf1.dend))
+            {
+                xdf1.reference_index.push(idx as usize);
+            } else {
+                xdf1.changed[idx as usize] = true;
+            }
+            idx += 1;
+        }
+        xdf1.nreff = xdf1.reference_index.len() as i64;
+
+        let mut idx = xdf2.dstart;
+        while idx <= xdf2.dend {
+            let a = action2[idx as usize];
+            if a == KEEP
+                || (a == INVESTIGATE && !clean_mmatch(&action2, idx, xdf2.dstart, xdf2.dend))
+            {
+                xdf2.reference_index.push(idx as usize);
+            } else {
+                xdf2.changed[idx as usize] = true;
+            }
+            idx += 1;
+        }
+        xdf2.nreff = xdf2.reference_index.len() as i64;
+
+        // Allocate K vectors (xdl_do_diff). koff lets us use negative diagonals.
+        let ndiags = xdf1.nreff + xdf2.nreff + 3;
+        let kvd_len = (2 * ndiags + 2) as usize;
+        let mut kvd = vec![0i64; kvd_len];
+        // kvdf base offset = nreff2 + 1; kvdb base offset = ndiags + nreff2 + 1.
+        let koff = xdf2.nreff + 1;
+        let (kvdf_slice, kvdb_slice) = kvd.split_at_mut(ndiags as usize);
+        // Both slices are indexed as [k + koff]; their length covers the diagonal range.
+
+        let xenv = XdAlgoEnv {
+            mxcost: bogosqrt(ndiags).max(XDL_MAX_COST_MIN),
+            snake_cnt: XDL_SNAKE_CNT,
+            heur_min: XDL_HEUR_MIN_COST,
+        };
+
+        let nreff1 = xdf1.nreff;
+        let nreff2 = xdf2.nreff;
+        xdl_recs_cmp(
+            &mut xdf1, 0, nreff1, &mut xdf2, 0, nreff2, kvdf_slice, kvdb_slice, koff, false, &xenv,
+        );
+
+        (xdf1.changed, xdf2.changed)
+    }
+}
+
+/// Convert per-token `changed` flags (Git xdiff style) into `similar::DiffOp`s.
+fn changed_flags_to_ops(
+    changed1: &[bool],
+    changed2: &[bool],
+    old_len: usize,
+    new_len: usize,
+) -> Vec<similar::DiffOp> {
+    use similar::DiffOp;
+    let mut ops: Vec<DiffOp> = Vec::new();
+    let mut i = 0usize;
+    let mut j = 0usize;
+    while i < old_len || j < new_len {
+        let del = i < old_len && changed1[i];
+        let ins = j < new_len && changed2[j];
+        if !del && !ins {
+            // Equal run.
+            let start_i = i;
+            let start_j = j;
+            while i < old_len && j < new_len && !changed1[i] && !changed2[j] {
+                i += 1;
+                j += 1;
+            }
+            ops.push(DiffOp::Equal {
+                old_index: start_i,
+                new_index: start_j,
+                len: i - start_i,
+            });
+        } else {
+            // Changed run: consecutive deletions then/and insertions.
+            let start_i = i;
+            let start_j = j;
+            while i < old_len && changed1[i] {
+                i += 1;
+            }
+            while j < new_len && changed2[j] {
+                j += 1;
+            }
+            let dlen = i - start_i;
+            let ilen = j - start_j;
+            if dlen > 0 && ilen > 0 {
+                ops.push(DiffOp::Replace {
+                    old_index: start_i,
+                    old_len: dlen,
+                    new_index: start_j,
+                    new_len: ilen,
+                });
+            } else if dlen > 0 {
+                ops.push(DiffOp::Delete {
+                    old_index: start_i,
+                    old_len: dlen,
+                    new_index: start_j,
+                });
+            } else if ilen > 0 {
+                ops.push(DiffOp::Insert {
+                    old_index: start_i,
+                    new_index: start_j,
+                    new_len: ilen,
+                });
+            }
+        }
+    }
+    ops
+}
+
+/// Diff two token streams with a faithful port of Git's xdiff Myers engine and return the
+/// result as `similar::DiffOp`s. Used by the word-diff machinery, where matching Git's exact
+/// record selection and tie-breaking matters: `imara-diff`/`similar` pick different — but
+/// equally minimal — alignments for streams with many repeated tokens (e.g. the `bibtex`
+/// driver's `{`/`}`/`,`), mismatching Git's reference output.
 #[must_use]
 pub fn word_diff_ops_imara(old_words: &[&str], new_words: &[&str]) -> Vec<similar::DiffOp> {
-    use imara_diff::{Algorithm, Diff, InternedInput};
-    use similar::DiffOp;
+    use std::collections::HashMap;
 
-    let mut input: InternedInput<&str> = InternedInput::default();
-    input.update_before(old_words.iter().copied());
-    input.update_after(new_words.iter().copied());
-    let mut diff = Diff::compute(Algorithm::Myers, &input);
-    diff.postprocess_lines(&input);
+    // Intern tokens to ids (equal id <=> equal token), mirroring xdiff's record hashing.
+    let mut interner: HashMap<&str, u32> = HashMap::new();
+    let mut ids1: Vec<u32> = Vec::with_capacity(old_words.len());
+    for &w in old_words {
+        let next = interner.len() as u32;
+        let id = *interner.entry(w).or_insert(next);
+        ids1.push(id);
+    }
+    let mut ids2: Vec<u32> = Vec::with_capacity(new_words.len());
+    for &w in new_words {
+        let next = interner.len() as u32;
+        let id = *interner.entry(w).or_insert(next);
+        ids2.push(id);
+    }
 
-    let mut ops: Vec<DiffOp> = Vec::new();
-    let mut old_pos = 0usize;
-    let mut new_pos = 0usize;
-    for hunk in diff.hunks() {
-        let b_start = hunk.before.start as usize;
-        let b_end = hunk.before.end as usize;
-        let a_start = hunk.after.start as usize;
-        let a_end = hunk.after.end as usize;
-        if b_start > old_pos {
-            let len = b_start - old_pos;
-            ops.push(DiffOp::Equal {
-                old_index: old_pos,
-                new_index: new_pos,
-                len,
-            });
-        }
-        let del = b_end - b_start;
-        let ins = a_end - a_start;
-        if del > 0 && ins > 0 {
-            ops.push(DiffOp::Replace {
-                old_index: b_start,
-                old_len: del,
-                new_index: a_start,
-                new_len: ins,
-            });
-        } else if del > 0 {
-            ops.push(DiffOp::Delete {
-                old_index: b_start,
-                old_len: del,
-                new_index: a_start,
-            });
-        } else if ins > 0 {
-            ops.push(DiffOp::Insert {
-                old_index: b_start,
-                new_index: a_start,
-                new_len: ins,
-            });
-        }
-        old_pos = b_end;
-        new_pos = a_end;
-    }
-    if old_pos < old_words.len() {
-        ops.push(DiffOp::Equal {
-            old_index: old_pos,
-            new_index: new_pos,
-            len: old_words.len() - old_pos,
-        });
-    }
+    let (changed1, changed2) = git_xdiff::changed_flags(&ids1, &ids2);
+    let ops = changed_flags_to_ops(&changed1, &changed2, old_words.len(), new_words.len());
+
     // Slide changed runs to Git's canonical position (`xdl_change_compact`); the word
     // diff never enables the indent heuristic.
     diff_indent_heuristic::apply_change_compact_to_ops(&ops, old_words, new_words, false)
@@ -1024,6 +1976,26 @@ pub fn diff_index_to_worktree_with_options(
         if ie.mode == 0o160000 {
             let sub_dir = work_tree.join(path_str_ref);
             let sub_head_oid = read_submodule_head_oid(&sub_dir);
+            // A gitlink whose worktree directory is entirely absent is a deleted submodule. Git's
+            // `check_removed` (diff-lib.c) `lstat`s the path first: a missing directory is reported
+            // as a removal (`D`, new mode 000000), *before* the submodule "not checked out" special
+            // case (which only applies when the directory exists). An empty directory that exists is
+            // a placeholder and stays unchanged. Skipped when `simplify_gitlinks` so callers that
+            // only compare recorded HEADs keep their behaviour. (t4060 #50/#51.)
+            if !simplify_gitlinks && sub_head_oid.is_none() && !sub_dir.exists() {
+                let path_owned = path_str_ref.to_owned();
+                result.push(DiffEntry {
+                    status: DiffStatus::Deleted,
+                    old_path: Some(path_owned.clone()),
+                    new_path: Some(path_owned),
+                    old_mode: format_mode(ie.mode),
+                    new_mode: "000000".to_owned(),
+                    old_oid: ie.oid,
+                    new_oid: zero_oid(),
+                    score: None,
+                });
+                continue;
+            }
             let ref_matches = if let Some(oid) = sub_head_oid {
                 oid == ie.oid
             } else {
@@ -1054,6 +2026,15 @@ pub fn diff_index_to_worktree_with_options(
                     });
                 }
                 continue;
+            }
+            // A populated submodule whose HEAD points at a commit object that is missing from its
+            // own object store is corrupt. Git's `is_submodule_modified` shells `git status` into
+            // the submodule, which fails, and Git aborts the surrounding status/diff. Mirror that:
+            // a broken submodule is a hard error rather than a silently-clean gitlink (t5526 #38).
+            if sub_head_oid.is_some() && submodule_head_object_broken(&sub_dir) {
+                return Err(Error::ConfigError(format!(
+                    "'git status --porcelain=2' failed in submodule {path_str_ref}"
+                )));
             }
             let mut flags = submodule_porcelain_flags(work_tree, path_str_ref, ie.oid);
             if ignore_submodule_untracked {
@@ -1721,34 +2702,70 @@ pub fn diff_tree_to_worktree(
                 .get(path.as_bytes())
                 .is_some_and(|ie| ie.mode == 0o160000);
         if is_gitlink {
-            if let Some(te) = tree_entry {
-                let sub_dir = work_tree.join(path);
-                let sub_head = read_submodule_head_oid(&sub_dir);
-                let index_oid = index_entries
-                    .get(path.as_bytes())
-                    .filter(|ie| ie.mode == 0o160000)
-                    .map(|ie| ie.oid);
-                let index_matches_tree = index_oid.is_some_and(|oid| oid == te.oid);
-                let head_differs = sub_head.as_ref() != Some(&te.oid);
-                let dirty_while_aligned = index_matches_tree
-                    && !head_differs
-                    && submodule_has_dirty_worktree_for_super_diff(work_tree, path, &te.oid);
-                if head_differs || dirty_while_aligned {
-                    // Raw `git diff <tree>` lines use a null OID on the worktree side when the
-                    // checked-out submodule HEAD differs from the tree's gitlink; patch output still
-                    // resolves the real commit from the submodule directory.
-                    let new_oid = if head_differs { zero_oid() } else { te.oid };
+            let sub_dir = work_tree.join(path);
+            let index_gitlink_oid = index_entries
+                .get(path.as_bytes())
+                .filter(|ie| ie.mode == 0o160000)
+                .map(|ie| ie.oid);
+            match (tree_entry, index_gitlink_oid) {
+                (Some(te), _) => {
+                    let sub_head = read_submodule_head_oid(&sub_dir);
+                    // A gitlink whose worktree directory no longer exists is a deleted submodule:
+                    // Git's `diff-lib.c` reports it as a deletion (status `D`, new mode 000000) and
+                    // `--submodule` renders the `(submodule deleted)` summary (t4041 #46).
+                    if sub_head.is_none() && !sub_dir.exists() {
+                        result.push(DiffEntry {
+                            status: DiffStatus::Deleted,
+                            old_path: Some(path.clone()),
+                            new_path: Some(path.clone()),
+                            old_mode: format_mode(te.mode),
+                            new_mode: "000000".to_string(),
+                            old_oid: te.oid,
+                            new_oid: zero_oid(),
+                            score: None,
+                        });
+                        continue;
+                    }
+                    let index_matches_tree = index_gitlink_oid.is_some_and(|oid| oid == te.oid);
+                    let head_differs = sub_head.as_ref() != Some(&te.oid);
+                    let dirty_while_aligned = index_matches_tree
+                        && !head_differs
+                        && submodule_has_dirty_worktree_for_super_diff(work_tree, path, &te.oid);
+                    if head_differs || dirty_while_aligned {
+                        // Raw `git diff <tree>` lines use a null OID on the worktree side when the
+                        // checked-out submodule HEAD differs from the tree's gitlink; patch output
+                        // still resolves the real commit from the submodule directory.
+                        let new_oid = if head_differs { zero_oid() } else { te.oid };
+                        result.push(DiffEntry {
+                            status: DiffStatus::Modified,
+                            old_path: Some(path.clone()),
+                            new_path: Some(path.clone()),
+                            old_mode: format_mode(te.mode),
+                            new_mode: format_mode(te.mode),
+                            old_oid: te.oid,
+                            new_oid,
+                            score: None,
+                        });
+                    }
+                }
+                (None, Some(idx_oid)) => {
+                    // Gitlink staged in the index but absent from the tree: a new submodule. Git
+                    // reports it as an addition (status `A`) with the index gitlink on the new side,
+                    // so `--submodule` renders `(new submodule)` (t4041 #46). The patch renderer
+                    // resolves the real commit from the index OID / submodule HEAD.
+                    let new_oid = read_submodule_head_oid(&sub_dir).unwrap_or(idx_oid);
                     result.push(DiffEntry {
-                        status: DiffStatus::Modified,
+                        status: DiffStatus::Added,
                         old_path: Some(path.clone()),
                         new_path: Some(path.clone()),
-                        old_mode: format_mode(te.mode),
-                        new_mode: format_mode(te.mode),
-                        old_oid: te.oid,
+                        old_mode: "000000".to_string(),
+                        new_mode: format_mode(0o160000),
+                        old_oid: zero_oid(),
                         new_oid,
                         score: None,
                     });
                 }
+                (None, None) => {}
             }
             continue;
         }
@@ -2810,21 +3827,9 @@ pub fn unified_diff_with_prefix_and_funcname_and_algorithm(
     indent_heuristic: bool,
     quote_path_fully: bool,
 ) -> String {
-    if use_git_histogram {
-        return unified_diff_histogram_with_prefix_and_funcname(
-            old_content,
-            new_content,
-            old_path,
-            new_path,
-            context_lines,
-            inter_hunk_context,
-            src_prefix,
-            dst_prefix,
-            funcname_matcher,
-            quote_path_fully,
-        );
-    }
-
+    // `--function-context` (`-W`) expansion must apply regardless of the line
+    // algorithm; the histogram body printer below does not do it, so route `-W`
+    // through the function-context emitter first (t4015 #136).
     if function_context {
         return unified_diff_with_function_context(
             old_content,
@@ -2838,6 +3843,21 @@ pub fn unified_diff_with_prefix_and_funcname_and_algorithm(
             funcname_matcher,
             algorithm,
             indent_heuristic,
+            quote_path_fully,
+        );
+    }
+
+    if use_git_histogram {
+        return unified_diff_histogram_with_prefix_and_funcname(
+            old_content,
+            new_content,
+            old_path,
+            new_path,
+            context_lines,
+            inter_hunk_context,
+            src_prefix,
+            dst_prefix,
+            funcname_matcher,
             quote_path_fully,
         );
     }
@@ -3015,7 +4035,7 @@ fn unified_diff_with_function_context(
     quote_path_fully: bool,
 ) -> String {
     use crate::quote_path::format_diff_path_with_prefix;
-    use similar::{group_diff_ops, udiff::UnifiedDiffHunk, TextDiff};
+    use similar::{udiff::UnifiedDiffHunk, TextDiff};
 
     let diff = TextDiff::configure()
         .algorithm(algorithm)
@@ -3026,11 +4046,17 @@ fn unified_diff_with_function_context(
     let n_old = old_lines.len();
     let n_new = new_lines.len();
 
-    let group_radius = context_lines
+    // Group changes the way Git's xdl_get_hunk does: merge while the unchanged
+    // gap is at most `2*context + inter_hunk_context`. `similar::group_diff_ops`
+    // splits only at gap > `2*radius`, which over-merges changes in *different*
+    // functions (e.g. a leading insertion and a body change) into one hunk and
+    // then over-expands the function context (t4015 #136). Use the gap-correct
+    // grouping (same as the non-function-context path).
+    let max_common_gap = context_lines
         .saturating_mul(2)
         .saturating_add(inter_hunk_context);
     let all_ops = diff.ops().to_vec();
-    let op_groups = group_diff_ops(all_ops.clone(), group_radius);
+    let op_groups = group_diff_ops_gap(all_ops.clone(), context_lines, max_common_gap);
 
     let mut ranges: Vec<(usize, usize, usize, usize)> = Vec::new();
 
@@ -3049,7 +4075,7 @@ fn unified_diff_with_function_context(
             .next()
             .unwrap_or("")
             .trim_end_matches(['\r', '\n']);
-        let Some((base_s1, base_e1, _base_s2, _base_e2)) =
+        let Some((base_s1, _base_e1, _base_s2, _base_e2)) =
             parse_unified_hunk_header_ranges(header_line)
         else {
             continue;
@@ -3076,7 +4102,12 @@ fn unified_diff_with_function_context(
                 s2 = map_old_line_to_new(&all_ops, s1, n_new).min(n_new);
             }
 
-            let mut e1 = (base_e1 + ctx).min(n_old);
+            // `i1_end` is the exclusive end of the changed region; its post-image
+            // context is `ctx` lines (Git's `xche->i1 + xche->chg1 + lctx`). The
+            // hunk's `base_e1` already includes the group's trailing context, so
+            // use the change end + ctx directly to avoid double-counting context
+            // (which over-extended the hunk and merged separate functions — t4015 #136).
+            let mut e1 = (i1_end + ctx).min(n_old);
             let mut e2 = map_old_line_to_new(&all_ops, e1, n_new).min(n_new);
             let fe1 = expand_func_post_end(e1, i1_end, n_old, &old_lines, funcname_matcher);
             if fe1 > e1 {
@@ -3088,6 +4119,22 @@ fn unified_diff_with_function_context(
 
         ranges.push((s1, e1, s2, e2));
     }
+
+    // Merge ranges whose function-context expansion made them overlap on the old
+    // side (Git emits a single hunk in that case).
+    ranges.sort_by_key(|r| (r.0, r.2));
+    let mut merged: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(ranges.len());
+    for (s1, e1, s2, e2) in ranges {
+        if let Some(last) = merged.last_mut() {
+            if s1 < last.1 {
+                last.1 = last.1.max(e1);
+                last.3 = last.3.max(e2);
+                continue;
+            }
+        }
+        merged.push((s1, e1, s2, e2));
+    }
+    let ranges = merged;
 
     let mut output = String::new();
     if old_path == "/dev/null" {
@@ -4717,6 +5764,34 @@ pub fn read_submodule_head_oid(sub_dir: &Path) -> Option<ObjectId> {
     }
 }
 
+/// True when a populated submodule checkout is *broken*: its `HEAD` resolves to a commit OID, but
+/// that commit object cannot be read from the submodule's own object database.
+///
+/// This mirrors Git's [`is_submodule_modified`], which shells out to `git status --porcelain=2`
+/// inside the submodule; when the submodule's object store is corrupt (e.g. `rm -r .git/objects`),
+/// that inner status fails and Git aborts the surrounding `status`/`diff`/`fetch`. We detect the
+/// same condition in-process so the superproject operation can return a fatal error rather than
+/// silently treating the submodule as clean (t5526 "fetching submodule into a broken repository").
+///
+/// Returns `false` when the submodule is not checked out, has no embedded git dir, or has an
+/// unresolvable HEAD (those are handled separately by the unpopulated/placeholder logic).
+#[must_use]
+pub fn submodule_head_object_broken(sub_dir: &Path) -> bool {
+    let Some(sub_git_dir) = submodule_embedded_git_dir(sub_dir) else {
+        return false;
+    };
+    let Some(head_oid) = read_submodule_head_oid(sub_dir) else {
+        return false;
+    };
+    let odb = Odb::new(&sub_git_dir.join("objects"));
+    match odb.read(&head_oid) {
+        // HEAD object present but not a commit would be a different kind of corruption; only the
+        // missing-object case is the broken-repo scenario Git guards against here.
+        Ok(obj) => parse_commit(&obj.data).is_err(),
+        Err(_) => true,
+    }
+}
+
 /// True when a checked-out submodule at `rel_path` has modified or untracked content relative to
 /// the gitlink `recorded_oid` stored in the superproject (used for `git diff <tree>` parity).
 fn submodule_has_dirty_worktree_for_super_diff(
@@ -4886,4 +5961,210 @@ fn submodule_dir_has_untracked_inner(
         }
     }
     false
+}
+
+/// Reorder diff entries by a `-O<orderfile>` (`diff.orderFile`): entries are sorted by the index of
+/// the first orderfile glob pattern that matches their path; unmatched entries sort last (stable).
+pub fn apply_orderfile_entries(
+    entries: Vec<DiffEntry>,
+    order_path: &str,
+    cwd: &Path,
+) -> Result<Vec<DiffEntry>> {
+    apply_orderfile(entries, order_path, cwd)
+}
+
+fn apply_orderfile(
+    mut entries: Vec<DiffEntry>,
+    order_path: &str,
+    cwd: &Path,
+) -> Result<Vec<DiffEntry>> {
+    let patterns = read_orderfile_patterns(order_path, cwd)?;
+    let sort_key = |entry: &DiffEntry| -> usize {
+        let path = entry
+            .new_path
+            .as_ref()
+            .or(entry.old_path.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        for (i, pat) in patterns.iter().enumerate() {
+            if orderfile_pattern_matches(pat, &path) {
+                return i;
+            }
+        }
+        patterns.len()
+    };
+    entries.sort_by_key(|e| sort_key(e));
+    Ok(entries)
+}
+
+/// Read non-empty, non-comment glob patterns (one per line) from a `-O<orderfile>` file.
+pub fn read_orderfile_patterns(order_path: &str, cwd: &Path) -> Result<Vec<String>> {
+    let path = Path::new(order_path);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    let _meta = std::fs::metadata(&resolved)
+        .map_err(|e| Error::Message(format!("could not read orderfile {order_path}: {e}")))?;
+    let mut f = std::fs::File::open(&resolved)
+        .map_err(|e| Error::Message(format!("could not read orderfile {order_path}: {e}")))?;
+    let mut content = String::new();
+    std::io::Read::read_to_string(&mut f, &mut content)
+        .map_err(|e| Error::Message(format!("could not read orderfile {order_path}: {e}")))?;
+    Ok(content
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect())
+}
+
+/// Reorder diff entries for `git diff` `--rotate-to` / `--skip-to` (changed paths only).
+pub fn apply_rotate_skip_entries(
+    mut entries: Vec<DiffEntry>,
+    rotate_to: Option<&str>,
+    skip_to: Option<&str>,
+) -> Result<Vec<DiffEntry>> {
+    let Some(needle) = rotate_to.or(skip_to) else {
+        return Ok(entries);
+    };
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return Ok(entries);
+    }
+    let idx = entries
+        .iter()
+        .position(|e| e.path() == needle)
+        .ok_or_else(|| Error::Message(format!("fatal: No such path '{needle}' in the diff")))?;
+    if rotate_to.is_some() {
+        entries.rotate_left(idx);
+    }
+    if let Some(skip) = skip_to.filter(|s| !s.trim().is_empty()) {
+        let pos = entries
+            .iter()
+            .position(|e| e.path() == skip)
+            .ok_or_else(|| Error::Message(format!("fatal: No such path '{skip}' in the diff")))?;
+        entries.drain(..pos);
+    }
+    Ok(entries)
+}
+
+/// `git log` rotate/skip: reorder using the **commit tree** path order (all blobs), then keep only
+/// paths present in `entries` — matches Git's `diff --rotate-to` with history walks.
+pub fn apply_rotate_skip_log_entries(
+    odb: &Odb,
+    commit_tree: &ObjectId,
+    entries: Vec<DiffEntry>,
+    rotate_to: Option<&str>,
+    skip_to: Option<&str>,
+) -> Result<Vec<DiffEntry>> {
+    let tree_paths = crate::merge_diff::all_blob_paths_in_tree_order(odb, commit_tree);
+    apply_rotate_skip_ordered_paths(&tree_paths, entries, rotate_to, skip_to)
+}
+
+fn apply_rotate_skip_ordered_paths(
+    tree_paths: &[String],
+    entries: Vec<DiffEntry>,
+    rotate_to: Option<&str>,
+    skip_to: Option<&str>,
+) -> Result<Vec<DiffEntry>> {
+    let rotate = rotate_to.and_then(|s| {
+        let t = s.trim();
+        (!t.is_empty()).then_some(t)
+    });
+    let skip = skip_to.and_then(|s| {
+        let t = s.trim();
+        (!t.is_empty()).then_some(t)
+    });
+    if rotate.is_none() && skip.is_none() {
+        return Ok(entries);
+    }
+
+    use std::collections::HashMap;
+    let mut by_path: HashMap<String, DiffEntry> = HashMap::new();
+    for e in entries {
+        by_path.insert(e.path().to_string(), e);
+    }
+
+    // `git log --skip-to`: only list changed paths from the skip point onward (unmodified paths
+    // in the tree-order suffix are omitted). `--rotate-to` still lists every changed file in order.
+    if rotate.is_none() {
+        let Some(skip_path) = skip else {
+            return Ok(by_path.into_values().collect());
+        };
+        let idx = tree_paths
+            .iter()
+            .position(|p| p == skip_path)
+            .ok_or_else(|| {
+                Error::Message(format!("fatal: No such path '{skip_path}' in the diff"))
+            })?;
+        let mut out = Vec::new();
+        for p in tree_paths.iter().skip(idx) {
+            if let Some(e) = by_path.remove(p) {
+                out.push(e);
+            }
+        }
+        return Ok(out);
+    }
+
+    let Some(needle) = rotate else {
+        return Ok(by_path.into_values().collect());
+    };
+    let idx = tree_paths
+        .iter()
+        .position(|p| p == needle)
+        .ok_or_else(|| Error::Message(format!("fatal: No such path '{needle}' in the diff")))?;
+    let mut order: Vec<String> = tree_paths.to_vec();
+    order.rotate_left(idx);
+    if let Some(skip_path) = skip {
+        let pos = order.iter().position(|p| p == skip_path).ok_or_else(|| {
+            Error::Message(format!("fatal: No such path '{skip_path}' in the diff"))
+        })?;
+        order.drain(..pos);
+    }
+    let mut out = Vec::new();
+    for p in order {
+        if let Some(e) = by_path.remove(&p) {
+            out.push(e);
+        }
+    }
+    Ok(out)
+}
+
+/// Check if an orderfile pattern matches a path (matches the basename or the full path).
+/// Supports basic glob patterns: `*` matches any sequence, `?` matches one char.
+pub fn orderfile_pattern_matches(pattern: &str, path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    orderfile_glob_match(pattern, name) || orderfile_glob_match(pattern, path)
+}
+
+/// Basic glob matching (supports `*` and `?`).
+fn orderfile_glob_match(pattern: &str, text: &str) -> bool {
+    let mut pi = 0;
+    let mut ti = 0;
+    let pb = pattern.as_bytes();
+    let tb = text.as_bytes();
+    let mut star_pi = usize::MAX;
+    let mut star_ti = 0;
+
+    while ti < tb.len() {
+        if pi < pb.len() && (pb[pi] == b'?' || pb[pi] == tb[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < pb.len() && pb[pi] == b'*' {
+            star_pi = pi;
+            star_ti = ti;
+            pi += 1;
+        } else if star_pi != usize::MAX {
+            pi = star_pi + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+    while pi < pb.len() && pb[pi] == b'*' {
+        pi += 1;
+    }
+    pi == pb.len()
 }

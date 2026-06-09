@@ -950,13 +950,11 @@ pub fn run(args: Args) -> Result<()> {
 
     // `--reflog` adds every reflog entry's OID as a positive tip; the ordinary
     // walk below dedupes and date-sorts them (Git's `add_reflogs_to_pending`).
+    // Insertion order matters: equal-date commits break ties by the order tips were
+    // added (Git's `prio_queue` FIFO), so feed them in Git's reflog-scan order.
     if add_reflog_tips {
         saw_pseudo_ref = true;
-        let mut reflog_oids: Vec<ObjectId> = grit_lib::reflog::all_reflog_oids(&repo.git_dir)?
-            .into_iter()
-            .collect();
-        reflog_oids.sort_by(|a, b| a.to_hex().cmp(&b.to_hex()));
-        for oid in reflog_oids {
+        for oid in grit_lib::reflog::all_reflog_oids_ordered(&repo.git_dir)? {
             revision_specs.push(oid.to_hex());
         }
     }
@@ -969,13 +967,15 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     if walk_reflog {
-        // Bare `--reflog` (no positional revision) walks the reflogs of HEAD and
-        // every ref, mirroring Git's `add_reflogs_to_pending`.
+        // Unlike `git log -g` (which defaults to HEAD via `add_head_to_pending`),
+        // `git rev-list -g` does *not* supply a default revision. With no
+        // positional revision the reflog walk stays empty and Git falls through
+        // to `usage(rev_list_usage)`, exiting non-zero. Mirror that here instead
+        // of silently walking every ref's reflog (that is `--reflog` behaviour,
+        // handled above via `add_reflog_tips`).
         if revision_specs.is_empty() {
-            revision_specs = grit_lib::reflog::list_reflog_refs(&repo.git_dir).unwrap_or_default();
-            if revision_specs.is_empty() {
-                return Ok(());
-            }
+            eprintln!("usage: git rev-list [<options>] <commit>... [--] [<path>...]");
+            std::process::exit(129);
         }
         return run_rev_list_reflog_walk(
             &repo,

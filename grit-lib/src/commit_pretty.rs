@@ -171,3 +171,163 @@ pub fn format_reference_line(
     let date = format_short_date_from_ident(committer_ident);
     format!("{abbrev} ({subject_first_line}, {date})")
 }
+
+/// Word-wrap `text` to `width` columns, a faithful port of Git's
+/// `strbuf_add_wrapped_text` (`utf8.c`), used by the `%w(width,indent1,indent2)`
+/// pretty directive.
+///
+/// `indent1` is the indent for the first output line, `indent2` for the rest. A
+/// negative `indent1` means that `-indent1` columns have already been consumed on
+/// the first line (no extra indent emitted there). With `width <= 0` the text is
+/// only indented, not wrapped. Column widths are measured with display width
+/// (East-Asian wide characters count as 2).
+#[must_use]
+pub fn add_wrapped_text(text: &str, indent1: i64, indent2: i64, width: i64) -> String {
+    use unicode_width::UnicodeWidthChar;
+
+    if width <= 0 {
+        return add_indented_text(text, indent1, indent2);
+    }
+
+    let bytes = text.as_bytes();
+    let mut out = String::new();
+
+    // Mirror Git's `strbuf_add_wrapped_text` (utf8.c). `bol` is the start of the current line's
+    // pending text; `space` (when set) is the index of the last whitespace breakpoint. `w` is the
+    // current column. The `new_line` label is emulated by `do_new_line`.
+    let mut bol: usize = 0;
+    let mut space: Option<usize> = None;
+    let mut indent: i64 = indent1;
+    let mut w: i64 = indent1;
+    if indent1 < 0 {
+        w = -indent1;
+        space = Some(0);
+    }
+
+    let mut text_pos: usize = 0;
+    loop {
+        let c = bytes.get(text_pos).copied();
+        let is_space = is_space_byte(c);
+        if c.is_none() || is_space {
+            let mut do_new_line = false;
+            if w <= width || space.is_none() {
+                let start = if let Some(sp) = space {
+                    sp
+                } else {
+                    if c.is_none() && text_pos == bol {
+                        return out;
+                    }
+                    for _ in 0..indent.max(0) {
+                        out.push(' ');
+                    }
+                    bol
+                };
+                out.push_str(&text[start..text_pos]);
+                if c.is_none() {
+                    return out;
+                }
+                let cc = c.unwrap();
+                let mut new_space = text_pos;
+                if cc == b'\t' {
+                    w |= 0x07;
+                } else if cc == b'\n' {
+                    new_space += 1;
+                    match bytes.get(new_space) {
+                        Some(b'\n') => {
+                            out.push('\n');
+                            space = Some(new_space);
+                            do_new_line = true;
+                        }
+                        nxt if !nxt.map(u8::is_ascii_alphanumeric).unwrap_or(false) => {
+                            space = Some(new_space);
+                            do_new_line = true;
+                        }
+                        _ => {
+                            out.push(' ');
+                        }
+                    }
+                }
+                if !do_new_line {
+                    space = Some(new_space);
+                    w += 1;
+                    text_pos += 1;
+                }
+            } else {
+                do_new_line = true;
+            }
+            if do_new_line {
+                out.push('\n');
+                let sp = space.unwrap();
+                text_pos = sp + usize::from(is_space_byte(bytes.get(sp).copied()));
+                bol = text_pos;
+                space = None;
+                w = indent2;
+                indent = indent2;
+            }
+            continue;
+        }
+        // Non-space character: advance by one display glyph.
+        let ch = text[text_pos..].chars().next().unwrap();
+        let gw = UnicodeWidthChar::width(ch).unwrap_or(0) as i64;
+        w += gw;
+        text_pos += ch.len_utf8();
+    }
+}
+
+fn is_space_byte(b: Option<u8>) -> bool {
+    matches!(
+        b,
+        Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r') | Some(11) | Some(12)
+    )
+}
+
+/// Indent each line of `text` (`Git strbuf_add_indented_text`): the first line by
+/// `indent1` spaces and subsequent lines by `indent2`. Used when wrap width is 0.
+#[must_use]
+pub fn add_indented_text(text: &str, indent1: i64, indent2: i64) -> String {
+    let indent1 = indent1.max(0);
+    let mut out = String::new();
+    let mut indent = indent1;
+    let bytes = text.as_bytes();
+    let mut pos = 0;
+    while pos < bytes.len() {
+        let eol = match bytes[pos..].iter().position(|&b| b == b'\n') {
+            Some(i) => pos + i + 1,
+            None => bytes.len(),
+        };
+        for _ in 0..indent {
+            out.push(' ');
+        }
+        out.push_str(&text[pos..eol]);
+        pos = eol;
+        indent = indent2;
+    }
+    out
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::add_wrapped_text;
+
+    #[test]
+    fn wrap_width_one_decoration_with_leading_newline() {
+        // t4205 "magical wrapping": the buffer after `%w(1)%+d` is "\n (tag: describe-me)%+w(2)"
+        // and Git rewraps it at width 1 to "\n(tag:\ndescribe-me)%+w(2)".
+        let input = "\n (tag: describe-me)%+w(2)";
+        assert_eq!(
+            add_wrapped_text(input, 0, 0, 1),
+            "\n(tag:\ndescribe-me)%+w(2)"
+        );
+    }
+
+    #[test]
+    fn wrap_zero_width_is_indent_only() {
+        assert_eq!(add_wrapped_text("a\nb", 2, 1, 0), "  a\n b");
+    }
+
+    #[test]
+    fn wrap_simple_words() {
+        // Two short words, width large enough to keep them on one line.
+        assert_eq!(add_wrapped_text("foo bar", 0, 0, 80), "foo bar");
+    }
+}

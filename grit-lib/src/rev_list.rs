@@ -433,6 +433,14 @@ pub struct RevListOptions {
     pub ancestry_path_bottoms: Vec<ObjectId>,
     /// Keep only decorated commits after traversal.
     pub simplify_by_decoration: bool,
+    /// The set of decorated ("interesting") commit OIDs for `--simplify-by-decoration`.
+    /// When non-empty, proper history simplification (parent rewriting) is applied: a commit is
+    /// kept iff it is decorated, a relevant merge in the rewritten graph, or a root. When empty,
+    /// the legacy crude retain (decorated tips only) is used as a fallback. The caller (CLI)
+    /// computes this set honoring the display decoration filter (`--decorate-refs[-exclude]`,
+    /// `log.excludeDecoration`, and the default hidden-ref behavior), matching Git's
+    /// `load_ref_decorations(NULL, ...)` set used by `rev_compare_tree`.
+    pub simplify_by_decoration_oids: HashSet<ObjectId>,
     /// Commit output mode.
     pub output_mode: OutputMode,
     /// Suppress commit output.
@@ -547,6 +555,7 @@ impl Default for RevListOptions {
             ancestry_path: false,
             ancestry_path_bottoms: Vec::new(),
             simplify_by_decoration: false,
+            simplify_by_decoration_oids: HashSet::new(),
             output_mode: OutputMode::OidOnly,
             quiet: false,
             count: false,
@@ -930,11 +939,84 @@ pub fn rev_list(
     // parent for the pathspec, Git follows only that parent and never walks the other sides.
     // `--full-history`, `--ancestry-path`, and `--simplify-merges` intentionally keep the full
     // parent walk and simplify later.
-    if !options.paths.is_empty()
+    //
+    // The dense closure narrows `included` to the path-matching commits, but the user tips
+    // themselves may be dropped (they did not touch the path). Keep a copy of the full reachable
+    // set so date-order emission can still traverse *through* those dropped tips to reach matching
+    // ancestors — otherwise a `log -- <path>` whose only matching commit is an ancestor of HEAD
+    // would emit nothing (Git's `limit_list` walks the full graph and only filters emission).
+    // Compute the changed-path Bloom-filter configuration once up front so that both the dense
+    // path-limited walk (which performs the real TREESAME comparison) and any later re-check use
+    // the same chain. Git records Bloom statistics during its single `limit_list` walk, so the
+    // dense walk is the natural place to consult the filters and emit the `GIT_TRACE2_PERF`
+    // counters; doing it later (after the set is already reduced) would miss TREESAME-dropped
+    // commits like the latest layer's empty filters.
+    let (bloom_chain, bloom_read_changed, bloom_version, bloom_cwd) = if !options.paths.is_empty() {
+        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        let mut core_cg = match cfg.get_bool("core.commitgraph") {
+            Some(Ok(b)) => b,
+            _ => true,
+        };
+        if std::env::var("GIT_TEST_COMMIT_GRAPH").ok().as_deref() == Some("0") {
+            core_cg = false;
+        }
+        let read_paths = cfg
+            .get("commitgraph.readchangedpaths")
+            .and_then(|v| crate::config::parse_bool(&v).ok())
+            .unwrap_or(true);
+        let version = cfg
+            .get("commitgraph.changedpathsversion")
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(-1);
+        let use_bloom = core_cg
+            && options.use_commit_graph_bloom
+            && crate::pathspec::pathspecs_allow_bloom(&options.paths);
+        let read_changed = read_paths && options.commit_graph_read_changed_paths;
+        let chain = if use_bloom {
+            CommitGraphChain::load(&repo.git_dir.join("objects"))
+        } else {
+            None
+        };
+        let version = if options.commit_graph_changed_paths_version != -1 {
+            options.commit_graph_changed_paths_version
+        } else {
+            version
+        };
+        (chain, read_changed, version, repo.bloom_pathspec_cwd())
+    } else {
+        (None, false, -1, None)
+    };
+
+    let mut dense_path_limited = false;
+    let dense_traversable: HashSet<ObjectId> = if !options.paths.is_empty()
         && !options.full_history
         && !options.ancestry_path
         && !options.simplify_merges
     {
+        let traversable = included.clone();
+        // Consult the Bloom filter over the full reachable set *before* dense limiting prunes the
+        // traversal. Git loads a first-parent Bloom filter for every commit its `limit_list` walk
+        // reaches — including those simplified away by TREESAME merges — which both feeds the
+        // `GIT_TRACE2_PERF` statistics and surfaces the reader's corrupt-graph integrity warnings.
+        // Consulting only the pruned/selected set would undercount the statistics (e.g. side-branch
+        // commits hidden by a TREESAME merge) and miss warnings for commits that don't touch the
+        // path. This runs whenever a Bloom chain is present, independent of statistics collection.
+        if bloom_chain.is_some() {
+            let bloom_ctx = DenseBloomCtx {
+                chain: bloom_chain.as_ref(),
+                read_changed_paths: bloom_read_changed,
+                changed_paths_version: bloom_version,
+                stats: options.bloom_stats.as_ref(),
+                cwd: bloom_cwd.as_deref(),
+            };
+            consult_dense_bloom_filters(
+                repo,
+                &mut graph,
+                &traversable,
+                &options.paths,
+                &bloom_ctx,
+            )?;
+        }
         included = walk_dense_path_limited_closure(
             repo,
             &mut graph,
@@ -944,9 +1026,17 @@ pub fn rev_list(
             options.sparse,
             options.show_pulls,
         )?;
-    }
+        dense_path_limited = true;
+        traversable
+    } else {
+        HashSet::new()
+    };
 
-    if options.simplify_by_decoration {
+    if options.simplify_by_decoration && options.simplify_by_decoration_oids.is_empty() {
+        // Legacy fallback when the caller did not supply the decorated set (e.g. plain
+        // `rev-list --simplify-by-decoration` with no CLI-computed decoration filter): keep
+        // commits pointed at by a ref tip. Proper parent-rewriting simplification (below,
+        // after ordering) runs when `simplify_by_decoration_oids` is populated.
         let decorated = all_ref_tips(repo, &RefExclusions::default())?;
         included.retain(|oid| decorated.contains(oid));
     }
@@ -972,8 +1062,26 @@ pub fn rev_list(
         || options.ancestry_path
         || (options.simplify_merges && !options.paths.is_empty());
 
-    // Filter by parent count (--merges, --no-merges, --min-parents, --max-parents)
-    if options.min_parents.is_some() || options.max_parents.is_some() {
+    // Filter by parent count (--merges, --no-merges, --min-parents, --max-parents). The dropped
+    // commits must still be *traversable* (Git only suppresses them from output, never severs the
+    // graph), so remember the full reachable set before narrowing `included` to the survivors.
+    let parent_count_filter_active = options.min_parents.is_some() || options.max_parents.is_some();
+    let traversable = if parent_count_filter_active {
+        // The walk must be able to traverse *through* commits that path limiting already dropped
+        // from `included` (e.g. a tip that does not touch the pathspec): Git never severs the graph
+        // for path limiting, it only suppresses emission. When the dense path-limited closure ran it
+        // pruned `included`, so seed the walk from the full reachable set (`dense_traversable`) it
+        // saved beforehand; otherwise the no-merges walk would start at a dropped tip and emit nothing
+        // (`range-diff <range> -- <path>` whose matching commits are all behind a non-matching tip).
+        if dense_path_limited {
+            dense_traversable.clone()
+        } else {
+            included.clone()
+        }
+    } else {
+        HashSet::new()
+    };
+    if parent_count_filter_active {
         let min_p = options.min_parents.unwrap_or(0);
         let max_p = options.max_parents.unwrap_or(usize::MAX);
         included.retain(|oid| {
@@ -989,73 +1097,53 @@ pub fn rev_list(
     let mut ordered = match options.ordering {
         OrderingMode::Default | OrderingMode::DateOrderWalk | OrderingMode::AuthorDateWalk => {
             let author_dates = options.ordering == OrderingMode::AuthorDateWalk;
-            let parent_count_filter_active =
-                options.min_parents.is_some() || options.max_parents.is_some();
             if parent_count_filter_active {
-                // When parent-count filters (`--max-parents=1` / `--no-merges`, …) drop a user-given
-                // tip (e.g. a merge under `--no-merges`), Git still seeds the walk from that tip's
-                // parents so both sides of the merge remain reachable (`format-patch`, `rev-list`).
-                let mut tips: Vec<ObjectId> = Vec::new();
-                let mut tip_seen = HashSet::new();
-                for &tip in &include {
-                    if included.contains(&tip) {
-                        if tip_seen.insert(tip) {
-                            tips.push(tip);
-                        }
-                        continue;
-                    }
-                    let parents = graph.parents_of(tip).unwrap_or_default();
-                    for p in parents {
-                        if tip_seen.insert(p) {
-                            tips.push(p);
-                        }
-                    }
-                }
-                date_order_walk_with_tips(&mut graph, &tips, &included, author_dates)?
+                // When parent-count filters (`--max-parents=1` / `--no-merges`, …) drop a commit
+                // (e.g. a merge under `--no-merges`), Git still walks *through* it: the dropped
+                // commit is simply not emitted, but its parents stay reachable. Seed from every
+                // user-given tip and traverse the full reachable set, skipping dropped commits in
+                // the output while continuing the walk past them (`format-patch -3` across a merge,
+                // `rev-list --no-merges -N`).
+                date_order_walk_through_dropped(
+                    &mut graph,
+                    &include,
+                    &traversable,
+                    &included,
+                    author_dates,
+                )?
+            } else if dense_path_limited && !include.is_empty() {
+                // Path-limiting may have dropped the user tips from `included`; traverse the full
+                // reachable set (`dense_traversable`) so matching ancestors are still emitted in
+                // date order, seeding from the user tips for Git's insertion-order tiebreak.
+                date_order_walk_through_dropped(
+                    &mut graph,
+                    &include,
+                    &dense_traversable,
+                    &included,
+                    author_dates,
+                )?
             } else {
-                date_order_walk(&mut graph, &included, author_dates)?
+                date_order_walk(&mut graph, &included, &include, author_dates)?
             }
         }
         OrderingMode::Topo => graph_order_topo_sort(&mut graph, &included, &discovery_order)?,
         OrderingMode::AuthorDateTopo => topo_sort(&mut graph, &included, true)?,
     };
 
-    // Path filtering: keep only commits that modify given paths
+    // Path filtering: keep only commits that modify given paths.
     if !options.paths.is_empty() {
         let paths = &options.paths;
-        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
-        let mut core_cg = match cfg.get_bool("core.commitgraph") {
-            Some(Ok(b)) => b,
-            _ => true,
-        };
-        if std::env::var("GIT_TEST_COMMIT_GRAPH").ok().as_deref() == Some("0") {
-            core_cg = false;
-        }
-        let read_paths = cfg
-            .get("commitgraph.readchangedpaths")
-            .and_then(|v| crate::config::parse_bool(&v).ok())
-            .unwrap_or(true);
-        let version = cfg
-            .get("commitgraph.changedpathsversion")
-            .and_then(|s| s.parse::<i32>().ok())
-            .unwrap_or(-1);
-
-        let use_bloom = core_cg
-            && options.use_commit_graph_bloom
-            && crate::pathspec::pathspecs_allow_bloom(paths);
-        let read_changed = read_paths && options.commit_graph_read_changed_paths;
-        let bloom_chain = if use_bloom {
-            CommitGraphChain::load(&repo.git_dir.join("objects"))
-        } else {
+        // The dense path-limited walk above already performed the first-parent Bloom precheck and
+        // recorded its `GIT_TRACE2_PERF` statistics for every visited commit (matching Git's single
+        // `limit_list` pass). Re-running the precheck here would double-count those counters, so
+        // suppress stats in the dense case while still consulting the chain to filter the set.
+        // For `--full-history`/`--simplify-merges`/`--ancestry-path`, the dense walk was skipped, so
+        // this re-check is the only place the precheck runs and must record the statistics.
+        let retain_stats = if dense_path_limited {
             None
-        };
-        let bloom_version = if options.commit_graph_changed_paths_version != -1 {
-            options.commit_graph_changed_paths_version
         } else {
-            version
+            options.bloom_stats.as_ref()
         };
-        let bloom_cwd = repo.bloom_pathspec_cwd();
-
         ordered.retain(|oid| {
             commit_touches_paths(
                 repo,
@@ -1072,9 +1160,9 @@ pub fn rev_list(
                 &effective_ancestry_path_bottoms,
                 &excluded,
                 bloom_chain.as_ref(),
-                read_changed,
+                bloom_read_changed,
                 bloom_version,
-                options.bloom_stats.as_ref(),
+                retain_stats,
                 bloom_cwd.as_deref(),
             )
             .unwrap_or(false)
@@ -1236,6 +1324,20 @@ pub fn rev_list(
             }
             true
         });
+    }
+
+    // `--simplify-by-decoration` with a caller-supplied decorated set: run proper
+    // history simplification with parent rewriting (Git's `simplify_commit`). A commit is
+    // kept iff it is decorated ("tree different" per `rev_compare_tree`), a root, or a
+    // relevant merge (>= 2 distinct rewritten relevant parents). `ordered` is already in
+    // the walk order (topo for default ordering), so we just retain the kept subset.
+    if options.simplify_by_decoration && !options.simplify_by_decoration_oids.is_empty() {
+        let keep = compute_simplify_by_decoration_keep_set(
+            &mut graph,
+            &ordered,
+            &options.simplify_by_decoration_oids,
+        )?;
+        ordered.retain(|oid| keep.contains(oid));
     }
 
     if options.skip > 0 {
@@ -2839,8 +2941,20 @@ fn resolve_specs_with_options(
 ) -> Result<Vec<ObjectId>> {
     let mut out = Vec::with_capacity(specs.len());
     for spec in specs {
-        match resolve_revision_for_range_end(repo, spec).and_then(|oid| peel_to_commit(repo, oid)) {
+        let oid = match resolve_revision_for_range_end(repo, spec) {
+            Ok(oid) => oid,
+            Err(Error::ObjectNotFound(_) | Error::InvalidRef(_)) if ignore_missing => continue,
+            Err(err) => return Err(err),
+        };
+        match peel_to_commit(repo, oid) {
             Ok(commit_oid) => out.push(commit_oid),
+            // `git rev-list <obj>` accepts a positive tip that is (or peels to) a non-commit
+            // object such as a blob or a tag-of-blob: it simply contributes no commits and exits
+            // 0 (verified against git: `git rev-list tag-of-blob` prints nothing, exit 0). Mirror
+            // that here so callers that feed all freshly-fetched ref tips into a commit walk
+            // (e.g. submodule-change detection over a remote carrying a tag-of-blob, t5516
+            // "refuse fetch to current branch of worktree") do not abort.
+            Err(Error::CorruptObject(_)) if object_peels_to_non_commit(repo, oid) => {}
             Err(Error::ObjectNotFound(_) | Error::InvalidRef(_)) if ignore_missing => {}
             Err(err) => return Err(err),
         }
@@ -3027,6 +3141,25 @@ fn resolve_specs_for_objects_with_options(
     Ok((commits, roots, tip_annotated_tag_by_commit))
 }
 
+/// Returns `true` when `oid` is a readable object that peels (through any tag chain) to a blob or
+/// tree rather than a commit. Used to mirror `git rev-list`'s tolerance of a non-commit positive
+/// tip: such a tip is silently ignored, whereas a genuinely missing/corrupt object is an error.
+fn object_peels_to_non_commit(repo: &Repository, mut oid: ObjectId) -> bool {
+    loop {
+        let Ok(object) = repo.odb.read(&oid) else {
+            return false;
+        };
+        match object.kind {
+            ObjectKind::Commit => return false,
+            ObjectKind::Blob | ObjectKind::Tree => return true,
+            ObjectKind::Tag => match parse_tag(&object.data) {
+                Ok(tag) => oid = tag.object,
+                Err(_) => return false,
+            },
+        }
+    }
+}
+
 /// Peel an object (possibly a tag) to the underlying commit.
 fn peel_to_commit(repo: &Repository, mut oid: ObjectId) -> Result<ObjectId> {
     loop {
@@ -3170,57 +3303,52 @@ fn walk_closure_ordered_with_missing(
     Ok((seen, order))
 }
 
-/// Like [`date_order_walk`], but the initial heap is seeded from `tips` (in order) instead of
-/// every commit with no selected children. Used when `--max-parents` / `--min-parents` filter out
-/// a user tip (e.g. a merge): parents must be explicit seeds so both sides stay reachable.
-fn date_order_walk_with_tips(
+/// Date-priority walk used when a parent-count filter (`--no-merges`, `--max-parents`, …) is
+/// active. Mirrors Git's `limit_list`: a pure committer-date priority queue seeded from the user
+/// tips that traverses the *full* reachable set (`traversable`), stepping through dropped commits
+/// (e.g. merges) without emitting them, and emits only commits in `emit`. Unlike [`date_order_walk`]
+/// this imposes no topological gating, so a tip that is also an ancestor (and has a later date than
+/// its descendants) is emitted in date order — matching `git rev-list --all --no-merges` (t6009).
+fn date_order_walk_through_dropped(
     graph: &mut CommitGraph<'_>,
     tips: &[ObjectId],
-    selected: &HashSet<ObjectId>,
+    traversable: &HashSet<ObjectId>,
+    emit: &HashSet<ObjectId>,
     author_dates: bool,
 ) -> Result<Vec<ObjectId>> {
-    let mut unfinished_children: HashMap<ObjectId, usize> =
-        selected.iter().map(|&oid| (oid, 0usize)).collect();
-    for &child in selected {
-        for parent in graph.parents_of(child)? {
-            if selected.contains(&parent) {
-                if let Some(count) = unfinished_children.get_mut(&parent) {
-                    *count += 1;
-                }
-            }
-        }
-    }
-
     let mut heap = BinaryHeap::new();
+    let mut queued: HashSet<ObjectId> = HashSet::new();
+    let mut next_seq: u64 = 0;
+    // Seed every user tip that is part of the reachable set, in their given order: an earlier tip
+    // gets a smaller seq so equal-date tips are emitted in tip order (Git's insertion-order tiebreak).
     for &tip in tips {
-        if selected.contains(&tip) {
+        if traversable.contains(&tip) && queued.insert(tip) {
             heap.push(CommitDateKey {
                 oid: tip,
                 date: graph.sort_key(tip, author_dates),
+                seq: next_seq,
             });
+            next_seq += 1;
         }
     }
 
     let mut emitted = HashSet::new();
-    let mut out = Vec::with_capacity(selected.len());
+    let mut out = Vec::with_capacity(emit.len());
     while let Some(item) = heap.pop() {
-        if !emitted.insert(item.oid) {
-            continue;
+        if emit.contains(&item.oid) && emitted.insert(item.oid) {
+            out.push(item.oid);
         }
-        out.push(item.oid);
         for parent in graph.parents_of(item.oid)? {
-            if !selected.contains(&parent) {
+            if !traversable.contains(&parent) {
                 continue;
             }
-            let Some(count) = unfinished_children.get_mut(&parent) else {
-                continue;
-            };
-            *count = count.saturating_sub(1);
-            if *count == 0 {
+            if queued.insert(parent) {
                 heap.push(CommitDateKey {
                     oid: parent,
                     date: graph.sort_key(parent, author_dates),
+                    seq: next_seq,
                 });
+                next_seq += 1;
             }
         }
     }
@@ -3237,6 +3365,7 @@ fn date_order_walk_with_tips(
 pub(crate) fn date_order_walk(
     graph: &mut CommitGraph<'_>,
     selected: &HashSet<ObjectId>,
+    tip_order: &[ObjectId],
     author_dates: bool,
 ) -> Result<Vec<ObjectId>> {
     let mut unfinished_children: HashMap<ObjectId, usize> =
@@ -3251,21 +3380,45 @@ pub(crate) fn date_order_walk(
         }
     }
 
-    // Match Git `commit_list_insert_by_date` / `get_revision_1`: only commits with no selected
-    // child are initially pending. Seeding every `tip` that happens to appear in `tips` is wrong
-    // when `tips` is the full selected set (path-walk): inner commits would be popped before
-    // descendants. Seeding only `tips` is also wrong when a source commit is not a ref tip
-    // (`rev-list`): start from every selected commit whose in-degree from selected is zero.
     let mut heap = BinaryHeap::new();
-    for &oid in selected {
-        if unfinished_children.get(&oid).copied().unwrap_or(0) == 0 {
-            heap.push(CommitDateKey {
-                oid,
-                date: graph.sort_key(oid, author_dates),
-            });
+    // Equal-date ties break by *insertion order* to match Git's `prio_queue` FIFO tiebreak
+    // (`prio-queue.c`): the tip the user (or pseudo-ref expansion like `--reflog`) listed first pops
+    // first. `tip_order` carries that user/insertion order; each seeded tip below takes its index as
+    // its `seq`, and parents discovered during the walk take a strictly larger `seq`.
+    let ordered_tip_count = tip_order.len() as u64;
+    // Git `limit_list` seeds `revs->commits` — every *explicitly given* tip — into the priority
+    // queue up front, then pops by date and inserts unseen parents. It does NOT defer a parent until
+    // its child is shown, so when the user lists an ancestor and its descendant as equal-date tips,
+    // the one listed first is emitted first (`rev-list A B` with A an ancestor of B, same date → A,
+    // then B). Replicate that: seed explicit tips immediately. When there are no explicit tips
+    // (path-walk, where `selected` is the whole matched set and seeding everything would surface
+    // ancestors before descendants), fall back to seeding only in-degree-zero commits so descendants
+    // still precede ancestors. Parents discovered during the walk get a strictly larger seq.
+    let mut seeded: HashSet<ObjectId> = HashSet::new();
+    if tip_order.is_empty() {
+        for &oid in selected {
+            if unfinished_children.get(&oid).copied().unwrap_or(0) == 0 {
+                heap.push(CommitDateKey {
+                    oid,
+                    date: graph.sort_key(oid, author_dates),
+                    seq: 0,
+                });
+                seeded.insert(oid);
+            }
+        }
+    } else {
+        for (i, &oid) in tip_order.iter().enumerate() {
+            if selected.contains(&oid) && seeded.insert(oid) {
+                heap.push(CommitDateKey {
+                    oid,
+                    date: graph.sort_key(oid, author_dates),
+                    seq: i as u64,
+                });
+            }
         }
     }
 
+    let mut next_seq: u64 = ordered_tip_count + 1;
     let mut emitted = HashSet::new();
     let mut out = Vec::with_capacity(selected.len());
     while let Some(item) = heap.pop() {
@@ -3281,11 +3434,16 @@ pub(crate) fn date_order_walk(
                 continue;
             };
             *count = count.saturating_sub(1);
-            if *count == 0 {
+            // Already-seeded commits (explicit tips) are in the heap; the pop-time `emitted` guard
+            // dedups them. Only enqueue a parent once its last selected child has been processed and
+            // it has not already been seeded as a tip.
+            if *count == 0 && !seeded.contains(&parent) {
                 heap.push(CommitDateKey {
                     oid: parent,
                     date: graph.sort_key(parent, author_dates),
+                    seq: next_seq,
                 });
+                next_seq += 1;
             }
         }
     }
@@ -3320,6 +3478,7 @@ fn topo_sort(
             ready.push(Reverse(CommitDateKey {
                 oid,
                 date: graph.sort_key(oid, author_dates),
+                seq: 0,
             }));
         }
     }
@@ -3338,6 +3497,7 @@ fn topo_sort(
                     ready.push(Reverse(CommitDateKey {
                         oid: parent,
                         date: graph.sort_key(parent, author_dates),
+                        seq: 0,
                     }));
                 }
             }
@@ -3550,6 +3710,7 @@ fn simplify_merges_author_date_order(
             ready.push(CommitDateKey {
                 oid: *oid,
                 date: graph.sort_key(*oid, true),
+                seq: 0,
             });
         }
     }
@@ -3574,6 +3735,7 @@ fn simplify_merges_author_date_order(
                     ready.push(CommitDateKey {
                         oid: *parent,
                         date: graph.sort_key(*parent, true),
+                        seq: 0,
                     });
                 }
             }
@@ -3596,16 +3758,20 @@ fn path_merge_survives_simplify(
     if commit.parents.len() <= 1 {
         return Ok(false);
     }
-    let commit_map: HashMap<String, ObjectId> =
-        flatten_tree(repo, commit.tree, "")?.into_iter().collect();
+    let commit_map: HashMap<String, (ObjectId, u32)> =
+        flatten_tree_with_mode(repo, commit.tree, "")?
+            .into_iter()
+            .collect();
     let mut treesame_parents = 0usize;
     let mut first_parent_differs = false;
     let mut differing_parent_is_excluded = false;
     let mut differing_parent_oids = Vec::new();
     for (nth, parent_oid) in commit.parents.iter().enumerate() {
         let parent = load_commit(repo, *parent_oid)?;
-        let parent_map: HashMap<String, ObjectId> =
-            flatten_tree(repo, parent.tree, "")?.into_iter().collect();
+        let parent_map: HashMap<String, (ObjectId, u32)> =
+            flatten_tree_with_mode(repo, parent.tree, "")?
+                .into_iter()
+                .collect();
         let differs = path_differs_for_specs(&commit_map, &parent_map, paths);
         if differs {
             differing_parent_oids.push(*parent_oid);
@@ -3671,12 +3837,16 @@ fn path_treesame_parents(
     }
 
     let commit = load_commit(repo, oid)?;
-    let commit_map: HashMap<String, ObjectId> =
-        flatten_tree(repo, commit.tree, "")?.into_iter().collect();
+    let commit_map: HashMap<String, (ObjectId, u32)> =
+        flatten_tree_with_mode(repo, commit.tree, "")?
+            .into_iter()
+            .collect();
     for parent_oid in parents {
         let parent = load_commit(repo, *parent_oid)?;
-        let parent_map: HashMap<String, ObjectId> =
-            flatten_tree(repo, parent.tree, "")?.into_iter().collect();
+        let parent_map: HashMap<String, (ObjectId, u32)> =
+            flatten_tree_with_mode(repo, parent.tree, "")?
+                .into_iter()
+                .collect();
         if !path_differs_for_specs(&commit_map, &parent_map, paths) {
             treesame.insert(*parent_oid);
         }
@@ -4028,8 +4198,8 @@ fn commit_touches_paths(
 ) -> Result<bool> {
     let commit = load_commit(repo, oid)?;
     let parents = graph.parents_of(oid)?;
-    let commit_entries = flatten_tree(repo, commit.tree, "")?;
-    let commit_map: HashMap<String, ObjectId> = commit_entries.into_iter().collect();
+    let commit_entries = flatten_tree_with_mode(repo, commit.tree, "")?;
+    let commit_map: HashMap<String, (ObjectId, u32)> = commit_entries.into_iter().collect();
 
     // Root commit: include only when any requested pathspec exists.
     if parents.is_empty() {
@@ -4068,8 +4238,10 @@ fn commit_touches_paths(
         }
 
         let parent = load_commit(repo, parents[0])?;
-        let parent_map: HashMap<String, ObjectId> =
-            flatten_tree(repo, parent.tree, "")?.into_iter().collect();
+        let parent_map: HashMap<String, (ObjectId, u32)> =
+            flatten_tree_with_mode(repo, parent.tree, "")?
+                .into_iter()
+                .collect();
         let differs = path_differs_for_specs(&commit_map, &parent_map, paths);
         if bloom_ret == BloomPrecheck::Maybe && !differs {
             if let Some(stats) = bloom_stats {
@@ -4122,8 +4294,10 @@ fn commit_touches_paths(
             false
         } else {
             let parent = load_commit(repo, *parent_oid)?;
-            let parent_map: HashMap<String, ObjectId> =
-                flatten_tree(repo, parent.tree, "")?.into_iter().collect();
+            let parent_map: HashMap<String, (ObjectId, u32)> =
+                flatten_tree_with_mode(repo, parent.tree, "")?
+                    .into_iter()
+                    .collect();
             path_differs_for_specs(&commit_map, &parent_map, paths)
         };
         if nth == 0 {
@@ -4263,6 +4437,20 @@ fn treesame_parent_is_ancestry_bottom_or_ancestor(
     Ok(false)
 }
 
+/// Bloom-filter context threaded through the dense path-limited walk so that the
+/// changed-path Bloom precheck (Git's `rev_compare_tree` first-parent shortcut) and its
+/// `GIT_TRACE2_PERF` statistics are recorded during the single real walk, exactly as Git
+/// does — rather than during a later re-check of an already-reduced set.
+#[derive(Clone, Copy)]
+struct DenseBloomCtx<'a> {
+    chain: Option<&'a CommitGraphChain>,
+    read_changed_paths: bool,
+    changed_paths_version: i32,
+    stats: Option<&'a BloomWalkStatsHandle>,
+    cwd: Option<&'a str>,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn walk_dense_path_limited_closure(
     repo: &Repository,
     graph: &mut CommitGraph<'_>,
@@ -4296,6 +4484,79 @@ fn walk_dense_path_limited_closure(
     Ok(selected)
 }
 
+/// Consult the changed-path Bloom filter over the full reachable set, matching Git's walk.
+///
+/// Git consults the Bloom filter for the first-parent comparison of *every* commit it walks in
+/// `limit_list` via `rev_compare_tree`/`check_maybe_different_in_bloom_filter` (even commits later
+/// pruned by TREESAME merge simplification). This happens unconditionally — not just when
+/// `GIT_TRACE2_PERF` statistics are being collected — so loading the filter for each commit is also
+/// what surfaces the reader's integrity warnings (out-of-range / decreasing index offsets) for a
+/// corrupt commit-graph. grit's dense path-limited selection walk prunes the traversal (it follows
+/// only the TREESAME parent of a merge) and then filters an already-reduced set, so on its own it
+/// would consult far fewer filters than Git and miss both the statistics and these warnings.
+///
+/// This pass therefore runs over `reachable` — the full reachable set before dense limiting — and
+/// looks up each commit's first-parent Bloom filter exactly once, mirroring Git's single
+/// `limit_list` pass. When a `BloomWalkStats` handle is present it records the
+/// `filter_not_present` / `maybe` / `definitely_not` / `false_positive` counters; the pass runs even
+/// without one so corrupt-graph warnings still fire. It never changes which commits are selected for
+/// output (a `DefinitelyNot` only confirms what the tree diff would also conclude).
+fn consult_dense_bloom_filters(
+    repo: &Repository,
+    graph: &mut CommitGraph<'_>,
+    reachable: &HashSet<ObjectId>,
+    paths: &[String],
+    bloom: &DenseBloomCtx<'_>,
+) -> Result<()> {
+    let Some(chain) = bloom.chain else {
+        return Ok(());
+    };
+    for oid in reachable {
+        let parents = graph.parents_of(*oid)?;
+        // Bloom is consulted only against the first parent (Git `rev_compare_tree`,
+        // `nth_parent == 0`); root commits have no first-parent comparison.
+        let Some(first_parent) = parents.first().copied() else {
+            continue;
+        };
+        let pre = chain.bloom_precheck_for_paths(
+            &repo.odb,
+            *oid,
+            paths,
+            bloom.cwd,
+            bloom.changed_paths_version,
+            bloom.read_changed_paths,
+        )?;
+        if let Some(stats) = bloom.stats {
+            if let Ok(mut g) = stats.lock() {
+                g.record_precheck(pre);
+            }
+        }
+        // A `Maybe` result that turns out not to touch the path (tree-same against the first
+        // parent) is a Bloom false positive in Git's accounting. Only computed when stats are
+        // being collected, since it requires an extra tree diff that is otherwise unnecessary.
+        if pre == BloomPrecheck::Maybe {
+            if let Some(stats) = bloom.stats {
+                let commit = load_commit(repo, *oid)?;
+                let commit_map: HashMap<String, (ObjectId, u32)> =
+                    flatten_tree_with_mode(repo, commit.tree, "")?
+                        .into_iter()
+                        .collect();
+                let parent = load_commit(repo, first_parent)?;
+                let parent_map: HashMap<String, (ObjectId, u32)> =
+                    flatten_tree_with_mode(repo, parent.tree, "")?
+                        .into_iter()
+                        .collect();
+                if !path_differs_for_specs(&commit_map, &parent_map, paths) {
+                    if let Ok(mut g) = stats.lock() {
+                        g.record_false_positive();
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 struct DensePathAction {
     visible: bool,
     parents_to_walk: Vec<ObjectId>,
@@ -4311,8 +4572,10 @@ fn dense_path_limited_action(
 ) -> Result<DensePathAction> {
     let commit = load_commit(repo, oid)?;
     let parents = graph.parents_of(oid)?;
-    let commit_map: HashMap<String, ObjectId> =
-        flatten_tree(repo, commit.tree, "")?.into_iter().collect();
+    let commit_map: HashMap<String, (ObjectId, u32)> =
+        flatten_tree_with_mode(repo, commit.tree, "")?
+            .into_iter()
+            .collect();
 
     if parents.is_empty() {
         let ctx = crate::pathspec::PathspecMatchContext {
@@ -4334,8 +4597,10 @@ fn dense_path_limited_action(
     let mut first_parent_differs = false;
     for (nth, parent_oid) in parents.iter().enumerate() {
         let parent = load_commit(repo, *parent_oid)?;
-        let parent_map: HashMap<String, ObjectId> =
-            flatten_tree(repo, parent.tree, "")?.into_iter().collect();
+        let parent_map: HashMap<String, (ObjectId, u32)> =
+            flatten_tree_with_mode(repo, parent.tree, "")?
+                .into_iter()
+                .collect();
         if path_differs_for_specs(&commit_map, &parent_map, paths) {
             if nth == 0 {
                 first_parent_differs = true;
@@ -4385,8 +4650,8 @@ pub fn commit_visible_for_dense_pathspecs(
     }
     let commit = load_commit(repo, oid)?;
     let parents = commit.parents.clone();
-    let commit_entries = flatten_tree(repo, commit.tree, "")?;
-    let commit_map: HashMap<String, ObjectId> = commit_entries.into_iter().collect();
+    let commit_entries = flatten_tree_with_mode(repo, commit.tree, "")?;
+    let commit_map: HashMap<String, (ObjectId, u32)> = commit_entries.into_iter().collect();
 
     if parents.is_empty() {
         return Ok(commit_map.keys().any(|path| {
@@ -4405,8 +4670,10 @@ pub fn commit_visible_for_dense_pathspecs(
 
     if parents.len() == 1 {
         let parent = load_commit(repo, parents[0])?;
-        let parent_map: HashMap<String, ObjectId> =
-            flatten_tree(repo, parent.tree, "")?.into_iter().collect();
+        let parent_map: HashMap<String, (ObjectId, u32)> =
+            flatten_tree_with_mode(repo, parent.tree, "")?
+                .into_iter()
+                .collect();
         return Ok(path_differs_for_specs(&commit_map, &parent_map, paths));
     }
 
@@ -4414,8 +4681,10 @@ pub fn commit_visible_for_dense_pathspecs(
     let mut differs_any = false;
     for parent_oid in &parents {
         let parent = load_commit(repo, *parent_oid)?;
-        let parent_map: HashMap<String, ObjectId> =
-            flatten_tree(repo, parent.tree, "")?.into_iter().collect();
+        let parent_map: HashMap<String, (ObjectId, u32)> =
+            flatten_tree_with_mode(repo, parent.tree, "")?
+                .into_iter()
+                .collect();
         let differs = path_differs_for_specs(&commit_map, &parent_map, paths);
         if differs {
             differs_any = true;
@@ -4446,8 +4715,8 @@ fn compute_cherry_patch_id(
 }
 
 fn path_differs_for_specs(
-    current: &HashMap<String, ObjectId>,
-    parent: &HashMap<String, ObjectId>,
+    current: &HashMap<String, (ObjectId, u32)>,
+    parent: &HashMap<String, (ObjectId, u32)>,
     specs: &[String],
 ) -> bool {
     let mut paths = std::collections::BTreeSet::new();
@@ -4916,6 +5185,133 @@ fn peel_ref_oids_to_unique_commits(repo: &Repository, raw: Vec<ObjectId>) -> Res
     Ok(out)
 }
 
+/// Compute which commits survive `--simplify-by-decoration`, mirroring Git's history
+/// simplification (`simplify_commit` / `rewrite_parents` in revision.c with the
+/// decoration-based TREESAME oracle from `rev_compare_tree`).
+///
+/// A commit is "interesting" (TREE_DIFFERENT, never pruned) iff it is decorated. Undecorated
+/// commits are TREESAME and are candidates for pruning; their parent links are rewritten so
+/// that children point past them to the nearest interesting ancestors. A commit is kept iff:
+///   * it is decorated, or
+///   * it is a root (no parents in the reachable graph) — roots are always interesting, or
+///   * it is a relevant merge: after rewriting and removing redundant parents (those reachable
+///     via another parent), it still has >= 2 distinct relevant parents.
+///
+/// `ordered` must be in walk order with every commit listed before its parents (topo order),
+/// so processing it in reverse computes each commit's rewritten parents bottom-up.
+fn compute_simplify_by_decoration_keep_set(
+    graph: &mut CommitGraph,
+    ordered: &[ObjectId],
+    decorated: &HashSet<ObjectId>,
+) -> Result<HashSet<ObjectId>> {
+    let in_walk: HashSet<ObjectId> = ordered.iter().copied().collect();
+    // For each commit, its list of rewritten relevant parents (the representatives a child
+    // sees when it points at this commit). For a kept commit this is itself; for a pruned
+    // commit it is the flattened relevant parents.
+    let mut rewritten: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    let mut keep: HashSet<ObjectId> = HashSet::new();
+
+    // Process parents before children: `ordered` lists children first, so iterate in reverse.
+    for &oid in ordered.iter().rev() {
+        let raw_parents: Vec<ObjectId> = graph
+            .parents_of(oid)?
+            .into_iter()
+            .filter(|p| in_walk.contains(p))
+            .collect();
+
+        // Build the relevant-parent list: replace each pruned parent with its own
+        // rewritten representatives (already computed since parents precede children here).
+        let mut relevant: Vec<ObjectId> = Vec::new();
+        let mut seen = HashSet::new();
+        for parent in &raw_parents {
+            if keep.contains(parent) {
+                if seen.insert(*parent) {
+                    relevant.push(*parent);
+                }
+            } else if let Some(reps) = rewritten.get(parent) {
+                for &rep in reps {
+                    if seen.insert(rep) {
+                        relevant.push(rep);
+                    }
+                }
+            }
+        }
+
+        // Remove redundant parents: a relevant parent reachable from another relevant parent
+        // (through the kept subgraph) is dropped, matching Git's parent-list simplification.
+        if relevant.len() > 1 {
+            relevant = remove_redundant_relevant_parents(graph, &relevant, &keep)?;
+        }
+
+        let is_root = raw_parents.is_empty();
+        let kept = decorated.contains(&oid) || is_root || relevant.len() >= 2;
+        if kept {
+            keep.insert(oid);
+            // A kept commit represents itself to its children.
+            rewritten.insert(oid, vec![oid]);
+        } else {
+            // A pruned commit forwards its relevant parents to its children.
+            rewritten.insert(oid, relevant);
+        }
+    }
+
+    Ok(keep)
+}
+
+/// Drop parents from `relevant` that are reachable from another parent through the kept
+/// subgraph (so a merge whose second parent is an ancestor of its first parent collapses).
+fn remove_redundant_relevant_parents(
+    graph: &mut CommitGraph,
+    relevant: &[ObjectId],
+    keep: &HashSet<ObjectId>,
+) -> Result<Vec<ObjectId>> {
+    let mut out = Vec::new();
+    for (i, &candidate) in relevant.iter().enumerate() {
+        let mut redundant = false;
+        for (j, &other) in relevant.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            if relevant_parent_reaches(graph, other, candidate, keep)? {
+                redundant = true;
+                break;
+            }
+        }
+        if !redundant {
+            out.push(candidate);
+        }
+    }
+    Ok(out)
+}
+
+/// Walk ancestors of `start` over the full graph to see if `target` is a proper ancestor.
+/// Used to drop a relevant parent that is already reachable through another parent.
+fn relevant_parent_reaches(
+    graph: &mut CommitGraph,
+    start: ObjectId,
+    target: ObjectId,
+    _keep: &HashSet<ObjectId>,
+) -> Result<bool> {
+    if start == target {
+        // A parent cannot make itself redundant; the caller already deduplicated by OID.
+        return Ok(false);
+    }
+    let mut stack = vec![start];
+    let mut seen = HashSet::new();
+    while let Some(oid) = stack.pop() {
+        if !seen.insert(oid) {
+            continue;
+        }
+        for parent in graph.parents_of(oid)? {
+            if parent == target {
+                return Ok(true);
+            }
+            stack.push(parent);
+        }
+    }
+    Ok(false)
+}
+
 fn all_ref_tips(repo: &Repository, exclusions: &RefExclusions) -> Result<Vec<ObjectId>> {
     let mut pairs = Vec::new();
     if let Ok(head) = refs::resolve_ref(&repo.git_dir, "HEAD") {
@@ -5255,12 +5651,22 @@ pub fn shallow_grafts_for_upload_pack_rev_list(
 struct CommitDateKey {
     oid: ObjectId,
     date: i64,
+    /// Insertion-order tiebreaker for equal dates, mirroring Git's `prio_queue` `ctr`
+    /// (prio-queue.c): among commits with the same committer date, the one inserted *earlier*
+    /// is emitted first. In this max-heap that means an earlier insertion must compare *greater*,
+    /// so we order by the negated sequence. Walks that do not care about insertion order leave
+    /// this at 0, falling through to the OID tiebreak (preserving prior behavior).
+    seq: u64,
 }
 
 impl Ord for CommitDateKey {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.date.cmp(&other.date) {
-            Ordering::Equal => self.oid.cmp(&other.oid),
+            // Earlier insertion (smaller seq) should pop first => compare as "greater".
+            Ordering::Equal => match other.seq.cmp(&self.seq) {
+                Ordering::Equal => self.oid.cmp(&other.oid),
+                ord => ord,
+            },
             ord => ord,
         }
     }
@@ -5678,20 +6084,30 @@ fn collect_reachable_objects_segmented(
             }
         }
         let parents = graph.parents_of(commit_oid)?;
-        let parent_union = union_parent_reachable_objects(
-            repo,
-            &parents,
-            missing_action,
-            &mut missing,
-            &mut missing_seen,
-        )?;
+        // The parent_union short-circuit dedups objects already reachable from a parent commit.
+        // With an active filter this changes which trees are *visited* per commit, which breaks
+        // Git's `tree:`/`combine:` skip-tree semantics (and the matching GIT_TRACE output): Git
+        // visits every reachable tree per commit and relies on each filter's own seen state to
+        // detect re-visits. Dedup of shown/omitted objects is already handled by `emitted` and the
+        // final omitted set, so skip the union optimization whenever a filter is present.
+        let parent_union = if filter.is_some() {
+            None
+        } else {
+            Some(union_parent_reachable_objects(
+                repo,
+                &parents,
+                missing_action,
+                &mut missing,
+                &mut missing_seen,
+            )?)
+        };
         collect_tree_objects_filtered(
             repo,
             commit.tree,
             "",
             0,
             false,
-            Some(&parent_union),
+            parent_union.as_ref(),
             &mut tree_state,
             &mut emitted,
             &mut result,
@@ -6381,20 +6797,27 @@ fn collect_root_object(
                 }
             }
             let commit = parse_commit(&object.data)?;
-            let parent_union = union_parent_reachable_objects(
-                repo,
-                &commit.parents,
-                missing_action,
-                missing,
-                missing_seen,
-            )?;
+            // See the note in `collect_objects_segmented`: the parent_union short-circuit must be
+            // disabled when a filter is active so that trees are visited per commit exactly like
+            // Git, preserving `tree:`/`combine:` skip-tree semantics and trace output.
+            let parent_union = if filter.is_some() {
+                None
+            } else {
+                Some(union_parent_reachable_objects(
+                    repo,
+                    &commit.parents,
+                    missing_action,
+                    missing,
+                    missing_seen,
+                )?)
+            };
             collect_tree_objects_filtered(
                 repo,
                 commit.tree,
                 "",
                 0,
                 false,
-                Some(&parent_union),
+                parent_union.as_ref(),
                 tree_state,
                 emitted,
                 result,
@@ -6672,11 +7095,15 @@ fn kept_object_ids(repo: &Repository) -> Result<HashSet<ObjectId>> {
     Ok(kept)
 }
 
-fn flatten_tree(
+/// Like [`flatten_tree`] but also carries each blob's file mode, so callers can detect
+/// mode-only changes (e.g. an executable-bit flip) when deciding whether a path changed.
+/// Git's tree diff treats a path as modified when *either* the object id or the (canonical)
+/// mode differs; the OID-only [`flatten_tree`] cannot see a mode-only change.
+fn flatten_tree_with_mode(
     repo: &Repository,
     tree_oid: ObjectId,
     prefix: &str,
-) -> Result<Vec<(String, ObjectId)>> {
+) -> Result<Vec<(String, (ObjectId, u32))>> {
     let mut result = Vec::new();
     let object = match repo.odb.read(&tree_oid) {
         Ok(o) => o,
@@ -6699,12 +7126,34 @@ fn flatten_tree(
             Err(err) => return Err(err),
         };
         if child.kind == ObjectKind::Tree {
-            result.extend(flatten_tree(repo, entry.oid, &path)?);
+            result.extend(flatten_tree_with_mode(repo, entry.oid, &path)?);
         } else {
-            result.push((path, entry.oid));
+            result.push((path, (entry.oid, canon_tree_mode(entry.mode))));
         }
     }
     Ok(result)
+}
+
+/// Canonicalize a tree entry mode for path-change comparison, mirroring Git's `canon_mode`:
+/// regular files collapse to `0100644`/`0100755`, symlinks to `0120000`, gitlinks to
+/// `0160000`. This keeps mode comparison stable regardless of incidental low-bit noise.
+fn canon_tree_mode(mode: u32) -> u32 {
+    const S_IFMT: u32 = 0o170000;
+    const S_IFREG: u32 = 0o100000;
+    const S_IFLNK: u32 = 0o120000;
+    const S_IFGITLINK: u32 = 0o160000;
+    match mode & S_IFMT {
+        S_IFREG => {
+            if mode & 0o111 != 0 {
+                0o100755
+            } else {
+                0o100644
+            }
+        }
+        S_IFLNK => 0o120000,
+        S_IFGITLINK => 0o160000,
+        _ => mode,
+    }
 }
 
 /// Compute merge bases between two commits.

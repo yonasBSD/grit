@@ -845,7 +845,17 @@ fn cmd_rename(rest: &[String], _from_add: bool) -> Result<()> {
     // itself (`parent` -> `parent/child`) where a plain directory rename would be impossible, and
     // captures broken/unborn symrefs (e.g. HEAD -> a nonexistent branch) that `list_refs` skips.
     let old_remote_dir = git_dir.join("refs/remotes").join(&old);
-    let refs_to_move = collect_loose_remote_refs(&old_remote_dir, &git_dir);
+    let mut refs_to_move = collect_loose_remote_refs(&old_remote_dir, &git_dir);
+    // Clone now records tracking refs in `packed-refs`, so the rename must also move any packed
+    // `refs/remotes/<old>/...` entry that has no loose counterpart (t5505 'rename a remote').
+    let already: std::collections::HashSet<String> =
+        refs_to_move.iter().map(|(r, _, _)| r.clone()).collect();
+    for (refname, oid) in collect_packed_remote_refs(&git_dir, &old_prefix) {
+        if !already.contains(&refname) {
+            refs_to_move.push((refname, Some(oid), None));
+        }
+    }
+    refs_to_move.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Detect a ref-namespace conflict (Git's transaction prepare failing with NAME_CONFLICT): a new
     // ref name that collides with an existing ref as a prefix/suffix. Renaming into itself only
@@ -1085,6 +1095,33 @@ fn collect_loose_remote_refs(
         }
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Read every `packed-refs` entry whose name begins with `old_prefix` (e.g.
+/// `refs/remotes/origin/`). Returns `(refname, oid)` pairs; peeled (`^...`) lines are skipped since
+/// they only annotate the preceding ref. Used so `git remote rename` moves packed tracking refs
+/// (clone now writes tracking refs to `packed-refs`).
+fn collect_packed_remote_refs(git_dir: &Path, old_prefix: &str) -> Vec<(String, ObjectId)> {
+    let mut out = Vec::new();
+    let Ok(content) = std::fs::read_to_string(git_dir.join("packed-refs")) else {
+        return out;
+    };
+    for line in content.lines() {
+        let line = line.trim_end();
+        if line.starts_with('#') || line.starts_with('^') || line.is_empty() {
+            continue;
+        }
+        let Some((oid_str, refname)) = line.split_once(' ') else {
+            continue;
+        };
+        if !refname.starts_with(old_prefix) {
+            continue;
+        }
+        if let Ok(oid) = ObjectId::from_hex(oid_str.trim()) {
+            out.push((refname.to_owned(), oid));
+        }
+    }
     out
 }
 

@@ -77,9 +77,15 @@ pub struct DiffstatOptions<'a> {
     /// Total display width for the stat block (after subtracting `line_prefix` when using terminal width).
     pub total_width: usize,
     /// Prefix printed before each stat line (graph + color); only affects width budget when
-    /// `subtract_prefix_from_terminal` is true.
+    /// `subtract_prefix_from_terminal` is true and `width_prefix` is empty.
     pub line_prefix: &'a str,
-    /// When true, width budget is `terminal_columns() - display_width_minus_ansi(line_prefix)`.
+    /// Prefix whose display width is subtracted from the terminal columns for the width budget,
+    /// but which is *not* itself printed (the caller emits it separately, e.g. `log --graph`'s
+    /// per-line rail). When empty, `line_prefix` is used for the subtraction instead. Matches
+    /// Git's `width = term_columns() - utf8_strnwidth(line_prefix)` where the graph's vertical
+    /// rail is the `output_prefix`.
+    pub width_prefix: &'a str,
+    /// When true, width budget is `terminal_columns() - display_width_minus_ansi(<prefix>)`.
     pub subtract_prefix_from_terminal: bool,
     /// Cap filename area (`diff.statNameWidth` / `--stat-name-width`).
     pub stat_name_width: Option<usize>,
@@ -209,9 +215,14 @@ pub fn write_diffstat_block(
         }
     }
 
+    let width_prefix = if opts.width_prefix.is_empty() {
+        opts.line_prefix
+    } else {
+        opts.width_prefix
+    };
     let mut width = if opts.subtract_prefix_from_terminal {
         terminal_columns()
-            .saturating_sub(display_width_minus_ansi(opts.line_prefix))
+            .saturating_sub(display_width_minus_ansi(width_prefix))
             .saturating_add(opts.graph_prefix_budget_slack)
     } else {
         opts.total_width
@@ -489,6 +500,7 @@ mod tests {
         let opts = DiffstatOptions {
             total_width: 80,
             line_prefix: "",
+            width_prefix: "",
             subtract_prefix_from_terminal: false,
             stat_name_width: Some(10),
             stat_graph_width: None,

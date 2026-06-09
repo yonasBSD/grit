@@ -54,6 +54,56 @@ fn is_linked_worktree_git_dir(git_dir: &Path) -> bool {
         .any(|c| c.as_os_str() == std::ffi::OsStr::new("worktrees"))
 }
 
+/// Compute the gitdir string the way Git's `setup_git_directory` would leave
+/// `the_repository->gitdir` for the current `cwd`. Git keeps the gitdir relative
+/// to the working directory when it was discovered by walking up to a literal
+/// `.git` directory (yielding `.git`, `../.git`, …), but keeps it absolute when
+/// the `.git` is a gitfile pointing elsewhere (separate gitdir / linked
+/// worktree) or `GIT_DIR` named an explicit path.
+fn setup_relative_git_dir(git_dir: &Path, cwd: &Path) -> PathBuf {
+    if let Ok(gd) = std::env::var("GIT_DIR") {
+        if !gd.is_empty() {
+            return PathBuf::from(gd);
+        }
+    }
+    let git_a = realpath_forgiving(git_dir);
+    let cwd_a = realpath_forgiving(cwd);
+    // At the gitdir itself (typical for a bare repo): Git reports ".".
+    if git_a == cwd_a {
+        return PathBuf::from(".");
+    }
+    // A gitfile (`.git` is a file) keeps the absolute target. Linked worktree
+    // admin dirs live under `.../worktrees/<name>` and are likewise absolute.
+    if cwd.join(".git").is_file() || is_linked_worktree_git_dir(&git_a) {
+        return git_a;
+    }
+    // `.git` discovered as a directory in cwd or an ancestor: keep it relative.
+    if git_a.file_name() == Some(std::ffi::OsStr::new(".git")) {
+        if let Some(parent) = git_a.parent() {
+            let parent_a = realpath_forgiving(parent);
+            if cwd_a == parent_a || cwd_a.starts_with(&parent_a) {
+                return PathBuf::from(to_relative_path(&git_a, &cwd_a));
+            }
+        }
+    }
+    git_a
+}
+
+/// Mirror Git's `get_common_dir_noenv`: if the gitdir has a `commondir` file the
+/// common dir is the canonical absolute path it points at, otherwise it is the
+/// gitdir itself (in the cwd-relative form Git's setup would have produced).
+fn computed_common_dir(git_dir: &Path, cwd: &Path) -> PathBuf {
+    if let Ok(common) = std::env::var("GIT_COMMON_DIR") {
+        if !common.is_empty() {
+            return PathBuf::from(common);
+        }
+    }
+    if let Some(common) = refs::common_dir(git_dir) {
+        return common;
+    }
+    setup_relative_git_dir(git_dir, cwd)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PathDefaultMode {
     /// Pass through `path` without canonicalization (e.g. literal `.git`).
@@ -116,6 +166,46 @@ fn print_rev_parse_path(
                     }
                 } else {
                     println!("{}", path_abs.display());
+                }
+            }
+        },
+    }
+}
+
+/// Faithful port of Git's `print_path(path, prefix, format, DEFAULT_RELATIVE_IF_SHARED)`
+/// as used by `--git-common-dir`.
+///
+/// * `--path-format=absolute` (`Some(true)`) → realpath, absolute.
+/// * `--path-format=relative` (`Some(false)`) → relative to `--prefix` or cwd
+///   after canonicalizing both ends.
+/// * default (`None`) → `relative_path(path, prefix)`, where `prefix` is NULL
+///   unless an explicit `--prefix` was given. A NULL prefix prints `path`
+///   verbatim; a sharing prefix yields a relative path.
+fn print_common_dir_path(path: &Path, cli_prefix: Option<&Path>, fmt: Option<bool>) {
+    match fmt {
+        Some(true) => {
+            println!("{}", realpath_forgiving(path).display());
+        }
+        Some(false) => {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let base = cli_prefix
+                .map(realpath_forgiving)
+                .unwrap_or_else(|| realpath_forgiving(&cwd));
+            println!("{}", to_relative_path(&realpath_forgiving(path), &base));
+        }
+        None => match cli_prefix {
+            // Git passes the command-line prefix straight through; with no
+            // `--prefix` it is NULL and `relative_path` returns the path as-is.
+            None => println!("{}", path.display()),
+            Some(prefix) => {
+                let path_abs = realpath_forgiving(path);
+                let prefix_abs = realpath_forgiving(prefix);
+                let path_s = path_abs.to_string_lossy();
+                let prefix_s = prefix_abs.to_string_lossy();
+                let mut sb = String::new();
+                match grit_lib::git_path::relative_path(&path_s, &prefix_s, &mut sb) {
+                    Some(rel) => println!("{rel}"),
+                    None => println!("{}", path.display()),
                 }
             }
         },
@@ -587,78 +677,107 @@ pub fn run(args: Args) -> Result<()> {
             negated = true;
             spec = rest;
         }
+        // Git's `try_difference()` only treats `A..B` / `A...B` as a range when *both*
+        // endpoints resolve. If either side fails (e.g. a ref name that merely contains
+        // `..`/`...`, such as the broken ref names exercised by t1430), git restores the
+        // string and resolves the whole spec as a single revision. Resolving the endpoints
+        // here with `.ok()` lets us fall through to the single-spec path on failure rather
+        // than reporting an "ambiguous argument" error for the left endpoint.
         if let Some((left, right)) = split_double_dot_range(spec) {
-            let left_oid = match if left.is_empty() {
-                resolve_revision_for_range_end(current, "HEAD")
-            } else {
-                resolve_revision_for_range_end(current, left)
-            } {
-                Ok(oid) => oid,
-                Err(e) => return fail_verify_resolve(quiet, &e, Some(current)),
-            };
-            let right_oid = match if right.is_empty() {
-                resolve_revision_for_range_end(current, "HEAD")
-            } else {
-                resolve_revision_for_range_end(current, right)
-            } {
-                Ok(oid) => oid,
-                Err(e) => return fail_verify_resolve(quiet, &e, Some(current)),
-            };
-            if let Some(mut len) = short_len {
-                if len == 0 {
-                    use grit_lib::config::ConfigSet;
-                    let config = ConfigSet::load(Some(&current.git_dir), false)
-                        .unwrap_or_else(|_| ConfigSet::new());
-                    len = config
-                        .get("core.abbrev")
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .unwrap_or(7);
+            let endpoints = (|| {
+                let left_oid = if left.is_empty() {
+                    resolve_revision_for_range_end(current, "HEAD")
+                } else {
+                    resolve_revision_for_range_end(current, left)
                 }
-                println!("{}", abbreviate_object_id(current, left_oid, len)?);
-                println!("^{}", abbreviate_object_id(current, right_oid, len)?);
-            } else {
-                println!("{left_oid}");
-                println!("^{right_oid}");
+                .ok()?;
+                let right_oid = if right.is_empty() {
+                    resolve_revision_for_range_end(current, "HEAD")
+                } else {
+                    resolve_revision_for_range_end(current, right)
+                }
+                .ok()?;
+                Some((left_oid, right_oid))
+            })();
+            if let Some((left_oid, right_oid)) = endpoints {
+                if let Some(mut len) = short_len {
+                    if len == 0 {
+                        use grit_lib::config::ConfigSet;
+                        let config = ConfigSet::load(Some(&current.git_dir), false)
+                            .unwrap_or_else(|_| ConfigSet::new());
+                        len = config
+                            .get("core.abbrev")
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(7);
+                    }
+                    println!("{}", abbreviate_object_id(current, left_oid, len)?);
+                    println!("^{}", abbreviate_object_id(current, right_oid, len)?);
+                } else {
+                    println!("{left_oid}");
+                    println!("^{right_oid}");
+                }
+                return Ok(());
             }
-            return Ok(());
         }
         if let Some((left, right)) = split_triple_dot_range(spec) {
-            let left_tip = if left.is_empty() {
-                resolve_revision_for_range_end(current, "HEAD")?
-            } else {
-                resolve_revision_for_range_end(current, left)?
-            };
-            let right_tip = if right.is_empty() {
-                resolve_revision_for_range_end(current, "HEAD")?
-            } else {
-                resolve_revision_for_range_end(current, right)?
-            };
-            let left_commit = peel_to_commit_for_merge_base(current, left_tip)?;
-            let right_commit = peel_to_commit_for_merge_base(current, right_tip)?;
-            let bases =
-                merge_base::merge_bases_first_vs_rest(current, left_commit, &[right_commit])?;
-            let Some(mb) = bases.into_iter().next() else {
-                return fail_verify(quiet, false);
-            };
-            if let Some(mut len) = short_len {
-                if len == 0 {
-                    use grit_lib::config::ConfigSet;
-                    let config = ConfigSet::load(Some(&current.git_dir), false)
-                        .unwrap_or_else(|_| ConfigSet::new());
-                    len = config
-                        .get("core.abbrev")
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .unwrap_or(7);
+            let tips = (|| {
+                let left_tip = if left.is_empty() {
+                    resolve_revision_for_range_end(current, "HEAD")
+                } else {
+                    resolve_revision_for_range_end(current, left)
                 }
-                println!("{}", abbreviate_object_id(current, left_tip, len)?);
-                println!("{}", abbreviate_object_id(current, right_tip, len)?);
-                println!("^{}", abbreviate_object_id(current, mb, len)?);
-            } else {
-                println!("{left_tip}");
-                println!("{right_tip}");
-                println!("^{mb}");
+                .ok()?;
+                let right_tip = if right.is_empty() {
+                    resolve_revision_for_range_end(current, "HEAD")
+                } else {
+                    resolve_revision_for_range_end(current, right)
+                }
+                .ok()?;
+                Some((left_tip, right_tip))
+            })();
+            if let Some((left_tip, right_tip)) = tips {
+                let left_commit = peel_to_commit_for_merge_base(current, left_tip)?;
+                let right_commit = peel_to_commit_for_merge_base(current, right_tip)?;
+                let bases =
+                    merge_base::merge_bases_first_vs_rest(current, left_commit, &[right_commit])?;
+                let Some(mb) = bases.into_iter().next() else {
+                    return fail_verify(quiet, false);
+                };
+                if let Some(mut len) = short_len {
+                    if len == 0 {
+                        use grit_lib::config::ConfigSet;
+                        let config = ConfigSet::load(Some(&current.git_dir), false)
+                            .unwrap_or_else(|_| ConfigSet::new());
+                        len = config
+                            .get("core.abbrev")
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(7);
+                    }
+                    println!("{}", abbreviate_object_id(current, left_tip, len)?);
+                    println!("{}", abbreviate_object_id(current, right_tip, len)?);
+                    println!("^{}", abbreviate_object_id(current, mb, len)?);
+                } else {
+                    println!("{left_tip}");
+                    println!("{right_tip}");
+                    println!("^{mb}");
+                }
+                return Ok(());
             }
-            return Ok(());
+        }
+        // We only reach here for a `..`/`...` spec when at least one range endpoint failed
+        // to resolve (matching git's `try_difference`, which then treats the whole string as
+        // a single revision). Git refuses to resolve a ref whose name is itself invalid, so a
+        // dotted name like `refs/heads/broken...symref` yields "Needed a single revision"
+        // rather than following the broken-named symref. Mirror that: reject a dotted spec
+        // that is not a valid ref name before attempting whole-spec resolution.
+        if (split_double_dot_range(spec).is_some() || split_triple_dot_range(spec).is_some())
+            && grit_lib::check_ref_format::check_refname_format(
+                spec,
+                &grit_lib::check_ref_format::RefNameOptions::default(),
+            )
+            .is_err()
+        {
+            return fail_verify(quiet, false);
         }
         let oid = if matches!(spec, "REVERT_HEAD" | "CHERRY_PICK_HEAD") {
             let path = current.git_dir.join(spec);
@@ -952,20 +1071,14 @@ pub fn run(args: Args) -> Result<()> {
                 let Some(current) = repo.as_ref() else {
                     bail!("not a git repository (or any of the parent directories)");
                 };
-                let common_git_dir =
-                    refs::common_dir(&current.git_dir).unwrap_or_else(|| current.git_dir.clone());
-                let default_mode = if current.git_dir.join("commondir").exists() {
-                    PathDefaultMode::Canonical
-                } else {
-                    PathDefaultMode::RelativeToCwd
-                };
-                print_rev_parse_path(
-                    &common_git_dir,
-                    &cwd,
-                    cli_prefix_path.as_deref(),
-                    *fmt,
-                    default_mode,
-                );
+                // Git: `print_path(repo_get_common_dir(), prefix, format,
+                // DEFAULT_RELATIVE_IF_SHARED)`. The common dir is reported in the
+                // same form Git's setup left it in (cwd-relative for an in-tree
+                // `.git`, absolute for a gitfile / linked worktree), and the
+                // RELATIVE_IF_SHARED default prints it verbatim unless an
+                // explicit `--prefix` was given that shares a filesystem root.
+                let common_git_dir = computed_common_dir(&current.git_dir, &cwd);
+                print_common_dir_path(&common_git_dir, cli_prefix_path.as_deref(), *fmt);
             }
             Action::ShowAbsoluteGitDir => {
                 let Some(current) = repo.as_ref() else {
@@ -1039,39 +1152,42 @@ pub fn run(args: Args) -> Result<()> {
                     }
                 }
             }
-            Action::BisectRefs(_) => {
+            Action::BisectRefs(symbolic_full_name) => {
                 let Some(current) = repo.as_ref() else {
                     bail!("not a git repository (or any of the parent directories)");
                 };
+                // Mirror git rev-parse --bisect: iterate refs under the
+                // `refs/bisect/bad` prefix (printed as "good" revs) and the
+                // `refs/bisect/good` prefix (printed as anti-revs, "^"). Git
+                // uses a plain string-prefix match and emits refs in
+                // sorted-by-name order, so `refs/bisect/b` and `refs/bisect/go`
+                // are excluded (they do not start with the full prefixes).
                 let all = grit_lib::refs::list_refs(&current.git_dir, "refs/bisect/")
                     .context("failed to list bisect refs")?;
-                let mut bad: Vec<_> = all
-                    .iter()
-                    .filter(|(r, _)| {
-                        r.starts_with("refs/bisect/bad")
-                            && r.as_bytes()
-                                .get("refs/bisect/bad".len())
-                                .is_none_or(|b| *b == b'-')
-                    })
-                    .map(|(_, oid)| *oid)
-                    .collect();
-                bad.sort();
-                for oid in &bad {
-                    println!("{oid}");
+
+                // Collect (name, oid) for each prefix, sorted by ref name to
+                // match git's ref-store iteration order.
+                let collect_sorted = |prefix: &str| {
+                    let mut v: Vec<_> = all.iter().filter(|(r, _)| r.starts_with(prefix)).collect();
+                    v.sort_by(|(a, _), (b, _)| a.cmp(b));
+                    v
+                };
+
+                // With --symbolic-full-name git prints the full ref name (via
+                // dwim resolution); otherwise it prints the object id.
+                for (name, oid) in collect_sorted("refs/bisect/bad") {
+                    if *symbolic_full_name {
+                        println!("{name}");
+                    } else {
+                        println!("{oid}");
+                    }
                 }
-                let mut good: Vec<_> = all
-                    .iter()
-                    .filter(|(r, _)| {
-                        r.starts_with("refs/bisect/good")
-                            && r.as_bytes()
-                                .get("refs/bisect/good".len())
-                                .is_none_or(|b| *b == b'-')
-                    })
-                    .map(|(_, oid)| *oid)
-                    .collect();
-                good.sort();
-                for oid in &good {
-                    println!("^{oid}");
+                for (name, oid) in collect_sorted("refs/bisect/good") {
+                    if *symbolic_full_name {
+                        println!("^{name}");
+                    } else {
+                        println!("^{oid}");
+                    }
                 }
             }
             Action::MaxAge(date) => {
@@ -1098,65 +1214,34 @@ pub fn run(args: Args) -> Result<()> {
                     let path_arg_out = path_arg; // original for output
                     let path_arg = &path_arg_for_match; // normalized for matching
 
-                    // Check GIT_COMMON_DIR: certain paths are relative to common dir
-                    // Worktree-local paths (NOT common):
-                    let is_worktree_local = {
-                        let p = path_arg.as_str();
-                        p == "HEAD"
-                            || p == "index"
-                            || p == "config.worktree"
-                            || p == "MERGE_HEAD"
-                            || p == "CHERRY_PICK_HEAD"
-                            || p == "REVERT_HEAD"
-                            || p == "BISECT_LOG"
-                            || p == "BISECT_TERMS"
-                            || p == "BISECT_EXPECTED_REV"
-                            || p == "AUTO_MERGE"
-                            || p == "SQUASH_MSG"
-                            || p == "MERGE_MSG"
-                            || p.starts_with("rebase-")
-                            || p.starts_with("sequencer")
-                            || p == "logs/HEAD"
-                            || p.starts_with("logs/HEAD.")
-                            || p.starts_with("logs/FETCH_HEAD")
-                            || p == "refs/bisect"
-                            || p.starts_with("refs/bisect/")
-                            || p == "logs/refs/bisect"
-                            || p.starts_with("logs/refs/bisect/")
-                            || p == "info/sparse-checkout"
-                    };
+                    // GIT_COMMON_DIR: paths classified as "common" by Git's
+                    // `update_common_dir`/`common_list` (port in
+                    // `grit_lib::git_path::is_common_git_path`) are resolved
+                    // against the common dir; everything else stays under the
+                    // per-worktree git dir. Git uses the env var spelling
+                    // verbatim (see setup.c `get_common_dir`) and replaces the
+                    // git-dir prefix, so a relative `GIT_COMMON_DIR=bar` yields a
+                    // relative `bar/<component>` result (printed as-is by
+                    // relative-if-shared since it shares no root with cwd).
                     if let Ok(common_dir) = std::env::var("GIT_COMMON_DIR") {
-                        if !is_worktree_local {
-                            let common_prefixes = [
-                                "objects",
-                                "refs",
-                                "packed-refs",
-                                "info",
-                                "config",
-                                "ORIG_HEAD",
-                                "FETCH_HEAD",
-                                "logs",
-                                "shallow",
-                                "remotes",
-                                "branches",
-                                "hooks",
-                                "common",
-                            ];
-                            let is_common = common_prefixes
-                                .iter()
-                                .any(|p| path_arg == p || path_arg.starts_with(&format!("{}/", p)));
-                            if is_common {
-                                let common_path = std::path::PathBuf::from(&common_dir);
-                                let common_path = if common_path.is_absolute() {
-                                    common_path
-                                } else {
-                                    current.git_dir.join(common_path)
-                                };
-                                let common_display =
-                                    common_path.canonicalize().unwrap_or(common_path);
-                                println!("{}/{}", common_display.display(), path_arg_out);
-                                continue;
-                            }
+                        // env-var overrides (grafts/index/objects) still win over
+                        // the common-dir replacement, matching `adjust_git_path`.
+                        let has_env_override = (path_arg == "info/grafts"
+                            && std::env::var("GIT_GRAFT_FILE").is_ok())
+                            || (path_arg == "index" && std::env::var("GIT_INDEX_FILE").is_ok())
+                            || ((path_arg == "objects" || path_arg.starts_with("objects/"))
+                                && std::env::var("GIT_OBJECT_DIRECTORY").is_ok());
+                        if !has_env_override
+                            && grit_lib::git_path::is_common_git_path(path_arg.as_str())
+                        {
+                            // Append the original component verbatim (preserving
+                            // internal `//`), mirroring `repo_git_pathv` +
+                            // `replace_dir`.
+                            let component =
+                                grit_lib::git_path::git_path_relative_component(path_arg_out);
+                            let sep = if common_dir.ends_with('/') { "" } else { "/" };
+                            println!("{common_dir}{sep}{component}");
+                            continue;
                         }
                     }
                     // Check env var overrides
@@ -1232,6 +1317,11 @@ pub fn run(args: Args) -> Result<()> {
                             current.git_dir.join(original_component)
                         }
                     };
+                    // For a real linked worktree (git_dir under `.../worktrees/<name>`),
+                    // worktree-local paths (those NOT classified as common) resolve to
+                    // the admin dir and print as a canonical absolute path.
+                    let is_worktree_local =
+                        !grit_lib::git_path::is_common_git_path(path_arg.as_str());
                     if is_worktree_local
                         && current
                             .git_dir

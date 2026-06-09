@@ -5,13 +5,13 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
+use grit_lib::commit::{format_git_timestamp, parse_date_to_git_timestamp};
 use grit_lib::config::ConfigSet;
 use grit_lib::diff::{
     diff_index_to_tree, diff_index_to_worktree, diff_trees, status_apply_rename_copy_detection,
     DiffEntry, DiffStatus,
 };
 use grit_lib::error::Error;
-use grit_lib::git_date::parse::parse_date;
 use grit_lib::hooks::{
     run_commit_hook, run_hook, run_reference_transaction_committed_for_head_update, CommitHookEnv,
     HookResult,
@@ -43,7 +43,6 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 /// Environment variable set by [`preprocess_commit_argv`] with the effective `-v` count after
@@ -156,6 +155,18 @@ pub struct Args {
     /// Select hunks interactively before committing (same idea as `git add -p`).
     #[arg(short = 'p', long = "patch", hide = true)]
     pub patch: bool,
+
+    /// Lines of context for `--patch` (validated to require `-p`).
+    #[arg(long = "unified", short = 'U', allow_hyphen_values = true, hide = true)]
+    pub unified: Option<i32>,
+
+    /// Context lines between adjacent `--patch` hunks (validated to require `-p`).
+    #[arg(long = "inter-hunk-context", allow_hyphen_values = true, hide = true)]
+    pub inter_hunk_context: Option<i32>,
+
+    /// Disable auto-advance in interactive patch mode (validated to require `-p`).
+    #[arg(long = "no-auto-advance", hide = true)]
+    pub no_auto_advance: bool,
 
     /// Untracked files mode.
     #[arg(short = 'u', long = "untracked-files", value_name = "MODE", num_args = 0..=1, default_missing_value = "all")]
@@ -516,6 +527,19 @@ pub(crate) fn preprocess_commit_for_parse(argv: &[String]) -> Vec<String> {
 pub fn run(mut args: Args) -> Result<()> {
     peel_message_flags_from_pathspec(&mut args);
 
+    crate::commands::add::validate_patch_context_options(
+        args.unified,
+        args.inter_hunk_context,
+        args.patch,
+    )?;
+    if args.no_auto_advance && !args.patch {
+        bail!(
+            "the option '{}' requires '{}'",
+            "--no-auto-advance",
+            "--interactive/--patch"
+        );
+    }
+
     // Tests and some scripts pass `-q` after `-m MSG`; if it lands in the
     // trailing pathspec bucket, strip it so we match Git (quiet is already
     // handled by the top-level flag).
@@ -676,7 +700,11 @@ pub fn run(mut args: Args) -> Result<()> {
     let had_rv_head = repo.git_dir.join("REVERT_HEAD").exists();
     let seq_todo_path = repo.git_dir.join("sequencer").join("todo");
     let resume_pick_after_cp = had_cp_head && seq_todo_path.exists();
-    let _resume_revert_after_rv = had_rv_head && seq_todo_path.exists();
+    let resume_revert_after_rv = had_rv_head && seq_todo_path.exists();
+    // Git's `sequencer_determine_whence`: a stopped interactive `pick` leaves CHERRY_PICK_HEAD
+    // *and* a rebase state dir with REBASE_HEAD == CHERRY_PICK_HEAD. In that case `commit` reports
+    // a rebase (not a cherry-pick) for partial-commit / amend errors (t3404 118/119).
+    let from_rebase_pick = had_cp_head && commit_is_rebase_pick_whence(&repo.git_dir);
 
     if grit_lib::precompose_config::effective_core_precomposeunicode(Some(&repo.git_dir)) {
         for ps in &mut args.pathspec {
@@ -764,11 +792,18 @@ pub fn run(mut args: Args) -> Result<()> {
 
     let index_path = resolved_index_path(&repo);
 
+    // For `commit --interactive` (`-i`), the selections are staged into a temporary index and the
+    // real on-disk index is left untouched until the commit succeeds (so an aborted commit does not
+    // mutate the index — t7501). Carry the staged index here so the post-commit refresh can persist
+    // it once the commit is final.
+    let mut interactive_staged_index: Option<Index> = None;
     let index = if args.interactive && !args.patch {
         let Some(wt) = work_tree else {
             bail!("this operation must be run in a work tree");
         };
-        run_commit_interactive_mode(&repo, wt, &args)?
+        let staged = run_commit_interactive_mode(&repo, wt, &args)?;
+        interactive_staged_index = Some(staged.clone());
+        staged
     } else if args.patch {
         let Some(wt) = work_tree else {
             bail!("this operation must be run in a work tree");
@@ -868,7 +903,11 @@ pub fn run(mut args: Args) -> Result<()> {
     let old_head_oid = head.oid().cloned();
 
     if had_cp_head && args.amend {
-        eprintln!("fatal: You are in the middle of a cherry-pick -- cannot amend.");
+        if from_rebase_pick {
+            eprintln!("fatal: You are in the middle of a rebase -- cannot amend.");
+        } else {
+            eprintln!("fatal: You are in the middle of a cherry-pick -- cannot amend.");
+        }
         std::process::exit(128);
     }
     if had_rv_head && args.amend {
@@ -877,7 +916,11 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     if had_cp_head && !args.pathspec.is_empty() {
-        eprintln!("fatal: cannot do a partial commit during a cherry-pick.");
+        if from_rebase_pick {
+            eprintln!("fatal: cannot do a partial commit during a rebase.");
+        } else {
+            eprintln!("fatal: cannot do a partial commit during a cherry-pick.");
+        }
         std::process::exit(128);
     }
     if had_rv_head && !args.pathspec.is_empty() {
@@ -1124,7 +1167,7 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     let template_path = resolve_commit_template_path(&args, &config)?;
-    let use_editor_for_message = commit_uses_editor(&args, fixup_parsed.as_ref(), &repo.git_dir);
+    let use_editor_for_message = commit_uses_editor(&args, fixup_parsed.as_ref());
     if use_editor_for_message {
         validate_explicit_committer_identity(&config)?;
         let _ = resolve_committer(&config, OffsetDateTime::now_utc())?;
@@ -1132,6 +1175,19 @@ pub fn run(mut args: Args) -> Result<()> {
 
     let verbose_level = resolve_commit_verbose_level(&args, &config);
     let commit_cleanup_mode = resolve_commit_cleanup_mode(&args, &config, use_editor_for_message);
+    // For editor commits, `prepare-commit-msg` must run on the full template buffer *before*
+    // the editor opens (Git `prepare_to_commit`: hook then editor). This closure is invoked at
+    // each editor-launch site inside `prepare_commit_message`. Non-editor commits run the hook
+    // afterwards (below) on the assembled message instead.
+    let prepare_hook = |msg_file: &Path| -> Result<()> {
+        run_prepare_commit_msg_hook_on(
+            &repo,
+            &args,
+            index_path.as_path(),
+            use_editor_for_message,
+            msg_file,
+        )
+    };
     let msg_result = prepare_commit_message(
         &args,
         &repo,
@@ -1143,6 +1199,7 @@ pub fn run(mut args: Args) -> Result<()> {
         &staged,
         &unstaged,
         verbose_level,
+        &prepare_hook,
     )?;
     let mut message = normalize_autosquash_editor_message(
         &args,
@@ -1159,46 +1216,18 @@ pub fn run(mut args: Args) -> Result<()> {
     let template_for_aborted_check = template_path.filter(|_| use_editor_for_message);
 
     // prepare-commit-msg runs for normal commits (not skipped by `--no-verify`; only pre-commit
-    // and commit-msg are). Writes COMMIT_EDITMSG then lets the hook edit it in place.
-    {
+    // and commit-msg are). For editor commits the hook already ran on the full template before the
+    // editor opened (inside `prepare_commit_message`), matching Git's `prepare_to_commit` order;
+    // running it again here would operate on the post-editor, comment-stripped buffer. So only the
+    // non-editor path writes COMMIT_EDITMSG and lets the hook edit it in place.
+    if !use_editor_for_message {
         let msg_file = repo.git_dir.join("COMMIT_EDITMSG");
         if let Some(ref raw) = raw_message {
             fs::write(&msg_file, raw)?;
         } else {
             fs::write(&msg_file, message.as_bytes())?;
         }
-        let msg_path_str = msg_file.to_string_lossy().to_string();
-        let (hook_arg1, hook_arg2) = prepare_commit_msg_hook_args(&args, &repo.git_dir);
-        let mut hook_args: Vec<&str> = vec![msg_path_str.as_str()];
-        if let Some(a1) = hook_arg1 {
-            hook_args.push(a1);
-            if let Some(ref a2) = hook_arg2 {
-                hook_args.push(a2.as_str());
-            }
-        }
-        // Match `run_commit_hook` upstream: when no editor is used, export GIT_EDITOR=:
-        // so hooks can detect a non-interactive commit. Also export GIT_INDEX_FILE.
-        let prepare_hook_env = CommitHookEnv {
-            index_file: Some(index_path.as_path()),
-            git_editor: if use_editor_for_message {
-                None
-            } else {
-                Some(":")
-            },
-            git_prefix: None,
-            extra_env: &[],
-        };
-        let r = run_commit_hook(
-            &repo,
-            "prepare-commit-msg",
-            &hook_args,
-            None,
-            &prepare_hook_env,
-        )
-        .map_err(|e| anyhow::anyhow!(e))?;
-        if let HookResult::Failed(code) = r {
-            bail!("prepare-commit-msg hook exited with status {code}");
-        }
+        run_prepare_commit_msg_hook_on(&repo, &args, index_path.as_path(), false, &msg_file)?;
         let new_raw = fs::read(&msg_file)?;
         // Preserve the verbatim bytes when the source message carried raw bytes
         // (a `-F` file or non-UTF-8 content); the commit body must be stored as-is
@@ -1788,15 +1817,36 @@ pub fn run(mut args: Args) -> Result<()> {
     // state when the just-committed pick was the final one (`have_finished_the_last_pick`:
     // the todo has at most one line left). That lets the last pick of a sequence be
     // finished with a plain `git commit` (t3507 "successful final commit clears ... state").
-    if resume_pick_after_cp && sequencer_finished_last_pick(&repo.git_dir) {
+    // This applies equally to a revert sequence (REVERT_HEAD), matching
+    // sequencer_post_commit_cleanup which sets need_cleanup for either head.
+    //
+    // grit's cherry-pick and revert keep the sequencer todo in different shapes:
+    // cherry-pick leaves the *current* (conflicting) item at the head of the todo
+    // (git's on-disk format), so "finished the last pick" means the todo has at
+    // most one line left. grit's revert instead drops the current item from the
+    // todo and tracks it via REVERT_HEAD, so the todo only ever holds the *remaining*
+    // un-attempted reverts; for revert the sequence is finished only when that todo
+    // is empty. Using the wrong test here would prematurely tear down the sequencer
+    // after committing the resolution of an intermediate revert (t7512.42).
+    let finished = if resume_revert_after_rv {
+        sequencer_todo_remaining_empty(&repo.git_dir)
+    } else {
+        sequencer_finished_last_pick(&repo.git_dir)
+    };
+    if (resume_pick_after_cp || resume_revert_after_rv) && finished {
         let _ = fs::remove_dir_all(repo.git_dir.join("sequencer"));
     }
 
-    // Refresh the index file Git used for this commit (including `GIT_INDEX_FILE`).
-    let mut index_refresh = match repo.load_index_at(&index_path) {
-        Ok(idx) => idx,
-        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
-        Err(e) => return Err(e.into()),
+    // Refresh the index file Git used for this commit (including `GIT_INDEX_FILE`). For
+    // `commit --interactive`, the real index was intentionally not touched until now; promote the
+    // interactively staged index here, after the commit has succeeded.
+    let mut index_refresh = match interactive_staged_index.take() {
+        Some(idx) => idx,
+        None => match repo.load_index_at(&index_path) {
+            Ok(idx) => idx,
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
+            Err(e) => return Err(e.into()),
+        },
     };
     let cache_tree = build_cache_tree_from_index(&repo.odb, &index_refresh)?;
     index_refresh.set_cache_tree(cache_tree);
@@ -2324,37 +2374,103 @@ fn find_untracked_files(
     crate::commands::status::collect_untracked_normal_for_status(repo, index, work_tree, pathspecs)
 }
 
+/// `git commit --interactive` (`-i`): drive the full interactive-add menu loop (status / update /
+/// revert / add untracked / patch / diff) against a *temporary* index seeded from the current
+/// index, then commit the tree that index describes (Git's `interactive_add` on a temp index file).
+///
+/// The selections are made in a copy so the real index/work tree are untouched by the loop. After
+/// the loop the temp index is written over the real index path so the normal post-commit refresh
+/// records exactly the staged-and-committed state (e.g. `foo.c` ends up ` M` in `git status`).
 fn run_commit_interactive_mode(repo: &Repository, work_tree: &Path, args: &Args) -> Result<Index> {
-    use std::io::BufRead;
+    let real_index_path = resolved_index_path(repo);
 
-    let index_path = resolved_index_path(repo);
-    let mut index = match repo.load_index_at(&index_path) {
-        Ok(idx) => idx,
-        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
+    // Seed a temporary index file from the current index so interactive selections never touch the
+    // real index until the commit is being built.
+    let tmp_index_path = repo
+        .git_dir
+        .join(format!("next-index-{}", std::process::id()));
+    match fs::copy(&real_index_path, &tmp_index_path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // No index yet: start the temp index empty.
+            let mut empty = Index::new();
+            repo.write_index_at(&tmp_index_path, &mut empty)?;
+        }
         Err(e) => return Err(e.into()),
+    }
+
+    let config = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let core_filemode = config
+        .get_bool("core.filemode")
+        .and_then(|r| r.ok())
+        .unwrap_or(true);
+    let precompose_unicode =
+        grit_lib::precompose_config::effective_core_precomposeunicode(Some(&repo.git_dir));
+    let sparse_state = crate::commands::add::AddSparseState::load(repo, &config);
+    let add_cfg = crate::commands::add::AddConfig {
+        core_filemode,
+        precompose_unicode,
+        ignore_errors: false,
+        conv: grit_lib::crlf::ConversionConfig::from_config(&config),
+        attrs: grit_lib::crlf::load_gitattributes(work_tree),
+        config: config.clone(),
+        sparse: sparse_state,
+        include_sparse: false,
+        large_blobs: None,
     };
 
-    println!("*** Commands ***");
-    println!("  1: status       2: update       3: revert       4: add untracked");
-    println!("  5: patch        6: diff         7: quit         8: help");
-    print!("What now> ");
-    io::stdout().flush().ok();
+    // Point the interactive-add engine at the temp index for the duration of the loop.
+    let prev_index_env = std::env::var_os("GIT_INDEX_FILE");
+    std::env::set_var("GIT_INDEX_FILE", &tmp_index_path);
 
-    let mut first = String::new();
-    let mut stdin = io::stdin().lock();
-    if stdin.read_line(&mut first).unwrap_or(0) == 0 {
-        std::process::exit(1);
-    }
-    match first.trim() {
-        "7" | "q" | "Q" => std::process::exit(1),
-        "2" | "u" | "U" | "update" => {
-            if args.pathspec.is_empty() {
-                std::process::exit(1);
-            }
-            apply_pathspec_to_index(repo, work_tree, &mut index, &args.pathspec)?;
-            Ok(index)
+    let tmp_index = match repo.load_index_at(&tmp_index_path) {
+        Ok(idx) => idx,
+        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
+        Err(e) => {
+            restore_index_env(prev_index_env.as_deref());
+            return Err(e.into());
         }
-        _ => std::process::exit(1),
+    };
+
+    let loop_result = crate::commands::add_interactive::run_add_i(
+        repo,
+        tmp_index,
+        work_tree,
+        &config,
+        &add_cfg,
+        &args.pathspec,
+    );
+
+    restore_index_env(prev_index_env.as_deref());
+
+    if let Err(e) = loop_result {
+        let _ = fs::remove_file(&tmp_index_path);
+        return Err(e);
+    }
+
+    // Reload the temp index (now carrying the interactively staged hunks). The commit tree is built
+    // from this index, but the *real* index is deliberately left untouched here: a later abort
+    // (e.g. empty commit message) must leave the on-disk index unchanged (t7501 "commit
+    // --interactive doesn't change index if editor aborts"). The post-commit index refresh persists
+    // this staged index only once the commit actually succeeds.
+    let staged_index = match repo.load_index_at(&tmp_index_path) {
+        Ok(idx) => idx,
+        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Index::new(),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp_index_path);
+            return Err(e.into());
+        }
+    };
+    let _ = fs::remove_file(&tmp_index_path);
+
+    Ok(staged_index)
+}
+
+/// Restore (or clear) `GIT_INDEX_FILE` after a temporary override.
+fn restore_index_env(prev: Option<&std::ffi::OsStr>) {
+    match prev {
+        Some(val) => std::env::set_var("GIT_INDEX_FILE", val),
+        None => std::env::remove_var("GIT_INDEX_FILE"),
     }
 }
 
@@ -2444,6 +2560,11 @@ fn run_commit_patch_mode(
 ) -> Result<Index> {
     use similar::{Algorithm, TextDiff};
     use std::io::BufRead;
+
+    let patch_cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+    let context = crate::commands::add::resolve_patch_context(args.unified, &patch_cfg)?;
+    let inter_hunk_context =
+        crate::commands::add::resolve_patch_interhunk(args.inter_hunk_context, &patch_cfg)?;
 
     let index_path = resolved_index_path(repo);
     let disk_index = match repo.load_index_at(&index_path) {
@@ -2602,12 +2723,13 @@ fn run_commit_patch_mode(
 
                 let display_idx = hunk_cursor + 1;
                 let (s, e) = hunk_ranges[hunk_cursor];
-                let hunk_only = crate::commands::stash::partial_unified_for_op_range(
+                let hunk_only = crate::commands::stash::partial_unified_for_op_range_interhunk(
                     path.as_str(),
                     &index_content,
                     &cur_work,
                     &ops[s..e],
-                    3,
+                    context,
+                    inter_hunk_context,
                     true,
                 );
 
@@ -2692,6 +2814,10 @@ fn run_commit_patch_mode(
                     _ => {}
                 }
             }
+
+            // Git prints a trailing newline when leaving the file's interactive hunk loop
+            // (t3701 "commit falls back to color.ui" compares raw vs color-decoded output).
+            writeln!(out).ok();
 
             // `blend_line_diff_by_hunk_ranges` uses the first arg as "source" when a range is
             // accepted. For `commit -p` the diff is **index → worktree**; answering `y` must stage
@@ -3159,6 +3285,31 @@ fn resolved_index_path(repo: &Repository) -> PathBuf {
     }
 }
 
+/// Whether a stopped commit corresponds to an interactive-rebase `pick` (Git `FROM_REBASE_PICK`).
+///
+/// True when an interactive rebase state dir is present and `REBASE_HEAD` equals
+/// `CHERRY_PICK_HEAD` (the in-progress pick that halted). Used to choose rebase-specific
+/// "cannot do a partial commit" / "cannot amend" error messages.
+///
+/// # Parameters
+/// - `git_dir`: the repository git directory.
+fn commit_is_rebase_pick_whence(git_dir: &Path) -> bool {
+    let rebase_dir_exists =
+        git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists();
+    if !rebase_dir_exists {
+        return false;
+    }
+    let read = |name: &str| -> Option<String> {
+        fs::read_to_string(git_dir.join(name))
+            .ok()
+            .map(|s| s.trim().to_owned())
+    };
+    match (read("REBASE_HEAD"), read("CHERRY_PICK_HEAD")) {
+        (Some(rh), Some(ch)) => !rh.is_empty() && rh == ch,
+        _ => false,
+    }
+}
+
 fn parse_fixup_argument(raw: &str) -> Result<FixupParsed> {
     let (prefix, rest) = match raw.split_once(':') {
         Some((a, b)) if !a.is_empty() && a.chars().all(|c| c.is_ascii_alphabetic()) => (a, b),
@@ -3197,10 +3348,10 @@ fn commit_rename_settings(config: &ConfigSet) -> (Option<u32>, bool) {
     (Some(50), false)
 }
 
-fn commit_uses_editor(args: &Args, fixup: Option<&FixupParsed>, git_dir: &Path) -> bool {
+fn commit_uses_editor(args: &Args, fixup: Option<&FixupParsed>) -> bool {
     // Mirror `builtin/commit.c`: first derive a default `use_editor` from the message source,
     // then let an explicit `-e`/`--no-edit` override it (upstream `edit_flag` tri-state).
-    let base = commit_uses_editor_default(args, fixup, git_dir);
+    let base = commit_uses_editor_default(args, fixup);
     if args.edit {
         return true;
     }
@@ -3211,7 +3362,7 @@ fn commit_uses_editor(args: &Args, fixup: Option<&FixupParsed>, git_dir: &Path) 
 }
 
 /// Default `use_editor` before applying an explicit `-e`/`--no-edit` override.
-fn commit_uses_editor_default(args: &Args, fixup: Option<&FixupParsed>, git_dir: &Path) -> bool {
+fn commit_uses_editor_default(args: &Args, fixup: Option<&FixupParsed>) -> bool {
     // `-c`/`-C` (reuse), `-m`, and `-F` all disable the editor by default.
     if args.reuse_message.is_some() && args.reedit_message.is_none() {
         return false;
@@ -3219,9 +3370,12 @@ fn commit_uses_editor_default(args: &Args, fixup: Option<&FixupParsed>, git_dir:
     if !args.message.is_empty() || args.file.is_some() {
         return false;
     }
-    if git_dir.join("MERGE_MSG").exists() || git_dir.join("SQUASH_MSG").exists() {
-        return false;
-    }
+    // Note: the presence of MERGE_MSG / SQUASH_MSG does NOT disable the editor. Git
+    // (`builtin/commit.c`) only clears `use_editor` for `-m`/`-F`/`-c`/`-C`; a plain
+    // `git commit` after a merge (or a manual commit while resolving a rebase conflict)
+    // still opens the editor, seeded with MERGE_MSG. Tests pass `EDITOR=:` to make that a
+    // no-op. Skipping the editor here would mislabel such commits to prepare-commit-msg
+    // hooks as non-interactive (t7505 `merge [pick rebase-b]`).
     if let Some(f) = fixup {
         match f.mode {
             // Plain `--fixup` uses a generated message (no editor) by default.
@@ -3586,6 +3740,80 @@ fn git_vertical_stripspace(s: &str) -> String {
     trimmed_start
         .trim_end_matches(['\n', '\r', ' ', '\t'])
         .to_string()
+}
+
+/// Byte-level twin of [`git_vertical_stripspace`]: strip leading `\n`/`\r` and any
+/// trailing horizontal/vertical whitespace, operating on raw bytes so that invalid
+/// UTF-8 message payloads (Git stores commit bodies verbatim) survive cleanup.
+fn git_vertical_stripspace_bytes(bytes: &[u8]) -> Vec<u8> {
+    let mut start = 0usize;
+    while start < bytes.len() && matches!(bytes[start], b'\n' | b'\r') {
+        start += 1;
+    }
+    let mut end = bytes.len();
+    while end > start && matches!(bytes[end - 1], b'\n' | b'\r' | b' ' | b'\t') {
+        end -= 1;
+    }
+    bytes[start..end].to_vec()
+}
+
+/// Byte-level twin of [`cleanup_edited_commit_message`]: drop comment lines, trim each
+/// line's trailing whitespace, and collapse runs of blank lines. Operates on raw bytes
+/// so invalid-UTF-8 payloads are preserved.
+fn cleanup_edited_commit_message_bytes(bytes: &[u8], comment_prefix: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut empties = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let line_end = match bytes[i..].iter().position(|&b| b == b'\n') {
+            Some(pos) => i + pos + 1,
+            None => bytes.len(),
+        };
+        let line = &bytes[i..line_end];
+        i = line_end;
+
+        if !comment_prefix.is_empty() && line.starts_with(comment_prefix) {
+            continue;
+        }
+        let mut content_len = line.len();
+        while content_len > 0 && line[content_len - 1].is_ascii_whitespace() {
+            content_len -= 1;
+        }
+        if content_len > 0 {
+            if empties > 0 && !out.is_empty() {
+                out.push(b'\n');
+            }
+            empties = 0;
+            out.extend_from_slice(&line[..content_len]);
+            out.push(b'\n');
+        } else {
+            empties += 1;
+        }
+    }
+    out
+}
+
+/// Apply `mode`'s cleanup to a raw (possibly non-UTF-8) message body and return the
+/// bytes Git would store, with a single trailing newline when non-empty. Mirrors
+/// [`apply_cleanup_message`] for the non-`Scissors`/non-verbose cases that `-m`/`-F`
+/// take. The caller only routes non-UTF-8 payloads here, so scissors/verbose (which
+/// require text scanning) never apply.
+fn cleanup_message_bytes(
+    bytes: &[u8],
+    comment_prefix: &[u8],
+    mode: CommitMsgCleanupMode,
+) -> Vec<u8> {
+    let mut cleaned = match mode {
+        CommitMsgCleanupMode::None => bytes.to_vec(),
+        CommitMsgCleanupMode::All => cleanup_edited_commit_message_bytes(bytes, comment_prefix),
+        CommitMsgCleanupMode::Space | CommitMsgCleanupMode::Scissors => {
+            git_vertical_stripspace_bytes(bytes)
+        }
+    };
+    if !cleaned.is_empty() && !cleaned.ends_with(b"\n") {
+        cleaned.push(b'\n');
+    }
+    cleaned
 }
 
 fn rest_is_empty_signedoff_only(s: &str, start: usize) -> bool {
@@ -4198,6 +4426,11 @@ fn prepare_commit_message(
     staged: &[DiffEntry],
     unstaged: &[DiffEntry],
     verbose_level: i64,
+    // Runs the `prepare-commit-msg` hook on the editor template file (the full message
+    // buffer including status comments) immediately before launching the editor, matching
+    // Git's `prepare_to_commit` order: hook first, editor second. For non-editor commits
+    // the caller runs the hook itself after the message is assembled.
+    run_prepare_hook: &dyn Fn(&Path) -> Result<()>,
 ) -> Result<MessageResult> {
     let comment_owned = comment_line_prefix_full(config);
     let comment_prefix = comment_owned.as_ref();
@@ -4239,6 +4472,7 @@ fn prepare_commit_message(
                     )?;
                 }
                 fs::write(&edit_path, &file_body)?;
+                run_prepare_hook(&edit_path)?;
                 launch_commit_editor(repo, &edit_path)?;
                 let edited = fs::read_to_string(&edit_path)?;
                 let cleaned =
@@ -4278,6 +4512,7 @@ fn prepare_commit_message(
                 )?;
             }
             fs::write(&edit_path, &file_body)?;
+            run_prepare_hook(&edit_path)?;
             launch_commit_editor(repo, &edit_path)?;
             let edited = fs::read_to_string(&edit_path)?;
             let cleaned =
@@ -4320,6 +4555,7 @@ fn prepare_commit_message(
                 )?;
             }
             fs::write(&edit_path, &file_body)?;
+            run_prepare_hook(&edit_path)?;
             launch_commit_editor(repo, &edit_path)?;
             let edited = fs::read_to_string(&edit_path)?;
             let cleaned =
@@ -4332,9 +4568,33 @@ fn prepare_commit_message(
         }
         let no_editor_cleanup = resolve_commit_cleanup_mode(args, config, false);
         let cleaned = apply_cleanup_message(&msg, 0, comment_prefix, no_editor_cleanup);
+        // Git stores the commit body verbatim and never transcodes it. When the raw
+        // `-m` argv bytes are not valid UTF-8 (e.g. an unknown `i18n.commitEncoding`),
+        // preserve them by cleaning the raw bytes and routing them through `raw_bytes`.
+        let raw_bytes = if args.raw_messages.len() == args.message.len()
+            && args
+                .raw_messages
+                .iter()
+                .any(|m| std::str::from_utf8(m).is_err())
+        {
+            let mut joined: Vec<u8> = Vec::new();
+            for (idx, m) in args.raw_messages.iter().enumerate() {
+                if idx > 0 {
+                    joined.extend_from_slice(b"\n\n");
+                }
+                joined.extend_from_slice(m);
+            }
+            Some(cleanup_message_bytes(
+                &joined,
+                comment_prefix.as_bytes(),
+                no_editor_cleanup,
+            ))
+        } else {
+            None
+        };
         return Ok(MessageResult {
             message: ensure_trailing_newline(&cleaned),
-            raw_bytes: None,
+            raw_bytes,
             from_merge_msg: false,
         });
     }
@@ -4361,6 +4621,7 @@ fn prepare_commit_message(
                 )?;
             }
             fs::write(&edit_path, &file_body)?;
+            run_prepare_hook(&edit_path)?;
             launch_commit_editor(repo, &edit_path)?;
             let edited = fs::read_to_string(&edit_path)?;
             let cleaned =
@@ -4375,9 +4636,20 @@ fn prepare_commit_message(
             return raw_to_message_result(raw);
         }
         let cleaned = apply_cleanup_message(&text, 0, comment_prefix, cleanup_mode);
+        // Preserve verbatim bytes (Git never transcodes the body) when the `-F` file
+        // content is not valid UTF-8; apply the same cleanup at the byte level.
+        let raw_bytes = if std::str::from_utf8(&raw).is_err() {
+            Some(cleanup_message_bytes(
+                &raw,
+                comment_prefix.as_bytes(),
+                cleanup_mode,
+            ))
+        } else {
+            None
+        };
         return Ok(MessageResult {
             message: ensure_trailing_newline(&cleaned),
-            raw_bytes: None,
+            raw_bytes,
             from_merge_msg: false,
         });
     }
@@ -4406,6 +4678,7 @@ fn prepare_commit_message(
                 )?;
             }
             fs::write(&edit_path, &file_body)?;
+            run_prepare_hook(&edit_path)?;
             launch_commit_editor(repo, &edit_path)?;
             let edited = fs::read_to_string(&edit_path)?;
             let cleaned =
@@ -4426,7 +4699,9 @@ fn prepare_commit_message(
     let initial = build_initial_commit_buffer(args, repo, fixup, template_path)?;
 
     // `git commit --amend --no-edit` (or implied no-edit): reuse HEAD without the editor.
-    if args.amend && !use_editor {
+    // `--fixup` overrides this: the message must become `fixup!`/`amend!`/`squash!` of the
+    // target's subject even when `--amend` replaces the current commit (t3404 `--update-refs`).
+    if args.amend && !use_editor && fixup.is_none() {
         let head_st = resolve_head(&repo.git_dir)?;
         if let Some(oid) = head_st.oid() {
             let obj = repo.odb.read(oid)?;
@@ -4489,6 +4764,7 @@ fn prepare_commit_message(
             )?;
         }
         fs::write(&edit_path, &file_body)?;
+        run_prepare_hook(&edit_path)?;
         launch_commit_editor(repo, &edit_path)?;
         let edited = fs::read_to_string(&edit_path)?;
         let cleaned = apply_cleanup_message(&edited, verbose_level, comment_prefix, cleanup_mode);
@@ -4928,7 +5204,7 @@ fn sign_commit_bytes(
     ))
 }
 
-fn resolve_committer(config: &ConfigSet, now: OffsetDateTime) -> Result<String> {
+pub(crate) fn resolve_committer(config: &ConfigSet, now: OffsetDateTime) -> Result<String> {
     let name = resolve_name(config, IdentRole::Committer)?;
 
     let email = resolve_email(config, IdentRole::Committer)?;
@@ -4965,87 +5241,6 @@ fn validate_explicit_committer_identity(config: &ConfigSet) -> Result<()> {
     } else {
         bail!("unable to auto-detect committer identity")
     }
-}
-
-/// Parse a date string (like "2006-06-26 00:04:00 +0000") into git's
-/// `<epoch> <offset>` format. Returns None if already in epoch format.
-pub fn parse_date_to_git_timestamp(date_str: &str) -> Option<String> {
-    let trimmed = date_str.trim();
-
-    // ISO 8601 / RFC 3339, including forms Git accepts without an explicit offset
-    // (e.g. `2020-01-01T00:00:00` — treated as UTC when no zone is present).
-    if let Ok(dt) = OffsetDateTime::parse(trimmed, &Rfc3339) {
-        return Some(format_git_timestamp(dt));
-    }
-    let with_utc_z = format!("{trimmed}Z");
-    if let Ok(dt) = OffsetDateTime::parse(&with_utc_z, &Rfc3339) {
-        return Some(format_git_timestamp(dt));
-    }
-
-    // Already in `<epoch> <offset>` format? (epoch is all digits)
-    let parts: Vec<&str> = trimmed.rsplitn(2, ' ').collect();
-    if parts.len() == 2 {
-        let maybe_epoch = parts[1];
-        if maybe_epoch.chars().all(|c| c.is_ascii_digit()) {
-            // Already epoch + offset
-            return None;
-        }
-    }
-
-    // Try parsing "YYYY-MM-DD HH:MM:SS <tz>" format
-    if parts.len() == 2 {
-        let tz = parts[0];
-        let datetime = parts[1];
-
-        // Parse tz offset
-        let tz_bytes = tz.as_bytes();
-        if tz_bytes.len() >= 5 {
-            let sign: i64 = if tz_bytes[0] == b'-' { -1 } else { 1 };
-            let h: i64 = tz[1..3].parse().unwrap_or(0);
-            let m: i64 = tz[3..5].parse().unwrap_or(0);
-            let tz_secs = sign * (h * 3600 + m * 60);
-
-            // Try YYYY-MM-DD HH:MM:SS
-            if let Ok(offset) = time::UtcOffset::from_whole_seconds(tz_secs as i32) {
-                let fmt = time::format_description::parse(
-                    "[year]-[month]-[day] [hour]:[minute]:[second]",
-                )
-                .ok()?;
-                if let Ok(naive) = time::PrimitiveDateTime::parse(datetime, &fmt) {
-                    let dt = naive.assume_offset(offset);
-                    let epoch = dt.unix_timestamp();
-                    return Some(format!("{epoch} {tz}"));
-                }
-            }
-        }
-    }
-
-    // Try "@<epoch>" format (git uses this for testing)
-    if let Some(epoch_str) = trimmed.strip_prefix('@') {
-        // @<epoch> <tz>
-        let ep_parts: Vec<&str> = epoch_str.splitn(2, ' ').collect();
-        if ep_parts.len() == 2 {
-            if let Ok(_epoch) = ep_parts[0].parse::<i64>() {
-                return Some(format!("{} {}", ep_parts[0], ep_parts[1]));
-            }
-        }
-    }
-
-    // Loose Git dates without explicit zone (e.g. `2022-02-01 00:00` from GIT_COMMITTER_DATE).
-    if let Ok(canonical) = parse_date(trimmed) {
-        return Some(canonical);
-    }
-
-    None
-}
-
-/// Format a timestamp in Git's format: `<epoch> <offset>`.
-fn format_git_timestamp(dt: OffsetDateTime) -> String {
-    let epoch = dt.unix_timestamp();
-    let offset = dt.offset();
-    let hours = offset.whole_hours();
-    let minutes = offset.minutes_past_hour().unsigned_abs();
-    format!("{epoch} {hours:+03}{minutes:02}")
 }
 
 /// First and optional second argument for `prepare-commit-msg` (Git `prepare_to_commit` semantics).
@@ -5094,6 +5289,48 @@ fn prepare_commit_msg_hook_args(
     }
     // Plain editor commit (no message source): hook_arg1 stays NULL upstream.
     (None, None)
+}
+
+/// Run the `prepare-commit-msg` hook on `msg_file`, in place.
+///
+/// Mirrors `builtin/commit.c:run_commit_hook(use_editor, …, "prepare-commit-msg", …)`. The hook
+/// receives the message-file path plus the source arguments from [`prepare_commit_msg_hook_args`].
+/// When no editor is used, `GIT_EDITOR=:` is exported so hooks can detect non-interactive commits;
+/// `GIT_INDEX_FILE` is always exported. A non-zero hook exit aborts the commit (`bail!`).
+fn run_prepare_commit_msg_hook_on(
+    repo: &Repository,
+    args: &Args,
+    index_path: &Path,
+    use_editor: bool,
+    msg_file: &Path,
+) -> Result<()> {
+    let msg_path_str = msg_file.to_string_lossy().to_string();
+    let (hook_arg1, hook_arg2) = prepare_commit_msg_hook_args(args, &repo.git_dir);
+    let mut hook_args: Vec<&str> = vec![msg_path_str.as_str()];
+    if let Some(a1) = hook_arg1 {
+        hook_args.push(a1);
+        if let Some(ref a2) = hook_arg2 {
+            hook_args.push(a2.as_str());
+        }
+    }
+    let prepare_hook_env = CommitHookEnv {
+        index_file: Some(index_path),
+        git_editor: if use_editor { None } else { Some(":") },
+        git_prefix: None,
+        extra_env: &[],
+    };
+    let r = run_commit_hook(
+        repo,
+        "prepare-commit-msg",
+        &hook_args,
+        None,
+        &prepare_hook_env,
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
+    if let HookResult::Failed(code) = r {
+        bail!("prepare-commit-msg hook exited with status {code}");
+    }
+    Ok(())
 }
 
 /// Update HEAD to point to the new commit.
@@ -5170,6 +5407,24 @@ fn sequencer_finished_last_pick(git_dir: &Path) -> bool {
         None => true,
         Some(eol) => content[eol + 1..].is_empty(),
     }
+}
+
+/// Whether the revert sequencer todo has no remaining un-attempted reverts.
+///
+/// grit's revert sequencer records only the commits *after* the current one in
+/// `sequencer/todo` (the in-progress revert is tracked via `REVERT_HEAD`). The
+/// whole revert sequence is therefore complete only when that todo holds no more
+/// `revert` lines. Returns `true` when the todo is missing or contains only blank
+/// or comment lines.
+fn sequencer_todo_remaining_empty(git_dir: &Path) -> bool {
+    let todo_path = git_dir.join("sequencer").join("todo");
+    let Ok(content) = fs::read_to_string(&todo_path) else {
+        return true;
+    };
+    !content.lines().any(|line| {
+        let t = line.trim();
+        !t.is_empty() && !t.starts_with('#')
+    })
 }
 
 /// Clean up merge-related state files after a successful commit.

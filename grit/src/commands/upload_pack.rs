@@ -8,14 +8,8 @@ use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
 use grit_lib::config::ConfigSet;
 use grit_lib::merge_base;
-<<<<<<< ours
 use grit_lib::objects::{parse_commit, parse_tag, parse_tree, ObjectId, ObjectKind};
-||||||| ancestor
-use grit_lib::objects::{parse_commit, ObjectId, ObjectKind};
-=======
-use grit_lib::objects::{parse_commit, ObjectId, ObjectKind};
 use grit_lib::ref_namespace;
->>>>>>> theirs
 use grit_lib::refs;
 use grit_lib::repo::Repository;
 use grit_lib::state::resolve_head;
@@ -133,6 +127,7 @@ pub fn run(args: Args) -> Result<()> {
     let mut requested_depth: Option<usize> = None;
     let mut filter_spec: Option<String> = None;
     let mut multi_ack_detailed = false;
+    let mut no_done = false;
     let mut no_progress = false;
     loop {
         match pkt_line::read_packet(&mut stdin)? {
@@ -144,6 +139,13 @@ pub fn run(args: Args) -> Result<()> {
                     let features = rest.strip_prefix(hex).unwrap_or("").trim();
                     if wants.is_empty() && features.contains("multi_ack_detailed") {
                         multi_ack_detailed = true;
+                    }
+                    // `no-done` (only honored with `multi_ack_detailed`) lets the server skip the
+                    // client's final `done`: when it sends `ACK <oid> ready` at a flush it follows
+                    // with `ACK <oid>` and streams the pack in the same stateless RPC, so the client
+                    // never has to send `done` (upload-pack.c get_common_commits, t5539 test 3).
+                    if wants.is_empty() && features.split_whitespace().any(|f| f == "no-done") {
+                        no_done = true;
                     }
                     if wants.is_empty() && features.split_whitespace().any(|f| f == "no-progress") {
                         no_progress = true;
@@ -205,9 +207,12 @@ pub fn run(args: Args) -> Result<()> {
     let allow_reachable = config_bool(&config, "uploadpack.allowreachablesha1inwant");
     let allow_any = config_bool(&config, "uploadpack.allowanysha1inwant");
     if !allow_any {
-        let our_refs = our_ref_oids(&repo.git_dir);
+        // Advertised (non-hidden) tips are always fetchable. `allow_tip` additionally permits any
+        // ref tip including those hidden by `transfer.hideRefs` / `uploadpack.hideRefs`.
+        let advertised_tips = advertised_ref_oids(&repo.git_dir, &config);
+        let all_tips = our_ref_oids(&repo.git_dir);
         for w in &want_unique {
-            if our_refs.contains(w) {
+            if advertised_tips.contains(w) {
                 continue;
             }
             let exists = repo.odb.read(w).is_ok();
@@ -215,18 +220,20 @@ pub fn run(args: Args) -> Result<()> {
                 // Object not present at all — never our ref regardless of policy.
                 return reject_not_our_ref(&mut out, w);
             }
-            if allow_tip {
-                // Any existing object tip is acceptable.
+            if allow_tip && all_tips.contains(w) {
+                // `allow-tip-sha1-in-want`: a want for *any* ref tip (incl. hidden) is acceptable,
+                // but a non-tip object is not — it must still pass the reachable/reject checks
+                // below (t5516 'deny fetch unreachable SHA1, allowtipsha1inwant=true').
                 continue;
             }
-            if allow_reachable && is_reachable_from_our_refs(&repo, &our_refs, w) {
+            if allow_reachable && is_reachable_from_our_refs(&repo, &all_tips, w) {
                 continue;
             }
             // `check_non_tip`: without allow-reachable, a non-stateless client cannot legitimately
             // ask for a non-tip object, so reject immediately. A stateless client's choice may be
             // based on a stale advertisement, so it is given the benefit of a reachability check —
             // but with the default (deny) policy we still reject unreachable non-tips.
-            if !args.stateless_rpc || !is_reachable_from_our_refs(&repo, &our_refs, w) {
+            if !args.stateless_rpc || !is_reachable_from_our_refs(&repo, &all_tips, w) {
                 return reject_not_our_ref(&mut out, w);
             }
         }
@@ -270,21 +277,32 @@ pub fn run(args: Args) -> Result<()> {
         match pkt_line::read_packet(&mut stdin)? {
             None => break,
             Some(pkt_line::Packet::Flush) => {
+                let mut sent_ready = false;
                 if multi_ack_detailed
                     && got_common
                     && !got_other
                     && ok_to_give_up(&repo, &want_set, &client_known)
                 {
                     pkt_line::write_line(&mut out, &format!("ACK {last_hex} ready"))?;
+                    sent_ready = true;
                 }
                 if args.stateless_rpc {
                     // Stateless negotiation ends at a flush: mirror `get_common_commits` —
-                    // write NAK only when no server-known `have` was received (or multi-ack), then
-                    // exit without generating a pack. The client re-sends its haves in a later RPC
-                    // (t5530 ACKs repeated non-commit objects; EOF after stateless wants).
+                    // write NAK only when no server-known `have` was received (or multi-ack).
                     if have_obj_count == 0 || multi_ack_detailed {
                         pkt_line::write_line(&mut out, "NAK")?;
                     }
+                    // `no-done` short-circuit: once `ACK <oid> ready` has been sent, the server
+                    // does not wait for the client's `done`. It sends a final `ACK <oid>` and
+                    // streams the pack in this same RPC (upload-pack.c: `no_done && sent_ready`),
+                    // so the client never sends `done` (t5539 "no shallow lines after ACK ready").
+                    if no_done && sent_ready {
+                        pkt_line::write_line(&mut out, &format!("ACK {last_hex}"))?;
+                        out.flush()?;
+                        break;
+                    }
+                    // Otherwise the client re-sends its haves in a later RPC (t5530 ACKs repeated
+                    // non-commit objects; EOF after stateless wants).
                     out.flush()?;
                     return Ok(());
                 }
@@ -416,8 +434,17 @@ pub fn run(args: Args) -> Result<()> {
             && wants_include_only_commits(&repo, &want_unique);
         let advertises_promisor = config_bool(&config, "promisor.advertise");
         let omit_missing_promisor = filter_spec.is_some() && advertises_promisor;
-        let force_lazy_fetch =
-            !advertises_promisor && (filter_spec.is_some() || !exclusion_commits.is_empty());
+        // `upload-pack` pins `GIT_NO_LAZY_FETCH=1` by default, so the server-side `pack-objects`
+        // never lazily fetches missing objects — it just fails if it cannot read an object
+        // (t0411-clone-from-partial: a plain clone/fetch from a partial-clone server must NOT run
+        // the promisor's upload-pack). Back-fill omitted blobs only when the operator explicitly
+        // re-enabled lazy fetching (`GIT_NO_LAZY_FETCH=0`).
+        let lazy_fetch_enabled =
+            !crate::commands::promisor_hydrate::git_no_lazy_fetch_env_disables_lazy()
+                .unwrap_or(false);
+        let force_lazy_fetch = lazy_fetch_enabled
+            && !advertises_promisor
+            && (filter_spec.is_some() || !exclusion_commits.is_empty());
         if force_lazy_fetch && !exclusion_commits.is_empty() {
             hydrate_upload_pack_blobs_missing_from_client(&repo, &want_unique, &exclusion_commits)?;
         }
@@ -628,6 +655,28 @@ fn our_ref_oids(git_dir: &Path) -> HashSet<ObjectId> {
     set
 }
 
+/// Collect the OIDs of tips that are actually *advertised* — every ref under `refs/` (plus HEAD)
+/// minus those hidden by `transfer.hideRefs` / `uploadpack.hideRefs`. These are the objects a
+/// default-policy client may `want` without any `allow-*-sha1-in-want` capability (mirrors
+/// upstream `mark_our_ref` over the advertised set).
+fn advertised_ref_oids(git_dir: &Path, config: &ConfigSet) -> HashSet<ObjectId> {
+    let mut hidden = grit_lib::ref_exclusions::RefExclusions::default();
+    hidden.load_hidden_refs_from_config(config, "uploadpack");
+    let mut set: HashSet<ObjectId> = HashSet::new();
+    if let Ok(oid) = refs::resolve_ref(git_dir, "HEAD") {
+        set.insert(oid);
+    }
+    if let Ok(entries) = refs::list_refs(git_dir, "refs/") {
+        for (name, oid) in entries {
+            if hidden.ref_excluded(Some(&name), &name) {
+                continue;
+            }
+            set.insert(oid);
+        }
+    }
+    set
+}
+
 /// Whether `oid` is reachable (as a commit ancestor) from any of our advertised ref tips. Used for
 /// the `allow-reachable-sha1-in-want` policy and the stateless non-tip tolerance check.
 fn is_reachable_from_our_refs(
@@ -823,8 +872,15 @@ fn write_ref_advertisement(w: &mut impl Write, git_dir: &Path) -> Result<()> {
                     write!(w, "{:04x}{}", len, line)?;
                 }
                 Ok(HeadState::Branch { oid: None, .. }) => {
+                    // Empty repository (unborn HEAD, no refs). Git advertises the no-ref carrier
+                    // line `<zero-oid> capabilities^{}` here, NOT `<zero-oid> HEAD`: a client that
+                    // sees a `HEAD` ref pointing at the all-zero OID would try to `want` it and the
+                    // negotiation would fail, whereas `capabilities^{}` tells the client there are
+                    // no refs to fetch while still carrying the capability list (incl.
+                    // `object-format`) so a hash-aware client records the object format
+                    // (t5551 "clone empty SHA-256 repository", proto v0).
                     let z = zero_oid_hex_for_format(&object_format);
-                    let line = format!("{z} HEAD\0{caps}\n");
+                    let line = format!("{z} capabilities^{{}}\0{caps}\n");
                     let len = 4 + line.len();
                     write!(w, "{:04x}{}", len, line)?;
                 }

@@ -6,7 +6,6 @@
 //! [`Some`] with the resolved command, defaulting to `vi`.
 
 use grit_lib::config::ConfigSet;
-use std::io::IsTerminal;
 
 /// Matches Git's `is_terminal_dumb()`: true when `TERM` is unset or equals `"dumb"`.
 #[must_use]
@@ -97,8 +96,8 @@ pub(crate) fn resolve_commit_launch_editor(config: &ConfigSet) -> Option<String>
     if terminal_is_dumb {
         return None;
     }
-    if !std::io::stdin().is_terminal() {
-        return None;
-    }
+    // Match upstream `git_editor()`: once the terminal is not dumb and nothing is
+    // configured, fall back to DEFAULT_EDITOR ("vi") unconditionally. Git does not
+    // consult `isatty()` here, so neither do we (t7005 "Using vi" runs without a TTY).
     Some("vi".to_owned())
 }

@@ -41,6 +41,11 @@ pub struct Args {
     /// Skip connectivity verification after unpacking (matches `git receive-pack`).
     #[arg(long = "skip-connectivity-check", hide = true)]
     pub skip_connectivity_check: bool,
+
+    /// Test-only: refuse a thin incoming pack (forwarded to index-pack by upstream). Used by
+    /// `t5516` 'push --no-thin must produce non-thin pack' to verify the sender honored `--no-thin`.
+    #[arg(long = "reject-thin-pack-for-testing", hide = true)]
+    pub reject_thin_pack_for_testing: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -153,9 +158,18 @@ pub fn run(args: Args) -> Result<()> {
 
     let mut pack_map = None;
     let mut pack_parse_err: Option<String> = None;
+
+    // `--reject-thin-pack-for-testing`: refuse a thin incoming pack so the suite can verify a
+    // `git push --no-thin` actually produced a self-contained pack (t5516 'push --no-thin').
+    if has_pack
+        && args.reject_thin_pack_for_testing
+        && grit_lib::unpack_objects::pack_is_thin(&pack_data)
+    {
+        pack_parse_err = Some("fatal: pack has unresolved deltas (thin pack rejected)".to_owned());
+    }
     // Thin packs may not resolve fully in-memory against an empty ODB; skip this when we will
     // not run connectivity anyway (`git receive-pack` still unpacks via unpack-objects/index-pack).
-    if has_pack && !args.skip_connectivity_check {
+    if has_pack && !args.skip_connectivity_check && pack_parse_err.is_none() {
         match pack_bytes_to_object_map(&pack_data, &repo.odb) {
             Ok(m) => pack_map = Some(m),
             Err(e) => pack_parse_err = Some(format!("{e:#}")),

@@ -42,7 +42,7 @@ test_expect_success 'unpack-objects: unpacks blobs, tree, commit into new ODB' '
 test_expect_success 'unpack-objects -n: dry run writes no loose objects' '
 	grit init dry.git --bare &&
 	grit -C dry.git unpack-objects -n <test.pack &&
-	count=$(find dry.git/objects -type f | wc -l) &&
+	count=$(find dry.git/objects -type f | wc -l | tr -d " ") &&
 	test "$count" = "0"
 '
 

@@ -20,7 +20,9 @@ use grit_lib::sparse_checkout::apply_sparse_checkout_skip_worktree;
 use grit_lib::submodule_gitdir::{
     set_submodule_repo_worktree, submodule_modules_git_dir, write_submodule_gitfile,
 };
-use grit_lib::write_tree::{build_cache_tree_from_index, write_tree_from_index};
+use grit_lib::write_tree::{
+    build_cache_tree_from_index, build_cache_tree_from_tree, write_tree_from_index,
+};
 
 /// Arguments for `grit read-tree`.
 #[derive(Debug, ClapArgs)]
@@ -250,9 +252,10 @@ pub fn run(args: Args) -> Result<()> {
     if tree_oids.is_empty() {
         bail!("at least one tree required");
     }
-    if args.merge && tree_oids.len() > 3 {
-        bail!("too many trees for -m (max 3)");
-    }
+    // Git accepts up to MAX_UNPACK_TREES (8) trees for `-m`; for >= 3 trees it runs the
+    // three-way merge with `head_idx = stage - 2` (builtin/read-tree.c). Grit currently
+    // implements the symmetric 4-tree form (`read-tree -m T0 T1 T1 T0`, t1000 case #16) and the
+    // 1/2/3-tree forms; anything beyond is rejected below by the merge dispatch.
     if tree_oids.len() > 4 {
         bail!("too many trees (max 4)");
     }
@@ -302,6 +305,9 @@ pub fn run(args: Args) -> Result<()> {
         new_index.entries =
             tree_to_index_entries(&repo, &tree_oids[tree_oids.len() - 1], "", prot)?;
         new_index.sort();
+        // A duplicate-entry tree (t4058) flattens to several identical-path entries; Git's index
+        // keeps only one per path. Restore that invariant.
+        new_index.dedup_paths_keep_last();
         if !dry_run {
             apply_sparse_checkout(
                 &repo.git_dir,
@@ -341,7 +347,12 @@ pub fn run(args: Args) -> Result<()> {
             }
         }
         if !dry_run {
-            write_index_with_cache_tree(&repo, &index_path, &mut new_index)
+            // Like Git's `read-tree --reset` (`prime_cache_tree`): the cache-tree is taken from the
+            // source tree, so its per-node entry counts reflect the *raw* tree (duplicates
+            // included). For a duplicate-entry tree (t4058) this exceeds the deduplicated index and
+            // a subsequent verified write reports the canonical "corrupted cache-tree" error.
+            let source_tree = tree_oids[tree_oids.len() - 1];
+            write_index_with_tree_cache_tree(&repo, &index_path, &mut new_index, &source_tree)
                 .context("writing index")?;
         }
         if args.update && recurse_submodules_effective && !dry_run {
@@ -485,6 +496,20 @@ fn write_index_with_cache_tree(
     index: &mut Index,
 ) -> Result<()> {
     let cache_tree = build_cache_tree_from_index(&repo.odb, index)?;
+    index.set_cache_tree(cache_tree);
+    repo.write_index_at(index_path, index)?;
+    Ok(())
+}
+
+/// Like [`write_index_with_cache_tree`], but derives the cache-tree from `source_tree` (with raw,
+/// duplicate-preserving entry counts), matching Git's `prime_cache_tree` after `read-tree --reset`.
+fn write_index_with_tree_cache_tree(
+    repo: &Repository,
+    index_path: &Path,
+    index: &mut Index,
+    source_tree: &ObjectId,
+) -> Result<()> {
+    let cache_tree = build_cache_tree_from_tree(&repo.odb, source_tree)?;
     index.set_cache_tree(cache_tree);
     repo.write_index_at(index_path, index)?;
     Ok(())

@@ -34,7 +34,7 @@ use crate::commands::submodule::{
 use crate::trace_run_command_git_invocation;
 use grit_lib::submodule_gitdir::{
     ensure_submodule_gitdir_config, submodule_gitdir_outer_conflict, submodule_path_config_enabled,
-    validate_submodule_path,
+    validate_submodule_path, write_submodule_gitfile,
 };
 
 fn expand_tilde_path(value: &str) -> String {
@@ -51,7 +51,12 @@ fn expand_tilde_path(value: &str) -> String {
 
 fn effective_template_dir(args: &Args) -> Option<PathBuf> {
     match &args.template {
-        Some(t) if t.is_empty() => None,
+        // `--template=` (explicit empty) means "use no template". Upstream Git's clone treats this
+        // as an empty template directory: `hooks/`, `info/`, `description`, and `branches/` are NOT
+        // created (they are template content), so a later `mkdir .git/info` in the harness succeeds
+        // (t1090). Return an empty path so `init_repository*`'s `skip_hooks_info` guard fires; the
+        // empty path is never `is_dir()`, so no template copy is attempted.
+        Some(t) if t.is_empty() => Some(PathBuf::new()),
         Some(t) => Some(PathBuf::from(t)),
         None => {
             if let Ok(tdir) = std::env::var("GIT_TEMPLATE_DIR") {
@@ -1003,7 +1008,7 @@ pub fn run(mut args: Args) -> Result<()> {
             work_tree_keep_toplevel: empty_dir_ok,
             git_dir,
             git_dir_keep_toplevel,
-            disarmed: false,
+            mode: JunkMode::LeaveNone,
         }
     };
 
@@ -1675,6 +1680,12 @@ pub fn run(mut args: Args) -> Result<()> {
     let sparse_partial_skip =
         partial_blob_none && matches!(filter_spec.as_deref(), Some("blob:none")) && args.sparse;
 
+    // The repository (git dir + objects) is now fully populated. From here on a failure must leave
+    // the partial repo on disk so the user can inspect and retry, matching upstream Git's
+    // `junk_mode = JUNK_LEAVE_REPO` immediately before `checkout()` (builtin/clone.c). In
+    // particular, a checkout failure from a corrupt object keeps `<dest>/.git` (t1060).
+    junk_guard.leave_repo();
+
     // Checkout working tree unless --bare or --no-checkout.
     // Sparse partial clones already materialize tip files via promisor hydration.
     if !args.bare && !args.no_checkout && !sparse_partial_skip {
@@ -1732,6 +1743,11 @@ pub fn run(mut args: Args) -> Result<()> {
             }
         }
     }
+
+    // Record the fetched remote-tracking refs in `packed-refs` (initial ref transaction), so a
+    // later up-to-date push does not re-create a loose tracking ref (t5516 'push preserves
+    // up-to-date packed refs'). Best-effort: a packing failure must not fail the clone.
+    let _ = crate::commands::pack_refs::pack_clone_tracking_refs(&dest.git_dir);
 
     // Clone succeeded: keep the directories we created (upstream `junk_mode = JUNK_LEAVE_ALL`).
     junk_guard.disarm();
@@ -3998,6 +4014,11 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                 &j.modules_dir,
                 &j.sub_dest,
             );
+            // Rewrite the absolute `gitdir:` left by `clone --separate-git-dir` into a relative
+            // gitlink (C Git's `connect_work_tree_and_git_dir`), so a copied/moved superproject
+            // keeps its submodule pointing at the copy's git dir (t7406).
+            write_submodule_gitfile(&j.sub_dest, &j.modules_dir)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             if let Some(strategy) = j.alternate_strategy.as_deref() {
                 crate::commands::submodule::write_submodule_alternate_inheritance_config(
                     &j.modules_dir,
@@ -4045,6 +4066,9 @@ fn clone_submodules(work_tree: &Path, repo: &Repository, clone_args: &Args) -> R
                                 &j.modules_dir,
                                 &j.sub_dest,
                             );
+                            // Relative gitlink (see single-worker branch / C `connect_work_tree_and_git_dir`).
+                            write_submodule_gitfile(&j.sub_dest, &j.modules_dir)
+                                .map_err(|e| e.to_string())?;
                             if let Some(strategy) = j.alternate_strategy.as_deref() {
                                 crate::commands::submodule::write_submodule_alternate_inheritance_config(
                                     &j.modules_dir,
@@ -4402,15 +4426,30 @@ fn remove_junk_path(path: &Path, keep_toplevel: bool) {
     }
 }
 
+/// What a [`JunkGuard`] removes when dropped, mirroring upstream Git's `enum junk_mode`
+/// (builtin/clone.c).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JunkMode {
+    /// Remove both the git dir and work tree (the default while the repo is still being set up).
+    LeaveNone,
+    /// Leave the partially populated repository on disk; only warn the user. Git switches to this
+    /// mode immediately before the worktree checkout, so a checkout failure (e.g. a corrupt object)
+    /// keeps `<dest>/.git` and the index around for inspection instead of deleting everything.
+    LeaveRepo,
+    /// Leave everything in place (the clone succeeded). Equivalent to disarming the guard.
+    LeaveAll,
+}
+
 /// RAII cleanup guard mirroring upstream Git's `remove_junk` (builtin/clone.c).
 ///
 /// On a failed clone, Git removes the git dir and work tree it created so the user does not have to
 /// clean up manually before retrying. If those directories already existed (empty) before the
 /// clone, only their contents are removed — the pre-existing directory is preserved.
 ///
-/// The guard runs cleanup when dropped unless [`JunkGuard::disarm`] is called after a successful
-/// clone. This matches Git's `atexit(remove_junk)` plus the `junk_mode = JUNK_LEAVE_ALL` reset on
-/// success.
+/// The guard runs cleanup when dropped while in [`JunkMode::LeaveNone`]. Once the clone reaches the
+/// worktree checkout phase, [`JunkGuard::leave_repo`] switches it to [`JunkMode::LeaveRepo`] so a
+/// checkout failure leaves the repository intact (matching Git's `junk_mode = JUNK_LEAVE_REPO`).
+/// On success [`JunkGuard::disarm`] selects [`JunkMode::LeaveAll`] (Git's `JUNK_LEAVE_ALL`).
 struct JunkGuard {
     /// Work tree directory to remove (absent for bare clones).
     work_tree: Option<PathBuf>,
@@ -4420,21 +4459,37 @@ struct JunkGuard {
     git_dir: Option<PathBuf>,
     /// Keep the git dir's top-level directory (it pre-existed and was empty).
     git_dir_keep_toplevel: bool,
-    /// When true, drop performs no cleanup (clone succeeded).
-    disarmed: bool,
+    /// Current cleanup mode. See [`JunkMode`].
+    mode: JunkMode,
 }
 
 impl JunkGuard {
     /// Disarm the guard so dropping it performs no cleanup (the clone succeeded).
     fn disarm(&mut self) {
-        self.disarmed = true;
+        self.mode = JunkMode::LeaveAll;
+    }
+
+    /// Switch to "leave the repo" cleanup: a later failure keeps the partial repository on disk and
+    /// only warns. Called before the worktree checkout so a corrupt-object checkout failure does not
+    /// delete `<dest>/.git` (upstream `junk_mode = JUNK_LEAVE_REPO`, t1060).
+    fn leave_repo(&mut self) {
+        self.mode = JunkMode::LeaveRepo;
     }
 }
 
 impl Drop for JunkGuard {
     fn drop(&mut self) {
-        if self.disarmed {
-            return;
+        match self.mode {
+            JunkMode::LeaveAll => return,
+            JunkMode::LeaveRepo => {
+                eprintln!(
+                    "warning: Clone succeeded, but checkout failed.\n\
+                     You can inspect what was checked out with 'git status'\n\
+                     and retry with 'git restore --source=HEAD :/'"
+                );
+                return;
+            }
+            JunkMode::LeaveNone => {}
         }
         // Upstream removes the git dir first, then the work tree. For a normal (non-separate)
         // clone the git dir lives inside the work tree, so removing the work tree afterwards
@@ -5543,6 +5598,28 @@ fn copy_refs_direct(src_git_dir: &Path, dst_git_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Write the default `remote.<name>.fetch` refspec without clobbering one that `clone -c`
+/// already supplied.
+///
+/// `git clone -c remote.<name>.fetch=<spec>` writes the user's refspec into the destination
+/// config *before* the clone machinery records the default tracking refspec. Upstream Git appends
+/// the default with `git_config_set_multivar_in_file_gently` (see `write_followtags`/
+/// `write_refspec_config` in `builtin/clone.c`), so the result is multi-valued: the user's spec
+/// first, then the default. Mirror that — only overwrite when no fetch entry exists yet.
+fn write_default_remote_fetch(
+    config: &mut ConfigFile,
+    remote_name: &str,
+    refspec: &str,
+) -> Result<()> {
+    let key = format!("remote.{remote_name}.fetch");
+    if config.get(&key).is_some() {
+        config.add_value(&key, refspec)?;
+    } else {
+        config.set(&key, refspec)?;
+    }
+    Ok(())
+}
+
 /// Set up the "origin" remote in the destination config (non-bare).
 fn setup_origin_remote(
     git_dir: &Path,
@@ -5559,7 +5636,7 @@ fn setup_origin_remote(
     let url = absolute_clone_source_url(source_path);
 
     config.set(&format!("remote.{remote_name}.url"), &url)?;
-    config.set(&format!("remote.{remote_name}.fetch"), refspec)?;
+    write_default_remote_fetch(&mut config, remote_name, refspec)?;
     config.write().context("writing config")?;
 
     Ok(())
@@ -5620,7 +5697,7 @@ fn setup_origin_remote_url(
         None => ConfigFile::parse(&config_path, "", ConfigScope::Local)?,
     };
     config.set(&format!("remote.{remote_name}.url"), remote_url)?;
-    config.set(&format!("remote.{remote_name}.fetch"), refspec)?;
+    write_default_remote_fetch(&mut config, remote_name, refspec)?;
     config.write().context("writing config")?;
     Ok(())
 }

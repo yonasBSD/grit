@@ -1007,8 +1007,14 @@ pub(crate) fn parse_ls_refs_v2_line(
     let (oid_hex, after_oid) = line
         .split_once(' ')
         .ok_or_else(|| anyhow::anyhow!("bad ls-refs line: {line}"))?;
-    let oid =
-        ObjectId::from_hex(oid_hex).with_context(|| format!("bad oid in ls-refs: {oid_hex}"))?;
+    // Protocol v2 advertises an unborn HEAD (symref pointing at a branch with no commits) as the
+    // literal token `unborn` in place of the object id (gitprotocol-v2: `obj-id-or-unborn`). Map it
+    // to the null OID so callers can recognize "no object" via `ObjectId::is_zero`.
+    let oid = if oid_hex == "unborn" {
+        ObjectId::zero()
+    } else {
+        ObjectId::from_hex(oid_hex).with_context(|| format!("bad oid in ls-refs: {oid_hex}"))?
+    };
 
     let mut peeled = None;
     let mut symref_target = None;

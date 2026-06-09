@@ -19,6 +19,7 @@ mod alias;
 mod branch_ref_format;
 mod branch_tracking;
 mod bundle_uri;
+#[cfg(feature = "test-tools")]
 mod bundle_uri_test_tool;
 mod commands;
 mod editor;
@@ -46,7 +47,9 @@ mod protocol_wire;
 mod receive_ingest;
 mod ref_transaction_hooks;
 mod ssh_transport;
+#[cfg(feature = "test-tools")]
 mod test_tool_pack_deltas;
+#[cfg(feature = "test-tools")]
 mod test_tool_run_command;
 mod trace2_transfer;
 mod trace_packet;
@@ -115,6 +118,12 @@ fn main() {
                 exit_code = 128 + 13;
             } else if let Some(ex) = e.downcast_ref::<crate::explicit_exit::SilentNonZeroExit>() {
                 exit_code = ex.code;
+            } else if error_chain_has_corrupt_cache_tree(&e) {
+                // Match Git: `error: corrupted cache-tree has entries not present in index`.
+                // Printed verbatim (not as `fatal:`) regardless of any wrapping context, so
+                // test_grep on the bare message succeeds (t4058-diff-duplicates).
+                eprintln!("error: corrupted cache-tree has entries not present in index");
+                exit_code = 128;
             } else if let Some(msg) = path_error_fatal_message(&e) {
                 eprintln!("fatal: {msg}");
                 exit_code = 128;
@@ -186,6 +195,15 @@ fn verbatim_lib_error_message(err: &anyhow::Error) -> Option<String> {
         }
     }
     None
+}
+
+fn error_chain_has_corrupt_cache_tree(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<grit_lib::error::Error>(),
+            Some(grit_lib::error::Error::CacheTreeCorrupt)
+        )
+    })
 }
 
 fn path_error_fatal_message(err: &anyhow::Error) -> Option<String> {
@@ -546,8 +564,10 @@ pub(crate) fn exit_with_status(status: std::process::ExitStatus) -> ! {
     std::process::exit(status.code().unwrap_or(1));
 }
 
+#[cfg(feature = "test-tools")]
 const TEST_TOOL_EXAMPLE_TAP_OUTPUT: &str = include_str!("test_tool_example_tap_output.txt");
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_example_tap(rest: &[String]) -> Result<()> {
     if rest.len() != 1 {
         bail!("usage: test-tool example-tap");
@@ -560,6 +580,7 @@ fn run_test_tool_example_tap(rest: &[String]) -> Result<()> {
 ///
 /// With `-l`, copy `<file>` to stdout (nothing if it does not exist); otherwise
 /// copy `<input>` into `<file>`. Used to mock crontab in t7900.
+#[cfg(feature = "test-tools")]
 fn run_test_tool_crontab(args: &[String]) -> Result<()> {
     if args.len() != 2 {
         bail!("usage: test-tool crontab <file> -l|<input>");
@@ -579,6 +600,7 @@ fn run_test_tool_crontab(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_trace2(rest: &[String]) -> Result<()> {
     match rest.get(1).map(String::as_str).unwrap_or("") {
         "001return" => {
@@ -630,6 +652,7 @@ fn run_test_tool_trace2(rest: &[String]) -> Result<()> {
     }
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_revision_walking(rest: &[String]) -> Result<()> {
     match rest.get(1).map(String::as_str).unwrap_or("") {
         "run-twice" => {
@@ -654,6 +677,7 @@ fn run_test_tool_revision_walking(rest: &[String]) -> Result<()> {
     }
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_mergesort(rest: &[String]) -> Result<()> {
     match rest.get(1).map(String::as_str).unwrap_or("") {
         "test" => {
@@ -672,6 +696,7 @@ fn run_test_tool_mergesort(rest: &[String]) -> Result<()> {
     }
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_hexdump(_rest: &[String]) -> Result<()> {
     use std::io::{Read, Write};
 
@@ -699,12 +724,14 @@ fn run_test_tool_hexdump(_rest: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-tools")]
 const BUILTIN_USERDIFF_DRIVERS: &[&str] = &[
     "ada", "bash", "bibtex", "cpp", "csharp", "css", "dts", "elixir", "fortran", "fountain",
     "golang", "html", "ini", "java", "kotlin", "markdown", "matlab", "objc", "pascal", "perl",
     "php", "python", "r", "ruby", "rust", "scheme", "tex",
 ];
 
+#[cfg(feature = "test-tools")]
 fn collect_custom_userdiff_drivers(config: &grit_lib::config::ConfigSet) -> Vec<String> {
     let mut custom = std::collections::BTreeSet::new();
 
@@ -727,6 +754,7 @@ fn collect_custom_userdiff_drivers(config: &grit_lib::config::ConfigSet) -> Vec<
     custom.into_iter().collect()
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_userdiff(rest: &[String]) -> Result<()> {
     if rest.len() != 2 {
         bail!("usage: test-tool userdiff <list-drivers|list-builtin-drivers|list-custom-drivers>");
@@ -758,12 +786,14 @@ fn run_test_tool_userdiff(rest: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-tools")]
 fn parse_find_pack_count_arg(value: &str) -> Result<usize> {
     value
         .parse::<usize>()
         .map_err(|_| anyhow::anyhow!("invalid --check-count value: {value}"))
 }
 
+#[cfg(feature = "test-tools")]
 fn display_find_pack_path(pack_path: &Path) -> String {
     let normalized = std::fs::canonicalize(pack_path).unwrap_or_else(|_| pack_path.to_path_buf());
     if let Ok(cwd) = std::env::current_dir() {
@@ -777,6 +807,7 @@ fn display_find_pack_path(pack_path: &Path) -> String {
     pack_path.to_string_lossy().into_owned()
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_find_pack(rest: &[String]) -> Result<()> {
     let mut i = 1usize;
     let mut expected_count: Option<usize> = None;
@@ -843,6 +874,7 @@ fn run_test_tool_find_pack(rest: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_bitmap(rest: &[String]) -> Result<()> {
     let Some(subcommand) = rest.get(1).map(String::as_str) else {
         bail!("usage: test-tool bitmap list-commits");
@@ -881,6 +913,7 @@ fn run_test_tool_bitmap(rest: &[String]) -> Result<()> {
 }
 
 /// `test-tool partial-clone` — matches `git/t/helper/test-partial-clone.c` (t0410).
+#[cfg(feature = "test-tools")]
 fn run_test_tool_partial_clone(rest: &[String]) -> Result<()> {
     if rest.len() < 4 {
         bail!("usage: test-tool partial-clone object-info <gitdir> <oid>");
@@ -903,17 +936,18 @@ fn run_test_tool_partial_clone(rest: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_ref_store(rest: &[String]) -> Result<()> {
     if rest.len() < 3 {
         bail!("usage: test-tool ref-store <backend> <subcommand> ...");
     }
     let backend = rest[1].as_str();
     let sub = rest[2].as_str();
-    if backend.starts_with("worktree:") {
+    if backend.starts_with("worktree:") || backend.starts_with("submodule:") {
         return commands::test_tool_ref_store::run(&rest[1..]);
     }
     if backend != "main" {
-        bail!("test-tool ref-store: unsupported backend (only 'main' and 'worktree:*' are implemented)");
+        bail!("test-tool ref-store: unsupported backend (only 'main', 'worktree:*' and 'submodule:*' are implemented)");
     }
 
     let repo = grit_lib::repo::Repository::discover(None)?;
@@ -958,8 +992,9 @@ fn run_test_tool_ref_store(rest: &[String]) -> Result<()> {
             let skip_refname_verification =
                 flags.iter().any(|f| f == "REF_SKIP_REFNAME_VERIFICATION");
 
+            // `dispatch` is given the subcommand name separately, so `args` must contain
+            // only the flags/operands of `git update-ref` (not the "update-ref" word itself).
             let mut args = vec![
-                "update-ref".to_owned(),
                 "-m".to_owned(),
                 msg.clone(),
                 refname.clone(),
@@ -988,6 +1023,16 @@ fn run_test_tool_ref_store(rest: &[String]) -> Result<()> {
                     &git_dir, refname, &old, &oid, &identity, msg, true,
                 );
                 return Ok(());
+            }
+            // Without REF_SKIP_OID_VERIFICATION, `refs_update_ref` (REF_STORE_WRITE) requires the
+            // new value to name an existing object; reject dangling OIDs so a non-skipping
+            // update of an invalid OID fails (t0610 "can skip object ID verification").
+            if !new_oid.starts_with("0000000000000000000000000000000000000000") {
+                if let Ok(oid) = grit_lib::objects::ObjectId::from_hex(new_oid) {
+                    if !repo.odb.exists(&oid) {
+                        bail!("update_ref failed for ref '{refname}': cannot update ref '{refname}': trying to write ref '{refname}' with nonexistent object {new_oid}");
+                    }
+                }
             }
             dispatch("update-ref", &args, &GlobalOpts::default())
         }
@@ -1037,7 +1082,10 @@ fn run_test_tool_ref_store(rest: &[String]) -> Result<()> {
                 } else {
                     oid.as_str()
                 };
-                println!("{display_oid} {name} {flags}");
+                // The C helper sets `trim_prefix = strlen(prefix)`, so the prefix is stripped
+                // from the emitted refname (e.g. `refs/heads/main` -> `main`).
+                let display = name.strip_prefix(prefix).unwrap_or(&name);
+                println!("{display_oid} {display} {flags}");
             }
             Ok(())
         }
@@ -1088,7 +1136,10 @@ fn run_test_tool_ref_store(rest: &[String]) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("usage: test-tool ref-store main {sub} <ref>"))?;
             let mut entries = grit_lib::reflog::read_reflog(&git_dir, refname)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            if sub == "for-each-reflog-ent" {
+            // `read_reflog` returns entries in file order (oldest-first), which
+            // matches upstream `files_for_each_reflog_ent` (front-to-back stream).
+            // Only the `-reverse` variant emits newest-first.
+            if sub == "for-each-reflog-ent-reverse" {
                 entries.reverse();
             }
             for entry in entries {
@@ -1123,13 +1174,126 @@ fn run_test_tool_ref_store(rest: &[String]) -> Result<()> {
             std::fs::rename(lock_path, path)?;
             Ok(())
         }
-        "resolve-ref" => commands::test_tool_ref_store::run(&rest[2..]),
+        "rename-ref" => {
+            // rename-ref <oldref> <newref> [logmsg]
+            if rest.len() < 5 {
+                bail!("usage: test-tool ref-store main rename-ref <oldref> <newref> [logmsg]");
+            }
+            let oldref = &rest[3];
+            let newref = &rest[4];
+            let logmsg = rest.get(5).cloned().unwrap_or_default();
+            run_ref_store_rename(&repo, &git_dir, oldref, newref, &logmsg)
+        }
+        "verify-ref" => {
+            // verify-ref <refname>: succeeds iff creating <refname> would not hit a D/F
+            // conflict with another ref (matches refs_verify_refname_available).
+            let refname = rest.get(3).ok_or_else(|| {
+                anyhow::anyhow!("usage: test-tool ref-store main verify-ref <refname>")
+            })?;
+            match grit_lib::refs::verify_refname_available_for_create(
+                &git_dir,
+                refname,
+                &std::collections::BTreeSet::new(),
+                &std::collections::HashSet::new(),
+            ) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    println!("{}", e.lock_message_suffix());
+                    std::process::exit(1);
+                }
+            }
+        }
+        "delete-ref" => {
+            // delete-ref <msg> <refname> <old-sha1> <flags>
+            if rest.len() < 6 {
+                bail!("usage: test-tool ref-store main delete-ref <msg> <ref> <old-sha1> <flags>");
+            }
+            let _msg = &rest[3];
+            let refname = &rest[4];
+            let old_sha1 = &rest[5];
+            // Honor the old-sha1 precondition (REF_NO_DEREF/flags don't change this test's path).
+            if old_sha1 != "0000000000000000000000000000000000000000" {
+                let expected = grit_lib::objects::ObjectId::from_hex(old_sha1)
+                    .with_context(|| format!("cannot parse {old_sha1} as object id"))?;
+                match grit_lib::refs::resolve_ref(&git_dir, refname) {
+                    Ok(current) if current == expected => {}
+                    Ok(current) => bail!(
+                        "ref {refname} is at {} but expected {}",
+                        current.to_hex(),
+                        expected.to_hex()
+                    ),
+                    Err(e) => bail!("cannot lock ref '{refname}': {e}"),
+                }
+            }
+            grit_lib::refs::delete_ref(&git_dir, refname).map_err(|e| anyhow::anyhow!("{e}"))
+        }
         // The module entry point expects `<store> <function> ...`, so pass the backend too.
+        "resolve-ref" => commands::test_tool_ref_store::run(&rest[1..]),
         "for-each-reflog" => commands::test_tool_ref_store::run(&rest[1..]),
         other => bail!("test-tool ref-store: unsupported subcommand '{other}'"),
     }
 }
 
+/// Low-level ref rename for `test-tool ref-store main rename-ref`, mirroring the files-backend
+/// `files_copy_or_rename_ref`: resolve the old ref without dereferencing (symrefs are rejected),
+/// migrate its reflog, delete the old ref, write the new ref, and append the rename reflog entry.
+#[cfg(feature = "test-tools")]
+fn run_ref_store_rename(
+    repo: &grit_lib::repo::Repository,
+    git_dir: &std::path::Path,
+    oldref: &str,
+    newref: &str,
+    logmsg: &str,
+) -> Result<()> {
+    // Renaming a symbolic ref is not supported (matches the C backend).
+    if matches!(
+        grit_lib::refs::read_symbolic_ref(git_dir, oldref),
+        Ok(Some(_))
+    ) {
+        bail!("refname {oldref} is a symbolic ref, renaming it is not supported");
+    }
+
+    let old_oid = grit_lib::refs::resolve_ref(git_dir, oldref)
+        .map_err(|_| anyhow::anyhow!("refname {oldref} not found"))?;
+
+    // Capture the old reflog bytes before deleting the ref (delete_ref removes logs/<ref> too).
+    let logs_dir = git_dir.join("logs");
+    let old_log_path = logs_dir.join(oldref);
+    let old_reflog_bytes = if old_log_path.is_file() {
+        std::fs::read(&old_log_path).ok()
+    } else {
+        None
+    };
+
+    // Delete the old ref first to avoid d/f conflicts when old/new share a path prefix.
+    grit_lib::refs::delete_ref(git_dir, oldref).map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Remove any pre-existing destination ref so the write lands cleanly.
+    let _ = grit_lib::refs::delete_ref(git_dir, newref);
+
+    grit_lib::refs::write_ref(git_dir, newref, &old_oid).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Migrate the reflog content to the new ref's reflog path.
+    if let Some(log_bytes) = old_reflog_bytes {
+        let new_log = logs_dir.join(newref);
+        if let Some(parent) = new_log.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&new_log, log_bytes)?;
+    }
+
+    // Append a reflog entry for the rename when a log message was supplied (an empty logmsg
+    // leaves the migrated reflog untouched, matching commit_ref_update with a NULL message).
+    if !logmsg.is_empty() {
+        let identity = commands::update_ref::resolve_reflog_identity(repo);
+        let _ = grit_lib::refs::append_reflog(
+            git_dir, newref, &old_oid, &old_oid, &identity, logmsg, true,
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "test-tools")]
 fn dir_iterator_error_name(kind: std::io::ErrorKind) -> &'static str {
     match kind {
         std::io::ErrorKind::NotFound => "ENOENT",
@@ -1138,6 +1302,7 @@ fn dir_iterator_error_name(kind: std::io::ErrorKind) -> &'static str {
     }
 }
 
+#[cfg(feature = "test-tools")]
 fn walk_dir_iterator(
     root_abs: &Path,
     root_display: &str,
@@ -1216,6 +1381,7 @@ fn walk_dir_iterator(
     Ok(())
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_dir_iterator(rest: &[String]) -> Result<()> {
     let mut pedantic = false;
     let mut path_arg: Option<String> = None;
@@ -1263,6 +1429,7 @@ fn run_test_tool_dir_iterator(rest: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_parse_pathspec_file(rest: &[String]) -> Result<()> {
     let mut pathspec_from_file: Option<String> = None;
     let mut pathspec_file_nul = false;
@@ -1309,6 +1476,7 @@ fn parse_bool_str(value: &str) -> Option<bool> {
     }
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_advise(rest: &[String]) -> Result<()> {
     if rest.len() != 2 {
         bail!("usage: test-tool advise <message>");
@@ -1358,10 +1526,12 @@ fn run_test_tool_advise(rest: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-tools")]
 fn parse_ulong_str(value: &str) -> Option<u64> {
     value.trim().parse::<u64>().ok()
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_env_helper(rest: &[String]) -> Result<()> {
     // test-tool env-helper --type=<bool|ulong> --default=<value> [--exit-code] <VAR>
     if rest.len() < 3 || rest.first().map(String::as_str) != Some("env-helper") {
@@ -1454,12 +1624,14 @@ fn run_test_tool_env_helper(rest: &[String]) -> Result<()> {
         ),
     }
 }
+#[cfg(feature = "test-tools")]
 fn test_tool_usage() -> Result<()> {
     bail!("test-tool: unknown or invalid subcommand usage")
 }
 
 /// `test-tool online-cpus` — print the number of processors Git would consider "online"
 /// (matches `git/t/helper/test-online-cpus.c` using `std::thread::available_parallelism`).
+#[cfg(feature = "test-tools")]
 fn run_test_tool_path_walk(rest: &[String]) -> Result<()> {
     let args = preprocess_test_tool_args(rest)?;
     let args = if args.first().map(String::as_str) == Some("path-walk") {
@@ -1506,6 +1678,7 @@ fn run_test_tool_path_walk(rest: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_online_cpus(rest: &[String]) -> Result<()> {
     let _ = preprocess_test_tool_args(rest)?;
     let n = std::thread::available_parallelism()
@@ -1515,6 +1688,7 @@ fn run_test_tool_online_cpus(rest: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_delta(rest: &[String]) -> Result<()> {
     if rest.len() != 5 {
         bail!("usage: test-tool delta (-d|-p) <from_file> <data_file> <out_file>");
@@ -1533,6 +1707,7 @@ fn run_test_tool_delta(rest: &[String]) -> Result<()> {
     }
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_pack_mtimes(rest: &[String]) -> Result<()> {
     if rest.len() != 2 {
         bail!("usage: test-tool pack-mtimes <pack-name.mtimes>");
@@ -1573,6 +1748,7 @@ fn run_test_tool_pack_mtimes(rest: &[String]) -> Result<()> {
 }
 
 /// `test-tool lazy-init-name-hash` — exercise case-folding name/dir hash init (t3008, perf tests).
+#[cfg(feature = "test-tools")]
 fn run_test_tool_lazy_init_name_hash(rest: &[String]) -> Result<()> {
     use anyhow::Context;
     use std::io::Write;
@@ -1702,6 +1878,7 @@ fn run_test_tool_lazy_init_name_hash(rest: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-tools")]
 fn time_runs_lazy_name_hash(
     index: &grit_lib::index::Index,
     try_threaded: bool,
@@ -1759,6 +1936,7 @@ fn time_runs_lazy_name_hash(
     Ok(sum_ns / count as u64)
 }
 
+#[cfg(feature = "test-tools")]
 fn analyze_runs_lazy_name_hash(
     index: &grit_lib::index::Index,
     analyze_start: i32,
@@ -1842,6 +2020,7 @@ fn analyze_runs_lazy_name_hash(
     }
 }
 
+#[cfg(feature = "test-tools")]
 fn truncate_index_for_analyze(index: &grit_lib::index::Index, n: usize) -> grit_lib::index::Index {
     let mut out = index.clone();
     if n < out.entries.len() {
@@ -1850,6 +2029,7 @@ fn truncate_index_for_analyze(index: &grit_lib::index::Index, n: usize) -> grit_
     out
 }
 
+#[cfg(feature = "test-tools")]
 fn preprocess_test_tool_args(rest: &[String]) -> Result<Vec<String>> {
     let mut i = 0usize;
     let mut change_dir: Option<std::path::PathBuf> = None;
@@ -1885,6 +2065,7 @@ fn preprocess_test_tool_args(rest: &[String]) -> Result<Vec<String>> {
 
     Ok(rest[i..].to_vec())
 }
+#[cfg(feature = "test-tools")]
 fn run_test_tool_sigchain(rest: &[String]) -> Result<()> {
     let mut signo: i32 = 15;
     if rest.get(1).map(String::as_str) == Some("--raise") {
@@ -1914,6 +2095,7 @@ fn run_test_tool_sigchain(rest: &[String]) -> Result<()> {
     std::process::exit(128 + signo);
 }
 #[derive(Debug, Clone)]
+#[cfg(feature = "test-tools")]
 enum JsonWriterValue {
     Object(Vec<(String, JsonWriterValue)>),
     Array(Vec<JsonWriterValue>),
@@ -1925,6 +2107,7 @@ enum JsonWriterValue {
 }
 
 #[derive(Debug)]
+#[cfg(feature = "test-tools")]
 enum JsonWriterContainer {
     Object {
         key_in_parent: Option<String>,
@@ -1936,6 +2119,7 @@ enum JsonWriterContainer {
     },
 }
 
+#[cfg(feature = "test-tools")]
 fn json_escape_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     for ch in s.chars() {
@@ -1951,6 +2135,7 @@ fn json_escape_string(s: &str) -> String {
     out
 }
 
+#[cfg(feature = "test-tools")]
 fn render_json_value(v: &JsonWriterValue, pretty: bool, indent: usize) -> String {
     match v {
         JsonWriterValue::Object(entries) => {
@@ -2032,6 +2217,7 @@ fn render_json_value(v: &JsonWriterValue, pretty: bool, indent: usize) -> String
     }
 }
 
+#[cfg(feature = "test-tools")]
 fn attach_json_value(
     stack: &mut [JsonWriterContainer],
     root: &mut Option<JsonWriterValue>,
@@ -2056,6 +2242,7 @@ fn attach_json_value(
     Ok(())
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_json_writer(rest: &[String]) -> Result<()> {
     let mut pretty = false;
     if let Some(flag) = rest.get(1) {
@@ -2330,6 +2517,7 @@ fn run_test_tool_json_writer(rest: &[String]) -> Result<()> {
     println!("{rendered}");
     Ok(())
 }
+#[cfg(feature = "test-tools")]
 fn run_test_tool_mktemp(rest: &[String]) -> Result<()> {
     if rest.len() < 2 {
         bail!("usage: test-tool mktemp <template>");
@@ -2341,6 +2529,7 @@ fn run_test_tool_mktemp(rest: &[String]) -> Result<()> {
     exit_with_status(status);
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_regex(rest: &[String]) -> Result<()> {
     if rest.get(1).map(String::as_str) == Some("--bug") {
         return Ok(());
@@ -2348,6 +2537,7 @@ fn run_test_tool_regex(rest: &[String]) -> Result<()> {
     bail!("usage: test-tool regex --bug")
 }
 #[derive(Debug, Clone, Copy)]
+#[cfg(feature = "test-tools")]
 struct BloomSettings {
     hash_version: u32,
     num_hashes: usize,
@@ -2355,6 +2545,7 @@ struct BloomSettings {
     max_changed_paths: usize,
 }
 
+#[cfg(feature = "test-tools")]
 const TEST_BLOOM_SETTINGS: BloomSettings = BloomSettings {
     // Matches git's DEFAULT_BLOOM_FILTER_SETTINGS used by test-tool bloom.
     hash_version: 1,
@@ -2363,14 +2554,17 @@ const TEST_BLOOM_SETTINGS: BloomSettings = BloomSettings {
     max_changed_paths: 512,
 };
 
+#[cfg(feature = "test-tools")]
 fn bloom_rotate_left(value: u32, count: u32) -> u32 {
     value.rotate_left(count)
 }
 
+#[cfg(feature = "test-tools")]
 fn bloom_signed_char_u32(b: u8) -> u32 {
     ((b as i8) as i32) as u32
 }
 
+#[cfg(feature = "test-tools")]
 fn bloom_murmur3_seeded_v2(mut seed: u32, data: &[u8]) -> u32 {
     let c1: u32 = 0xcc9e2d51;
     let c2: u32 = 0x1b873593;
@@ -2427,6 +2621,7 @@ fn bloom_murmur3_seeded_v2(mut seed: u32, data: &[u8]) -> u32 {
     seed
 }
 
+#[cfg(feature = "test-tools")]
 fn bloom_murmur3_seeded_v1(mut seed: u32, data: &[u8]) -> u32 {
     let c1: u32 = 0xcc9e2d51;
     let c2: u32 = 0x1b873593;
@@ -2483,6 +2678,7 @@ fn bloom_murmur3_seeded_v1(mut seed: u32, data: &[u8]) -> u32 {
     seed
 }
 
+#[cfg(feature = "test-tools")]
 fn bloom_murmur3_seeded(seed: u32, data: &[u8], version: u32) -> u32 {
     match version {
         2 => bloom_murmur3_seeded_v2(seed, data),
@@ -2490,6 +2686,7 @@ fn bloom_murmur3_seeded(seed: u32, data: &[u8], version: u32) -> u32 {
     }
 }
 
+#[cfg(feature = "test-tools")]
 fn bloom_key_hashes(data: &[u8], settings: BloomSettings) -> Vec<u32> {
     let seed0 = 0x293ae76f;
     let seed1 = 0x7e646e2c;
@@ -2503,6 +2700,7 @@ fn bloom_key_hashes(data: &[u8], settings: BloomSettings) -> Vec<u32> {
     out
 }
 
+#[cfg(feature = "test-tools")]
 fn bloom_add_hashes_to_filter(hashes: &[u32], filter: &mut [u8]) {
     let mod_bits = (filter.len() * 8) as u64;
     if mod_bits == 0 {
@@ -2516,6 +2714,7 @@ fn bloom_add_hashes_to_filter(hashes: &[u32], filter: &mut [u8]) {
     }
 }
 
+#[cfg(feature = "test-tools")]
 fn bloom_print_filter(filter: &[u8]) {
     println!("Filter_Length:{}", filter.len());
     print!("Filter_Data:");
@@ -2525,6 +2724,7 @@ fn bloom_print_filter(filter: &[u8]) {
     println!();
 }
 
+#[cfg(feature = "test-tools")]
 fn bloom_collect_paths_with_prefixes(path: &str, out: &mut std::collections::BTreeSet<String>) {
     if path.is_empty() {
         return;
@@ -2542,6 +2742,7 @@ fn bloom_collect_paths_with_prefixes(path: &str, out: &mut std::collections::BTr
     }
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_bloom(rest: &[String]) -> Result<()> {
     if rest.len() < 2 {
         bail!(
@@ -2685,6 +2886,57 @@ pub(crate) fn git_exec_path_for_helpers(cli_exec_path: Option<&Path>) -> Option<
     std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+}
+
+/// Git subcommands that vanilla Git ships as separate `git-<cmd>` executables in its
+/// libexec dir, but which grit implements as built-ins. When grit's exec path is an
+/// explicitly-provided, writable directory (the test harness points `GIT_EXEC_PATH`
+/// at a dedicated helper dir), a sibling *real* `git` invocation such as
+/// `/usr/bin/git submodule add ...` resolves `git-submodule` from `GIT_EXEC_PATH` and
+/// fails with "submodule is not a git command" because the dir only contains the few
+/// shims the harness wrote. Installing a passthrough shim that re-invokes grit lets
+/// those real-git calls delegate to grit's own implementation.
+const EXEC_PATH_PASSTHROUGH_HELPERS: &[&str] = &["submodule"];
+
+/// Install passthrough shims for [`EXEC_PATH_PASSTHROUGH_HELPERS`] into the
+/// `GIT_EXEC_PATH` helper directory so a sibling vanilla `git` can find the
+/// `git-<cmd>` helpers that grit implements as built-ins.
+///
+/// This only acts when `GIT_EXEC_PATH` is set in the environment to a directory that
+/// already exists and is writable; otherwise it is a no-op (production runs that do
+/// not set `GIT_EXEC_PATH`, or point it at git's read-only libexec, are unaffected).
+/// Each shim is written at most once (skipped when already present) and re-invokes the
+/// running grit binary, so the behavior matches grit's own built-in subcommand.
+fn install_exec_path_passthrough_helpers() {
+    let Ok(exec_dir) = std::env::var("GIT_EXEC_PATH") else {
+        return;
+    };
+    if exec_dir.is_empty() {
+        return;
+    }
+    let exec_dir = PathBuf::from(exec_dir);
+    if !exec_dir.is_dir() {
+        return;
+    }
+    let Ok(self_exe) = std::env::current_exe() else {
+        return;
+    };
+    let self_exe = self_exe.display().to_string();
+    for cmd in EXEC_PATH_PASSTHROUGH_HELPERS {
+        let shim = exec_dir.join(format!("git-{cmd}"));
+        if shim.exists() {
+            continue;
+        }
+        let body = format!("#!/bin/sh\nexec \"{self_exe}\" {cmd} \"$@\"\n");
+        if fs::write(&shim, body).is_err() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&shim, fs::Permissions::from_mode(0o755));
+        }
+    }
 }
 
 /// Extract global options and return (globals, subcommand_name, remaining_args).
@@ -3688,6 +3940,11 @@ fn run() -> Result<()> {
             std::env::set_var("GRIT_INVOCATION_CWD", cwd.display().to_string());
         }
     }
+
+    // When GIT_EXEC_PATH points at a writable helper dir, expose shims for the few
+    // subcommands vanilla Git ships as separate executables but grit implements as
+    // built-ins, so a sibling real `git submodule …` can delegate to grit.
+    install_exec_path_passthrough_helpers();
 
     let args = argv_lossy();
     let (opts, subcmd, rest) = extract_globals(&args)?;
@@ -4741,6 +4998,14 @@ fn strip_log_revision_pseudo_for_clap(rest: &[String]) -> Vec<String> {
     let mut i = 0usize;
     while i < rest.len() {
         let a = rest[i].as_str();
+        // After `--end-of-options`, every remaining token is a revision or
+        // pathspec (e.g. a branch literally named `--source`), not an option.
+        // Drop them from clap's view (the revision machinery re-reads them from
+        // `raw_argv_tail`) so clap does not mistake e.g. `--source` for its flag.
+        if a == "--end-of-options" {
+            out.push(rest[i].clone());
+            break;
+        }
         if a == "--not" {
             i += 1;
             continue;
@@ -4838,8 +5103,11 @@ fn preprocess_log_args(rest: &[String]) -> Vec<String> {
             i += 1;
             continue;
         }
-        // `-L:pat:file` must keep the leading `:` (e.g. `-L:$:file.c` → `:$:file.c` for line-log).
-        if arg.starts_with("-L:") {
+        // Normalize the attached form `-L<value>` into `-L <value>` so the value is parsed as the
+        // line-range option rather than being swallowed by the hyphen-tolerant `revisions`
+        // positional. This covers both `-L1,1:file` and `-L:pat:file` (the leading `:` of the
+        // latter is preserved). `arg[2..]` strips only the `-L` prefix and keeps the remainder.
+        if arg.starts_with("-L") && arg.len() > 2 {
             result.push("-L".to_string());
             result.push(arg[2..].to_string());
             i += 1;
@@ -5579,6 +5847,7 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
             commands::imap_send::run_from_argv(rest)
         }
         "index-pack" => {
+            commands::upstream_synopsis_help::try_print_upstream_help_and_exit(subcmd, rest);
             let args = commands::index_pack::parse_argv(rest.to_vec())?;
             commands::index_pack::run(args)
         }
@@ -5753,7 +6022,10 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         "sh-i18n--envsubst" => commands::sh_i18n_envsubst::run_from_argv(rest),
         "sh-setup" => commands::sh_setup::run(parse_cmd_args(subcmd, rest)),
         "shell" => commands::shell::run(parse_cmd_args(subcmd, rest)),
-        "shortlog" => commands::shortlog::run_with_raw_args(rest),
+        "shortlog" => {
+            commands::upstream_synopsis_help::try_print_upstream_help_and_exit(subcmd, rest);
+            commands::shortlog::run_with_raw_args(rest)
+        }
         "show" => {
             let rest = preprocess_expand_tabs_for_rev_cmd(rest);
             let rest = preprocess_show_argv(&rest);
@@ -5844,9 +6116,16 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
         "verify-tag" => commands::verify_tag::run(parse_cmd_args(subcmd, rest)),
         "version" => commands::version::run(parse_cmd_args(subcmd, rest)),
         "web--browse" => commands::web_browse::run(parse_cmd_args(subcmd, rest)),
-        "whatchanged" => commands::whatchanged::run(rest),
+        "whatchanged" => {
+            commands::upstream_synopsis_help::try_print_upstream_help_and_exit(subcmd, rest);
+            commands::whatchanged::run(rest)
+        }
         "worktree" => commands::worktree::run(parse_cmd_args(subcmd, rest)),
         "write-tree" => commands::write_tree::run(parse_cmd_args(subcmd, rest)),
+        // The entire `test-tool` dispatch is gated behind the default `test-tools`
+        // feature. With `--no-default-features`, `grit test-tool` is an unknown
+        // command (falls through to the `_` arm below).
+        #[cfg(feature = "test-tools")]
         "test-tool" => {
             let sub = rest.first().map(|s| s.as_str()).unwrap_or("");
             match sub {
@@ -6382,6 +6661,7 @@ pub(crate) fn dispatch(subcmd: &str, rest: &[String], opts: &GlobalOpts) -> Resu
 
 /// Normalize a path (resolve . and ..) without requiring filesystem existence.
 /// Returns "++failed++" if path goes above root for relative paths.
+#[cfg(feature = "test-tools")]
 fn normalize_path_simple(path: &str) -> String {
     match git_path::normalize_path_copy(path) {
         Ok(s) => s,
@@ -6390,6 +6670,7 @@ fn normalize_path_simple(path: &str) -> String {
 }
 
 /// POSIX `basename(3)` (matches libc used by Git's test-tool path-utils).
+#[cfg(feature = "test-tools")]
 fn posix_basename(path: &str) -> String {
     if path.is_empty() {
         return ".".to_string();
@@ -6410,6 +6691,7 @@ fn posix_basename(path: &str) -> String {
 }
 
 /// POSIX `dirname(3)` (matches libc used by Git's test-tool path-utils).
+#[cfg(feature = "test-tools")]
 fn posix_dirname(path: &str) -> String {
     if path.is_empty() {
         return ".".to_string();
@@ -6444,6 +6726,7 @@ fn posix_dirname(path: &str) -> String {
 
 /// `test-tool subprocess` — matches `git/t/helper/test-subprocess.c`: discover repo, optionally
 /// `setup_work_tree` (chdir + normalize `GIT_WORK_TREE`), then re-exec grit with the remaining args.
+#[cfg(feature = "test-tools")]
 fn run_test_tool_subprocess(rest: &[String]) -> Result<()> {
     use std::process::Command;
 
@@ -6478,6 +6761,7 @@ fn run_test_tool_subprocess(rest: &[String]) -> Result<()> {
 }
 
 /// Handle `test-tool path-utils` — path manipulation utilities.
+#[cfg(feature = "test-tools")]
 fn run_test_tool_path_utils(rest: &[String]) -> Result<()> {
     let subcmd = rest.first().map(|s| s.as_str()).unwrap_or("");
     match subcmd {
@@ -6653,6 +6937,7 @@ fn run_test_tool_path_utils(rest: &[String]) -> Result<()> {
 }
 
 /// `test-tool submodule-config` — Git `t7411-submodule-config` helper (`test-submodule-config.c`).
+#[cfg(feature = "test-tools")]
 fn run_test_tool_submodule_config(rest: &[String]) -> Result<()> {
     let args = preprocess_test_tool_args(rest)?;
     if args.first().map(|s| s.as_str()) != Some("submodule-config") {
@@ -6720,6 +7005,7 @@ fn run_test_tool_submodule_config(rest: &[String]) -> Result<()> {
 }
 
 /// `test-tool submodule-nested-repo-config` — nested `.gitmodules` reader (`test-submodule-nested-repo-config.c`).
+#[cfg(feature = "test-tools")]
 fn run_test_tool_submodule_nested_repo_config(rest: &[String]) -> Result<()> {
     let args = preprocess_test_tool_args(rest)?;
     if args.first().map(|s| s.as_str()) != Some("submodule-nested-repo-config") {
@@ -6740,6 +7026,7 @@ fn run_test_tool_submodule_nested_repo_config(rest: &[String]) -> Result<()> {
 }
 
 /// Handle `test-tool submodule` subcommands.
+#[cfg(feature = "test-tools")]
 fn run_test_tool_submodule(rest: &[String]) -> Result<()> {
     let args = preprocess_test_tool_args(rest)?;
     if args.first().map(|s| s.as_str()) != Some("submodule") {
@@ -6910,6 +7197,7 @@ fn run_test_tool_submodule(rest: &[String]) -> Result<()> {
 }
 
 /// `test-tool dump-untracked-cache` — matches `git/t/helper/test-dump-untracked-cache.c`.
+#[cfg(feature = "test-tools")]
 fn run_test_tool_dump_split_index(rest: &[String]) -> Result<()> {
     use grit_lib::index::Index;
     use grit_lib::repo::Repository;
@@ -6937,6 +7225,7 @@ fn run_test_tool_dump_split_index(rest: &[String]) -> Result<()> {
 ///
 /// Loads the index, compares the stored cache-tree against a freshly built
 /// reference, and prints the agreeing nodes.
+#[cfg(feature = "test-tools")]
 fn run_test_tool_dump_cache_tree() -> Result<()> {
     use grit_lib::repo::Repository;
 
@@ -6955,6 +7244,7 @@ fn run_test_tool_dump_cache_tree() -> Result<()> {
 /// `test-tool scrap-cache-tree` — matches `git/t/helper/test-scrap-cache-tree.c`.
 ///
 /// Drops the cache-tree extension from the index and writes it back.
+#[cfg(feature = "test-tools")]
 fn run_test_tool_scrap_cache_tree() -> Result<()> {
     use grit_lib::repo::Repository;
 
@@ -6969,6 +7259,7 @@ fn run_test_tool_scrap_cache_tree() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-tools")]
 fn run_test_tool_dump_untracked_cache() -> Result<()> {
     use grit_lib::index::Index;
     use grit_lib::repo::Repository;
@@ -7026,6 +7317,7 @@ fn run_test_tool_dump_untracked_cache() -> Result<()> {
 }
 
 /// `test-tool dump-fsmonitor` — minimal helper used by status/fsmonitor tests.
+#[cfg(feature = "test-tools")]
 fn run_test_tool_dump_fsmonitor() -> Result<()> {
     use grit_lib::index::Index;
     use grit_lib::repo::Repository;
@@ -7041,6 +7333,7 @@ fn run_test_tool_dump_fsmonitor() -> Result<()> {
 }
 
 /// `test-tool read-cache` — minimal helper for fsmonitor/read-cache tests.
+#[cfg(feature = "test-tools")]
 fn run_test_tool_read_cache(rest: &[String]) -> Result<()> {
     use grit_lib::repo::Repository;
 
@@ -7078,6 +7371,7 @@ fn run_test_tool_read_cache(rest: &[String]) -> Result<()> {
 }
 
 /// `.gitmodules` text and a path used only for parsing / round-trip (Git `config_from_gitmodules`).
+#[cfg(feature = "test-tools")]
 fn gitmodules_file_content_for_test_tool(
     repo: &grit_lib::repo::Repository,
     work_tree: &Path,
@@ -7127,6 +7421,7 @@ fn gitmodules_file_content_for_test_tool(
 }
 
 /// Matches Git `is_writing_gitmodules_ok` (`git/submodule.c`).
+#[cfg(feature = "test-tools")]
 fn is_writing_gitmodules_ok_for_test_tool(
     repo: &grit_lib::repo::Repository,
     work_tree: &Path,
@@ -7164,6 +7459,7 @@ fn is_writing_gitmodules_ok_for_test_tool(
 }
 
 /// Handle `test-tool chmtime` — get or set file modification times.
+#[cfg(feature = "test-tools")]
 fn run_test_tool_chmtime(rest: &[String]) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     if rest.is_empty() {
@@ -7239,12 +7535,14 @@ fn run_test_tool_chmtime(rest: &[String]) -> Result<()> {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "test-tools")]
 enum TestToolConfigParseKeyErr {
     InvalidKey,
     NoSectionOrName,
 }
 
 /// Match `git_config_parse_key` enough for `test-tool config get` (t1308).
+#[cfg(feature = "test-tools")]
 fn test_tool_git_config_parse_key(
     key: &str,
 ) -> std::result::Result<String, TestToolConfigParseKeyErr> {
@@ -7283,6 +7581,7 @@ fn test_tool_git_config_parse_key(
     String::from_utf8(out).map_err(|_| TestToolConfigParseKeyErr::InvalidKey)
 }
 
+#[cfg(feature = "test-tools")]
 fn test_tool_config_display_name(path: &std::path::Path) -> String {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if let Ok(stripped) = path.strip_prefix(&cwd) {
@@ -7297,6 +7596,7 @@ fn test_tool_config_display_name(path: &std::path::Path) -> String {
         .to_string()
 }
 
+#[cfg(feature = "test-tools")]
 fn test_tool_config_origin_type(entry: &grit_lib::config::ConfigEntry) -> &'static str {
     if matches!(entry.scope, grit_lib::config::ConfigScope::Command) {
         return "command line";
@@ -7304,6 +7604,7 @@ fn test_tool_config_origin_type(entry: &grit_lib::config::ConfigEntry) -> &'stat
     "file"
 }
 
+#[cfg(feature = "test-tools")]
 fn test_tool_config_iterate_name(entry: &grit_lib::config::ConfigEntry) -> String {
     match &entry.file {
         None => String::new(),
@@ -7316,6 +7617,7 @@ fn test_tool_config_iterate_name(entry: &grit_lib::config::ConfigEntry) -> Strin
     }
 }
 
+#[cfg(feature = "test-tools")]
 fn test_tool_config_fatal_bad_numeric(
     name: &str,
     value: &str,
@@ -7334,6 +7636,7 @@ fn test_tool_config_fatal_bad_numeric(
     std::process::exit(128);
 }
 
+#[cfg(feature = "test-tools")]
 fn test_tool_config_fatal_missing_string(name: &str, entry: &grit_lib::config::ConfigEntry) -> ! {
     let msg = match &entry.file {
         Some(path) => {
@@ -7349,6 +7652,7 @@ fn test_tool_config_fatal_missing_string(name: &str, entry: &grit_lib::config::C
     std::process::exit(128);
 }
 
+#[cfg(feature = "test-tools")]
 fn test_tool_parse_git_bool_strict(value: &str) -> std::result::Result<bool, ()> {
     match value.to_ascii_lowercase().as_str() {
         "true" | "yes" | "on" => Ok(true),
@@ -7363,7 +7667,37 @@ fn test_tool_parse_git_bool_strict(value: &str) -> std::result::Result<bool, ()>
     }
 }
 
+/// Locate the repository git directory for `test-tool config` without requiring config to parse.
+///
+/// `Repository::discover` reads (and parses) the repository config as part of discovery, so when the
+/// config file contains a syntax error discovery fails and returns `None`. The config test helper
+/// must still find the local `config` file in that case so the malformed line surfaces as a fatal
+/// parse error (t1308 "proper error on error in default config files"). Mirror the `git config`
+/// command's `resolve_git_dir`: try discovery first, then fall back to a config-free directory walk.
+#[cfg(feature = "test-tools")]
+fn test_tool_config_locate_git_dir() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("GIT_DIR") {
+        let p = std::path::PathBuf::from(dir);
+        if p.is_absolute() {
+            return Some(p);
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            return Some(cwd.join(p));
+        }
+        return Some(p);
+    }
+    grit_lib::repo::Repository::discover(None)
+        .ok()
+        .map(|r| r.git_dir)
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .and_then(grit_lib::precompose_config::locate_git_dir_from_cwd)
+        })
+}
+
 /// Handle `test-tool config` — config API test helper.
+#[cfg(feature = "test-tools")]
 fn run_test_tool_config(rest: &[String]) -> Result<()> {
     use grit_lib::config::{canonical_key, ConfigFile};
     use grit_lib::config::{parse_git_config_int_strict, ConfigScope, ConfigSet, IncludeContext};
@@ -7372,8 +7706,14 @@ fn run_test_tool_config(rest: &[String]) -> Result<()> {
 
     if subcmd == "read_early_config" {
         let key = rest.get(1).map(|s| s.as_str()).unwrap_or("");
-        let repo = grit_lib::repo::Repository::discover(None).ok();
-        let git_dir = repo.as_ref().map(|r| r.git_dir.as_path());
+        // Locate the git dir the way Git's `read_early_config`/`discover_git_directory_reason`
+        // does: still record the gitdir even when the repository format is unsupported
+        // (`GIT_DIR_INVALID_FORMAT`), so `read_early_config` can emit the
+        // "Expected git repo version <= N" warning and skip the repo's local config (t1309).
+        // `Repository::discover` validates the format and would yield no gitdir for such a repo,
+        // so use the validation-free locator (it still honors GIT_DIR/ceilings).
+        let git_dir_buf = test_tool_config_locate_git_dir();
+        let git_dir = git_dir_buf.as_deref();
         return match ConfigSet::read_early_config(git_dir, key) {
             Ok(values) => {
                 if values.is_empty() {
@@ -7388,8 +7728,8 @@ fn run_test_tool_config(rest: &[String]) -> Result<()> {
         };
     }
 
-    let repo = grit_lib::repo::Repository::discover(None).ok();
-    let git_dir = repo.as_ref().map(|r| r.git_dir.as_path());
+    let git_dir_buf = test_tool_config_locate_git_dir();
+    let git_dir = git_dir_buf.as_deref();
 
     match subcmd {
         "get" => {

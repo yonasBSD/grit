@@ -69,6 +69,12 @@ pub struct Args {
     /// Alias for `--receive-pack` (Git compatibility).
     #[arg(long = "exec", value_name = "PATH")]
     pub exec: Option<String>,
+
+    /// Use (or, with `--no-thin`, omit) thin-pack generation. Defaults on, matching `git send-pack`.
+    #[arg(long = "thin", overrides_with = "no_thin", default_value_t = true)]
+    pub thin: bool,
+    #[arg(long = "no-thin", overrides_with = "thin")]
+    pub no_thin: bool,
 }
 
 struct RefUpdate {
@@ -308,14 +314,21 @@ pub fn run(args: Args) -> Result<()> {
     // own pack-objects when the system git is unavailable or fails — notably when the source
     // object store has a grit-written v2 multi-pack-index that older system git cannot parse
     // ("multi-pack-index version 2 not recognized"; t5400 receive-pack auto-gc).
+    let use_thin = args.thin && !args.no_thin;
     let pack_bin = std::path::Path::new("/usr/bin/git");
     let pack_output = if pack_bin.is_file() {
-        match run_pack_objects(Some(pack_bin), &pack_cwd, &repo.git_dir, &rev_input)? {
+        match run_pack_objects(
+            Some(pack_bin),
+            &pack_cwd,
+            &repo.git_dir,
+            &rev_input,
+            use_thin,
+        )? {
             output if output.status.success() => output,
-            _ => run_pack_objects(None, &pack_cwd, &repo.git_dir, &rev_input)?,
+            _ => run_pack_objects(None, &pack_cwd, &repo.git_dir, &rev_input, use_thin)?,
         }
     } else {
-        run_pack_objects(None, &pack_cwd, &repo.git_dir, &rev_input)?
+        run_pack_objects(None, &pack_cwd, &repo.git_dir, &rev_input, use_thin)?
     };
     if !pack_output.status.success() {
         // Surface the (final) pack-objects diagnostics now that no further fallback will run.
@@ -419,21 +432,24 @@ fn run_pack_objects(
     pack_cwd: &Path,
     git_dir: &Path,
     rev_input: &str,
+    thin: bool,
 ) -> Result<std::process::Output> {
-    let pack_args = [
+    let mut pack_args = vec![
         "pack-objects",
         "--stdout",
         "--revs",
-        "--thin",
         "--delta-base-offset",
         "-q",
     ];
+    if thin {
+        pack_args.push("--thin");
+    }
     let mut cmd = match pack_bin {
         Some(bin) => {
             let mut c = Command::new(bin);
             c.current_dir(pack_cwd)
                 .env("GIT_DIR", git_dir)
-                .args(pack_args);
+                .args(&pack_args);
             // Tests prepend a `git` shim ahead of `/usr/bin`; helpers invoked by git must not recurse.
             c.env("PATH", "/usr/bin:/bin");
             c
@@ -443,7 +459,7 @@ fn run_pack_objects(
             let mut c = Command::new(exe);
             c.current_dir(pack_cwd)
                 .env("GIT_DIR", git_dir)
-                .args(pack_args);
+                .args(&pack_args);
             c
         }
     };

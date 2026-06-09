@@ -1083,6 +1083,21 @@ pub fn run(mut args: Args) -> Result<()> {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no base name"))?;
 
+        // When writing bitmaps, Git's bitmap writer reads `pack.preferbitmaptips` as a
+        // multi-valued string (`pack-bitmap.c:bitmap_preferred_tips`). A value-less key
+        // (`[pack]\n\tpreferBitmapTips`) makes `repo_config_get_string_multi` fail via
+        // `config_error_nonbool`, which prints `error: missing value for '<key>'` to stderr.
+        // Emit the same diagnostic once before writing the placeholder bitmap.
+        if !args.no_write_bitmap_index
+            && (args.write_bitmap_index || args.write_bitmap_index_quiet)
+            && config
+                .get_all_raw("pack.preferBitmapTips")
+                .iter()
+                .any(|v| v.is_none())
+        {
+            eprintln!("error: missing value for 'pack.preferbitmaptips'");
+        }
+
         let mut pack_hashes: Vec<String> = Vec::new();
         for chunk in &chunks {
             let pack_bytes = build_pack(chunk, use_ofs_delta, pack_hash_bytes, zlib_compression)?;
@@ -1118,7 +1133,18 @@ pub fn run(mut args: Args) -> Result<()> {
             }
 
             println!("{pack_hash}");
-            if !args.quiet {
+            // Git only prints the final "Total ..." summary when progress is enabled, which
+            // defaults to `isatty(2)` (`builtin/pack-objects.c`: `progress = isatty(2)` and the
+            // summary is guarded by `if (progress)`). For the file-output path (`repack`), honor
+            // that gating: tests that redirect stderr to a file (e.g. t5310 pack.preferBitmapTips)
+            // expect this progress line to be suppressed. `--progress`/`--all-progress-implied`
+            // and GIT_PROGRESS_DELAY still force it on.
+            let show_total = !args.quiet
+                && (io::stderr().is_terminal()
+                    || args.progress
+                    || args.all_progress_implied
+                    || progress_delay_env.is_some());
+            if show_total {
                 eprintln!(
                     "Total {} (delta {}), reused 0 (delta {})",
                     chunk.len(),
@@ -2000,6 +2026,85 @@ pub fn build_thin_push_pack(
     build_thin_push_pack_from_have_set(local_repo, push_tips, &have_roots)
 }
 
+/// Build a thin push pack whose negative (`--not`) boundary is restricted to the objects reachable
+/// from the receiver's *advertised* refs (i.e. excluding any ref hidden by
+/// `transfer.hideRefs` / `receive.hideRefs`).
+///
+/// Mirrors real Git's wire push: receive-pack advertises only non-hidden refs, so a non-negotiating
+/// pusher can only treat the advertised ref tips as "have". Objects that live in the receiver's
+/// object store but are reachable solely from a hidden ref are therefore *re-sent*. The
+/// direct-object-membership shortcut in [`build_thin_push_pack`] would wrongly exclude them
+/// (t5516 'push without negotiation').
+pub fn build_thin_push_pack_excluding_hidden(
+    local_repo: &Repository,
+    push_tips: &[ObjectId],
+    remote_git_dir: &Path,
+    hidden: &grit_lib::ref_exclusions::RefExclusions,
+) -> Result<Vec<u8>> {
+    if push_tips.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // The advertised ref tips define the negative boundary. Marking just these OIDs as `--not`
+    // roots makes pack-objects walk their reachable closure and exclude exactly those objects,
+    // which is what a real (non-negotiating) push computes from the advertisement.
+    let mut have_roots: BTreeSet<ObjectId> = BTreeSet::new();
+    if let Ok(empty_tree) = ObjectId::from_hex("4b825dc642cb6eb9a060e54bf8d69288fbee4904") {
+        have_roots.insert(empty_tree);
+    }
+    if let Ok(remote_refs) = refs::list_refs(remote_git_dir, "refs/") {
+        for (refname, oid) in remote_refs {
+            if hidden.ref_excluded(Some(&refname), &refname) {
+                continue;
+            }
+            // Only refs whose closure we actually have locally can serve as a thin-pack base.
+            if have_root_closure_is_local(local_repo, &oid) {
+                have_roots.insert(oid);
+            }
+        }
+    }
+    // receive-pack also advertises `.have` lines for the tips of the receiver's *alternate*
+    // object stores (`for_each_alternate_ref`): when the receiver shares an alternate with the
+    // pusher (e.g. `git clone --reference`), those commits are common and a non-negotiating push
+    // must exclude them. Without this boundary every object reachable from the shared history is
+    // re-sent (t5501 'pushing into a repository with the same alternate').
+    for oid in remote_alternate_have_roots(remote_git_dir) {
+        if have_root_closure_is_local(local_repo, &oid) {
+            have_roots.insert(oid);
+        }
+    }
+    build_thin_push_pack_from_have_set(local_repo, push_tips, &have_roots)
+}
+
+/// Collect the object IDs the receiver's `receive-pack` would advertise as `.have` lines for its
+/// *alternate* object stores: the ref tips of each alternate repository whose `.git` directory has a
+/// `refs/` tree (mirrors `collect_alternate_have_oids` in the receive-pack advertisement, and Git's
+/// `for_each_alternate_ref`).
+///
+/// `remote_git_dir` is the receiver's git directory. Failures (unreadable alternates, malformed
+/// `info/alternates`) yield an empty set so a push never aborts on alternate discovery.
+fn remote_alternate_have_roots(remote_git_dir: &Path) -> BTreeSet<ObjectId> {
+    let mut out: BTreeSet<ObjectId> = BTreeSet::new();
+    let remote_objects = remote_git_dir.join("objects");
+    let Ok(alternates) = grit_lib::pack::read_alternates_recursive(&remote_objects) else {
+        return out;
+    };
+    for alt_objects in alternates {
+        let Some(alt_git_dir) = alt_objects.parent() else {
+            continue;
+        };
+        if !alt_git_dir.join("refs").is_dir() {
+            continue;
+        }
+        if let Ok(alt_refs) = refs::list_refs(alt_git_dir, "refs/") {
+            for (_, oid) in alt_refs {
+                out.insert(oid);
+            }
+        }
+    }
+    out
+}
+
 /// Compute the set of object IDs the local-push receiver already has (the `--not`/negative side of
 /// a thin push pack), restricted to those whose closure is also present locally.
 ///
@@ -2101,18 +2206,41 @@ pub fn build_thin_push_pack_from_remote_oids(
     push_tips: &[ObjectId],
     remote_have_oids: &[ObjectId],
 ) -> Result<Vec<u8>> {
+    build_push_pack_from_remote_oids(local_repo, push_tips, remote_have_oids, true)
+}
+
+/// Like [`build_thin_push_pack_from_remote_oids`] but lets the caller request a self-contained
+/// (non-thin) pack for `git push --no-thin` (t5516 'push --no-thin must produce non-thin pack').
+pub fn build_push_pack_from_remote_oids(
+    local_repo: &Repository,
+    push_tips: &[ObjectId],
+    remote_have_oids: &[ObjectId],
+    thin: bool,
+) -> Result<Vec<u8>> {
     let have_roots: BTreeSet<ObjectId> = remote_have_oids
         .iter()
         .copied()
         .filter(|oid| local_repo.odb.read(oid).is_ok())
         .collect();
-    build_thin_push_pack_from_have_set(local_repo, push_tips, &have_roots)
+    build_push_pack_from_have_set(local_repo, push_tips, &have_roots, thin)
 }
 
 fn build_thin_push_pack_from_have_set(
     local_repo: &Repository,
     push_tips: &[ObjectId],
     have_roots: &BTreeSet<ObjectId>,
+) -> Result<Vec<u8>> {
+    build_push_pack_from_have_set(local_repo, push_tips, have_roots, true)
+}
+
+/// Like [`build_thin_push_pack_from_have_set`] but lets the caller choose a thin or self-contained
+/// pack. `git push --no-thin` (and a receiver that rejects thin packs) requires `thin = false`,
+/// which omits `--thin` so every delta base is included in the pack (t5516 'push --no-thin').
+fn build_push_pack_from_have_set(
+    local_repo: &Repository,
+    push_tips: &[ObjectId],
+    have_roots: &BTreeSet<ObjectId>,
+    thin: bool,
 ) -> Result<Vec<u8>> {
     if push_tips.is_empty() {
         return Ok(Vec::new());
@@ -2139,9 +2267,11 @@ fn build_thin_push_pack_from_have_set(
         .stderr(Stdio::inherit())
         .arg("pack-objects")
         .arg("--revs")
-        .arg("--thin")
         .arg("--stdout")
         .arg("-q");
+    if thin {
+        cmd.arg("--thin");
+    }
     let mut child = cmd.spawn().context("spawn pack-objects for local push")?;
     {
         let mut stdin = child.stdin.take().context("pack-objects stdin")?;
@@ -4741,6 +4871,15 @@ fn optimize_blob_deltas(
         if !window_reuse_only {
             for t in &blobs {
                 if delta_target_to_base.contains_key(&t.oid) {
+                    continue;
+                }
+                // The empty blob has no content to delta. Any non-empty base trivially has it as a
+                // prefix, so the size-prefix heuristic below would pick a base and emit a degenerate
+                // delta (`src_size N`, `dst_size 0`, no ops). Git never deltifies a zero-length
+                // object, and such a delta is rejected by `git unpack-objects` ("failed to apply
+                // delta"), breaking thin pushes (t5541 push --all/--mirror/--atomic). Keep the empty
+                // blob a full object.
+                if t.data.is_empty() {
                     continue;
                 }
                 let mut best_base: Option<&PackEntry> = None;

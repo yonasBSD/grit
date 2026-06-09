@@ -75,10 +75,7 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
     for m in &selected {
         if !grit_lib::gitmodules::check_submodule_name(&m.name) {
             if !args.quiet {
-                eprintln!(
-                    "warning: ignoring suspicious submodule name: {}",
-                    m.name
-                );
+                eprintln!("warning: ignoring suspicious submodule name: {}", m.name);
             }
             continue;
         }
@@ -121,8 +118,8 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
         // Git operates on a submodule when it is "active": `submodule.<name>.active`,
         // `submodule.active` pathspec, or a `submodule.<name>.url` in config. An inactive
         // submodule is reported as not initialized and skipped (warn only with explicit paths).
-        let active = grit_lib::submodule_active::is_submodule_active(&repo, &m.path)
-            .unwrap_or(has_url);
+        let active =
+            grit_lib::submodule_active::is_submodule_active(&repo, &m.path).unwrap_or(has_url);
         if !active {
             if !args.paths.is_empty() {
                 eprintln!("Submodule path '{msg_path}' not initialized");
@@ -158,8 +155,7 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
             continue;
         };
 
-        validate_submodule_path(work_tree, &m.path)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        validate_submodule_path(work_tree, &m.path).map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let modules_dir = submodule_separate_git_dir(&repo, work_tree, &m.name, &m.path)?;
         if let Some(outer) = submodule_gitdir_outer_conflict(&modules_dir, &m.name) {
@@ -195,7 +191,14 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
             if let Ok(nested_repo) = Repository::open(&modules_dir, Some(&sub_path))
                 .or_else(|_| Repository::discover(Some(&sub_path)))
             {
-                let _ = init_in_repo(&nested_repo, &InitArgs { quiet: false, paths: vec![] }, false);
+                let _ = init_in_repo(
+                    &nested_repo,
+                    &InitArgs {
+                        quiet: false,
+                        paths: vec![],
+                    },
+                    false,
+                );
             }
         }
 
@@ -235,23 +238,21 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                         Err(e) => return Err(e),
                     }
                 }
-                let clone_alternate_strategy = if !args.dissociate && !clone_reference_roots.is_empty() {
-                    Some(
-                        superproject_submodule_alternate_error_strategy(&repo.git_dir)?
-                            .unwrap_or_else(|| "die".to_string()),
-                    )
-                } else {
-                    None
-                };
+                let clone_alternate_strategy =
+                    if !args.dissociate && !clone_reference_roots.is_empty() {
+                        Some(
+                            superproject_submodule_alternate_error_strategy(&repo.git_dir)?
+                                .unwrap_or_else(|| "die".to_string()),
+                        )
+                    } else {
+                        None
+                    };
 
                 // git refuses to clone over an occupied path: a regular file, or a non-empty
                 // directory that is not itself the submodule checkout (t7400.52/53).
                 if let Ok(meta) = fs::symlink_metadata(&sub_path) {
                     if !meta.is_dir() {
-                        eprintln!(
-                            "fatal: could not create directory '{}'",
-                            sub_path.display()
-                        );
+                        eprintln!("fatal: could not create directory '{}'", sub_path.display());
                         any_failure = true;
                         continue;
                     }
@@ -280,16 +281,16 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                 // test harness (`lib-httpd.sh` hybrid wrapper). Native grit smart HTTP v2 cannot
                 // clone those servers yet (`t5619-clone-local-ambiguous-transport`).
                 let src_trim = clone_src_str.trim_start();
-                let mut clone_cmd = if src_trim.starts_with("http://") || src_trim.starts_with("https://")
-                {
-                    let mut c = std::process::Command::new(system_git_binary());
-                    c.env_remove("GIT_DIR");
-                    c.env_remove("GIT_WORK_TREE");
-                    crate::grit_exe::strip_trace2_env(&mut c);
-                    c
-                } else {
-                    grit_subprocess(&grit_bin)
-                };
+                let mut clone_cmd =
+                    if src_trim.starts_with("http://") || src_trim.starts_with("https://") {
+                        let mut c = std::process::Command::new(system_git_binary());
+                        c.env_remove("GIT_DIR");
+                        c.env_remove("GIT_WORK_TREE");
+                        crate::grit_exe::strip_trace2_env(&mut c);
+                        c
+                    } else {
+                        grit_subprocess(&grit_bin)
+                    };
                 clone_cmd
                     .arg("clone")
                     .arg("--no-checkout")
@@ -354,6 +355,16 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                 }
                 set_submodule_core_worktree(&grit_bin, &modules_dir, &sub_path);
 
+                // `grit clone --separate-git-dir` writes an *absolute* `gitdir:` path (matching
+                // top-level `clone --separate-git-dir`, t5601). Submodules must use a *relative*
+                // gitlink so the worktree survives being copied/moved with its superproject — this
+                // mirrors C Git's `connect_work_tree_and_git_dir` (dir.c), which writes
+                // `relative_path(git_dir, work_tree)`. Without this, `cp -r super super2` leaves the
+                // copied submodule's `.git` pointing back into the original superproject (t7406
+                // "submodule update with renamed remote" et al.).
+                write_submodule_gitfile(&sub_path, &modules_dir)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
                 if !args.dissociate && !clone_reference_roots.is_empty() {
                     write_submodule_object_alternates(
                         &modules_dir,
@@ -368,22 +379,36 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                 if args.init {
                     let nested_repo = Repository::open(&modules_dir, Some(&sub_path))
                         .or_else(|_| Repository::discover(Some(&sub_path)))?;
-                    init_in_repo(&nested_repo, &InitArgs { quiet: false, paths: vec![] }, false)?;
+                    init_in_repo(
+                        &nested_repo,
+                        &InitArgs {
+                            quiet: false,
+                            paths: vec![],
+                        },
+                        false,
+                    )?;
                 }
 
-                let abs_origin = if Path::new(&clone_src_str).is_absolute() {
-                    Path::new(&clone_src_str).canonicalize()
-                } else {
-                    work_tree.join(&clone_src_str).canonicalize()
-                };
-                if let Ok(p) = abs_origin {
-                    let sub_cfg_path = modules_dir.join("config");
-                    if sub_cfg_path.exists() {
-                        let sub_content = fs::read_to_string(&sub_cfg_path)?;
-                        let mut sub_cfg =
-                            ConfigFile::parse(&sub_cfg_path, &sub_content, ConfigScope::Local)?;
-                        sub_cfg.set("remote.origin.url", &p.to_string_lossy())?;
-                        sub_cfg.write()?;
+                // C Git's `git clone` records `remote.origin.url` *verbatim* as the clone
+                // argument for local paths — it does not canonicalize (so `<super>/.` stays
+                // `<super>/.`). Preserving this is load-bearing for *nested* submodules whose
+                // `.gitmodules` url is relative (`../.`): the nested url is resolved against the
+                // parent submodule's recorded origin (`relative_url`), and chopping a trailing
+                // `/.` off the parent origin would land one directory too high (t3600 nested
+                // subsubmodule). grit's own `clone` already records `clone_src_str` verbatim, so
+                // for an *absolute* source we leave that untouched. Only when the clone source is
+                // relative do we rewrite it to an absolute path so recursive fetches from the
+                // submodule's own object store resolve correctly (t7406).
+                if !Path::new(&clone_src_str).is_absolute() {
+                    if let Ok(p) = work_tree.join(&clone_src_str).canonicalize() {
+                        let sub_cfg_path = modules_dir.join("config");
+                        if sub_cfg_path.exists() {
+                            let sub_content = fs::read_to_string(&sub_cfg_path)?;
+                            let mut sub_cfg =
+                                ConfigFile::parse(&sub_cfg_path, &sub_content, ConfigScope::Local)?;
+                            sub_cfg.set("remote.origin.url", &p.to_string_lossy())?;
+                            sub_cfg.write()?;
+                        }
                     }
                 }
             }
@@ -439,7 +464,8 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                     sub_path.join(".git").join("config")
                 };
                 let nested_content = fs::read_to_string(&nested_cfg_path)?;
-                let nested_cfg = ConfigFile::parse(&nested_cfg_path, &nested_content, ConfigScope::Local)?;
+                let nested_cfg =
+                    ConfigFile::parse(&nested_cfg_path, &nested_content, ConfigScope::Local)?;
                 remote_nested_cfg = Some(nested_cfg.clone());
                 let used_local_fetch =
                     submodule_fetch_origin_local_path(&sub_path, &nested_cfg, args.quiet)?;
@@ -453,7 +479,8 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                     if args.quiet {
                         fetch_cmd.arg("--quiet");
                     }
-                    let fetch_status = fetch_cmd.status().context("failed to fetch in submodule")?;
+                    let fetch_status =
+                        fetch_cmd.status().context("failed to fetch in submodule")?;
                     if !fetch_status.success() {
                         bail!("failed to fetch in submodule '{}'", m.name);
                     }
@@ -478,7 +505,8 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                         .output()
                         .context("failed to resolve remote tracking branch")?
                 } else {
-                    remote_update_branch = Some(resolve_submodule_remote_branch_name(&repo, m, &local_cfg));
+                    remote_update_branch =
+                        Some(resolve_submodule_remote_branch_name(&repo, m, &local_cfg));
                     grit_subprocess(&grit_bin)
                         .args(["rev-parse", "origin/HEAD"])
                         .current_dir(&sub_path)
@@ -519,20 +547,25 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
             }
 
             if !sub_path.exists() {
-                bail!("failed to checkout submodule commit: No such file or directory (os error 2)");
+                bail!(
+                    "failed to checkout submodule commit: No such file or directory (os error 2)"
+                );
             }
 
             let checkout_force = args.force || needs_clone;
 
-            // When the submodule worktree is already at the recorded commit there is normally
-            // nothing to do. But `--force` must still re-check out the worktree to discard local
-            // changes / restore removed files (t7406 "update --force forcibly checks out
-            // submodules"), so do not take this fast path under `--force`.
+            // When the submodule worktree is already at the recorded commit there is nothing to do,
+            // even if its worktree is dirty: C Git's `update_submodule` only runs the checkout /
+            // rebase / merge procedure when `!oideq(oid, suboid) || force` (builtin/submodule--
+            // helper.c), so a dirty submodule already at the recorded commit is a no-op rather than
+            // an error. Taking the rebase/merge path here would `pull --rebase` into a dirty tree and
+            // die with "cannot pull with rebase: You have unstaged changes" (t7406 "revives a moved
+            // submodule"). `--force` must still re-check out the worktree to discard local changes /
+            // restore removed files (t7406 "update --force forcibly checks out submodules").
             if !args.remote
                 && !needs_clone
                 && !args.force
                 && read_submodule_head(&sub_path).as_deref() == Some(recorded_oid)
-                && submodule_worktree_clean_for_update(&modules_dir, &sub_path)
             {
                 refresh_gitlink_index_stat(&repo, &m.path)?;
                 if let Ok(sub_repo) = Repository::open(&modules_dir, Some(&sub_path)) {
@@ -644,7 +677,9 @@ fn run_update_inner(args: &UpdateArgs, discover_base: Option<PathBuf>) -> Result
                     reset_cmd
                         .args(["reset", "--hard", "--quiet"])
                         .current_dir(&sub_path);
-                    let reset_status = reset_cmd.status().context("reset submodule after checkout")?;
+                    let reset_status = reset_cmd
+                        .status()
+                        .context("reset submodule after checkout")?;
                     if !reset_status.success() {
                         bail!("failed to reset submodule '{}' after checkout", m.name);
                     }

@@ -103,8 +103,8 @@ test_expect_success 'simple writes' '
 
 		git reflog write refs/heads/something $COMMIT_OID $COMMIT_OID second &&
 		test_reflog_matches . refs/heads/something <<-EOF
-		$COMMIT_OID $COMMIT_OID $SIGNATURE	second
 		$ZERO_OID $COMMIT_OID $SIGNATURE	first
+		$COMMIT_OID $COMMIT_OID $SIGNATURE	second
 		EOF
 	)
 '

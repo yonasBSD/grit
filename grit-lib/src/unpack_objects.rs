@@ -236,18 +236,13 @@ pub fn unpack_objects(reader: &mut dyn Read, odb: &Odb, opts: &UnpackOptions) ->
             dot_fsck_map.insert(*oid, (kind, data));
         }
         gitmodules::verify_packed_dot_special(&dot_fsck_map)?;
-<<<<<<< ours
         strict_verify_packed_references_map(
             Some(odb),
             &by_oid,
             &opts.allowed_missing,
             opts.allow_promisor_missing_references,
+            &opts.shallow_boundaries,
         )?;
-||||||| ancestor
-        strict_verify_packed_references_map(Some(odb), &by_oid)?;
-=======
-        strict_verify_packed_references_map(Some(odb), &by_oid, &opts.shallow_boundaries)?;
->>>>>>> theirs
     }
 
     Ok(count)
@@ -294,13 +289,9 @@ fn entry_object_bytes<'a>(entry: &'a PackedObjectEntry, odb: &Odb) -> Result<Cow
 fn strict_verify_packed_references_map(
     odb: Option<&Odb>,
     pack: &HashMap<ObjectId, PackedObjectEntry>,
-<<<<<<< ours
     allowed_missing: &HashSet<ObjectId>,
     allow_promisor_missing_references: bool,
-||||||| ancestor
-=======
     shallow_boundaries: &HashSet<ObjectId>,
->>>>>>> theirs
 ) -> Result<()> {
     for (oid, entry) in pack {
         match entry {
@@ -465,6 +456,53 @@ pub fn strict_verify_packed_references(
         }
     }
     Ok(())
+}
+
+/// Whether `data` is a *thin* pack — i.e. it contains a `ref-delta` (type 7) whose base object is
+/// not itself present in the pack. `git pack-objects --thin` produces such packs; a receiver that
+/// rejects thin packs (`receive-pack --reject-thin-pack-for-testing`) uses this to refuse them.
+///
+/// Conservative: any parse error makes this return `false` (treat as non-thin) so a malformed pack
+/// is handled by the normal ingestion path rather than mislabeled.
+pub fn pack_is_thin(data: &[u8]) -> bool {
+    pack_is_thin_inner(data).unwrap_or(false)
+}
+
+fn pack_is_thin_inner(data: &[u8]) -> Result<bool> {
+    let mut rd = PackReader::new(data.to_vec());
+    if rd.read_exact(4)? != b"PACK" {
+        return Ok(false);
+    }
+    let _version = rd.read_u32_be()?;
+    let nr_objects = rd.read_u32_be()? as usize;
+
+    let mut in_pack: HashSet<ObjectId> = HashSet::new();
+    let mut ref_delta_bases: Vec<ObjectId> = Vec::new();
+    for _ in 0..nr_objects {
+        let obj_offset = rd.pos;
+        let (type_code, size) = rd.read_type_size()?;
+        match type_code {
+            1..=4 => {
+                let kind = type_code_to_kind(type_code)?;
+                let obj_data = rd.decompress(size)?;
+                in_pack.insert(Odb::hash_object_data(kind, &obj_data));
+            }
+            6 => {
+                // ofs-delta: base is always in-pack (referenced by relative offset).
+                let _neg = rd.read_ofs_neg_offset()?;
+                let _ = obj_offset;
+                let _ = rd.decompress(size)?;
+            }
+            7 => {
+                let base_bytes = rd.read_exact(20)?;
+                ref_delta_bases.push(ObjectId::from_bytes(base_bytes)?);
+                let _ = rd.decompress(size)?;
+            }
+            _ => return Ok(false),
+        }
+    }
+    // Thin iff any ref-delta points at a base that is not packed alongside it.
+    Ok(ref_delta_bases.iter().any(|b| !in_pack.contains(b)))
 }
 
 /// Parse a pack byte stream and return every resolved object (after delta resolution) keyed by OID.

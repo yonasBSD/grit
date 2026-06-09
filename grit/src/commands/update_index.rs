@@ -1117,7 +1117,7 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
             args.ignore_missing,
             args.ignore_submodules,
             fsmonitor_reported.as_ref(),
-            false,
+            args.quiet,
         )?;
         // Match Git: skip rewriting the index when nothing changed and no entry is racy
         // relative to the index file's mtime at read time (see `has_racy_timestamp` in
@@ -1131,9 +1131,13 @@ pub fn run(args: Args, raw_rest: &[String]) -> Result<()> {
             write_update_index(&repo, &index_path, &mut index, split_write)
                 .context("writing index")?;
         }
-        // Git `builtin/update-index.c`: the command always `return has_errors ? 1 : 0`
-        // regardless of `-q`. `-q`/quiet only suppresses the per-file diagnostic output
-        // inside refresh_index, NOT the exit status (t4002 diff-files preconditions).
+        // Git `builtin/update-index.c` `return has_errors ? 1 : 0`. `-q` (REFRESH_QUIET)
+        // suppresses both the per-file `needs update` diagnostic AND the `has_errors` flag for an
+        // entry that merely needs a content refresh but has valid stat data (read-cache.c
+        // `refresh_index`: `if (quiet) continue;`). It does NOT suppress entries left without real
+        // stat by `read-tree --reset` / `--cacheinfo` (t4002 `update-index --refresh -q` is
+        // `test_must_fail`); `refresh_index` already keeps `all_uptodate=false` for those. So this
+        // exit-1 now only fires for genuine hard errors even under `-q` (t5516 push-to-checkout).
         if !uptodate {
             std::process::exit(1);
         }
@@ -1359,7 +1363,9 @@ fn refresh_index(
                 if !quiet {
                     println!("{path_str2}: needs update");
                 }
-                all_uptodate = false;
+                if !quiet || entry_stat_is_zeroed(entry) {
+                    all_uptodate = false;
+                }
                 set_refresh_fsmonitor_valid(entry, fsmonitor_enabled, false, &mut index_modified);
             } else {
                 set_refresh_fsmonitor_valid(entry, fsmonitor_enabled, true, &mut index_modified);
@@ -1394,7 +1400,9 @@ fn refresh_index(
                         if !quiet {
                             println!("{path_str}: needs update");
                         }
-                        all_uptodate = false;
+                        if !quiet || entry_stat_is_zeroed(entry) {
+                            all_uptodate = false;
+                        }
                         set_refresh_fsmonitor_valid(
                             entry,
                             fsmonitor_enabled,
@@ -1434,7 +1442,9 @@ fn refresh_index(
                         if !quiet {
                             println!("{path_str}: needs update");
                         }
-                        all_uptodate = false;
+                        if !quiet || entry_stat_is_zeroed(entry) {
+                            all_uptodate = false;
+                        }
                         set_refresh_fsmonitor_valid(
                             entry,
                             fsmonitor_enabled,
@@ -1461,7 +1471,9 @@ fn refresh_index(
                         if !quiet {
                             println!("{path_str}: needs update");
                         }
-                        all_uptodate = false;
+                        if !quiet || entry_stat_is_zeroed(entry) {
+                            all_uptodate = false;
+                        }
                         set_refresh_fsmonitor_valid(
                             entry,
                             fsmonitor_enabled,
@@ -1484,7 +1496,9 @@ fn refresh_index(
                     if !quiet {
                         println!("{path_str}: does not exist and --remove not set");
                     }
-                    all_uptodate = false;
+                    if !quiet || entry_stat_is_zeroed(entry) {
+                        all_uptodate = false;
+                    }
                     set_refresh_fsmonitor_valid(
                         entry,
                         fsmonitor_enabled,
@@ -1496,6 +1510,23 @@ fn refresh_index(
         }
     }
     Ok((all_uptodate, index_modified))
+}
+
+/// Whether an index entry has never had real `lstat(2)` stat data populated — the state left by
+/// `read-tree --reset` / `update-index --cacheinfo`, where ctime/mtime/dev/ino are all zero.
+///
+/// Git's `ie_modified()` (read-cache.c) treats a content-mismatched entry as a hard "needs update"
+/// error that `update-index -q --refresh` does NOT suppress only for such never-stat'd entries
+/// (t4002 `update-index --refresh -q` after `read-tree --reset` is `test_must_fail`). For an entry
+/// with valid stat data, `-q` suppresses both the message and the non-zero exit (t5516
+/// `updateInstead with push-to-checkout hook`, whose hook relies on `update-index -q --refresh &&`).
+fn entry_stat_is_zeroed(entry: &IndexEntry) -> bool {
+    entry.ctime_sec == 0
+        && entry.ctime_nsec == 0
+        && entry.mtime_sec == 0
+        && entry.mtime_nsec == 0
+        && entry.dev == 0
+        && entry.ino == 0
 }
 
 fn refresh_entry_stat(entry: &mut IndexEntry, meta: &std::fs::Metadata) {

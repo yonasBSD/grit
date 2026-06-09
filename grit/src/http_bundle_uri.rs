@@ -57,17 +57,7 @@ fn read_v2_caps(body: &[u8]) -> Result<Vec<String>> {
     Ok(caps)
 }
 
-fn cap_lines_for_bundle_request(caps: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in caps {
-        if line.starts_with("agent=") {
-            out.push(line.clone());
-        } else if let Some(fmt) = line.strip_prefix("object-format=") {
-            out.push(format!("object-format={fmt}"));
-        }
-    }
-    out
-}
+use grit_lib::protocol_v2::cap_lines_for_command_request as cap_lines_for_bundle_request;
 
 /// Fetch `bundle.*` key/value lines from a smart HTTP remote (protocol v2).
 ///
