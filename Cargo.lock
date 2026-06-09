@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "grit-cli"
-version = "0.3.94"
+version = "0.3.99"
 dependencies = [
  "anyhow",
  "atty",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "grit-examples"
-version = "0.3.94"
+version = "0.3.99"
 dependencies = [
  "anyhow",
  "clap",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "grit-http-server"
-version = "0.3.94"
+version = "0.3.99"
 dependencies = [
  "anyhow",
  "axum",
@@ -507,7 +507,7 @@ dependencies = [
 
 [[package]]
 name = "grit-lib"
-version = "0.3.94"
+version = "0.3.99"
 dependencies = [
  "encoding_rs",
  "filetime",
@@ -530,7 +530,7 @@ dependencies = [
 
 [[package]]
 name = "grit-protocol"
-version = "0.3.94"
+version = "0.3.99"
 dependencies = [
  "anyhow",
  "grit-lib",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "grit-simple"
-version = "0.3.94-1"
+version = "0.3.99"
 dependencies = [
  "anyhow",
  "clap",

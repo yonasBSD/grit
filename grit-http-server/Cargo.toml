@@ -5,6 +5,7 @@ edition.workspace = true
 license = "MIT"
 description = "Git smart HTTP server powered by grit"
 repository = "https://github.com/schacon/grit"
+publish = false
 
 [lints]
 workspace = true
