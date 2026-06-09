@@ -5,7 +5,7 @@ edition.workspace = true
 license = "MIT"
 description = "Core library for the grit Git implementation"
 readme = "README.md"
-repository = "https://github.com/schacon/grit"
+repository = "https://github.com/gitbutlerapp/grit"
 
 # Inherit workspace deny rules but allow `unsafe` for `git_date` (`libc` FFI like Git `date.c`).
 [lints.rust]

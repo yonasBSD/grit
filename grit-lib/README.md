@@ -1,6 +1,6 @@
 # grit-lib
 
-Core library for [Grit](https://github.com/schacon/grit), a from-scratch
+Core library for [Grit](https://github.com/gitbutlerapp/grit), a from-scratch
 reimplementation of Git in Rust.
 
 `grit-lib` provides the low-level building blocks for working with Git

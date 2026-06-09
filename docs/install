@@ -5,7 +5,7 @@
 main() {
   set -eu
 
-  REPO="schacon/grit"
+  REPO="gitbutlerapp/grit"
   INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
   for cmd in command uname tr curl tar mkdir; do

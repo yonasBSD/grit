@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "grit-utils"
-version = "0.3.94"
+version = "0.3.99"
 dependencies = [
  "anyhow",
  "clap",

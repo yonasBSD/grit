@@ -5,7 +5,7 @@ on top of [`grit-lib`](https://crates.io/crates/grit-lib).
 
 Grit aims to match Git's behavior closely enough that the upstream Git test
 suite can be run against it. See the
-[progress dashboard](https://schacon.github.io/grit) for current test pass
+[progress dashboard](https://gitbutlerapp.github.io/grit) for current test pass
 rates.
 
 ## Design philosophy

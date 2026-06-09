@@ -6,7 +6,7 @@ resolver = "2"
 [workspace.package]
 version = "0.3.99"
 edition = "2021"
-repository = "https://github.com/schacon/grit"
+repository = "https://github.com/gitbutlerapp/grit"
 
 [workspace.dependencies]
 anyhow = "1"

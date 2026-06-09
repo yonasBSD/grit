@@ -22,7 +22,7 @@ OUT_HOME = REPO / "docs" / "index.html"
 DOC_EXAMPLES = REPO / "docs" / "examples"
 
 # Published site root (GitHub Pages) for absolute og/twitter image URLs on index.html.
-GITHUB_PAGES_SITE = "https://schacon.github.io/grit"
+GITHUB_PAGES_SITE = "https://gitbutlerapp.github.io/grit"
 
 # Labels from git/t/README "Naming Tests" (first digit = family).
 GROUP_DESC: dict[str, str] = {
