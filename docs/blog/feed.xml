@@ -4,22 +4,7 @@
   <title>project notes from Grit</title>
   <link>https://grit-scm.com/blog/</link>
   <description>Short deep dives into building a Git-compatible, library-oriented Rust implementation.</description>
-  <lastBuildDate>Fri, 05 Jun 2026 00:00:00 +0000</lastBuildDate>
-  <item>
-    <title>Introducing Grit</title>
-    <link>https://grit-scm.com/blog/introducing-grit/</link>
-    <guid isPermaLink="true">https://grit-scm.com/blog/introducing-grit/</guid>
-    <pubDate>Fri, 05 Jun 2026 00:00:00 +0000</pubDate>
-    <description>A short note on rebuilding Git in Rust, as a library, with compatibility as the benchmark.</description>
-    <content:encoded><![CDATA[<p>Grit is a from-scratch reimplementation of Git in Rust. The goal is not to make a Git-like tool with a nicer surface area, but to build a compatible Git engine that can eventually pass the upstream Git test suite.</p>
-<h2 id="why-rebuild-git">Why rebuild Git?</h2>
-<p>Git is everywhere, but much of its behavior is encoded in a large C codebase that grew around a command-line program. That history is part of what makes Git powerful, but it also makes Git hard to embed, hard to experiment with, and hard to reason about as a set of reusable library components.</p>
-<p>Grit started from a simple question: what would Git look like if it were designed today as an idiomatic Rust library first, with the CLI as a thin wrapper around that library?</p>
-<h2 id="what-we-want-from-it">What we want from it</h2>
-<p>The project is focused on compatibility before novelty. Passing Git&#x27;s own tests gives us a concrete target and keeps the work honest. If Grit behaves differently, that difference should be intentional and understood.</p>
-<p>At the same time, Rust gives us a chance to expose Git internals through typed APIs: objects, refs, the index, trees, revisions, diffs, merges, and transport protocols as library surfaces instead of command output that callers have to parse.</p>
-<h2 id="why-now">Why now?</h2>
-<p>A library-oriented Git implementation opens the door to better developer tools, servers, agents, and experiments that need Git semantics without shelling out to <code>git</code>. Grit is an attempt to make that foundation small, explicit, testable, and embeddable.</p>]]></content:encoded>
-  </item>
+  <lastBuildDate>Tue, 09 Jun 2026 13:40:27 +0000</lastBuildDate>
+
 </channel>
 </rss>
