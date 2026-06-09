@@ -40,7 +40,7 @@ To update your version of Grit CLI, you can run `grit update` and it will re-run
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | [`grit-cli`](https://crates.io/crates/grit-cli) | The `grit` binary — a drop-in CLI reimplementation of `git` with 140+ commands                  |
 | [`grit-lib`](https://crates.io/crates/grit-lib) | Core library: object model, diff engine, index, refs, revision walking, merge, config, and more |
-| grit-examples                                   | Runnable examples of simple lib usage (add, cat-file, write-tree, hash-object, etc              |
+| `grit-examples`                                   | Runnable examples of simple lib usage (add, cat-file, write-tree, hash-object, etc              |
 
 ## License
 
