@@ -398,7 +398,8 @@ fn verify_loose_ref(
     while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
         i += 1;
     }
-    if i != 40 {
+    // A valid ref points at a full hex OID (40 chars for SHA-1, 64 for SHA-256).
+    if !ObjectId::is_hex_len(i) {
         push_issue(
             issues,
             config,
@@ -410,7 +411,7 @@ fn verify_loose_ref(
         );
         return Ok(());
     }
-    let oid: ObjectId = match buf[..40].parse() {
+    let oid: ObjectId = match buf[..i].parse() {
         Ok(o) => o,
         Err(_) => {
             push_issue(
@@ -425,7 +426,7 @@ fn verify_loose_ref(
             return Ok(());
         }
     };
-    let trailing = &buf[40..];
+    let trailing = &buf[i..];
     if !trailing.is_empty()
         && !trailing
             .as_bytes()
@@ -733,7 +734,7 @@ fn fsck_packed_refs(
             while j < inner.len() && inner.as_bytes()[j].is_ascii_hexdigit() {
                 j += 1;
             }
-            if j != 40 {
+            if !ObjectId::is_hex_len(j) {
                 push_issue(
                     issues,
                     config,
@@ -751,7 +752,7 @@ fn fsck_packed_refs(
                     "badPackedRefEntry",
                     false,
                     format!("packed-refs line {line_no}"),
-                    format!("has trailing garbage after peeled oid '{}'", &inner[40..]),
+                    format!("has trailing garbage after peeled oid '{}'", &inner[j..]),
                 );
             }
             continue;
@@ -764,7 +765,7 @@ fn fsck_packed_refs(
         let oid_hex = &line[..j];
         let rest = &line[j..];
 
-        if oid_hex.len() != 40 {
+        if !ObjectId::is_hex_len(oid_hex.len()) {
             let display_line = format!("{oid_hex}{rest}");
             push_issue(
                 issues,

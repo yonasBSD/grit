@@ -385,7 +385,7 @@ fn dwim_detach_label(git_dir: &Path, target: &str, noid: ObjectId) -> String {
             }
         }
     }
-    if target.len() == 40 {
+    if ObjectId::is_hex_len(target.len()) {
         if let Ok(oid) = ObjectId::from_hex(target) {
             if oid == noid {
                 return abbrev_oid(&noid);
@@ -396,7 +396,7 @@ fn dwim_detach_label(git_dir: &Path, target: &str, noid: ObjectId) -> String {
     // abbreviation (Git does not substitute a tag name here — see t3203 detached HEAD).
     if !target.is_empty()
         && target.chars().all(|c| c.is_ascii_hexdigit())
-        && target.len() <= 40
+        && target.len() <= noid.algo().hex_len()
         && noid.to_hex().starts_with(target)
     {
         return target.to_owned();

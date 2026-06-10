@@ -661,15 +661,15 @@ fn walk_reachable(
 
     // Seed commit OIDs mentioned in reflogs so we walk trees/blobs reachable only via history
     // (matches `git fsck`: missing blobs in reflog-only commits are reported as `missing blob`).
-    let z = zero_oid();
     if let Ok(refnames) = list_reflog_refs(&repo.git_dir) {
         for refname in refnames {
             if let Ok(entries) = read_reflog(&repo.git_dir, &refname) {
                 for e in entries {
-                    if e.old_oid != z {
+                    // Skip the null OID at either hash width (ref creation/deletion).
+                    if !e.old_oid.is_zero() {
                         queue.push_back((e.old_oid, None));
                     }
-                    if e.new_oid != z {
+                    if !e.new_oid.is_zero() {
                         queue.push_back((e.new_oid, None));
                     }
                 }

@@ -618,6 +618,11 @@ impl Repository {
         updated_workdir: bool,
         updated_skipworktree: bool,
     ) -> Result<()> {
+        // The on-disk index format (entry OID width and trailing checksum) is
+        // fixed by the repository's hash algorithm. Stamp it here so every
+        // index written through the repository is consistent, regardless of how
+        // the in-memory `Index` was constructed (e.g. a fresh `Index::new`).
+        index.hash_algo = self.odb.hash_algo();
         self.finalize_sparse_index_if_needed(index)?;
         let cfg = ConfigSet::load(Some(&self.git_dir), true).unwrap_or_default();
         let skip_hash = crate::index::index_skip_hash_for_write(Some(&cfg));

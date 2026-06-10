@@ -39,8 +39,6 @@ fn warn_once_for_base_chunk_too_small(id: &str) -> bool {
 
 const SIGNATURE: &[u8; 4] = b"CGPH";
 const GRAPH_VERSION: u8 = 1;
-const HASH_VERSION_SHA1: u8 = 1;
-const HASH_LEN: usize = 20;
 
 const CHUNK_OID_FANOUT: u32 = 0x4f49_4446; // OIDF
 const CHUNK_OID_LOOKUP: u32 = 0x4f49_444c; // OIDL
@@ -86,6 +84,17 @@ pub struct CommitGraphLayer {
     /// Size in bytes of the BASE chunk (0 if absent). Used to bounds-check the
     /// base-graph list against `base_layers_declared` (Git `add_graph_to_chain`).
     base_chunk_size: usize,
+    /// OID width in bytes implied by the header hash version (20 for SHA-1, 32 for SHA-256).
+    hash_len: usize,
+}
+
+/// OID width for a commit-graph header hash-version byte (`body[5]`).
+const fn commit_graph_hash_len(hash_version: u8) -> Option<usize> {
+    match hash_version {
+        1 => Some(20),
+        2 => Some(32),
+        _ => None,
+    }
 }
 
 impl CommitGraphLayer {
@@ -96,13 +105,24 @@ impl CommitGraphLayer {
                 "commit-graph file too small".to_owned(),
             ));
         }
-        let body = raw[..raw.len() - HASH_LEN].to_vec();
+        // The hash version (byte 5) selects the OID width and trailing-checksum
+        // width: 1 → SHA-1 (20 bytes), 2 → SHA-256 (32 bytes).
+        let hash_len = match commit_graph_hash_len(raw[5]) {
+            Some(n) => n,
+            None => {
+                return Err(Error::CorruptObject(format!(
+                    "commit-graph version/hash not supported (version {} hash {})",
+                    raw[4], raw[5]
+                )))
+            }
+        };
+        let body = raw[..raw.len() - hash_len].to_vec();
         if body.len() < 8 || &body[0..4] != SIGNATURE {
             return Err(Error::CorruptObject(
                 "commit-graph has bad signature".to_owned(),
             ));
         }
-        if body[4] != GRAPH_VERSION || body[5] != HASH_VERSION_SHA1 {
+        if body[4] != GRAPH_VERSION {
             return Err(Error::CorruptObject(format!(
                 "commit-graph version/hash not supported (version {} hash {})",
                 body[4], body[5]
@@ -268,12 +288,12 @@ impl CommitGraphLayer {
                 .try_into()
                 .map_err(|_| Error::CorruptObject("commit-graph fanout corrupt".to_owned()))?,
         );
-        if oid_lookup_off + num_commits as usize * HASH_LEN > body.len() {
+        if oid_lookup_off + num_commits as usize * hash_len > body.len() {
             return Err(Error::CorruptObject(
                 "commit-graph OID lookup extends past end of file".to_owned(),
             ));
         }
-        let graph_data_width = HASH_LEN + 16;
+        let graph_data_width = hash_len + 16;
         if commit_data_off + num_commits as usize * graph_data_width > body.len() {
             return Err(Error::CorruptObject(
                 "commit-graph commit data extends past end of file".to_owned(),
@@ -362,6 +382,7 @@ impl CommitGraphLayer {
             bloom_disabled: false,
             base_layers_declared,
             base_chunk_size,
+            hash_len,
         })
     }
 
@@ -373,8 +394,8 @@ impl CommitGraphLayer {
         if lex_index >= self.num_commits {
             return None;
         }
-        let off = self.oid_lookup_off + lex_index as usize * HASH_LEN;
-        ObjectId::from_bytes(self.body.get(off..off + HASH_LEN)?.try_into().ok()?).ok()
+        let off = self.oid_lookup_off + lex_index as usize * self.hash_len;
+        ObjectId::from_bytes(self.body.get(off..off + self.hash_len)?).ok()
     }
 
     fn bsearch_oid(&self, oid: &ObjectId) -> Option<u32> {
@@ -383,8 +404,8 @@ impl CommitGraphLayer {
         let bytes = oid.as_bytes();
         while lo < hi {
             let mid = (lo + hi) / 2;
-            let off = self.oid_lookup_off + mid as usize * HASH_LEN;
-            let slice = &self.body[off..off + HASH_LEN];
+            let off = self.oid_lookup_off + mid as usize * self.hash_len;
+            let slice = &self.body[off..off + self.hash_len];
             match slice.cmp(bytes) {
                 std::cmp::Ordering::Less => lo = mid + 1,
                 std::cmp::Ordering::Greater => hi = mid,
@@ -652,7 +673,7 @@ impl CommitGraphChain {
                 // those commits. `layers.len()` here is the number of base layers
                 // already loaded below this one.
                 let n = layers.len();
-                if n > 0 && layer.base_chunk_size / HASH_LEN < n {
+                if n > 0 && layer.base_chunk_size / layer.hash_len < n {
                     if warn_once_for_base_chunk_too_small(&layer.layer_display_id()) {
                         eprintln!("warning: commit-graph base graphs chunk is too small");
                     }
@@ -769,7 +790,7 @@ impl CommitGraphChain {
             let raw = std::fs::read(&graph_path).map_err(Error::from)?;
             let layer = CommitGraphLayer::try_parse(graph_path, raw)?;
             let n = layers.len();
-            if n > 0 && layer.base_chunk_size / HASH_LEN < n {
+            if n > 0 && layer.base_chunk_size / layer.hash_len < n {
                 if warn_once_for_base_chunk_too_small(&layer.layer_display_id()) {
                     eprintln!("warning: commit-graph base graphs chunk is too small");
                 }
@@ -1084,7 +1105,8 @@ pub fn parse_graph_file(path: &Path) -> Option<ParsedGraphDump> {
     if raw.len() < 28 {
         return None;
     }
-    let body = &raw[..raw.len() - HASH_LEN];
+    let hash_len = commit_graph_hash_len(raw[5])?;
+    let body = &raw[..raw.len() - hash_len];
     if body.len() < 8 || &body[0..4] != SIGNATURE {
         return None;
     }

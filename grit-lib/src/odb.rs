@@ -26,11 +26,12 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use sha1::{Digest, Sha1};
+use sha2::Sha256;
 
 use crate::config::ConfigSet;
 use crate::error::{Error, Result};
 use crate::midx::{midx_oid_listed_in_tip, try_read_object_via_midx};
-use crate::objects::{Object, ObjectId, ObjectKind};
+use crate::objects::{HashAlgo, Object, ObjectId, ObjectKind};
 use crate::pack;
 
 /// Decompress a zlib-wrapped loose object payload from an open file.
@@ -101,6 +102,10 @@ pub struct Odb {
     /// mirrors `git merge-tree --quiet`, which performs a full merge but must leave the object
     /// database untouched (no new loose objects).
     mem_overlay: Arc<Mutex<Option<std::collections::HashMap<ObjectId, (ObjectKind, Vec<u8>)>>>>,
+    /// The repository's object hash algorithm (`extensions.objectformat`),
+    /// detected lazily from the config and cached. Determines the hash used
+    /// when writing objects. Defaults to SHA-1 when no config is available.
+    hash_algo_cache: Arc<OnceLock<HashAlgo>>,
 }
 
 impl std::fmt::Debug for Odb {
@@ -128,6 +133,7 @@ impl Odb {
             config_git_dir: None,
             core_multi_pack_index_cache: Arc::new(OnceLock::new()),
             mem_overlay: Arc::new(Mutex::new(None)),
+            hash_algo_cache: Arc::new(OnceLock::new()),
         }
     }
 
@@ -141,6 +147,7 @@ impl Odb {
             config_git_dir: None,
             core_multi_pack_index_cache: Arc::new(OnceLock::new()),
             mem_overlay: Arc::new(Mutex::new(None)),
+            hash_algo_cache: Arc::new(OnceLock::new()),
         }
     }
 
@@ -227,6 +234,29 @@ impl Odb {
     pub fn with_config_git_dir(mut self, git_dir: PathBuf) -> Self {
         self.config_git_dir = Some(git_dir);
         self
+    }
+
+    /// The repository's object hash algorithm, detected from
+    /// `extensions.objectformat` and cached for the lifetime of this `Odb`.
+    ///
+    /// The git directory is taken from the attached `config_git_dir` when set,
+    /// otherwise inferred as the parent of the `objects/` directory. Defaults
+    /// to [`HashAlgo::Sha1`] when no config can be read.
+    #[must_use]
+    pub fn hash_algo(&self) -> HashAlgo {
+        *self.hash_algo_cache.get_or_init(|| {
+            let git_dir = self
+                .config_git_dir
+                .clone()
+                .or_else(|| self.objects_dir.parent().map(Path::to_path_buf));
+            let Some(git_dir) = git_dir else {
+                return HashAlgo::Sha1;
+            };
+            let cfg = ConfigSet::load(Some(&git_dir), true).unwrap_or_default();
+            cfg.get("extensions.objectformat")
+                .and_then(|v| HashAlgo::from_name(&v))
+                .unwrap_or(HashAlgo::Sha1)
+        })
     }
 
     fn core_multi_pack_index_enabled(&self) -> bool {
@@ -409,7 +439,9 @@ impl Odb {
         let file = fs::File::open(path).map_err(Error::Io)?;
         let raw = read_zlib_loose_payload(file)?;
         let obj = parse_object_bytes_with_oid(&raw, expected_oid)?;
-        let computed = hash_object_from_parsed(&obj);
+        // Verify against the expected OID using its own hash algorithm; a SHA-256
+        // loose object must be re-hashed with SHA-256, not SHA-1.
+        let computed = hash_object_data_with(expected_oid.algo(), obj.kind, &obj.data);
         if computed != *expected_oid {
             return Err(Error::LooseHashMismatch {
                 path: path.display().to_string(),
@@ -528,19 +560,22 @@ impl Odb {
         }
     }
 
-    /// Hash raw content of a given kind and return the [`ObjectId`].
+    /// Hash raw content of a given kind with SHA-1 and return the [`ObjectId`].
+    ///
+    /// This does **not** write anything to disk. Prefer [`Self::hash`] when a
+    /// repository hash algorithm is available, so SHA-256 repositories are
+    /// handled correctly.
+    #[must_use]
+    pub fn hash_object_data(kind: ObjectKind, data: &[u8]) -> ObjectId {
+        hash_object_data_with(HashAlgo::Sha1, kind, data)
+    }
+
+    /// Hash raw content of a given kind using this repository's hash algorithm.
     ///
     /// This does **not** write anything to disk.
     #[must_use]
-    pub fn hash_object_data(kind: ObjectKind, data: &[u8]) -> ObjectId {
-        // Stream the hash without copying data into a contiguous buffer.
-        let header = format!("{} {}\0", kind, data.len());
-        let mut hasher = Sha1::new();
-        hasher.update(header.as_bytes());
-        hasher.update(data);
-        let digest = hasher.finalize();
-        ObjectId::from_bytes(digest.as_slice())
-            .unwrap_or_else(|_| unreachable!("SHA-1 is 20 bytes"))
+    pub fn hash(&self, kind: ObjectKind, data: &[u8]) -> ObjectId {
+        hash_object_data_with(self.hash_algo(), kind, data)
     }
 
     /// Write an object to the loose store and return its [`ObjectId`].
@@ -553,7 +588,7 @@ impl Odb {
     /// - [`Error::Zlib`] — compression failed.
     pub fn write(&self, kind: ObjectKind, data: &[u8]) -> Result<ObjectId> {
         let store_bytes = build_store_bytes(kind, data);
-        let oid = hash_bytes(&store_bytes);
+        let oid = hash_bytes_with(self.hash_algo(), &store_bytes);
 
         // When the in-memory overlay is active, keep the object in memory only (unless it is
         // already present on disk, in which case nothing new needs to be written anyway).
@@ -613,7 +648,7 @@ impl Odb {
     /// Same as [`Self::write`].
     pub fn write_local(&self, kind: ObjectKind, data: &[u8]) -> Result<ObjectId> {
         let store_bytes = build_store_bytes(kind, data);
-        let oid = hash_bytes(&store_bytes);
+        let oid = hash_bytes_with(self.hash_algo(), &store_bytes);
 
         let path = self.object_path(&oid);
         if path.exists() {
@@ -657,7 +692,7 @@ impl Odb {
     /// promisor pack are still written because [`Self::exists_local`] treats those as absent.
     pub fn write_loose_materialize(&self, kind: ObjectKind, data: &[u8]) -> Result<ObjectId> {
         let store_bytes = build_store_bytes(kind, data);
-        let oid = hash_bytes(&store_bytes);
+        let oid = hash_bytes_with(self.hash_algo(), &store_bytes);
         let path = self.object_path(&oid);
         if path.exists() {
             let _ = self.freshen_object(&oid);
@@ -701,7 +736,7 @@ impl Odb {
         // Validate the header before storing
         parse_object_bytes(store_bytes)?;
 
-        let oid = hash_bytes(store_bytes);
+        let oid = hash_bytes_with(self.hash_algo(), store_bytes);
         let path = self.object_path(&oid);
         if path.exists() {
             let _ = self.freshen_object(&oid);
@@ -746,7 +781,7 @@ impl Odb {
     pub fn write_raw_local(&self, store_bytes: &[u8]) -> Result<ObjectId> {
         parse_object_bytes(store_bytes)?;
 
-        let oid = hash_bytes(store_bytes);
+        let oid = hash_bytes_with(self.hash_algo(), store_bytes);
         let path = self.object_path(&oid);
         if path.exists() {
             let _ = self.freshen_object(&oid);
@@ -848,17 +883,44 @@ fn freshen_object_in_objects_dir(objects_dir: &Path, oid: &ObjectId) -> bool {
     false
 }
 
-fn hash_object_from_parsed(obj: &Object) -> ObjectId {
-    Odb::hash_object_data(obj.kind, &obj.data)
+/// Hash the canonical store bytes of an object (`"<kind> <len>\0<data>"`) with
+/// the given hash algorithm.
+fn hash_object_data_with(algo: HashAlgo, kind: ObjectKind, data: &[u8]) -> ObjectId {
+    let header = format!("{} {}\0", kind, data.len());
+    match algo {
+        HashAlgo::Sha1 => {
+            let mut hasher = Sha1::new();
+            hasher.update(header.as_bytes());
+            hasher.update(data);
+            ObjectId::from_bytes(hasher.finalize().as_slice())
+                .unwrap_or_else(|_| unreachable!("SHA-1 is 20 bytes"))
+        }
+        HashAlgo::Sha256 => {
+            let mut hasher = Sha256::new();
+            hasher.update(header.as_bytes());
+            hasher.update(data);
+            ObjectId::from_bytes(hasher.finalize().as_slice())
+                .unwrap_or_else(|_| unreachable!("SHA-256 is 32 bytes"))
+        }
+    }
 }
 
-/// Compute the SHA-1 of a byte slice and return it as an [`ObjectId`].
-fn hash_bytes(data: &[u8]) -> ObjectId {
-    let mut hasher = Sha1::new();
-    hasher.update(data);
-    let digest = hasher.finalize();
-    // SAFETY: SHA-1 always produces exactly 20 bytes.
-    ObjectId::from_bytes(digest.as_slice()).unwrap_or_else(|_| unreachable!("SHA-1 is 20 bytes"))
+/// Compute the digest of pre-built store bytes with the given hash algorithm.
+fn hash_bytes_with(algo: HashAlgo, data: &[u8]) -> ObjectId {
+    match algo {
+        HashAlgo::Sha1 => {
+            let mut hasher = Sha1::new();
+            hasher.update(data);
+            ObjectId::from_bytes(hasher.finalize().as_slice())
+                .unwrap_or_else(|_| unreachable!("SHA-1 is 20 bytes"))
+        }
+        HashAlgo::Sha256 => {
+            let mut hasher = Sha256::new();
+            hasher.update(data);
+            ObjectId::from_bytes(hasher.finalize().as_slice())
+                .unwrap_or_else(|_| unreachable!("SHA-256 is 32 bytes"))
+        }
+    }
 }
 
 /// Build the canonical store byte sequence: `"<kind> <len>\0<data>"`.
@@ -896,7 +958,7 @@ fn parse_object_bytes_inner(raw: &[u8], oid_hint: Option<&ObjectId>) -> Result<O
     if sp > 32 {
         let oid_str = oid_hint
             .map(|o| o.to_hex())
-            .unwrap_or_else(|| hash_bytes(raw).to_hex());
+            .unwrap_or_else(|| hash_bytes_with(HashAlgo::Sha1, raw).to_hex());
         return Err(Error::ObjectHeaderTooLong { oid: oid_str });
     }
 

@@ -5,13 +5,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use sha1::{Digest, Sha1};
+use sha2::Sha256;
 
 use crate::config::ConfigSet;
 use crate::error::{Error, Result};
 use crate::ewah_bitmap::EwahBitmap;
 use crate::git_date::approx::approxidate_careful;
 use crate::index::{Index, IndexEntry};
-use crate::objects::ObjectId;
+use crate::objects::{HashAlgo, ObjectId};
 
 /// Split-index metadata carried on an [`Index`] (in-memory; bitmaps cleared after merge/write).
 #[derive(Debug, Clone)]
@@ -229,14 +230,15 @@ pub(crate) fn merge_split_into_index(
 }
 
 /// Parse the `link` extension payload (Git `read_link_extension`).
-pub(crate) fn parse_link_extension(data: &[u8]) -> Result<SplitIndexLink> {
-    if data.len() < 20 {
+pub(crate) fn parse_link_extension(data: &[u8], algo: HashAlgo) -> Result<SplitIndexLink> {
+    let hash_len = algo.len();
+    if data.len() < hash_len {
         return Err(Error::IndexError(
             "corrupt link extension (too short)".to_owned(),
         ));
     }
-    let base_oid = ObjectId::from_bytes(&data[..20])?;
-    let mut rest = &data[20..];
+    let base_oid = ObjectId::from_bytes(&data[..hash_len])?;
+    let mut rest = &data[hash_len..];
     if rest.is_empty() {
         return Ok(SplitIndexLink {
             base_oid,
@@ -332,11 +334,20 @@ fn resolve_shared_index_file(git_dir: &Path, index_path: &Path, base_oid: &Objec
     primary
 }
 
-pub(crate) fn hash_index_body(body: &[u8]) -> ObjectId {
-    let mut hasher = Sha1::new();
-    hasher.update(body);
-    let digest = hasher.finalize();
-    ObjectId::from_bytes(digest.as_slice()).unwrap_or_else(|_| unreachable!("SHA-1 is 20 bytes"))
+pub(crate) fn hash_index_body(body: &[u8], algo: HashAlgo) -> ObjectId {
+    let digest: Vec<u8> = match algo {
+        HashAlgo::Sha1 => {
+            let mut hasher = Sha1::new();
+            hasher.update(body);
+            hasher.finalize().to_vec()
+        }
+        HashAlgo::Sha256 => {
+            let mut hasher = Sha256::new();
+            hasher.update(body);
+            hasher.finalize().to_vec()
+        }
+    };
+    ObjectId::from_bytes(&digest).unwrap_or_else(|_| unreachable!("digest is a valid OID width"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -686,6 +697,7 @@ pub(crate) fn write_index_file_split(
             split_link: None,
             cache_tree_root: None,
             cache_tree: None,
+            hash_algo: index.hash_algo,
         };
         let tmp = match tempfile::NamedTempFile::new_in(git_dir) {
             Ok(t) => t,
@@ -705,11 +717,12 @@ pub(crate) fn write_index_file_split(
         shared_index.write_to_path(&tmp_path, skip_hash)?;
         adjust_shared_perm_file(&tmp_path, shared_repo).map_err(Error::Io)?;
         let file_data = fs::read(&tmp_path).map_err(Error::Io)?;
-        if file_data.len() < 20 {
+        let hash_len = index.hash_algo.len();
+        if file_data.len() < hash_len {
             return Err(Error::IndexError("shared index temp too short".to_owned()));
         }
-        let body = &file_data[..file_data.len() - 20];
-        let oid = hash_index_body(body);
+        let body = &file_data[..file_data.len() - hash_len];
+        let oid = hash_index_body(body, index.hash_algo);
         let dest = git_dir.join(format!("sharedindex.{}", oid.to_hex()));
         if let Err(e) = fs::rename(&tmp_path, &dest) {
             if e.kind() == io::ErrorKind::PermissionDenied {
@@ -816,6 +829,7 @@ pub(crate) fn write_index_file_split(
         split_link: Some(link),
         cache_tree_root: index.cache_tree_root,
         cache_tree: index.cache_tree.clone(),
+        hash_algo: index.hash_algo,
     };
 
     out_index.write_to_path(path, skip_hash)?;
@@ -861,13 +875,14 @@ pub fn resolve_split_index_if_needed(
             shared_path.display()
         ))
     })?;
-    if data.len() < 20 {
+    let hash_len = index.hash_algo.len();
+    if data.len() < hash_len {
         return Err(Error::IndexError(
             "split index: shared index too short".to_owned(),
         ));
     }
-    let body = &data[..data.len() - 20];
-    let got = hash_index_body(body);
+    let body = &data[..data.len() - hash_len];
+    let got = hash_index_body(body, index.hash_algo);
     if got != base_oid {
         return Err(Error::IndexError(format!(
             "broken index, expect {} in {}, got {}",
@@ -891,13 +906,14 @@ pub fn resolve_split_index_if_needed(
 /// without merging the shared base — stubs and EWAH bitmaps stay intact).
 pub fn format_dump_split_index_file(data: &[u8], index: &Index) -> Result<String> {
     use std::fmt::Write;
-    if data.len() < 20 {
+    let hash_len = index.hash_algo.len();
+    if data.len() < hash_len {
         return Err(Error::IndexError("index too short".to_owned()));
     }
-    let body = &data[..data.len() - 20];
-    let trail = &data[data.len() - 20..];
+    let body = &data[..data.len() - hash_len];
+    let trail = &data[data.len() - hash_len..];
     let own = if trail.iter().all(|&b| b == 0) {
-        hash_index_body(body)
+        hash_index_body(body, index.hash_algo)
     } else {
         ObjectId::from_bytes(trail)?
     };

@@ -697,7 +697,7 @@ impl<'a, R: BufRead> Importer<'a, R> {
                 .copied()
                 .ok_or_else(|| Error::IndexError(format!("fast-import: unknown mark :{id}")));
         }
-        if spec.len() == 40 && spec.chars().all(|c| c.is_ascii_hexdigit()) {
+        if ObjectId::is_full_hex(spec) {
             return spec.parse();
         }
         resolve_revision(self.repo, spec)
@@ -714,7 +714,7 @@ impl<'a, R: BufRead> Importer<'a, R> {
                 .copied()
                 .ok_or_else(|| Error::IndexError(format!("fast-import: unknown mark :{id}")));
         }
-        if spec.len() == 40 && spec.chars().all(|c| c.is_ascii_hexdigit()) {
+        if ObjectId::is_full_hex(spec) {
             return spec.parse();
         }
         Err(Error::IndexError(format!(

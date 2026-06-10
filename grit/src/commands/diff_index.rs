@@ -2085,7 +2085,8 @@ fn write_raw_diff_entry_z(
     abbrev: Option<usize>,
     diff_index_uncached: bool,
 ) -> Result<()> {
-    let width = abbrev.unwrap_or(40).clamp(4, 40);
+    let full = repo.odb.hash_algo().hex_len();
+    let width = abbrev.unwrap_or(full).clamp(4, full);
 
     let (old_oid_disp, new_oid_disp) = {
         let old_oid = if entry.old_oid == zero_oid() {
@@ -2148,7 +2149,8 @@ fn render_raw_diff_entry(
     diff_index_uncached: bool,
     quote_fully: bool,
 ) -> Result<String> {
-    let width = abbrev.unwrap_or(40).clamp(4, 40);
+    let full = repo.odb.hash_algo().hex_len();
+    let width = abbrev.unwrap_or(full).clamp(4, full);
 
     let (old_oid_disp, new_oid_disp) = {
         let old_oid = if entry.old_oid == zero_oid() {

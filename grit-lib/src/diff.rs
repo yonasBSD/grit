@@ -3656,10 +3656,36 @@ pub fn format_raw(entry: &DiffEntry) -> String {
         _ => entry.status.letter().to_string(),
     };
 
+    let (old_hex, new_hex) = raw_oid_hex_pair(&entry.old_oid, &entry.new_oid);
     format!(
         ":{} {} {} {} {}\t{}",
-        entry.old_mode, entry.new_mode, entry.old_oid, entry.new_oid, status_str, path
+        entry.old_mode, entry.new_mode, old_hex, new_hex, status_str, path
     )
+}
+
+/// Render a diff entry's `(old, new)` OIDs as full hex for `--raw` output,
+/// widening any null OID to the repository's hash width.
+///
+/// Diff entries store null OIDs at SHA-1 width regardless of the repository
+/// algorithm, but `git diff --raw` prints them at the real hash width (64
+/// zeros in a SHA-256 repo). A diff entry never has both sides null, so the
+/// width is taken from whichever side carries a real object.
+fn raw_oid_hex_pair(old: &ObjectId, new: &ObjectId) -> (String, String) {
+    let width = if !old.is_zero() {
+        old.algo().hex_len()
+    } else if !new.is_zero() {
+        new.algo().hex_len()
+    } else {
+        old.algo().hex_len()
+    };
+    let render = |oid: &ObjectId| {
+        if oid.is_zero() {
+            "0".repeat(width)
+        } else {
+            oid.to_hex()
+        }
+    };
+    (render(old), render(new))
 }
 
 /// Format a diff entry with abbreviated OIDs.

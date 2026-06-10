@@ -123,15 +123,13 @@ fn parse_reflog_line(line: &str) -> Option<ReflogEntry> {
         (line, String::new())
     };
 
-    // The first 40 chars are old OID, then space, then 40 chars new OID, then space, then identity
-    if before_tab.len() < 83 {
-        // 40 + 1 + 40 + 1 + at least 1 char identity
-        return None;
-    }
-
-    let old_hex = &before_tab[..40];
-    let new_hex = &before_tab[41..81];
-    let identity = before_tab[82..].to_string();
+    // Format: `<old-hex> <new-hex> <identity>`. The two OIDs are whitespace-
+    // delimited; their hex width (40 for SHA-1, 64 for SHA-256) is inferred by
+    // the parser, so split on the first two spaces rather than fixed offsets.
+    let mut parts = before_tab.splitn(3, ' ');
+    let old_hex = parts.next()?;
+    let new_hex = parts.next()?;
+    let identity = parts.next()?.to_string();
 
     let old_oid = old_hex.parse::<ObjectId>().ok()?;
     let new_oid = new_hex.parse::<ObjectId>().ok()?;

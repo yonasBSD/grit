@@ -163,7 +163,7 @@ pub fn run(args: Args) -> Result<()> {
     // `git push --no-thin` actually produced a self-contained pack (t5516 'push --no-thin').
     if has_pack
         && args.reject_thin_pack_for_testing
-        && grit_lib::unpack_objects::pack_is_thin(&pack_data)
+        && grit_lib::unpack_objects::pack_is_thin(&pack_data, repo.odb.hash_algo())
     {
         pack_parse_err = Some("fatal: pack has unresolved deltas (thin pack rejected)".to_owned());
     }
@@ -614,16 +614,22 @@ fn advertise_refs_phase(repo: &Repository, extra_have: &HashSet<ObjectId>) -> Re
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let version = crate::version_string();
+    let cfg = ConfigSet::load(Some(&repo.git_dir), false).unwrap_or_default();
+    let object_format = cfg
+        .get("extensions.objectformat")
+        .or_else(|| cfg.get("extensions.objectFormat"))
+        .map(|s| s.to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "sha1".to_owned());
     let mut caps = format!(
         "report-status report-status-v2 delete-refs side-band-64k quiet ofs-delta \
-         object-format=sha1 agent=grit/{version}"
+         object-format={object_format} agent=grit/{version}"
     );
     if trace2_transfer::transfer_advertise_sid_enabled(&repo.git_dir) {
         let sid = trace2_transfer::trace2_session_id_wire_once();
         caps.push_str(" session-id=");
         caps.push_str(&sid);
     }
-    let cfg = ConfigSet::load(Some(&repo.git_dir), false).unwrap_or_default();
     let hide = hide_refs::hide_ref_patterns_receive(&cfg);
 
     // `git receive-pack` does not advertise `HEAD`; it iterates only the ref store
@@ -689,7 +695,9 @@ fn advertise_refs_phase(repo: &Repository, extra_have: &HashSet<ObjectId>) -> Re
     }
 
     if first {
-        let line = format!("0000000000000000000000000000000000000000 capabilities^{{}}\0{caps}\n");
+        let zero_width = if object_format == "sha256" { 64 } else { 40 };
+        let zero = "0".repeat(zero_width);
+        let line = format!("{zero} capabilities^{{}}\0{caps}\n");
         wire_trace::trace_packet_receive_pack('>', line.trim_end_matches('\n'));
         let len = 4 + line.len();
         write!(out, "{:04x}{}", len, line)?;

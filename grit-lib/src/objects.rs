@@ -24,48 +24,153 @@ use std::str::FromStr;
 use crate::commit_encoding;
 use crate::error::{Error, Result};
 
-/// A 20-byte SHA-1 object identifier.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ObjectId([u8; 20]);
+/// A Git hash algorithm.
+///
+/// Git supports two object-id hash functions: the historical SHA-1 (20-byte
+/// digests, 40 hex chars) and the newer SHA-256 (32-byte digests, 64 hex
+/// chars). A repository's algorithm is recorded in `extensions.objectformat`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum HashAlgo {
+    /// SHA-1 — 20-byte digests.
+    #[default]
+    Sha1,
+    /// SHA-256 — 32-byte digests.
+    Sha256,
+}
 
-impl ObjectId {
-    /// The all-zero object id (Git's "null" OID).
-    ///
-    /// Used for index placeholders such as intent-to-add entries and for
-    /// special cases in plumbing output.
+impl HashAlgo {
+    /// The raw digest length in bytes (20 for SHA-1, 32 for SHA-256).
     #[must_use]
-    pub const fn zero() -> Self {
-        Self([0u8; 20])
+    pub const fn len(self) -> usize {
+        match self {
+            Self::Sha1 => 20,
+            Self::Sha256 => 32,
+        }
     }
 
-    /// Construct from a 20-byte slice.
+    /// The hex-encoded digest length (40 for SHA-1, 64 for SHA-256).
+    #[must_use]
+    pub const fn hex_len(self) -> usize {
+        self.len() * 2
+    }
+
+    /// The lowercase name as written in `extensions.objectformat`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Sha1 => "sha1",
+            Self::Sha256 => "sha256",
+        }
+    }
+
+    /// The `oid_version` byte used in `.idx`/multi-pack-index headers
+    /// (SHA-1 → 1, SHA-256 → 2).
+    #[must_use]
+    pub const fn oid_version(self) -> u8 {
+        match self {
+            Self::Sha1 => 1,
+            Self::Sha256 => 2,
+        }
+    }
+
+    /// Parse from the name used in `extensions.objectformat` config.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim() {
+            "sha1" => Some(Self::Sha1),
+            "sha256" => Some(Self::Sha256),
+            _ => None,
+        }
+    }
+
+    /// The algorithm implied by a raw digest length, if recognised.
+    #[must_use]
+    pub const fn from_len(len: usize) -> Option<Self> {
+        match len {
+            20 => Some(Self::Sha1),
+            32 => Some(Self::Sha256),
+            _ => None,
+        }
+    }
+}
+
+/// Maximum raw digest length across supported hash algorithms (SHA-256).
+const MAX_OID_LEN: usize = 32;
+
+/// A Git object identifier: a SHA-1 (20-byte) or SHA-256 (32-byte) digest.
+///
+/// The digest is stored in a fixed 32-byte buffer with an explicit length;
+/// bytes beyond `len` are always zero, so the derived `Eq`/`Ord`/`Hash`
+/// remain correct. The hash algorithm is inferred from the length.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ObjectId {
+    bytes: [u8; MAX_OID_LEN],
+    len: u8,
+}
+
+impl ObjectId {
+    /// The all-zero SHA-1 object id (Git's "null" OID).
+    ///
+    /// Used for index placeholders such as intent-to-add entries and for
+    /// special cases in plumbing output. For an algorithm-specific null OID
+    /// (e.g. 64 zeros in a SHA-256 repo) use [`ObjectId::null`].
+    #[must_use]
+    pub const fn zero() -> Self {
+        Self {
+            bytes: [0u8; MAX_OID_LEN],
+            len: 20,
+        }
+    }
+
+    /// The all-zero ("null") object id for a given hash algorithm.
+    #[must_use]
+    pub const fn null(algo: HashAlgo) -> Self {
+        Self {
+            bytes: [0u8; MAX_OID_LEN],
+            len: algo.len() as u8,
+        }
+    }
+
+    /// Construct from a raw digest slice (20 bytes for SHA-1, 32 for SHA-256).
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidObjectId`] when `bytes` is not exactly 20 bytes.
+    /// Returns [`Error::InvalidObjectId`] when `bytes` is not a recognised
+    /// digest length.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let arr: [u8; 20] = bytes
-            .try_into()
-            .map_err(|_| Error::InvalidObjectId(hex::encode(bytes)))?;
-        Ok(Self(arr))
+        if HashAlgo::from_len(bytes.len()).is_none() {
+            return Err(Error::InvalidObjectId(hex::encode(bytes)));
+        }
+        let mut buf = [0u8; MAX_OID_LEN];
+        buf[..bytes.len()].copy_from_slice(bytes);
+        Ok(Self {
+            bytes: buf,
+            len: bytes.len() as u8,
+        })
     }
 
-    /// Raw 20-byte digest.
+    /// Raw digest bytes (20 or 32 bytes depending on the hash algorithm).
     #[must_use]
-    pub fn as_bytes(&self) -> &[u8; 20] {
-        &self.0
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+
+    /// The hash algorithm this OID belongs to.
+    #[must_use]
+    pub fn algo(&self) -> HashAlgo {
+        HashAlgo::from_len(self.len as usize).unwrap_or(HashAlgo::Sha1)
     }
 
     /// Check if this is the null (all-zero) object ID.
     #[must_use]
     pub fn is_zero(&self) -> bool {
-        self.0 == [0u8; 20]
+        self.as_bytes().iter().all(|&b| b == 0)
     }
 
-    /// Lowercase hex representation (40 characters).
+    /// Lowercase hex representation (40 or 64 characters).
     #[must_use]
     pub fn to_hex(&self) -> String {
-        hex::encode(self.0)
+        hex::encode(self.as_bytes())
     }
 
     /// The two-character directory prefix used by the loose object store.
@@ -73,23 +178,45 @@ impl ObjectId {
     /// Returns the first two hex chars (e.g. `"ab"` for `"ab3f…"`).
     #[must_use]
     pub fn loose_prefix(&self) -> String {
-        hex::encode(&self.0[..1])
+        hex::encode(&self.bytes[..1])
     }
 
-    /// Parse an object ID from a hex string.
+    /// Parse an object ID from a hex string (40 chars for SHA-1, 64 for
+    /// SHA-256).
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidObjectId`] if the string is not a valid
-    /// 40-character hex OID.
+    /// Returns [`Error::InvalidObjectId`] if the string is not a valid hex OID.
     pub fn from_hex(s: &str) -> Result<Self> {
         s.parse()
     }
 
-    /// The 38-character suffix used as the filename inside the loose prefix dir.
+    /// The suffix used as the filename inside the loose prefix dir (the digest
+    /// minus its first byte: 38 hex chars for SHA-1, 62 for SHA-256).
     #[must_use]
     pub fn loose_suffix(&self) -> String {
-        hex::encode(&self.0[1..])
+        hex::encode(&self.bytes[1..self.len as usize])
+    }
+
+    /// Whether `s` is a full-length hex OID for a supported hash algorithm
+    /// (40 hex chars for SHA-1 or 64 for SHA-256), case-insensitive.
+    #[must_use]
+    pub fn is_full_hex(s: &str) -> bool {
+        (s.len() == HashAlgo::Sha1.hex_len() || s.len() == HashAlgo::Sha256.hex_len())
+            && s.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+
+    /// Whether `len` is a valid full hex-OID length (40 or 64).
+    #[must_use]
+    pub const fn is_hex_len(len: usize) -> bool {
+        len == HashAlgo::Sha1.hex_len() || len == HashAlgo::Sha256.hex_len()
+    }
+
+    /// Whether `len` is a valid loose-object filename suffix length, i.e. a full
+    /// hex OID minus its first byte (38 for SHA-1, 62 for SHA-256).
+    #[must_use]
+    pub const fn is_loose_suffix_len(len: usize) -> bool {
+        len == HashAlgo::Sha1.hex_len() - 2 || len == HashAlgo::Sha256.hex_len() - 2
     }
 }
 
@@ -109,7 +236,7 @@ impl FromStr for ObjectId {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self> {
-        if s.len() != 40 {
+        if s.len() != HashAlgo::Sha1.hex_len() && s.len() != HashAlgo::Sha256.hex_len() {
             return Err(Error::InvalidObjectId(s.to_owned()));
         }
         let bytes = hex::decode(s).map_err(|_| Error::InvalidObjectId(s.to_owned()))?;
@@ -271,6 +398,22 @@ impl TreeEntry {
 ///
 /// Returns [`Error::CorruptObject`] if the data is malformed.
 pub fn parse_tree(data: &[u8]) -> Result<Vec<TreeEntry>> {
+    // A tree blob does not record its OID width; it is fixed by the repo's
+    // hash algorithm. Rather than thread `HashAlgo` through ~140 call sites,
+    // infer the width: a well-formed tree only parses cleanly (consuming the
+    // whole buffer) with the correct OID length. Try SHA-1 (20) first, then
+    // SHA-256 (32).
+    match parse_tree_with_oid_len(data, HashAlgo::Sha1.len()) {
+        Ok(entries) => Ok(entries),
+        Err(sha1_err) => parse_tree_with_oid_len(data, HashAlgo::Sha256.len()).map_err(|_| sha1_err),
+    }
+}
+
+/// Parse a tree blob assuming a fixed raw OID width (`oid_len` bytes).
+///
+/// Returns an error if the data does not parse cleanly into whole entries of
+/// that width (used by [`parse_tree`] to detect the hash algorithm).
+pub fn parse_tree_with_oid_len(data: &[u8], oid_len: usize) -> Result<Vec<TreeEntry>> {
     let mut entries = Vec::new();
     let mut pos = 0;
 
@@ -292,7 +435,7 @@ pub fn parse_tree(data: &[u8]) -> Result<Vec<TreeEntry>> {
             })?;
         pos += sp + 1;
 
-        // Find the NUL separating name from the 20-byte SHA
+        // Find the NUL separating name from the raw OID
         let nul = data[pos..]
             .iter()
             .position(|&b| b == 0)
@@ -300,11 +443,11 @@ pub fn parse_tree(data: &[u8]) -> Result<Vec<TreeEntry>> {
         let name = data[pos..pos + nul].to_vec();
         pos += nul + 1;
 
-        if pos + 20 > data.len() {
+        if pos + oid_len > data.len() {
             return Err(Error::CorruptObject("tree entry truncated SHA".to_owned()));
         }
-        let oid = ObjectId::from_bytes(&data[pos..pos + 20])?;
-        pos += 20;
+        let oid = ObjectId::from_bytes(&data[pos..pos + oid_len])?;
+        pos += oid_len;
 
         entries.push(TreeEntry { mode, name, oid });
     }

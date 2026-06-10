@@ -70,56 +70,34 @@ fn is_hex_lower(b: u8) -> bool {
     matches!(b, b'0'..=b'9' | b'a'..=b'f')
 }
 
-/// Parse a 40-character lowercase hex object id at the start of `buf`, requiring
-/// the next byte to be `\n`. Returns bytes consumed (41).
+/// Parse a lowercase hex object id at the start of `buf` (40 chars for SHA-1 or
+/// 64 for SHA-256), requiring the next byte to be `\n`. Returns bytes consumed
+/// (hex width + 1).
 fn parse_oid_line(buf: &[u8], bad_sha1_id: &'static str) -> Result<usize, FsckError> {
-    if buf.len() < 41 {
-        return Err(FsckError::new(
+    let bad = || {
+        FsckError::new(
             bad_sha1_id,
             format!(
                 "invalid '{}' line format - bad sha1",
                 line_kind(bad_sha1_id)
             ),
-        ));
+        )
+    };
+    // The hex width follows the repository hash (a `\n` terminates the id).
+    let hex_len = buf
+        .iter()
+        .position(|&b| b == b'\n')
+        .ok_or_else(bad)?;
+    if !ObjectId::is_hex_len(hex_len) {
+        return Err(bad());
     }
-    let hex = &buf[..40];
+    let hex = &buf[..hex_len];
     if !hex.iter().copied().all(is_hex_lower) {
-        return Err(FsckError::new(
-            bad_sha1_id,
-            format!(
-                "invalid '{}' line format - bad sha1",
-                line_kind(bad_sha1_id)
-            ),
-        ));
+        return Err(bad());
     }
-    if buf[40] != b'\n' {
-        return Err(FsckError::new(
-            bad_sha1_id,
-            format!(
-                "invalid '{}' line format - bad sha1",
-                line_kind(bad_sha1_id)
-            ),
-        ));
-    }
-    let hex_str = std::str::from_utf8(hex).map_err(|_| {
-        FsckError::new(
-            bad_sha1_id,
-            format!(
-                "invalid '{}' line format - bad sha1",
-                line_kind(bad_sha1_id)
-            ),
-        )
-    })?;
-    hex_str.parse::<ObjectId>().map_err(|_| {
-        FsckError::new(
-            bad_sha1_id,
-            format!(
-                "invalid '{}' line format - bad sha1",
-                line_kind(bad_sha1_id)
-            ),
-        )
-    })?;
-    Ok(41)
+    let hex_str = std::str::from_utf8(hex).map_err(|_| bad())?;
+    hex_str.parse::<ObjectId>().map_err(|_| bad())?;
+    Ok(hex_len + 1)
 }
 
 fn line_kind(bad_sha1_id: &'static str) -> &'static str {

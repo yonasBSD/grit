@@ -21,10 +21,11 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use sha1::{Digest, Sha1};
+use sha2::Sha256;
 
 use crate::config::ConfigSet;
 use crate::error::{Error, Result};
-use crate::objects::{parse_tree, ObjectId, ObjectKind, TreeEntry};
+use crate::objects::{parse_tree, HashAlgo, ObjectId, ObjectKind, TreeEntry};
 use crate::odb::Odb;
 use crate::repo::Repository;
 use crate::resolve_undo::{self, write_resolve_undo_payload, ResolveUndoRecord};
@@ -234,6 +235,10 @@ pub struct Index {
     pub cache_tree_root: Option<ObjectId>,
     /// Parsed `TREE` index extension (`cache-tree`) preserving invalid and subtree nodes.
     pub cache_tree: Option<CacheTreeNode>,
+    /// The repository's object hash algorithm. Determines the width of entry
+    /// object IDs and the trailing checksum on disk. Set authoritatively from
+    /// the object database when loaded via the repository; defaults to SHA-1.
+    pub hash_algo: HashAlgo,
 }
 
 /// One node from Git's `TREE` index extension.
@@ -307,8 +312,8 @@ const INDEX_FORMAT_UB: u32 = 4;
 const INDEX_EXT_CACHE_TREE: u32 = 0x5452_4545;
 
 /// Best-effort read of Git's `TREE` index extension (`cache_tree_read`).
-fn parse_cache_tree(data: &[u8]) -> Option<CacheTreeNode> {
-    let (node, pos) = parse_cache_tree_node(data, 0)?;
+fn parse_cache_tree(data: &[u8], hash_len: usize) -> Option<CacheTreeNode> {
+    let (node, pos) = parse_cache_tree_node(data, 0, hash_len)?;
     if pos == data.len() {
         Some(node)
     } else {
@@ -316,7 +321,11 @@ fn parse_cache_tree(data: &[u8]) -> Option<CacheTreeNode> {
     }
 }
 
-fn parse_cache_tree_node(data: &[u8], mut pos: usize) -> Option<(CacheTreeNode, usize)> {
+fn parse_cache_tree_node(
+    data: &[u8],
+    mut pos: usize,
+    hash_len: usize,
+) -> Option<(CacheTreeNode, usize)> {
     let name_end = data.get(pos..)?.iter().position(|&b| b == 0)? + pos;
     let name = data[pos..name_end].to_vec();
     pos = name_end + 1;
@@ -338,11 +347,11 @@ fn parse_cache_tree_node(data: &[u8], mut pos: usize) -> Option<(CacheTreeNode, 
     pos += 1;
 
     let oid = if entry_count >= 0 {
-        if data.len().saturating_sub(pos) < 20 {
+        if data.len().saturating_sub(pos) < hash_len {
             return None;
         }
-        let oid = ObjectId::from_bytes(&data[pos..pos + 20]).ok()?;
-        pos += 20;
+        let oid = ObjectId::from_bytes(&data[pos..pos + hash_len]).ok()?;
+        pos += hash_len;
         Some(oid)
     } else {
         None
@@ -350,7 +359,7 @@ fn parse_cache_tree_node(data: &[u8], mut pos: usize) -> Option<(CacheTreeNode, 
 
     let mut children = Vec::with_capacity(subtree_count as usize);
     for _ in 0..subtree_count {
-        let (child, next) = parse_cache_tree_node(data, pos)?;
+        let (child, next) = parse_cache_tree_node(data, pos, hash_len)?;
         children.push(child);
         pos = next;
     }
@@ -514,6 +523,7 @@ impl Index {
             split_link: None,
             cache_tree_root: None,
             cache_tree: None,
+            hash_algo: HashAlgo::Sha1,
         }
     }
 
@@ -536,6 +546,7 @@ impl Index {
             split_link: None,
             cache_tree_root: None,
             cache_tree: None,
+            hash_algo: HashAlgo::Sha1,
         }
     }
 
@@ -558,6 +569,7 @@ impl Index {
                 split_link: None,
                 cache_tree_root: None,
                 cache_tree: None,
+                hash_algo: HashAlgo::default(),
             };
         }
 
@@ -592,6 +604,7 @@ impl Index {
             split_link: None,
             cache_tree_root: None,
             cache_tree: None,
+            hash_algo: HashAlgo::default(),
         }
     }
 
@@ -612,6 +625,7 @@ impl Index {
                 split_link: None,
                 cache_tree_root: None,
                 cache_tree: None,
+                hash_algo: HashAlgo::default(),
             };
         }
 
@@ -649,6 +663,7 @@ impl Index {
             split_link: None,
             cache_tree_root: None,
             cache_tree: None,
+            hash_algo: HashAlgo::default(),
         }
     }
 
@@ -675,7 +690,15 @@ impl Index {
     /// After a successful return, [`Index::sparse_directories`] is cleared and every
     /// placeholder is replaced by the blob entries from the referenced tree.
     pub fn load_expand_sparse(path: &Path, odb: &Odb) -> Result<Self> {
-        let mut idx = Self::load(path)?;
+        let mut idx = match fs::read(path) {
+            Ok(data) => Self::parse_with_algo(&data, odb.hash_algo())?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Self {
+                sparse_directories: false,
+                hash_algo: odb.hash_algo(),
+                ..Self::new()
+            },
+            Err(e) => return Err(Error::Io(e)),
+        };
         idx.expand_sparse_directory_placeholders(odb)?;
         Ok(idx)
     }
@@ -683,12 +706,19 @@ impl Index {
     /// Like [`Index::load_expand_sparse`], but treats a missing index or Git's
     /// `"file too short"` placeholder as an empty index.
     pub fn load_expand_sparse_optional(path: &Path, odb: &Odb) -> Result<Self> {
+        let algo = odb.hash_algo();
         let mut idx = match fs::read(path) {
-            Ok(data) => Self::parse(&data).or_else(|e| match e {
-                Error::IndexError(msg) if msg == "file too short" => Ok(Self::new()),
+            Ok(data) => Self::parse_with_algo(&data, algo).or_else(|e| match e {
+                Error::IndexError(msg) if msg == "file too short" => Ok(Self {
+                    hash_algo: algo,
+                    ..Self::new()
+                }),
                 other => Err(other),
             })?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Self::new(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Self {
+                hash_algo: algo,
+                ..Self::new()
+            },
             Err(e) => return Err(Error::Io(e)),
         };
         idx.expand_sparse_directory_placeholders(odb)?;
@@ -854,19 +884,31 @@ impl Index {
     ///
     /// Returns [`Error::IndexError`] on structural problems.
     pub fn parse(data: &[u8]) -> Result<Self> {
+        // The index file does not record its hash width; it is fixed by the
+        // repository. Detect it from the trailing checksum (callers with a
+        // repository should prefer [`Self::parse_with_algo`]).
+        Self::parse_with_algo(data, detect_index_hash_algo(data))
+    }
+
+    /// Parse an index using a known hash algorithm (e.g. from the repository's
+    /// `extensions.objectformat`), which determines the entry OID width and the
+    /// trailing checksum width.
+    pub fn parse_with_algo(data: &[u8], hash_algo: HashAlgo) -> Result<Self> {
         if data.len() < 12 {
             return Err(Error::IndexError("file too short".to_owned()));
         }
 
-        // Trailing SHA-1: normal index is a hash of the body; Git may write all zeros when
-        // `index.skipHash` / `feature.manyFiles` skips computing the checksum.
-        let (body, checksum) = data.split_at(data.len() - 20);
+        let hash_len = hash_algo.len();
+        // Trailing checksum: normal index is a hash of the body; Git may write
+        // all zeros when `index.skipHash` / `feature.manyFiles` skips it.
+        let (body, checksum) = data.split_at(data.len() - hash_len);
         if !checksum.iter().all(|&b| b == 0) {
-            let mut hasher = Sha1::new();
-            hasher.update(body);
-            let computed = hasher.finalize();
-            if computed.as_slice() != checksum {
-                return Err(Error::IndexError("SHA-1 checksum mismatch".to_owned()));
+            let computed = hash_index_body(hash_algo, body);
+            if computed != checksum {
+                return Err(Error::IndexError(format!(
+                    "{} checksum mismatch",
+                    hash_algo.name().to_uppercase()
+                )));
             }
         }
 
@@ -896,7 +938,7 @@ impl Index {
 
         let mut prev_path: Vec<u8> = Vec::new();
         for _ in 0..count {
-            let (entry, consumed) = parse_entry(&body[pos..], version, &prev_path)?;
+            let (entry, consumed) = parse_entry(&body[pos..], version, &prev_path, hash_len)?;
             prev_path = entry.path.clone();
             entries.push(entry);
             pos += consumed;
@@ -944,10 +986,10 @@ impl Index {
                 resolve_undo = Some(resolve_undo::parse_resolve_undo_payload(ext_data)?);
             } else if sig == INDEX_EXT_LINK {
                 let ext_data = &body[pos..pos + ext_sz];
-                split_link = Some(crate::split_index::parse_link_extension(ext_data)?);
+                split_link = Some(crate::split_index::parse_link_extension(ext_data, hash_algo)?);
             } else if sig == INDEX_EXT_CACHE_TREE {
                 let ext_data = &body[pos..pos + ext_sz];
-                cache_tree = parse_cache_tree(ext_data);
+                cache_tree = parse_cache_tree(ext_data, hash_len);
                 cache_tree_root = cache_tree
                     .as_ref()
                     .and_then(|node| node.oid.filter(|_| node.entry_count >= 0));
@@ -968,6 +1010,7 @@ impl Index {
             split_link,
             cache_tree_root,
             cache_tree,
+            hash_algo,
         })
     }
 
@@ -1003,12 +1046,10 @@ impl Index {
             sorted.serialize_into(&mut body)?;
         }
 
-        let checksum: [u8; 20] = if skip_hash {
-            [0u8; 20]
+        let checksum: Vec<u8> = if skip_hash {
+            vec![0u8; self.hash_algo.len()]
         } else {
-            let mut hasher = Sha1::new();
-            hasher.update(&body);
-            hasher.finalize().into()
+            hash_index_body(self.hash_algo, &body)
         };
 
         let tmp_path = path.with_extension("lock");
@@ -1973,9 +2014,52 @@ fn is_process_running(pid: u64) -> bool {
     }
 }
 
+/// Hash an index body with the given algorithm, returning the raw checksum.
+fn hash_index_body(algo: HashAlgo, body: &[u8]) -> Vec<u8> {
+    match algo {
+        HashAlgo::Sha1 => {
+            let mut hasher = Sha1::new();
+            hasher.update(body);
+            hasher.finalize().to_vec()
+        }
+        HashAlgo::Sha256 => {
+            let mut hasher = Sha256::new();
+            hasher.update(body);
+            hasher.finalize().to_vec()
+        }
+    }
+}
+
+/// Best-effort detection of an index file's hash algorithm from its trailing
+/// checksum. Used by [`Index::parse`] when no repository algorithm is known.
+/// Callers with a repository should use [`Index::parse_with_algo`] instead,
+/// which is authoritative even when the checksum is skipped (all zeros).
+fn detect_index_hash_algo(data: &[u8]) -> HashAlgo {
+    // A SHA-256 index ends with a 32-byte checksum over the body. If that
+    // verifies, the file is SHA-256; otherwise assume SHA-1.
+    let sha256_len = HashAlgo::Sha256.len();
+    if data.len() > sha256_len + 12 {
+        let (body, checksum) = data.split_at(data.len() - sha256_len);
+        if checksum.iter().any(|&b| b != 0)
+            && hash_index_body(HashAlgo::Sha256, body) == checksum
+        {
+            return HashAlgo::Sha256;
+        }
+    }
+    HashAlgo::Sha1
+}
+
 /// Parse a single index entry from `data`, returning `(entry, bytes_consumed)`.
-fn parse_entry(data: &[u8], version: u32, prev_path: &[u8]) -> Result<(IndexEntry, usize)> {
-    if data.len() < 62 {
+///
+/// `hash_len` is the raw object-id width (20 for SHA-1, 32 for SHA-256).
+fn parse_entry(
+    data: &[u8],
+    version: u32,
+    prev_path: &[u8],
+    hash_len: usize,
+) -> Result<(IndexEntry, usize)> {
+    // 40 bytes of stat fields + the OID + 2 flag bytes.
+    if data.len() < 40 + hash_len + 2 {
         return Err(Error::IndexError("entry too short".to_owned()));
     }
 
@@ -2004,8 +2088,8 @@ fn parse_entry(data: &[u8], version: u32, prev_path: &[u8]) -> Result<(IndexEntr
     let gid = read_u32!();
     let size = read_u32!();
 
-    let oid = ObjectId::from_bytes(&data[pos..pos + 20])?;
-    pos += 20;
+    let oid = ObjectId::from_bytes(&data[pos..pos + hash_len])?;
+    pos += hash_len;
 
     let flags = u16::from_be_bytes(
         data[pos..pos + 2]

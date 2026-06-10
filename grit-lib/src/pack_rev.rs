@@ -4,6 +4,7 @@
 
 use crate::pack::PackIndex;
 use sha1::{Digest, Sha1};
+use sha2::{Digest as Sha256Digest, Sha256};
 use std::path::Path;
 
 /// Magic `RIDX` in big-endian form (same as Git's `RIDX_SIGNATURE`).
@@ -12,9 +13,53 @@ pub const RIDX_SIGNATURE: u32 = 0x5249_4458;
 pub const RIDX_VERSION: u32 = 1;
 /// Hash id field for SHA-1 packs (`oid_version` in Git).
 pub const RIDX_HASH_ID_SHA1: u32 = 1;
+/// Hash id field for SHA-256 packs (`oid_version` in Git).
+pub const RIDX_HASH_ID_SHA256: u32 = 2;
 
 const HEADER_LEN: usize = 12;
 const SHA1_TRAILER: usize = 20;
+const SHA256_TRAILER: usize = 32;
+
+/// The RIDX hash-id field for a given trailing-hash width.
+const fn ridx_hash_id(hash_len: usize) -> u32 {
+    if hash_len == SHA256_TRAILER {
+        RIDX_HASH_ID_SHA256
+    } else {
+        RIDX_HASH_ID_SHA1
+    }
+}
+
+/// Append the hashfile body checksum (`hash_len`-wide) over `out` so far.
+fn append_hashfile_checksum(out: &mut Vec<u8>, hash_len: usize) {
+    if hash_len == SHA256_TRAILER {
+        let mut h = Sha256::new();
+        Sha256Digest::update(&mut h, &*out);
+        out.extend_from_slice(h.finalize().as_slice());
+    } else {
+        let mut h = Sha1::new();
+        Digest::update(&mut h, &*out);
+        out.extend_from_slice(h.finalize().as_slice());
+    }
+}
+
+/// True if `data` is a valid hashfile of trailing width `hash_len`: the last
+/// `hash_len` bytes equal the hash (SHA-1 or SHA-256) of the preceding bytes.
+#[must_use]
+pub fn hashfile_checksum_valid(data: &[u8], hash_len: usize) -> bool {
+    if data.len() < hash_len {
+        return false;
+    }
+    let body_len = data.len() - hash_len;
+    if hash_len == SHA256_TRAILER {
+        let mut h = Sha256::new();
+        Sha256Digest::update(&mut h, &data[..body_len]);
+        h.finalize().as_slice() == &data[body_len..]
+    } else {
+        let mut h = Sha1::new();
+        Digest::update(&mut h, &data[..body_len]);
+        h.finalize().as_slice() == &data[body_len..]
+    }
+}
 
 /// Build `.rev` file bytes for a pack index (RIDX body + trailing SHA-1 of the body).
 #[must_use]
@@ -35,32 +80,36 @@ pub fn build_pack_rev_bytes_from_index_order_offsets_and_checksum(
     offsets: &[u64],
     pack_checksum: &[u8],
 ) -> Vec<u8> {
+    // The trailing-hash width is implied by the pack checksum (20 for SHA-1,
+    // 32 for SHA-256); fall back to SHA-1 width for an unexpected length.
+    let hash_len = if pack_checksum.len() == SHA256_TRAILER {
+        SHA256_TRAILER
+    } else {
+        SHA1_TRAILER
+    };
     let n = offsets.len();
     let mut order: Vec<u32> = (0..n as u32).collect();
     order.sort_by_key(|&i| offsets[i as usize]);
 
-    let body_len = HEADER_LEN + n * 4 + SHA1_TRAILER;
-    let total_len = body_len + SHA1_TRAILER;
+    let body_len = HEADER_LEN + n * 4 + hash_len;
+    let total_len = body_len + hash_len;
     let mut out = Vec::with_capacity(total_len);
 
     out.extend_from_slice(&RIDX_SIGNATURE.to_be_bytes());
     out.extend_from_slice(&RIDX_VERSION.to_be_bytes());
-    out.extend_from_slice(&RIDX_HASH_ID_SHA1.to_be_bytes());
+    out.extend_from_slice(&ridx_hash_id(hash_len).to_be_bytes());
     for idx_pos in order {
         out.extend_from_slice(&idx_pos.to_be_bytes());
     }
-    if pack_checksum.len() >= SHA1_TRAILER {
-        out.extend_from_slice(&pack_checksum[..SHA1_TRAILER]);
+    if pack_checksum.len() >= hash_len {
+        out.extend_from_slice(&pack_checksum[..hash_len]);
     } else {
-        out.extend_from_slice(&[0u8; SHA1_TRAILER]);
+        out.extend_from_slice(&vec![0u8; hash_len]);
     }
 
     debug_assert_eq!(out.len(), body_len);
-    let mut h = Sha1::new();
-    h.update(&out);
-    let digest = h.finalize();
     // Git's hashfile appends the hash of the body; it is unrelated to the pack checksum.
-    out.extend_from_slice(digest.as_slice());
+    append_hashfile_checksum(&mut out, hash_len);
     debug_assert_eq!(out.len(), total_len);
 
     out
@@ -106,8 +155,9 @@ pub fn pack_rev_fsck_messages(
     rev_path_display: &str,
 ) -> Vec<String> {
     let n = index.entries.len();
-    let expected_len = HEADER_LEN + n * 4 + SHA1_TRAILER + SHA1_TRAILER;
-    if data.len() < ridx_min_size() {
+    let hash_len = index.hash_bytes;
+    let expected_len = HEADER_LEN + n * 4 + hash_len + hash_len;
+    if data.len() < HEADER_LEN + hash_len {
         return vec![format!(
             "reverse-index file {rev_path_display} is too small"
         )];
@@ -143,7 +193,7 @@ pub fn pack_rev_fsck_messages(
     }
 
     let mut msgs = Vec::new();
-    if !hashfile_checksum_valid_sha1(data) {
+    if !hashfile_checksum_valid(data, hash_len) {
         msgs.push("invalid checksum".to_owned());
     }
 
@@ -166,9 +216,6 @@ pub fn pack_rev_fsck_messages(
     msgs
 }
 
-fn ridx_min_size() -> usize {
-    HEADER_LEN + SHA1_TRAILER
-}
 
 /// Verify a `.rev` file for `index-pack --rev-index --verify` (checksum first, like Git's
 /// `verify_pack_revindex`).
@@ -177,11 +224,12 @@ pub fn verify_pack_rev_file_contents(
     index: &PackIndex,
     path_for_errors: &str,
 ) -> std::result::Result<(), String> {
-    if !hashfile_checksum_valid_sha1(data) {
+    let hash_len = index.hash_bytes;
+    if !hashfile_checksum_valid(data, hash_len) {
         return Err(format!("sha1 file '{path_for_errors}': validation error"));
     }
     let n = index.entries.len();
-    let expected_len = HEADER_LEN + n * 4 + SHA1_TRAILER + SHA1_TRAILER;
+    let expected_len = HEADER_LEN + n * 4 + hash_len + hash_len;
     if data.len() != expected_len {
         return Err(format!("reverse-index file {path_for_errors} is corrupt"));
     }
@@ -238,8 +286,11 @@ pub fn verify_pack_rev_file(rev_path: &Path, index: &PackIndex) -> std::result::
 /// (object at pack offset rank `i` → OID at index row `result[i]`). Otherwise `None`.
 #[must_use]
 pub fn try_rev_positions_in_pack_order(data: &[u8], num_objects: usize) -> Option<Vec<u32>> {
-    let expected_len = HEADER_LEN + num_objects * 4 + SHA1_TRAILER + SHA1_TRAILER;
-    if data.len() != expected_len || !hashfile_checksum_valid_sha1(data) {
+    // The trailing-hash width (SHA-1 vs SHA-256) is implied by the file length.
+    let hash_len = [SHA1_TRAILER, SHA256_TRAILER]
+        .into_iter()
+        .find(|&hl| data.len() == HEADER_LEN + num_objects * 4 + hl + hl)?;
+    if !hashfile_checksum_valid(data, hash_len) {
         return None;
     }
     let mut pos = 0usize;
@@ -252,7 +303,7 @@ pub fn try_rev_positions_in_pack_order(data: &[u8], num_objects: usize) -> Optio
         return None;
     }
     let hash_id = read_u32_be(data, &mut pos)?;
-    if hash_id != RIDX_HASH_ID_SHA1 && hash_id != 2 {
+    if hash_id != RIDX_HASH_ID_SHA1 && hash_id != RIDX_HASH_ID_SHA256 {
         return None;
     }
     let mut pack_order_idx = vec![0u32; num_objects];
@@ -262,8 +313,8 @@ pub fn try_rev_positions_in_pack_order(data: &[u8], num_objects: usize) -> Optio
     if pos != HEADER_LEN + num_objects * 4 {
         return None;
     }
-    pos += SHA1_TRAILER;
-    if pos != data.len() - SHA1_TRAILER {
+    pos += hash_len;
+    if pos != data.len() - hash_len {
         return None;
     }
     if pack_order_idx.len() != num_objects {

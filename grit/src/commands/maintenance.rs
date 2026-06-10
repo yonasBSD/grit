@@ -1896,10 +1896,7 @@ fn cg_auto(repo: &Repository, cfg: &ConfigSet) -> Result<bool> {
     let in_g = graph_oids(repo)?;
     let mut count = 0i32;
     walk_commits(repo, |oid| {
-        let h = oid.as_bytes();
-        let mut arr = [0u8; 20];
-        arr.copy_from_slice(h);
-        if !in_g.contains(&arr) {
+        if !in_g.contains(oid.as_bytes()) {
             count += 1;
         }
         count < limit
@@ -1907,7 +1904,7 @@ fn cg_auto(repo: &Repository, cfg: &ConfigSet) -> Result<bool> {
     Ok(count >= limit)
 }
 
-fn graph_oids(repo: &Repository) -> Result<HashSet<[u8; 20]>> {
+fn graph_oids(repo: &Repository) -> Result<HashSet<Vec<u8>>> {
     let objects_dir = repo.git_dir.join("objects");
 
     // A split commit-graph stores its commits across a chain of layer files rather than the
@@ -1918,7 +1915,7 @@ fn graph_oids(repo: &Repository) -> Result<HashSet<[u8; 20]>> {
     if let Some(chain) = grit_lib::commit_graph_file::CommitGraphChain::load(&objects_dir) {
         let mut set = HashSet::new();
         for oid in chain.all_oids_in_order() {
-            set.insert(*oid.as_bytes());
+            set.insert(oid.as_bytes().to_vec());
         }
         return Ok(set);
     }
@@ -1931,7 +1928,7 @@ fn graph_oids(repo: &Repository) -> Result<HashSet<[u8; 20]>> {
     read_graph_oids(&data)
 }
 
-fn read_graph_oids(data: &[u8]) -> Result<HashSet<[u8; 20]>> {
+fn read_graph_oids(data: &[u8]) -> Result<HashSet<Vec<u8>>> {
     let mut set = HashSet::new();
     if data.len() < 8 || &data[0..4] != b"CGPH" {
         return Ok(set);
@@ -1965,9 +1962,7 @@ fn read_graph_oids(data: &[u8]) -> Result<HashSet<[u8; 20]>> {
     let n = (body.len() - lookup) / 20;
     for i in 0..n {
         let s = lookup + i * 20;
-        let mut h = [0u8; 20];
-        h.copy_from_slice(&body[s..s + 20]);
-        set.insert(h);
+        set.insert(body[s..s + 20].to_vec());
     }
     Ok(set)
 }

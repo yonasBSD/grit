@@ -16,12 +16,60 @@ use std::io::{self, Read};
 use flate2::read::ZlibDecoder;
 use flate2::{Decompress, FlushDecompress, Status};
 use sha1::{Digest, Sha1};
+use sha2::{Digest as Sha256Digest, Sha256};
 
 use crate::error::{Error, Result};
 use crate::gitmodules;
 use crate::index::MODE_GITLINK;
-use crate::objects::{parse_commit, parse_tag, parse_tree, Object, ObjectId, ObjectKind};
+use crate::objects::{parse_commit, parse_tag, parse_tree, HashAlgo, Object, ObjectId, ObjectKind};
 use crate::odb::Odb;
+
+/// Incremental pack checksum hasher matching the repository hash algorithm.
+#[derive(Clone)]
+enum PackHasher {
+    Sha1(Sha1),
+    Sha256(Sha256),
+}
+
+impl PackHasher {
+    fn new(algo: HashAlgo) -> Self {
+        match algo {
+            HashAlgo::Sha1 => Self::Sha1(Sha1::new()),
+            HashAlgo::Sha256 => Self::Sha256(Sha256::new()),
+        }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        match self {
+            Self::Sha1(h) => Digest::update(h, data),
+            Self::Sha256(h) => Sha256Digest::update(h, data),
+        }
+    }
+
+    fn finalize(self) -> Vec<u8> {
+        match self {
+            Self::Sha1(h) => h.finalize().to_vec(),
+            Self::Sha256(h) => h.finalize().to_vec(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Sha1(_) => 20,
+            Self::Sha256(_) => 32,
+        }
+    }
+}
+
+/// Compute an object id for `data` of the given `kind` using `algo`, without an
+/// `Odb` in scope (Git store form: `"<kind> <len>\0<data>"`).
+fn hash_object_with(algo: HashAlgo, kind: ObjectKind, data: &[u8]) -> ObjectId {
+    let header = format!("{kind} {}\0", data.len());
+    let mut h = PackHasher::new(algo);
+    h.update(header.as_bytes());
+    h.update(data);
+    ObjectId::from_bytes(&h.finalize()).expect("digest is a valid OID width")
+}
 
 /// Options controlling `unpack-objects` behaviour.
 #[derive(Debug, Default)]
@@ -82,7 +130,8 @@ pub fn unpack_objects(reader: &mut dyn Read, odb: &Odb, opts: &UnpackOptions) ->
     /// and `--strict` graph walks without extra ODB reads.
     const MAX_RETAIN_BYTES: usize = 1024 * 1024;
 
-    let mut rd = StreamingPackReader::new(reader, opts.max_input_bytes);
+    let algo = odb.hash_algo();
+    let mut rd = StreamingPackReader::new(reader, opts.max_input_bytes, algo);
 
     // Validate magic and version.
     let sig = rd.read_exact_n(4)?;
@@ -136,8 +185,8 @@ pub fn unpack_objects(reader: &mut dyn Read, odb: &Odb, opts: &UnpackOptions) ->
                 });
             }
             7 => {
-                // REF_DELTA: base identified by its SHA-1.
-                let base_bytes = rd.read_exact_n(20)?;
+                // REF_DELTA: base identified by its object id (hash-width bytes).
+                let base_bytes = rd.read_exact_n(algo.len())?;
                 let base_oid = ObjectId::from_bytes(&base_bytes)?;
                 let delta_data = rd.decompress(size)?;
                 pending.push(PendingDelta {
@@ -155,10 +204,10 @@ pub fn unpack_objects(reader: &mut dyn Read, odb: &Odb, opts: &UnpackOptions) ->
         }
     }
 
-    // Trailing pack checksum (SHA-1 of all preceding bytes); not included in the hash.
+    // Trailing pack checksum (hash of all preceding bytes); not included in the hash.
     let digest = rd.finalize_hasher();
-    let trailing = rd.read_trailer_20()?;
-    if digest.as_slice() != trailing {
+    let trailing = rd.read_trailer()?;
+    if digest != trailing {
         return Err(Error::CorruptObject(
             "pack trailing checksum mismatch".to_owned(),
         ));
@@ -464,11 +513,11 @@ pub fn strict_verify_packed_references(
 ///
 /// Conservative: any parse error makes this return `false` (treat as non-thin) so a malformed pack
 /// is handled by the normal ingestion path rather than mislabeled.
-pub fn pack_is_thin(data: &[u8]) -> bool {
-    pack_is_thin_inner(data).unwrap_or(false)
+pub fn pack_is_thin(data: &[u8], algo: HashAlgo) -> bool {
+    pack_is_thin_inner(data, algo).unwrap_or(false)
 }
 
-fn pack_is_thin_inner(data: &[u8]) -> Result<bool> {
+fn pack_is_thin_inner(data: &[u8], algo: HashAlgo) -> Result<bool> {
     let mut rd = PackReader::new(data.to_vec());
     if rd.read_exact(4)? != b"PACK" {
         return Ok(false);
@@ -485,7 +534,7 @@ fn pack_is_thin_inner(data: &[u8]) -> Result<bool> {
             1..=4 => {
                 let kind = type_code_to_kind(type_code)?;
                 let obj_data = rd.decompress(size)?;
-                in_pack.insert(Odb::hash_object_data(kind, &obj_data));
+                in_pack.insert(hash_object_with(algo, kind, &obj_data));
             }
             6 => {
                 // ofs-delta: base is always in-pack (referenced by relative offset).
@@ -494,7 +543,7 @@ fn pack_is_thin_inner(data: &[u8]) -> Result<bool> {
                 let _ = rd.decompress(size)?;
             }
             7 => {
-                let base_bytes = rd.read_exact(20)?;
+                let base_bytes = rd.read_exact(algo.len())?;
                 ref_delta_bases.push(ObjectId::from_bytes(base_bytes)?);
                 let _ = rd.decompress(size)?;
             }
@@ -517,6 +566,7 @@ pub fn pack_bytes_to_object_map(data: &[u8], odb: &Odb) -> Result<HashMap<Object
 }
 
 fn build_pack_object_map(mut rd: PackReader, odb: &Odb) -> Result<HashMap<ObjectId, Object>> {
+    let algo = odb.hash_algo();
     let sig = rd.read_exact(4)?;
     if sig != b"PACK" {
         return Err(Error::CorruptObject(
@@ -554,7 +604,7 @@ fn build_pack_object_map(mut rd: PackReader, odb: &Odb) -> Result<HashMap<Object
             1..=4 => {
                 let kind = type_code_to_kind(type_code)?;
                 let data = rd.decompress(size)?;
-                let oid = Odb::hash_object_data(kind, &data);
+                let oid = odb.hash(kind, &data);
                 by_offset.insert(obj_offset, (kind, data.clone()));
                 by_oid.insert(oid, (kind, data));
             }
@@ -572,7 +622,7 @@ fn build_pack_object_map(mut rd: PackReader, odb: &Odb) -> Result<HashMap<Object
                 });
             }
             7 => {
-                let base_bytes = rd.read_exact(20)?;
+                let base_bytes = rd.read_exact(algo.len())?;
                 let base_oid = ObjectId::from_bytes(base_bytes)?;
                 let delta_data = rd.decompress(size)?;
                 pending.push(PendingDelta {
@@ -592,10 +642,10 @@ fn build_pack_object_map(mut rd: PackReader, odb: &Odb) -> Result<HashMap<Object
 
     let consumed = rd.pos;
     {
-        let mut hasher = Sha1::new();
+        let mut hasher = PackHasher::new(algo);
         hasher.update(&rd.data[..consumed]);
         let digest = hasher.finalize();
-        let trailing = rd.read_exact(20)?;
+        let trailing = rd.read_exact(algo.len())?;
         if digest.as_slice() != trailing {
             return Err(Error::CorruptObject(
                 "pack trailing checksum mismatch".to_owned(),
@@ -622,7 +672,7 @@ fn build_pack_object_map(mut rd: PackReader, odb: &Odb) -> Result<HashMap<Object
 
             if let Some((base_kind, base_data)) = base {
                 let result = apply_delta(&base_data, &delta.delta_data)?;
-                let oid = Odb::hash_object_data(base_kind, &result);
+                let oid = odb.hash(base_kind, &result);
                 by_offset.insert(delta.offset, (base_kind, result.clone()));
                 by_oid.insert(oid, (base_kind, result));
             } else {
@@ -649,7 +699,7 @@ fn build_pack_object_map(mut rd: PackReader, odb: &Odb) -> Result<HashMap<Object
 /// [`ObjectId`] without touching the filesystem.
 fn write_or_hash(kind: ObjectKind, data: &[u8], odb: &Odb, dry_run: bool) -> Result<ObjectId> {
     if dry_run {
-        Ok(Odb::hash_object_data(kind, data))
+        Ok(odb.hash(kind, data))
     } else {
         // Always materialize into this ODB: objects reachable only via alternates must still be
         // written locally (matches git unpack-objects; t5519-push-alternates).
@@ -787,7 +837,7 @@ fn io_to_corrupt_eof(e: io::Error, stream_pos: usize, context: &str) -> Error {
 /// object header or zlib stream starts at the correct offset.
 struct StreamingPackReader<'a> {
     inner: &'a mut dyn Read,
-    pack_hasher: Sha1,
+    pack_hasher: PackHasher,
     stream_pos: usize,
     max_input_bytes: Option<u64>,
     /// Compressed (or other) bytes already read from `inner` and hashed but not yet consumed by
@@ -796,10 +846,10 @@ struct StreamingPackReader<'a> {
 }
 
 impl<'a> StreamingPackReader<'a> {
-    fn new(inner: &'a mut dyn Read, max_input_bytes: Option<u64>) -> Self {
+    fn new(inner: &'a mut dyn Read, max_input_bytes: Option<u64>, algo: HashAlgo) -> Self {
         Self {
             inner,
-            pack_hasher: Sha1::new(),
+            pack_hasher: PackHasher::new(algo),
             stream_pos: 0,
             max_input_bytes,
             pending: Vec::new(),
@@ -1042,20 +1092,19 @@ impl<'a> StreamingPackReader<'a> {
         }
     }
 
-    /// SHA-1 over all pack bytes read so far (objects only; trailer not yet read).
-    fn finalize_hasher(
-        &self,
-    ) -> sha1::digest::generic_array::GenericArray<u8, sha1::digest::consts::U20> {
+    /// Hash over all pack bytes read so far (objects only; trailer not yet read).
+    fn finalize_hasher(&self) -> Vec<u8> {
         self.pack_hasher.clone().finalize()
     }
 
-    /// Trailing pack checksum; not included in [`Self::finalize_hasher`].
-    fn read_trailer_20(&mut self) -> Result<[u8; 20]> {
-        let mut b = [0u8; 20];
-        if self.pending.len() >= 20 {
-            b.copy_from_slice(&self.pending[..20]);
-            self.pending.drain(..20);
-            self.stream_pos += 20;
+    /// Trailing pack checksum (hash-width bytes); not included in [`Self::finalize_hasher`].
+    fn read_trailer(&mut self) -> Result<Vec<u8>> {
+        let hash_len = self.pack_hasher.len();
+        let mut b = vec![0u8; hash_len];
+        if self.pending.len() >= hash_len {
+            b.copy_from_slice(&self.pending[..hash_len]);
+            self.pending.drain(..hash_len);
+            self.stream_pos += hash_len;
             self.enforce_max_input()?;
             return Ok(b);
         }
@@ -1067,7 +1116,7 @@ impl<'a> StreamingPackReader<'a> {
         self.inner
             .read_exact(&mut b[tail..])
             .map_err(|e| io_to_corrupt_eof(e, self.stream_pos, "trailer"))?;
-        self.stream_pos += 20;
+        self.stream_pos += hash_len;
         self.enforce_max_input()?;
         Ok(b)
     }

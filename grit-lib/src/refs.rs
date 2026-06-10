@@ -66,7 +66,7 @@ pub fn read_ref_file(path: &Path) -> Result<Ref> {
 pub(crate) fn parse_ref_content(content: &str) -> Result<Ref> {
     if let Some(target) = content.strip_prefix("ref: ") {
         Ok(Ref::Symbolic(target.trim().to_owned()))
-    } else if content.len() == 40 && content.chars().all(|c| c.is_ascii_hexdigit()) {
+    } else if ObjectId::is_full_hex(content) {
         let oid: ObjectId = content.parse()?;
         Ok(Ref::Direct(oid))
     } else if content == "unknown-oid" {
@@ -606,7 +606,7 @@ fn lookup_packed_ref(git_dir: &Path, refname: &str) -> Result<Option<ObjectId>> 
         let mut parts = line.splitn(2, ' ');
         let hash = parts.next().unwrap_or("");
         let name = parts.next().unwrap_or("").trim();
-        if name == refname && hash.len() == 40 {
+        if name == refname && ObjectId::is_hex_len(hash.len()) {
             let oid: ObjectId = hash.parse()?;
             return Ok(Some(oid));
         }
@@ -1184,6 +1184,26 @@ fn clear_conflicting_reflog_files(logs_root: &Path, target: &Path) {
     }
 }
 
+/// Render a reflog entry's `(old, new)` OIDs as hex, widening a null OID to the
+/// width of the non-null side so the line matches the repository hash algorithm.
+fn reflog_oid_hex_pair(old: &ObjectId, new: &ObjectId) -> (String, String) {
+    let width = if !old.is_zero() {
+        old.algo().hex_len()
+    } else if !new.is_zero() {
+        new.algo().hex_len()
+    } else {
+        old.algo().hex_len()
+    };
+    let render = |oid: &ObjectId| {
+        if oid.is_zero() {
+            "0".repeat(width)
+        } else {
+            oid.to_hex()
+        }
+    };
+    (render(old), render(new))
+}
+
 pub fn append_reflog(
     git_dir: &Path,
     refname: &str,
@@ -1220,10 +1240,15 @@ pub fn append_reflog(
         clear_conflicting_reflog_files(&logs_root, parent);
         fs::create_dir_all(parent)?;
     }
+    // A reflog records `<old> <new>` at the repository's hash width. The null
+    // ("0000…") side of a ref creation/deletion is stored at SHA-1 width by
+    // callers; widen it to match the non-null side so sha256 reflogs are
+    // internally consistent (and re-parseable).
+    let (old_hex, new_hex) = reflog_oid_hex_pair(old_oid, new_oid);
     let line = if message.is_empty() {
-        format!("{old_oid} {new_oid} {identity}\n")
+        format!("{old_hex} {new_hex} {identity}\n")
     } else {
-        format!("{old_oid} {new_oid} {identity}\t{message}\n")
+        format!("{old_hex} {new_hex} {identity}\t{message}\n")
     };
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -1480,7 +1505,7 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 fn loose_ref_file_direct_oid(path: &Path) -> Option<ObjectId> {
     let content = fs::read_to_string(path).ok()?;
     let content = content.trim_end_matches('\n').trim();
-    if content.len() == 40 && content.chars().all(|c| c.is_ascii_hexdigit()) {
+    if ObjectId::is_full_hex(content) {
         content.parse().ok()
     } else {
         None
@@ -1611,7 +1636,7 @@ fn collect_packed_refs_into_map(
         let mut parts = line.splitn(2, ' ');
         let hash = parts.next().unwrap_or("");
         let refname = parts.next().unwrap_or("").trim();
-        if !ref_name_matches_list_prefix(refname, prefix) || hash.len() != 40 {
+        if !ref_name_matches_list_prefix(refname, prefix) || !ObjectId::is_hex_len(hash.len()) {
             continue;
         }
         let oid: ObjectId = hash.parse()?;

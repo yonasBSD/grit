@@ -57,6 +57,25 @@ thread_local! {
 ///
 /// Git's negotiation (`mark_complete`, `everything_local`) silently ignores refs that do not
 /// resolve to commits rather than treating them as fatal, so we mirror that by skipping them.
+/// The object-format the client advertises during fetch: the local repository's
+/// `extensions.objectformat` when set (so SHA-256 repos negotiate correctly),
+/// otherwise `GIT_DEFAULT_HASH`, otherwise `sha1`.
+fn client_fetch_object_format() -> String {
+    if let Ok(repo) = Repository::discover(None) {
+        let cfg = ConfigSet::load(Some(&repo.git_dir), true).unwrap_or_default();
+        if let Some(fmt) = cfg
+            .get("extensions.objectformat")
+            .or_else(|| cfg.get("extensions.objectFormat"))
+        {
+            let f = fmt.trim().to_ascii_lowercase();
+            if !f.is_empty() {
+                return f;
+            }
+        }
+    }
+    std::env::var("GIT_DEFAULT_HASH").unwrap_or_else(|_| "sha1".to_owned())
+}
+
 fn peel_commit_oid_for_negotiation(repo: &Repository, oid: ObjectId) -> Result<Option<ObjectId>> {
     try_peel_to_commit_for_merge_base(repo, oid).map_err(|e| match e {
         grit_lib::error::Error::InvalidRef(msg) => anyhow::anyhow!(msg),
@@ -274,7 +293,7 @@ fn v2_ls_refs_for_fetch(
     refspecs: &[String],
     server_options: &[String],
 ) -> Result<(Vec<(String, ObjectId)>, Option<String>)> {
-    let default_hash = std::env::var("GIT_DEFAULT_HASH").unwrap_or_else(|_| "sha1".to_owned());
+    let default_hash = client_fetch_object_format();
     let agent = format!("agent=git/{}-", crate::version_string());
 
     trace_packet_fetch('>', "command=ls-refs");
@@ -1505,7 +1524,7 @@ pub fn fetch_via_upload_pack_skipping(
 
     let pack_buf = if client_proto == 2 {
         let caps = v2_caps.context("internal: missing v2 capability list")?;
-        let default_hash = std::env::var("GIT_DEFAULT_HASH").unwrap_or_else(|_| "sha1".to_owned());
+        let default_hash = client_fetch_object_format();
         let sideband_all = v2_fetch_supports_sideband_all(&caps);
 
         // Promisor-remote capability (protocol v2): if the server advertised promisor remotes,
@@ -2123,7 +2142,7 @@ fn fetch_upload_pack_negotiate_pack_bytes(
             write_bundle_uri_command(&mut stdin, &cap_send)?;
             drain_bundle_uri_response(&mut stdout)?;
         }
-        let default_hash = std::env::var("GIT_DEFAULT_HASH").unwrap_or_else(|_| "sha1".to_owned());
+        let default_hash = client_fetch_object_format();
         let sideband_all = v2_fetch_supports_sideband_all(&caps);
         // Drop the filter line when the server does not advertise `filter` (see `send_filter` in
         // `fetch-pack.c`): sending it to a non-filtering server is a fatal "unexpected line".
@@ -2755,7 +2774,7 @@ pub fn fetch_via_git_protocol_skipping(
     }
 
     let pack_buf = if use_v2_fetch {
-        let default_hash = std::env::var("GIT_DEFAULT_HASH").unwrap_or_else(|_| "sha1".to_owned());
+        let default_hash = client_fetch_object_format();
         write_v2_fetch_request(
             &mut stream_w,
             &default_hash,
@@ -2879,7 +2898,7 @@ pub fn fetch_via_ssh_upload_pack_skipping(
     }
 
     let pack_buf = if use_v2_fetch {
-        let default_hash = std::env::var("GIT_DEFAULT_HASH").unwrap_or_else(|_| "sha1".to_owned());
+        let default_hash = client_fetch_object_format();
         write_v2_fetch_request(
             &mut stdin,
             &default_hash,

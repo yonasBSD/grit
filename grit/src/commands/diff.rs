@@ -3615,17 +3615,18 @@ pub fn run(mut args: Args) -> Result<()> {
                     .and_then(|s| s.parse().ok())
             })
             .unwrap_or(0);
+        let full_hex = repo.odb.hash_algo().hex_len();
         let patch_abbrev = if args.full_index {
-            40
+            full_hex
         } else if let Some(n) = args.abbrev {
-            n.max(4).min(40)
+            n.max(4).min(full_hex)
         } else {
             7
         };
         let oid_len = if args.full_index || args.no_abbrev {
-            40
+            full_hex
         } else if let Some(n) = args.abbrev {
-            n.max(4).min(40)
+            n.max(4).min(full_hex)
         } else {
             7
         };
@@ -10650,8 +10651,26 @@ fn write_raw(
     for entry in entries {
         let old_mode = &entry.old_mode;
         let new_mode = &entry.new_mode;
-        let old_oid_hex = entry.old_oid.to_hex();
-        let new_oid_hex = entry.new_oid.to_hex();
+        // A null OID is stored at SHA-1 width regardless of repository algorithm;
+        // render it at the width of the non-null side so `--no-abbrev`/`--full-index`
+        // output is consistent (64 zeros in a sha256 repo, not 40).
+        let entry_hex_width = if !entry.old_oid.is_zero() {
+            entry.old_oid.algo().hex_len()
+        } else if !entry.new_oid.is_zero() {
+            entry.new_oid.algo().hex_len()
+        } else {
+            entry.old_oid.algo().hex_len()
+        };
+        let old_oid_hex = if entry.old_oid.is_zero() {
+            "0".repeat(entry_hex_width)
+        } else {
+            entry.old_oid.to_hex()
+        };
+        let new_oid_hex = if entry.new_oid.is_zero() {
+            "0".repeat(entry_hex_width)
+        } else {
+            entry.new_oid.to_hex()
+        };
         let olen = abbrev_len.min(old_oid_hex.len());
         let nlen = abbrev_len.min(new_oid_hex.len());
         let old_oid = format!("{}{ell}", &old_oid_hex[..olen]);

@@ -8,7 +8,7 @@ use crate::objects::{Object, ObjectId, ObjectKind};
 use crate::unpack_objects::apply_delta;
 use flate2::read::ZlibDecoder;
 use sha1::{Digest, Sha1};
-use sha2::Sha256;
+use sha2::{Digest as Sha256Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io;
@@ -43,17 +43,17 @@ pub struct PackIndex {
 }
 
 impl PackIndex {
-    /// Find the offset in the `.pack` file for the given SHA-1 OID via the fanout
+    /// Find the offset in the `.pack` file for the given OID via the fanout
     /// table and binary search; returns `None` when the OID is not present.
     ///
-    /// Pack indexes containing SHA-256 OIDs are skipped here (callers handling
-    /// SHA-256 should branch on [`PackIndex::hash_bytes`]).
+    /// The lookup only applies when the OID's width matches this index's hash
+    /// width (20 bytes for SHA-1, 32 for SHA-256); a width mismatch yields `None`.
     #[must_use]
     pub fn find_offset(&self, oid: &ObjectId) -> Option<u64> {
-        if self.hash_bytes != 20 {
+        let needle = oid.as_bytes();
+        if self.hash_bytes != needle.len() {
             return None;
         }
-        let needle = oid.as_bytes();
         let first_byte = needle[0] as usize;
         let lo = if first_byte == 0 {
             0
@@ -66,7 +66,7 @@ impl PackIndex {
         }
         let slice = &self.entries[lo..hi];
         slice
-            .binary_search_by(|e| e.oid.as_slice().cmp(needle.as_slice()))
+            .binary_search_by(|e| e.oid.as_slice().cmp(needle))
             .ok()
             .map(|idx| slice[idx].offset)
     }
@@ -589,17 +589,23 @@ pub fn collect_local_pack_info(objects_dir: &Path) -> Result<LocalPackInfo> {
     Ok(info)
 }
 
-fn verify_idx_trailing_checksum(idx_path: &Path, bytes: &[u8]) -> Result<()> {
-    if bytes.len() < 20 {
+fn verify_idx_trailing_checksum(idx_path: &Path, bytes: &[u8], hash_bytes: usize) -> Result<()> {
+    if bytes.len() < hash_bytes {
         return Err(Error::CorruptObject(format!(
             "index file {} missing checksum",
             idx_path.display()
         )));
     }
-    let idx_body_end = bytes.len() - 20;
-    let mut h = Sha1::new();
-    h.update(&bytes[..idx_body_end]);
-    let digest = h.finalize();
+    let idx_body_end = bytes.len() - hash_bytes;
+    let digest: Vec<u8> = if hash_bytes == 32 {
+        let mut h = Sha256::new();
+        Sha256Digest::update(&mut h, &bytes[..idx_body_end]);
+        h.finalize().to_vec()
+    } else {
+        let mut h = Sha1::new();
+        Digest::update(&mut h, &bytes[..idx_body_end]);
+        h.finalize().to_vec()
+    };
     if digest.as_slice() != &bytes[idx_body_end..] {
         return Err(Error::CorruptObject(format!(
             "index checksum mismatch for {}",
@@ -673,7 +679,8 @@ fn read_pack_index_v1(idx_path: &Path, bytes: &[u8], verify: bool) -> Result<Pac
     }
 
     if verify {
-        verify_idx_trailing_checksum(idx_path, bytes)?;
+        // Version-1 indexes are SHA-1 only (20-byte trailing checksum).
+        verify_idx_trailing_checksum(idx_path, bytes, 20)?;
     }
 
     let mut pack_path = idx_path.to_path_buf();
@@ -795,7 +802,7 @@ fn read_pack_index_v2(idx_path: &Path, bytes: &[u8], verify: bool) -> Result<Pac
     pack_path.set_extension("pack");
 
     if verify {
-        verify_idx_trailing_checksum(idx_path, bytes)?;
+        verify_idx_trailing_checksum(idx_path, bytes, hash_bytes)?;
     }
 
     Ok(PackIndex {
@@ -820,32 +827,25 @@ fn detect_idx_hash_bytes_v2(
     if object_count == 0 {
         return Ok(20);
     }
-    if idx_file_len < 20 {
-        return Err(Error::CorruptObject(format!(
-            "index file {} missing checksum",
-            idx_path.display()
-        )));
-    }
-    let body_without_checksum = idx_file_len.saturating_sub(20);
 
+    // For a width `hb` (20 for SHA-1, 32 for SHA-256) the v2 index is:
+    //   fanout_end + n*hb (OIDs) + n*4 (CRC) + n*4 (offsets)
+    //   + large*8 (64-bit offset extension) + hb (pack checksum) + hb (index checksum)
+    // The OID width and both trailing checksums all use the repository hash, so the
+    // index checksum is `hb`-wide too (Git `packfile.c` `load_idx`). Require the size
+    // to match exactly one `(hb, large)` pair with `0 <= large <= n`.
     for &hb in &[20usize, 32] {
-        // Body is everything before the 20-byte SHA-1 index checksum: tables, optional 64-bit
-        // offset extension, then `hb`-byte pack checksum (see `packfile.c` `load_idx`).
-        let min_body = fanout_end
+        let fixed = fanout_end
             .saturating_add(object_count.saturating_mul(hb + 4 + 4))
-            .saturating_add(hb);
-        if body_without_checksum < min_body {
+            .saturating_add(2 * hb);
+        if idx_file_len < fixed {
             continue;
         }
-        let mut max_body = min_body;
-        if object_count > 0 {
-            max_body = max_body.saturating_add((object_count - 1).saturating_mul(8));
-        }
-        if body_without_checksum > max_body {
-            continue;
-        }
-        let extra = body_without_checksum.saturating_sub(min_body);
+        let extra = idx_file_len - fixed;
         if extra % 8 != 0 {
+            continue;
+        }
+        if extra / 8 > object_count {
             continue;
         }
         return Ok(hb);
@@ -865,7 +865,7 @@ pub fn oid_bytes_to_hex(oid: &[u8]) -> String {
 /// True when `entry` stores a SHA-1 OID matching `oid` (SHA-256 pack entries are ignored).
 #[must_use]
 pub fn pack_index_entry_matches_sha1_oid(entry: &PackIndexEntry, oid: &ObjectId) -> bool {
-    entry.oid.len() == 20 && entry.oid.as_slice() == oid.as_bytes().as_slice()
+    entry.oid.len() == 20 && entry.oid.as_slice() == oid.as_bytes()
 }
 
 /// Hash canonical loose object bytes (`kind SP size NUL data`) with the repo hash width.
@@ -1079,8 +1079,11 @@ pub fn verify_pack_and_collect(idx_path: &Path) -> Result<Vec<VerifyObjectRecord
             )));
         }
     }
-    if idx_file_bytes.len() >= hb + 20 {
-        let embedded = &idx_file_bytes[idx_file_bytes.len() - (hb + 20)..idx_file_bytes.len() - 20];
+    // The `.idx` ends with the pack checksum followed by its own checksum, both
+    // at the repository hash width `hb` (20 for SHA-1, 32 for SHA-256).
+    if idx_file_bytes.len() >= 2 * hb {
+        let n = idx_file_bytes.len();
+        let embedded = &idx_file_bytes[n - 2 * hb..n - hb];
         if embedded != &pack_bytes[pack_end..] {
             return Err(Error::CorruptObject(format!(
                 "pack checksum in index does not match {}",
@@ -1579,7 +1582,7 @@ pub fn packed_ref_delta_reuse_slice(
         let Some(entry) = idx
             .entries
             .iter()
-            .find(|e| e.oid.len() == 20 && e.oid.as_slice() == oid.as_bytes().as_slice())
+            .find(|e| e.oid.len() == 20 && e.oid.as_slice() == oid.as_bytes())
         else {
             continue;
         };
@@ -1672,7 +1675,7 @@ pub fn packed_delta_base_oid(objects_dir: &Path, oid: &ObjectId) -> Result<Optio
         let Some(entry) = idx
             .entries
             .iter()
-            .find(|e| e.oid.len() == 20 && e.oid.as_slice() == oid.as_bytes().as_slice())
+            .find(|e| e.oid.len() == 20 && e.oid.as_slice() == oid.as_bytes())
         else {
             continue;
         };

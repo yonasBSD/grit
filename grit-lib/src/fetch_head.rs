@@ -1,5 +1,7 @@
 //! Parsing [`FETCH_HEAD`](https://git-scm.com/docs/git-fetch#_discussion) lines.
 
+use crate::objects::ObjectId;
+
 /// Collect 40-character hex object IDs from `FETCH_HEAD` content for lines that are **for merge**.
 ///
 /// Git marks merge candidates with either:
@@ -21,7 +23,7 @@ pub fn merge_object_ids_hex(input: &str) -> Vec<String> {
             continue;
         };
         let oid = &line[..first_tab];
-        if oid.len() != 40 || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if !ObjectId::is_full_hex(oid) {
             continue;
         }
         let rest = &line[first_tab + 1..];

@@ -4,15 +4,15 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use sha1::{Digest, Sha1};
+use sha2::{Digest as Sha256Digest, Sha256};
 
 use crate::bloom::{BloomBuildOutcome, BloomFilterSettings};
 use crate::commit_graph_file::CommitGraphChain;
-use crate::objects::{parse_commit, ObjectId, ObjectKind};
+use crate::objects::{parse_commit, HashAlgo, ObjectId, ObjectKind};
 use crate::odb::Odb;
 
 const SIGNATURE: &[u8; 4] = b"CGPH";
 const VERSION: u8 = 1;
-const HASH_VERSION_SHA1: u8 = 1;
 const HASH_LEN: usize = 20;
 
 const CHUNK_OID_FANOUT: u32 = 0x4f49_4446;
@@ -47,6 +47,18 @@ fn sha1_file_body(body: &[u8]) -> [u8; 20] {
     let mut h = Sha1::new();
     h.update(body);
     h.finalize().into()
+}
+
+/// Hash a commit-graph/multi-pack-index file body with the repository algorithm.
+fn hash_file_body(body: &[u8], algo: HashAlgo) -> Vec<u8> {
+    match algo {
+        HashAlgo::Sha1 => sha1_file_body(body).to_vec(),
+        HashAlgo::Sha256 => {
+            let mut h = Sha256::new();
+            Sha256Digest::update(&mut h, body);
+            h.finalize().to_vec()
+        }
+    }
 }
 
 fn parse_commit_time(committer: &str) -> u64 {
@@ -438,10 +450,13 @@ pub fn build_commit_graph_bytes(
     }
     let end_offset = cur;
 
-    let mut out = Vec::with_capacity(end_offset as usize + HASH_LEN);
+    // The commit-graph hash version and trailing checksum follow the repository
+    // hash algorithm (SHA-1 → version 1, SHA-256 → version 2).
+    let algo = odb.hash_algo();
+    let mut out = Vec::with_capacity(end_offset as usize + algo.len());
     out.write_all(SIGNATURE)?;
     let base_layers = base_graph_hashes.len() as u8;
-    out.write_all(&[VERSION, HASH_VERSION_SHA1, num_chunks, base_layers])?;
+    out.write_all(&[VERSION, algo.oid_version(), num_chunks, base_layers])?;
     for i in 0..chunks.len() {
         out.write_all(&chunks[i].0.to_be_bytes())?;
         out.write_all(&offsets[i].to_be_bytes())?;
@@ -452,7 +467,7 @@ pub fn build_commit_graph_bytes(
         out.write_all(data)?;
     }
 
-    let checksum = sha1_file_body(&out);
+    let checksum = hash_file_body(&out, algo);
     out.write_all(&checksum)?;
     Ok((out, bloom_stats))
 }

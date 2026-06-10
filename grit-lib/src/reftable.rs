@@ -181,6 +181,9 @@ pub struct WriteOptions {
     pub skip_index_objects: bool,
     /// Write blocks without padding to the block size.
     pub unpadded: bool,
+    /// Object-id width in bytes: 20 for SHA-1 (reftable version 1), 32 for
+    /// SHA-256 (reftable version 2). Defaults to SHA-1.
+    pub hash_size: usize,
 }
 
 impl Default for WriteOptions {
@@ -191,6 +194,7 @@ impl Default for WriteOptions {
             write_log: true,
             skip_index_objects: false,
             unpadded: false,
+            hash_size: HASH_SIZE,
         }
     }
 }
@@ -641,18 +645,28 @@ impl WriterState {
     }
 
     fn header_size(&self) -> usize {
-        // version 1 (sha1) only — grit is sha1 in these tests.
-        24
+        // Version 1 (SHA-1) is 24 bytes; version 2 (SHA-256) adds a 4-byte
+        // hash-id field for 28.
+        if self.opts.hash_size == 32 {
+            28
+        } else {
+            24
+        }
     }
 
     fn write_header(&self, dest: &mut [u8]) {
         dest[0..4].copy_from_slice(REFTABLE_MAGIC);
-        dest[4] = 1;
+        dest[4] = if self.opts.hash_size == 32 { 2 } else { 1 };
         dest[5] = ((self.opts.block_size >> 16) & 0xff) as u8;
         dest[6] = ((self.opts.block_size >> 8) & 0xff) as u8;
         dest[7] = (self.opts.block_size & 0xff) as u8;
         dest[8..16].copy_from_slice(&self.min_update_index.to_be_bytes());
         dest[16..24].copy_from_slice(&self.max_update_index.to_be_bytes());
+        // Version 2 records the hash function id (`sha1` / `s256`, Git
+        // `GIT_SHA{1,256}_FORMAT_ID`).
+        if self.opts.hash_size == 32 {
+            dest[24..28].copy_from_slice(b"s256");
+        }
     }
 
     fn stats_mut(&mut self, typ: u8) -> &mut SectionStats {
@@ -1115,6 +1129,25 @@ impl ReftableReader {
         })
     }
 
+    /// Object-id width implied by the reftable version (32 for version 2 / SHA-256,
+    /// 20 otherwise).
+    fn hash_size(&self) -> usize {
+        if self.version == 2 {
+            32
+        } else {
+            20
+        }
+    }
+
+    /// File-header size implied by the reftable version (28 for version 2, 24 otherwise).
+    fn header_len(&self) -> usize {
+        if self.version == 2 {
+            28
+        } else {
+            HEADER_SIZE
+        }
+    }
+
     /// Read all ref records from the table.
     pub fn read_refs(&self) -> Result<Vec<RefRecord>> {
         let mut refs = Vec::new();
@@ -1135,10 +1168,11 @@ impl ReftableReader {
         };
 
         let mut pos = 0usize;
-        // Skip the header — first ref block starts at offset 24 but shares
-        // the same physical block as the header.
-        if pos < HEADER_SIZE {
-            pos = HEADER_SIZE;
+        // Skip the file header — the first ref block shares the header's physical
+        // block, starting at the header size (24 for v1, 28 for v2).
+        let header_len = self.header_len();
+        if pos < header_len {
+            pos = header_len;
         }
 
         while pos < ref_end {
@@ -1164,8 +1198,8 @@ impl ReftableReader {
             // Determine the data range for this block
             let block_data_start = pos + 4; // after type(1) + len(3)
 
-            // The first block's block_len includes the 24-byte header
-            let is_first = pos == HEADER_SIZE;
+            // The first block's block_len includes the file header.
+            let is_first = pos == header_len;
             let records_end = if is_first {
                 // block_len is from file start
                 block_len
@@ -1187,8 +1221,13 @@ impl ReftableReader {
             let mut prev_name = Vec::<u8>::new();
 
             while rpos < restart_table_start {
-                let (rec, new_pos) =
-                    decode_ref_record(&self.data, rpos, &prev_name, self.min_update_index)?;
+                let (rec, new_pos) = decode_ref_record(
+                    &self.data,
+                    rpos,
+                    &prev_name,
+                    self.min_update_index,
+                    self.hash_size(),
+                )?;
                 prev_name = rec.name.as_bytes().to_vec();
                 refs.push(rec);
                 rpos = new_pos;
@@ -1235,9 +1274,9 @@ impl ReftableReader {
         // header) is a log block — mirroring `is_present` in git's table.c.
         let mut pos = if self.log_position > 0 {
             self.log_position as usize
-        } else if self.data.len() > HEADER_SIZE && self.data[HEADER_SIZE] == BLOCK_TYPE_LOG {
+        } else if self.data.len() > self.header_len() && self.data[self.header_len()] == BLOCK_TYPE_LOG {
             // Log block is the first block; it begins right after the header.
-            HEADER_SIZE
+            self.header_len()
         } else {
             return Ok(Vec::new());
         };
@@ -1255,13 +1294,13 @@ impl ReftableReader {
             // header, the 3-byte block length counts from offset 0 and so
             // includes the header bytes; the compressed payload still starts
             // right after the type+length header at `pos + 4`.
-            let is_first = pos == HEADER_SIZE && self.log_position == 0;
+            let is_first = pos == self.header_len() && self.log_position == 0;
             let block_len = read_u24(&self.data, pos + 1);
             let compressed_start = pos + 4;
 
             // The inflated size is block_len minus the 4-byte type+length header
             // (and, for the first block, minus the embedded reftable header).
-            let header_prefix = if is_first { HEADER_SIZE } else { 0 };
+            let header_prefix = if is_first { self.header_len() } else { 0 };
             let inflated_size = block_len.saturating_sub(4 + header_prefix);
 
             // Decompress
@@ -1288,7 +1327,7 @@ impl ReftableReader {
             let mut prev_key = Vec::<u8>::new();
 
             while rpos < restart_table_start {
-                let (log, new_pos) = decode_log_record(&inflated, rpos, &prev_key)?;
+                let (log, new_pos) = decode_log_record(&inflated, rpos, &prev_key, self.hash_size())?;
                 // Reconstruct key for prefix compression
                 let mut key = Vec::new();
                 key.extend_from_slice(log.refname.as_bytes());
@@ -1330,6 +1369,7 @@ fn decode_ref_record(
     pos: usize,
     prev_name: &[u8],
     min_update_index: u64,
+    hash_size: usize,
 ) -> Result<(RefRecord, usize)> {
     let (prefix_len, p) = get_varint(data, pos)?;
     let (suffix_and_type, mut p) = get_varint(data, p)?;
@@ -1361,21 +1401,21 @@ fn decode_ref_record(
     let value = match value_type {
         VALUE_DELETION => RefValue::Deletion,
         VALUE_ONE_OID => {
-            if p + HASH_SIZE > data.len() {
+            if p + hash_size > data.len() {
                 return Err(Error::InvalidRef("reftable: truncated OID".into()));
             }
-            let oid = ObjectId::from_bytes(&data[p..p + HASH_SIZE])?;
-            p += HASH_SIZE;
+            let oid = ObjectId::from_bytes(&data[p..p + hash_size])?;
+            p += hash_size;
             RefValue::Val1(oid)
         }
         VALUE_TWO_OID => {
-            if p + 2 * HASH_SIZE > data.len() {
+            if p + 2 * hash_size > data.len() {
                 return Err(Error::InvalidRef("reftable: truncated OID pair".into()));
             }
-            let oid = ObjectId::from_bytes(&data[p..p + HASH_SIZE])?;
-            p += HASH_SIZE;
-            let peeled = ObjectId::from_bytes(&data[p..p + HASH_SIZE])?;
-            p += HASH_SIZE;
+            let oid = ObjectId::from_bytes(&data[p..p + hash_size])?;
+            p += hash_size;
+            let peeled = ObjectId::from_bytes(&data[p..p + hash_size])?;
+            p += hash_size;
             RefValue::Val2(oid, peeled)
         }
         VALUE_SYMREF => {
@@ -1409,7 +1449,12 @@ fn decode_ref_record(
     ))
 }
 
-fn decode_log_record(data: &[u8], pos: usize, prev_key: &[u8]) -> Result<(LogRecord, usize)> {
+fn decode_log_record(
+    data: &[u8],
+    pos: usize,
+    prev_key: &[u8],
+    hash_size: usize,
+) -> Result<(LogRecord, usize)> {
     let (prefix_len, p) = get_varint(data, pos)?;
     let (suffix_and_type, mut p) = get_varint(data, p)?;
     let suffix_len = (suffix_and_type >> 3) as usize;
@@ -1450,7 +1495,7 @@ fn decode_log_record(data: &[u8], pos: usize, prev_key: &[u8]) -> Result<(LogRec
 
     if log_type == 0 {
         // Deletion
-        let zero_oid = ObjectId::from_bytes(&[0u8; 20])?;
+        let zero_oid = ObjectId::from_bytes(&vec![0u8; hash_size])?;
         return Ok((
             LogRecord {
                 refname,
@@ -1468,13 +1513,13 @@ fn decode_log_record(data: &[u8], pos: usize, prev_key: &[u8]) -> Result<(LogRec
     }
 
     // log_type == 1: standard log data
-    if p + 2 * HASH_SIZE > data.len() {
+    if p + 2 * hash_size > data.len() {
         return Err(Error::InvalidRef("reftable: truncated log OIDs".into()));
     }
-    let old_id = ObjectId::from_bytes(&data[p..p + HASH_SIZE])?;
-    p += HASH_SIZE;
-    let new_id = ObjectId::from_bytes(&data[p..p + HASH_SIZE])?;
-    p += HASH_SIZE;
+    let old_id = ObjectId::from_bytes(&data[p..p + hash_size])?;
+    p += hash_size;
+    let new_id = ObjectId::from_bytes(&data[p..p + hash_size])?;
+    p += hash_size;
 
     let (name_len, p2) = get_varint(data, p)?;
     p = p2;
@@ -1535,6 +1580,30 @@ fn decode_log_record(data: &[u8], pos: usize, prev_key: &[u8]) -> Result<(LogRec
 // Stack management
 // ---------------------------------------------------------------------------
 
+/// Widen a null OID to `hash_size` bytes so every OID written into a reftable
+/// shares the table's hash width. Non-null OIDs (real objects) are already at the
+/// repository width and are returned unchanged.
+fn widen_oid_to(oid: ObjectId, hash_size: usize) -> ObjectId {
+    if oid.is_zero() && oid.as_bytes().len() != hash_size {
+        ObjectId::from_bytes(&vec![0u8; hash_size]).unwrap_or(oid)
+    } else {
+        oid
+    }
+}
+
+/// Object-id width for reftables in the repository owning `git_dir`: 32 bytes
+/// (reftable version 2) when `extensions.objectformat=sha256`, else 20 (version 1).
+fn reftable_hash_size_for_git_dir(git_dir: &Path) -> usize {
+    let cfg = crate::config::ConfigSet::load(Some(git_dir), true).unwrap_or_default();
+    match cfg
+        .get("extensions.objectformat")
+        .and_then(|v| crate::objects::HashAlgo::from_name(&v))
+    {
+        Some(crate::objects::HashAlgo::Sha256) => 32,
+        _ => 20,
+    }
+}
+
 /// Manages the `$GIT_DIR/reftable/` directory and `tables.list` stack.
 ///
 /// The stack provides a merged view of all tables, with later tables
@@ -1577,6 +1646,15 @@ impl Drop for TablesListLock {
 }
 
 impl ReftableStack {
+    /// Object-id width (20 or 32) for reftables written into this stack, from the
+    /// owning repository's `extensions.objectformat`.
+    fn hash_size(&self) -> usize {
+        match self.reftable_dir.parent() {
+            Some(git_dir) => reftable_hash_size_for_git_dir(git_dir),
+            None => 20,
+        }
+    }
+
     /// Open an existing reftable stack.
     pub fn open(git_dir: &Path) -> Result<Self> {
         let reftable_dir = git_dir.join("reftable");
@@ -1740,13 +1818,14 @@ impl ReftableStack {
             .filter(|log| log.refname != refname)
             .collect();
         let mut next_update_index = self.max_update_index()? + 1;
+        let hash_size = self.hash_size();
         for entry in entries {
             let (name, email, time_secs, tz) = parse_identity_string(&entry.identity);
             logs.push(LogRecord {
                 refname: refname.to_owned(),
                 update_index: next_update_index,
-                old_id: entry.old_oid,
-                new_id: entry.new_oid,
+                old_id: widen_oid_to(entry.old_oid, hash_size),
+                new_id: widen_oid_to(entry.new_oid, hash_size),
                 name,
                 email,
                 time_seconds: time_secs,
@@ -1770,7 +1849,9 @@ impl ReftableStack {
         }
         max_idx = max_idx.max(next_update_index.saturating_sub(1));
 
-        let mut writer = ReftableWriter::new(WriteOptions::default(), min_idx, max_idx);
+        let mut wopts = WriteOptions::default();
+        wopts.hash_size = self.hash_size();
+        let mut writer = ReftableWriter::new(wopts, min_idx, max_idx);
         for rec in refs {
             writer.add_ref(rec)?;
         }
@@ -1935,7 +2016,9 @@ impl ReftableStack {
             min_idx = 0;
         }
 
-        let mut writer = ReftableWriter::new(WriteOptions::default(), min_idx, max_idx);
+        let mut wopts = WriteOptions::default();
+        wopts.hash_size = self.hash_size();
+        let mut writer = ReftableWriter::new(wopts, min_idx, max_idx);
         for rec in refs {
             writer.add_ref(rec)?;
         }
@@ -1994,7 +2077,9 @@ impl ReftableStack {
             min_idx = 0;
         }
 
-        let mut writer = ReftableWriter::new(WriteOptions::default(), min_idx, max_idx);
+        let mut wopts = WriteOptions::default();
+        wopts.hash_size = self.hash_size();
+        let mut writer = ReftableWriter::new(wopts, min_idx, max_idx);
         for rec in refs {
             writer.add_ref(rec)?;
         }
@@ -2477,7 +2562,7 @@ pub fn reftable_write_ref(
             _ => None,
         }) {
         Some(oid) => oid,
-        None => ObjectId::from_bytes(&[0u8; 20])?,
+        None => ObjectId::from_bytes(&vec![0u8; reftable_hash_size_for_git_dir(&store_git_dir)])?,
     };
 
     let log = if let Some(identity) = log_identity {
@@ -2519,7 +2604,7 @@ pub fn reftable_write_symref(
 
     let log = if let Some(identity) = log_identity {
         let (name, email, time_secs, tz) = parse_identity_string(identity);
-        let zero_oid = ObjectId::from_bytes(&[0u8; 20])?;
+        let zero_oid = ObjectId::from_bytes(&vec![0u8; reftable_hash_size_for_git_dir(&store_git_dir)])?;
         Some(LogRecord {
             refname: storage_refname.clone(),
             update_index: 0,
@@ -2772,12 +2857,16 @@ pub fn reftable_append_reflog(
     let update_index = stack.max_update_index()? + 1;
     let opts = read_write_options(&store_git_dir);
 
+    // A null OID is stored at SHA-1 width by callers; widen it to the table's
+    // hash width so every OID in a sha256 reftable is 32 bytes (a mixed-width
+    // log record desynchronizes the block).
+    let hash_size = opts.hash_size;
     let mut writer = ReftableWriter::new(opts, update_index, update_index);
     writer.add_log(LogRecord {
         refname: storage_refname.clone(),
         update_index,
-        old_id: *old_oid,
-        new_id: *new_oid,
+        old_id: widen_oid_to(*old_oid, hash_size),
+        new_id: widen_oid_to(*new_oid, hash_size),
         name,
         email,
         time_seconds: time_secs,
@@ -2879,6 +2968,7 @@ pub fn reftable_delete_reflog(git_dir: &Path, refname: &str) -> Result<()> {
 /// Read reftable write options from the repository config.
 pub fn read_write_options(git_dir: &Path) -> WriteOptions {
     let mut opts = WriteOptions::default();
+    opts.hash_size = reftable_hash_size_for_git_dir(git_dir);
 
     if let Ok(config) = ConfigSet::load(Some(git_dir), true) {
         if let Some(value) = config.get("reftable.blockSize") {
@@ -3193,7 +3283,9 @@ fn parse_footer(data: &[u8], version: u8) -> Result<Footer> {
     let min_update_index = read_u64(&data[8..16])?;
     let max_update_index = read_u64(&data[16..24])?;
 
-    let off = 24;
+    // The position fields follow the file header, whose size is version-dependent
+    // (24 bytes for v1, 28 for v2 — the extra 4 bytes are the hash-id).
+    let off = if version == 2 { 28 } else { 24 };
     let ref_index_position = read_u64(&data[off..off + 8])?;
     let obj_position_and_id_len = read_u64(&data[off + 8..off + 16])?;
     let obj_index_position = read_u64(&data[off + 16..off + 24])?;

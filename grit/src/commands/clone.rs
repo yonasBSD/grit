@@ -5127,7 +5127,7 @@ fn assert_source_refs_valid_for_clone(git_dir: &Path) -> Result<()> {
                 if trimmed.starts_with("ref: ") {
                     continue;
                 }
-                if trimmed.len() != 40 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+                if !ObjectId::is_full_hex(trimmed) {
                     bail!("has neither a valid OID nor a target");
                 }
             }
@@ -5155,7 +5155,7 @@ fn assert_source_refs_valid_for_clone(git_dir: &Path) -> Result<()> {
             if !(refname.starts_with("refs/heads/") || refname.starts_with("refs/tags/")) {
                 continue;
             }
-            if oid.len() != 40 || !oid.chars().all(|c| c.is_ascii_hexdigit()) {
+            if !ObjectId::is_full_hex(oid) {
                 bail!("has neither a valid OID nor a target");
             }
         }

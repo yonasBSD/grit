@@ -1859,7 +1859,7 @@ fn collect_pack_oids_with_prefix(objects_dir: &Path, prefix: &str) -> Result<Vec
     let mut out = Vec::new();
     for idx in pack::read_local_pack_indexes_cached(objects_dir)? {
         for e in &idx.entries {
-            if e.oid.len() != 20 {
+            if e.oid.len() != 20 && e.oid.len() != 32 {
                 continue;
             }
             let hex = pack::oid_bytes_to_hex(&e.oid);
@@ -1941,7 +1941,7 @@ fn warn_if_branch_refname_collides_with_abbrev_hex(
     spec: &str,
     object_oid: ObjectId,
 ) {
-    if spec.len() >= 40 {
+    if spec.len() >= repo.odb.hash_algo().hex_len() {
         return;
     }
     let branch_ref = format!("refs/heads/{spec}");
@@ -1956,7 +1956,7 @@ fn warn_if_branch_refname_collides_with_abbrev_hex(
 /// When a hex-like `spec` resolved as a ref under `refs/heads/` or `refs/tags/`, warn if that name
 /// also matches object(s) in the ODB (Git: `warning: refname 'abc' is ambiguous.`).
 fn warn_if_hex_ref_collides_with_objects(repo: &Repository, spec: &str, ref_oid: ObjectId) {
-    if spec.len() >= 40 || !is_hex_prefix(spec) {
+    if spec.len() >= repo.odb.hash_algo().hex_len() || !is_hex_prefix(spec) {
         return;
     }
     let Ok(matches) = find_abbrev_matches(repo, spec) else {
@@ -2160,7 +2160,7 @@ fn resolve_base(
             let Some(oid_hex) = parts.next() else {
                 continue;
             };
-            if oid_hex.len() == 40 && oid_hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            if ObjectId::is_full_hex(oid_hex) {
                 let oid = oid_hex
                     .parse::<ObjectId>()
                     .map_err(|_| Error::InvalidRef("invalid FETCH_HEAD object id".to_owned()))?;
@@ -2309,7 +2309,7 @@ fn resolve_base(
 
     // Hex-like tokens may name refs (e.g. tag `1.2` / `2.2`) — resolve those before treating the
     // string as an abbreviated object id (t5334 incremental MIDX).
-    if is_hex_prefix(spec) && spec.len() < 40 {
+    if is_hex_prefix(spec) && spec.len() < repo.odb.hash_algo().hex_len() {
         let tag_ref = format!("refs/tags/{spec}");
         if let Ok(oid) = refs::resolve_ref(&repo.git_dir, &tag_ref) {
             warn_if_hex_ref_collides_with_objects(repo, spec, oid);
@@ -2328,7 +2328,7 @@ fn resolve_base(
             // Git treats 4+ hex digits as an abbreviated object id lookup first. When nothing
             // matches, fail as unknown revision — do not fall through to index DWIM (which would
             // incorrectly report "ambiguous argument" for paths like `000000000`).
-            if (4..40).contains(&spec.len()) {
+            if (4..repo.odb.hash_algo().hex_len()).contains(&spec.len()) {
                 return Err(Error::ObjectNotFound(spec.to_owned()));
             }
         } else if matches.len() == 1 {
@@ -3633,7 +3633,8 @@ fn resolve_commit_message_search_from(
 }
 
 fn find_abbrev_matches(repo: &Repository, prefix: &str) -> Result<Vec<ObjectId>> {
-    if !is_hex_prefix(prefix) || !(4..=40).contains(&prefix.len()) {
+    let max_len = repo.odb.hash_algo().hex_len();
+    if !is_hex_prefix(prefix) || !(4..=max_len).contains(&prefix.len()) {
         return Ok(Vec::new());
     }
     let mut seen = HashSet::new();
@@ -3691,7 +3692,9 @@ fn collect_loose_object_ids_in_dir(objects_dir: &Path) -> Result<Vec<String>> {
             let Some(suffix) = file_name.to_str() else {
                 continue;
             };
-            if suffix.len() == 38 && suffix.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            if ObjectId::is_loose_suffix_len(suffix.len())
+                && suffix.chars().all(|ch| ch.is_ascii_hexdigit())
+            {
                 ids.push(format!("{prefix}{suffix}"));
             }
         }

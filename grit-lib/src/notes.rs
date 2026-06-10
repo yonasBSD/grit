@@ -48,7 +48,7 @@ enum NotesTreeChild {
 
 pub fn note_object_name(path: &[u8]) -> Option<String> {
     let compact: Vec<u8> = path.iter().copied().filter(|byte| *byte != b'/').collect();
-    if compact.len() != 40 || !compact.iter().all(u8::is_ascii_hexdigit) {
+    if !ObjectId::is_hex_len(compact.len()) || !compact.iter().all(u8::is_ascii_hexdigit) {
         return None;
     }
     String::from_utf8(compact)
