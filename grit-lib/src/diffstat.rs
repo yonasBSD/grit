@@ -38,21 +38,30 @@ pub fn terminal_columns() -> usize {
             }
         }
     }
-    if let Ok(output) = std::process::Command::new("stty")
-        .arg("size")
-        .stdin(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
+    // The terminal size is constant for the life of the process (matching
+    // C git, which caches `term_columns()` after the first call); spawning
+    // `stty` once per --stat commit dominated history walks. The `COLUMNS`
+    // check above stays uncached so per-call env overrides keep working.
+    static STTY_COLS: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    if let Some(w) = *STTY_COLS.get_or_init(|| {
+        let output = std::process::Command::new("stty")
+            .arg("size")
+            .stdin(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
         let s = String::from_utf8_lossy(&output.stdout);
         let parts: Vec<&str> = s.split_whitespace().collect();
         if parts.len() == 2 {
             if let Ok(w) = parts[1].parse::<usize>() {
                 if w > 0 {
-                    return w;
+                    return Some(w);
                 }
             }
         }
+        None
+    }) {
+        return w;
     }
     80
 }

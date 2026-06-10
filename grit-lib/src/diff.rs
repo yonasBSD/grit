@@ -6084,6 +6084,16 @@ pub fn apply_rotate_skip_log_entries(
     rotate_to: Option<&str>,
     skip_to: Option<&str>,
 ) -> Result<Vec<DiffEntry>> {
+    // Without --rotate-to/--skip-to this is a no-op (the ordered-paths helper
+    // returns the entries untouched), so skip the full-tree walk that
+    // `all_blob_paths_in_tree_order` performs — per displayed commit it read
+    // every subtree of the commit's tree just to discard the result.
+    fn trimmed(s: Option<&str>) -> Option<&str> {
+        s.map(str::trim).filter(|t| !t.is_empty())
+    }
+    if trimmed(rotate_to).is_none() && trimmed(skip_to).is_none() {
+        return Ok(entries);
+    }
     let tree_paths = crate::merge_diff::all_blob_paths_in_tree_order(odb, commit_tree);
     apply_rotate_skip_ordered_paths(&tree_paths, entries, rotate_to, skip_to)
 }

@@ -320,8 +320,8 @@ pub fn read_local_pack_indexes(objects_dir: &Path) -> Result<Vec<PackIndex>> {
 /// verifies pack indexes during `fsck`/`verify-pack`, not on every object lookup. Use
 /// [`read_pack_index`] when verification is required.
 mod pack_cache {
-    use super::{read_pack_index_no_verify, Error, PackIndex, Result};
-    use std::collections::HashMap;
+    use super::{read_pack_index_no_verify, Error, ObjectKind, PackIndex, Result};
+    use std::collections::{HashMap, VecDeque};
     use std::fs;
     use std::io;
     use std::path::{Path, PathBuf};
@@ -345,11 +345,23 @@ mod pack_cache {
         bytes: Arc<Vec<u8>>,
     }
 
+    /// Upper bound on retained delta-base bytes, matching git's default
+    /// `core.deltaBaseCacheLimit` (96 MiB).
+    const DELTA_BASE_CACHE_LIMIT: usize = 96 * 1024 * 1024;
+
     #[derive(Default)]
     struct State {
         by_dir: HashMap<PathBuf, CachedDir>,
         by_idx: HashMap<PathBuf, CachedIdx>,
         by_pack: HashMap<PathBuf, CachedPack>,
+        /// Resolved delta bases keyed by pack path → in-pack offset (git's
+        /// `delta_base_cache`). Entries are dropped whenever the pack's bytes
+        /// are re-read (stamp change), so they can never outlive the pack
+        /// content they were inflated from.
+        delta_bases: HashMap<PathBuf, HashMap<u64, (ObjectKind, Arc<Vec<u8>>)>>,
+        /// FIFO eviction order for `delta_bases` (size-bounded).
+        delta_order: VecDeque<(PathBuf, u64)>,
+        delta_bytes: usize,
     }
 
     static CACHE: OnceLock<Mutex<State>> = OnceLock::new();
@@ -476,6 +488,9 @@ mod pack_cache {
             }
             let bytes = Arc::new(fs::read(pack_path).map_err(Error::Io)?);
             let mut g = lock();
+            // The pack's content (re)entered the cache: any delta bases
+            // inflated from a previous read of this path are now suspect.
+            drop_delta_entries_locked(&mut g, pack_path);
             g.by_pack.insert(
                 pack_path.to_path_buf(),
                 CachedPack {
@@ -500,6 +515,65 @@ mod pack_cache {
         g.by_dir.clear();
         g.by_idx.clear();
         g.by_pack.clear();
+        g.delta_bases.clear();
+        g.delta_order.clear();
+        g.delta_bytes = 0;
+    }
+
+    /// Drop every cached delta base inflated from `pack_path`.
+    fn drop_delta_entries_locked(g: &mut State, pack_path: &Path) {
+        if let Some(per) = g.delta_bases.remove(pack_path) {
+            let removed: usize = per.values().map(|(_, d)| d.len()).sum();
+            g.delta_bytes = g.delta_bytes.saturating_sub(removed);
+            g.delta_order.retain(|(p, _)| p != pack_path);
+        }
+    }
+
+    /// Cached delta base at `(pack_path, offset)`, if still resident.
+    pub fn get_delta_base(pack_path: &Path, offset: u64) -> Option<(ObjectKind, Arc<Vec<u8>>)> {
+        let g = lock();
+        let (kind, data) = g.delta_bases.get(pack_path)?.get(&offset)?;
+        Some((*kind, Arc::clone(data)))
+    }
+
+    /// Insert a resolved delta base, evicting oldest entries past the size cap.
+    pub fn put_delta_base(pack_path: &Path, offset: u64, kind: ObjectKind, data: Arc<Vec<u8>>) {
+        let sz = data.len();
+        if sz > DELTA_BASE_CACHE_LIMIT {
+            return;
+        }
+        let mut g = lock();
+        while g.delta_bytes.saturating_add(sz) > DELTA_BASE_CACHE_LIMIT {
+            let Some((p, off)) = g.delta_order.pop_front() else {
+                break;
+            };
+            let mut removed = 0;
+            let mut now_empty = false;
+            if let Some(per) = g.delta_bases.get_mut(&p) {
+                if let Some((_, old)) = per.remove(&off) {
+                    removed = old.len();
+                }
+                now_empty = per.is_empty();
+            }
+            if now_empty {
+                g.delta_bases.remove(&p);
+            }
+            g.delta_bytes = g.delta_bytes.saturating_sub(removed);
+        }
+        let prev = g
+            .delta_bases
+            .entry(pack_path.to_path_buf())
+            .or_default()
+            .insert(offset, (kind, data));
+        match prev {
+            Some((_, old)) => {
+                g.delta_bytes = g.delta_bytes.saturating_sub(old.len()).saturating_add(sz);
+            }
+            None => {
+                g.delta_order.push_back((pack_path.to_path_buf(), offset));
+                g.delta_bytes = g.delta_bytes.saturating_add(sz);
+            }
+        }
     }
 
     /// Re-stamp the cached signature for `pack_path` after the caller deliberately touched the
@@ -1300,6 +1374,27 @@ fn decompress_pack_data(bytes: &[u8], pos: &mut usize, expected_size: u64) -> Re
 ///
 /// Handles OFS_DELTA and REF_DELTA by recursively reading the base object.
 /// The `idx` is used for REF_DELTA resolution (to find a base by OID).
+/// Resolve an in-pack delta base through the process-wide delta-base cache
+/// (git's `cache_or_unpack_entry`). Without it every delta resolution
+/// re-inflates the full chain below it; `log --stat/-p` walks chains whose
+/// bases are shared across consecutive commits, turning history walks
+/// quadratic in chain depth.
+fn read_pack_base_cached(
+    pack_bytes: &[u8],
+    base_offset: u64,
+    idx: &PackIndex,
+    objects_dir: Option<&Path>,
+    depth: usize,
+) -> Result<(ObjectKind, Arc<Vec<u8>>)> {
+    if let Some(hit) = pack_cache::get_delta_base(&idx.pack_path, base_offset) {
+        return Ok(hit);
+    }
+    let (kind, data) = read_pack_object_at(pack_bytes, base_offset, idx, objects_dir, depth + 1)?;
+    let data = Arc::new(data);
+    pack_cache::put_delta_base(&idx.pack_path, base_offset, kind, Arc::clone(&data));
+    Ok((kind, data))
+}
+
 fn read_pack_object_at(
     pack_bytes: &[u8],
     offset: u64,
@@ -1328,7 +1423,7 @@ fn read_pack_object_at(
             // resolve in-pack first. Loose or other-pack copies of the base are consulted only
             // when the in-pack read fails (e.g. a corrupt base rescued by another copy), which
             // keeps hot reads free of per-link loose-path stats and pack-directory probes.
-            let in_pack = read_pack_object_at(pack_bytes, base_offset, idx, objects_dir, depth + 1);
+            let in_pack = read_pack_base_cached(pack_bytes, base_offset, idx, objects_dir, depth);
             match in_pack {
                 Ok((base_kind, base_data)) => {
                     let result = apply_delta(&base_data, &delta_data)?;
@@ -1388,7 +1483,7 @@ fn read_pack_object_at(
                 .map(|i| idx.entries[i].offset);
             let mut in_pack_err = None;
             if let Some(base_offset) = in_pack_offset {
-                match read_pack_object_at(pack_bytes, base_offset, idx, objects_dir, depth + 1) {
+                match read_pack_base_cached(pack_bytes, base_offset, idx, objects_dir, depth) {
                     Ok((base_kind, base_data)) => {
                         let result = apply_delta(&base_data, &delta_data)?;
                         return Ok((base_kind, result));

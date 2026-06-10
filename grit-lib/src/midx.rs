@@ -246,13 +246,110 @@ fn repo_midx_hash_version(pack_dir: &Path) -> u8 {
     repo_midx_hash_version_for_objects_dir(objects_dir)
 }
 
+// ── Process-lifetime MIDX read cache ─────────────────────────────────
+//
+// `try_read_object_via_midx` / `midx_oid_listed_in_tip` run once per object
+// lookup, and each used to re-read the entire multi-pack-index file, re-parse
+// the referenced pack `.idx`, and re-scan `[extensions] objectformat` from the
+// repo config. History walks paid for it per object (`log --stat` issued ~90
+// full MIDX reads per commit). Cache the MIDX bytes keyed by path and the
+// sniffed hash version keyed by config path, both revalidated with stat
+// stamps (mtime + size, recorded before the read) on every access. In-process
+// MIDX writers evict their pack dir, closing the same-mtime-tick rewrite
+// window; C git opens the MIDX once per process with no revalidation at all,
+// so serving a stamped copy is strictly more conservative than upstream.
+mod midx_cache {
+    use crate::error::{Error, Result};
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::SystemTime;
+
+    type Stamp = (SystemTime, u64);
+
+    #[derive(Default)]
+    struct State {
+        bytes: HashMap<PathBuf, (Stamp, Arc<Vec<u8>>)>,
+        hash_version: HashMap<PathBuf, (Option<Stamp>, u8)>,
+    }
+
+    static CACHE: OnceLock<Mutex<State>> = OnceLock::new();
+
+    fn lock() -> std::sync::MutexGuard<'static, State> {
+        CACHE
+            .get_or_init(|| Mutex::new(State::default()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn stamp(path: &Path) -> Option<Stamp> {
+        let m = fs::metadata(path).ok()?;
+        Some((m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()))
+    }
+
+    /// MIDX file bytes, re-read from disk only when the file's stamp changes.
+    pub fn get_bytes(path: &Path) -> Result<Arc<Vec<u8>>> {
+        let sig = stamp(path);
+        if let Some(sig) = sig {
+            let g = lock();
+            if let Some((s, b)) = g.bytes.get(path) {
+                if *s == sig {
+                    return Ok(Arc::clone(b));
+                }
+            }
+        }
+        let data = Arc::new(fs::read(path).map_err(Error::Io)?);
+        if let Some(sig) = sig {
+            lock()
+                .bytes
+                .insert(path.to_path_buf(), (sig, Arc::clone(&data)));
+        }
+        Ok(data)
+    }
+
+    /// Cached `[extensions] objectformat` sniff keyed by the config path,
+    /// re-computed only when the config file's stamp changes (an absent
+    /// config is cached too, stamped as `None`).
+    pub fn hash_version(config_path: &Path, compute: impl FnOnce() -> u8) -> u8 {
+        let sig = stamp(config_path);
+        {
+            let g = lock();
+            if let Some((s, v)) = g.hash_version.get(config_path) {
+                if *s == sig {
+                    return *v;
+                }
+            }
+        }
+        let v = compute();
+        lock()
+            .hash_version
+            .insert(config_path.to_path_buf(), (sig, v));
+        v
+    }
+
+    /// Drop cached MIDX bytes under `pack_dir` (called by in-process writers).
+    pub fn evict_pack_dir(pack_dir: &Path) {
+        lock().bytes.retain(|p, _| !p.starts_with(pack_dir));
+    }
+}
+
 /// Like [`repo_midx_hash_version`] but starting from the `objects` directory.
+/// The config sniff is cached per config path with stat-stamp revalidation
+/// (see [`midx_cache`]).
 fn repo_midx_hash_version_for_objects_dir(objects_dir: &Path) -> u8 {
     let Some(gitdir) = objects_dir.parent() else {
         return HASH_VERSION_SHA1;
     };
     let config_path = gitdir.join("config");
-    let Ok(text) = fs::read_to_string(&config_path) else {
+    midx_cache::hash_version(&config_path, || {
+        sniff_objectformat_hash_version(&config_path)
+    })
+}
+
+/// Uncached `[extensions] objectformat` scan of one config file.
+fn sniff_objectformat_hash_version(config_path: &Path) -> u8 {
+    let Ok(text) = fs::read_to_string(config_path) else {
         return HASH_VERSION_SHA1;
     };
     // Minimal scan for `[extensions]` ... `objectformat = sha256`. Section and key
@@ -1686,7 +1783,7 @@ pub fn midx_oid_listed_in_tip(objects_dir: &Path, oid: &ObjectId) -> Result<Opti
     let Some(midx_path) = resolve_tip_midx_path(&pack_dir) else {
         return Ok(None);
     };
-    let data = fs::read(&midx_path).map_err(Error::Io)?;
+    let data = midx_cache::get_bytes(&midx_path)?;
     let hash_len = midx_hash_len(&data);
     let MidxReadView {
         oidf_off,
@@ -1990,7 +2087,7 @@ pub fn try_read_object_via_midx(
     let Some(midx_path) = resolve_tip_midx_path(&pack_dir) else {
         return Ok(None);
     };
-    let data = fs::read(&midx_path).map_err(Error::Io)?;
+    let data = midx_cache::get_bytes(&midx_path)?;
 
     // Load-time validation, mirroring `load_multi_pack_index` in git/midx.c.
     // Fatal corruptions `die()` (print error + fatal, exit 128); recoverable
@@ -2071,7 +2168,7 @@ pub fn try_read_object_via_midx(
     // surfacing the parse error as fatal. Use the non-verifying parse to match
     // `open_pack_index`, which does not validate the trailing checksum (a pack
     // `.idx` with a stale checksum but valid structure must still be usable).
-    let idx = match crate::pack::read_pack_index_no_verify(&idx_path) {
+    let idx = match crate::pack::read_pack_index_cached(&idx_path) {
         Ok(idx) => idx,
         Err(_) => {
             let mut pack_path = idx_path.clone();
@@ -2468,6 +2565,7 @@ pub fn write_multi_pack_index_with_options(
         }
     }
 
+    midx_cache::evict_pack_dir(pack_dir);
     Ok(())
 }
 
@@ -2691,6 +2789,7 @@ pub fn compact_multi_pack_index(
     // Drop the now-removed range layers and their sidecars.
     clear_stale_split_layers(pack_dir, &new_chain)?;
 
+    midx_cache::evict_pack_dir(pack_dir);
     Ok(())
 }
 
