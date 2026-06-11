@@ -93,6 +93,17 @@ pub trait Connection {
 
     /// The negotiated protocol version (`0`, `1`, or `2`).
     fn protocol_version(&self) -> u8;
+
+    /// Half-close the write side of the stream, signalling end-of-input to the
+    /// server (the wire equivalent of the CLI's `drop(stdin)`).
+    ///
+    /// Protocol v2 servers run a persistent `serve_loop`: after streaming the
+    /// pack for one `command=fetch` they block reading the next command. A
+    /// streaming transport (ssh subprocess, daemon socket) must therefore close
+    /// its write half once the fetch is complete, or the server never exits and
+    /// teardown (`child.wait()` / socket close) blocks. The default is a no-op
+    /// (v0/v1 connections, where the server closes after the single response).
+    fn finish_send(&mut self) {}
 }
 
 /// A factory that connects to a remote and performs the protocol handshake.
@@ -147,6 +158,11 @@ pub fn read_advertisement(reader: &mut dyn Read) -> Result<Advertisement> {
     };
     let mut reader = reader;
     let mut first_ref = true;
+    // Set once we see a `version 2` line: every subsequent pkt-line up to the
+    // flush is a v2 capability (`agent=…`, `ls-refs=…`, `fetch=…`,
+    // `object-format=…`, `server-option`, …), not a ref. The caller obtains the
+    // refs later via an `ls-refs` command.
+    let mut v2 = false;
     loop {
         match pkt_line::read_packet(&mut reader)? {
             None => break,
@@ -157,9 +173,23 @@ pub fn read_advertisement(reader: &mut dyn Read) -> Result<Advertisement> {
                 if let Some(ver) = line.strip_prefix("version ") {
                     if let Ok(n) = ver.trim().parse::<u8>() {
                         adv.protocol_version = n;
-                        // A v2 preamble has no ref lines; the caller obtains refs via ls-refs.
+                        if n >= 2 {
+                            v2 = true;
+                        }
                         continue;
                     }
+                }
+                if v2 {
+                    // v2 capability block: collect every line verbatim and leave
+                    // `advertised_refs` empty. `ERR` is still fatal.
+                    if let Some(msg) = line.strip_prefix("ERR ") {
+                        return Err(Error::Message(format!(
+                            "remote error: {}",
+                            msg.trim_end()
+                        )));
+                    }
+                    adv.capabilities.push(line.to_string());
+                    continue;
                 }
                 if let Some(msg) = line.strip_prefix("ERR ") {
                     return Err(Error::Message(format!(
@@ -334,6 +364,12 @@ impl Connection for GitDaemonConnection {
     fn protocol_version(&self) -> u8 {
         self.adv.protocol_version
     }
+
+    fn finish_send(&mut self) {
+        // Signal EOF to the daemon's upload-pack so a v2 `serve_loop` exits after
+        // the fetch instead of blocking for another command. Best-effort.
+        let _ = self.writer.shutdown(std::net::Shutdown::Write);
+    }
 }
 
 /// The native `git://` daemon transport.
@@ -447,7 +483,7 @@ impl Transport for GitDaemonTransport {
 // ===========================================================================
 //
 // Lifted from the CLI's `ssh_transport` (`grit/src/ssh_transport.rs`): the
-// scp-style / `ssh://` / `git+ssh://` URL parser (a faithful port of Git's
+// scp-style / `ssh://` / `git+ssh://` URL parser (matching the behavior of Git's
 // `connect.c` `parse_connect_url`/`host_end`/`get_host_and_port`) and the
 // `GIT_SSH_COMMAND` / `GIT_SSH` subprocess spawn. The remote command is the
 // usual `git-upload-pack '<path>'`, shell-quoted exactly like Git's
@@ -809,7 +845,9 @@ impl SshCommand {
 /// remote) and reaps the child.
 pub struct SshConnection {
     child: Child,
-    writer: ChildStdin,
+    // `Option` so [`Connection::finish_send`] can drop stdin (sending EOF to the
+    // remote `git-upload-pack`) without consuming the connection.
+    writer: Option<ChildStdin>,
     reader: ChildStdout,
     adv: Advertisement,
 }
@@ -820,7 +858,9 @@ impl Connection for SshConnection {
     }
 
     fn writer(&mut self) -> &mut dyn Write {
-        &mut self.writer
+        self.writer
+            .as_mut()
+            .expect("ssh connection writer used after finish_send")
     }
 
     fn advertised_refs(&self) -> &[(String, ObjectId)] {
@@ -837,6 +877,13 @@ impl Connection for SshConnection {
 
     fn protocol_version(&self) -> u8 {
         self.adv.protocol_version
+    }
+
+    fn finish_send(&mut self) {
+        // Dropping the child's stdin closes the pipe, signalling EOF so the
+        // remote `git-upload-pack` v2 `serve_loop` exits instead of blocking for
+        // another command (which would hang the `child.wait()` in `Drop`).
+        self.writer = None;
     }
 }
 
@@ -889,7 +936,7 @@ impl SshTransport {
 
     /// Build and spawn the ssh child for `spec`/`service`, returning the live
     /// child with piped stdin/stdout.
-    fn spawn(&self, spec: &SshUrl, service: Service) -> Result<Child> {
+    fn spawn(&self, spec: &SshUrl, service: Service, opts: &ConnectOptions) -> Result<Child> {
         let quoted_path = sq_quote_shell_arg(&spec.path);
         let remote_cmd = remote_service_cmd(service, &quoted_path);
         let port = spec.port.as_deref();
@@ -925,6 +972,16 @@ impl SshTransport {
             SshCommand::Auto => unreachable!("SshCommand::resolve never yields Auto"),
         };
 
+        // Request the wire protocol version the same way Git does: export
+        // `GIT_PROTOCOL=version=N` into the ssh process environment. OpenSSH
+        // forwards it (Git ships a `SendEnv GIT_PROTOCOL` default) and the remote
+        // `git-upload-pack` reads it to switch to v2; servers that don't see it
+        // fall back to the v0 advertisement, which `read_advertisement` still
+        // parses. Only set it for v1/v2 so a plain v0 request is unchanged.
+        if opts.protocol_version > 0 {
+            command.env("GIT_PROTOCOL", format!("version={}", opts.protocol_version));
+        }
+
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -939,10 +996,10 @@ impl Transport for SshTransport {
         &self,
         url: &str,
         service: Service,
-        _opts: &ConnectOptions,
+        opts: &ConnectOptions,
     ) -> Result<Box<dyn Connection>> {
         let spec = parse_ssh_url(url)?;
-        let mut child = self.spawn(&spec, service)?;
+        let mut child = self.spawn(&spec, service, opts)?;
 
         let writer = child
             .stdin
@@ -957,7 +1014,7 @@ impl Transport for SshTransport {
 
         Ok(Box::new(SshConnection {
             child,
-            writer,
+            writer: Some(writer),
             reader,
             adv,
         }))
@@ -1030,6 +1087,30 @@ mod tests {
         // HEAD, capabilities and peeled lines excluded; main + v1 recorded.
         let names: Vec<&str> = adv.refs.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["refs/heads/main", "refs/tags/v1"]);
+    }
+
+    #[test]
+    fn read_advertisement_v2_captures_caps_and_no_refs() {
+        // A v2 advertisement: `version 2`, capability lines, flush — and no refs.
+        let mut buf: Vec<u8> = Vec::new();
+        pkt_line::write_line_to_vec(&mut buf, "version 2").unwrap();
+        pkt_line::write_line_to_vec(&mut buf, "agent=git/2.43.0").unwrap();
+        pkt_line::write_line_to_vec(&mut buf, "ls-refs=unborn").unwrap();
+        pkt_line::write_line_to_vec(&mut buf, "fetch=shallow wait-for-done filter").unwrap();
+        pkt_line::write_line_to_vec(&mut buf, "object-format=sha1").unwrap();
+        buf.extend_from_slice(b"0000");
+
+        let mut cur = std::io::Cursor::new(buf);
+        let adv = read_advertisement(&mut cur).unwrap();
+        assert_eq!(adv.protocol_version, 2);
+        assert!(adv.refs.is_empty(), "v2 advertisement carries no refs");
+        assert!(adv.capabilities.iter().any(|c| c == "agent=git/2.43.0"));
+        assert!(adv
+            .capabilities
+            .iter()
+            .any(|c| c == "fetch=shallow wait-for-done filter"));
+        assert!(adv.capabilities.iter().any(|c| c == "object-format=sha1"));
+        assert!(adv.head_symref.is_none());
     }
 
     #[test]

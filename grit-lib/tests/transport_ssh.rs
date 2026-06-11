@@ -223,6 +223,105 @@ fn fetch_over_ssh_shell_command_lands_refs_and_objects() {
 }
 
 #[test]
+fn fetch_over_ssh_v2_lands_refs_and_objects() {
+    if Command::new("sh").arg("-c").arg("exit 0").status().is_err() {
+        eprintln!("SKIP: no POSIX sh available");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let source = tmp.path().join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    build_source(&source);
+    git(&source, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+
+    let Some(fake_ssh) = write_fake_ssh(tmp.path()) else {
+        eprintln!("SKIP: could not create executable fake-ssh script");
+        return;
+    };
+
+    // The transport sets `GIT_PROTOCOL=version=2` on the (fake) ssh process; the
+    // fake-ssh inherits it and the local `git upload-pack` it execs switches to
+    // protocol v2 — so the fetch exercises the v2 ls-refs + fetch path through
+    // the SSH transport's streaming pkt-line channel.
+    let transport = SshTransport::with_program(fake_ssh.as_os_str());
+    let abs_path = source.to_str().expect("utf8 path");
+    let url = format!("ssh://git@fakehost{abs_path}");
+
+    let main_oid = rev_parse(&source, "refs/heads/main");
+    let topic_oid = rev_parse(&source, "refs/heads/topic");
+    let tag_oid = rev_parse(&source, "refs/tags/v1");
+
+    let local_root = tmp.path().join("local-v2");
+    std::fs::create_dir_all(&local_root).unwrap();
+    git(&local_root, &["init", "-q", "-b", "main", "."]);
+    let local_git = local_root.join(".git");
+
+    let opts_v2 = ConnectOptions {
+        protocol_version: 2,
+        ..Default::default()
+    };
+    let mut conn = transport
+        .connect(&url, Service::UploadPack, &opts_v2)
+        .expect("SshTransport::connect v2");
+
+    // Proof v2 was negotiated: the server answered with a v2 capability block
+    // (no refs on connect) and the protocol version is 2.
+    if conn.protocol_version() != 2 {
+        // The local `git upload-pack` did not honor GIT_PROTOCOL (very old git);
+        // skip rather than fail, since the v2 path cannot be exercised here.
+        eprintln!(
+            "SKIP: server negotiated v{} (GIT_PROTOCOL not honored by upload-pack)",
+            conn.protocol_version()
+        );
+        return;
+    }
+    assert!(
+        conn.advertised_refs().is_empty(),
+        "v2 connection must advertise no refs on connect"
+    );
+    assert!(
+        conn.capabilities()
+            .iter()
+            .any(|c| c == "ls-refs" || c.starts_with("ls-refs=") || c.starts_with("fetch=")),
+        "v2 capability block missing ls-refs/fetch: {:?}",
+        conn.capabilities()
+    );
+
+    let opts = FetchOptions {
+        refspecs: vec!["+refs/heads/*:refs/remotes/origin/*".to_owned()],
+        tags: TagMode::All,
+        ..Default::default()
+    };
+    let outcome =
+        fetch_remote(&local_git, &mut *conn, &opts, &mut NoProgress).expect("v2 fetch over ssh");
+
+    let got_main = resolve_ref(&local_git, "refs/remotes/origin/main").expect("origin/main");
+    let got_topic = resolve_ref(&local_git, "refs/remotes/origin/topic").expect("origin/topic");
+    assert_eq!(got_main, main_oid);
+    assert_eq!(got_topic, topic_oid);
+    let got_tag = resolve_ref(&local_git, "refs/tags/v1").expect("tag v1");
+    assert_eq!(got_tag, tag_oid);
+    assert_eq!(outcome.default_branch.as_deref(), Some("main"));
+
+    let local_odb = open_odb(&local_git);
+    for oid in [main_oid, topic_oid, tag_oid] {
+        assert!(local_odb.exists(&oid), "object {} missing", oid.to_hex());
+    }
+
+    let fsck = Command::new("git")
+        .current_dir(&local_root)
+        .args(["fsck", "--no-dangling"])
+        .output()
+        .expect("run git fsck");
+    assert!(
+        fsck.status.success(),
+        "git fsck failed after v2 ssh fetch: {}",
+        String::from_utf8_lossy(&fsck.stderr)
+    );
+}
+
+#[test]
 fn fetch_over_ssh_program_lands_refs_and_objects() {
     if Command::new("sh").arg("-c").arg("exit 0").status().is_err() {
         eprintln!("SKIP: no POSIX sh available");
