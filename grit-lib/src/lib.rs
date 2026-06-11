@@ -142,6 +142,7 @@ pub mod fetch_submodules;
 pub mod filter_process;
 pub mod fmt_merge_msg;
 pub mod fsck_standalone;
+pub mod gc;
 pub mod git_binary_base85;
 pub mod git_column;
 pub mod git_date;
@@ -238,6 +239,7 @@ pub mod tab_expand;
 #[cfg(feature = "test-tools")]
 pub mod test_tool_progress;
 pub mod textconv_cache;
+pub mod transfer;
 pub mod transport_path;
 pub mod tree_path_follow;
 #[cfg(unix)]
