@@ -145,7 +145,7 @@ fn histogram_unified_body_raw(
 
 /// Build the unified-diff body (no `---`/`+++` header) using Git's histogram
 /// algorithm, but applying `--ignore-blank-lines` / `-I` semantics through a
-/// faithful port of Git's xdiff change-record machinery
+/// Git-compatible implementation of the xdiff change-record machinery
 /// (`xdl_mark_ignorable_lines` + `xdl_get_hunk` + `xdl_emit_diff`).
 ///
 /// `is_ignorable_change` is called with the slices of removed and added lines
@@ -653,7 +653,7 @@ pub fn parse_indent_heuristic_cli_flags(argv: &[String]) -> (bool, bool) {
 }
 
 // ---------------------------------------------------------------------------
-// Faithful port of Git's xdiff Myers engine (xdiff/xdiffi.c + xprepare.c),
+// Git-compatible implementation of the xdiff Myers engine,
 // restricted to what the word-diff path needs (no rename/ignore-whitespace
 // flags). Git's word diff runs the *default* xdiff Myers over the per-word
 // token streams; matching Git's exact change-record selection requires
@@ -1263,7 +1263,7 @@ fn changed_flags_to_ops(
     ops
 }
 
-/// Diff two token streams with a faithful port of Git's xdiff Myers engine and return the
+/// Diff two token streams with a Git-compatible implementation of the xdiff Myers engine and return the
 /// result as `similar::DiffOp`s. Used by the word-diff machinery, where matching Git's exact
 /// record selection and tie-breaking matters: `imara-diff`/`similar` pick different — but
 /// equally minimal — alignments for streams with many repeated tokens (e.g. the `bibtex`

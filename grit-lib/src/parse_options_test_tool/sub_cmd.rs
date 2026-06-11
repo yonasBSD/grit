@@ -1,4 +1,4 @@
-//! `test-tool parse-subcommand` — mirrors `cmd__parse_subcommand` / `parse_subcommand__cmd`.
+//! `test-tool parse-subcommand` — provides the behavior the upstream tests expect.
 
 use super::parse_options_cmd::ParseOptionsToolError;
 

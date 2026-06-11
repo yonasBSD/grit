@@ -3,7 +3,7 @@
 //! Submodule `path` and `url` values must not look like command-line options
 //! (non-empty and starting with `-`). See Git's `looks_like_command_line_option` in `path.c`.
 //!
-//! Submodule name and URL rules mirror Git's `submodule-config.c` (`check_submodule_name`,
+//! Submodule name and URL validation rules matching Git's (`check_submodule_name`,
 //! `check_submodule_url`).
 
 use std::collections::{HashMap, HashSet};

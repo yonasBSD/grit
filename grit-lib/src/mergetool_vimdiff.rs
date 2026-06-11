@@ -1,6 +1,6 @@
 //! Vimdiff merge tool layout generation compatible with Git's `mergetools/vimdiff` driver.
 //!
-//! This mirrors the shell logic in `git/mergetools/vimdiff` so `grit mergetool` and tests can
+//! This implements the same vimdiff layout behavior Git provides so `grit mergetool` and tests can
 //! share one implementation. Layout strings use only ASCII (`LOCAL`, `BASE`, `REMOTE`, `MERGED`,
 //! separators `+`, `/`, `,`, and parentheses).
 

@@ -481,7 +481,7 @@ pub fn ipc_server_run(path: &Path, nr_threads: usize, app: AppCb) -> Result<(), 
     Ok(())
 }
 
-/// Test daemon command handler (mirrors Git `test-simple-ipc.c`).
+/// Test daemon command handler providing Git-compatible test-IPC behavior.
 #[must_use]
 pub fn test_app_callback() -> AppCb {
     Arc::new(|request: &[u8], reply: &mut dyn Write| {

@@ -172,8 +172,8 @@ pub fn format_reference_line(
     format!("{abbrev} ({subject_first_line}, {date})")
 }
 
-/// Word-wrap `text` to `width` columns, a faithful port of Git's
-/// `strbuf_add_wrapped_text` (`utf8.c`), used by the `%w(width,indent1,indent2)`
+/// Word-wrap `text` to `width` columns with the same wrapping behavior as Git's
+/// `strbuf_add_wrapped_text`, used by the `%w(width,indent1,indent2)`
 /// pretty directive.
 ///
 /// `indent1` is the indent for the first output line, `indent2` for the rest. A

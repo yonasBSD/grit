@@ -32,8 +32,8 @@
 //! - [`fixup_replacement_message`] plus the squash-message buffer builders
 //!   [`update_squash_message_for_fixup`], [`append_nth_squash_message`],
 //!   [`append_skipped_squash_message`], [`squash_comment_subject_prefix`],
-//!   [`append_commented`], [`copy_section`] — faithful ports of Git's
-//!   `sequencer.c` squash-message assembly.
+//!   [`append_commented`], [`copy_section`] — implementing Git's
+//!   `sequencer.c` squash-message assembly behavior.
 
 use crate::interpret_trailers::complete_line;
 use crate::objects::CommitData;
@@ -260,7 +260,7 @@ pub fn append_commented(buf: &mut String, text: &str) {
 /// from "This is the Nth commit message:" to "The Nth commit message will be skipped:", leaving
 /// already-skipped sections untouched.
 ///
-/// This is a faithful port of Git's `update_squash_message_for_fixup` (`sequencer.c`): it is run
+/// This reproduces the behavior of Git's `update_squash_message_for_fixup`: it is run
 /// when a `fixup -C`/`fixup -c` step replaces the accumulated message (`is_fixup_flag && !seen_squash`)
 /// so every section accumulated so far is dropped from the final message. Unlike a single-section
 /// marker, it walks the whole buffer, so a chain such as `pick, fixup, fixup -C` correctly skips

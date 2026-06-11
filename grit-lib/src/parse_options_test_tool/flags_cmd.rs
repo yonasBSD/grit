@@ -1,4 +1,4 @@
-//! `test-tool parse-options-flags` — mirrors `cmd__parse_options_flags` / `parse_options_flags__cmd`.
+//! `test-tool parse-options-flags` — provides the behavior the upstream tests expect.
 
 use super::parse_options_cmd::ParseOptionsToolError;
 

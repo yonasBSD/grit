@@ -32,7 +32,7 @@ pub const GPG_SIG_HEADER_SHA1: &str = "gpgsig";
 /// The hash header label for a sha256 repository.
 pub const GPG_SIG_HEADER_SHA256: &str = "gpgsig-sha256";
 
-/// Signature trust level, mirroring Git's `enum signature_trust_level`.
+/// Signature trust level, as reported for a verified signature.
 ///
 /// The numeric ordering matters: `gpg.minTrustLevel` comparisons use it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -645,7 +645,7 @@ fn memchr(buf: &[u8], from: usize, needle: u8) -> Option<usize> {
         .map(|p| p + from)
 }
 
-/// A parsed signature check result, mirroring Git's `struct signature_check`.
+/// A parsed signature check result.
 #[derive(Debug, Clone, Default)]
 pub struct SignatureCheck {
     /// The detached armored signature extracted from the object.
@@ -850,7 +850,7 @@ pub fn verify_commit(cfg: &GpgConfig, raw_commit: &[u8]) -> Result<SignatureChec
 }
 
 /// Parse `ssh-keygen -Y verify` human output into `sigc`
-/// (port of Git `gpg-interface.c:parse_ssh_output`).
+/// (produces the same parse as Git's `gpg-interface.c:parse_ssh_output`).
 ///
 /// Expected first line of `sigc.output`:
 /// * `Good "git" signature for PRINCIPAL with ... key SHA256:FINGERPRINT`

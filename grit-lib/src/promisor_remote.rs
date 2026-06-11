@@ -5,7 +5,7 @@
 //! client, which may then accept some of them and lazily fetch the omitted objects from those
 //! remotes directly instead of forcing the server to back-fill and serve them.
 //!
-//! This module mirrors `git/promisor-remote.c`:
+//! This module provides Git-compatible promisor-remote handling:
 //!
 //! - [`promisor_remote_info`] builds the server's advertisement from config
 //!   (`promisor.advertise`, `promisor.sendFields`, `remote.<name>.{url,partialCloneFilter,token}`).

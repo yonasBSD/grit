@@ -1,4 +1,4 @@
-//! Git-compatible time conversion helpers (ported from Git's `date.c`).
+//! Time conversion helpers that produce Git-compatible timestamps.
 
 use super::compat::{self, time_t, tm};
 
@@ -10,7 +10,11 @@ pub type TzHhmm = i32;
 
 pub const TIMESTAMP_MAX: u64 = (((2100u64 - 1970) * 365 + 32) * 24 * 60 * 60).saturating_sub(1);
 
-/// Git's `tm_to_time_t` — like `mktime`, but without normalization of `tm_wday` / `tm_yday`.
+/// Convert a calendar `tm` to a Unix timestamp using only the date/time fields.
+///
+/// The `tm_wday` and `tm_yday` fields are ignored rather than recomputed, so the
+/// result depends purely on year/month/day/hour/minute/second. Produces the same
+/// values Git records for commit and author dates.
 pub fn tm_to_time_t(tm: &tm) -> time_t {
     const MDAYS: [i32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
     let year = tm.tm_year - 70;

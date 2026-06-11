@@ -84,11 +84,13 @@ pub fn find_invalid_utf8(buf: &[u8]) -> Option<usize> {
         if codepoint < min_val || codepoint > max_val {
             return Some(bad_offset);
         }
-        // Surrogates are only for UTF-16 and cannot be encoded in UTF-8.
+        // Reject the UTF-16 surrogate block (U+D800..=U+DFFF): it has no
+        // legal UTF-8 encoding.
         if codepoint & 0x1f_f800 == 0xd800 {
             return Some(bad_offset);
         }
-        // U+xxFFFE and U+xxFFFF are guaranteed non-characters.
+        // The last two code points of every plane (..FFFE and ..FFFF) are
+        // permanent non-characters.
         if codepoint & 0xfffe == 0xfffe {
             return Some(bad_offset);
         }

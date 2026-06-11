@@ -30,7 +30,7 @@ impl QuotedCrAction {
 }
 
 /// Options controlling subject cleanup, scissors, in-body headers, charset handling, and
-/// quoted-printable CRLF warnings — mirrors Git's `struct mailinfo` / CLI flags.
+/// quoted-printable CRLF warnings — corresponding to the `git mailinfo` CLI flags.
 #[derive(Debug, Clone)]
 pub struct MailinfoOptions {
     pub keep_subject: bool,

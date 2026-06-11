@@ -527,7 +527,7 @@ fn check_common(entry: &CommonDir, unmatched: &[u8]) -> Option<bool> {
     None
 }
 
-/// Faithful port of Git's compressed-trie `trie_find` specialized to
+/// Compressed-trie lookup with the same behavior as Git's `trie_find`, specialized to
 /// `common_list` + `check_common`. Returns the longest `/`-or-`\0`-terminated
 /// `common_list` prefix's classification for `key`, or `None` if no prefix
 /// matches (treated as "not common" by callers).

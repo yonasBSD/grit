@@ -1,4 +1,4 @@
-//! `test-tool parse-options` — mirrors `cmd__parse_options` in `git/t/helper/test-parse-options.c`.
+//! `test-tool parse-options` — provides the behavior the upstream tests expect.
 
 use std::collections::HashMap;
 

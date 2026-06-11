@@ -98,15 +98,11 @@ impl IdentRole {
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum IdentityError {
     /// `user.useConfigOnly` disables email auto-detection and no config email was provided.
-    #[error(
-        "no email was given and auto-detection is disabled\n\n\
-*** Please tell me who you are.\n\n\
-Run\n\n\
-  git config --global user.email \"you@example.com\"\n\
-  git config --global user.name \"Your Name\"\n\n\
-to set your account's default identity.\n\
-Omit --global to set the identity only in this repository.\n"
-    )]
+    ///
+    /// The Display text here is a terse, functional description of the
+    /// condition. The user-facing setup guidance is rendered by the
+    /// (GPL-licensed) CLI layer, which maps this variant to its own message.
+    #[error("email auto-detection is disabled (user.useConfigOnly) and no configured email is available")]
     AutoDetectionDisabled {
         /// Identity role being resolved.
         role: IdentRole,

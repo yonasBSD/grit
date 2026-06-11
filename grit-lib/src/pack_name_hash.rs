@@ -18,16 +18,7 @@ pub fn pack_name_hash(name: &str) -> u32 {
     hash
 }
 
-/// Reverse the bits of a single byte (Git's `pack_name_hash_v2` step).
-#[inline]
-fn reverse_bits_byte(c: u8) -> u8 {
-    let mut c = c;
-    c = (c & 0xF0) >> 4 | (c & 0x0F) << 4;
-    c = (c & 0xCC) >> 2 | (c & 0x33) << 2;
-    (c & 0xAA) >> 1 | (c & 0x55) << 1
-}
-
-/// Git's v2 pack name hash: path-component aware, used for newer bitmap formats.
+/// The v2 pack name hash: path-component aware, used for newer bitmap formats.
 #[must_use]
 pub fn pack_name_hash_v2(name: &[u8]) -> u32 {
     let mut hash: u32 = 0;
@@ -43,8 +34,9 @@ pub fn pack_name_hash_v2(name: &[u8]) -> u32 {
             base = (base >> 6) ^ hash;
             hash = 0;
         } else {
-            let c = reverse_bits_byte(c);
-            let c = u32::from(c);
+            // `u8::reverse_bits` is the stdlib equivalent of the per-byte
+            // bit-reversal step; it lowers to a single instruction.
+            let c = u32::from(c.reverse_bits());
             hash = (hash >> 2).wrapping_add(c << 24);
         }
     }

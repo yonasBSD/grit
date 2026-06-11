@@ -273,7 +273,7 @@ impl ReftableWriter {
 
     /// Finish writing and return the complete reftable file bytes.
     ///
-    /// This is a faithful port of `git/reftable/writer.c` so that the
+    /// This implements the reftable on-disk format so that the
     /// on-disk layout (block boundaries, restart points, padding,
     /// index/object sections, footer offsets) is byte-identical to git.
     pub fn finish(self) -> Result<Vec<u8>> {
@@ -309,7 +309,7 @@ impl ReftableWriter {
 // Faithful low-level writer (ports git/reftable/{block,writer,record}.c)
 // ---------------------------------------------------------------------------
 
-/// Default block size, mirrors reftable's `DEFAULT_BLOCK_SIZE`.
+/// Default reftable block size (per the reftable format specification).
 const REFTABLE_DEFAULT_BLOCK_SIZE: u32 = 4096;
 /// Maximum number of restart points per block (`MAX_RESTARTS`).
 const MAX_RESTARTS: usize = (1 << 16) - 1;
@@ -576,7 +576,7 @@ impl BlockWriter {
     }
 }
 
-/// Per-section accumulated stats (mirrors `reftable_block_stats`).
+/// Per-section statistics accumulated while writing a reftable.
 #[derive(Default, Clone)]
 struct SectionStats {
     blocks: usize,
@@ -591,7 +591,7 @@ struct ObjEntry {
     offsets: Vec<u64>,
 }
 
-/// The full writer state, ported from `struct reftable_writer`.
+/// The full writer state needed to emit a reftable file.
 struct WriterState {
     opts: WriteOptions,
     min_update_index: u64,

@@ -1,5 +1,5 @@
-//! Move detection for `git diff --color-moved` (port of git/diff.c
-//! `add_lines_to_move_detection` + `mark_color_as_moved` + `dim_moved_lines`).
+//! Move detection for `git diff --color-moved`, implementing the same behavior
+//! as git's `add_lines_to_move_detection` + `mark_color_as_moved` + `dim_moved_lines`.
 //!
 //! Operates on the already-rendered *plain* unified diff text (one or more files
 //! of `diff --git` headers, `@@` hunk headers, and `+`/`-`/context body lines).
@@ -402,7 +402,7 @@ pub fn detect_moved_lines(patch: &str, mode: ColorMovedMode, ws_flags: u32) -> V
         *pmb = kept;
     };
 
-    // mark_color_as_moved (faithful port of git/diff.c). We emulate git's
+    // mark_color_as_moved: matches git's behavior. We emulate git's
     // `for (n = 0; n < nr; n++)` loop: a "rewind" sets `nn -= block_length`
     // here and the loop epilogue still does `nn += 1`, giving git's net
     // `nn -= block_length - 1` (re-examine from the block's 2nd line).
@@ -476,8 +476,9 @@ pub fn detect_moved_lines(patch: &str, mode: ColorMovedMode, ws_flags: u32) -> V
             let contiguous = adjust_last_block(&mut syms, nn, block_length);
 
             if !contiguous && block_length > 1 {
-                // Rewind in case there is another match starting at the second
-                // line of the block. pmb stays empty (no fill).
+                // Nothing carried over: back the cursor up to the block start so
+                // a run that begins on its second line can still be picked up.
+                // pmb is left empty here (no refill).
                 nn -= block_length;
             } else {
                 // fill_potential_moved_blocks: set up pmb from all matches.

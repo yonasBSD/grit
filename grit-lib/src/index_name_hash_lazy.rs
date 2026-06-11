@@ -1,7 +1,7 @@
 //! Lazy, optionally multi-threaded index name/dir hash initialization compatible with Git's
 //! `name-hash.c` (used by `test-tool lazy-init-name-hash` and regression test t3008).
 //!
-//! This mirrors Git's `memihash` / `LAZY_THREAD_COST` thresholds and the recursive directory
+//! This implements Git-compatible `memihash` hashing and the `LAZY_THREAD_COST` thresholds, plus the recursive directory
 //! scan used when `core.ignorecase` is effectively enabled for the test helper.
 
 use std::collections::HashMap;

@@ -61,6 +61,31 @@ The tests we're trying to make pass with our new implementation is in the `git/t
 
 Manpage documentation is located in `git/Documentation` directory as `*.doc` files.
 
+## Licensing Hard Rule — No Copied Expression in `grit-lib`
+
+`grit-lib` is **MIT-licensed**; Git's C source under `git/` is **GPLv2**. To keep
+the library clean, this rule is absolute:
+
+**Never copy protected expression from Git's C source into `grit-lib`. Use the
+C source only for ideas, methods, interfaces, and behavior.**
+
+- **Allowed** (not protectable): the *algorithm or method* (e.g. Myers diff, the
+  approxidate parser, name-hash math), the *interface/behavior* it must produce,
+  byte-for-byte *output compatibility*, and *facts* (keyword lists, opcode
+  tables, format constants). Reimplement these in your own idiomatic Rust.
+- **Forbidden** (protected expression copied verbatim or near-verbatim): Git's
+  prose **comments**, multi-line **user-facing message strings**, and code whose
+  **structure, naming, and layout** track the C beyond what the method requires.
+
+If Git-identical user-facing text or other copied expression is genuinely
+needed, it lives in the **`grit` CLI crate (`grit/src`), which is GPL-2.0** and
+may reuse Git's strings and expression — not in `grit-lib`. Have the library
+return a **structured/typed error or value**, and render the Git-compatible text
+at the CLI boundary.
+
+When porting from `git/`: read the C to understand *what* and *why*, then write
+the Rust from that understanding — do not transcribe.
+
 ## How to Work
 
 Read **TESTING.md** for the full strategy. The short version:

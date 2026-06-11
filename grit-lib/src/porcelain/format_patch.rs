@@ -319,7 +319,7 @@ pub fn sanitize_subject(subject: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Header encoding / folding (ported from git's pretty.c + utf8.c)
+// Header encoding / folding (Git-compatible behavior, cf. pretty.c + utf8.c)
 // ---------------------------------------------------------------------------
 
 /// Length of the last line of `s` (bytes after the final `\n`).

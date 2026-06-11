@@ -17,7 +17,7 @@ use crate::check_ref_format::{check_refname_format, RefNameOptions};
 
 /// A parsed refspec item.
 ///
-/// Fields mirror `struct refspec_item` in `git/refspec.h`, capturing the
+/// Holds a parsed refspec, capturing the
 /// modifier flags and the source/destination sides of the mapping.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RefspecItem {

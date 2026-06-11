@@ -35,10 +35,22 @@ Omit --global to set the identity only in this repository.\n"
     );
 }
 
+/// Identity-setup guidance shown when no author/committer email can be
+/// resolved. This presentation text lives in the CLI (GPL) layer; `grit-lib`
+/// only reports the structured condition.
+const IDENTITY_SETUP_ADVICE: &str = "no email was given and auto-detection is disabled\n\n\
+*** Please tell me who you are.\n\n\
+Run\n\n\
+  git config --global user.email \"you@example.com\"\n\
+  git config --global user.name \"Your Name\"\n\n\
+to set your account's default identity.\n\
+Omit --global to set the identity only in this repository.\n";
+
 fn map_identity_error(err: IdentityError) -> anyhow::Error {
     match &err {
         IdentityError::AutoDetectionDisabled { role } => {
             eprintln!("{}", role.missing_email_hint());
+            return anyhow::anyhow!(IDENTITY_SETUP_ADVICE);
         }
         IdentityError::EmptyName { role, .. } => {
             ident_env_hint(*role);

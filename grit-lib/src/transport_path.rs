@@ -46,8 +46,8 @@ fn is_dir_sep(b: u8) -> bool {
 }
 
 /// Derive the "humanish" directory name Git would use for `git clone <repo>` when no explicit
-/// target directory is given. This is a faithful port of Git's `git_url_basename`
-/// (`git/dir.c`): it operates on the **raw URL string** (not a pre-parsed path), so it can
+/// target directory is given. It matches the behavior of Git's `git_url_basename`:
+/// it operates on the **raw URL string** (not a pre-parsed path), so it can
 /// fall back to the hostname when the URL has no path component (e.g. `ssh://host/` → `host`).
 ///
 /// # Parameters

@@ -1,4 +1,4 @@
-//! Git-compatible date parsing and display (ported from Git `date.c`).
+//! Git-compatible date parsing and display.
 
 pub mod approx;
 pub(crate) mod compat;

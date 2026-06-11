@@ -1,4 +1,4 @@
-//! Skipping fetch negotiator — mirrors `git/negotiator/skipping.c`.
+//! Skipping fetch negotiator — implements Git's "skipping" negotiation strategy.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};

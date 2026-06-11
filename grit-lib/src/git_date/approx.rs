@@ -1,4 +1,4 @@
-//! Git `approxidate` (ported from `date.c`).
+//! Git-compatible `approxidate` parsing.
 
 use super::compat::{self, time_t, tm};
 use super::parse::{match_multi_number, MONTH_NAMES, WEEKDAY_NAMES};

@@ -236,7 +236,7 @@ fn validate_component(
 
 /// Strip a leading `/` and collapse consecutive interior slashes to one.
 ///
-/// This mirrors git's `collapse_slashes()` in `builtin/check-ref-format.c`.
+/// This collapses runs of `/` the same way `git check-ref-format` does.
 pub fn collapse_slashes(refname: &str) -> String {
     let mut result = String::with_capacity(refname.len());
     let mut prev = b'/';

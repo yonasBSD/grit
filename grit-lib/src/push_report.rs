@@ -1,4 +1,4 @@
-//! Push status reporting that mirrors Git's `transport_print_push_status`.
+//! Push status reporting that matches Git's output.
 //!
 //! After a push, Git prints one line per reference describing how the update
 //! resolved (`[up to date]`, `[new branch]`, `[deleted]`, `[rejected]`, …).
@@ -164,7 +164,7 @@ pub struct PushStatusOutput {
     pub had_errors: bool,
 }
 
-/// Sort key mirroring `transport_print_push_status`: up-to-date refs first,
+/// Sort key matching Git's push-status output order: up-to-date refs first,
 /// then successful updates, then everything else (errors), preserving the
 /// original order within each bucket.
 fn status_bucket(status: &PushRefStatus) -> u8 {

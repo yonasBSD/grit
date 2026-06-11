@@ -1477,7 +1477,7 @@ fn validate_repository_format(git_dir: &Path) -> Result<()> {
 }
 
 /// The result of parsing `core.repositoryformatversion` and `extensions.*` from a
-/// repository's `config` file, mirroring git/setup.c `check_repo_format`.
+/// repository's `config` file, using Git-compatible format parsing.
 struct RepositoryFormat {
     /// Declared `core.repositoryformatversion` (defaults to 0; invalid values ignored).
     repo_version: u32,
@@ -1634,7 +1634,7 @@ fn parse_repository_format(content: &str, config_path: &Path) -> Result<Reposito
 /// Return the warning message git would print for a repository whose `config`
 /// declares an unsupported format, or `None` if the format is acceptable.
 ///
-/// This mirrors git/setup.c `check_repository_format_gently` + `verify_repository_format`:
+/// This matches Git's repository-format verification behavior:
 /// commands that run with `RUN_SETUP_GENTLY` (e.g. `git config`) emit this text as a
 /// `warning:` and then behave as if no repository were present, which makes the command
 /// fail with a non-zero exit. The returned string is the bare message without the
