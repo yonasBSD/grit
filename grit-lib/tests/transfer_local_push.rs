@@ -107,6 +107,7 @@ fn push_local_full_lifecycle() {
             force: false,
             delete: false,
             expected_old: None,
+            expect_absent: false,
         }],
         &PushOptions::default(),
     )
@@ -150,6 +151,7 @@ fn push_local_full_lifecycle() {
             force: false,
             delete: false,
             expected_old: None,
+            expect_absent: false,
         }],
         &PushOptions::default(),
     )
@@ -171,6 +173,7 @@ fn push_local_full_lifecycle() {
             force: true,
             delete: false,
             expected_old: None,
+            expect_absent: false,
         }],
         &PushOptions::default(),
     )
@@ -191,6 +194,7 @@ fn push_local_full_lifecycle() {
             force: false,
             delete: true,
             expected_old: None,
+            expect_absent: false,
         }],
         &PushOptions::default(),
     )
@@ -217,6 +221,7 @@ fn push_local_full_lifecycle() {
             delete: false,
             // Expect c2 but remote is actually c1 -> stale.
             expected_old: Some(c2),
+            expect_absent: false,
         }],
         &PushOptions::default(),
     )
@@ -235,6 +240,7 @@ fn push_local_full_lifecycle() {
             force: true,
             delete: false,
             expected_old: Some(c1),
+            expect_absent: false,
         }],
         &PushOptions::default(),
     )
@@ -278,6 +284,7 @@ fn push_local_atomic_rejects_all_on_any_failure() {
             force: false,
             delete: false,
             expected_old: None,
+            expect_absent: false,
         }],
         &PushOptions::default(),
     )
@@ -295,6 +302,7 @@ fn push_local_atomic_rejects_all_on_any_failure() {
                 force: false,
                 delete: false,
                 expected_old: None,
+                expect_absent: false,
             },
             PushRefSpec {
                 src: Some(c2),
@@ -302,6 +310,7 @@ fn push_local_atomic_rejects_all_on_any_failure() {
                 force: false,
                 delete: false,
                 expected_old: Some(c2), // wrong: remote is c1
+                expect_absent: false,
             },
         ],
         &PushOptions {

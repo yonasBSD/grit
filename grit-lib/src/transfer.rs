@@ -137,8 +137,13 @@ pub struct PushRefSpec {
     /// Whether this update deletes the remote ref.
     pub delete: bool,
     /// Compare-and-swap expectation: the remote ref's current value must match
-    /// this (force-with-lease). `None` disables the check.
+    /// this (force-with-lease). `None` disables the value check.
     pub expected_old: Option<ObjectId>,
+    /// Force-with-lease expectation that the remote ref does **not** currently
+    /// exist. When `true`, a push whose destination already exists on the remote
+    /// is rejected as stale (used for "create only" pushes whose lease is the
+    /// ref's absence). Independent of [`Self::expected_old`].
+    pub expect_absent: bool,
 }
 
 /// Options controlling a push.
@@ -206,11 +211,14 @@ pub fn build_pack(
     // not byte-optimal.
 
     // Objects already reachable from the remote's haves: never repack these, and
-    // stop descent into them.
-    let have_closure = reachable_closure(odb, haves, &HashSet::new())?;
+    // stop descent into them. A `have` that is not present in this odb (e.g. a
+    // local-only commit named by a local tracking ref) simply prunes nothing, so
+    // missing haves are tolerated rather than erroring.
+    let have_closure = reachable_closure(odb, haves, &HashSet::new(), true)?;
 
-    // Objects reachable from wants but not from haves, in discovery order.
-    let send = collect_reachable_excluding(odb, wants, &have_closure)?;
+    // Objects reachable from wants but not from haves, in discovery order. A
+    // missing want IS an error (we were asked to pack an object we don't have).
+    let send = collect_reachable_excluding(odb, wants, &have_closure, false)?;
 
     serialize_pack(odb, &send)
 }
@@ -221,9 +229,10 @@ fn reachable_closure(
     odb: &Odb,
     roots: &[ObjectId],
     stop: &HashSet<ObjectId>,
+    skip_missing: bool,
 ) -> Result<HashSet<ObjectId>> {
     let mut seen = HashSet::new();
-    let order = collect_reachable_excluding(odb, roots, stop)?;
+    let order = collect_reachable_excluding(odb, roots, stop, skip_missing)?;
     for oid in order {
         seen.insert(oid);
     }
@@ -240,6 +249,7 @@ fn collect_reachable_excluding(
     odb: &Odb,
     roots: &[ObjectId],
     exclude: &HashSet<ObjectId>,
+    skip_missing: bool,
 ) -> Result<Vec<ObjectId>> {
     let mut visited: HashSet<ObjectId> = HashSet::new();
     let mut ordered: Vec<ObjectId> = Vec::new();
@@ -267,7 +277,14 @@ fn collect_reachable_excluding(
     }
 
     while let Some(oid) = queue.pop_front() {
-        let obj = odb.read(&oid)?;
+        let obj = match odb.read(&oid) {
+            Ok(o) => o,
+            // A root/have absent from this odb cannot be traversed; with
+            // `skip_missing` it simply contributes nothing (no descent), instead
+            // of failing the whole pack build.
+            Err(_) if skip_missing => continue,
+            Err(e) => return Err(e),
+        };
         match obj.kind {
             ObjectKind::Commit => {
                 let commit = parse_commit(&obj.data)?;
@@ -742,6 +759,52 @@ fn decide_push(
 ) -> Result<PushDecision> {
     let remote_current = crate::refs::resolve_ref(remote_git_dir, &spec.dst).ok();
 
+    // Absence lease (force-with-lease that the ref not exist): a push that
+    // expected the destination to be absent is rejected when it is present, even
+    // if it happens to already point at the source (Git enforces the lease
+    // strictly). Checked before the up-to-date shortcut below.
+    if spec.expect_absent && remote_current.is_some() {
+        return Ok(PushDecision {
+            result: PushRefResult {
+                local_ref: None,
+                remote_ref: spec.dst.clone(),
+                old_oid: remote_current,
+                new_oid: spec.src,
+                forced: false,
+                deletion: spec.delete,
+                status: PushRefStatus::RejectStale,
+                message: Some("stale info".to_owned()),
+            },
+            action: PushAction::None,
+            apply: false,
+        });
+    }
+
+    // Up-to-date trumps the lease: pushing a non-delete to where the remote ref
+    // already points is a no-op that succeeds even when `expected_old` (the
+    // force-with-lease expectation) differs ("moving a bookmark to the same place
+    // it already is is OK"). This check must precede the compare-and-swap check.
+    if !spec.delete {
+        if let Some(src) = spec.src {
+            if remote_current == Some(src) {
+                return Ok(PushDecision {
+                    result: PushRefResult {
+                        local_ref: None,
+                        remote_ref: spec.dst.clone(),
+                        old_oid: remote_current,
+                        new_oid: Some(src),
+                        forced: false,
+                        deletion: false,
+                        status: PushRefStatus::UpToDate,
+                        message: None,
+                    },
+                    action: PushAction::None,
+                    apply: false,
+                });
+            }
+        }
+    }
+
     // Compare-and-swap (force-with-lease): the remote's current value must match
     // the caller's expectation, otherwise reject as stale. A `None` expectation
     // disables the check. An expectation that the ref be absent is honored too.
@@ -1015,7 +1078,7 @@ fn apply_tag_mode(
     // (non-tag) refs, so we can keep tags pointing into that closure.
     let following_closure: HashSet<ObjectId> = if mode == TagMode::Following {
         let roots: Vec<ObjectId> = matched.iter().map(|m| m.oid).collect();
-        reachable_closure(remote_odb, &roots, &HashSet::new())?
+        reachable_closure(remote_odb, &roots, &HashSet::new(), true)?
     } else {
         HashSet::new()
     };
