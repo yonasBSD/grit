@@ -499,6 +499,7 @@ version = "0.3.99"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "clap",
  "grit-protocol",
  "serde",
@@ -509,6 +510,7 @@ dependencies = [
 name = "grit-lib"
 version = "0.3.99"
 dependencies = [
+ "base64",
  "encoding_rs",
  "filetime",
  "flate2",
@@ -521,11 +523,13 @@ dependencies = [
  "regex",
  "sha1",
  "sha2",
+ "shell-words",
  "similar",
  "tempfile",
  "thiserror",
  "time",
  "unicode-width",
+ "ureq",
  "url",
 ]
 

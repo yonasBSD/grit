@@ -93,6 +93,28 @@ pub enum Error {
     #[error("{0}")]
     Signing(String),
 
+    /// HTTP authentication failed: the server required credentials (`401`) and
+    /// either no credential provider was wired, the provider could not supply a
+    /// usable username/password, the server demanded an unsupported auth scheme,
+    /// or the supplied credentials were rejected.
+    ///
+    /// Distinct from [`Error::Message`] so embedders can detect an authentication
+    /// failure (and e.g. fall back to an interactive/subprocess path) rather than
+    /// string-matching, and so the failure surfaces typed instead of hanging.
+    #[error("authentication failed: {0}")]
+    Auth(String),
+
+    /// A push carried `--push-option` values but the remote `git-receive-pack`
+    /// did not advertise the `push-options` capability, so the options cannot be
+    /// transmitted.
+    ///
+    /// Distinct from [`Error::Message`] so embedders can detect this specific
+    /// negotiation failure (and e.g. fall back to a subprocess push) rather than
+    /// string-matching. The message matches Git's
+    /// `fatal: the receiving end does not support push options`.
+    #[error("the receiving end does not support push options")]
+    PushOptionsUnsupported,
+
     /// User-facing message that should be printed verbatim (no extra prefix).
     ///
     /// Used for revision errors that must match Git's `fatal:` lines exactly.

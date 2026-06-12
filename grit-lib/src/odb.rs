@@ -282,6 +282,16 @@ impl Odb {
         &self.objects_dir
     }
 
+    /// Return the attached git directory, if one was set with
+    /// [`Self::with_config_git_dir`].
+    ///
+    /// Used by config- and ref-aware operations (delta islands, on-disk delta
+    /// reuse) that need the repository root rather than just the object store.
+    #[must_use]
+    pub fn config_git_dir(&self) -> Option<&Path> {
+        self.config_git_dir.as_deref()
+    }
+
     /// Return the filesystem path for a given object ID.
     #[must_use]
     pub fn object_path(&self, oid: &ObjectId) -> PathBuf {

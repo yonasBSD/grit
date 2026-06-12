@@ -17,7 +17,9 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-grit-lib = { path = "../grit-lib" }
+# `http-ureq` provides the default ureq-backed HTTP client used by gritx-fetch /
+# gritx-push for smart-HTTP remotes.
+grit-lib = { path = "../grit-lib", features = ["http-ureq"] }
 
 [dev-dependencies]
 tempfile.workspace = true

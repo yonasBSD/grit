@@ -7,6 +7,8 @@ use grit_lib::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_REGULAR};
 use grit_lib::objects::{parse_commit, parse_tree, ObjectId, ObjectKind};
 use grit_lib::repo::Repository;
 
+pub mod remote;
+
 /// Resolve a revision-like string as a ref first, then as a raw object id.
 pub fn resolve_name(repo: &Repository, name: &str) -> Result<ObjectId> {
     grit_lib::refs::resolve_ref(&repo.git_dir, name)
