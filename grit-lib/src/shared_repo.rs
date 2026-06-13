@@ -4,6 +4,7 @@
 //! `path.c`.
 
 use crate::config::{parse_bool, ConfigSet};
+#[cfg(unix)]
 use std::fs;
 use std::path::Path;
 

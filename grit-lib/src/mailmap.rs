@@ -11,6 +11,7 @@ use crate::repo::Repository;
 use crate::rev_parse::resolve_revision;
 use std::collections::BTreeMap;
 use std::fs;
+#[cfg(unix)]
 use std::io::Read;
 use std::path::{Path, PathBuf};
 

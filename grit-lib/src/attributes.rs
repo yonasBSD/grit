@@ -6,6 +6,7 @@
 
 use crate::config::parse_path;
 use crate::config::ConfigSet;
+#[cfg(unix)]
 use crate::index::normalize_mode;
 use crate::index::Index;
 use crate::index::MODE_EXECUTABLE;

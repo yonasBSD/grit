@@ -100,35 +100,44 @@ edge cases are a follow-up, not a compile blocker:
 - **Default identity**: `ident_config` resolves the user via `getuid`/passwd on
   Unix; the Windows branch already falls back to env-based resolution.
 
-## Follow-up clean-up (not required to compile, but do before enabling `-D warnings` in CI)
+## Warning clean-up — done
 
-The Windows cross-check emits ~13 warnings, all in already-ported files where an
-import or binding is only used on Unix. Tidy with `#[cfg(unix)]` on the imports /
-`let _ =` bindings or `#[cfg_attr(not(unix), allow(unused))]`:
+The Windows cross-check originally emitted ~12 warnings in already-ported files
+where an import/binding is only used on Unix. All are now resolved by gating the
+imports (`#[cfg(unix)] use …`) or, for parameters, `#[cfg_attr(not(unix),
+allow(unused_variables))]`:
 
-- `porcelain/stash.rs:22` (`PermissionsExt` import), `:444` (`target` unused)
-- `attributes.rs:9`, `ident_resolve.rs:10`, `shared_repo.rs:7`, `mailmap.rs:14`
-  (unused imports under non-unix)
-- `hooks.rs:282`/`:290` (`repo`/`meta` unused on non-unix)
-- `repo.rs:352` (`gitfile` field unused on non-unix)
-- `git_date/compat.rs:12` (`time_t` non-camel-case — pre-existing, allow it)
+- `porcelain/stash.rs` — `MODE_EXECUTABLE` import gated; symlink restore now
+  writes the target as a regular file on Windows (also uses `target`).
+- `attributes.rs`, `ident_resolve.rs`, `shared_repo.rs`, `mailmap.rs` — unused
+  imports gated to `#[cfg(unix)]`.
+- `hooks.rs` — `traditional_hook_candidate` annotated
+  `#[cfg_attr(not(unix), allow(unused_variables))]`.
+- `repo.rs` — dropped the `#[cfg(unix)]` on the `ensure_valid_ownership` call so
+  the existing `#[cfg(not(unix))]` stub is used; this removes both the unused
+  `gitfile` binding **and** the dead-stub warnings at once.
+- `split_index.rs` — `calc_shared_perm` gated to `#[cfg(unix)]`.
+- `git_date/compat.rs` — `#[allow(non_camel_case_types)]` on the Windows
+  `time_t` alias (mirrors the C / `libc` spelling).
 
-## Optional dependency hygiene
+After this, both host and Windows checks emit only the **pre-existing**
+`commit_graph_file.rs` `base_layers_declared` dead-field warning, which is
+present on host independent of the port and is out of scope here.
 
-`grit-lib/Cargo.toml` declares `nix` and `libc` as unconditional dependencies.
-They currently compile for `x86_64-pc-windows-gnu` (their Windows-relevant
-surface is small), so this is **not** a blocker. For cleanliness, move the
-Unix-only ones behind a target table so they are never built on Windows:
+## Dependency hygiene — done
+
+`nix` (signals, poll, uid, `uname`, Unix sockets) is used exclusively behind
+`#[cfg(unix)]`, so it is now declared under a target table in
+`grit-lib/Cargo.toml` and is not built on Windows:
 
 ```toml
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true }
+nix.workspace = true
 ```
 
-(`libc` must stay generally available — `git_date/compat.rs` references
-`libc::c_char` under `#[cfg(unix)]` only, but a workspace-level move to
-`cfg(unix)` is safe since the Windows path uses bare `extern "C"`.) Validate
-with the cross-check after moving.
+`libc` deliberately stays a general dependency: `refs.rs` compares
+`e.raw_os_error()` against `libc::EISDIR`/`ENOTDIR`/`EPERM` **un-gated**, and
+those errno constants are defined by `libc` on Windows too.
 
 ## MSVC vs GNU note
 
@@ -145,4 +154,4 @@ runner / via `cargo-xwin` as a final gate before declaring the port done.
 2. `cargo check -p grit-simple` (host) — still clean. ✅
 3. (Recommended) `cargo build --target x86_64-pc-windows-msvc -p grit-simple` on
    a Windows runner to validate the `git_date` CRT FFI links.
-4. (Optional) Warning clean-up + `nix` target-gating per the sections above.
+4. Warning clean-up + `nix` target-gating — done (see sections above).

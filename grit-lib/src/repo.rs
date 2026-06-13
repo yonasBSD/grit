@@ -386,7 +386,6 @@ impl Repository {
                 if assume_different {
                     repo.enforce_safe_directory()?;
                 } else {
-                    #[cfg(unix)]
                     ensure_valid_ownership(
                         gitfile.as_deref(),
                         repo.work_tree.as_deref(),

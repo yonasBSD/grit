@@ -7,6 +7,7 @@ use std::ffi::OsString;
 
 use thiserror::Error;
 
+#[cfg(unix)]
 use crate::commit_encoding::decode_bytes;
 use crate::config::ConfigSet;
 use crate::ident_config::ident_default_name;

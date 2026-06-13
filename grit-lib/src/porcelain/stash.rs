@@ -19,7 +19,10 @@ use std::io;
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::index::{Index, IndexEntry, MODE_EXECUTABLE, MODE_GITLINK, MODE_SYMLINK};
+use crate::index::{Index, IndexEntry, MODE_GITLINK, MODE_SYMLINK};
+// `MODE_EXECUTABLE` only drives the Unix executable-bit application below.
+#[cfg(unix)]
+use crate::index::MODE_EXECUTABLE;
 use crate::objects::{parse_commit, parse_tree, CommitData, ObjectId};
 use crate::odb::Odb;
 use crate::repo::Repository;
@@ -448,6 +451,10 @@ pub fn apply_stash(
                     }
                     #[cfg(unix)]
                     std::os::unix::fs::symlink(&target, &file_path)?;
+                    // Windows lacks unprivileged symlinks; keep the worktree
+                    // populated by writing the target as a regular file.
+                    #[cfg(not(unix))]
+                    fs::write(&file_path, target.as_bytes())?;
                 } else if head_moved {
                     // Three-way merge: base (head_at_stash), ours (current HEAD), theirs (stash)
                     let base_content = base_map

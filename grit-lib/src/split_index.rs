@@ -69,6 +69,7 @@ fn parse_shared_repository_perm(raw: Option<&str>) -> i32 {
     }
 }
 
+#[cfg(unix)]
 fn calc_shared_perm(shared_repo: i32, mode: u32) -> u32 {
     let tweak = if shared_repo < 0 {
         (-shared_repo) as u32

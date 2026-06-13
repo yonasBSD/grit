@@ -278,6 +278,9 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
+// `repo`/`meta` are only read on Unix (executable-bit advice); Windows has no
+// POSIX permission bits, so the candidate is returned without that check.
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn traditional_hook_candidate(
     repo: &Repository,
     hooks_dir: &Path,
