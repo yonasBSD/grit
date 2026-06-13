@@ -869,8 +869,7 @@ fn serialize_pack_with_deltas(
                 };
 
                 let in_pack_offset = oid_to_offset.get(&base_oid).copied();
-                if opts.use_ofs_delta && in_pack_offset.is_some() {
-                    let base_off = in_pack_offset.expect("checked is_some");
+                if let Some(base_off) = in_pack_offset.filter(|_| opts.use_ofs_delta) {
                     let dist = start.checked_sub(base_off).ok_or_else(|| {
                         Error::CorruptObject("ofs-delta distance underflow".to_owned())
                     })?;

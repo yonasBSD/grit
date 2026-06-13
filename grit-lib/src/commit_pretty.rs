@@ -181,6 +181,10 @@ pub fn format_reference_line(
 /// the first line (no extra indent emitted there). With `width <= 0` the text is
 /// only indented, not wrapped. Column widths are measured with display width
 /// (East-Asian wide characters count as 2).
+// The `unwrap()`s below rest on loop invariants: `c`/`space` are `Some` whenever
+// the wrapping branch that reads them runs, and `text_pos` always sits on a
+// char boundary inside `text`.
+#[allow(clippy::unwrap_used)]
 #[must_use]
 pub fn add_wrapped_text(text: &str, indent1: i64, indent2: i64, width: i64) -> String {
     use unicode_width::UnicodeWidthChar;

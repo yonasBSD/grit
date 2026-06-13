@@ -68,6 +68,9 @@ fn hash_object_with(algo: HashAlgo, kind: ObjectKind, data: &[u8]) -> ObjectId {
     let mut h = PackHasher::new(algo);
     h.update(header.as_bytes());
     h.update(data);
+    // `finalize()` returns exactly `algo`'s digest width, which is always a
+    // valid OID length, so `from_bytes` cannot fail here.
+    #[allow(clippy::expect_used)]
     ObjectId::from_bytes(&h.finalize()).expect("digest is a valid OID width")
 }
 

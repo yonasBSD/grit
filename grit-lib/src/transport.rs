@@ -868,6 +868,10 @@ impl Connection for SshConnection {
     }
 
     fn writer(&mut self) -> &mut dyn Write {
+        // The trait returns `&mut dyn Write`, so there is no error channel: the
+        // writer is present until `finish_send` takes it; writing afterward is a
+        // caller bug.
+        #[allow(clippy::expect_used)]
         self.writer
             .as_mut()
             .expect("ssh connection writer used after finish_send")
