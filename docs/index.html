@@ -1043,6 +1043,40 @@
       .install-alt code {
         font-size: 0.85rem;
       }
+      .install-tabs {
+        display: inline-flex;
+        gap: 0.3rem;
+        margin-bottom: 0.95rem;
+        padding: 0.25rem;
+        border-radius: 0.6rem;
+        background: rgba(255, 250, 242, 0.06);
+      }
+      .install-tab {
+        border: 0;
+        border-radius: 0.45rem;
+        padding: 0.45rem 1.05rem;
+        background: transparent;
+        color: #c9b9a4;
+        cursor: pointer;
+        font:
+          640 0.85rem/1 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+      .install-tab[aria-selected="true"] {
+        background: #3b3834;
+        color: var(--paper);
+      }
+      .install-panel {
+        display: none;
+        justify-items: center;
+      }
+      .install-panel.active {
+        display: grid;
+      }
       @media (max-width: 560px) {
         body {
           font-size: 13.5px;
@@ -1709,35 +1743,81 @@ grit-lib = <span class="string">"0.3"</span>
             replacement for <code>git</code>.</span
           >
           <span class="install-secondary"
-            >Pre-built binaries for macOS and Linux, or install via Cargo.</span
+            >Pre-built binaries for macOS, Linux, and Windows, or install via
+            Cargo.</span
           >
         </p>
-        <div class="install-block">
-          <div class="install-cmd" data-install-cmd>
-            <code>curl -fsSL https://grit-scm.com/install | sh</code>
-            <button
-              class="copy-btn"
-              aria-label="Copy to clipboard"
-              data-copy="curl -fsSL https://grit-scm.com/install | sh"
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <rect x="9" y="9" width="13" height="13" rx="2" />
-                <path
-                  d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
-                />
-              </svg>
+        <div class="install-block" data-install-tabs>
+          <div class="install-tabs" role="tablist">
+            <button class="install-tab" data-os="unix" aria-selected="true">
+              macOS / Linux
+            </button>
+            <button class="install-tab" data-os="windows" aria-selected="false">
+              Windows
             </button>
           </div>
-          <div class="install-alt">or <code>cargo install grit-cli</code></div>
+
+          <div class="install-panel active" data-os="unix">
+            <div class="install-cmd">
+              <code>curl -fsSL https://grit-scm.com/install | sh</code>
+              <button
+                class="copy-btn"
+                aria-label="Copy to clipboard"
+                data-copy="curl -fsSL https://grit-scm.com/install | sh"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="9" y="9" width="13" height="13" rx="2" />
+                  <path
+                    d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                  />
+                </svg>
+              </button>
+            </div>
+            <div class="install-alt">
+              installs <code>grit</code> and <code>gi</code>, or
+              <code>cargo install grit-cli</code>
+            </div>
+          </div>
+
+          <div class="install-panel" data-os="windows">
+            <div class="install-cmd">
+              <code>irm grit-scm.com/install.ps1 | iex</code>
+              <button
+                class="copy-btn"
+                aria-label="Copy to clipboard"
+                data-copy="irm grit-scm.com/install.ps1 | iex"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="9" y="9" width="13" height="13" rx="2" />
+                  <path
+                    d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                  />
+                </svg>
+              </button>
+            </div>
+            <div class="install-alt">
+              installs <code>gi</code> (run in PowerShell), or
+              <code>cargo install grit-simple</code>
+            </div>
+          </div>
         </div>
       </section>
     </main>
@@ -1801,6 +1881,36 @@ grit-lib = <span class="string">"0.3"</span>
             });
           });
         });
+      })();
+      (function () {
+        const block = document.querySelector("[data-install-tabs]");
+        if (!block) return;
+        const tabs = block.querySelectorAll(".install-tab");
+        const panels = block.querySelectorAll(".install-panel");
+        function select(os) {
+          tabs.forEach(function (t) {
+            t.setAttribute(
+              "aria-selected",
+              t.getAttribute("data-os") === os ? "true" : "false"
+            );
+          });
+          panels.forEach(function (p) {
+            p.classList.toggle("active", p.getAttribute("data-os") === os);
+          });
+        }
+        tabs.forEach(function (t) {
+          t.addEventListener("click", function () {
+            select(t.getAttribute("data-os"));
+          });
+        });
+        // Default to the tab matching the visitor's OS.
+        let isWindows = /windows|win32|win64/i.test(
+          (navigator.userAgent || "") + " " + (navigator.platform || "")
+        );
+        if (navigator.userAgentData && navigator.userAgentData.platform) {
+          isWindows = /windows/i.test(navigator.userAgentData.platform);
+        }
+        select(isWindows ? "windows" : "unix");
       })();
       (function () {
         const modal = document.querySelector("[data-example-modal]");

@@ -1,5 +1,6 @@
 #!/bin/sh
-# grit installer - downloads a pre-built binary from GitHub Releases
+# grit installer - downloads pre-built binaries from GitHub Releases.
+# Installs both `grit` (grit-cli) and `gi` (grit-simple).
 # Usage: curl -fsSL https://grit-scm.com/install | sh
 
 main() {
@@ -51,22 +52,24 @@ main() {
   esac
 
   TARGET="${ARCH_TARGET}-${OS_TARGET}"
-  URL="https://github.com/$REPO/releases/latest/download/grit-${TARGET}.tar.gz"
 
   echo "Detected: $OS/$ARCH -> $TARGET"
-  echo "Downloading from: $URL"
 
   TMP=$(mktemp -d)
   trap 'rm -rf "$TMP"' EXIT
 
-  curl -fSL "$URL" -o "$TMP/grit.tar.gz"
-  tar xzf "$TMP/grit.tar.gz" -C "$TMP"
-
   mkdir -p "$INSTALL_DIR"
-  mv "$TMP/grit" "$INSTALL_DIR/grit"
-  chmod +x "$INSTALL_DIR/grit"
 
-  echo "Installed grit to $INSTALL_DIR/grit"
+  # Install both binaries: `grit` (grit-cli) and `gi` (grit-simple).
+  for BIN in grit gi; do
+    URL="https://github.com/$REPO/releases/latest/download/${BIN}-${TARGET}.tar.gz"
+    echo "Downloading from: $URL"
+    curl -fSL "$URL" -o "$TMP/${BIN}.tar.gz"
+    tar xzf "$TMP/${BIN}.tar.gz" -C "$TMP"
+    mv "$TMP/${BIN}" "$INSTALL_DIR/${BIN}"
+    chmod +x "$INSTALL_DIR/${BIN}"
+    echo "Installed ${BIN} to $INSTALL_DIR/${BIN}"
+  done
 
   if ! command -v grit >/dev/null 2>&1; then
     echo ""
@@ -74,6 +77,7 @@ main() {
     echo "Add it with:  export PATH=\"$INSTALL_DIR:\$PATH\""
   else
     echo "$(grit --version)"
+    echo "$(gi --version)"
   fi
 }
 

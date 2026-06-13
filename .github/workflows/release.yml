@@ -56,26 +56,62 @@ jobs:
 
       - name: Build
         if: ${{ !matrix.cross }}
-        run: cargo build --release --target ${{ matrix.target }} -p grit-cli
+        run: cargo build --release --target ${{ matrix.target }} -p grit-cli -p grit-simple
 
       - name: Build (cross)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }} -p grit-cli
+        run: cross build --release --target ${{ matrix.target }} -p grit-cli -p grit-simple
 
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../grit-${{ matrix.target }}.tar.gz grit
+          tar czf ../../../gi-${{ matrix.target }}.tar.gz gi
         shell: bash
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: grit-${{ matrix.target }}
-          path: grit-${{ matrix.target }}.tar.gz
+          path: |
+            grit-${{ matrix.target }}.tar.gz
+            gi-${{ matrix.target }}.tar.gz
+
+  # Windows ships the `grit-simple` CLI (the `gi` binary), installed via
+  # `irm grit-scm.com/install.ps1 | iex` (see docs/install.ps1).
+  build-windows:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p grit-simple
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/gi.exe -DestinationPath gi-${{ matrix.target }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gi-${{ matrix.target }}
+          path: gi-${{ matrix.target }}.zip
 
   release:
-    needs: build
+    needs: [build, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -86,4 +122,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: grit-*.tar.gz
+          files: |
+            grit-*.tar.gz
+            gi-*.zip
