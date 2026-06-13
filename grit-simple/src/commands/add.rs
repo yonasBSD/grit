@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use grit_lib::diff::{mode_from_metadata, DiffStatus};
 use grit_lib::index::{entry_from_stat, Index};
 use grit_lib::objects::ObjectKind;
-use grit_lib::porcelain::status::{status, StatusOptions};
+use grit_lib::porcelain::status::{status, StatusOptions, UntrackedMode};
 use grit_lib::progress::NullProgress;
 use grit_lib::repo::Repository;
 
@@ -36,8 +36,13 @@ pub fn stage(repo: &Repository, selectors: &[String]) -> Result<usize> {
         .work_tree
         .clone()
         .context("gs add needs a working tree")?;
-    let model = status(repo, &StatusOptions::default(), &mut NullProgress)
-        .context("could not compute status")?;
+    // Enumerate untracked *files* (not collapsed directories like `sub/`), so we
+    // can hash each one rather than trying to read a directory as a blob.
+    let opts = StatusOptions {
+        untracked: UntrackedMode::All,
+        ..StatusOptions::default()
+    };
+    let model = status(repo, &opts, &mut NullProgress).context("could not compute status")?;
     let mut index = repo.load_index().context("could not load the index")?;
 
     let matches = |path: &str| selectors.is_empty() || selectors.iter().any(|s| path_matches(s, path));
