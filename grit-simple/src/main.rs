@@ -1,8 +1,8 @@
-//! `gi` — a small, opinionated command line interface backed by `grit-lib`.
+//! `gs` — a small, opinionated command line interface backed by `grit-lib`.
 //!
-//! `gi` deliberately does not mirror Git's UX. It favors a single obvious way
+//! `gs` deliberately does not mirror Git's UX. It favors a single obvious way
 //! to do the common thing, plain-language output, and a status screen that
-//! doubles as the home base: running `gi` with no arguments shows you where you
+//! doubles as the home base: running `gs` with no arguments shows you where you
 //! are, what's changed, and what to do next.
 
 mod commands;
@@ -15,13 +15,13 @@ use clap::{Parser, Subcommand};
 
 /// A simplified alternative to the Git-compatible `grit` command line.
 #[derive(Debug, Parser)]
-#[command(name = "gi", version, about = "A simple Grit-powered CLI")]
+#[command(name = "gs", version, about = "A simple Grit-powered CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 }
 
-/// Top-level `gi` commands.
+/// Top-level `gs` commands.
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Show what's changed and where you are (this is the default).

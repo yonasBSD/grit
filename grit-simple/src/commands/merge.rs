@@ -1,8 +1,8 @@
-//! `gi merge` — merge another branch into the current one.
+//! `gs merge` — merge another branch into the current one.
 //!
 //! Fast-forwards when possible; otherwise performs a real three-way merge and
 //! records a merge commit. Conflicts are reported (without leaving a
-//! half-finished state) — resolving them is out of scope for `gi`.
+//! half-finished state) — resolving them is out of scope for `gs`.
 
 use anyhow::{bail, Context, Result};
 use grit_lib::config::ConfigSet;
@@ -36,7 +36,7 @@ pub fn run(branch: &str) -> Result<()> {
     let (refname, head_oid) = match resolve_head(&repo.git_dir)? {
         HeadState::Branch { refname, oid: Some(oid), .. } => (refname, oid),
         HeadState::Branch { .. } => bail!("no commits yet on this branch"),
-        HeadState::Detached { .. } => bail!("HEAD is detached; gi merge needs a branch"),
+        HeadState::Detached { .. } => bail!("HEAD is detached; gs merge needs a branch"),
         HeadState::Invalid => bail!("HEAD is in an unknown state"),
     };
 
@@ -45,7 +45,7 @@ pub fn run(branch: &str) -> Result<()> {
 }
 
 /// Integrate `other` into the branch `into_ref` (currently at `into_oid`):
-/// up-to-date, fast-forward, or three-way merge. Shared with `gi pull`.
+/// up-to-date, fast-forward, or three-way merge. Shared with `gs pull`.
 pub fn integrate(
     repo: &Repository,
     into_ref: &str,

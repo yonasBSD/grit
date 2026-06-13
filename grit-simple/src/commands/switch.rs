@@ -1,6 +1,6 @@
-//! `gi switch` — move to another branch, updating the working tree.
+//! `gs switch` — move to another branch, updating the working tree.
 //!
-//! `gi` keeps this safe and simple: it refuses to switch when you have
+//! `gs` keeps this safe and simple: it refuses to switch when you have
 //! uncommitted (staged or unstaged) changes, and won't clobber an untracked
 //! file that the destination branch wants to create. Untracked files that don't
 //! collide come along for the ride.

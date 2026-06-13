@@ -70,7 +70,7 @@ jobs:
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../grit-${{ matrix.target }}.tar.gz grit
-          tar czf ../../../gi-${{ matrix.target }}.tar.gz gi
+          tar czf ../../../gs-${{ matrix.target }}.tar.gz gs
         shell: bash
 
       - name: Upload artifact
@@ -79,9 +79,9 @@ jobs:
           name: grit-${{ matrix.target }}
           path: |
             grit-${{ matrix.target }}.tar.gz
-            gi-${{ matrix.target }}.tar.gz
+            gs-${{ matrix.target }}.tar.gz
 
-  # Windows ships the `grit-simple` CLI (the `gi` binary), installed via
+  # Windows ships the `grit-simple` CLI (the `gs` binary), installed via
   # `irm grit-scm.com/install.ps1 | iex` (see docs/install.ps1).
   build-windows:
     strategy:
@@ -114,13 +114,13 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/gi.exe -DestinationPath gi-${{ matrix.target }}.zip
+          Compress-Archive -Path target/${{ matrix.target }}/release/gs.exe -DestinationPath gs-${{ matrix.target }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gi-${{ matrix.target }}
-          path: gi-${{ matrix.target }}.zip
+          name: gs-${{ matrix.target }}
+          path: gs-${{ matrix.target }}.zip
 
   release:
     needs: [build, build-windows]
@@ -139,4 +139,5 @@ jobs:
           generate_release_notes: true
           files: |
             grit-*.tar.gz
-            gi-*.zip
+            gs-*.tar.gz
+            gs-*.zip

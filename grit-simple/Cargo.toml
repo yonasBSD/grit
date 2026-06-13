@@ -8,7 +8,7 @@ repository = "https://github.com/gitbutlerapp/grit"
 readme = "README.md"
 
 [[bin]]
-name = "gi"
+name = "gs"
 path = "src/main.rs"
 
 [lints]

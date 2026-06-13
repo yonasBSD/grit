@@ -1,4 +1,4 @@
-//! Small output-formatting helpers shared by `gi` commands.
+//! Small output-formatting helpers shared by `gs` commands.
 
 use grit_lib::diff::{DiffEntry, DiffStatus};
 

@@ -1,6 +1,6 @@
-//! `gi push` — publish the current branch to its remote.
+//! `gs push` — publish the current branch to its remote.
 //!
-//! No upstream ceremony: `gi push` sends the current branch to `origin` (or the
+//! No upstream ceremony: `gs push` sends the current branch to `origin` (or the
 //! configured `branch.<name>.remote`) under the same name, creating it on the
 //! remote if needed.
 
@@ -19,7 +19,7 @@ pub fn run() -> Result<()> {
     let (short_name, oid) = match resolve_head(&repo.git_dir)? {
         HeadState::Branch { short_name, oid: Some(oid), .. } => (short_name, oid),
         HeadState::Branch { .. } => bail!("no commits yet to push"),
-        HeadState::Detached { .. } => bail!("HEAD is detached; gi push needs a branch"),
+        HeadState::Detached { .. } => bail!("HEAD is detached; gs push needs a branch"),
         HeadState::Invalid => bail!("HEAD is in an unknown state"),
     };
 
@@ -52,7 +52,7 @@ pub fn run() -> Result<()> {
             PushRefStatus::UpToDate => println!("  {target} already up to date"),
             PushRefStatus::RejectNonFastForward => {
                 rejected = true;
-                eprintln!("  rejected {target}: not a fast-forward — run `gi pull` first");
+                eprintln!("  rejected {target}: not a fast-forward — run `gs pull` first");
             }
             _ => {
                 rejected = true;

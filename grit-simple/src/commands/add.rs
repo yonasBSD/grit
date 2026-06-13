@@ -1,7 +1,7 @@
-//! `gi add` — stage changes. With no paths, stages everything.
+//! `gs add` — stage changes. With no paths, stages everything.
 //!
-//! Staging is driven by the same status model the dashboard uses, so `gi add`
-//! stages exactly what `gi status` reports as changed — including deletions and
+//! Staging is driven by the same status model the dashboard uses, so `gs add`
+//! stages exactly what `gs status` reports as changed — including deletions and
 //! untracked files — without reimplementing worktree walking or ignore rules.
 
 use anyhow::{Context, Result};
@@ -30,12 +30,12 @@ pub fn run(paths: &[String]) -> Result<()> {
 
 /// Stage all changes matching `selectors` (empty selectors = everything).
 ///
-/// Returns the number of paths staged. Shared with `gi commit -a`.
+/// Returns the number of paths staged. Shared with `gs commit -a`.
 pub fn stage(repo: &Repository, selectors: &[String]) -> Result<usize> {
     let work_tree = repo
         .work_tree
         .clone()
-        .context("gi add needs a working tree")?;
+        .context("gs add needs a working tree")?;
     let model = status(repo, &StatusOptions::default(), &mut NullProgress)
         .context("could not compute status")?;
     let mut index = repo.load_index().context("could not load the index")?;

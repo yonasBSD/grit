@@ -4,7 +4,7 @@
 //! The wire protocols, ref updates, and pack handling all live in grit-lib. The
 //! only binary-specific piece is choosing a transport (and an HTTP client) for a
 //! URL — grit-cli brings its own HTTP stack, so this dispatch lives here in
-//! `gi` rather than in the shared library.
+//! `gs` rather than in the shared library.
 
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
@@ -23,7 +23,7 @@ use grit_lib::transport::{
     is_ssh_url, ConnectOptions, Connection, GitDaemonTransport, Service, SshTransport, Transport,
 };
 
-/// The remote `gi` uses when none is named or configured.
+/// The remote `gs` uses when none is named or configured.
 pub const DEFAULT_REMOTE: &str = "origin";
 
 /// Look up `remote.<name>.url`.

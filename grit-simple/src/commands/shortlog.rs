@@ -1,4 +1,4 @@
-//! `gi shortlog` — the commits on this branch that aren't on the target yet.
+//! `gs shortlog` — the commits on this branch that aren't on the target yet.
 
 use anyhow::{bail, Context, Result};
 use grit_lib::objects::ObjectId;
@@ -43,7 +43,7 @@ fn current_branch_and_oid(head: &HeadState) -> Result<(&str, ObjectId)> {
         HeadState::Branch { short_name, .. } => {
             bail!("branch '{short_name}' does not have any commits yet")
         }
-        HeadState::Detached { .. } => bail!("HEAD is detached; gi shortlog needs a current branch"),
+        HeadState::Detached { .. } => bail!("HEAD is detached; gs shortlog needs a current branch"),
         HeadState::Invalid => bail!("HEAD is invalid"),
     }
 }

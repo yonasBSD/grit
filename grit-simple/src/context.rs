@@ -1,4 +1,4 @@
-//! Shared repository helpers used across `gi` commands.
+//! Shared repository helpers used across `gs` commands.
 
 use std::collections::HashSet;
 
@@ -13,7 +13,7 @@ use grit_lib::refs;
 use grit_lib::repo::Repository;
 use time::OffsetDateTime;
 
-/// A resolved "target" branch (the trunk `gi` measures the current branch against).
+/// A resolved "target" branch (the trunk `gs` measures the current branch against).
 #[derive(Debug, Clone)]
 pub struct TargetBranch {
     pub display_name: String,
@@ -32,7 +32,7 @@ pub fn discover() -> Result<Repository> {
     Repository::discover(None).context("not in a repository")
 }
 
-/// Find the branch `gi` should measure the current branch against, trying
+/// Find the branch `gs` should measure the current branch against, trying
 /// `target.branch` from config first, then the usual trunk names.
 pub fn find_target_branch(repo: &Repository) -> Result<Option<TargetBranch>> {
     for candidate in target_branch_candidates(repo)? {
@@ -193,6 +193,6 @@ pub fn reflog_identity(config: &ConfigSet, now: OffsetDateTime) -> String {
 
 fn identity_error(err: IdentityError) -> anyhow::Error {
     anyhow::anyhow!(
-        "{err}\n\nTell gi who you are:\n  grit config --global user.name \"Your Name\"\n  grit config --global user.email \"you@example.com\""
+        "{err}\n\nTell gs who you are:\n  grit config --global user.name \"Your Name\"\n  grit config --global user.email \"you@example.com\""
     )
 }

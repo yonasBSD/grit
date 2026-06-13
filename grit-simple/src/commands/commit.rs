@@ -1,4 +1,4 @@
-//! `gi commit` — record the staged changes as a new commit.
+//! `gs commit` — record the staged changes as a new commit.
 
 use anyhow::{bail, Context, Result};
 use grit_lib::config::ConfigSet;
@@ -22,13 +22,13 @@ pub fn run(message: Option<String>, all: bool) -> Result<()> {
 
     let message = match message {
         Some(m) if !m.trim().is_empty() => m,
-        _ => bail!("provide a commit message, e.g. gi commit \"what changed\""),
+        _ => bail!("provide a commit message, e.g. gs commit \"what changed\""),
     };
 
     let model = status(&repo, &StatusOptions::default(), &mut NullProgress)
         .context("could not compute status")?;
     if model.staged.is_empty() {
-        bail!("nothing staged to commit — use \"gi add\" first");
+        bail!("nothing staged to commit — use \"gs add\" first");
     }
 
     let (refname, short_name, parent) = match &model.head {
@@ -38,7 +38,7 @@ pub fn run(message: Option<String>, all: bool) -> Result<()> {
             oid,
         } => (refname.clone(), short_name.clone(), *oid),
         HeadState::Detached { .. } => {
-            bail!("HEAD is detached; gi commit needs a branch")
+            bail!("HEAD is detached; gs commit needs a branch")
         }
         HeadState::Invalid => bail!("HEAD is in an unknown state"),
     };

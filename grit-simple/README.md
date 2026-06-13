@@ -1,8 +1,8 @@
 # grit-simple
 
-`grit-simple` provides `gi`, a small opinionated command line interface backed by [`grit-lib`](https://crates.io/crates/grit-lib).
+`grit-simple` provides `gs`, a small opinionated command line interface backed by [`grit-lib`](https://crates.io/crates/grit-lib).
 
-It is not intended to be a drop-in replacement for Git. For Git-compatible command behavior, use the `grit` binary from the `grit-cli` crate. `gi` is a simpler interface for workflows built on Grit's Rust implementation.
+It is not intended to be a drop-in replacement for Git. For Git-compatible command behavior, use the `grit` binary from the `grit-cli` crate. `gs` is a simpler interface for workflows built on Grit's Rust implementation.
 
 ## Install
 
@@ -10,24 +10,24 @@ It is not intended to be a drop-in replacement for Git. For Git-compatible comma
 cargo install grit-simple
 ```
 
-This installs the `gi` executable.
+This installs the `gs` executable.
 
 ## Commands
 
-`gi` favors one obvious way to do the common thing, plain-language output, and a
+`gs` favors one obvious way to do the common thing, plain-language output, and a
 status screen that doubles as the home base.
 
-### `gi` / `gi status`
+### `gs` / `gs status`
 
-Running `gi` with no arguments shows the dashboard: the current branch, a
+Running `gs` with no arguments shows the dashboard: the current branch, a
 shortlog of the commits you're ahead of the target branch by, your staged and
 unstaged changes, untracked files, and a hint for what to do next.
 
 ```sh
-gi
+gs
 # explicit form / alias:
-gi status
-gi st
+gs status
+gs st
 ```
 
 ```text
@@ -46,87 +46,87 @@ Changed (not staged)
 Untracked
   ?  notes.md
 
-→ gi add <file> to stage  ·  gi commit "message" to commit
+→ gs add <file> to stage  ·  gs commit "message" to commit
 ```
 
-### `gi add`
+### `gs add`
 
-Stage changes. With no paths, stages **everything** that `gi status` reports as
+Stage changes. With no paths, stages **everything** that `gs status` reports as
 changed — modifications, deletions, and untracked files alike. Pass paths to
 stage a subset.
 
 ```sh
-gi add            # stage all changes
-gi add src/ a.txt # stage only these paths
+gs add            # stage all changes
+gs add src/ a.txt # stage only these paths
 ```
 
-### `gi commit`
+### `gs commit`
 
 Record the staged changes as a new commit. The message can be a positional
 argument or `-m`; `-a` stages every change first.
 
 ```sh
-gi commit "what changed"
-gi commit -m "what changed"
-gi commit -a "stage everything, then commit"
+gs commit "what changed"
+gs commit -m "what changed"
+gs commit -a "stage everything, then commit"
 ```
 
 Author/committer identity comes from `user.name` / `user.email` (honoring the
 `GIT_AUTHOR_DATE` / `GIT_COMMITTER_DATE` overrides).
 
-### `gi branch`
+### `gs branch`
 
 List branches, or create / delete one.
 
 ```sh
-gi branch            # list (current marked with *)
-gi branch feature    # create "feature" at HEAD (does not switch)
-gi branch -d feature # delete "feature"
+gs branch            # list (current marked with *)
+gs branch feature    # create "feature" at HEAD (does not switch)
+gs branch -d feature # delete "feature"
 ```
 
-### `gi switch`
+### `gs switch`
 
 Move to another branch, updating the working tree. Refuses to switch with
 uncommitted changes, and won't clobber an untracked file the destination needs.
 
 ```sh
-gi switch main          # switch to an existing branch
-gi switch -c feature    # create "feature" and switch to it
-gi checkout main        # aliases: checkout, co
+gs switch main          # switch to an existing branch
+gs switch -c feature    # create "feature" and switch to it
+gs checkout main        # aliases: checkout, co
 ```
 
-### `gi merge`
+### `gs merge`
 
 Merge another branch into the current one — fast-forwarding when possible,
 otherwise recording a merge commit. Conflicts are reported without leaving a
-half-finished merge (resolving them is out of scope for `gi`).
+half-finished merge (resolving them is out of scope for `gs`).
 
 ```sh
-gi merge feature
+gs merge feature
 ```
 
-### `gi fetch` / `gi pull` / `gi push`
+### `gs fetch` / `gs pull` / `gs push`
 
-Talk to remotes. `gi` keeps these argument-free: they default to `origin` and
+Talk to remotes. `gs` keeps these argument-free: they default to `origin` and
 the current branch's same-named counterpart — no `-u origin <branch>` ceremony.
 
 ```sh
-gi fetch          # download refs/objects from origin (or: gi fetch <remote>)
-gi pull           # fetch, then fast-forward / merge the upstream in
-gi push           # publish the current branch to origin
+gs fetch          # download refs/objects from origin (or: gs fetch <remote>)
+gs pull           # fetch, then fast-forward / merge the upstream in
+gs push           # publish the current branch to origin
 ```
 
 Local (`file://` / path), `git://`, `ssh`, and `http(s)` remotes are supported.
 
-### `gi shortlog`
+### `gs shortlog`
 
 Show the current branch, the target branch, and commits that are reachable from
 `HEAD` but not from the target branch.
 
 ```sh
-gi shortlog
+gs shortlog
 # alias:
-gi sl
+gs sl
 ```
 
 Target branch lookup uses the first available value from:

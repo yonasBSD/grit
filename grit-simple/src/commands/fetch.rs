@@ -1,4 +1,4 @@
-//! `gi fetch` — download refs and objects from a remote (default `origin`).
+//! `gs fetch` — download refs and objects from a remote (default `origin`).
 
 use anyhow::{Context, Result};
 use grit_lib::config::ConfigSet;

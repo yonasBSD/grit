@@ -1,4 +1,4 @@
-//! `gi branch` — list branches, or create / delete one.
+//! `gs branch` — list branches, or create / delete one.
 
 use anyhow::{bail, Context, Result};
 use grit_lib::refs;

@@ -1,4 +1,4 @@
-//! `gi status` (and bare `gi`) — the dashboard: where you are, the commits
+//! `gs status` (and bare `gs`) — the dashboard: where you are, the commits
 //! you're ahead by, what's changed, and what to do next.
 
 use anyhow::{Context, Result};
@@ -91,10 +91,10 @@ fn print_changes(model: &StatusModel) {
 fn print_hints(model: &StatusModel) {
     let mut hints = Vec::new();
     if !model.unstaged.is_empty() || !model.untracked.is_empty() {
-        hints.push("gi add <file> to stage");
+        hints.push("gs add <file> to stage");
     }
     if !model.staged.is_empty() {
-        hints.push("gi commit \"message\" to commit");
+        hints.push("gs commit \"message\" to commit");
     }
     if !hints.is_empty() {
         println!("→ {}", hints.join("  ·  "));

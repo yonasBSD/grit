@@ -1,4 +1,4 @@
-//! `gi pull` — fetch from the remote, then integrate the upstream into the
+//! `gs pull` — fetch from the remote, then integrate the upstream into the
 //! current branch (fast-forward when possible, otherwise a merge).
 
 use anyhow::{bail, Context, Result};
@@ -24,7 +24,7 @@ pub fn run() -> Result<()> {
 
     let (refname, short_name, head_oid) = match resolve_head(&repo.git_dir)? {
         HeadState::Branch { refname, short_name, oid } => (refname, short_name, oid),
-        HeadState::Detached { .. } => bail!("HEAD is detached; gi pull needs a branch"),
+        HeadState::Detached { .. } => bail!("HEAD is detached; gs pull needs a branch"),
         HeadState::Invalid => bail!("HEAD is in an unknown state"),
     };
 

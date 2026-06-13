@@ -1,4 +1,4 @@
-//! `gi` subcommand implementations.
+//! `gs` subcommand implementations.
 
 pub mod add;
 pub mod branch;
