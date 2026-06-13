@@ -20,7 +20,17 @@ main() {
 
   case "$OS" in
     darwin)  OS_TARGET="apple-darwin" ;;
-    linux)   OS_TARGET="unknown-linux-gnu" ;;
+    linux)
+      # Pick the right C library flavor. musl-based distros (e.g. Alpine) get the
+      # statically-linked musl binary; everything else gets the glibc (gnu) one.
+      LIBC="gnu"
+      if { command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; } \
+         || ls /lib/ld-musl-* >/dev/null 2>&1 \
+         || { [ -f /etc/os-release ] && grep -qiE '^(ID|ID_LIKE)=.*alpine' /etc/os-release; }; then
+        LIBC="musl"
+      fi
+      OS_TARGET="unknown-linux-${LIBC}"
+      ;;
     mingw*|msys*|cygwin*)
       echo "On Windows, download from: https://github.com/$REPO/releases/latest" >&2
       exit 1

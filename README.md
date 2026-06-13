@@ -28,7 +28,7 @@ To install the `grit` CLI via Bash, you can run our install script:
 $ curl -fsSL https://grit-scm.com/install | sh
 ```
 
-There are builds for Mac and Linux, (aarch64 and x86_64 for both). Windows is on the list, but there's some work to do there.
+There are builds for Mac and Linux, (aarch64 and x86_64 for both). Linux ships both glibc and statically-linked musl binaries, so the installer works on distros like Alpine too — it auto-detects which one your system needs. Windows is on the list, but there's some work to do there.
 
 ## Updating
 
