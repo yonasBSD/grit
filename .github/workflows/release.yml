@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - "v*"
+  # Allow kicking off a manual test build from the Actions tab. These runs build
+  # and upload the artifacts but do not publish a GitHub Release (see the
+  # `release` job's `if` guard below).
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -89,7 +93,15 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+      # The repo's logs/ directory contains files with ':' in their names, which
+      # are invalid on NTFS and abort `git checkout` on Windows. Sparse-checkout
+      # everything except logs/ — the build doesn't need it.
       - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            /*
+            !/logs/
+          sparse-checkout-cone-mode: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -112,6 +124,9 @@ jobs:
 
   release:
     needs: [build, build-windows]
+    # Only publish a GitHub Release for tag pushes. Manual (workflow_dispatch)
+    # runs stop after the build jobs, leaving the artifacts on the run to download.
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
