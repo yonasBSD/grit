@@ -21,6 +21,18 @@ struct Cli {
     command: Option<Command>,
 }
 
+/// Subcommands of `gs remote`.
+#[derive(Debug, Subcommand)]
+enum RemoteAction {
+    /// Add a new remote.
+    Add {
+        /// Short name for the remote (e.g. origin).
+        name: String,
+        /// The remote's URL or path.
+        url: String,
+    },
+}
+
 /// Top-level `gs` commands.
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -38,6 +50,17 @@ enum Command {
         url: String,
         /// Directory to clone into (defaults to the repository name).
         dir: Option<String>,
+    },
+    /// List remotes, or add one.
+    Remote {
+        #[command(subcommand)]
+        action: Option<RemoteAction>,
+    },
+    /// Show recent commits reachable from HEAD.
+    Log {
+        /// Continue listing from before this commit (for paging).
+        #[arg(long)]
+        before: Option<String>,
     },
     /// Show what's changed and where you are (this is the default).
     #[command(alias = "st")]
@@ -106,6 +129,11 @@ fn run() -> Result<()> {
     match cli.command.unwrap_or(Command::Status) {
         Command::Init { path, bare } => commands::init::run(path, bare),
         Command::Clone { url, dir } => commands::clone::run(&url, dir),
+        Command::Remote { action } => {
+            let add = action.map(|RemoteAction::Add { name, url }| (name, url));
+            commands::remote::run(add)
+        }
+        Command::Log { before } => commands::log::run(before),
         Command::Status => commands::status::run(),
         Command::Shortlog => commands::shortlog::run(),
         Command::Add { paths } => commands::add::run(&paths),

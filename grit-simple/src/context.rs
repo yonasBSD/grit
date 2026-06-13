@@ -137,7 +137,8 @@ pub fn commit_tree(repo: &Repository, oid: &ObjectId) -> Result<ObjectId> {
     Ok(read_commit(repo, oid)?.tree)
 }
 
-fn read_commit(repo: &Repository, oid: &ObjectId) -> Result<CommitData> {
+/// Read and parse a commit object.
+pub fn read_commit(repo: &Repository, oid: &ObjectId) -> Result<CommitData> {
     let object = repo
         .odb
         .read(oid)
