@@ -117,6 +117,30 @@ enum Command {
     Push,
     /// Sign in to GitHub (device flow) and store a token for HTTPS push/fetch.
     Auth,
+    /// Read, set, or list configuration values.
+    Config {
+        /// Use the global (per-user) config file instead of this repository's.
+        #[arg(long)]
+        global: bool,
+        /// List all configuration values.
+        #[arg(short = 'l', long = "list")]
+        list: bool,
+        /// Remove the key instead of reading or setting it.
+        #[arg(long)]
+        unset: bool,
+        /// The configuration key, e.g. user.name. Omit only with --list.
+        key: Option<String>,
+        /// The value to set. Omit to read the current value.
+        value: Option<String>,
+    },
+    /// Git credential helper backed by the Windows Credential Manager.
+    ///
+    /// You don't normally run this yourself — `gs auth` wires it into
+    /// `credential.helper` on Windows. It speaks Git's credential protocol.
+    Manager {
+        /// The credential operation: get, store, or erase.
+        operation: String,
+    },
 }
 
 fn main() {
@@ -151,5 +175,13 @@ fn run() -> Result<()> {
         Command::Pull => commands::pull::run(),
         Command::Push => commands::push::run(),
         Command::Auth => commands::auth::run(),
+        Command::Config {
+            global,
+            list,
+            unset,
+            key,
+            value,
+        } => commands::config::run(global, list, unset, key, value),
+        Command::Manager { operation } => commands::manager::run(&operation),
     }
 }

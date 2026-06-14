@@ -52,3 +52,8 @@ base64 = { workspace = true, optional = true }
 # `#[cfg(unix)]`, so it is not pulled in on Windows.
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
+
+# `windows-sys` backs the Windows Credential Manager store (`credentials::windows_store`),
+# used by the built-in `gs manager` credential helper. Windows-only.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }

@@ -44,19 +44,14 @@ const FORM: &str = "application/x-www-form-urlencoded";
 
 /// Run the interactive `gs auth` device flow and store the token.
 pub fn run() -> Result<()> {
-    let config = load_config();
+    let mut config = load_config();
     let client_id = client_id(&config)?;
 
     // Make sure there's somewhere to put the token before we send the user off
     // to authorize — otherwise they'd do the dance and we'd silently drop it.
+    // On Windows we can set one up automatically; elsewhere we explain how.
     if credential_helpers(&config).is_empty() {
-        bail!(
-            "no credential helper is configured, so the token couldn't be stored.\n\
-             Enable one first, for example:\n  \
-             macOS:   grit config --global credential.helper osxkeychain\n  \
-             Linux:   grit config --global credential.helper libsecret\n  \
-             any:     grit config --global credential.helper store   (plaintext file)"
-        );
+        config = ensure_credential_helper()?;
     }
 
     let http = UreqHttpClient::from_config(&config).context("could not set up HTTP client")?;
@@ -196,6 +191,37 @@ fn credential_helpers(config: &ConfigSet) -> Vec<String> {
         }
     }
     helpers
+}
+
+/// Called when no `credential.helper` is configured. On Windows we wire one up
+/// automatically — pointing `credential.helper` at the built-in `gs manager`
+/// (Windows Credential Manager) — and return the reloaded config. Elsewhere we
+/// bail with instructions, since storing the token would otherwise be silently
+/// lost. We use `gs manager` rather than Git Credential Manager because the
+/// latter only ships with Git for Windows, which may not be installed.
+#[cfg(windows)]
+fn ensure_credential_helper() -> Result<ConfigSet> {
+    let exe = std::env::current_exe()
+        .context("could not locate the gs executable to set up the credential helper")?;
+    // Git accepts forward slashes in helper paths on Windows, and they avoid the
+    // backslash-escaping pitfalls of the helper string being shell-split.
+    let exe = exe.to_string_lossy().replace('\\', "/");
+    let helper = format!("\"{exe}\" manager");
+    crate::commands::config::set_global("credential.helper", &helper)
+        .context("setting up the Windows credential helper")?;
+    println!("Set credential.helper to `gs manager` (Windows Credential Manager).");
+    Ok(load_config())
+}
+
+#[cfg(not(windows))]
+fn ensure_credential_helper() -> Result<ConfigSet> {
+    bail!(
+        "no credential helper is configured, so the token couldn't be stored.\n\
+         Enable one first, for example:\n  \
+         macOS:   gs config --global credential.helper osxkeychain\n  \
+         Linux:   gs config --global credential.helper libsecret\n  \
+         any:     gs config --global credential.helper store   (plaintext file)"
+    )
 }
 
 /// The fields GitHub returns from the device-code request.

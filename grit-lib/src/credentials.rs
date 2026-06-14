@@ -685,6 +685,164 @@ fn credential_config_value(
     out
 }
 
+/// Windows Credential Manager backing store for the built-in `manager`
+/// credential helper (`gs manager`).
+///
+/// Git for Windows bundles Git Credential Manager (the `manager` helper), but it
+/// is only present when Git for Windows is installed. These functions let `gs`
+/// store and retrieve secrets directly from the Windows Credential Manager
+/// without that dependency. They are only compiled on Windows; the `gs manager`
+/// command errors elsewhere.
+///
+/// Secrets are stored as `CRED_TYPE_GENERIC` entries keyed by a target name of
+/// the form `git:<protocol>://<host>`, matching Git's own `wincred` helper so
+/// the entries are recognizable in the Credential Manager UI.
+#[cfg(windows)]
+pub mod windows_store {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
+    use windows_sys::Win32::Security::Credentials::{
+        CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
+        CRED_TYPE_GENERIC,
+    };
+
+    use super::Credential;
+    use crate::error::{Error, Result};
+
+    /// The Credential Manager target name a credential is stored under.
+    fn target_name(cred: &Credential) -> Result<String> {
+        let protocol = cred
+            .protocol
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| Error::Message("credential is missing its protocol".to_owned()))?;
+        let host = cred
+            .host
+            .as_deref()
+            .filter(|h| !h.is_empty())
+            .ok_or_else(|| Error::Message("credential is missing its host".to_owned()))?;
+        Ok(format!("git:{protocol}://{host}"))
+    }
+
+    /// Encode a string as a NUL-terminated UTF-16 buffer for the wide Win32 API.
+    fn wide(s: &str) -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    /// Read a NUL-terminated wide string from a (possibly null) pointer.
+    ///
+    /// # Safety
+    /// `ptr` must be null or point to a NUL-terminated UTF-16 string owned by a
+    /// live `CREDENTIALW` returned by `CredReadW`.
+    unsafe fn wstr_to_string(ptr: *const u16) -> String {
+        if ptr.is_null() {
+            return String::new();
+        }
+        let mut len = 0usize;
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+        String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
+    }
+
+    /// Look up the stored username/password for `cred`'s host, if any.
+    pub fn get(cred: &Credential) -> Result<Option<Credential>> {
+        let target = wide(&target_name(cred)?);
+        let mut pcred: *mut CREDENTIALW = std::ptr::null_mut();
+        // SAFETY: `target` is a valid NUL-terminated wide string and `pcred` is a
+        // valid out-pointer; on success Windows allocates the credential for us.
+        let ok = unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut pcred) };
+        if ok == 0 {
+            // SAFETY: `GetLastError` is always safe to call after a failed Win32 call.
+            let err = unsafe { GetLastError() };
+            if err == ERROR_NOT_FOUND {
+                return Ok(None);
+            }
+            return Err(Error::Message(format!(
+                "reading from the Windows Credential Manager failed (error {err})"
+            )));
+        }
+
+        // SAFETY: `CredReadW` succeeded, so `pcred` points to a live credential we own
+        // until `CredFree`. We copy out the fields before freeing it.
+        let (username, password) = unsafe {
+            let c = &*pcred;
+            let username = wstr_to_string(c.UserName);
+            let password = if c.CredentialBlob.is_null() || c.CredentialBlobSize == 0 {
+                String::new()
+            } else {
+                let bytes =
+                    std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize);
+                String::from_utf8_lossy(bytes).into_owned()
+            };
+            (username, password)
+        };
+        // SAFETY: `pcred` came from `CredReadW` and has not been freed yet.
+        unsafe { CredFree(pcred as *const core::ffi::c_void) };
+
+        let mut out = Credential::default();
+        if !username.is_empty() {
+            out.username = Some(username);
+        }
+        if !password.is_empty() {
+            out.password = Some(password);
+        }
+        Ok(Some(out))
+    }
+
+    /// Store `cred`'s password (and username) for its host. A credential with no
+    /// password is a no-op.
+    pub fn store(cred: &Credential) -> Result<()> {
+        let password = match cred.password.as_deref() {
+            Some(p) if !p.is_empty() => p,
+            _ => return Ok(()),
+        };
+        let mut target = wide(&target_name(cred)?);
+        let mut username = wide(cred.username.as_deref().unwrap_or(""));
+        let blob = password.as_bytes();
+
+        // SAFETY: zeroing is valid for this plain-old-data struct; we populate the
+        // fields the API reads below.
+        let mut credential: CREDENTIALW = unsafe { std::mem::zeroed() };
+        credential.Type = CRED_TYPE_GENERIC;
+        credential.TargetName = target.as_mut_ptr();
+        credential.CredentialBlobSize = blob.len() as u32;
+        credential.CredentialBlob = blob.as_ptr() as *mut u8;
+        credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
+        credential.UserName = username.as_mut_ptr();
+
+        // SAFETY: every pointer field references a buffer that outlives the call.
+        let ok = unsafe { CredWriteW(&credential as *const CREDENTIALW, 0) };
+        if ok == 0 {
+            // SAFETY: always safe after a failed Win32 call.
+            let err = unsafe { GetLastError() };
+            return Err(Error::Message(format!(
+                "writing to the Windows Credential Manager failed (error {err})"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Delete the stored credential for `cred`'s host. Succeeds if none exists.
+    pub fn erase(cred: &Credential) -> Result<()> {
+        let target = wide(&target_name(cred)?);
+        // SAFETY: `target` is a valid NUL-terminated wide string.
+        let ok = unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) };
+        if ok == 0 {
+            // SAFETY: always safe after a failed Win32 call.
+            let err = unsafe { GetLastError() };
+            if err != ERROR_NOT_FOUND {
+                return Err(Error::Message(format!(
+                    "deleting from the Windows Credential Manager failed (error {err})"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
