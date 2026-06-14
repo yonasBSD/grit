@@ -4,9 +4,9 @@ on:
   push:
     tags:
       - "v*"
-  # Allow kicking off a manual test build from the Actions tab. These runs build
-  # and upload the artifacts but do not publish a GitHub Release (see the
-  # `release` job's `if` guard below).
+  # Allow kicking off a build manually from the Actions tab. A manual run
+  # refreshes the rolling `nightly` prerelease (see the `publish-nightly` job) so
+  # `install-nightly` can fetch it with plain curl — no GitHub auth required.
   workflow_dispatch:
 
 permissions:
@@ -73,13 +73,10 @@ jobs:
           tar czf ../../../gs-${{ matrix.target }}.tar.gz gs
         shell: bash
 
-      # Manual (workflow_dispatch) runs publish a `*-nightly` artifact so the
-      # `install-nightly` script can find them; tag pushes keep the plain name
-      # the release job globs over.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: grit-${{ matrix.target }}${{ github.event_name == 'workflow_dispatch' && '-nightly' || '' }}
+          name: grit-${{ matrix.target }}
           path: |
             grit-${{ matrix.target }}.tar.gz
             gs-${{ matrix.target }}.tar.gz
@@ -122,7 +119,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gs-${{ matrix.target }}${{ github.event_name == 'workflow_dispatch' && '-nightly' || '' }}
+          name: gs-${{ matrix.target }}
           path: gs-${{ matrix.target }}.zip
 
   release:
@@ -144,3 +141,32 @@ jobs:
             grit-*.tar.gz
             gs-*.tar.gz
             gs-*.zip
+
+  # Manual (workflow_dispatch) runs refresh a rolling `nightly` prerelease.
+  # Release assets are public, so `install-nightly` downloads them with plain
+  # curl — no GitHub CLI or token needed (unlike workflow-run artifacts, which
+  # require authentication). The previous nightly release and its tag are deleted
+  # first so the tag always points at the commit we just built.
+  publish-nightly:
+    needs: [build, build-windows]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Refresh the rolling "nightly" prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # `gh` is preinstalled on the runner; this is CI-side only and does not
+          # affect how end users install the nightly build.
+          gh release delete nightly --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create nightly \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Nightly" \
+            --notes "Latest manual build from ${GITHUB_SHA}." \
+            grit-*.tar.gz gs-*.tar.gz gs-*.zip
