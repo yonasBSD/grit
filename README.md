@@ -8,6 +8,10 @@ The Grit project is brought to you by the mad geniuses at [GitButler ⧓](https:
 
 ![Harness test progress](docs/test-progress.svg)
 
+## Motivation
+
+Why rewrite Git functionality into Rust? It's not about replacing Git, it's about having a feature-complete linkable library. It's similar to Gitoxide or libgit2/git2-rs, but using LLMs to try to acheive total feature parity by targeting the Git testing suite.
+
 ## Approach
 
 This implementation has been written nearly entirely by AI coding agents with the goal of entirely passing the C Git testing suite. For details on how we accomplished this, see our [blog post](https://blog.gitbutler.com/true-grit).
