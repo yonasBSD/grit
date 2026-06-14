@@ -1,10 +1,8 @@
 # grit-simple nightly installer for Windows - installs the latest manually-triggered CI build.
 #
-# Unlike the release installer (docs/install.ps1), nightly builds are not
-# published as GitHub Releases. They live as a `gs-<target>-nightly` artifact on
-# the most recent manual (workflow_dispatch) run of the Release workflow. GitHub
-# requires authentication to download workflow artifacts, so this script drives
-# the GitHub CLI (`gh`) - log in first with `gh auth login`.
+# Manual (workflow_dispatch) runs publish to a rolling `nightly` prerelease, so
+# this works exactly like the stable installer (docs/install.ps1): it downloads
+# a public release asset with Invoke-WebRequest. No GitHub CLI or token required.
 #
 # Usage: irm grit-scm.com/install-nightly.ps1 | iex
 #
@@ -17,30 +15,16 @@ $InstallDir = if ($env:GRIT_INSTALL_DIR) { $env:GRIT_INSTALL_DIR } else { Join-P
 
 # Windows ARM64 runs x86_64 binaries via emulation, so x86_64 is the only target we ship.
 $Target = 'x86_64-pc-windows-msvc'
+$Url = "https://github.com/$Repo/releases/download/nightly/gs-$Target.zip"
 
-if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-  throw "The GitHub CLI (gh) is required. Install it from https://cli.github.com and run 'gh auth login'."
-}
-
-# Find the most recent successful manual (workflow_dispatch) build.
-Write-Host "Looking up the latest manual build..."
-$RunId = gh run list --repo $Repo --workflow release.yml `
-  --event workflow_dispatch --status success --limit 1 `
-  --json databaseId --jq '.[0].databaseId'
-
-if ([string]::IsNullOrWhiteSpace($RunId)) {
-  throw "No successful manual build found. Trigger one from the Actions tab (Run workflow) and try again."
-}
-Write-Host "Using run #$RunId"
+Write-Host "Downloading from: $Url"
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("grit-" + [System.IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
-  $Artifact = "gs-$Target-nightly"
-  Write-Host "Downloading artifact: $Artifact"
-  gh run download $RunId --repo $Repo -n $Artifact -D $tmp
-
-  Expand-Archive -Path (Join-Path $tmp "gs-$Target.zip") -DestinationPath $tmp -Force
+  $zip = Join-Path $tmp 'gs.zip'
+  Invoke-WebRequest -Uri $Url -OutFile $zip
+  Expand-Archive -Path $zip -DestinationPath $tmp -Force
 
   New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
   Copy-Item -Path (Join-Path $tmp 'gs.exe') -Destination (Join-Path $InstallDir 'gs.exe') -Force
