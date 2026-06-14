@@ -445,9 +445,17 @@ pub fn run(mut args: Args) -> Result<()> {
                 Err(_) => true,
             })
     });
-    let use_full_paths = args.full_name || args.full_tree || at_repo_root;
+    // --full-tree and --full-name are separate concerns:
+    //   --full-tree  affects scope (skip cwd narrowing, show entire tree)
+    //   --full-name  affects display only (repo-root relative paths)
+    let scope_full_tree = args.full_tree || at_repo_root;
+    let display_full_paths = args.full_name || scope_full_tree;
 
-    let cwd_rel = if use_full_paths {
+    // cwd_rel: needed for tree narrowing (scope) regardless of --full-name.
+    // Only --full-tree skips cwd context entirely.
+    // Display layer uses display_full_paths (above) to decide path formatting,
+    // so cwd_rel being Some here when --full-name is set won't affect output.
+    let cwd_rel = if args.full_tree || at_repo_root {
         None
     } else {
         cwd_relative_to_work_tree(&repo)?
@@ -457,7 +465,7 @@ pub fn run(mut args: Args) -> Result<()> {
     // pathspec prefix). Pathspec arguments disable narrowing: `read_tree` matches against the full
     // tree so patterns like `../a[a]` from a subdirectory still resolve (t3102).
     let mut narrowed_prefix = String::new();
-    if !use_full_paths && args.paths.is_empty() {
+    if !scope_full_tree && args.paths.is_empty() {
         if let Some(ref cwd_rel) = cwd_rel {
             if !cwd_rel.is_empty() {
                 let Some((oid, pfx)) =
@@ -477,8 +485,10 @@ pub fn run(mut args: Args) -> Result<()> {
     }
 
     // Prefix for paths under `list_tree` (repo-root-relative), and cwd-relative display adjustment.
-    let (list_prefix, cwd_prefix) = if use_full_paths {
-        (String::new(), None)
+    let (list_prefix, cwd_prefix) = if display_full_paths {
+        // --full-tree: narrowed_prefix is empty, list from root with full paths.
+        // --full-name: narrowed_prefix is set, use it as list prefix for repo-root display.
+        (narrowed_prefix.clone(), None)
     } else if !narrowed_prefix.is_empty() {
         (narrowed_prefix.clone(), Some(narrowed_prefix))
     } else if let Some(ref rel) = cwd_rel {
