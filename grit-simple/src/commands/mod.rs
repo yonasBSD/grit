@@ -1,6 +1,7 @@
 //! `gs` subcommand implementations.
 
 pub mod add;
+pub mod auth;
 pub mod branch;
 pub mod clone;
 pub mod commit;

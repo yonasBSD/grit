@@ -118,6 +118,40 @@ gs push           # publish the current branch to origin
 
 Local (`file://` / path), `git://`, `ssh`, and `http(s)` remotes are supported.
 
+For HTTPS remotes, credentials come from your configured `credential.helper`.
+When a push or fetch to a `github.com` HTTPS remote fails authentication, `gs`
+offers to sign you in (see `gs auth`) and retries.
+
+### `gs auth`
+
+Sign in to GitHub using the OAuth **Device Flow** and store the resulting token
+in Git's credential store, so HTTPS `gs push` / `gs fetch` to github.com just
+work. There is no intermediate service — every request goes straight to
+github.com.
+
+```sh
+gs auth
+```
+
+`gs` prints a short code and a URL (`https://github.com/login/device`); you enter
+the code in your browser, and `gs` polls GitHub until you authorize, then hands
+the token to your `credential.helper`. A credential helper must be configured so
+the token can be saved, for example:
+
+```sh
+grit config --global credential.helper osxkeychain   # macOS
+grit config --global credential.helper libsecret      # Linux
+grit config --global credential.helper store          # plaintext file (any OS)
+```
+
+The flow uses the client id of a registered GitHub OAuth App (no client secret
+is needed for the device flow). Provide it via `$GS_GITHUB_CLIENT_ID` or the
+`gs.githubClientId` config key:
+
+```sh
+grit config --global gs.githubClientId <your-oauth-app-client-id>
+```
+
 ### `gs shortlog`
 
 Show the current branch, the target branch, and commits that are reachable from

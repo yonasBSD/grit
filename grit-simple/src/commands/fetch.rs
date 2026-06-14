@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use grit_lib::config::ConfigSet;
 
+use crate::commands::auth;
 use crate::context::{self, short_oid};
 use crate::net;
 
@@ -12,7 +13,18 @@ pub fn run(remote: Option<String>) -> Result<()> {
     let remote = remote.unwrap_or_else(|| net::DEFAULT_REMOTE.to_owned());
 
     let refspecs = net::fetch_refspecs(&config, &remote);
-    let outcome = net::fetch(&repo, &config, &remote, refspecs)?;
+    // On an HTTPS auth failure, `gs auth` can refresh the token and we retry once.
+    let outcome = match net::fetch(&repo, &config, &remote, refspecs.clone()) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            let url = net::remote_url(&config, &remote).unwrap_or_default();
+            if auth::offer_reauth(&err, &url)? {
+                net::fetch(&repo, &config, &remote, refspecs)?
+            } else {
+                return Err(err);
+            }
+        }
+    };
 
     let mut updated = 0;
     for update in &outcome.updates {

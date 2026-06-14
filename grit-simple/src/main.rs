@@ -115,6 +115,8 @@ enum Command {
     Pull,
     /// Publish the current branch to its remote.
     Push,
+    /// Sign in to GitHub (device flow) and store a token for HTTPS push/fetch.
+    Auth,
 }
 
 fn main() {
@@ -148,5 +150,6 @@ fn run() -> Result<()> {
         Command::Fetch { remote } => commands::fetch::run(remote),
         Command::Pull => commands::pull::run(),
         Command::Push => commands::push::run(),
+        Command::Auth => commands::auth::run(),
     }
 }

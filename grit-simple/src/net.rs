@@ -10,6 +10,7 @@ use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 
 use grit_lib::config::ConfigSet;
+use grit_lib::credentials::HelperCredentialProvider;
 use grit_lib::fetch::{fetch_remote, NoProgress};
 use grit_lib::push::push_remote;
 use grit_lib::repo::Repository;
@@ -55,6 +56,18 @@ fn is_http(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
 }
 
+/// Build an HTTP client honoring the repo's request-shaping config and wired
+/// with a `credential.helper`-backed provider, so a `401` is satisfied from the
+/// credential store (e.g. a token saved by `gs auth`). Falls back to a plain
+/// credentialed client if the config-driven build fails.
+fn http_client(config: &ConfigSet) -> Result<UreqHttpClient> {
+    let provider = Box::new(HelperCredentialProvider::new(config.clone()));
+    let client = UreqHttpClient::from_config(config)
+        .context("could not set up HTTP client")?
+        .with_credential_provider(provider);
+    Ok(client)
+}
+
 /// Resolve the git directory of a local remote (a path or `file://` URL).
 fn local_git_dir(url: &str) -> PathBuf {
     let path = url.strip_prefix("file://").unwrap_or(url);
@@ -96,7 +109,7 @@ pub fn fetch(
     let outcome = if !is_url_scheme(&url) {
         fetch_local(&repo.git_dir, &local_git_dir(&url), &opts)?
     } else if is_http(&url) {
-        let client = UreqHttpClient::from_config(config).context("could not set up HTTP client")?;
+        let client = http_client(config)?;
         http_fetch(&client, &repo.git_dir, &url, &opts, &mut NoProgress)?
     } else {
         let mut conn = connect(&url, Service::UploadPack)?;
@@ -118,7 +131,7 @@ pub fn push(
     let outcome = if !is_url_scheme(&url) {
         push_local(&repo.git_dir, &local_git_dir(&url), refs, &opts)?
     } else if is_http(&url) {
-        let client = UreqHttpClient::from_config(config).context("could not set up HTTP client")?;
+        let client = http_client(config)?;
         SmartHttpTransport::new(client).push(&repo.git_dir, &url, refs, &opts, &mut NoProgress)?
     } else {
         let mut conn = connect(&url, Service::ReceivePack)?;

@@ -10,6 +10,7 @@ use grit_lib::push_report::PushRefStatus;
 use grit_lib::state::{resolve_head, HeadState};
 use grit_lib::transfer::PushRefSpec;
 
+use crate::commands::auth;
 use crate::context;
 use crate::net;
 
@@ -42,7 +43,18 @@ pub fn run() -> Result<()> {
         expect_absent: false,
     };
 
-    let outcome = net::push(&repo, &config, &remote, &[spec])?;
+    // On an HTTPS auth failure, `gs auth` can refresh the token and we retry once.
+    let outcome = match net::push(&repo, &config, &remote, std::slice::from_ref(&spec)) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            let url = net::remote_url(&config, &remote).unwrap_or_default();
+            if auth::offer_reauth(&err, &url)? {
+                net::push(&repo, &config, &remote, std::slice::from_ref(&spec))?
+            } else {
+                return Err(err);
+            }
+        }
+    };
 
     let mut rejected = false;
     for result in &outcome.results {
