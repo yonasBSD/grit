@@ -1274,7 +1274,9 @@ impl ReftableReader {
         // header) is a log block — mirroring `is_present` in git's table.c.
         let mut pos = if self.log_position > 0 {
             self.log_position as usize
-        } else if self.data.len() > self.header_len() && self.data[self.header_len()] == BLOCK_TYPE_LOG {
+        } else if self.data.len() > self.header_len()
+            && self.data[self.header_len()] == BLOCK_TYPE_LOG
+        {
             // Log block is the first block; it begins right after the header.
             self.header_len()
         } else {
@@ -1327,7 +1329,8 @@ impl ReftableReader {
             let mut prev_key = Vec::<u8>::new();
 
             while rpos < restart_table_start {
-                let (log, new_pos) = decode_log_record(&inflated, rpos, &prev_key, self.hash_size())?;
+                let (log, new_pos) =
+                    decode_log_record(&inflated, rpos, &prev_key, self.hash_size())?;
                 // Reconstruct key for prefix compression
                 let mut key = Vec::new();
                 key.extend_from_slice(log.refname.as_bytes());
@@ -2604,7 +2607,8 @@ pub fn reftable_write_symref(
 
     let log = if let Some(identity) = log_identity {
         let (name, email, time_secs, tz) = parse_identity_string(identity);
-        let zero_oid = ObjectId::from_bytes(&vec![0u8; reftable_hash_size_for_git_dir(&store_git_dir)])?;
+        let zero_oid =
+            ObjectId::from_bytes(&vec![0u8; reftable_hash_size_for_git_dir(&store_git_dir)])?;
         Some(LogRecord {
             refname: storage_refname.clone(),
             update_index: 0,

@@ -340,7 +340,9 @@ mod tests {
     }
 
     fn oid(hex_byte: u8) -> ObjectId {
-        let s: String = std::iter::repeat(format!("{hex_byte:02x}")).take(20).collect();
+        let s: String = std::iter::repeat(format!("{hex_byte:02x}"))
+            .take(20)
+            .collect();
         ObjectId::from_hex(&s).unwrap()
     }
 
@@ -432,6 +434,9 @@ mod tests {
         assert_eq!(deepen_since_wire_value("  1234567890 "), "1234567890");
         // A human date is converted to a bare integer (no trailing garbage).
         let v = deepen_since_wire_value("2005-04-07 22:13:13 +0200");
-        assert!(v.parse::<u64>().is_ok(), "expected a bare timestamp, got {v:?}");
+        assert!(
+            v.parse::<u64>().is_ok(),
+            "expected a bare timestamp, got {v:?}"
+        );
     }
 }

@@ -34,9 +34,9 @@ use grit_lib::push::push_remote;
 use grit_lib::push_report::PushRefStatus;
 use grit_lib::refs::resolve_ref;
 use grit_lib::transfer::{PushOptions, PushRefSpec};
-use grit_lib::transport::{ConnectOptions, GitDaemonTransport, Service, Transport};
 #[cfg(unix)]
 use grit_lib::transport::SshTransport;
+use grit_lib::transport::{ConnectOptions, GitDaemonTransport, Service, Transport};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")

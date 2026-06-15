@@ -84,10 +84,7 @@ fn run() -> Result<()> {
         if u.old_oid == u.new_oid {
             continue;
         }
-        let from = u
-            .old_oid
-            .map(short)
-            .unwrap_or_else(|| "(new)".to_owned());
+        let from = u.old_oid.map(short).unwrap_or_else(|| "(new)".to_owned());
         let to = u
             .new_oid
             .map(short)

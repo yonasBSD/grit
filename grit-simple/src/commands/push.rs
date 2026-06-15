@@ -18,7 +18,11 @@ pub fn run() -> Result<()> {
     let repo = context::discover()?;
 
     let (short_name, oid) = match resolve_head(&repo.git_dir)? {
-        HeadState::Branch { short_name, oid: Some(oid), .. } => (short_name, oid),
+        HeadState::Branch {
+            short_name,
+            oid: Some(oid),
+            ..
+        } => (short_name, oid),
         HeadState::Branch { .. } => bail!("no commits yet to push"),
         HeadState::Detached { .. } => bail!("HEAD is detached; gs push needs a branch"),
         HeadState::Invalid => bail!("HEAD is in an unknown state"),
@@ -68,7 +72,10 @@ pub fn run() -> Result<()> {
             }
             _ => {
                 rejected = true;
-                let reason = result.message.clone().unwrap_or_else(|| "rejected".to_owned());
+                let reason = result
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| "rejected".to_owned());
                 eprintln!("  rejected {target}: {reason}");
             }
         }

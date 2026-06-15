@@ -28,12 +28,10 @@ use grit_lib::error::Result as GritResult;
 use grit_lib::fetch::NoProgress;
 use grit_lib::objects::ObjectId;
 use grit_lib::odb::Odb;
-use grit_lib::refs::resolve_ref;
 use grit_lib::push::push_http;
 use grit_lib::push_report::PushRefStatus;
-use grit_lib::transfer::{
-    FetchOptions, PushOptions, PushRefSpec, TagMode, UpdateMode,
-};
+use grit_lib::refs::resolve_ref;
+use grit_lib::transfer::{FetchOptions, PushOptions, PushRefSpec, TagMode, UpdateMode};
 use grit_lib::transport::http::ureq_client::UreqHttpClient;
 use grit_lib::transport::http::{http_fetch, HttpClient, SmartHttpTransport};
 use grit_lib::transport::{ConnectOptions, Service, Transport};
@@ -176,7 +174,13 @@ fn fetch_over_smart_http_lands_refs_and_objects() {
     let source = root.join("repo.git");
     git(
         &work,
-        &["clone", "-q", "--bare", ".", source.to_str().expect("utf8 path")],
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            ".",
+            source.to_str().expect("utf8 path"),
+        ],
     );
     git(&source, &["symbolic-ref", "HEAD", "refs/heads/main"]);
 
@@ -487,7 +491,9 @@ impl HttpClient for RecordingClient {
         if command == "command=fetch" && Self::body_has_have_line(body) {
             *self.fetch_sent_haves.lock().unwrap() = true;
         }
-        let resp = self.inner.post(url, content_type, accept, body, git_protocol)?;
+        let resp = self
+            .inner
+            .post(url, content_type, accept, body, git_protocol)?;
         // For a v2 `command=fetch`, record the object count of any packfile the
         // response carried — direct wire evidence of how minimal the pack was.
         if command == "command=fetch" {
@@ -525,7 +531,13 @@ fn fetch_over_smart_http_v2_lands_refs_and_objects() {
     let source = root.join("repo.git");
     git(
         &work,
-        &["clone", "-q", "--bare", ".", source.to_str().expect("utf8 path")],
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            ".",
+            source.to_str().expect("utf8 path"),
+        ],
     );
     git(&source, &["symbolic-ref", "HEAD", "refs/heads/main"]);
 
@@ -643,9 +655,7 @@ fn fetch_over_smart_http_v2_lands_refs_and_objects() {
     // Every request carried `Git-Protocol: version=2`.
     let protocols = recording.git_protocols.lock().unwrap().clone();
     assert!(
-        protocols
-            .iter()
-            .all(|p| p.as_deref() == Some("version=2")),
+        protocols.iter().all(|p| p.as_deref() == Some("version=2")),
         "expected version=2 on every request; saw {protocols:?}"
     );
 
@@ -728,13 +738,22 @@ fn fetch_over_smart_http_v2_lands_refs_and_objects() {
     git(&work, &["add", "c.txt"]);
     git(&work, &["commit", "-q", "-m", "c3"]);
     // Refresh the served bare repo from the work tree.
-    git(&work, &["push", "-q", source.to_str().expect("utf8 path"), "main"]);
+    git(
+        &work,
+        &["push", "-q", source.to_str().expect("utf8 path"), "main"],
+    );
     let new_main_oid = rev_parse(&source, "refs/heads/main");
     assert_ne!(new_main_oid, main_oid, "source main should have advanced");
 
     let recording2 = Arc::new(RecordingClient::new("version=2"));
-    let outcome2 = http_fetch(recording2.as_ref(), &local_git, &url, &opts, &mut NoProgress)
-        .expect("incremental v2 http_fetch");
+    let outcome2 = http_fetch(
+        recording2.as_ref(),
+        &local_git,
+        &url,
+        &opts,
+        &mut NoProgress,
+    )
+    .expect("incremental v2 http_fetch");
     let commands2 = recording2.post_commands.lock().unwrap().clone();
     assert!(
         commands2.iter().any(|c| c == "command=ls-refs"),
@@ -907,7 +926,10 @@ fn push_over_smart_http_lands_ref_and_objects_and_reports_rejection() {
 
     // The remote ref now points at our main, and the objects are present.
     let remote_main = resolve_ref(&bare, "refs/heads/main").expect("remote main written");
-    assert_eq!(remote_main, main_oid, "remote main oid mismatch after http push");
+    assert_eq!(
+        remote_main, main_oid,
+        "remote main oid mismatch after http push"
+    );
 
     let remote_odb = open_odb(&bare);
     for oid in [main_oid, c1_oid] {
@@ -1261,7 +1283,10 @@ fn push_then_fetch_roundtrip_and_server_side_rejection_over_http() {
     // Build a divergent commit that is not a descendant of remote main: branch
     // off c1 (main's first commit) and add a new commit, so the resulting tip is
     // a sibling of remote main (c2), never its descendant.
-    git(&local, &["checkout", "-q", "-b", "rt-diverge", "refs/heads/main~1"]);
+    git(
+        &local,
+        &["checkout", "-q", "-b", "rt-diverge", "refs/heads/main~1"],
+    );
     std::fs::write(local.join("rt.txt"), "rt-diverge\n").unwrap();
     git(&local, &["add", "rt.txt"]);
     git(&local, &["commit", "-q", "-m", "rt-divergent"]);

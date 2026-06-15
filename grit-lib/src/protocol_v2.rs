@@ -98,9 +98,15 @@ mod tests {
 
     #[test]
     fn bundle_uri_bare_and_valued() {
-        assert!(server_advertises_bundle_uri(&s(&["agent=git/2", "bundle-uri"])));
+        assert!(server_advertises_bundle_uri(&s(&[
+            "agent=git/2",
+            "bundle-uri"
+        ])));
         assert!(server_advertises_bundle_uri(&s(&["bundle-uri=foo"])));
-        assert!(!server_advertises_bundle_uri(&s(&["agent=git/2", "ls-refs"])));
+        assert!(!server_advertises_bundle_uri(&s(&[
+            "agent=git/2",
+            "ls-refs"
+        ])));
         assert!(!server_advertises_bundle_uri(&s(&[])));
     }
 

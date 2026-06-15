@@ -57,8 +57,7 @@ pub fn run(name: &str, create: bool) -> Result<()> {
 
     checkout_between_trees(&repo, head_tree.as_ref(), &target_tree)
         .context("could not update the working tree")?;
-    refs::write_symbolic_ref(&repo.git_dir, "HEAD", &branch_ref)
-        .context("could not move HEAD")?;
+    refs::write_symbolic_ref(&repo.git_dir, "HEAD", &branch_ref).context("could not move HEAD")?;
 
     if create {
         println!("Created and switched to branch {name}");

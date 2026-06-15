@@ -261,7 +261,11 @@ fn append_shallow_request_v0(
     } else if let Some(depth) = opts.depth.filter(|d| *d > 0) {
         pkt_line::write_line_to_vec(req, &format!("deepen {depth}"))?;
     }
-    if let Some(since) = opts.deepen_since.as_deref().filter(|s| !s.trim().is_empty()) {
+    if let Some(since) = opts
+        .deepen_since
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
         if server_caps.contains("deepen-since") {
             let value = crate::shallow::deepen_since_wire_value(since);
             pkt_line::write_line_to_vec(req, &format!("deepen-since {value}"))?;
@@ -313,7 +317,8 @@ fn negotiate_pack(
     let shallow_request = opts.has_deepen_request() || !local_shallow.is_empty();
 
     // Capability set matching `git fetch-pack`'s first `want` line for v0/v1.
-    let caps = " multi_ack_detailed side-band-64k thin-pack no-progress include-tag ofs-delta agent=grit";
+    let caps =
+        " multi_ack_detailed side-band-64k thin-pack no-progress include-tag ofs-delta agent=grit";
 
     // Capture the advertised refs before borrowing the writer (avoids aliasing
     // the connection's reader/writer with its accessors). v0/v1 shallow servers
@@ -622,8 +627,7 @@ pub(crate) fn build_v2_ls_refs_request(
     if prefixes.is_empty() {
         prefixes.push("refs/heads/".to_owned());
         prefixes.push("refs/tags/".to_owned());
-    } else if tags != crate::transfer::TagMode::None
-        && !prefixes.iter().any(|p| p == "refs/tags/")
+    } else if tags != crate::transfer::TagMode::None && !prefixes.iter().any(|p| p == "refs/tags/")
     {
         // Tag-following / `--tags` wants the tag namespace advertised so we can
         // add tags from the ls-refs result, even if the refspecs only name heads.
@@ -655,10 +659,7 @@ pub(crate) fn parse_v2_ls_refs_response(
             Some(pkt_line::Packet::Data(line)) => {
                 let line = line.trim_end_matches('\n');
                 if let Some(msg) = line.strip_prefix("ERR ") {
-                    return Err(Error::Message(format!(
-                        "remote error: {}",
-                        msg.trim_end()
-                    )));
+                    return Err(Error::Message(format!("remote error: {}", msg.trim_end())));
                 }
                 let Some((name, oid, symref_target)) = parse_ls_refs_v2_line(line) else {
                     continue;
@@ -693,10 +694,7 @@ pub(crate) fn parse_v2_ls_refs_response(
 /// paths so both offer the server the same `have`s in the same order. The wire
 /// rounds (how many haves per request, when to send `done`) are batched by the
 /// caller, which differs between a duplex socket and stateless POSTs.
-pub(crate) fn v2_local_haves(
-    local_git_dir: &Path,
-    wants: &[ObjectId],
-) -> Result<Vec<ObjectId>> {
+pub(crate) fn v2_local_haves(local_git_dir: &Path, wants: &[ObjectId]) -> Result<Vec<ObjectId>> {
     let want_set: HashSet<ObjectId> = wants.iter().copied().collect();
     let local_repo = crate::repo::Repository::open(local_git_dir, None)?;
     let mut negotiator = SkippingNegotiator::new(local_repo);
@@ -1137,20 +1135,14 @@ pub fn fetch_remote(
         Option<Vec<String>>,
     ) = if conn.protocol_version() >= 2 {
         let caps: Vec<String> = conn.capabilities().to_vec();
-        let (refs, head_symref) =
-            v2_ls_refs(conn, &caps, &local_odb, opts.tags, &opts.refspecs)?;
-        let default_branch = head_symref.map(|t| {
-            t.strip_prefix("refs/heads/")
-                .unwrap_or(&t)
-                .to_owned()
-        });
+        let (refs, head_symref) = v2_ls_refs(conn, &caps, &local_odb, opts.tags, &opts.refspecs)?;
+        let default_branch =
+            head_symref.map(|t| t.strip_prefix("refs/heads/").unwrap_or(&t).to_owned());
         (refs, default_branch, Some(caps))
     } else {
-        let default_branch = conn.head_symref().map(|t| {
-            t.strip_prefix("refs/heads/")
-                .unwrap_or(t)
-                .to_owned()
-        });
+        let default_branch = conn
+            .head_symref()
+            .map(|t| t.strip_prefix("refs/heads/").unwrap_or(t).to_owned());
         let remote_refs: Vec<(String, ObjectId)> = conn
             .advertised_refs()
             .iter()
@@ -1261,14 +1253,26 @@ pub fn fetch_remote(
         "fetch_remote: {} matched ref(s), want {} object(s){}",
         matched.len(),
         wants.len(),
-        if shallow_request { " (shallow request)" } else { "" }
+        if shallow_request {
+            " (shallow request)"
+        } else {
+            ""
+        }
     );
 
     if !wants.is_empty() && !opts.dry_run {
         net_trace!("fetch_remote: negotiating + fetching pack…");
         let (pack, su) = if let Some(caps) = v2_caps.as_ref() {
             let deepen = V2DeepenArgs::from_opts(opts, &local_shallow);
-            negotiate_pack_v2(local_git_dir, conn, caps, &local_odb, &wants, &deepen, progress)?
+            negotiate_pack_v2(
+                local_git_dir,
+                conn,
+                caps,
+                &local_odb,
+                &wants,
+                &deepen,
+                progress,
+            )?
         } else {
             negotiate_pack(local_git_dir, conn, &wants, opts, &local_shallow, progress)?
         };

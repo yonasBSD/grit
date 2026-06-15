@@ -129,10 +129,7 @@ pub fn push_remote(
     //    does not read one after a delete-only command block, so sending an empty
     //    pack would leave unread bytes on the wire and reset the connection.
     let commands = build_command_block(&plan, &adv, algo, &opts.push_options)?;
-    net_trace!(
-        "push_remote: sending {} command(s)…",
-        plan.decisions.len()
-    );
+    net_trace!("push_remote: sending {} command(s)…", plan.decisions.len());
     conn.writer().write_all(&commands)?;
     conn.writer().flush()?;
 
@@ -269,10 +266,7 @@ pub fn push_http(
     };
 
     apply_report_status(&report, &mut plan.decisions);
-    net_trace!(
-        "push_http: done — {} result(s)",
-        plan.decisions.len()
-    );
+    net_trace!("push_http: done — {} result(s)", plan.decisions.len());
 
     Ok(PushOutcome {
         results: plan.decisions.into_iter().map(|d| d.result).collect(),
@@ -479,7 +473,9 @@ fn parse_receive_pack_advertisement(body: &[u8]) -> Result<ReceivePackAdvertisem
                     continue;
                 }
                 let oid = ObjectId::from_hex(oid_hex).map_err(|e| {
-                    Error::Message(format!("bad oid in receive-pack advertisement: {oid_hex}: {e}"))
+                    Error::Message(format!(
+                        "bad oid in receive-pack advertisement: {oid_hex}: {e}"
+                    ))
                 })?;
                 if refname == ".have" {
                     advertised_haves.push(oid);
@@ -639,7 +635,10 @@ fn build_command_block(
         // ("funny refname"). The first line's capability list rides the NUL.
         let line = if first {
             first = false;
-            format!("{old_hex} {new_hex} {}\0{command_caps}", d.result.remote_ref)
+            format!(
+                "{old_hex} {new_hex} {}\0{command_caps}",
+                d.result.remote_ref
+            )
         } else {
             format!("{old_hex} {new_hex} {}", d.result.remote_ref)
         };
@@ -965,10 +964,7 @@ fn apply_report_status(report: &[u8], decisions: &mut [PushDecision]) {
 /// (remote diagnostics) is forwarded to `progress`. Lifted from the CLI's
 /// `demux_report_and_remote_messages`, but progress goes to the callback rather
 /// than directly to stderr (the public API must not assume stdout/stderr).
-fn demux_report_and_remote_messages(
-    input: &[u8],
-    progress: &mut dyn Progress,
-) -> Result<Vec<u8>> {
+fn demux_report_and_remote_messages(input: &[u8], progress: &mut dyn Progress) -> Result<Vec<u8>> {
     let mut report = Vec::new();
     let mut i = 0usize;
     while i + 4 <= input.len() {
@@ -1099,8 +1095,8 @@ mod tests {
             decisions: vec![send_decision("refs/heads/main", new)],
             to_send: vec![0],
         };
-        let block =
-            build_command_block(&plan, &adv_state(false, false, true), HashAlgo::Sha1, &[]).unwrap();
+        let block = build_command_block(&plan, &adv_state(false, false, true), HashAlgo::Sha1, &[])
+            .unwrap();
         let pkts = decode_block(&block);
         // command line, then a single terminating flush — nothing else.
         assert_eq!(pkts.len(), 2);
@@ -1124,13 +1120,8 @@ mod tests {
             to_send: vec![0],
         };
         let opts = vec!["ci.skip".to_owned(), "reviewer=alice".to_owned()];
-        let block = build_command_block(
-            &plan,
-            &adv_state(true, true, true),
-            HashAlgo::Sha1,
-            &opts,
-        )
-        .unwrap();
+        let block = build_command_block(&plan, &adv_state(true, true, true), HashAlgo::Sha1, &opts)
+            .unwrap();
         let pkts = decode_block(&block);
         // command line | flush | push-option ci.skip | push-option reviewer=alice | flush
         assert_eq!(
@@ -1221,7 +1212,10 @@ mod tests {
         assert!(adv.state.server_sideband);
         assert!(adv.state.server_ofs_delta);
         assert_eq!(
-            adv.state.remote_refs.get("refs/heads/main").map(|o| o.to_hex()),
+            adv.state
+                .remote_refs
+                .get("refs/heads/main")
+                .map(|o| o.to_hex()),
             Some(main.clone())
         );
         assert_eq!(adv.state.advertised_haves.len(), 1);

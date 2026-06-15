@@ -15,8 +15,8 @@ const SHORTLOG_LIMIT: usize = 10;
 
 pub fn run() -> Result<()> {
     let repo = context::discover()?;
-    let model =
-        status(&repo, &StatusOptions::default(), &mut NullProgress).context("could not compute status")?;
+    let model = status(&repo, &StatusOptions::default(), &mut NullProgress)
+        .context("could not compute status")?;
 
     print_header(&repo, &model)?;
     print_changes(&model);
@@ -76,8 +76,7 @@ fn print_header(repo: &Repository, model: &StatusModel) -> Result<()> {
 }
 
 fn print_changes(model: &StatusModel) {
-    let clean =
-        model.staged.is_empty() && model.unstaged.is_empty() && model.untracked.is_empty();
+    let clean = model.staged.is_empty() && model.unstaged.is_empty() && model.untracked.is_empty();
     if clean {
         println!("Nothing to commit — working tree clean.");
         return;

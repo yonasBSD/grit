@@ -63,7 +63,13 @@ fn source_and_consumer(root: &Path, origin_url: &str) -> Result<(std::path::Path
     let bare = root.join("repo.git");
     git(
         root,
-        &["clone", "-q", "--bare", work.to_str().unwrap(), bare.to_str().unwrap()],
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            work.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
     )?;
     let main_oid = git(&bare, &["rev-parse", "refs/heads/main"])?;
 
@@ -100,7 +106,10 @@ fn fetch_and_push_over_local_remote() -> Result<()> {
     assert!(git(&consumer, &["rev-parse", "refs/remotes/origin/topic"]).is_ok());
 
     // --- push: a new local commit on main updates the bare remote.
-    git(&consumer, &["reset", "-q", "--hard", "refs/remotes/origin/main"])?;
+    git(
+        &consumer,
+        &["reset", "-q", "--hard", "refs/remotes/origin/main"],
+    )?;
     git(&consumer, &["commit", "-q", "--allow-empty", "-m", "c2"])?;
     let head = git(&consumer, &["rev-parse", "HEAD"])?;
 
@@ -118,11 +127,22 @@ fn fetch_and_push_over_local_remote() -> Result<()> {
     let other = tmp.path().join("other");
     git(
         tmp.path(),
-        &["clone", "-q", bare.to_str().unwrap(), other.to_str().unwrap()],
+        &[
+            "clone",
+            "-q",
+            bare.to_str().unwrap(),
+            other.to_str().unwrap(),
+        ],
     )?;
-    git(&other, &["commit", "-q", "--allow-empty", "-m", "remote-adv"])?;
+    git(
+        &other,
+        &["commit", "-q", "--allow-empty", "-m", "remote-adv"],
+    )?;
     git(&other, &["push", "-q", "origin", "main"])?;
-    git(&consumer, &["commit", "-q", "--allow-empty", "-m", "local-div"])?;
+    git(
+        &consumer,
+        &["commit", "-q", "--allow-empty", "-m", "local-div"],
+    )?;
 
     let out = push(&consumer, &["origin"]);
     assert!(
@@ -161,7 +181,13 @@ fn fetch_over_git_daemon_reports_anonymous_auth() -> Result<()> {
     let served = base.join("repo.git");
     git(
         tmp.path(),
-        &["clone", "-q", "--bare", work.to_str().unwrap(), served.to_str().unwrap()],
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            work.to_str().unwrap(),
+            served.to_str().unwrap(),
+        ],
     )?;
     let main_oid = git(&served, &["rev-parse", "refs/heads/main"])?;
 

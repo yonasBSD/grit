@@ -79,8 +79,24 @@ pub fn run(message: Option<String>, all: bool) -> Result<()> {
         format!("commit (initial): {subject}")
     };
     refs::write_ref(&repo.git_dir, &refname, &oid).context("could not update branch")?;
-    refs::append_reflog(&repo.git_dir, &refname, &old, &oid, &committer, &reflog_msg, false)?;
-    refs::append_reflog(&repo.git_dir, "HEAD", &old, &oid, &committer, &reflog_msg, false)?;
+    refs::append_reflog(
+        &repo.git_dir,
+        &refname,
+        &old,
+        &oid,
+        &committer,
+        &reflog_msg,
+        false,
+    )?;
+    refs::append_reflog(
+        &repo.git_dir,
+        "HEAD",
+        &old,
+        &oid,
+        &committer,
+        &reflog_msg,
+        false,
+    )?;
 
     let count = model.staged.len();
     println!("[{short_name} {}] {subject}", short_oid(&oid));

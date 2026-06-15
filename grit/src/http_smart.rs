@@ -684,7 +684,12 @@ pub fn http_ls_refs(
     refs_url.push_str(if refs_url.contains('?') { "&" } else { "?" });
     refs_url.push_str(&format!("service={SERVICE}"));
 
-    let (body, base) = http_get_discovery_with_base(client, &refs_url, original_base, client.git_protocol_header())?;
+    let (body, base) = http_get_discovery_with_base(
+        client,
+        &refs_url,
+        original_base,
+        client.git_protocol_header(),
+    )?;
     let pkt_body = strip_v0_service_advertisement_if_present(&body)?;
     let (caps, object_format) = match discover_http_protocol(pkt_body)? {
         HttpDiscovery::V2 {
@@ -733,7 +738,12 @@ pub fn http_negotiate_only_common(
     refs_url.push_str(if refs_url.contains('?') { "&" } else { "?" });
     refs_url.push_str(&format!("service={SERVICE}"));
 
-    let (body, base) = http_get_discovery_with_base(client, &refs_url, original_base, client.git_protocol_header())?;
+    let (body, base) = http_get_discovery_with_base(
+        client,
+        &refs_url,
+        original_base,
+        client.git_protocol_header(),
+    )?;
     let pkt_body = strip_v0_service_advertisement_if_present(&body)?;
     let (caps, object_format) = match discover_http_protocol(pkt_body)? {
         HttpDiscovery::V2 {
@@ -1581,7 +1591,12 @@ pub fn http_fetch_pack(
     refs_url.push_str(if refs_url.contains('?') { "&" } else { "?" });
     refs_url.push_str(&format!("service={SERVICE}"));
 
-    let (body, base) = http_get_discovery_with_base(client, &refs_url, original_base, client.git_protocol_header())?;
+    let (body, base) = http_get_discovery_with_base(
+        client,
+        &refs_url,
+        original_base,
+        client.git_protocol_header(),
+    )?;
     let base = base.as_str();
     let pkt_body = strip_v0_service_advertisement_if_present(&body)?;
     let discovery = discover_http_protocol(pkt_body)?;

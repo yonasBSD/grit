@@ -26,9 +26,7 @@ use sha2::Sha256;
 
 use crate::delta_encode::{encode_lcp_delta, encode_prefix_extension_delta};
 use crate::error::{Error, Result};
-use crate::objects::{
-    parse_commit, parse_tag, parse_tree, HashAlgo, Object, ObjectId, ObjectKind,
-};
+use crate::objects::{parse_commit, parse_tag, parse_tree, HashAlgo, Object, ObjectId, ObjectKind};
 use crate::odb::Odb;
 use crate::push_report::{PushRefResult, PushRefStatus};
 use crate::refspec::{parse_fetch_refspec, RefspecItem};
@@ -360,9 +358,9 @@ fn collect_reachable_excluding(
     let mut queue: VecDeque<ObjectId> = VecDeque::new();
 
     let enqueue = |oid: ObjectId,
-                       queue: &mut VecDeque<ObjectId>,
-                       visited: &mut HashSet<ObjectId>,
-                       ordered: &mut Vec<ObjectId>|
+                   queue: &mut VecDeque<ObjectId>,
+                   visited: &mut HashSet<ObjectId>,
+                   ordered: &mut Vec<ObjectId>|
      -> bool {
         if exclude.contains(&oid) {
             return false;
@@ -627,10 +625,7 @@ fn plan_deltas(
                 if let Ok(Some((base, zdelta))) =
                     crate::pack::packed_ref_delta_reuse_slice(objects_dir, &t, &in_pack)
                 {
-                    if base != t
-                        && in_pack.contains(&base)
-                        && islands.in_same_island(&t, &base)
-                    {
+                    if base != t && in_pack.contains(&base) && islands.in_same_island(&t, &base) {
                         delta_to_base.insert(t, base);
                         reused.insert(t, zdelta);
                     }
@@ -836,8 +831,11 @@ fn serialize_pack_with_deltas(
 
     // Payload of every emitted object, so a base reached later can be deltified
     // and so we can compute deltas without another odb round-trip.
-    let payloads: HashMap<ObjectId, &[u8]> =
-        plan.entries.iter().map(|e| (e.oid, e.data.as_slice())).collect();
+    let payloads: HashMap<ObjectId, &[u8]> = plan
+        .entries
+        .iter()
+        .map(|e| (e.oid, e.data.as_slice()))
+        .collect();
 
     let mut oid_to_offset: HashMap<ObjectId, u64> = HashMap::new();
 
@@ -1129,13 +1127,7 @@ pub fn fetch_local(
         };
 
         let old = crate::refs::resolve_ref(local_git_dir, local_ref).ok();
-        let mode = classify_update(
-            old.as_ref(),
-            &m.oid,
-            m.force,
-            m.is_tag,
-            local_repo.as_ref(),
-        );
+        let mode = classify_update(old.as_ref(), &m.oid, m.force, m.is_tag, local_repo.as_ref());
 
         let write = matches!(
             mode,

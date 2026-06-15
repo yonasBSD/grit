@@ -628,7 +628,9 @@ fn build_delta_fixture(algo: HashAlgo) -> Option<DeltaFixture> {
 
     let mut body = String::new();
     for i in 0..4000 {
-        body.push_str(&format!("line {i:05} lorem ipsum dolor sit amet consectetur\n"));
+        body.push_str(&format!(
+            "line {i:05} lorem ipsum dolor sit amet consectetur\n"
+        ));
     }
 
     let mut tips = Vec::new();
@@ -894,7 +896,10 @@ fn ofs_vs_ref_delta_selection() {
     )
     .expect("ofs pack");
     let (ref_ofs, ofs_ofs, _) = pack_delta_stats(&ofs, 20);
-    assert!(ofs_ofs >= 3, "use_ofs_delta=true should emit OFS_DELTAs (got {ofs_ofs})");
+    assert!(
+        ofs_ofs >= 3,
+        "use_ofs_delta=true should emit OFS_DELTAs (got {ofs_ofs})"
+    );
     assert_eq!(
         ref_ofs, 0,
         "use_ofs_delta=true with no thin bases must emit NO REF_DELTAs (got {ref_ofs})"
@@ -913,7 +918,10 @@ fn ofs_vs_ref_delta_selection() {
     )
     .expect("ref pack");
     let (ref_ref, ofs_ref, _) = pack_delta_stats(&refp, 20);
-    assert!(ref_ref >= 3, "use_ofs_delta=false should emit REF_DELTAs (got {ref_ref})");
+    assert!(
+        ref_ref >= 3,
+        "use_ofs_delta=false should emit REF_DELTAs (got {ref_ref})"
+    );
     assert_eq!(
         ofs_ref, 0,
         "use_ofs_delta=false must emit NO OFS_DELTAs (got {ofs_ref})"
@@ -1142,7 +1150,10 @@ fn negotiated_push_pack_is_far_below_full_closure() {
 fn sha256_repo_packs_index_and_fsck_clean() {
     // Probe sha256 support.
     let probe = tempfile::tempdir().expect("probe");
-    if !git_try(probe.path(), &["init", "--object-format=sha256", "--bare", "."]) {
+    if !git_try(
+        probe.path(),
+        &["init", "--object-format=sha256", "--bare", "."],
+    ) {
         eprintln!("SKIP: git lacks --object-format=sha256 support");
         return;
     }
@@ -1202,7 +1213,10 @@ fn sha256_repo_packs_index_and_fsck_clean() {
 
     // Per-edge reconstruction must hash correctly under sha256.
     let edges = pack_delta_edges_resolved(&delta, &odb);
-    assert!(!edges.is_empty(), "sha256 delta pack should have resolvable edges");
+    assert!(
+        !edges.is_empty(),
+        "sha256 delta pack should have resolvable edges"
+    );
     for (t, _b) in &edges {
         assert!(
             delta_map.contains_key(t),
@@ -1235,8 +1249,15 @@ fn sha256_repo_packs_index_and_fsck_clean() {
         "sha256 thin pack must reference an external 32-byte base"
     );
     for base in &external {
-        assert_eq!(base.to_hex().len(), 64, "external base must be a sha256 oid");
-        assert!(odb.read(base).is_ok(), "external base must resolve from odb");
+        assert_eq!(
+            base.to_hex().len(),
+            64,
+            "external base must be a sha256 oid"
+        );
+        assert!(
+            odb.read(base).is_ok(),
+            "external base must resolve from odb"
+        );
     }
     assert!(
         git_index_pack_fix_thin_ok(fx.dir.path(), &thin),
@@ -1271,7 +1292,11 @@ fn window_zero_disables_delta_selection() {
 
     // window=0 disables in-pack delta selection → a whole-object pack.
     let (r, o, _t) = pack_delta_stats(&pack, 20);
-    assert_eq!(r + o, 0, "window=0 must produce no deltas (ref={r} ofs={o})");
+    assert_eq!(
+        r + o,
+        0,
+        "window=0 must produce no deltas (ref={r} ofs={o})"
+    );
 
     // Still a correct, valid pack with the full closure.
     let whole = build_pack(&odb, &[tip], &[], &PackBuildOptions::default()).expect("whole");

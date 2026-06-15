@@ -129,7 +129,10 @@ fn git_supports_sha256() -> bool {
 /// Build a sha256 source repo: two commits on `main`, a `topic` branch, an
 /// annotated tag. Returns nothing; the caller bare-clones it.
 fn build_sha256_source(dir: &Path) {
-    git(dir, &["init", "-q", "-b", "main", "--object-format=sha256", "."]);
+    git(
+        dir,
+        &["init", "-q", "-b", "main", "--object-format=sha256", "."],
+    );
     // Cross-check: this really is a sha256 repo.
     assert_eq!(
         git(dir, &["rev-parse", "--show-object-format"]).trim(),
@@ -315,7 +318,13 @@ fn sha256_fetch_over_git_daemon_v2() {
     let source = base.join("repo.git");
     git(
         &work,
-        &["clone", "-q", "--bare", ".", source.to_str().expect("utf8 path")],
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            ".",
+            source.to_str().expect("utf8 path"),
+        ],
     );
     git(&source, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     // The bare clone preserved the sha256 format.
@@ -357,7 +366,10 @@ fn sha256_fetch_over_git_daemon_v2() {
     // Local sha256 repo so the library's odb hash-algo matches the wire format.
     let local = tmp.path().join("local");
     std::fs::create_dir_all(&local).unwrap();
-    git(&local, &["init", "-q", "-b", "main", "--object-format=sha256", "."]);
+    git(
+        &local,
+        &["init", "-q", "-b", "main", "--object-format=sha256", "."],
+    );
     let local_git = local.join(".git");
     assert_eq!(open_odb(&local_git).hash_algo(), HashAlgo::Sha256);
 
@@ -375,7 +387,11 @@ fn sha256_fetch_over_git_daemon_v2() {
     };
 
     // v2 negotiated (no refs on connect; v2 capability block present).
-    assert_eq!(conn.protocol_version(), 2, "expected protocol v2 negotiation");
+    assert_eq!(
+        conn.protocol_version(),
+        2,
+        "expected protocol v2 negotiation"
+    );
     assert!(
         conn.advertised_refs().is_empty(),
         "a v2 connection advertises no refs on connect"
@@ -491,7 +507,13 @@ fn sha256_fetch_over_smart_http() {
     let source = root.join("repo.git");
     git(
         &work,
-        &["clone", "-q", "--bare", ".", source.to_str().expect("utf8 path")],
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            ".",
+            source.to_str().expect("utf8 path"),
+        ],
     );
     git(&source, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     assert_eq!(
@@ -524,7 +546,10 @@ fn sha256_fetch_over_smart_http() {
     // Empty local sha256 repo.
     let local = tmp.path().join("local");
     std::fs::create_dir_all(&local).unwrap();
-    git(&local, &["init", "-q", "-b", "main", "--object-format=sha256", "."]);
+    git(
+        &local,
+        &["init", "-q", "-b", "main", "--object-format=sha256", "."],
+    );
     let local_git = local.join(".git");
     assert_eq!(open_odb(&local_git).hash_algo(), HashAlgo::Sha256);
 
@@ -630,7 +655,10 @@ fn sha256_push_over_git_daemon() {
     std::fs::create_dir_all(&base).unwrap();
     let bare = base.join("repo.git");
     std::fs::create_dir_all(&bare).unwrap();
-    git(&bare, &["init", "-q", "--bare", "--object-format=sha256", "."]);
+    git(
+        &bare,
+        &["init", "-q", "--bare", "--object-format=sha256", "."],
+    );
     git(&bare, &["config", "daemon.receivepack", "true"]);
     assert_eq!(
         git(&bare, &["rev-parse", "--show-object-format"]).trim(),
@@ -848,7 +876,10 @@ fn sha256_push_over_smart_http() {
     std::fs::create_dir_all(&root).unwrap();
     let bare = root.join("push.git");
     std::fs::create_dir_all(&bare).unwrap();
-    git(&bare, &["init", "-q", "--bare", "--object-format=sha256", "."]);
+    git(
+        &bare,
+        &["init", "-q", "--bare", "--object-format=sha256", "."],
+    );
     git(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     assert_eq!(
         git(&bare, &["rev-parse", "--show-object-format"]).trim(),
@@ -926,7 +957,10 @@ fn sha256_push_over_smart_http() {
     assert!(r.old_oid.is_none(), "new ref has no old value");
 
     let remote_main = resolve_ref(&bare, "refs/heads/main").expect("remote main written");
-    assert_eq!(remote_main, main_oid, "remote main oid mismatch after http push");
+    assert_eq!(
+        remote_main, main_oid,
+        "remote main oid mismatch after http push"
+    );
     assert_sha256_oid(&remote_main, "remote main");
     assert_eq!(
         remote_main.to_hex(),

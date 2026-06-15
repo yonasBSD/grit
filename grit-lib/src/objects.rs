@@ -405,7 +405,9 @@ pub fn parse_tree(data: &[u8]) -> Result<Vec<TreeEntry>> {
     // SHA-256 (32).
     match parse_tree_with_oid_len(data, HashAlgo::Sha1.len()) {
         Ok(entries) => Ok(entries),
-        Err(sha1_err) => parse_tree_with_oid_len(data, HashAlgo::Sha256.len()).map_err(|_| sha1_err),
+        Err(sha1_err) => {
+            parse_tree_with_oid_len(data, HashAlgo::Sha256.len()).map_err(|_| sha1_err)
+        }
     }
 }
 

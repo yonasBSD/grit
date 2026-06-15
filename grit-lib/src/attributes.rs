@@ -941,7 +941,9 @@ fn attr_file_stamp(path: &Path) -> Option<(SystemTime, u64)> {
 }
 
 fn attr_dir_stamp(path: &Path) -> Option<SystemTime> {
-    fs::symlink_metadata(path).ok().and_then(|m| m.modified().ok())
+    fs::symlink_metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
 }
 
 fn attr_stamps_valid(entry: &AttrStackCacheEntry) -> bool {
@@ -1582,8 +1584,7 @@ mod attr_cache_tests {
         assert!(rules_for(&repo, wt).is_empty());
 
         // info/attributes appearing after a cached empty load must be seen.
-        fs::write(repo.git_dir.join("info/attributes"), "from-info text\n")
-            .expect("write info");
+        fs::write(repo.git_dir.join("info/attributes"), "from-info text\n").expect("write info");
         assert_eq!(rules_for(&repo, wt), vec!["from-info".to_string()]);
     }
 }

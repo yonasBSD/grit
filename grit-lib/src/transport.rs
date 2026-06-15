@@ -183,19 +183,13 @@ pub fn read_advertisement(reader: &mut dyn Read) -> Result<Advertisement> {
                     // v2 capability block: collect every line verbatim and leave
                     // `advertised_refs` empty. `ERR` is still fatal.
                     if let Some(msg) = line.strip_prefix("ERR ") {
-                        return Err(Error::Message(format!(
-                            "remote error: {}",
-                            msg.trim_end()
-                        )));
+                        return Err(Error::Message(format!("remote error: {}", msg.trim_end())));
                     }
                     adv.capabilities.push(line.to_string());
                     continue;
                 }
                 if let Some(msg) = line.strip_prefix("ERR ") {
-                    return Err(Error::Message(format!(
-                        "remote error: {}",
-                        msg.trim_end()
-                    )));
+                    return Err(Error::Message(format!("remote error: {}", msg.trim_end())));
                 }
                 let Some((oid, refname, caps)) = parse_ref_advertisement_line(line) else {
                     continue;
@@ -833,9 +827,7 @@ impl SshCommand {
     fn resolve(&self) -> SshCommand {
         match self {
             SshCommand::Auto => {
-                if let Some(c) =
-                    std::env::var_os("GIT_SSH_COMMAND").filter(|v| !v.is_empty())
-                {
+                if let Some(c) = std::env::var_os("GIT_SSH_COMMAND").filter(|v| !v.is_empty()) {
                     SshCommand::ShellCommand(c)
                 } else if let Some(p) = std::env::var_os("GIT_SSH").filter(|v| !v.is_empty()) {
                     SshCommand::Program(p)
@@ -1099,9 +1091,7 @@ mod tests {
     fn read_advertisement_captures_refs_caps_and_symref() {
         let mut buf: Vec<u8> = Vec::new();
         let main = "1111111111111111111111111111111111111111";
-        let head = format!(
-            "{main} HEAD\0multi_ack symref=HEAD:refs/heads/main agent=git/2",
-        );
+        let head = format!("{main} HEAD\0multi_ack symref=HEAD:refs/heads/main agent=git/2",);
         pkt_line::write_line_to_vec(&mut buf, &head).unwrap();
         let r = format!("{main} refs/heads/main");
         pkt_line::write_line_to_vec(&mut buf, &r).unwrap();

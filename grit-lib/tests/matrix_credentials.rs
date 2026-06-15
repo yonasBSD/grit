@@ -44,7 +44,8 @@ use std::time::Duration;
 
 use grit_lib::config::ConfigSet;
 use grit_lib::credentials::{
-    use_http_path, Credential, CredentialProvider, HelperCredentialProvider, NON_INTERACTIVE_MESSAGE,
+    use_http_path, Credential, CredentialProvider, HelperCredentialProvider,
+    NON_INTERACTIVE_MESSAGE,
 };
 
 // ---------------------------------------------------------------------------
@@ -188,7 +189,11 @@ fn wire_format_preserves_extra_and_multivalued_keys_round_trip() {
         .filter(|(k, _)| k == "capability[]")
         .map(|(_, v)| v.as_str())
         .collect();
-    assert_eq!(caps, vec!["authtype", "state"], "capability[] order preserved");
+    assert_eq!(
+        caps,
+        vec!["authtype", "state"],
+        "capability[] order preserved"
+    );
     assert!(cred
         .extra
         .iter()
@@ -206,7 +211,8 @@ fn wire_format_preserves_extra_and_multivalued_keys_round_trip() {
 fn parse_stops_at_blank_line_and_tolerates_crlf() {
     // CRLF line endings + a blank line terminator; everything after the blank
     // line (the `injected=` directive) must be ignored, matching Git.
-    let input = "protocol=https\r\nhost=h.example\r\nusername=u\r\npassword=p\r\n\r\ninjected=evil\r\n";
+    let input =
+        "protocol=https\r\nhost=h.example\r\nusername=u\r\npassword=p\r\n\r\ninjected=evil\r\n";
     let cred = Credential::parse(input);
     assert_eq!(cred.host.as_deref(), Some("h.example"));
     assert_eq!(cred.username.as_deref(), Some("u"));
@@ -448,7 +454,9 @@ fn external_credential_store_helper_full_lifecycle_cross_checked_with_git() {
     );
 
     // approve(store) writes the credential to the store file.
-    provider.approve(&full).expect("approve -> store writes file");
+    provider
+        .approve(&full)
+        .expect("approve -> store writes file");
     let store_contents = fs::read_to_string(&store_file).expect("store file written");
     assert!(
         store_contents.contains("https://dave:p%40ss-w0rd@store.example.com")
@@ -495,7 +503,9 @@ fn external_credential_store_helper_full_lifecycle_cross_checked_with_git() {
     assert_eq!(git_cred.password.as_deref(), Some("p@ss-w0rd"));
 
     // reject(erase) removes it; fill goes back to the typed non-interactive error.
-    provider.reject(&full).expect("reject -> erase removes credential");
+    provider
+        .reject(&full)
+        .expect("reject -> erase removes credential");
     let after_erase = fs::read_to_string(&store_file).unwrap_or_default();
     assert!(
         !after_erase.contains("store.example.com"),
@@ -561,8 +571,11 @@ fn url_scoped_helper_match_nonmatch_wildcard_and_reset() {
     );
     let real_value = format!("!{}", real.display());
     // First set a helper, then append an empty reset entry (Git clears the list).
-    let out = git(dir2, &["config", "--local", "credential.helper", &real_value])
-        .expect("git config helper");
+    let out = git(
+        dir2,
+        &["config", "--local", "credential.helper", &real_value],
+    )
+    .expect("git config helper");
     assert!(out.status.success());
     let out = git(
         dir2,
@@ -651,8 +664,11 @@ fn helper_quit_short_circuits_with_typed_error() {
         format!("!{}", quitter.display()),
         format!("!{}", would_fill.display()),
     ] {
-        let out = git(dir, &["config", "--local", "--add", "credential.helper", &v])
-            .expect("git config add");
+        let out = git(
+            dir,
+            &["config", "--local", "--add", "credential.helper", &v],
+        )
+        .expect("git config add");
         assert!(out.status.success());
     }
     let cfg = load_config(dir);
@@ -794,7 +810,13 @@ mod http_401 {
         let bare = root.join(name);
         git_ok(
             work,
-            &["clone", "-q", "--bare", ".", bare.to_str().expect("utf8 path")],
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                ".",
+                bare.to_str().expect("utf8 path"),
+            ],
         );
         git_ok(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
         bare
@@ -905,8 +927,8 @@ mod http_401 {
             git_ok(&local, &["init", "-q", "-b", "main", "."]);
             let local_git = local.join(".git");
 
-            let client = UreqHttpClient::with_credentials(Box::new(provider))
-                .with_git_protocol("version=2");
+            let client =
+                UreqHttpClient::with_credentials(Box::new(provider)).with_git_protocol("version=2");
             let err = http_fetch(&client, &local_git, &url, &opts, &mut NoProgress)
                 .expect_err("wrong creds from helper must fail typed, not hang");
             assert!(

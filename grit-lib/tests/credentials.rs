@@ -241,7 +241,9 @@ fn fill_short_circuits_when_input_already_complete() {
         password: Some("hunter2".into()),
         ..Default::default()
     };
-    let filled = provider.fill(&input).expect("complete input should not call helper");
+    let filled = provider
+        .fill(&input)
+        .expect("complete input should not call helper");
     assert_eq!(filled.username.as_deref(), Some("bob"));
     assert_eq!(filled.password.as_deref(), Some("hunter2"));
 }
@@ -266,7 +268,10 @@ fn url_scoped_helper_applies_only_to_matching_target() {
     );
     let helper_value = format!("!{}", helper.display());
     // Scope the helper to github.com only.
-    let cfg = build_config(dir, &[("credential.https://github.com.helper", &helper_value)]);
+    let cfg = build_config(
+        dir,
+        &[("credential.https://github.com.helper", &helper_value)],
+    );
     let provider = HelperCredentialProvider::new(cfg);
 
     // Matching target -> helper fires, credential completed.
@@ -284,7 +289,9 @@ fn url_scoped_helper_applies_only_to_matching_target() {
         host: Some("example.com".into()),
         ..Default::default()
     };
-    let err = provider.fill(&other).expect_err("non-matching scope yields no creds");
+    let err = provider
+        .fill(&other)
+        .expect_err("non-matching scope yields no creds");
     assert!(err.to_string().contains(NON_INTERACTIVE_MESSAGE));
 }
 

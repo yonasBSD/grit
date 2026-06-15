@@ -45,7 +45,7 @@ use crate::transfer::{
     classify_update, match_positive, open_odb, prune_tracking_refs, ref_excluded, refspecs_force,
     FetchOptions, FetchOutcome, RefUpdate, TagMode, UpdateMode,
 };
-use crate::transport::{Advertisement, Connection, ConnectOptions, Service, Transport};
+use crate::transport::{Advertisement, ConnectOptions, Connection, Service, Transport};
 
 #[cfg(feature = "http-ureq")]
 pub mod ureq_client;
@@ -764,10 +764,9 @@ fn read_stateless_response(
         if payload.is_empty() {
             continue;
         }
-        let is_pack = (sideband
-            && payload.first() == Some(&1)
-            && payload.get(1..5) == Some(b"PACK"))
-            || payload.starts_with(b"PACK");
+        let is_pack =
+            (sideband && payload.first() == Some(&1) && payload.get(1..5) == Some(b"PACK"))
+                || payload.starts_with(b"PACK");
         if is_pack {
             got_pack = true;
             cur.set_position(start as u64);
@@ -855,7 +854,11 @@ fn append_shallow_request_v0_http(
     } else if let Some(depth) = opts.depth.filter(|d| *d > 0) {
         pkt_line::write_line_to_vec(req, &format!("deepen {depth}"))?;
     }
-    if let Some(since) = opts.deepen_since.as_deref().filter(|s| !s.trim().is_empty()) {
+    if let Some(since) = opts
+        .deepen_since
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
         if caps.contains("deepen-since") {
             let value = crate::shallow::deepen_since_wire_value(since);
             pkt_line::write_line_to_vec(req, &format!("deepen-since {value}"))?;
@@ -905,7 +908,10 @@ fn negotiate_pack_http(
     // terminating flush.
     let mut state = Vec::new();
     let first = wants[0];
-    pkt_line::write_line_to_vec(&mut state, &format!("want {}{}", first.to_hex(), fetch_caps))?;
+    pkt_line::write_line_to_vec(
+        &mut state,
+        &format!("want {}{}", first.to_hex(), fetch_caps),
+    )?;
     for w in wants.iter().skip(1) {
         pkt_line::write_line_to_vec(&mut state, &format!("want {}", w.to_hex()))?;
     }
@@ -985,8 +991,12 @@ fn negotiate_pack_http(
         let round_result =
             read_stateless_response(&resp, sideband, shallow_request, &mut pack_buf, progress)?;
         if shallow_request && !shallow_applied {
-            shallow_update.shallow.extend(round_result.shallow.iter().copied());
-            shallow_update.unshallow.extend(round_result.unshallow.iter().copied());
+            shallow_update
+                .shallow
+                .extend(round_result.shallow.iter().copied());
+            shallow_update
+                .unshallow
+                .extend(round_result.unshallow.iter().copied());
             shallow_applied = true;
         }
         for ack in &round_result.acks {
@@ -1353,8 +1363,12 @@ fn http_fetch_v2(
 
     // 1. Recover the ref map via `command=ls-refs`.
     let (remote_refs, head_symref) = {
-        let req =
-            crate::fetch::build_v2_ls_refs_request(&server_caps, &local_odb, opts.tags, &opts.refspecs)?;
+        let req = crate::fetch::build_v2_ls_refs_request(
+            &server_caps,
+            &local_odb,
+            opts.tags,
+            &opts.refspecs,
+        )?;
         let resp = client.post(&post_url, &content_type, &accept, &req, Some(git_protocol))?;
         let mut cur = Cursor::new(resp);
         crate::fetch::parse_v2_ls_refs_response(&mut cur)?
@@ -1601,7 +1615,12 @@ fn negotiate_pack_v2_http(
         )?;
         let resp = client.post(post_url, content_type, accept, &req, Some(git_protocol))?;
         let mut cur = Cursor::new(resp);
-        crate::fetch::read_v2_fetch_pack_response(&mut cur, &mut pack, &mut shallow_update, progress)?;
+        crate::fetch::read_v2_fetch_pack_response(
+            &mut cur,
+            &mut pack,
+            &mut shallow_update,
+            progress,
+        )?;
         return Ok((pack, shallow_update));
     }
 
@@ -1666,7 +1685,12 @@ fn negotiate_pack_v2_http(
         )?;
         let resp = client.post(post_url, content_type, accept, &req, Some(git_protocol))?;
         let mut cur = Cursor::new(resp);
-        crate::fetch::read_v2_fetch_pack_response(&mut cur, &mut pack, &mut shallow_update, progress)?;
+        crate::fetch::read_v2_fetch_pack_response(
+            &mut cur,
+            &mut pack,
+            &mut shallow_update,
+            progress,
+        )?;
         return Ok((pack, shallow_update));
     }
 }
@@ -1677,7 +1701,11 @@ fn retain_following_tags(
     matched: &mut Vec<crate::transfer::MatchedRef>,
     wants: &HashSet<ObjectId>,
 ) {
-    let roots: Vec<ObjectId> = matched.iter().filter(|m| !m.is_tag).map(|m| m.oid).collect();
+    let roots: Vec<ObjectId> = matched
+        .iter()
+        .filter(|m| !m.is_tag)
+        .map(|m| m.oid)
+        .collect();
     let closure = reachable_closure(odb, &roots);
     matched.retain(|m| {
         if !m.is_tag {
@@ -1785,7 +1813,10 @@ mod tests {
         assert_eq!(rebased_base_from_redirect(base, None), None);
         // Same base (no actual redirect) → None.
         assert_eq!(
-            rebased_base_from_redirect(base, Some("https://host/smart/repo/info/refs?service=git-upload-pack")),
+            rebased_base_from_redirect(
+                base,
+                Some("https://host/smart/repo/info/refs?service=git-upload-pack")
+            ),
             None
         );
         // A final URL that is not an `info/refs` request → None (don't guess).
@@ -1856,6 +1887,9 @@ mod tests {
             info_refs_url("http://h/r.git/"),
             "http://h/r.git/info/refs?service=git-upload-pack"
         );
-        assert_eq!(upload_pack_url("http://h/r.git/"), "http://h/r.git/git-upload-pack");
+        assert_eq!(
+            upload_pack_url("http://h/r.git/"),
+            "http://h/r.git/git-upload-pack"
+        );
     }
 }

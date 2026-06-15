@@ -59,9 +59,9 @@ use grit_lib::refs::resolve_ref;
 use grit_lib::transfer::{PushOptions, PushOutcome, PushRefSpec};
 use grit_lib::transport::http::ureq_client::UreqHttpClient;
 use grit_lib::transport::http::{HttpClient, SmartHttpTransport};
-use grit_lib::transport::{ConnectOptions, GitDaemonTransport, Service, Transport};
 #[cfg(unix)]
 use grit_lib::transport::SshTransport;
+use grit_lib::transport::{ConnectOptions, GitDaemonTransport, Service, Transport};
 
 // ---------------------------------------------------------------------------
 // Shared fixture helpers (copied from the sibling transport_*.rs tests so the
@@ -139,7 +139,10 @@ fn build_source(dir: &Path) -> Graph {
     let side = rev_parse(dir, "HEAD");
 
     // A second independent new tip for the multi-ref push.
-    git(dir, &["checkout", "-q", "-b", "extra", c1.to_hex().as_str()]);
+    git(
+        dir,
+        &["checkout", "-q", "-b", "extra", c1.to_hex().as_str()],
+    );
     std::fs::write(dir.join("x.txt"), "extra\n").unwrap();
     git(dir, &["add", "x.txt"]);
     git(dir, &["commit", "-q", "-m", "e1"]);
@@ -383,7 +386,10 @@ fn run_push_matrix(label: &str, bare: &Path, graph: &Graph, push: &Pusher<'_>) {
     } = *graph;
 
     // --- 1. New ref (create) --------------------------------------------------
-    let out = push(&[spec(Some(c2), "refs/heads/main")], &PushOptions::default());
+    let out = push(
+        &[spec(Some(c2), "refs/heads/main")],
+        &PushOptions::default(),
+    );
     let r = result_for(&out, "refs/heads/main");
     assert_eq!(
         r.status,
@@ -399,7 +405,10 @@ fn run_push_matrix(label: &str, bare: &Path, graph: &Graph, push: &Pusher<'_>) {
     fsck_clean(bare, &format!("{label} create"));
 
     // --- 2. Fast-forward update ----------------------------------------------
-    let out = push(&[spec(Some(ff), "refs/heads/main")], &PushOptions::default());
+    let out = push(
+        &[spec(Some(ff), "refs/heads/main")],
+        &PushOptions::default(),
+    );
     let r = result_for(&out, "refs/heads/main");
     assert_eq!(
         r.status,
@@ -415,7 +424,10 @@ fn run_push_matrix(label: &str, bare: &Path, graph: &Graph, push: &Pusher<'_>) {
     fsck_clean(bare, &format!("{label} fast-forward"));
 
     // --- 3. Up-to-date no-op (re-push the same tip) ---------------------------
-    let out = push(&[spec(Some(ff), "refs/heads/main")], &PushOptions::default());
+    let out = push(
+        &[spec(Some(ff), "refs/heads/main")],
+        &PushOptions::default(),
+    );
     let r = result_for(&out, "refs/heads/main");
     assert_eq!(
         r.status,
@@ -461,7 +473,10 @@ fn run_push_matrix(label: &str, bare: &Path, graph: &Graph, push: &Pusher<'_>) {
     // Create a scratch ref, then delete it. A pure deletion must stream no pack;
     // if it did, the streaming transports would reset on the unread bytes — so a
     // successful deletion here also proves the no-pack behaviour end-to-end.
-    let out = push(&[spec(Some(extra), "refs/heads/scratch")], &PushOptions::default());
+    let out = push(
+        &[spec(Some(extra), "refs/heads/scratch")],
+        &PushOptions::default(),
+    );
     assert_eq!(
         result_for(&out, "refs/heads/scratch").status,
         PushRefStatus::Ok,
@@ -486,7 +501,10 @@ fn run_push_matrix(label: &str, bare: &Path, graph: &Graph, push: &Pusher<'_>) {
     fsck_clean(bare, &format!("{label} deletion"));
 
     // --- 7. Deleting an absent ref is an UpToDate no-op ------------------------
-    let out = push(&[deletion("refs/heads/never-existed")], &PushOptions::default());
+    let out = push(
+        &[deletion("refs/heads/never-existed")],
+        &PushOptions::default(),
+    );
     assert_eq!(
         result_for(&out, "refs/heads/never-existed").status,
         PushRefStatus::UpToDate,
@@ -977,7 +995,12 @@ fn write_fake_ssh_to(dir: &Path, name: &str, fake_rp: &Path) -> Option<PathBuf> 
 ///
 /// `report_bytes` is the exact pkt-line report to emit (built with [`pkt`]).
 #[cfg(unix)]
-fn write_fake_receive_pack(dir: &Path, name: &str, adv_oid: &str, report_bytes: &[u8]) -> Option<PathBuf> {
+fn write_fake_receive_pack(
+    dir: &Path,
+    name: &str,
+    adv_oid: &str,
+    report_bytes: &[u8],
+) -> Option<PathBuf> {
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt;
 

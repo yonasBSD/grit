@@ -23,7 +23,11 @@ pub fn run() -> Result<()> {
     }
 
     let (refname, short_name, head_oid) = match resolve_head(&repo.git_dir)? {
-        HeadState::Branch { refname, short_name, oid } => (refname, short_name, oid),
+        HeadState::Branch {
+            refname,
+            short_name,
+            oid,
+        } => (refname, short_name, oid),
         HeadState::Detached { .. } => bail!("HEAD is detached; gs pull needs a branch"),
         HeadState::Invalid => bail!("HEAD is in an unknown state"),
     };

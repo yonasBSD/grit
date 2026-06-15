@@ -47,10 +47,7 @@ fn unique_tmp(tag: &str) -> PathBuf {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     let mut p = std::env::temp_dir();
-    p.push(format!(
-        "grit-sha256-{tag}-{}-{n}",
-        std::process::id()
-    ));
+    p.push(format!("grit-sha256-{tag}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("create temp dir");
     p
@@ -256,10 +253,7 @@ fn sha256_log_reads_real_git_repo() {
 fn sha256_rev_list_reads_real_git_repo() {
     let dir = real_git_sha256_repo(
         "rev-list",
-        &[
-            ("a.txt", "one\n", "c1"),
-            ("b.txt", "two\n", "c2"),
-        ],
+        &[("a.txt", "one\n", "c1"), ("b.txt", "two\n", "c2")],
     );
 
     let rl = grit(&["rev-list", "HEAD"], &dir);
@@ -295,8 +289,14 @@ fn sha256_repack_pack_verified_by_git() {
     );
     for i in 1..=3 {
         write_file(&dir, &format!("f{i}.txt"), &format!("content {i}\n"));
-        assert!(grit(&["add", &format!("f{i}.txt")], &dir).ok(), "grit add failed");
-        assert!(grit(&["commit", "-m", &format!("c{i}")], &dir).ok(), "grit commit failed");
+        assert!(
+            grit(&["add", &format!("f{i}.txt")], &dir).ok(),
+            "grit add failed"
+        );
+        assert!(
+            grit(&["commit", "-m", &format!("c{i}")], &dir).ok(),
+            "grit commit failed"
+        );
     }
 
     let repack = grit(&["repack", "-a", "-d"], &dir);
@@ -310,29 +310,56 @@ fn sha256_repack_pack_verified_by_git() {
         .find(|p| p.extension().is_some_and(|x| x == "idx"))
         .expect("no .idx written by repack");
     let verify = git(&["verify-pack", "-v", idx_glob.to_str().unwrap()], &dir);
-    assert!(verify.ok(), "git verify-pack rejected grit's sha256 pack\n{}", verify.dump("verify-pack"));
+    assert!(
+        verify.ok(),
+        "git verify-pack rejected grit's sha256 pack\n{}",
+        verify.dump("verify-pack")
+    );
     let fsck = git(&["fsck", "--strict"], &dir);
-    assert!(fsck.ok(), "git fsck failed on grit's sha256 pack\n{}", fsck.dump("git fsck"));
+    assert!(
+        fsck.ok(),
+        "git fsck failed on grit's sha256 pack\n{}",
+        fsck.dump("git fsck")
+    );
 
     // grit reads its own pack (loose objects were pruned by -d).
     let log = grit(&["log", "--oneline"], &dir);
     assert!(log.ok(), "{}", log.dump("grit log after repack"));
-    assert_eq!(log.stdout.lines().count(), 3, "grit log lost commits after repack");
+    assert_eq!(
+        log.stdout.lines().count(),
+        3,
+        "grit log lost commits after repack"
+    );
 }
 
 #[test]
 fn sha256_reads_git_written_pack() {
     // grit must read a pack produced by the system git in a sha256 repo.
-    let dir = real_git_sha256_repo("readpack", &[("a.txt", "x\n", "c1"), ("b.txt", "y\n", "c2")]);
+    let dir = real_git_sha256_repo(
+        "readpack",
+        &[("a.txt", "x\n", "c1"), ("b.txt", "y\n", "c2")],
+    );
     let repack = git(&["repack", "-a", "-d", "-q"], &dir);
     assert!(repack.ok(), "{}", repack.dump("git repack"));
 
     let log = grit(&["log", "--oneline"], &dir);
-    assert!(log.ok(), "grit could not read git's sha256 pack\n{}", log.dump("grit log"));
-    assert_eq!(log.stdout.lines().count(), 2, "grit lost commits reading git's pack");
+    assert!(
+        log.ok(),
+        "grit could not read git's sha256 pack\n{}",
+        log.dump("grit log")
+    );
+    assert_eq!(
+        log.stdout.lines().count(),
+        2,
+        "grit lost commits reading git's pack"
+    );
 
     let fsck = grit(&["fsck"], &dir);
-    assert!(fsck.ok(), "grit fsck failed on git's sha256 pack\n{}", fsck.dump("grit fsck"));
+    assert!(
+        fsck.ok(),
+        "grit fsck failed on git's sha256 pack\n{}",
+        fsck.dump("grit fsck")
+    );
 }
 
 #[test]
@@ -340,7 +367,15 @@ fn sha256_reftable_refs_roundtrip() {
     // A sha256 repo using the reftable backend must round-trip refs through both
     // grit and the system git (reftable version 2 / 32-byte object ids).
     let dir = unique_tmp("reftable");
-    let init = grit(&["init", "--object-format=sha256", "--ref-format=reftable", "."], &dir);
+    let init = grit(
+        &[
+            "init",
+            "--object-format=sha256",
+            "--ref-format=reftable",
+            ".",
+        ],
+        &dir,
+    );
     assert!(init.ok(), "{}", init.dump("grit init reftable sha256"));
 
     write_file(&dir, "a.txt", "one\n");
@@ -351,13 +386,29 @@ fn sha256_reftable_refs_roundtrip() {
     // grit reads its own reftable.
     let refs = grit(&["for-each-ref", "--format=%(refname)"], &dir);
     assert!(refs.ok(), "{}", refs.dump("grit for-each-ref"));
-    assert!(refs.stdout.contains("refs/heads/main"), "missing main\n{}", refs.dump("for-each-ref"));
-    assert!(refs.stdout.contains("refs/heads/feature"), "missing feature\n{}", refs.dump("for-each-ref"));
+    assert!(
+        refs.stdout.contains("refs/heads/main"),
+        "missing main\n{}",
+        refs.dump("for-each-ref")
+    );
+    assert!(
+        refs.stdout.contains("refs/heads/feature"),
+        "missing feature\n{}",
+        refs.dump("for-each-ref")
+    );
 
     // The system git must read grit's sha256 reftable (version 2).
     let gshow = git(&["show-ref"], &dir);
-    assert!(gshow.ok(), "git could not read grit's sha256 reftable\n{}", gshow.dump("git show-ref"));
-    assert!(gshow.stdout.contains("refs/heads/main"), "git missing main\n{}", gshow.dump("git show-ref"));
+    assert!(
+        gshow.ok(),
+        "git could not read grit's sha256 reftable\n{}",
+        gshow.dump("git show-ref")
+    );
+    assert!(
+        gshow.stdout.contains("refs/heads/main"),
+        "git missing main\n{}",
+        gshow.dump("git show-ref")
+    );
     // Each ref line is a 64-hex sha256 OID.
     for line in gshow.stdout.lines() {
         let oid = line.split_whitespace().next().unwrap_or("");
@@ -370,45 +421,89 @@ fn sha256_commit_graph_write_and_read() {
     // grit must write a commit-graph (hash version 2) that the system git
     // accepts, and read it back when resolving history.
     let dir = unique_tmp("cgraph");
-    assert!(grit(&["init", "--object-format=sha256", "."], &dir).ok(), "init");
+    assert!(
+        grit(&["init", "--object-format=sha256", "."], &dir).ok(),
+        "init"
+    );
     for i in 1..=4 {
         write_file(&dir, "f.txt", &format!("c{i}\n"));
         assert!(grit(&["add", "f.txt"], &dir).ok(), "add");
-        assert!(grit(&["commit", "-m", &format!("c{i}")], &dir).ok(), "commit");
+        assert!(
+            grit(&["commit", "-m", &format!("c{i}")], &dir).ok(),
+            "commit"
+        );
     }
     let write = grit(&["commit-graph", "write"], &dir);
     assert!(write.ok(), "{}", write.dump("grit commit-graph write"));
     let gverify = git(&["commit-graph", "verify"], &dir);
-    assert!(gverify.ok(), "git rejected grit's sha256 commit-graph\n{}", gverify.dump("git commit-graph verify"));
+    assert!(
+        gverify.ok(),
+        "git rejected grit's sha256 commit-graph\n{}",
+        gverify.dump("git commit-graph verify")
+    );
     // grit reads its own commit-graph for history.
     let log = grit(&["log", "--oneline"], &dir);
-    assert!(log.ok() && log.stdout.lines().count() == 4, "{}", log.dump("grit log w/ commit-graph"));
+    assert!(
+        log.ok() && log.stdout.lines().count() == 4,
+        "{}",
+        log.dump("grit log w/ commit-graph")
+    );
 }
 
 #[test]
 fn sha256_multi_pack_index_write_and_read() {
     // grit must write a multi-pack-index that git accepts and read objects via it.
     let dir = unique_tmp("midx");
-    assert!(grit(&["init", "--object-format=sha256", "."], &dir).ok(), "init");
+    assert!(
+        grit(&["init", "--object-format=sha256", "."], &dir).ok(),
+        "init"
+    );
     // Build two packs deterministically (bitmaps disabled — a separate feature)
     // so the MIDX covers multiple packs.
     for i in 1..=2 {
         write_file(&dir, &format!("f{i}.txt"), &format!("c{i}\n"));
         assert!(grit(&["add", &format!("f{i}.txt")], &dir).ok(), "add");
-        assert!(grit(&["commit", "-m", &format!("c{i}")], &dir).ok(), "commit");
-        assert!(grit(&["-c", "repack.writeBitmaps=false", "repack"], &dir).ok(), "repack");
+        assert!(
+            grit(&["commit", "-m", &format!("c{i}")], &dir).ok(),
+            "commit"
+        );
+        assert!(
+            grit(&["-c", "repack.writeBitmaps=false", "repack"], &dir).ok(),
+            "repack"
+        );
     }
     // Write a v1 MIDX (the format the system git verifies across versions).
     let write = grit(&["-c", "midx.version=1", "multi-pack-index", "write"], &dir);
     assert!(write.ok(), "{}", write.dump("grit multi-pack-index write"));
     let gverify = git(&["multi-pack-index", "verify"], &dir);
-    assert!(gverify.ok(), "git rejected grit's sha256 MIDX\n{}", gverify.dump("git midx verify"));
+    assert!(
+        gverify.ok(),
+        "git rejected grit's sha256 MIDX\n{}",
+        gverify.dump("git midx verify")
+    );
     let grverify = grit(&["multi-pack-index", "verify"], &dir);
-    assert!(grverify.ok(), "grit could not verify its own sha256 MIDX\n{}", grverify.dump("grit midx verify"));
+    assert!(
+        grverify.ok(),
+        "grit could not verify its own sha256 MIDX\n{}",
+        grverify.dump("grit midx verify")
+    );
     // Read an object through the MIDX.
     let head = grit(&["rev-parse", "HEAD"], &dir);
-    let t = grit(&["-c", "core.multiPackIndex=true", "cat-file", "-t", head.stdout.trim()], &dir);
-    assert!(t.ok() && t.stdout.trim() == "commit", "{}", t.dump("grit cat-file via midx"));
+    let t = grit(
+        &[
+            "-c",
+            "core.multiPackIndex=true",
+            "cat-file",
+            "-t",
+            head.stdout.trim(),
+        ],
+        &dir,
+    );
+    assert!(
+        t.ok() && t.stdout.trim() == "commit",
+        "{}",
+        t.dump("grit cat-file via midx")
+    );
 }
 
 #[test]
@@ -416,21 +511,38 @@ fn sha256_clone_fetch_push_roundtrip() {
     // Exercise the wire protocol (clone, push, fetch) end-to-end on sha256:
     // the pack (un)packing, object-format negotiation, and ref handling.
     let src = unique_tmp("net-src");
-    assert!(grit(&["init", "--object-format=sha256", "."], &src).ok(), "init src");
+    assert!(
+        grit(&["init", "--object-format=sha256", "."], &src).ok(),
+        "init src"
+    );
     write_file(&src, "a.txt", "one\n");
     assert!(grit(&["add", "a.txt"], &src).ok(), "add");
     assert!(grit(&["commit", "-m", "c1"], &src).ok(), "commit");
 
     // clone (sha256 must propagate)
     let dst = unique_tmp("net-dst");
-    let clone = grit(&["clone", src.to_str().unwrap(), dst.to_str().unwrap()], &src);
+    let clone = grit(
+        &["clone", src.to_str().unwrap(), dst.to_str().unwrap()],
+        &src,
+    );
     assert!(clone.ok(), "{}", clone.dump("grit clone"));
     let fmt = grit(&["rev-parse", "--show-object-format"], &dst);
-    assert_eq!(fmt.stdout.trim(), "sha256", "clone did not propagate sha256");
+    assert_eq!(
+        fmt.stdout.trim(),
+        "sha256",
+        "clone did not propagate sha256"
+    );
 
     // push a new commit from the clone to a bare sha256 remote
     let bare = unique_tmp("net-bare");
-    assert!(git(&["init", "--bare", "--object-format=sha256", "-q", "."], &bare).ok(), "init bare");
+    assert!(
+        git(
+            &["init", "--bare", "--object-format=sha256", "-q", "."],
+            &bare
+        )
+        .ok(),
+        "init bare"
+    );
     write_file(&dst, "b.txt", "two\n");
     assert!(grit(&["add", "b.txt"], &dst).ok(), "add b");
     assert!(grit(&["commit", "-m", "c2"], &dst).ok(), "commit c2");
@@ -438,10 +550,17 @@ fn sha256_clone_fetch_push_roundtrip() {
     assert!(push.ok(), "{}", push.dump("grit push"));
     // system git must accept the pushed pack
     let gfsck = git(&["fsck"], &bare);
-    assert!(gfsck.ok(), "git fsck on pushed sha256 repo\n{}", gfsck.dump("git fsck"));
+    assert!(
+        gfsck.ok(),
+        "git fsck on pushed sha256 repo\n{}",
+        gfsck.dump("git fsck")
+    );
 
     // fetch the bare back into the original src
-    assert!(grit(&["remote", "add", "bare", bare.to_str().unwrap()], &src).ok(), "remote add");
+    assert!(
+        grit(&["remote", "add", "bare", bare.to_str().unwrap()], &src).ok(),
+        "remote add"
+    );
     let fetch = grit(&["fetch", "bare"], &src);
     assert!(fetch.ok(), "{}", fetch.dump("grit fetch"));
     let log = grit(&["log", "--oneline", "bare/main"], &src);
@@ -461,10 +580,16 @@ fn sha256_reflog_records_64_hex_oids() {
     );
     write_file(&dir, "a.txt", "one\n");
     assert!(grit(&["add", "a.txt"], &dir).ok(), "grit add a failed");
-    assert!(grit(&["commit", "-m", "c1"], &dir).ok(), "grit commit c1 failed");
+    assert!(
+        grit(&["commit", "-m", "c1"], &dir).ok(),
+        "grit commit c1 failed"
+    );
     write_file(&dir, "a.txt", "two\n");
     assert!(grit(&["add", "a.txt"], &dir).ok(), "grit add b failed");
-    assert!(grit(&["commit", "-m", "c2"], &dir).ok(), "grit commit c2 failed");
+    assert!(
+        grit(&["commit", "-m", "c2"], &dir).ok(),
+        "grit commit c2 failed"
+    );
 
     let rl = grit(&["reflog"], &dir);
     assert!(rl.ok(), "{}", rl.dump("grit reflog"));
@@ -499,11 +624,20 @@ fn sha256_diff_raw_null_oid_is_64_zeros() {
         "grit init failed"
     );
     write_file(&dir, "base.txt", "base\n");
-    assert!(grit(&["add", "base.txt"], &dir).ok(), "grit add base failed");
-    assert!(grit(&["commit", "-m", "base"], &dir).ok(), "grit commit base failed");
+    assert!(
+        grit(&["add", "base.txt"], &dir).ok(),
+        "grit add base failed"
+    );
+    assert!(
+        grit(&["commit", "-m", "base"], &dir).ok(),
+        "grit commit base failed"
+    );
 
     write_file(&dir, "added.txt", "new\n");
-    assert!(grit(&["add", "added.txt"], &dir).ok(), "grit add added failed");
+    assert!(
+        grit(&["add", "added.txt"], &dir).ok(),
+        "grit add added failed"
+    );
 
     let diff = grit(&["diff", "--cached", "--raw", "--no-abbrev"], &dir);
     assert!(diff.ok(), "{}", diff.dump("grit diff --raw"));
@@ -511,7 +645,12 @@ fn sha256_diff_raw_null_oid_is_64_zeros() {
         .stdout
         .lines()
         .find(|l| l.contains("added.txt"))
-        .unwrap_or_else(|| panic!("no raw line for added.txt\n{}", diff.dump("grit diff --raw")));
+        .unwrap_or_else(|| {
+            panic!(
+                "no raw line for added.txt\n{}",
+                diff.dump("grit diff --raw")
+            )
+        });
     // Format: :<old-mode> <new-mode> <old-oid> <new-oid> A\tadded.txt
     let fields: Vec<&str> = line.trim_start_matches(':').split_whitespace().collect();
     let old_oid = fields.get(2).copied().unwrap_or("");
@@ -558,14 +697,24 @@ fn sha256_fsck_clean_loose_and_packed() {
     // grit's fsck object/ref/pack checks were SHA-1-width-hardcoded. A sha256
     // repo must pass `grit fsck` both with loose objects and after a repack.
     let dir = unique_tmp("fsck");
-    assert!(grit(&["init", "--object-format=sha256", "."], &dir).ok(), "init");
+    assert!(
+        grit(&["init", "--object-format=sha256", "."], &dir).ok(),
+        "init"
+    );
     for i in 1..=3 {
         write_file(&dir, "f.txt", &format!("c{i}\n"));
         assert!(grit(&["add", "f.txt"], &dir).ok(), "add");
-        assert!(grit(&["commit", "-m", &format!("c{i}")], &dir).ok(), "commit");
+        assert!(
+            grit(&["commit", "-m", &format!("c{i}")], &dir).ok(),
+            "commit"
+        );
     }
     let loose = grit(&["fsck"], &dir);
-    assert!(loose.ok(), "grit fsck failed on loose sha256 repo\n{}", loose.dump("grit fsck loose"));
+    assert!(
+        loose.ok(),
+        "grit fsck failed on loose sha256 repo\n{}",
+        loose.dump("grit fsck loose")
+    );
     assert!(
         !loose.stderr.contains("badTreeSha1") && !loose.stderr.contains("badRefContent"),
         "grit fsck reported sha256-width errors (loose)\n{}",
@@ -574,7 +723,11 @@ fn sha256_fsck_clean_loose_and_packed() {
 
     assert!(grit(&["repack", "-a", "-d"], &dir).ok(), "repack");
     let packed = grit(&["fsck"], &dir);
-    assert!(packed.ok(), "grit fsck failed on packed sha256 repo\n{}", packed.dump("grit fsck packed"));
+    assert!(
+        packed.ok(),
+        "grit fsck failed on packed sha256 repo\n{}",
+        packed.dump("grit fsck packed")
+    );
     assert!(
         !packed.stderr.contains("does not match")
             && !packed.stderr.contains("invalid oid")
@@ -589,11 +742,20 @@ fn sha256_split_index_roundtrip() {
     // The split-index body hash and trailer were SHA-1-only; in a sha256 repo
     // the shared index must be written and read back consistently.
     let dir = unique_tmp("split-index");
-    assert!(grit(&["init", "--object-format=sha256", "."], &dir).ok(), "init");
-    assert!(grit(&["config", "core.splitIndex", "true"], &dir).ok(), "config");
+    assert!(
+        grit(&["init", "--object-format=sha256", "."], &dir).ok(),
+        "init"
+    );
+    assert!(
+        grit(&["config", "core.splitIndex", "true"], &dir).ok(),
+        "config"
+    );
     write_file(&dir, "a.txt", "a\n");
     assert!(grit(&["add", "a.txt"], &dir).ok(), "add a");
-    assert!(grit(&["update-index", "--split-index"], &dir).ok(), "split-index");
+    assert!(
+        grit(&["update-index", "--split-index"], &dir).ok(),
+        "split-index"
+    );
     write_file(&dir, "b.txt", "b\n");
     assert!(grit(&["add", "b.txt"], &dir).ok(), "add b");
     assert!(grit(&["commit", "-m", "c1"], &dir).ok(), "commit");
@@ -606,7 +768,10 @@ fn sha256_split_index_roundtrip() {
             let n = e.file_name().to_string_lossy().into_owned();
             n.strip_prefix("sharedindex.").is_some_and(is_hex64)
         });
-    assert!(shared, "no 64-hex shared index written for sha256 split index");
+    assert!(
+        shared,
+        "no 64-hex shared index written for sha256 split index"
+    );
     let files = grit(&["ls-files"], &dir);
     assert!(files.ok(), "{}", files.dump("grit ls-files"));
     assert!(
@@ -616,7 +781,11 @@ fn sha256_split_index_roundtrip() {
     );
     // System git must also read the split index.
     let gfiles = git(&["ls-files"], &dir);
-    assert!(gfiles.ok() && gfiles.stdout.contains("a.txt"), "git could not read sha256 split index\n{}", gfiles.dump("git ls-files"));
+    assert!(
+        gfiles.ok() && gfiles.stdout.contains("a.txt"),
+        "git could not read sha256 split index\n{}",
+        gfiles.dump("git ls-files")
+    );
 }
 
 #[test]
@@ -624,27 +793,48 @@ fn sha256_fast_import_creates_sha256_objects() {
     // fast-import hex-ref parsing was 40-char-only; importing into a sha256 repo
     // must produce a 64-hex commit resolvable by grit.
     let dir = unique_tmp("fast-import");
-    assert!(grit(&["init", "--object-format=sha256", "."], &dir).ok(), "init");
+    assert!(
+        grit(&["init", "--object-format=sha256", "."], &dir).ok(),
+        "init"
+    );
     let stream = b"blob\nmark :1\ndata 6\nhello\n\ncommit refs/heads/main\nmark :2\ncommitter Test <test@example.com> 1700000000 +0000\ndata 2\nc1\nM 100644 :1 a.txt\n";
     let imp = grit_stdin(&["fast-import"], &dir, stream);
     assert!(imp.ok(), "{}", imp.dump("grit fast-import"));
     let head = grit(&["rev-parse", "HEAD"], &dir);
-    assert!(head.ok() && is_hex64(&head.stdout), "fast-import HEAD not sha256\n{}", head.dump("rev-parse HEAD"));
+    assert!(
+        head.ok() && is_hex64(&head.stdout),
+        "fast-import HEAD not sha256\n{}",
+        head.dump("rev-parse HEAD")
+    );
     let show = grit(&["cat-file", "-p", "HEAD:a.txt"], &dir);
-    assert!(show.ok() && show.stdout.contains("hello"), "{}", show.dump("cat-file blob"));
+    assert!(
+        show.ok() && show.stdout.contains("hello"),
+        "{}",
+        show.dump("cat-file blob")
+    );
 }
 
 #[test]
 fn sha256_notes_resolve() {
     // note_object_name parsed a 40-char path; notes must work in a sha256 repo.
     let dir = unique_tmp("notes");
-    assert!(grit(&["init", "--object-format=sha256", "."], &dir).ok(), "init");
+    assert!(
+        grit(&["init", "--object-format=sha256", "."], &dir).ok(),
+        "init"
+    );
     write_file(&dir, "a.txt", "x\n");
     assert!(grit(&["add", "a.txt"], &dir).ok(), "add");
     assert!(grit(&["commit", "-m", "c1"], &dir).ok(), "commit");
-    assert!(grit(&["notes", "add", "-m", "a note", "HEAD"], &dir).ok(), "notes add");
+    assert!(
+        grit(&["notes", "add", "-m", "a note", "HEAD"], &dir).ok(),
+        "notes add"
+    );
     let show = grit(&["notes", "show", "HEAD"], &dir);
-    assert!(show.ok() && show.stdout.contains("a note"), "{}", show.dump("grit notes show"));
+    assert!(
+        show.ok() && show.stdout.contains("a note"),
+        "{}",
+        show.dump("grit notes show")
+    );
 }
 
 #[test]
@@ -652,24 +842,64 @@ fn sha256_grit_reads_git_delta_pack() {
     // grit's packed-object/delta read path was gated on 20-byte OIDs. grit must
     // resolve an object stored as a delta in a git-written sha256 pack.
     let dir = unique_tmp("delta");
-    assert!(git(&["init", "--object-format=sha256", "-q", "."], &dir).ok(), "git init");
+    assert!(
+        git(&["init", "--object-format=sha256", "-q", "."], &dir).ok(),
+        "git init"
+    );
     // A large file with small per-commit edits deltifies well.
-    let base: String = (0..2000).map(|i| format!("line {i} content padding padding\n")).collect();
+    let base: String = (0..2000)
+        .map(|i| format!("line {i} content padding padding\n"))
+        .collect();
     write_file(&dir, "big.txt", &base);
     assert!(git(&["add", "big.txt"], &dir).ok(), "add");
-    assert!(git(&["-c", "user.name=T", "-c", "user.email=t@e", "commit", "-q", "-m", "base"], &dir).ok(), "commit base");
+    assert!(
+        git(
+            &[
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@e",
+                "commit",
+                "-q",
+                "-m",
+                "base"
+            ],
+            &dir
+        )
+        .ok(),
+        "commit base"
+    );
     for i in 1..=5 {
         let edited = base.replacen("line 0 ", &format!("CHANGED{i} "), 1);
         write_file(&dir, "big.txt", &edited);
         assert!(git(&["add", "big.txt"], &dir).ok(), "add edit");
-        assert!(git(&["-c", "user.name=T", "-c", "user.email=t@e", "commit", "-q", "-m", &format!("e{i}")], &dir).ok(), "commit edit");
+        assert!(
+            git(
+                &[
+                    "-c",
+                    "user.name=T",
+                    "-c",
+                    "user.email=t@e",
+                    "commit",
+                    "-q",
+                    "-m",
+                    &format!("e{i}")
+                ],
+                &dir
+            )
+            .ok(),
+            "commit edit"
+        );
     }
     let repack = git(&["repack", "-a", "-d", "-f", "--window=50", "-q"], &dir);
     assert!(repack.ok(), "{}", repack.dump("git repack"));
     // Confirm the pack actually contains deltas (otherwise the test is vacuous).
-    let idx = std::fs::read_dir(dir.join(".git/objects/pack")).unwrap()
-        .filter_map(|e| e.ok()).map(|e| e.path())
-        .find(|p| p.extension().is_some_and(|x| x == "idx")).unwrap();
+    let idx = std::fs::read_dir(dir.join(".git/objects/pack"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "idx"))
+        .unwrap();
     let vp = git(&["verify-pack", "-v", idx.to_str().unwrap()], &dir);
     assert!(
         vp.stdout.contains("chain length ="),
@@ -679,10 +909,21 @@ fn sha256_grit_reads_git_delta_pack() {
 
     // grit reads the latest delta-compressed blob and passes fsck.
     let cat = grit(&["cat-file", "-p", "HEAD:big.txt"], &dir);
-    assert!(cat.ok(), "grit could not read delta-compressed sha256 blob\n{}", cat.dump("grit cat-file"));
-    assert!(cat.stdout.contains("CHANGED5"), "grit read stale/wrong blob from delta pack");
+    assert!(
+        cat.ok(),
+        "grit could not read delta-compressed sha256 blob\n{}",
+        cat.dump("grit cat-file")
+    );
+    assert!(
+        cat.stdout.contains("CHANGED5"),
+        "grit read stale/wrong blob from delta pack"
+    );
     let fsck = grit(&["fsck"], &dir);
-    assert!(fsck.ok(), "grit fsck failed on git's delta sha256 pack\n{}", fsck.dump("grit fsck"));
+    assert!(
+        fsck.ok(),
+        "grit fsck failed on git's delta sha256 pack\n{}",
+        fsck.dump("grit fsck")
+    );
 }
 
 #[test]
@@ -691,24 +932,48 @@ fn sha256_reftable_reflog_roundtrip() {
     // reflog entries in a sha256 reftable repo must read back via grit.
     let dir = unique_tmp("reftable-reflog");
     assert!(
-        grit(&["init", "--object-format=sha256", "--ref-format=reftable", "."], &dir).ok(),
+        grit(
+            &[
+                "init",
+                "--object-format=sha256",
+                "--ref-format=reftable",
+                "."
+            ],
+            &dir
+        )
+        .ok(),
         "init"
     );
     for i in 1..=2 {
         write_file(&dir, "f.txt", &format!("c{i}\n"));
         assert!(grit(&["add", "f.txt"], &dir).ok(), "add");
-        assert!(grit(&["commit", "-m", &format!("c{i}")], &dir).ok(), "commit");
+        assert!(
+            grit(&["commit", "-m", &format!("c{i}")], &dir).ok(),
+            "commit"
+        );
     }
     let reflog = grit(&["reflog"], &dir);
-    assert!(reflog.ok(), "{}", reflog.dump("grit reflog (reftable sha256)"));
-    let lines: Vec<&str> = reflog.stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert!(
+        reflog.ok(),
+        "{}",
+        reflog.dump("grit reflog (reftable sha256)")
+    );
+    let lines: Vec<&str> = reflog
+        .stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
     assert_eq!(
         lines.len(),
         2,
         "sha256 reftable reflog did not round-trip both entries\n{}",
         reflog.dump("grit reflog")
     );
-    assert!(lines[0].contains("c2") && lines[1].contains("c1"), "reflog entries out of order/missing\n{}", reflog.dump("grit reflog"));
+    assert!(
+        lines[0].contains("c2") && lines[1].contains("c1"),
+        "reflog entries out of order/missing\n{}",
+        reflog.dump("grit reflog")
+    );
 }
 
 #[test]
@@ -716,7 +981,10 @@ fn sha256_diff_raw_modify_and_delete() {
     // Beyond the added-file case: a modified file shows two real 64-hex OIDs and
     // a deleted file shows a 64-zero new OID in `--raw --no-abbrev` output.
     let dir = unique_tmp("diff-md");
-    assert!(grit(&["init", "--object-format=sha256", "."], &dir).ok(), "init");
+    assert!(
+        grit(&["init", "--object-format=sha256", "."], &dir).ok(),
+        "init"
+    );
     write_file(&dir, "keep.txt", "v1\n");
     write_file(&dir, "gone.txt", "bye\n");
     assert!(grit(&["add", "keep.txt", "gone.txt"], &dir).ok(), "add");
@@ -727,13 +995,37 @@ fn sha256_diff_raw_modify_and_delete() {
 
     let diff = grit(&["diff", "--cached", "--raw", "--no-abbrev"], &dir);
     assert!(diff.ok(), "{}", diff.dump("grit diff --raw"));
-    let modline = diff.stdout.lines().find(|l| l.contains("keep.txt")).unwrap_or("");
+    let modline = diff
+        .stdout
+        .lines()
+        .find(|l| l.contains("keep.txt"))
+        .unwrap_or("");
     let mf: Vec<&str> = modline.trim_start_matches(':').split_whitespace().collect();
-    assert_eq!(mf.get(2).map(|s| s.len()), Some(64), "modified old oid not 64 hex: {modline:?}");
-    assert_eq!(mf.get(3).map(|s| s.len()), Some(64), "modified new oid not 64 hex: {modline:?}");
+    assert_eq!(
+        mf.get(2).map(|s| s.len()),
+        Some(64),
+        "modified old oid not 64 hex: {modline:?}"
+    );
+    assert_eq!(
+        mf.get(3).map(|s| s.len()),
+        Some(64),
+        "modified new oid not 64 hex: {modline:?}"
+    );
 
-    let delline = diff.stdout.lines().find(|l| l.contains("gone.txt")).unwrap_or("");
+    let delline = diff
+        .stdout
+        .lines()
+        .find(|l| l.contains("gone.txt"))
+        .unwrap_or("");
     let df: Vec<&str> = delline.trim_start_matches(':').split_whitespace().collect();
-    assert_eq!(df.get(3), Some(&"0".repeat(64).as_str()), "deleted new oid not 64 zeros: {delline:?}");
-    assert_eq!(df.get(2).map(|s| s.len()), Some(64), "deleted old oid not 64 hex: {delline:?}");
+    assert_eq!(
+        df.get(3),
+        Some(&"0".repeat(64).as_str()),
+        "deleted new oid not 64 zeros: {delline:?}"
+    );
+    assert_eq!(
+        df.get(2).map(|s| s.len()),
+        Some(64),
+        "deleted old oid not 64 hex: {delline:?}"
+    );
 }

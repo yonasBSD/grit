@@ -45,7 +45,8 @@ pub fn stage(repo: &Repository, selectors: &[String]) -> Result<usize> {
     let model = status(repo, &opts, &mut NullProgress).context("could not compute status")?;
     let mut index = repo.load_index().context("could not load the index")?;
 
-    let matches = |path: &str| selectors.is_empty() || selectors.iter().any(|s| path_matches(s, path));
+    let matches =
+        |path: &str| selectors.is_empty() || selectors.iter().any(|s| path_matches(s, path));
 
     let mut staged = 0;
     for entry in &model.unstaged {
@@ -86,8 +87,8 @@ fn stage_worktree_file(
     index: &mut Index,
 ) -> Result<()> {
     let abs = work_tree.join(rel_path);
-    let meta = std::fs::symlink_metadata(&abs)
-        .with_context(|| format!("could not read {rel_path}"))?;
+    let meta =
+        std::fs::symlink_metadata(&abs).with_context(|| format!("could not read {rel_path}"))?;
     let mode = mode_from_metadata(&meta);
 
     let data = if meta.file_type().is_symlink() {

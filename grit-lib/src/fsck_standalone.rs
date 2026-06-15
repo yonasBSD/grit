@@ -84,10 +84,7 @@ fn parse_oid_line(buf: &[u8], bad_sha1_id: &'static str) -> Result<usize, FsckEr
         )
     };
     // The hex width follows the repository hash (a `\n` terminates the id).
-    let hex_len = buf
-        .iter()
-        .position(|&b| b == b'\n')
-        .ok_or_else(bad)?;
+    let hex_len = buf.iter().position(|&b| b == b'\n').ok_or_else(bad)?;
     if !ObjectId::is_hex_len(hex_len) {
         return Err(bad());
     }

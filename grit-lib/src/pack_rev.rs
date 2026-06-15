@@ -216,7 +216,6 @@ pub fn pack_rev_fsck_messages(
     msgs
 }
 
-
 /// Verify a `.rev` file for `index-pack --rev-index --verify` (checksum first, like Git's
 /// `verify_pack_revindex`).
 pub fn verify_pack_rev_file_contents(

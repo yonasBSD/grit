@@ -93,8 +93,7 @@ fn prune_removes_unreachable_keeps_reachable() {
     }
 
     // Prune with the live ref tip as the only root, no grace window.
-    let stats =
-        prune_loose_unreachable(&odb, &[tip], None).expect("prune");
+    let stats = prune_loose_unreachable(&odb, &[tip], None).expect("prune");
 
     // The dangling blob must be gone; the reachable objects must remain.
     assert!(
@@ -138,8 +137,7 @@ fn prune_respects_grace_window() {
 
     // Cutoff in the past: the recent object is newer than the cutoff, so it is
     // kept even though unreachable.
-    let cutoff =
-        std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
     let stats = prune_loose_unreachable(&odb, &[tip], Some(cutoff)).expect("prune");
     assert!(
         odb.exists(&dangling),
@@ -148,8 +146,7 @@ fn prune_respects_grace_window() {
     assert_eq!(stats.pruned, 0, "nothing pruned within the grace window");
 
     // Cutoff in the future: now the object is older than the cutoff and pruned.
-    let cutoff =
-        std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+    let cutoff = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
     let stats = prune_loose_unreachable(&odb, &[tip], Some(cutoff)).expect("prune");
     assert!(
         !odb.exists(&dangling),
@@ -174,13 +171,16 @@ fn default_branch_is_main_for_normal_repo() {
 
     // A bare clone preserves HEAD -> main too.
     let bare = tmp.path().join("bare.git");
-    git(tmp.path(), &[
-        "clone",
-        "-q",
-        "--bare",
-        repo.to_str().unwrap(),
-        bare.to_str().unwrap(),
-    ]);
+    git(
+        tmp.path(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            repo.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    );
     let branch = remote_default_branch_local(&bare).expect("default branch bare");
     assert_eq!(branch.as_deref(), Some("main"));
 }
@@ -281,8 +281,7 @@ fn update_refs_cas_and_atomicity() {
         new_oid: Some(c2),
         expected_old: Some(c1),
     }];
-    update_refs(&git_dir, &absent_cas)
-        .expect_err("CAS on an absent ref must fail");
+    update_refs(&git_dir, &absent_cas).expect_err("CAS on an absent ref must fail");
     assert!(remote_ref(&git_dir, "refs/heads/never").is_none());
 
     let (ok, out) = git_try(&git_dir, &["fsck", "--strict"]);

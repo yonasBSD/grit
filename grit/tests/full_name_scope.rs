@@ -33,14 +33,15 @@ use std::path::{Path, PathBuf};
 fn build_test_repo(tag: &str) -> PathBuf {
     let dir = unique_tmp("full-name", tag);
 
-    git_cmd(&["init", "-q", "-b", "main", "."]).in_dir(&dir).suc();
+    git_cmd(&["init", "-q", "-b", "main", "."])
+        .in_dir(&dir)
+        .suc();
     write_file(&dir, "root", "root content\n");
     git_cmd(&["add", "root"]).in_dir(&dir).suc();
     git_cmd(&["commit", "-q", "-m", "root"]).in_dir(&dir).suc();
 
     let sub = dir.join("sub");
-    std::fs::create_dir_all(&sub)
-        .unwrap_or_else(|e| panic!("fixture: mkdir sub: {e}"));
+    std::fs::create_dir_all(&sub).unwrap_or_else(|e| panic!("fixture: mkdir sub: {e}"));
 
     write_file(&sub, "a", "a content\n");
     write_file(&sub, "b", "b content\n");
@@ -61,28 +62,33 @@ fn sub(dir: &Path) -> PathBuf {
 #[test]
 fn ls_files_full_name_from_subdir_no_pathspec() {
     let dir = build_test_repo("lsf-np");
-    grit_cmd(&["ls-files", "--full-name"]).in_dir(&sub(&dir)).check();
+    grit_cmd(&["ls-files", "--full-name"])
+        .in_dir(&sub(&dir))
+        .check();
 }
 
 #[test]
 fn ls_files_full_name_from_subdir_with_pathspec() {
     let dir = build_test_repo("lsf-ps");
     grit_cmd(&["ls-files", "--full-name", "--", "sub"])
-        .in_dir(&sub(&dir)).check();
+        .in_dir(&sub(&dir))
+        .check();
 }
 
 #[test]
 fn ls_tree_full_name_from_subdir_no_pathspec() {
     let dir = build_test_repo("lst-np");
     grit_cmd(&["ls-tree", "--full-name", "HEAD"])
-        .in_dir(&sub(&dir)).check();
+        .in_dir(&sub(&dir))
+        .check();
 }
 
 #[test]
 fn ls_tree_full_name_from_subdir_with_pathspec() {
     let dir = build_test_repo("lst-ps");
     grit_cmd(&["ls-tree", "--full-name", "HEAD", "--", "sub"])
-        .in_dir(&sub(&dir)).check();
+        .in_dir(&sub(&dir))
+        .check();
 }
 
 #[test]
@@ -92,8 +98,12 @@ fn ls_tree_full_name_is_not_full_tree() {
     let dir = build_test_repo("lst-nt");
     let s = sub(&dir);
 
-    let name = grit_cmd(&["ls-tree", "--full-name", "HEAD"]).in_dir(&s).suc();
-    let tree = grit_cmd(&["ls-tree", "--full-tree", "HEAD"]).in_dir(&s).suc();
+    let name = grit_cmd(&["ls-tree", "--full-name", "HEAD"])
+        .in_dir(&s)
+        .suc();
+    let tree = grit_cmd(&["ls-tree", "--full-tree", "HEAD"])
+        .in_dir(&s)
+        .suc();
 
     assert_ne!(
         name.stdout, tree.stdout,

@@ -1359,8 +1359,9 @@ pub fn read_midx_objects(objects_dir: &Path) -> Result<(Vec<String>, Vec<MidxObj
     }
     let mut objects = Vec::with_capacity(num);
     for i in 0..num {
-        let oid = ObjectId::from_bytes(&data[oidl_off + i * hash_len..oidl_off + (i + 1) * hash_len])
-            .map_err(|e| Error::CorruptObject(e.to_string()))?;
+        let oid =
+            ObjectId::from_bytes(&data[oidl_off + i * hash_len..oidl_off + (i + 1) * hash_len])
+                .map_err(|e| Error::CorruptObject(e.to_string()))?;
         let base = ooff_off + i * 8;
         let pack_id = read_be_u32(&data, base)? as usize;
         objects.push(MidxObjectRef {
@@ -1425,8 +1426,9 @@ pub fn format_midx_show_objects_layer(
         ));
     }
     for i in 0..num {
-        let oid = ObjectId::from_bytes(&data[oidl_off + i * hash_len..oidl_off + (i + 1) * hash_len])
-            .map_err(|e| Error::CorruptObject(e.to_string()))?;
+        let oid =
+            ObjectId::from_bytes(&data[oidl_off + i * hash_len..oidl_off + (i + 1) * hash_len])
+                .map_err(|e| Error::CorruptObject(e.to_string()))?;
         let base = ooff_off + i * 8;
         let pack_id = read_be_u32(&data, base)? as usize;
         let offset = u64::from(read_be_u32(&data, base + 4)?);
@@ -1805,7 +1807,8 @@ pub fn midx_oid_listed_in_tip(objects_dir: &Path, oid: &ObjectId) -> Result<Opti
 
     let mut i = lo as usize;
     while i < hi as usize && i < num_objects {
-        let o = ObjectId::from_bytes(&data[oidl_off + i * hash_len..oidl_off + (i + 1) * hash_len])?;
+        let o =
+            ObjectId::from_bytes(&data[oidl_off + i * hash_len..oidl_off + (i + 1) * hash_len])?;
         match o.cmp(oid) {
             std::cmp::Ordering::Equal => return Ok(Some(true)),
             std::cmp::Ordering::Greater => return Ok(Some(false)),
@@ -2116,7 +2119,8 @@ pub fn try_read_object_via_midx(
     let mut pos = None;
     let mut i = lo as usize;
     while i < hi as usize && i < num_objects {
-        let o = ObjectId::from_bytes(&data[oidl_off + i * hash_len..oidl_off + (i + 1) * hash_len])?;
+        let o =
+            ObjectId::from_bytes(&data[oidl_off + i * hash_len..oidl_off + (i + 1) * hash_len])?;
         let c = o.cmp(oid);
         if c == std::cmp::Ordering::Equal {
             pos = Some(i);
@@ -2408,7 +2412,11 @@ pub fn write_multi_pack_index_with_options(
     let pack_mtimes_layer: Vec<std::time::SystemTime> =
         indexes.iter().map(pack_mtime_for_midx).collect();
     let preferred_u32 = preferred_idx.map(|p| p as u32);
-    let select_hash_len = if repo_midx_hash_version(pack_dir) == 2 { 32 } else { 20 };
+    let select_hash_len = if repo_midx_hash_version(pack_dir) == 2 {
+        32
+    } else {
+        20
+    };
 
     let mut best: HashMap<ObjectId, MidxEntry> = HashMap::new();
     for (pack_id, idx) in indexes.iter().enumerate() {
@@ -2468,7 +2476,11 @@ pub fn write_multi_pack_index_with_options(
         exclude,
     )?;
 
-    let hash_len = if repo_midx_hash_version(pack_dir) == 2 { 32 } else { 20 };
+    let hash_len = if repo_midx_hash_version(pack_dir) == 2 {
+        32
+    } else {
+        20
+    };
     let hash = &out[out.len() - hash_len..];
     let hash_hex = hex::encode(hash);
     let hash_arr: Vec<u8> = hash.to_vec();
@@ -2746,7 +2758,11 @@ pub fn compact_multi_pack_index(
         exclude,
     )?;
 
-    let hash_len = if repo_midx_hash_version(pack_dir) == 2 { 32 } else { 20 };
+    let hash_len = if repo_midx_hash_version(pack_dir) == 2 {
+        32
+    } else {
+        20
+    };
     let hash = &out[out.len() - hash_len..];
     let hash_hex = hex::encode(hash);
     let hash_arr: Vec<u8> = hash.to_vec();

@@ -56,8 +56,8 @@ use grit_lib::objects::ObjectId;
 use grit_lib::odb::Odb;
 use grit_lib::refs::resolve_ref;
 use grit_lib::transfer::{FetchOptions, FetchOutcome, TagMode, UpdateMode};
-use grit_lib::transport::http::ureq_client::UreqHttpClient;
 use grit_lib::transport::http::http_fetch;
+use grit_lib::transport::http::ureq_client::UreqHttpClient;
 use grit_lib::transport::{ConnectOptions, GitDaemonTransport, Service, SshTransport, Transport};
 
 // ---------------------------------------------------------------------------
@@ -277,13 +277,7 @@ fn daemon_driver(protocol: u8) -> Driver {
             let served = base.join("repo.git");
             // `git clone --bare` of a bare repo reproduces it cleanly.
             let st = Command::new("git")
-                .args([
-                    "clone",
-                    "-q",
-                    "--bare",
-                    source.to_str()?,
-                    served.to_str()?,
-                ])
+                .args(["clone", "-q", "--bare", source.to_str()?, served.to_str()?])
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_CONFIG_SYSTEM", "/dev/null")
                 .status()
@@ -390,13 +384,7 @@ fn http_driver(protocol: u8) -> Option<Driver> {
             std::fs::create_dir_all(&root).ok()?;
             let served = root.join("repo.git");
             let st = Command::new("git")
-                .args([
-                    "clone",
-                    "-q",
-                    "--bare",
-                    source.to_str()?,
-                    served.to_str()?,
-                ])
+                .args(["clone", "-q", "--bare", source.to_str()?, served.to_str()?])
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_CONFIG_SYSTEM", "/dev/null")
                 .status()
@@ -520,7 +508,10 @@ fn for_each_driver(
     for (i, driver) in h.drivers().into_iter().enumerate() {
         // A fresh source per driver keeps drivers independent (prune/incremental
         // tests mutate the served copy).
-        let src = h.make_source(&format!("src-{}-{i}", driver.name.replace('/', "-")), build_source);
+        let src = h.make_source(
+            &format!("src-{}-{i}", driver.name.replace('/', "-")),
+            build_source,
+        );
         let Some((handle, url)) = (driver.serve)(&src) else {
             eprintln!("SKIP driver {}: server bring-up failed", driver.name);
             continue;
@@ -546,9 +537,8 @@ fn for_each_driver(
             .trim_end_matches(".git");
         let local_root = h.path().join(format!("local-{src_tag}"));
         let local_git = init_local(&local_root);
-        let fetch = |opts_local_git: &Path, opts: &FetchOptions| {
-            (driver.fetch)(&url, opts_local_git, opts)
-        };
+        let fetch =
+            |opts_local_git: &Path, opts: &FetchOptions| (driver.fetch)(&url, opts_local_git, opts);
         // Bind the closure to this driver's local_git so `body` stays terse.
         let bound = |lg: &Path, opts: &FetchOptions| fetch(lg, opts);
         body(&driver, &bound, &served, &local_git);
@@ -631,7 +621,10 @@ fn matrix_wildcard_refspec_all_heads() {
             fsck_clean(local_git.parent().unwrap());
         },
     );
-    assert!(ran > 0, "no transport driver was available for the wildcard test");
+    assert!(
+        ran > 0,
+        "no transport driver was available for the wildcard test"
+    );
 }
 
 // ===========================================================================
@@ -674,7 +667,10 @@ fn matrix_exact_refspec_single_head() {
             fsck_clean(local_git.parent().unwrap());
         },
     );
-    assert!(ran > 0, "no transport driver was available for the exact-refspec test");
+    assert!(
+        ran > 0,
+        "no transport driver was available for the exact-refspec test"
+    );
 }
 
 // ===========================================================================
@@ -721,7 +717,10 @@ fn matrix_negative_refspec_excludes_head() {
             fsck_clean(local_git.parent().unwrap());
         },
     );
-    assert!(ran > 0, "no transport driver was available for the negative-refspec test");
+    assert!(
+        ran > 0,
+        "no transport driver was available for the negative-refspec test"
+    );
 }
 
 // ===========================================================================
@@ -799,7 +798,10 @@ fn matrix_tag_modes_all_following_none() {
             fsck_clean(local_git.parent().unwrap());
         },
     );
-    assert!(ran2 > 0, "no transport driver was available for tags=Following");
+    assert!(
+        ran2 > 0,
+        "no transport driver was available for tags=Following"
+    );
 
     let ran3 = for_each_driver(
         &h,
@@ -881,8 +883,11 @@ fn matrix_prune_vanished_wildcard_ref() {
             );
             // The prune is reported.
             assert!(
-                outcome.updates.iter().any(|u| u.mode == UpdateMode::DeletedMissing
-                    && u.local_ref.as_deref() == Some("refs/remotes/origin/topic")),
+                outcome
+                    .updates
+                    .iter()
+                    .any(|u| u.mode == UpdateMode::DeletedMissing
+                        && u.local_ref.as_deref() == Some("refs/remotes/origin/topic")),
                 "[{}] prune must report a DeletedMissing for origin/topic; got {:?}",
                 driver.name,
                 outcome.updates
@@ -890,7 +895,10 @@ fn matrix_prune_vanished_wildcard_ref() {
             fsck_clean(local_git.parent().unwrap());
         },
     );
-    assert!(ran > 0, "no transport driver was available for wildcard prune");
+    assert!(
+        ran > 0,
+        "no transport driver was available for wildcard prune"
+    );
 }
 
 // ===========================================================================
@@ -929,17 +937,19 @@ fn matrix_prune_vanished_exact_ref() {
                 tags: TagMode::None,
                 ..Default::default()
             };
-            let outcome = fetch(local_git, &prune_exact).unwrap_or_else(|e| {
-                panic!("[{}] exact pruning fetch failed: {e}", driver.name)
-            });
+            let outcome = fetch(local_git, &prune_exact)
+                .unwrap_or_else(|e| panic!("[{}] exact pruning fetch failed: {e}", driver.name));
             assert!(
                 resolve_ref(local_git, "refs/remotes/origin/topic").is_err(),
                 "[{}] exact-refspec prune must remove origin/topic",
                 driver.name
             );
             assert!(
-                outcome.updates.iter().any(|u| u.mode == UpdateMode::DeletedMissing
-                    && u.local_ref.as_deref() == Some("refs/remotes/origin/topic")),
+                outcome
+                    .updates
+                    .iter()
+                    .any(|u| u.mode == UpdateMode::DeletedMissing
+                        && u.local_ref.as_deref() == Some("refs/remotes/origin/topic")),
                 "[{}] exact prune must report DeletedMissing for origin/topic; got {:?}",
                 driver.name,
                 outcome.updates
@@ -967,65 +977,64 @@ fn matrix_prune_before_update_df_conflict() {
         // A branch literally named `feature` (becomes the stale FILE ref).
         git(w, &["branch", "feature"]);
     };
-    let ran = for_each_driver(
-        &h,
-        &build,
-        &|driver, fetch, served, local_git| {
-            let wildcard = FetchOptions {
-                refspecs: vec!["+refs/heads/*:refs/remotes/origin/*".to_owned()],
-                tags: TagMode::None,
-                ..Default::default()
-            };
-            // 1. Fetch -> origin/feature exists as a loose FILE.
-            fetch(local_git, &wildcard)
-                .unwrap_or_else(|e| panic!("[{}] initial DF fetch failed: {e}", driver.name));
-            assert!(
-                local_git.join("refs/remotes/origin/feature").is_file(),
-                "[{}] origin/feature must be a loose ref file before the conflict",
+    let ran = for_each_driver(&h, &build, &|driver, fetch, served, local_git| {
+        let wildcard = FetchOptions {
+            refspecs: vec!["+refs/heads/*:refs/remotes/origin/*".to_owned()],
+            tags: TagMode::None,
+            ..Default::default()
+        };
+        // 1. Fetch -> origin/feature exists as a loose FILE.
+        fetch(local_git, &wildcard)
+            .unwrap_or_else(|e| panic!("[{}] initial DF fetch failed: {e}", driver.name));
+        assert!(
+            local_git.join("refs/remotes/origin/feature").is_file(),
+            "[{}] origin/feature must be a loose ref file before the conflict",
+            driver.name
+        );
+
+        // 2. On the remote, delete `feature` and create `feature/sub` (needs a
+        //    `feature/` DIRECTORY on the local tracking side).
+        git(served, &["branch", "-D", "feature"]);
+        git(served, &["branch", "feature/sub", "refs/heads/main"]);
+        let sub_oid = rev_parse(served, "refs/heads/feature/sub");
+
+        // 3. Prune-enabled fetch: prune `origin/feature` first, then write
+        //    `origin/feature/sub`. Both must succeed.
+        let pruning = FetchOptions {
+            refspecs: vec!["+refs/heads/*:refs/remotes/origin/*".to_owned()],
+            prune: true,
+            tags: TagMode::None,
+            ..Default::default()
+        };
+        fetch(local_git, &pruning).unwrap_or_else(|e| {
+            panic!(
+                "[{}] prune-before-update D/F fetch failed (D/F conflict not resolved?): {e}",
                 driver.name
-            );
+            )
+        });
 
-            // 2. On the remote, delete `feature` and create `feature/sub` (needs a
-            //    `feature/` DIRECTORY on the local tracking side).
-            git(served, &["branch", "-D", "feature"]);
-            git(served, &["branch", "feature/sub", "refs/heads/main"]);
-            let sub_oid = rev_parse(served, "refs/heads/feature/sub");
-
-            // 3. Prune-enabled fetch: prune `origin/feature` first, then write
-            //    `origin/feature/sub`. Both must succeed.
-            let pruning = FetchOptions {
-                refspecs: vec!["+refs/heads/*:refs/remotes/origin/*".to_owned()],
-                prune: true,
-                tags: TagMode::None,
-                ..Default::default()
-            };
-            fetch(local_git, &pruning).unwrap_or_else(|e| {
+        assert!(
+            resolve_ref(local_git, "refs/remotes/origin/feature").is_err(),
+            "[{}] stale origin/feature ref must be pruned",
+            driver.name
+        );
+        assert_eq!(
+            resolve_ref(local_git, "refs/remotes/origin/feature/sub").unwrap_or_else(|_| {
                 panic!(
-                    "[{}] prune-before-update D/F fetch failed (D/F conflict not resolved?): {e}",
+                    "[{}] origin/feature/sub must be written after the prune cleared the D/F",
                     driver.name
                 )
-            });
-
-            assert!(
-                resolve_ref(local_git, "refs/remotes/origin/feature").is_err(),
-                "[{}] stale origin/feature ref must be pruned",
-                driver.name
-            );
-            assert_eq!(
-                resolve_ref(local_git, "refs/remotes/origin/feature/sub").unwrap_or_else(|_| {
-                    panic!(
-                        "[{}] origin/feature/sub must be written after the prune cleared the D/F",
-                        driver.name
-                    )
-                }),
-                sub_oid,
-                "[{}] feature/sub oid",
-                driver.name
-            );
-            fsck_clean(local_git.parent().unwrap());
-        },
+            }),
+            sub_oid,
+            "[{}] feature/sub oid",
+            driver.name
+        );
+        fsck_clean(local_git.parent().unwrap());
+    });
+    assert!(
+        ran > 0,
+        "no transport driver was available for the D/F conflict test"
     );
-    assert!(ran > 0, "no transport driver was available for the D/F conflict test");
 }
 
 // ===========================================================================
@@ -1040,34 +1049,36 @@ fn matrix_empty_unborn_remote() {
         git(w, &["init", "-q", "-b", "main", "."]);
         // No commits; HEAD is unborn. bare_clone will mirror this empty repo.
     };
-    let ran = for_each_driver(
-        &h,
-        &build,
-        &|driver, fetch, _served, local_git| {
-            let opts = FetchOptions {
-                refspecs: vec!["+refs/heads/*:refs/remotes/origin/*".to_owned()],
-                tags: TagMode::All,
-                ..Default::default()
-            };
-            let outcome = fetch(local_git, &opts).unwrap_or_else(|e| {
-                panic!("[{}] empty-remote fetch failed (should be a clean no-op): {e}", driver.name)
-            });
-            assert!(
-                outcome.updates.iter().all(|u| u.new_oid.is_none()),
-                "[{}] unborn remote must yield no ref creations; got {:?}",
-                driver.name,
-                outcome.updates
-            );
-            assert!(
-                resolve_ref(local_git, "refs/remotes/origin/main").is_err(),
-                "[{}] no tracking ref should be written for an unborn remote",
+    let ran = for_each_driver(&h, &build, &|driver, fetch, _served, local_git| {
+        let opts = FetchOptions {
+            refspecs: vec!["+refs/heads/*:refs/remotes/origin/*".to_owned()],
+            tags: TagMode::All,
+            ..Default::default()
+        };
+        let outcome = fetch(local_git, &opts).unwrap_or_else(|e| {
+            panic!(
+                "[{}] empty-remote fetch failed (should be a clean no-op): {e}",
                 driver.name
-            );
-            // The local repo is still valid.
-            fsck_clean(local_git.parent().unwrap());
-        },
+            )
+        });
+        assert!(
+            outcome.updates.iter().all(|u| u.new_oid.is_none()),
+            "[{}] unborn remote must yield no ref creations; got {:?}",
+            driver.name,
+            outcome.updates
+        );
+        assert!(
+            resolve_ref(local_git, "refs/remotes/origin/main").is_err(),
+            "[{}] no tracking ref should be written for an unborn remote",
+            driver.name
+        );
+        // The local repo is still valid.
+        fsck_clean(local_git.parent().unwrap());
+    });
+    assert!(
+        ran > 0,
+        "no transport driver was available for the empty-remote test"
     );
-    assert!(ran > 0, "no transport driver was available for the empty-remote test");
 }
 
 // ===========================================================================
@@ -1105,7 +1116,9 @@ fn matrix_incremental_shared_history() {
             // 2. New commit on the remote's topic branch.
             //    (Operate on the served bare repo via a temp worktree-less commit:
             //    create a commit object on top of topic and move the ref.)
-            let work2 = h.path().join(format!("inc-work-{}", driver.name.replace('/', "-")));
+            let work2 = h
+                .path()
+                .join(format!("inc-work-{}", driver.name.replace('/', "-")));
             git_clone_nonbare(served, &work2);
             git(&work2, &["checkout", "-q", "-B", "topic", "origin/topic"]);
             std::fs::write(work2.join("c.txt"), "three\n").unwrap();
@@ -1124,8 +1137,10 @@ fn matrix_incremental_shared_history() {
             fetch(local_git, &inc)
                 .unwrap_or_else(|e| panic!("[{}] incremental fetch failed: {e}", driver.name));
 
-            let got_topic = resolve_ref(local_git, "refs/remotes/origin/topic")
-                .unwrap_or_else(|_| panic!("[{}] origin/topic missing after incremental", driver.name));
+            let got_topic =
+                resolve_ref(local_git, "refs/remotes/origin/topic").unwrap_or_else(|_| {
+                    panic!("[{}] origin/topic missing after incremental", driver.name)
+                });
             assert_eq!(
                 got_topic, topic_new,
                 "[{}] incremental must advance origin/topic to the new tip",
@@ -1141,7 +1156,9 @@ fn matrix_incremental_shared_history() {
             // The pre-existing shared main commit is still there (not re-fetched
             // away); cross-check it equals git's view.
             assert_eq!(
-                resolve_ref(local_git, "refs/remotes/origin/main").unwrap().to_hex(),
+                resolve_ref(local_git, "refs/remotes/origin/main")
+                    .unwrap()
+                    .to_hex(),
                 git(served, &["rev-parse", "refs/heads/main"]).trim(),
                 "[{}] shared main unchanged after incremental",
                 driver.name
@@ -1149,7 +1166,10 @@ fn matrix_incremental_shared_history() {
             fsck_clean(local_root);
         },
     );
-    assert!(ran > 0, "no transport driver was available for the incremental test");
+    assert!(
+        ran > 0,
+        "no transport driver was available for the incremental test"
+    );
 }
 
 /// Clone `bare` into a non-bare work tree `dst` with an `origin` remote, so a
@@ -1203,7 +1223,9 @@ fn matrix_head_symref_nondefault_branch() {
             );
             // Sanity: topic landed and equals git's view.
             assert_eq!(
-                resolve_ref(local_git, "refs/remotes/origin/topic").unwrap().to_hex(),
+                resolve_ref(local_git, "refs/remotes/origin/topic")
+                    .unwrap()
+                    .to_hex(),
                 git(served, &["rev-parse", "refs/heads/topic"]).trim(),
                 "[{}] topic tip",
                 driver.name
@@ -1211,7 +1233,10 @@ fn matrix_head_symref_nondefault_branch() {
             fsck_clean(local_git.parent().unwrap());
         },
     );
-    assert!(ran > 0, "no transport driver was available for the HEAD-symref test");
+    assert!(
+        ran > 0,
+        "no transport driver was available for the HEAD-symref test"
+    );
 }
 
 /// Like [`for_each_driver`] but runs `tweak_served` against the freshly served

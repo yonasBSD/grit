@@ -121,8 +121,11 @@ impl Credential {
             _ => {
                 if key.ends_with("[]") {
                     self.extra.push((key.to_string(), value.to_string()));
-                } else if let Some(slot) =
-                    self.extra.iter_mut().find(|(k, _)| k == key).map(|(_, v)| v)
+                } else if let Some(slot) = self
+                    .extra
+                    .iter_mut()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, v)| v)
                 {
                     *slot = value.to_string();
                 } else {
@@ -560,7 +563,9 @@ fn invoke_helper(helper: &str, action: &str, creds: &Credential) -> Result<Crede
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| {
-                Error::Message(format!("failed to run credential helper shell '{helper}': {e}"))
+                Error::Message(format!(
+                    "failed to run credential helper shell '{helper}': {e}"
+                ))
             })?
     } else if matches!(
         first_word,
@@ -584,17 +589,19 @@ fn invoke_helper(helper: &str, action: &str, creds: &Credential) -> Result<Crede
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| {
-                Error::Message(format!("failed to run built-in credential helper '{subcmd}': {e}"))
+                Error::Message(format!(
+                    "failed to run built-in credential helper '{subcmd}': {e}"
+                ))
             })?
     } else {
-        let helper_program = if first_word.contains('/') || first_word.starts_with("git-credential-")
-        {
-            // Already a path or fully-qualified helper binary; use verbatim.
-            first_word.to_string()
-        } else {
-            // Bare helper name (e.g. `osxkeychain`) -> `git-credential-osxkeychain`.
-            format!("git-credential-{first_word}")
-        };
+        let helper_program =
+            if first_word.contains('/') || first_word.starts_with("git-credential-") {
+                // Already a path or fully-qualified helper binary; use verbatim.
+                first_word.to_string()
+            } else {
+                // Bare helper name (e.g. `osxkeychain`) -> `git-credential-osxkeychain`.
+                format!("git-credential-{first_word}")
+            };
         let resolved = resolve_credential_helper_executable(&helper_program);
         let mut cmd = Command::new(&resolved);
         for arg in extra_args {
@@ -606,7 +613,9 @@ fn invoke_helper(helper: &str, action: &str, creds: &Credential) -> Result<Crede
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| {
-                Error::Message(format!("failed to run credential helper '{helper_program}': {e}"))
+                Error::Message(format!(
+                    "failed to run credential helper '{helper_program}': {e}"
+                ))
             })?
     };
 
@@ -728,7 +737,10 @@ pub mod windows_store {
 
     /// Encode a string as a NUL-terminated UTF-16 buffer for the wide Win32 API.
     fn wide(s: &str) -> Vec<u16> {
-        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 
     /// Read a NUL-terminated wide string from a (possibly null) pointer.
@@ -849,7 +861,8 @@ mod tests {
 
     #[test]
     fn parse_round_trips_named_fields() {
-        let input = "protocol=https\nhost=example.com\nusername=alice\npassword=secret\n\nignored=x\n";
+        let input =
+            "protocol=https\nhost=example.com\nusername=alice\npassword=secret\n\nignored=x\n";
         let cred = Credential::parse(input);
         assert_eq!(cred.protocol.as_deref(), Some("https"));
         assert_eq!(cred.host.as_deref(), Some("example.com"));
@@ -868,7 +881,10 @@ mod tests {
             password: Some("p".into()),
             ..Default::default()
         };
-        assert_eq!(cred.serialize(), "protocol=https\nhost=h\nusername=u\npassword=p\n");
+        assert_eq!(
+            cred.serialize(),
+            "protocol=https\nhost=h\nusername=u\npassword=p\n"
+        );
     }
 
     #[test]
@@ -879,6 +895,9 @@ mod tests {
             path: Some("o/r.git".into()),
             ..Default::default()
         };
-        assert_eq!(cred.target_url().as_deref(), Some("https://github.com/o/r.git"));
+        assert_eq!(
+            cred.target_url().as_deref(),
+            Some("https://github.com/o/r.git")
+        );
     }
 }

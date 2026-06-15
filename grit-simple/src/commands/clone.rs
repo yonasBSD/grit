@@ -30,13 +30,16 @@ pub fn run(url: &str, dir: Option<String>) -> Result<()> {
     let repo = init_repository(&path, false, "main", None, "files")
         .with_context(|| format!("could not initialize '{dir}'"))?;
 
-    set_config(&repo, &[
-        ("remote.origin.url", url.to_owned()),
-        (
-            "remote.origin.fetch",
-            "+refs/heads/*:refs/remotes/origin/*".to_owned(),
-        ),
-    ])?;
+    set_config(
+        &repo,
+        &[
+            ("remote.origin.url", url.to_owned()),
+            (
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*".to_owned(),
+            ),
+        ],
+    )?;
 
     let config = ConfigSet::load(Some(&repo.git_dir), true).context("could not load config")?;
     let refspecs = net::fetch_refspecs(&config, net::DEFAULT_REMOTE);
@@ -57,13 +60,16 @@ pub fn run(url: &str, dir: Option<String>) -> Result<()> {
     let branch_ref = format!("refs/heads/{default}");
     refs::write_ref(&repo.git_dir, &branch_ref, &oid).context("could not create local branch")?;
     refs::write_symbolic_ref(&repo.git_dir, "HEAD", &branch_ref).context("could not set HEAD")?;
-    set_config(&repo, &[
-        (&format!("branch.{default}.remote"), "origin".to_owned()),
-        (
-            &format!("branch.{default}.merge"),
-            format!("refs/heads/{default}"),
-        ),
-    ])?;
+    set_config(
+        &repo,
+        &[
+            (&format!("branch.{default}.remote"), "origin".to_owned()),
+            (
+                &format!("branch.{default}.merge"),
+                format!("refs/heads/{default}"),
+            ),
+        ],
+    )?;
 
     let tree = context::commit_tree(&repo, &oid)?;
     checkout_between_trees(&repo, None, &tree).context("could not check out files")?;
@@ -89,7 +95,9 @@ fn set_config(repo: &Repository, entries: &[(&str, String)]) -> Result<()> {
     for (key, value) in entries {
         config.set(key, value)?;
     }
-    config.write().context("could not write repository config")?;
+    config
+        .write()
+        .context("could not write repository config")?;
     Ok(())
 }
 

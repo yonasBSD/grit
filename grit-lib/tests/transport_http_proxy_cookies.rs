@@ -37,8 +37,8 @@ use grit_lib::fetch::NoProgress;
 use grit_lib::objects::ObjectId;
 use grit_lib::refs::resolve_ref;
 use grit_lib::transfer::{FetchOptions, TagMode};
-use grit_lib::transport::http::ureq_client::UreqHttpClient;
 use grit_lib::transport::http::http_fetch;
+use grit_lib::transport::http::ureq_client::UreqHttpClient;
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -173,10 +173,7 @@ fn setup(log_headers: Option<&Path>, set_cookie: Option<&str>) -> Option<Fixture
     let root = tmp.path().join("srv");
     std::fs::create_dir_all(&root).ok()?;
     let source = root.join("repo.git");
-    git(
-        &work,
-        &["clone", "-q", "--bare", ".", source.to_str()?],
-    );
+    git(&work, &["clone", "-q", "--bare", ".", source.to_str()?]);
     git(&source, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     let main_oid = rev_parse(&source, "refs/heads/main");
 
@@ -255,8 +252,14 @@ fn cookie_file_sends_cookie_header_to_server() {
         .unwrap();
     let client = UreqHttpClient::from_config(&cfg).expect("from_config");
 
-    let outcome = http_fetch(&client, &fx.local_git, &fx.url, &fetch_opts(), &mut NoProgress)
-        .expect("http_fetch with cookie file");
+    let outcome = http_fetch(
+        &client,
+        &fx.local_git,
+        &fx.url,
+        &fetch_opts(),
+        &mut NoProgress,
+    )
+    .expect("http_fetch with cookie file");
     // The fetch really happened (ref landed) — so the headers we logged are from a
     // genuine smart-HTTP exchange, not a no-op.
     assert!(
@@ -271,7 +274,9 @@ fn cookie_file_sends_cookie_header_to_server() {
 
     let logged = read_logged_headers(&log_path);
     assert!(
-        logged.to_lowercase().contains("cookie: session=wiretoken123"),
+        logged
+            .to_lowercase()
+            .contains("cookie: session=wiretoken123"),
         "server did not receive the configured Cookie header; log was:\n{logged}"
     );
 }
@@ -291,11 +296,18 @@ fn save_cookies_persists_set_cookie_to_file() {
     let mut cfg = ConfigSet::new();
     cfg.add_command_override("http.cookieFile", cookie_file.to_str().unwrap())
         .unwrap();
-    cfg.add_command_override("http.saveCookies", "true").unwrap();
+    cfg.add_command_override("http.saveCookies", "true")
+        .unwrap();
     let client = UreqHttpClient::from_config(&cfg).expect("from_config");
 
-    http_fetch(&client, &fx.local_git, &fx.url, &fetch_opts(), &mut NoProgress)
-        .expect("http_fetch with saveCookies");
+    http_fetch(
+        &client,
+        &fx.local_git,
+        &fx.url,
+        &fetch_opts(),
+        &mut NoProgress,
+    )
+    .expect("http_fetch with saveCookies");
 
     let jar = std::fs::read_to_string(&cookie_file).unwrap_or_default();
     assert!(
@@ -319,8 +331,14 @@ fn extra_header_reaches_server() {
         .unwrap();
     let client = UreqHttpClient::from_config(&cfg).expect("from_config");
 
-    http_fetch(&client, &fx.local_git, &fx.url, &fetch_opts(), &mut NoProgress)
-        .expect("http_fetch with extraHeader");
+    http_fetch(
+        &client,
+        &fx.local_git,
+        &fx.url,
+        &fetch_opts(),
+        &mut NoProgress,
+    )
+    .expect("http_fetch with extraHeader");
 
     let logged = read_logged_headers(&log_path);
     assert!(
@@ -420,7 +438,13 @@ fn http_proxy_routes_fetch_through_proxy() {
         .unwrap();
     let client = UreqHttpClient::from_config(&cfg).expect("from_config with proxy");
 
-    let outcome = match http_fetch(&client, &fx.local_git, &fx.url, &fetch_opts(), &mut NoProgress) {
+    let outcome = match http_fetch(
+        &client,
+        &fx.local_git,
+        &fx.url,
+        &fetch_opts(),
+        &mut NoProgress,
+    ) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("SKIP: proxied fetch failed (proxy/ureq incompatibility): {e}");

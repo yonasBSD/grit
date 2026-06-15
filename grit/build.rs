@@ -60,7 +60,11 @@ fn try_generate(script: &Path, dst: &Path) -> bool {
             return false;
         }
     };
-    match Command::new("python3").arg(script).stdout(out_file).status() {
+    match Command::new("python3")
+        .arg(script)
+        .stdout(out_file)
+        .status()
+    {
         Ok(status) if status.success() => true,
         Ok(status) => {
             println!(

@@ -47,7 +47,8 @@ fn add_tip_accepts_annotated_tag() {
     let mut neg = SkippingNegotiator::new(repo);
 
     // Both entry points previously panicked the fetch on a tag tip.
-    neg.add_tip(tag).expect("add_tip must accept an annotated tag");
+    neg.add_tip(tag)
+        .expect("add_tip must accept an annotated tag");
     neg.known_common(tag)
         .expect("known_common must accept an annotated tag");
 
@@ -59,5 +60,6 @@ fn add_tip_accepts_annotated_tag() {
     // skipped rather than erroring.
     let mut neg = SkippingNegotiator::new(Repository::open(&tmp.path(), None).expect("open"));
     neg.add_tip(commit).expect("commit tip ok");
-    neg.add_tip(tree).expect("tree tip must be skipped, not error");
+    neg.add_tip(tree)
+        .expect("tree tip must be skipped, not error");
 }

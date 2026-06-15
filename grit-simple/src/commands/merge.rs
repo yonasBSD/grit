@@ -34,7 +34,11 @@ pub fn run(branch: &str) -> Result<()> {
     }
 
     let (refname, head_oid) = match resolve_head(&repo.git_dir)? {
-        HeadState::Branch { refname, oid: Some(oid), .. } => (refname, oid),
+        HeadState::Branch {
+            refname,
+            oid: Some(oid),
+            ..
+        } => (refname, oid),
         HeadState::Branch { .. } => bail!("no commits yet on this branch"),
         HeadState::Detached { .. } => bail!("HEAD is detached; gs merge needs a branch"),
         HeadState::Invalid => bail!("HEAD is in an unknown state"),
@@ -64,7 +68,13 @@ pub fn integrate(
     if is_ancestor(repo, into_oid, other_oid)? {
         checkout_between_trees(repo, Some(&into_tree), &other_tree)
             .context("could not update the working tree")?;
-        move_branch(repo, into_ref, into_oid, other_oid, &format!("merge {label}: fast-forward"))?;
+        move_branch(
+            repo,
+            into_ref,
+            into_oid,
+            other_oid,
+            &format!("merge {label}: fast-forward"),
+        )?;
         println!("Fast-forwarded {label} → {}", short_oid(&other_oid));
         return Ok(());
     }
@@ -100,8 +110,8 @@ pub fn integrate(
         );
     }
 
-    let merged_tree =
-        write_tree_from_index(&repo.odb, &merged.index, "").context("could not write merged tree")?;
+    let merged_tree = write_tree_from_index(&repo.odb, &merged.index, "")
+        .context("could not write merged tree")?;
     checkout_between_trees(repo, Some(&into_tree), &merged_tree)
         .context("could not update the working tree")?;
 
@@ -127,7 +137,10 @@ pub fn integrate(
         .context("could not store merge commit")?;
 
     move_branch(repo, into_ref, into_oid, oid, &format!("merge {label}"))?;
-    println!("Merged {label} into the current branch ({})", short_oid(&oid));
+    println!(
+        "Merged {label} into the current branch ({})",
+        short_oid(&oid)
+    );
     Ok(())
 }
 

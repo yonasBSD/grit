@@ -43,7 +43,9 @@ impl PathProtection {
     pub fn from_config(config: &ConfigSet) -> Self {
         let protect_hfs = config
             .get("core.protectHFS")
-            .map_or(cfg!(target_os = "macos"), |v| v.eq_ignore_ascii_case("true"));
+            .map_or(cfg!(target_os = "macos"), |v| {
+                v.eq_ignore_ascii_case("true")
+            });
         let protect_ntfs = config
             .get("core.protectNTFS")
             .is_none_or(|v| v.eq_ignore_ascii_case("true"));

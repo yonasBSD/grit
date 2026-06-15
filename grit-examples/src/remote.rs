@@ -195,7 +195,11 @@ fn ssh_command() -> String {
     std::env::var("GIT_SSH_COMMAND")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .or_else(|| std::env::var("GIT_SSH").ok().filter(|v| !v.trim().is_empty()))
+        .or_else(|| {
+            std::env::var("GIT_SSH")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })
         .unwrap_or_else(|| "ssh".to_owned())
 }
 
@@ -283,7 +287,9 @@ pub fn push(
             let mut conn = SshTransport::new().connect(&remote.url, Service::ReceivePack, &v0)?;
             push_remote(git_dir, &mut *conn, refs, opts, &mut NoProgress)?
         }
-        RemoteKind::Local => transfer::push_local(git_dir, &local_git_dir(&remote.url), refs, opts)?,
+        RemoteKind::Local => {
+            transfer::push_local(git_dir, &local_git_dir(&remote.url), refs, opts)?
+        }
     };
     Ok(outcome)
 }

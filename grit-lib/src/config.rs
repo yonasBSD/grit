@@ -1873,7 +1873,9 @@ impl ConfigSet {
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::path::PathBuf::from("/etc/gitconfig"));
             match ConfigFile::from_path(&system_path, ConfigScope::System) {
-                Ok(Some(f)) => Self::merge_with_includes_collect(&mut set, &f, proc, 0, &ctx, included_files)?,
+                Ok(Some(f)) => {
+                    Self::merge_with_includes_collect(&mut set, &f, proc, 0, &ctx, included_files)?
+                }
                 Ok(None) => {}
                 Err(e) => return Err(e),
             }
@@ -1882,7 +1884,9 @@ impl ConfigSet {
         // Global config (Git merges every existing file: XDG then ~/.gitconfig).
         for path in global_config_paths() {
             match ConfigFile::from_path(&path, ConfigScope::Global) {
-                Ok(Some(f)) => Self::merge_with_includes_collect(&mut set, &f, proc, 0, &ctx, included_files)?,
+                Ok(Some(f)) => {
+                    Self::merge_with_includes_collect(&mut set, &f, proc, 0, &ctx, included_files)?
+                }
                 Ok(None) => {}
                 Err(e) => return Err(e),
             }
@@ -1893,7 +1897,9 @@ impl ConfigSet {
             let common_dir = crate::repo::common_git_dir_for_config(gd);
             let local_path = common_dir.join("config");
             match ConfigFile::from_path(&local_path, ConfigScope::Local) {
-                Ok(Some(f)) => Self::merge_with_includes_collect(&mut set, &f, proc, 0, &ctx, included_files)?,
+                Ok(Some(f)) => {
+                    Self::merge_with_includes_collect(&mut set, &f, proc, 0, &ctx, included_files)?
+                }
                 Ok(None) => {}
                 Err(e) => return Err(e),
             }
@@ -1903,7 +1909,14 @@ impl ConfigSet {
             let wt_path = gd.join("config.worktree");
             if crate::repo::worktree_config_enabled(&common_dir) {
                 match ConfigFile::from_path(&wt_path, ConfigScope::Worktree) {
-                    Ok(Some(f)) => Self::merge_with_includes_collect(&mut set, &f, proc, 0, &ctx, included_files)?,
+                    Ok(Some(f)) => Self::merge_with_includes_collect(
+                        &mut set,
+                        &f,
+                        proc,
+                        0,
+                        &ctx,
+                        included_files,
+                    )?,
                     Ok(None) => {}
                     Err(e) => return Err(e),
                 }
@@ -1915,7 +1928,14 @@ impl ConfigSet {
             match ConfigFile::from_path(Path::new(&path), ConfigScope::Command) {
                 Ok(Some(f)) => {
                     if proc {
-                        Self::merge_with_includes_collect(&mut set, &f, proc, 0, &ctx, included_files)?;
+                        Self::merge_with_includes_collect(
+                            &mut set,
+                            &f,
+                            proc,
+                            0,
+                            &ctx,
+                            included_files,
+                        )?;
                     } else {
                         set.merge(&f);
                     }
@@ -1932,7 +1952,14 @@ impl ConfigSet {
             if proc && opts.command_includes && !params.trim().is_empty() {
                 let pseudo = Path::new(":GIT_CONFIG_PARAMETERS");
                 let cmd_file = ConfigFile::from_git_config_parameters(pseudo, &params)?;
-                Self::merge_with_includes_collect(&mut set, &cmd_file, proc, 0, &ctx, included_files)?;
+                Self::merge_with_includes_collect(
+                    &mut set,
+                    &cmd_file,
+                    proc,
+                    0,
+                    &ctx,
+                    included_files,
+                )?;
             } else if !params.trim().is_empty() {
                 for entry in parse_config_parameters(&params) {
                     if let Some((key, val)) =
@@ -2304,7 +2331,10 @@ fn config_env_fingerprint() -> Option<Vec<(String, Option<String>)>> {
         match count_str.parse::<usize>() {
             Ok(n) if n <= MAX_TRACKED => {
                 for i in 0..n {
-                    for var in [format!("GIT_CONFIG_KEY_{i}"), format!("GIT_CONFIG_VALUE_{i}")] {
+                    for var in [
+                        format!("GIT_CONFIG_KEY_{i}"),
+                        format!("GIT_CONFIG_VALUE_{i}"),
+                    ] {
                         let val = std::env::var(&var).ok();
                         fp.push((var, val));
                     }
@@ -4046,8 +4076,11 @@ mod config_cache_tests {
             "[includeIf \"onbranch:main\"]\n\tpath = branch.conf\n",
         )
         .expect("write config");
-        fs::write(gd.join("branch.conf"), "[gritcachetest]\n\tvalue = onmain\n")
-            .expect("write branch config");
+        fs::write(
+            gd.join("branch.conf"),
+            "[gritcachetest]\n\tvalue = onmain\n",
+        )
+        .expect("write branch config");
         assert_eq!(load_value(gd).as_deref(), Some("onmain"));
 
         // Switching branches rewrites HEAD; the stamped HEAD must invalidate

@@ -837,8 +837,14 @@ mod tests {
         let spec = parse_cookie_spec(line).expect("parse");
         let http = url::Url::parse("http://example.com/").unwrap();
         let https = url::Url::parse("https://example.com/").unwrap();
-        assert!(!spec.matches_url(Some(&http)), "secure cookie must skip http");
-        assert!(spec.matches_url(Some(&https)), "secure cookie matches https");
+        assert!(
+            !spec.matches_url(Some(&http)),
+            "secure cookie must skip http"
+        );
+        assert!(
+            spec.matches_url(Some(&https)),
+            "secure cookie matches https"
+        );
     }
 
     #[test]

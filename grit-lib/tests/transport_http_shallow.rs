@@ -31,8 +31,8 @@ use grit_lib::fetch::NoProgress;
 use grit_lib::objects::ObjectId;
 use grit_lib::odb::Odb;
 use grit_lib::transfer::FetchOptions;
-use grit_lib::transport::http::ureq_client::UreqHttpClient;
 use grit_lib::transport::http::http_fetch;
+use grit_lib::transport::http::ureq_client::UreqHttpClient;
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -168,7 +168,13 @@ fn shallow_depth1_then_unshallow_over_smart_http_v1() {
     let source = root.join("repo.git");
     git(
         &work,
-        &["clone", "-q", "--bare", ".", source.to_str().expect("utf8 path")],
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            ".",
+            source.to_str().expect("utf8 path"),
+        ],
     );
     git(&source, &["symbolic-ref", "HEAD", "refs/heads/main"]);
 
@@ -215,7 +221,10 @@ fn shallow_depth1_then_unshallow_over_smart_http_v1() {
     };
 
     let local_odb = open_odb(&local_git);
-    assert!(local_odb.exists(&tip), "tip present after depth=1 http fetch");
+    assert!(
+        local_odb.exists(&tip),
+        "tip present after depth=1 http fetch"
+    );
     assert!(
         !local_odb.exists(&parent),
         "parent {} must be ABSENT after depth=1 (shallow boundary)",
@@ -229,7 +238,11 @@ fn shallow_depth1_then_unshallow_over_smart_http_v1() {
     assert!(
         outcome.new_shallow.contains(&tip),
         "outcome.new_shallow must contain the tip boundary; got {:?}",
-        outcome.new_shallow.iter().map(ObjectId::to_hex).collect::<Vec<_>>()
+        outcome
+            .new_shallow
+            .iter()
+            .map(ObjectId::to_hex)
+            .collect::<Vec<_>>()
     );
 
     let log = git(&local, &["log", "--format=%H", "refs/remotes/origin/main"]);
@@ -295,7 +308,11 @@ fn shallow_depth1_then_unshallow_over_smart_http_v1() {
     assert!(
         outcome.new_unshallow.contains(&tip),
         "unshallow fetch must report the tip as no-longer-shallow; got {:?}",
-        outcome.new_unshallow.iter().map(ObjectId::to_hex).collect::<Vec<_>>()
+        outcome
+            .new_unshallow
+            .iter()
+            .map(ObjectId::to_hex)
+            .collect::<Vec<_>>()
     );
 
     let log = git(&local, &["log", "--format=%H", "refs/remotes/origin/main"]);

@@ -43,7 +43,10 @@ fn rev_parse(dir: &Path, rev: &str) -> ObjectId {
 /// Header object count from a PACK v2 byte stream.
 fn pack_header_count(bytes: &[u8]) -> u32 {
     assert_eq!(&bytes[0..4], b"PACK", "must start with PACK magic");
-    assert_eq!(u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]), 2);
+    assert_eq!(
+        u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+        2
+    );
     u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]])
 }
 
@@ -149,7 +152,12 @@ fn build_pack_with_empty_haves_packs_full_closure() {
         map.len(),
         "header count must match resolved object count"
     );
-    assert_eq!(map.len(), 6, "full closure of C2 is 6 objects, got {}", map.len());
+    assert_eq!(
+        map.len(),
+        6,
+        "full closure of C2 is 6 objects, got {}",
+        map.len()
+    );
 
     // Every object from both commits must be present.
     for oid in fx.c1_objects.iter().chain(fx.c2_new_objects.iter()) {
@@ -181,7 +189,9 @@ fn build_delta_fixture() -> DeltaFixture {
     // size-sorted prefix/window selector will deltify them.
     let mut body = String::new();
     for i in 0..4000 {
-        body.push_str(&format!("line {i:05} lorem ipsum dolor sit amet consectetur\n"));
+        body.push_str(&format!(
+            "line {i:05} lorem ipsum dolor sit amet consectetur\n"
+        ));
     }
 
     let mut tips = Vec::new();
@@ -528,12 +538,7 @@ fn git_pack_objects_size(repo: &Path, tips: &[ObjectId]) -> usize {
 
     let mut child = Command::new("git")
         .current_dir(repo)
-        .args([
-            "pack-objects",
-            "--stdout",
-            "--revs",
-            "--delta-base-offset",
-        ])
+        .args(["pack-objects", "--stdout", "--revs", "--delta-base-offset"])
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .stdin(Stdio::piped())
@@ -870,18 +875,17 @@ fn pack_delta_edges_resolved(pack: &[u8], odb: &Odb) -> Vec<(ObjectId, ObjectId)
             }
             EdgeBase::Ref(oid) => {
                 // In-pack base if present; else external (thin) base from odb.
-                let (base_content, base_type) =
-                    if let Ok(obj) = odb.read(oid) {
-                        let tc = match obj.kind {
-                            grit_lib::objects::ObjectKind::Commit => 1,
-                            grit_lib::objects::ObjectKind::Tree => 2,
-                            grit_lib::objects::ObjectKind::Blob => 3,
-                            grit_lib::objects::ObjectKind::Tag => 4,
-                        };
-                        (obj.data, tc)
-                    } else {
-                        (Vec::new(), 3)
+                let (base_content, base_type) = if let Ok(obj) = odb.read(oid) {
+                    let tc = match obj.kind {
+                        grit_lib::objects::ObjectKind::Commit => 1,
+                        grit_lib::objects::ObjectKind::Tree => 2,
+                        grit_lib::objects::ObjectKind::Blob => 3,
+                        grit_lib::objects::ObjectKind::Tag => 4,
                     };
+                    (obj.data, tc)
+                } else {
+                    (Vec::new(), 3)
+                };
                 (apply_delta(&base_content, &payload), base_type)
             }
         };
@@ -1003,7 +1007,18 @@ fn reuse_deltas_produces_valid_pack() {
     let fx = build_delta_fixture();
     let dir = fx.dir.path();
     // Force git to create on-disk deltas to reuse.
-    git(dir, &["repack", "-q", "-a", "-d", "-f", "--window=10", "--depth=50"]);
+    git(
+        dir,
+        &[
+            "repack",
+            "-q",
+            "-a",
+            "-d",
+            "-f",
+            "--window=10",
+            "--depth=50",
+        ],
+    );
 
     let odb = open_odb(dir);
     let tip = *fx.tips.last().unwrap();

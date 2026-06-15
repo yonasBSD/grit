@@ -35,8 +35,14 @@ pub fn run(remote: Option<String>) -> Result<()> {
             continue;
         };
         updated += 1;
-        let from = update.old_oid.as_ref().map_or_else(|| "new".to_owned(), short_oid);
-        let to = update.new_oid.as_ref().map_or_else(|| "deleted".to_owned(), short_oid);
+        let from = update
+            .old_oid
+            .as_ref()
+            .map_or_else(|| "new".to_owned(), short_oid);
+        let to = update
+            .new_oid
+            .as_ref()
+            .map_or_else(|| "deleted".to_owned(), short_oid);
         println!("  {local}  {from} → {to}");
     }
 

@@ -623,8 +623,12 @@ fn read_bundle_list_from_http(
     };
     // Re-base onto a redirected `info/refs` location so the bundle-uri POST
     // targets the right host (shared with the fetch path via grit-lib).
-    let (body, base) =
-        crate::http_smart::http_get_discovery_with_base(client, &refs_url, original_base, Some("version=2"))?;
+    let (body, base) = crate::http_smart::http_get_discovery_with_base(
+        client,
+        &refs_url,
+        original_base,
+        Some("version=2"),
+    )?;
     let pkt_body = strip_v0_service_advertisement_if_present(&body)?;
     let mut cur = Cursor::new(pkt_body);
     let first = match pkt_line::read_packet(&mut cur)? {

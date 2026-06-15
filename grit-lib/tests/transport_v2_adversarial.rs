@@ -38,7 +38,7 @@ use grit_lib::fetch::{fetch_remote, NoProgress};
 use grit_lib::objects::ObjectId;
 use grit_lib::refs::resolve_ref;
 use grit_lib::transfer::{FetchOptions, TagMode};
-use grit_lib::transport::{Connection, ConnectOptions, GitDaemonTransport, Service, Transport};
+use grit_lib::transport::{ConnectOptions, Connection, GitDaemonTransport, Service, Transport};
 
 /// A [`Connection`] decorator that tees every byte the server sends into a shared
 /// buffer, so a test can inspect the raw server->client stream after the fetch —
@@ -139,12 +139,7 @@ fn pack_object_count(stream: &[u8]) -> Option<u32> {
     if p + 12 > stream.len() {
         return None;
     }
-    let cnt = u32::from_be_bytes([
-        stream[p + 8],
-        stream[p + 9],
-        stream[p + 10],
-        stream[p + 11],
-    ]);
+    let cnt = u32::from_be_bytes([stream[p + 8], stream[p + 9], stream[p + 10], stream[p + 11]]);
     Some(cnt)
 }
 
@@ -325,10 +320,7 @@ impl Server {
 
 /// Force-kill a process by pid (the unborn-remote watchdog). Best-effort.
 fn kill_pid(pid: u32) {
-    let _ = Command::new("kill")
-        .arg("-9")
-        .arg(pid.to_string())
-        .status();
+    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
 }
 
 fn start_server_with(build: impl FnOnce(&Path, &Path)) -> Option<Server> {
@@ -455,7 +447,10 @@ fn v2_incremental_offers_haves_and_pack_is_minimal() {
         // Deepen main past the 16-have initial-flush window so a multi-round
         // exchange is forced.
         for i in 0..25 {
-            git(work, &["commit", "-q", "--allow-empty", "-m", &format!("d{i}")]);
+            git(
+                work,
+                &["commit", "-q", "--allow-empty", "-m", &format!("d{i}")],
+            );
         }
         git(
             work,
@@ -880,7 +875,10 @@ fn v2_sha256_fetch_lands_refs_and_objects() {
 
     let Some(srv) = start_server_with(|work, source| {
         // Build the SOURCE as a sha256 repo.
-        git(work, &["init", "-q", "--object-format=sha256", "-b", "main", "."]);
+        git(
+            work,
+            &["init", "-q", "--object-format=sha256", "-b", "main", "."],
+        );
         std::fs::write(work.join("a.txt"), "one\n").unwrap();
         git(work, &["add", "a.txt"]);
         git(work, &["commit", "-q", "-m", "c1"]);
@@ -914,7 +912,10 @@ fn v2_sha256_fetch_lands_refs_and_objects() {
     let local = tmp.path().join("local");
     std::fs::create_dir_all(&local).unwrap();
     // The LOCAL repo must also be sha256 so its odb hash_algo() matches.
-    git(&local, &["init", "-q", "--object-format=sha256", "-b", "main", "."]);
+    git(
+        &local,
+        &["init", "-q", "--object-format=sha256", "-b", "main", "."],
+    );
     let local_git = local.join(".git");
 
     let transport = GitDaemonTransport::new();

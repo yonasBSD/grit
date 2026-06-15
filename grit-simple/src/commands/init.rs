@@ -11,7 +11,11 @@ pub fn run(path: Option<String>, bare: bool) -> Result<()> {
     let repo = init_repository(&path, bare, "main", None, "files")
         .with_context(|| format!("could not initialize a repository at {}", path.display()))?;
 
-    let kind = if bare { "bare repository" } else { "repository" };
+    let kind = if bare {
+        "bare repository"
+    } else {
+        "repository"
+    };
     println!("Initialized empty {kind} in {}", repo.git_dir.display());
     Ok(())
 }

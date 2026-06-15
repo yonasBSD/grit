@@ -37,8 +37,8 @@ use grit_lib::push::push_http;
 use grit_lib::push_report::PushRefStatus;
 use grit_lib::refs::resolve_ref;
 use grit_lib::transfer::{FetchOptions, PushOptions, PushRefSpec, TagMode};
-use grit_lib::transport::http::ureq_client::UreqHttpClient;
 use grit_lib::transport::http::http_fetch;
+use grit_lib::transport::http::ureq_client::UreqHttpClient;
 
 const USER: &str = "alice";
 const PASS: &str = "s3cr3t";
@@ -223,7 +223,13 @@ fn mirror_bare(work: &Path, root: &Path, name: &str) -> PathBuf {
     let bare = root.join(name);
     git(
         work,
-        &["clone", "-q", "--bare", ".", bare.to_str().expect("utf8 path")],
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            ".",
+            bare.to_str().expect("utf8 path"),
+        ],
     );
     git(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     bare
@@ -316,7 +322,11 @@ fn fetch_over_authed_http_succeeds_with_right_credentials_and_fails_typed_otherw
             "expected a typed Error::Auth for wrong credentials, got: {err:?}"
         );
         // We filled once and, on the 401 retry, rejected the bad credential.
-        assert_eq!(provider.0.fills.load(Ordering::SeqCst), 1, "fill should run once");
+        assert_eq!(
+            provider.0.fills.load(Ordering::SeqCst),
+            1,
+            "fill should run once"
+        );
         assert_eq!(
             provider.0.rejects.load(Ordering::SeqCst),
             1,

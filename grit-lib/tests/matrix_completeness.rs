@@ -57,7 +57,7 @@ use grit_lib::refs::resolve_ref;
 use grit_lib::transfer::{FetchOptions, PushOptions, PushRefSpec, TagMode};
 use grit_lib::transport::http::HttpClient;
 use grit_lib::transport::{
-    read_advertisement, Connection, ConnectOptions, GitDaemonTransport, Service, SshTransport,
+    read_advertisement, ConnectOptions, Connection, GitDaemonTransport, Service, SshTransport,
     Transport,
 };
 
@@ -139,7 +139,11 @@ fn wait_ready(port: u16) -> bool {
 /// Run `f` on a helper thread and fail the test if it does not finish within
 /// `secs` — proving the code under test returned (typed error) rather than hung.
 /// `f` must be `Send` and own everything it touches.
-fn with_watchdog<T: Send + 'static>(secs: u64, what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+fn with_watchdog<T: Send + 'static>(
+    secs: u64,
+    what: &str,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
         let _ = tx.send(f());
@@ -149,7 +153,9 @@ fn with_watchdog<T: Send + 'static>(secs: u64, what: &str, f: impl FnOnce() -> T
             let _ = handle.join();
             v
         }
-        Err(_) => panic!("{what}: did not return within {secs}s (it hung instead of erroring typed)"),
+        Err(_) => {
+            panic!("{what}: did not return within {secs}s (it hung instead of erroring typed)")
+        }
     }
 }
 
@@ -652,14 +658,22 @@ fn streaming_transports_reject_malformed_urls_typed() {
     // Not a git:// URL at all.
     assert!(
         daemon
-            .connect("https://example.com/repo.git", Service::UploadPack, &ConnectOptions::default())
+            .connect(
+                "https://example.com/repo.git",
+                Service::UploadPack,
+                &ConnectOptions::default()
+            )
             .is_err(),
         "git daemon transport must reject a non-git:// URL"
     );
     // git:// with no repository path.
     assert!(
         daemon
-            .connect("git://example.com", Service::UploadPack, &ConnectOptions::default())
+            .connect(
+                "git://example.com",
+                Service::UploadPack,
+                &ConnectOptions::default()
+            )
             .is_err(),
         "git daemon transport must reject a git:// URL with no path"
     );
@@ -714,7 +728,13 @@ fn shallow_depth1_with_all_tags_over_git_daemon() {
     std::fs::create_dir_all(&base).unwrap();
     let served = base.join("repo.git");
     let st = Command::new("git")
-        .args(["clone", "-q", "--bare", work.to_str().unwrap(), served.to_str().unwrap()])
+        .args([
+            "clone",
+            "-q",
+            "--bare",
+            work.to_str().unwrap(),
+            served.to_str().unwrap(),
+        ])
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .status()
@@ -793,7 +813,10 @@ fn shallow_depth1_with_all_tags_over_git_daemon() {
     // The annotated tag came along (TagMode::All + include-tag), and points at the
     // same object system git resolves it to.
     let landed_tag = resolve_ref(&local_git, "refs/tags/v1").expect("tag v1 must be fetched");
-    assert_eq!(landed_tag, tag, "the annotated tag must land with the shallow fetch");
+    assert_eq!(
+        landed_tag, tag,
+        "the annotated tag must land with the shallow fetch"
+    );
 
     let local_odb = open_odb(&local_git);
     assert!(local_odb.exists(&tip), "tip object must be present");

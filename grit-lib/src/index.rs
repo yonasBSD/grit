@@ -991,7 +991,9 @@ impl Index {
                 resolve_undo = Some(resolve_undo::parse_resolve_undo_payload(ext_data)?);
             } else if sig == INDEX_EXT_LINK {
                 let ext_data = &body[pos..pos + ext_sz];
-                split_link = Some(crate::split_index::parse_link_extension(ext_data, hash_algo)?);
+                split_link = Some(crate::split_index::parse_link_extension(
+                    ext_data, hash_algo,
+                )?);
             } else if sig == INDEX_EXT_CACHE_TREE {
                 let ext_data = &body[pos..pos + ext_sz];
                 cache_tree = parse_cache_tree(ext_data, hash_len);
@@ -2045,9 +2047,7 @@ fn detect_index_hash_algo(data: &[u8]) -> HashAlgo {
     let sha256_len = HashAlgo::Sha256.len();
     if data.len() > sha256_len + 12 {
         let (body, checksum) = data.split_at(data.len() - sha256_len);
-        if checksum.iter().any(|&b| b != 0)
-            && hash_index_body(HashAlgo::Sha256, body) == checksum
-        {
+        if checksum.iter().any(|&b| b != 0) && hash_index_body(HashAlgo::Sha256, body) == checksum {
             return HashAlgo::Sha256;
         }
     }

@@ -149,7 +149,13 @@ fn shallow_depth1_over_daemon(protocol_version: u8) {
     let source = base.join("repo.git");
     git(
         &work,
-        &["clone", "-q", "--bare", ".", source.to_str().expect("utf8 path")],
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            ".",
+            source.to_str().expect("utf8 path"),
+        ],
     );
     git(&source, &["symbolic-ref", "HEAD", "refs/heads/main"]);
 
@@ -225,7 +231,11 @@ fn shallow_depth1_over_daemon(protocol_version: u8) {
     assert!(
         outcome.new_shallow.contains(&tip),
         "FetchOutcome.new_shallow must contain the tip boundary; got {:?}",
-        outcome.new_shallow.iter().map(ObjectId::to_hex).collect::<Vec<_>>()
+        outcome
+            .new_shallow
+            .iter()
+            .map(ObjectId::to_hex)
+            .collect::<Vec<_>>()
     );
     assert!(
         outcome.new_unshallow.is_empty(),
@@ -311,7 +321,13 @@ fn shallow_then_unshallow_over_git_daemon_v2() {
     let source = base.join("repo.git");
     git(
         &work,
-        &["clone", "-q", "--bare", ".", source.to_str().expect("utf8 path")],
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            ".",
+            source.to_str().expect("utf8 path"),
+        ],
     );
     git(&source, &["symbolic-ref", "HEAD", "refs/heads/main"]);
 
@@ -413,7 +429,10 @@ fn shallow_then_unshallow_over_git_daemon_v2() {
     // `git log` now shows all four commits.
     let log = git(&local, &["log", "--format=%H", "refs/remotes/origin/main"]);
     let count = log.lines().filter(|l| !l.is_empty()).count();
-    assert_eq!(count, 4, "full history (4 commits) after --unshallow; got {count}");
+    assert_eq!(
+        count, 4,
+        "full history (4 commits) after --unshallow; got {count}"
+    );
 
     let fsck = Command::new("git")
         .current_dir(&local)

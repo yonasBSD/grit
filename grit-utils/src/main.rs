@@ -334,7 +334,12 @@ fn walkdir_inner(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
 
 // ── Benchmarks ───────────────────────────────────────────────────────
 
-fn bench_status(git: &Path, grit: &Path, sizes: &[usize], iterations: usize) -> Result<BenchResult> {
+fn bench_status(
+    git: &Path,
+    grit: &Path,
+    sizes: &[usize],
+    iterations: usize,
+) -> Result<BenchResult> {
     let mut points = Vec::new();
 
     for &size in sizes {
@@ -361,12 +366,18 @@ fn bench_status(git: &Path, grit: &Path, sizes: &[usize], iterations: usize) -> 
 
     Ok(BenchResult {
         name: "status".into(),
-        description: "git/grit status --porcelain on a dirty worktree (~10% modified, ~5% untracked)".into(),
+        description:
+            "git/grit status --porcelain on a dirty worktree (~10% modified, ~5% untracked)".into(),
         points,
     })
 }
 
-fn bench_status_clean(git: &Path, grit: &Path, sizes: &[usize], iterations: usize) -> Result<BenchResult> {
+fn bench_status_clean(
+    git: &Path,
+    grit: &Path,
+    sizes: &[usize],
+    iterations: usize,
+) -> Result<BenchResult> {
     let mut points = Vec::new();
 
     for &size in sizes {
@@ -720,8 +731,9 @@ fn main() -> Result<()> {
     let rendered = match cli.format {
         OutputFormat::Text => render_text(&report),
         OutputFormat::Html => render_html(&report),
-        OutputFormat::Json => serde_json::to_string_pretty(&report)
-            .context("failed to serialize JSON")?,
+        OutputFormat::Json => {
+            serde_json::to_string_pretty(&report).context("failed to serialize JSON")?
+        }
     };
 
     if let Some(path) = &cli.output {
