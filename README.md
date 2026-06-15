@@ -38,6 +38,25 @@ There are builds for Mac and Linux, (aarch64 and x86_64 for both). Linux ships b
 
 To update your version of Grit CLI, you can run `grit update` and it will re-run the install script.
 
+## Shell completions
+
+`grit completions <shell>` prints a completion script for `bash`, `zsh`, `fish`, `elvish`, or `powershell`. The script completes subcommands (with descriptions), per-command options, and nested subcommands like `grit config get`.
+
+For **fish**, drop it where fish auto-loads completions:
+
+```sh
+$ grit completions fish > ~/.config/fish/completions/grit.fish
+```
+
+Other shells:
+
+```sh
+# bash — install into your bash-completion directory
+$ grit completions bash > ~/.local/share/bash-completion/completions/grit
+# zsh — put it on your $fpath, e.g. ~/.zfunc/_grit, then run `compinit`
+$ grit completions zsh > ~/.zfunc/_grit
+```
+
 ## Rust Crates
 
 | Crate                                           | Description                                                                                     |

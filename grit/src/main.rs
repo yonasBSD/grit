@@ -4010,6 +4010,12 @@ fn run() -> Result<()> {
         }
     }
 
+    // `grit completions <shell>` is grit-specific (not a Git built-in); handle it
+    // before alias resolution so it cannot be shadowed by a user alias.
+    if subcmd == "completions" {
+        return commands::completions::run(&rest);
+    }
+
     // Handle --git-completion-helper / --git-completion-helper-all
     if let Some(pos) = rest
         .iter()

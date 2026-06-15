@@ -30,6 +30,7 @@ pub mod column;
 pub mod commit;
 pub mod commit_graph;
 pub mod commit_tree;
+pub mod completions;
 pub mod config;
 pub mod count_objects;
 pub mod credential;
