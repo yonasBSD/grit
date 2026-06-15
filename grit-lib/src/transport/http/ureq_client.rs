@@ -48,7 +48,7 @@ use std::time::Duration;
 use base64::Engine;
 
 use crate::config::{self, ConfigSet};
-use crate::credentials::{Credential, CredentialProvider};
+use crate::credentials::{self, Credential, CredentialProvider};
 use crate::error::{Error, Result};
 
 use super::HttpClient;
@@ -79,6 +79,8 @@ pub struct UreqHttpClient {
     save_cookies: bool,
     /// Configured `http.extraHeader` rules (optionally URL-scoped).
     extra_headers: Vec<ExtraHeaderRule>,
+    /// Merged Git config used for credential URL matching.
+    credential_config: ConfigSet,
 }
 
 impl UreqHttpClient {
@@ -99,6 +101,7 @@ impl UreqHttpClient {
             cookie_file_path: None,
             save_cookies: false,
             extra_headers: Vec::new(),
+            credential_config: ConfigSet::default(),
         }
     }
 
@@ -142,6 +145,7 @@ impl UreqHttpClient {
 
         // Extra headers (`http.extraHeader`, optionally URL-scoped).
         client.extra_headers = extra_header_rules_from_config(config);
+        client.credential_config = config.clone();
 
         Ok(client)
     }
@@ -335,8 +339,13 @@ fn build_proxy(config: &ConfigSet) -> Result<Option<ureq::Proxy>> {
     Ok(Some(proxy))
 }
 
-/// Decompose a request URL into a target [`Credential`] (protocol/host/path).
-fn credential_for_url(url: &str) -> Option<Credential> {
+/// Decompose a request URL into a target [`Credential`].
+///
+/// Git omits the path from HTTP credentials unless `credential.useHttpPath`
+/// applies. That lets a host-level token stored for `https://github.com` satisfy
+/// requests to any repository on that host, which is how helpers such as macOS
+/// `osxkeychain` are normally populated.
+fn credential_for_url(url: &str, config: &ConfigSet) -> Option<Credential> {
     let parsed = url::Url::parse(url).ok()?;
     let protocol = parsed.scheme().to_string();
     let host = parsed.host_str()?.to_string();
@@ -345,11 +354,13 @@ fn credential_for_url(url: &str) -> Option<Credential> {
     } else {
         host
     };
-    let path = parsed.path().trim_start_matches('/').to_string();
+    let path = credentials::use_http_path(config, Some(url))
+        .then(|| parsed.path().trim_start_matches('/').to_string())
+        .filter(|path| !path.is_empty());
     Some(Credential {
         protocol: Some(protocol),
         host: Some(host),
-        path: if path.is_empty() { None } else { Some(path) },
+        path,
         url: Some(url.to_string()),
         ..Default::default()
     })
@@ -453,7 +464,7 @@ impl UreqHttpClient {
                 first.www_authenticate
             )));
         }
-        let Some(input) = credential_for_url(url) else {
+        let Some(input) = credential_for_url(url, &self.credential_config) else {
             return Err(Error::Auth(format!(
                 "{url}: server requires authentication (401) but the URL could not be decomposed into credential fields"
             )));
@@ -947,5 +958,53 @@ mod tests {
         cfg.add_command_override("http.proxy", "").unwrap();
         let proxy = build_proxy(&cfg).expect("empty proxy ok");
         assert!(proxy.is_none(), "empty http.proxy must disable proxying");
+    }
+
+    #[test]
+    fn credentials_omit_http_path_by_default() {
+        let cfg = ConfigSet::new();
+        let cred = credential_for_url(
+            "https://github.com/owner/repo.git/info/refs?service=git-upload-pack",
+            &cfg,
+        )
+        .expect("credential target");
+
+        assert_eq!(cred.protocol.as_deref(), Some("https"));
+        assert_eq!(cred.host.as_deref(), Some("github.com"));
+        assert_eq!(cred.path, None);
+    }
+
+    #[test]
+    fn credentials_include_http_path_when_configured() {
+        let mut cfg = ConfigSet::new();
+        cfg.add_command_override("credential.useHttpPath", "true")
+            .unwrap();
+        let cred = credential_for_url(
+            "https://github.com/owner/repo.git/info/refs?service=git-upload-pack",
+            &cfg,
+        )
+        .expect("credential target");
+
+        assert_eq!(cred.path.as_deref(), Some("owner/repo.git/info/refs"));
+    }
+
+    #[test]
+    fn credentials_include_http_path_when_url_scoped() {
+        let mut cfg = ConfigSet::new();
+        cfg.add_command_override("credential.https://github.com/owner.useHttpPath", "true")
+            .unwrap();
+        let matching = credential_for_url(
+            "https://github.com/owner/repo.git/info/refs?service=git-upload-pack",
+            &cfg,
+        )
+        .expect("credential target");
+        let other = credential_for_url(
+            "https://github.com/elsewhere/repo.git/info/refs?service=git-upload-pack",
+            &cfg,
+        )
+        .expect("credential target");
+
+        assert_eq!(matching.path.as_deref(), Some("owner/repo.git/info/refs"));
+        assert_eq!(other.path, None);
     }
 }
