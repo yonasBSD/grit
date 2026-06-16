@@ -5,8 +5,9 @@ use grit_lib::objects::ObjectId;
 use grit_lib::state::{resolve_head, HeadState};
 use serde::Serialize;
 
-use crate::context;
+use crate::context::{self, CommitSummary};
 use crate::output::{CommitJson, HumanRender};
+use crate::ui;
 
 /// Result of `gs shortlog`.
 #[derive(Serialize)]
@@ -16,6 +17,8 @@ pub struct ShortlogOutcome {
     pub target: Option<String>,
     pub ahead: usize,
     pub commits: Vec<CommitJson>,
+    #[serde(skip)]
+    commit_rows: Vec<CommitSummary>,
 }
 
 impl HumanRender for ShortlogOutcome {
@@ -31,14 +34,10 @@ impl HumanRender for ShortlogOutcome {
             self.ahead,
             if self.ahead == 1 { "" } else { "s" }
         );
-        for commit in &self.commits {
-            println!("{} {}", short_hex(&commit.oid), commit.subject);
+        for row in ui::commit_rows(&self.commit_rows) {
+            println!("{row}");
         }
     }
-}
-
-fn short_hex(oid: &str) -> &str {
-    oid.get(..7).unwrap_or(oid)
 }
 
 pub fn run() -> Result<ShortlogOutcome> {
@@ -52,15 +51,17 @@ pub fn run() -> Result<ShortlogOutcome> {
             target: None,
             ahead: 0,
             commits: Vec::new(),
+            commit_rows: Vec::new(),
         });
     };
 
-    let commits = context::commits_ahead_of(&repo, head_oid, target.oid)?;
+    let ahead = context::commits_ahead_of(&repo, head_oid, target.oid)?;
     Ok(ShortlogOutcome {
         branch: branch_name.to_owned(),
         target: Some(target.display_name),
-        ahead: commits.len(),
-        commits: commits.iter().map(CommitJson::from_summary).collect(),
+        ahead: ahead.len(),
+        commits: ahead.iter().map(CommitJson::from_summary).collect(),
+        commit_rows: ahead,
     })
 }
 

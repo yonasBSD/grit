@@ -7,8 +7,9 @@ use anyhow::{Context, Result};
 use grit_lib::rev_list::{rev_list, RevListOptions};
 use serde::Serialize;
 
-use crate::context::{self, subject_line};
+use crate::context::{self, subject_line, CommitSummary};
 use crate::output::{CommitJson, HumanRender};
+use crate::ui;
 
 /// How many commits to show per page.
 const PAGE: usize = 10;
@@ -20,6 +21,8 @@ pub struct LogOutcome {
     /// Full oid to resume from (`gs log --before=<next>`), or `null` when there
     /// is no further history.
     pub next: Option<String>,
+    #[serde(skip)]
+    commit_rows: Vec<CommitSummary>,
 }
 
 impl HumanRender for LogOutcome {
@@ -28,8 +31,8 @@ impl HumanRender for LogOutcome {
             println!("No commits yet.");
             return;
         }
-        for commit in &self.commits {
-            println!("{}  {}", short_hex(&commit.oid), commit.subject);
+        for row in ui::commit_rows(&self.commit_rows) {
+            println!("{row}");
         }
         if let Some(next) = &self.next {
             println!();
@@ -55,20 +58,31 @@ pub fn run(before: Option<String>) -> Result<LogOutcome> {
     let result = rev_list(&repo, std::slice::from_ref(&start), &[], &opts)
         .with_context(|| format!("could not list commits from {start}"))?;
 
-    let commits = result
+    let commit_rows = result
         .commits
         .iter()
         .take(PAGE)
         .map(|oid| {
             let commit = context::read_commit(&repo, oid)?;
-            Ok(CommitJson {
-                oid: oid.to_hex(),
+            let (author, timestamp) = context::author_and_time(&commit.author);
+            Ok(CommitSummary {
+                oid: *oid,
                 subject: subject_line(&commit.message),
+                author,
+                timestamp,
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let commits = commit_rows.iter().map(CommitJson::from_summary).collect();
 
-    let next = result.commits.get(PAGE).map(grit_lib::objects::ObjectId::to_hex);
+    let next = result
+        .commits
+        .get(PAGE)
+        .map(grit_lib::objects::ObjectId::to_hex);
 
-    Ok(LogOutcome { commits, next })
+    Ok(LogOutcome {
+        commits,
+        next,
+        commit_rows,
+    })
 }

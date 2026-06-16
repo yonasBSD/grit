@@ -50,6 +50,8 @@ pub struct StatusOutcome {
     #[serde(skip)]
     header: HeaderKind,
     #[serde(skip)]
+    commit_rows: Vec<CommitSummary>,
+    #[serde(skip)]
     staged_entries: Vec<DiffEntry>,
     #[serde(skip)]
     unstaged_entries: Vec<DiffEntry>,
@@ -71,8 +73,11 @@ impl StatusOutcome {
             HeaderKind::AheadOfTarget => {
                 println!("On {branch}  ·  {} ahead of {target}", self.ahead);
                 println!();
-                for commit in self.commits.iter().take(SHORTLOG_LIMIT) {
-                    println!("  {}  {}", short_hex(&commit.oid), commit.subject);
+                for row in ui::commit_rows(&self.commit_rows)
+                    .iter()
+                    .take(SHORTLOG_LIMIT)
+                {
+                    println!("{row}");
                 }
                 if self.ahead > SHORTLOG_LIMIT {
                     println!("  … and {} more", self.ahead - SHORTLOG_LIMIT);
@@ -137,8 +142,10 @@ pub fn run() -> Result<StatusOutcome> {
     let model = status(&repo, &StatusOptions::default(), &mut NullProgress)
         .context("could not compute status")?;
 
-    let (branch, detached, head, target, commits, header) = resolve_header(&repo, &model.head)?;
-    let ahead = commits.len();
+    let (branch, detached, head, target, ahead_commits, header) =
+        resolve_header(&repo, &model.head)?;
+    let ahead = ahead_commits.len();
+    let commits = ahead_commits.iter().map(CommitJson::from_summary).collect();
 
     let staged: Vec<ChangeJson> = model.staged.iter().map(change_json).collect();
     let unstaged: Vec<ChangeJson> = model.unstaged.iter().map(change_json).collect();
@@ -156,6 +163,7 @@ pub fn run() -> Result<StatusOutcome> {
         untracked: model.untracked,
         clean,
         header,
+        commit_rows: ahead_commits,
         staged_entries: model.staged,
         unstaged_entries: model.unstaged,
     })
@@ -167,7 +175,7 @@ type HeaderResult = (
     bool,
     Option<String>,
     Option<String>,
-    Vec<CommitJson>,
+    Vec<CommitSummary>,
     HeaderKind,
 );
 
@@ -189,7 +197,6 @@ fn resolve_header(repo: &grit_lib::repo::Repository, head: &HeadState) -> Result
             Some(target) => {
                 let ahead: Vec<CommitSummary> =
                     context::commits_ahead_of(repo, *head_oid, target.oid)?;
-                let commits = ahead.iter().map(CommitJson::from_summary).collect();
                 let header = if ahead.is_empty() {
                     HeaderKind::EvenWith
                 } else {
@@ -200,7 +207,7 @@ fn resolve_header(repo: &grit_lib::repo::Repository, head: &HeadState) -> Result
                     false,
                     Some(head_oid.to_hex()),
                     Some(target.display_name),
-                    commits,
+                    ahead,
                     header,
                 )
             }
