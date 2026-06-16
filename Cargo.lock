@@ -569,6 +569,7 @@ dependencies = [
  "grit-lib",
  "serde",
  "serde_json",
+ "similar",
  "time",
 ]
 

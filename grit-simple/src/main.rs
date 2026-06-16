@@ -75,6 +75,12 @@ enum Command {
         #[arg(long)]
         before: Option<String>,
     },
+    /// Show changes as a diff. No argument: uncommitted changes; with a commit:
+    /// the change that commit introduced.
+    Diff {
+        /// Commit to show the diff of (defaults to uncommitted changes).
+        commit: Option<String>,
+    },
     /// Show what's changed and where you are (this is the default).
     #[command(alias = "st")]
     Status,
@@ -189,6 +195,7 @@ fn dispatch(cli: Cli, mode: OutputMode) -> Result<()> {
             emit(&commands::remote::run(add)?, mode)
         }
         Command::Log { before } => emit(&commands::log::run(before)?, mode),
+        Command::Diff { commit } => emit(&commands::diff::run(commit)?, mode),
         Command::Status => emit(&commands::status::run()?, mode),
         Command::Shortlog => emit(&commands::shortlog::run()?, mode),
         Command::Add { paths } => emit(&commands::add::run(&paths)?, mode),

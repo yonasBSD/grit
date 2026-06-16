@@ -404,6 +404,71 @@ fn remote_workflow_json_clone_push_fetch_pull() -> TestResult {
 }
 
 #[test]
+fn diff_json_uncommitted_and_commit() -> TestResult {
+    let scratch = Scratch::new("diff")?;
+    let repo = scratch.child("repo");
+    fs::create_dir_all(&repo)?;
+    gs_ok(&repo, &["init", "."]);
+    write_file(&repo.join("a.txt"), "one\ntwo\nthree\n");
+    gs_ok(&repo, &["commit", "first"]);
+
+    // No changes yet → empty file list.
+    let clean = gs_json(&repo, &["diff"]);
+    assert_eq!(clean["files"].as_array().unwrap().len(), 0);
+
+    // Uncommitted change: one line modified.
+    write_file(&repo.join("a.txt"), "one\nTWO\nthree\n");
+    let v = gs_json(&repo, &["diff"]);
+    let files = v["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["path"], "a.txt");
+    assert_eq!(files[0]["status"], "modified");
+    let lines = files[0]["hunks"][0]["lines"].as_array().unwrap();
+    // The modified line shows as a del (old line 2) and an add (new line 2).
+    assert!(lines
+        .iter()
+        .any(|l| l["kind"] == "del" && l["old"] == 2));
+    assert!(lines
+        .iter()
+        .any(|l| l["kind"] == "add" && l["new"] == 2));
+
+    // Commit diff: the change a specific commit introduced (root commit → all added).
+    let head = gs_json(&repo, &["log"])["commits"][0]["oid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let cv = gs_json(&repo, &["diff", &head]);
+    let cfiles = cv["files"].as_array().unwrap();
+    assert_eq!(cfiles[0]["path"], "a.txt");
+    assert!(cfiles[0]["hunks"][0]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|l| l["kind"] == "add"));
+    Ok(())
+}
+
+#[test]
+fn diff_human_is_plain_when_piped() -> TestResult {
+    let scratch = Scratch::new("diffhuman")?;
+    let repo = scratch.child("repo");
+    fs::create_dir_all(&repo)?;
+    gs_ok(&repo, &["init", "."]);
+    write_file(&repo.join("a.txt"), "alpha\n");
+    gs_ok(&repo, &["commit", "first"]);
+    write_file(&repo.join("a.txt"), "beta\n");
+
+    let out = gs(&repo, ["diff"]);
+    assert_eq!(out.status, Some(0), "{}", out.dump());
+    // Piped → no ANSI escapes, and the file header + both sides are present.
+    assert!(!out.stdout.contains('\u{1b}'), "piped diff must be plain");
+    assert!(out.stdout.contains("a.txt"), "{}", out.dump());
+    assert!(out.stdout.contains("- alpha"), "{}", out.dump());
+    assert!(out.stdout.contains("+ beta"), "{}", out.dump());
+    Ok(())
+}
+
+#[test]
 fn merge_json_fast_forward_and_up_to_date() -> TestResult {
     let scratch = Scratch::new("merge")?;
     let repo = scratch.child("repo");
