@@ -65,7 +65,7 @@ pub fn parse_date_to_git_timestamp(date_str: &str) -> Option<String> {
 
             // Try YYYY-MM-DD HH:MM:SS
             if let Ok(offset) = time::UtcOffset::from_whole_seconds(tz_secs as i32) {
-                let fmt = time::format_description::parse(
+                let fmt = time::format_description::parse_borrowed::<1>(
                     "[year]-[month]-[day] [hour]:[minute]:[second]",
                 )
                 .ok()?;

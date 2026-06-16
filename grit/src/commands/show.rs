@@ -2764,8 +2764,9 @@ fn format_date_iso(ident: &str) -> String {
             let offset_secs = parse_offset_seconds(offset_str);
             let dt = time::OffsetDateTime::from_unix_timestamp(ts + offset_secs as i64)
                 .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
-            let format =
-                time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]");
+            let format = time::format_description::parse_borrowed::<1>(
+                "[year]-[month]-[day] [hour]:[minute]:[second]",
+            );
             if let Ok(fmt) = format {
                 if let Ok(formatted) = dt.format(&fmt) {
                     // Git outputs: 2001-09-09 01:46:40 +0000

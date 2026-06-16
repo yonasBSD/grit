@@ -3515,9 +3515,10 @@ fn format_author_date(date_str: &str) -> Option<String> {
         let tz_secs = parse_tz_offset_secs(tz);
         if let Ok(offset) = time::UtcOffset::from_whole_seconds(tz_secs) {
             // Try YYYY-MM-DD HH:MM:SS
-            let ymd_hms =
-                time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
-                    .ok()?;
+            let ymd_hms = time::format_description::parse_borrowed::<1>(
+                "[year]-[month]-[day] [hour]:[minute]:[second]",
+            )
+            .ok()?;
             if let Ok(naive) = time::PrimitiveDateTime::parse(datetime, &ymd_hms) {
                 let dt = naive.assume_offset(offset);
                 let ts = dt.unix_timestamp();
