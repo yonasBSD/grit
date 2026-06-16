@@ -134,12 +134,7 @@ fn write_file(path: &Path, contents: &str) {
 
 /// Sorted top-level key names of a JSON object (for schema-stability assertions).
 fn keys(value: &Value) -> Vec<String> {
-    let mut names: Vec<String> = value
-        .as_object()
-        .expect("object")
-        .keys()
-        .cloned()
-        .collect();
+    let mut names: Vec<String> = value.as_object().expect("object").keys().cloned().collect();
     names.sort();
     names
 }
@@ -301,7 +296,10 @@ fn remote_json_list_and_add() -> TestResult {
     assert_eq!(empty["action"], "list");
     assert_eq!(empty["remotes"].as_array().unwrap().len(), 0);
 
-    let added = gs_json(&repo, &["remote", "add", "origin", "https://example.com/r.git"]);
+    let added = gs_json(
+        &repo,
+        &["remote", "add", "origin", "https://example.com/r.git"],
+    );
     assert_eq!(added["action"], "add");
     assert_eq!(added["name"], "origin");
     assert_eq!(added["url"], "https://example.com/r.git");
@@ -381,7 +379,10 @@ fn remote_workflow_json_clone_push_fetch_pull() -> TestResult {
     assert_eq!(pushed["results"][0]["status"], "ok");
 
     // Clone.
-    let cloned = gs_json(scratch.path(), &["clone", &path_arg(&remote), &path_arg(&clone)]);
+    let cloned = gs_json(
+        scratch.path(),
+        &["clone", &path_arg(&remote), &path_arg(&clone)],
+    );
     assert_eq!(cloned["branch"], "main");
     assert_eq!(cloned["path"], path_arg(&clone));
 
@@ -425,12 +426,8 @@ fn diff_json_uncommitted_and_commit() -> TestResult {
     assert_eq!(files[0]["status"], "modified");
     let lines = files[0]["hunks"][0]["lines"].as_array().unwrap();
     // The modified line shows as a del (old line 2) and an add (new line 2).
-    assert!(lines
-        .iter()
-        .any(|l| l["kind"] == "del" && l["old"] == 2));
-    assert!(lines
-        .iter()
-        .any(|l| l["kind"] == "add" && l["new"] == 2));
+    assert!(lines.iter().any(|l| l["kind"] == "del" && l["old"] == 2));
+    assert!(lines.iter().any(|l| l["kind"] == "add" && l["new"] == 2));
 
     // Commit diff: the change a specific commit introduced (root commit → all added).
     let head = gs_json(&repo, &["log"])["commits"][0]["oid"]
@@ -465,6 +462,65 @@ fn diff_human_is_plain_when_piped() -> TestResult {
     assert!(out.stdout.contains("a.txt"), "{}", out.dump());
     assert!(out.stdout.contains("- alpha"), "{}", out.dump());
     assert!(out.stdout.contains("+ beta"), "{}", out.dump());
+    Ok(())
+}
+
+#[test]
+fn show_json_commit_branch_and_tag() -> TestResult {
+    let scratch = Scratch::new("show")?;
+    let repo = scratch.child("repo");
+    fs::create_dir_all(&repo)?;
+    gs_ok(&repo, &["init", "."]);
+    write_file(&repo.join("a.txt"), "one\n");
+    gs_ok(&repo, &["commit", "first"]);
+    write_file(&repo.join("a.txt"), "one\ntwo\n");
+    gs_ok(&repo, &["commit", "second"]);
+
+    // Default (HEAD on a branch) → branch kind, with the commit and its diff.
+    let v = gs_json(&repo, &["show"]);
+    assert_eq!(v["kind"], "branch");
+    assert_eq!(v["ref_name"], "main");
+    assert_eq!(v["commit"]["subject"], "second");
+    assert_eq!(v["commit"]["oid"].as_str().unwrap().len(), 40);
+    assert_eq!(v["commit"]["author"]["email"], "test@example.com");
+    // `show` carries a diffstat, not the full patch.
+    assert_eq!(v["stat"]["files"][0]["path"], "a.txt");
+    assert_eq!(v["stat"]["files_changed"], 1);
+    assert_eq!(v["stat"]["insertions"], 1);
+
+    // By commit sha → commit kind.
+    let sha = v["commit"]["oid"].as_str().unwrap().to_owned();
+    let c = gs_json(&repo, &["show", &sha]);
+    assert_eq!(c["kind"], "commit");
+    assert_eq!(c["commit"]["oid"], sha);
+
+    // Lightweight tag (a ref pointing straight at a commit) → tag kind.
+    let tags = repo.join(".git/refs/tags");
+    fs::create_dir_all(&tags)?;
+    fs::write(tags.join("v1"), format!("{sha}\n"))?;
+    let t = gs_json(&repo, &["show", "v1"]);
+    assert_eq!(t["kind"], "tag");
+    assert_eq!(t["ref_name"], "v1");
+    assert_eq!(t["commit"]["oid"], sha);
+    Ok(())
+}
+
+#[test]
+fn show_human_has_commit_header_and_diff() -> TestResult {
+    let scratch = Scratch::new("showhuman")?;
+    let repo = scratch.child("repo");
+    fs::create_dir_all(&repo)?;
+    gs_ok(&repo, &["init", "."]);
+    write_file(&repo.join("a.txt"), "hello\n");
+    gs_ok(&repo, &["commit", "the subject"]);
+
+    let out = gs(&repo, ["show"]);
+    assert_eq!(out.status, Some(0), "{}", out.dump());
+    assert!(!out.stdout.contains('\u{1b}'), "piped show must be plain");
+    assert!(out.stdout.contains("commit "), "{}", out.dump());
+    assert!(out.stdout.contains("Author: Test User <test@example.com>"));
+    assert!(out.stdout.contains("    the subject"));
+    assert!(out.stdout.contains("a.txt"));
     Ok(())
 }
 
@@ -506,7 +562,11 @@ fn error_contract_is_a_json_object_on_stdout() -> TestResult {
     // Empty commit message → failure.
     let out = gs(&repo, ["--json", "commit"]);
     assert_eq!(out.status, Some(1), "{}", out.dump());
-    assert!(out.stderr.is_empty(), "stderr should be empty: {}", out.dump());
+    assert!(
+        out.stderr.is_empty(),
+        "stderr should be empty: {}",
+        out.dump()
+    );
     let v: Value = serde_json::from_str(&out.stdout)
         .unwrap_or_else(|e| panic!("error stdout not JSON ({e}): {}", out.dump()));
     assert!(v["error"].is_string(), "expected an error string: {v}");
@@ -552,8 +612,16 @@ fn schema_top_level_keys_are_stable() -> TestResult {
     assert_eq!(
         keys(&status),
         [
-            "ahead", "branch", "clean", "commits", "detached", "head", "staged", "target",
-            "unstaged", "untracked"
+            "ahead",
+            "branch",
+            "clean",
+            "commits",
+            "detached",
+            "head",
+            "staged",
+            "target",
+            "unstaged",
+            "untracked"
         ]
     );
 

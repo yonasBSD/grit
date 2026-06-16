@@ -38,9 +38,9 @@ const BG_ADD_EMPH: &str = "48;5;28"; // brighter green
 const FG_DIM: &str = "38;5;244"; // gutter gray
 const FG_DEL_NUM: &str = "38;5;167"; // removed line number
 const FG_ADD_NUM: &str = "38;5;71"; // added line number
-// Explicit near-white foreground for the changed (colored-background) lines.
-// Our backgrounds are always dark, so a light fg stays readable on both light-
-// and dark-themed terminals (the default fg would be dark-on-dark in light mode).
+                                    // Explicit near-white foreground for the changed (colored-background) lines.
+                                    // Our backgrounds are always dark, so a light fg stays readable on both light-
+                                    // and dark-themed terminals (the default fg would be dark-on-dark in light mode).
 const FG_ON_DIFF: &str = "38;5;231";
 
 /// Result of `gs diff`.
@@ -105,11 +105,25 @@ pub struct Segment {
 pub fn run(commit: Option<String>) -> Result<DiffOutcome> {
     let repo = context::discover()?;
     let changes = match commit {
-        Some(spec) => commit_changes(&repo, &spec)?,
+        Some(spec) => {
+            let oid = grit_lib::rev_parse::resolve_revision(&repo, &spec)
+                .with_context(|| format!("could not resolve '{spec}'"))?;
+            commit_changes(&repo, &oid)?
+        }
         None => worktree_changes(&repo)?,
     };
-    let files = changes.into_iter().map(build_file_diff).collect();
-    Ok(DiffOutcome { files })
+    Ok(outcome_from_changes(changes))
+}
+
+/// The diff a single commit introduced, as a [`DiffOutcome`]. Reused by `gs show`.
+pub fn diff_of_commit(repo: &grit_lib::repo::Repository, oid: &ObjectId) -> Result<DiffOutcome> {
+    Ok(outcome_from_changes(commit_changes(repo, oid)?))
+}
+
+fn outcome_from_changes(changes: Vec<FileChange>) -> DiffOutcome {
+    DiffOutcome {
+        files: changes.into_iter().map(build_file_diff).collect(),
+    }
 }
 
 /// A changed file with both sides' text resolved.
@@ -153,10 +167,8 @@ fn worktree_changes(repo: &grit_lib::repo::Repository) -> Result<Vec<FileChange>
 }
 
 /// The change a single commit introduced: its first parent's tree vs its own.
-fn commit_changes(repo: &grit_lib::repo::Repository, spec: &str) -> Result<Vec<FileChange>> {
-    let oid = grit_lib::rev_parse::resolve_revision(repo, spec)
-        .with_context(|| format!("could not resolve '{spec}'"))?;
-    let commit = context::read_commit(repo, &oid)?;
+fn commit_changes(repo: &grit_lib::repo::Repository, oid: &ObjectId) -> Result<Vec<FileChange>> {
+    let commit = context::read_commit(repo, oid)?;
     let new_tree = commit.tree;
     let old_tree = match commit.parents.first() {
         Some(parent) => Some(context::commit_tree(repo, parent)?),
@@ -187,8 +199,10 @@ fn file_change(e: DiffEntry, old_text: String, new_text: String, binary: bool) -
         .clone()
         .or_else(|| e.old_path.clone())
         .unwrap_or_default();
-    // Record the pre-rename path only when it actually differs.
-    let old_path = e.old_path.filter(|op| Some(op) != e.new_path.as_ref());
+    // Record the pre-rename path only on a true rename (old differs from the
+    // displayed path). For a deletion the displayed path *is* the old path, so
+    // this must not treat it as a rename.
+    let old_path = e.old_path.filter(|op| *op != path);
     FileChange {
         path,
         old_path,
