@@ -3,11 +3,45 @@
 use anyhow::{bail, Context, Result};
 use grit_lib::config::{ConfigFile, ConfigScope, ConfigSet};
 use grit_lib::repo::Repository;
+use serde::Serialize;
 
 use crate::context;
+use crate::output::HumanRender;
+
+/// Result of `gs remote`, tagged by `action` (`list` / `add`).
+#[derive(Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum RemoteOutcome {
+    List { remotes: Vec<RemoteEntry> },
+    Add { name: String, url: String },
+}
+
+/// One remote in a `list` outcome.
+#[derive(Serialize)]
+pub struct RemoteEntry {
+    pub name: String,
+    pub url: String,
+}
+
+impl HumanRender for RemoteOutcome {
+    fn render_human(&self) {
+        match self {
+            RemoteOutcome::List { remotes } => {
+                if remotes.is_empty() {
+                    println!("No remotes. Add one with: gs remote add <name> <url>");
+                    return;
+                }
+                for remote in remotes {
+                    println!("{}\t{}", remote.name, remote.url);
+                }
+            }
+            RemoteOutcome::Add { name, url } => println!("Added remote {name} → {url}"),
+        }
+    }
+}
 
 /// `Some((name, url))` adds a remote; `None` lists them.
-pub fn run(add: Option<(String, String)>) -> Result<()> {
+pub fn run(add: Option<(String, String)>) -> Result<RemoteOutcome> {
     let repo = context::discover()?;
     match add {
         None => list(&repo),
@@ -15,23 +49,21 @@ pub fn run(add: Option<(String, String)>) -> Result<()> {
     }
 }
 
-fn list(repo: &Repository) -> Result<()> {
+fn list(repo: &Repository) -> Result<RemoteOutcome> {
     let config = ConfigSet::load(Some(&repo.git_dir), true).context("could not load config")?;
-    let names = remote_names(&config);
-    if names.is_empty() {
-        println!("No remotes. Add one with: gs remote add <name> <url>");
-        return Ok(());
-    }
-    for name in names {
-        let url = config
-            .get(&format!("remote.{name}.url"))
-            .unwrap_or_else(|| "(no url)".to_owned());
-        println!("{name}\t{url}");
-    }
-    Ok(())
+    let remotes = remote_names(&config)
+        .into_iter()
+        .map(|name| {
+            let url = config
+                .get(&format!("remote.{name}.url"))
+                .unwrap_or_else(|| "(no url)".to_owned());
+            RemoteEntry { name, url }
+        })
+        .collect();
+    Ok(RemoteOutcome::List { remotes })
 }
 
-fn add_remote(repo: &Repository, name: &str, url: &str) -> Result<()> {
+fn add_remote(repo: &Repository, name: &str, url: &str) -> Result<RemoteOutcome> {
     let config = ConfigSet::load(Some(&repo.git_dir), true).context("could not load config")?;
     if remote_names(&config).iter().any(|n| n == name) {
         bail!("remote '{name}' already exists");
@@ -48,8 +80,10 @@ fn add_remote(repo: &Repository, name: &str, url: &str) -> Result<()> {
     )?;
     cfg.write().context("could not write repository config")?;
 
-    println!("Added remote {name} → {url}");
-    Ok(())
+    Ok(RemoteOutcome::Add {
+        name: name.to_owned(),
+        url: url.to_owned(),
+    })
 }
 
 /// Distinct, sorted remote names from any `remote.<name>.*` config entry.

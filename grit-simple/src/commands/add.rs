@@ -11,21 +11,39 @@ use grit_lib::objects::ObjectKind;
 use grit_lib::porcelain::status::{status, StatusOptions, UntrackedMode};
 use grit_lib::progress::NullProgress;
 use grit_lib::repo::Repository;
+use serde::Serialize;
 
 use crate::context;
+use crate::output::HumanRender;
 use crate::ui::entry_path;
 
-pub fn run(paths: &[String]) -> Result<()> {
+/// Result of `gs add`: how many changes were staged.
+#[derive(Serialize)]
+pub struct AddOutcome {
+    pub staged: usize,
+    /// Whether the invocation had no path arguments (stages everything).
+    #[serde(skip)]
+    no_paths: bool,
+}
+
+impl HumanRender for AddOutcome {
+    fn render_human(&self) {
+        match self.staged {
+            0 if self.no_paths => println!("Nothing to stage — working tree clean."),
+            0 => println!("Nothing to stage matched the given paths."),
+            1 => println!("Staged 1 change."),
+            n => println!("Staged {n} changes."),
+        }
+    }
+}
+
+pub fn run(paths: &[String]) -> Result<AddOutcome> {
     let repo = context::discover()?;
     let staged = stage(&repo, paths)?;
-
-    match staged {
-        0 if paths.is_empty() => println!("Nothing to stage — working tree clean."),
-        0 => println!("Nothing to stage matched the given paths."),
-        1 => println!("Staged 1 change."),
-        n => println!("Staged {n} changes."),
-    }
-    Ok(())
+    Ok(AddOutcome {
+        staged,
+        no_paths: paths.is_empty(),
+    })
 }
 
 /// Stage all changes matching `selectors` (empty selectors = everything).

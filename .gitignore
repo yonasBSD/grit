@@ -30,3 +30,4 @@ tests/repo.git/
 logs/agent_*
 data/family/
 reports/*
+.DS_Store

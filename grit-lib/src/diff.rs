@@ -1942,6 +1942,11 @@ pub fn diff_index_to_worktree_with_options(
     let mut unmerged_base: std::collections::BTreeMap<String, (u8, &IndexEntry)> =
         std::collections::BTreeMap::new();
 
+    // Cache of ancestor-directory symlink-ness so we stat each directory at most
+    // once, rather than re-lstat'ing every ancestor of every index entry
+    // (O(unique dirs) instead of O(files × depth)).
+    let mut dir_symlinks = SymlinkDirCache::default();
+
     for ie in &index.entries {
         if ie.stage() != 0 {
             let path = String::from_utf8_lossy(&ie.path).to_string();
@@ -2113,7 +2118,7 @@ pub fn diff_index_to_worktree_with_options(
 
         // If any parent component of the path is a symlink, the file is effectively
         // deleted from the working tree (a symlink replaced a directory).
-        if has_symlink_in_path(work_tree, path_str_ref) {
+        if dir_symlinks.has_symlink_in_path(work_tree, path_str_ref) {
             result.push(DiffEntry {
                 status: DiffStatus::Deleted,
                 old_path: Some(path_str_ref.to_owned()),
@@ -2299,6 +2304,47 @@ pub fn diff_index_to_worktree_with_options(
     Ok(result)
 }
 
+/// Memoized cache of which ancestor directories are symlinks, so each directory
+/// is lstat'd at most once per `diff_index_to_worktree` call.
+#[derive(Default)]
+struct SymlinkDirCache {
+    /// Relative dir prefixes confirmed to be symlinks.
+    symlink: std::collections::HashSet<String>,
+    /// Relative dir prefixes confirmed not to be symlinks.
+    plain: std::collections::HashSet<String>,
+}
+
+impl SymlinkDirCache {
+    /// Whether any parent component of `rel_path` is a symlink.
+    fn has_symlink_in_path(&mut self, work_tree: &Path, rel_path: &str) -> bool {
+        let components: Vec<&str> = rel_path.split('/').collect();
+        let mut prefix = String::new();
+        // Check every ancestor directory (all components except the file itself).
+        for component in &components[..components.len().saturating_sub(1)] {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(component);
+            if self.symlink.contains(&prefix) {
+                return true;
+            }
+            if self.plain.contains(&prefix) {
+                continue;
+            }
+            match fs::symlink_metadata(work_tree.join(&prefix)) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    self.symlink.insert(prefix.clone());
+                    return true;
+                }
+                _ => {
+                    self.plain.insert(prefix.clone());
+                }
+            }
+        }
+        false
+    }
+}
+
 fn entry_is_racy(ie: &IndexEntry, index_mtime: Option<(u32, u32)>) -> bool {
     let Some((index_mtime_sec, index_mtime_nsec)) = index_mtime else {
         return false;
@@ -2412,11 +2458,11 @@ pub fn stat_matches(ie: &IndexEntry, meta: &fs::Metadata) -> bool {
         if meta.ctime_nsec() as u32 != ie.ctime_nsec {
             return false;
         }
-        // Compare inode and device
+        // Compare inode. Device (`st_dev`) is deliberately NOT compared: Git
+        // leaves `USE_STDEV` off by default because device numbers aren't stable
+        // (across remounts, and some index writers store 0), so comparing it
+        // forces a needless re-hash of the whole tree. Match Git and ignore it.
         if meta.ino() as u32 != ie.ino {
-            return false;
-        }
-        if meta.dev() as u32 != ie.dev {
             return false;
         }
     }
@@ -2557,22 +2603,6 @@ fn invalidate_index_stat_cache(ie: &mut IndexEntry) {
     ie.dev = 0;
     ie.ino = 0;
     ie.size = 0;
-}
-
-/// Hash a working tree file as a blob to get its OID.
-/// Check if any parent component of `rel_path` (relative to `work_tree`) is a symlink.
-fn has_symlink_in_path(work_tree: &Path, rel_path: &str) -> bool {
-    let mut check = work_tree.to_path_buf();
-    let components: Vec<&str> = rel_path.split('/').collect();
-    // Check all components except the last one (which is the file itself)
-    for component in &components[..components.len().saturating_sub(1)] {
-        check.push(component);
-        match fs::symlink_metadata(&check) {
-            Ok(meta) if meta.file_type().is_symlink() => return true,
-            _ => {}
-        }
-    }
-    false
 }
 
 pub fn hash_worktree_file(

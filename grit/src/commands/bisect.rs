@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{stdin, stdout, IsTerminal, Write};
 #[cfg(unix)]
-use std::os::unix::io::AsRawFd;
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -1138,7 +1138,7 @@ fn bisect_next_all(repo: &Repository, git_dir: &Path, terms: &BisectTerms) -> Re
         }
     }
 
-    if managed.next.is_none() {
+    let Some(bisect_rev) = managed.next else {
         // revs.commits empty after managed_skipped: only return BISECT_ONLY_SKIPPED if "bad" is
         // also "skip"ped (tried non-empty), otherwise "was both good and bad".
         if error_if_skipped_commits(repo, terms, &managed.tried, None)? {
@@ -1149,7 +1149,7 @@ fn bisect_next_all(repo: &Repository, git_dir: &Path, terms: &BisectTerms) -> Re
             bad, terms.term_good, terms.term_bad
         );
         return Ok(1);
-    }
+    };
 
     if all == 0 {
         println!("{} is the first {} commit", bad, terms.term_bad);
@@ -1157,8 +1157,6 @@ fn bisect_next_all(repo: &Repository, git_dir: &Path, terms: &BisectTerms) -> Re
         bisect_successful_log(repo, git_dir, terms)?;
         return Ok(10);
     }
-
-    let bisect_rev = managed.next.expect("checked is_none above");
 
     if bisect_rev == bad {
         if error_if_skipped_commits(repo, terms, &managed.tried, Some(bad))? {
@@ -1878,23 +1876,20 @@ fn cmd_terms(repo: &Repository, args: &[String]) -> Result<()> {
 
 /// Redirects the process stdout to `fd` for the duration of `f`, then restores the original stdout.
 #[cfg(unix)]
-fn with_stdout_redirected_to_fd<T>(
-    fd: std::os::fd::RawFd,
-    f: impl FnOnce() -> Result<T>,
-) -> Result<T> {
-    use nix::unistd::{close, dup, dup2};
+fn with_stdout_redirected_to_fd<T>(file: &fs::File, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    use nix::unistd::{dup, dup2_stdout};
     let _ = stdout().flush();
-    let out_target = stdout().as_raw_fd();
-    let saved = dup(out_target).context("dup stdout")?;
-    dup2(fd, out_target).context("dup2 stdout to bisect run file")?;
+    // Duplicate the current stdout so we can restore it afterward. `saved` is an
+    // OwnedFd; dropping it at the end closes the duplicate.
+    let saved = dup(stdout()).context("dup stdout")?;
+    dup2_stdout(file.as_fd()).context("redirect stdout to bisect run file")?;
     let result = f();
-    let _ = dup2(saved, out_target).context("restore stdout");
-    let _ = close(saved);
+    let _ = dup2_stdout(&saved).context("restore stdout");
     result
 }
 
 #[cfg(not(unix))]
-fn with_stdout_redirected_to_fd<T>(_fd: i32, f: impl FnOnce() -> Result<T>) -> Result<T> {
+fn with_stdout_redirected_to_fd<T>(_file: &fs::File, f: impl FnOnce() -> Result<T>) -> Result<T> {
     f()
 }
 
@@ -1974,9 +1969,8 @@ fn cmd_run(repo: &Repository, args: &[String]) -> Result<()> {
             .truncate(true)
             .open(&run_path)
             .context("BISECT_RUN")?;
-        let run_fd = run_file.as_raw_fd();
 
-        let next_result = with_stdout_redirected_to_fd(run_fd, || {
+        let next_result = with_stdout_redirected_to_fd(&run_file, || {
             if code == 125 {
                 bisect_skip_inner(repo, &[])
             } else if code == 0 {

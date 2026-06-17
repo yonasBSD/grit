@@ -169,7 +169,7 @@ pub fn describe_auth(config: &ConfigSet, remote: &Remote) -> String {
 /// what [`HelperCredentialProvider`] will actually consult.
 fn http_credential_helpers(config: &ConfigSet, url: &str) -> Vec<String> {
     let mut helpers: Vec<String> = Vec::new();
-    let mut push = |val: &str, helpers: &mut Vec<String>| {
+    let push = |val: &str, helpers: &mut Vec<String>| {
         let val = val.trim().to_owned();
         if !val.is_empty() && !helpers.contains(&val) {
             helpers.push(val);

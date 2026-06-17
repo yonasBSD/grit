@@ -8,12 +8,39 @@ use grit_lib::porcelain::status::{status, StatusOptions};
 use grit_lib::progress::NullProgress;
 use grit_lib::state::HeadState;
 use grit_lib::{refs, write_tree::write_tree_from_index};
+use serde::Serialize;
 use time::OffsetDateTime;
 
 use crate::commands::add;
-use crate::context::{self, short_oid, subject_line};
+use crate::context::{self, subject_line};
+use crate::output::HumanRender;
 
-pub fn run(message: Option<String>) -> Result<()> {
+/// Result of `gs commit`.
+#[derive(Serialize)]
+pub struct CommitOutcome {
+    pub oid: String,
+    pub branch: String,
+    pub subject: String,
+    pub changes: usize,
+}
+
+impl HumanRender for CommitOutcome {
+    fn render_human(&self) {
+        println!(
+            "[{} {}] {}",
+            self.branch,
+            self.oid.get(..7).unwrap_or(&self.oid),
+            self.subject
+        );
+        println!(
+            "{} change{} committed",
+            self.changes,
+            if self.changes == 1 { "" } else { "s" }
+        );
+    }
+}
+
+pub fn run(message: Option<String>) -> Result<CommitOutcome> {
     let repo = context::discover()?;
 
     add::stage(&repo, &[])?;
@@ -97,10 +124,10 @@ pub fn run(message: Option<String>) -> Result<()> {
     )?;
 
     let count = model.staged.len();
-    println!("[{short_name} {}] {subject}", short_oid(&oid));
-    println!(
-        "{count} change{} committed",
-        if count == 1 { "" } else { "s" }
-    );
-    Ok(())
+    Ok(CommitOutcome {
+        oid: oid.to_hex(),
+        branch: short_name,
+        subject,
+        changes: count,
+    })
 }

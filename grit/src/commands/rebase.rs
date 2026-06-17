@@ -10378,12 +10378,9 @@ fn do_continue() -> Result<()> {
                 .unwrap_or(false);
         let current_diffs = diff_index_to_tree(&repo.odb, &index, Some(&current_tree), false)?;
         let only_submodule_resolution_left = !current_diffs.is_empty()
-            && current_diffs.iter().all(|entry| {
-                entry.old_mode == "160000"
-                    || entry.new_mode == "160000"
-                    || (entry.old_mode.is_empty() && entry.new_mode == "160000")
-                    || (entry.new_mode.is_empty() && entry.old_mode == "160000")
-            });
+            && current_diffs
+                .iter()
+                .all(|entry| entry.old_mode == "160000" || entry.new_mode == "160000");
         if clean_ignoring_submodules && only_submodule_resolution_left {
             if todo_lines_continue
                 .first()

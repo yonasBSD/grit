@@ -20,11 +20,88 @@ use grit_lib::refs;
 use grit_lib::repo::Repository;
 use grit_lib::state::{resolve_head, HeadState};
 use grit_lib::write_tree::write_tree_from_index;
+use serde::Serialize;
 use time::OffsetDateTime;
 
-use crate::context::{self, short_oid};
+use crate::context;
+use crate::output::HumanRender;
 
-pub fn run(branch: &str) -> Result<()> {
+/// Result of `gs merge` (and the merge half of `gs pull`).
+#[derive(Serialize)]
+pub struct MergeOutcome {
+    /// `up_to_date` | `fast_forward` | `merged` | `set_upstream`.
+    pub result: String,
+    /// The merge source label (for `set_upstream`, the branch being set).
+    pub branch: String,
+    /// Resulting commit (fast-forward target, merge commit, or adopted upstream).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oid: Option<String>,
+    /// For `set_upstream` (unborn `gs pull`): the upstream the branch was set to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+}
+
+impl MergeOutcome {
+    fn up_to_date(label: &str) -> Self {
+        Self {
+            result: "up_to_date".to_owned(),
+            branch: label.to_owned(),
+            oid: None,
+            upstream: None,
+        }
+    }
+
+    fn fast_forward(label: &str, oid: ObjectId) -> Self {
+        Self {
+            result: "fast_forward".to_owned(),
+            branch: label.to_owned(),
+            oid: Some(oid.to_hex()),
+            upstream: None,
+        }
+    }
+
+    fn merged(label: &str, oid: ObjectId) -> Self {
+        Self {
+            result: "merged".to_owned(),
+            branch: label.to_owned(),
+            oid: Some(oid.to_hex()),
+            upstream: None,
+        }
+    }
+
+    /// `gs pull` on an unborn branch adopting the upstream as the first commit.
+    pub fn set_upstream(branch: &str, upstream: &str, oid: ObjectId) -> Self {
+        Self {
+            result: "set_upstream".to_owned(),
+            branch: branch.to_owned(),
+            oid: Some(oid.to_hex()),
+            upstream: Some(upstream.to_owned()),
+        }
+    }
+}
+
+impl HumanRender for MergeOutcome {
+    fn render_human(&self) {
+        let short = self.oid.as_deref().map(short_hex).unwrap_or_default();
+        match self.result.as_str() {
+            "up_to_date" => println!("Already up to date."),
+            "fast_forward" => println!("Fast-forwarded {} → {short}", self.branch),
+            "merged" => println!("Merged {} into the current branch ({short})", self.branch),
+            "set_upstream" => println!(
+                "Set {} to {}.",
+                self.branch,
+                self.upstream.as_deref().unwrap_or_default()
+            ),
+            other => println!("{other}"),
+        }
+    }
+}
+
+fn short_hex(oid: &str) -> &str {
+    oid.get(..7).unwrap_or(oid)
+}
+
+pub fn run(branch: &str) -> Result<MergeOutcome> {
     let repo = context::discover()?;
 
     let model = status(&repo, &StatusOptions::default(), &mut NullProgress)
@@ -56,10 +133,9 @@ pub fn integrate(
     into_oid: ObjectId,
     other_oid: ObjectId,
     label: &str,
-) -> Result<()> {
+) -> Result<MergeOutcome> {
     if into_oid == other_oid || is_ancestor(repo, other_oid, into_oid)? {
-        println!("Already up to date.");
-        return Ok(());
+        return Ok(MergeOutcome::up_to_date(label));
     }
 
     let into_tree = context::commit_tree(repo, &into_oid)?;
@@ -75,8 +151,7 @@ pub fn integrate(
             other_oid,
             &format!("merge {label}: fast-forward"),
         )?;
-        println!("Fast-forwarded {label} → {}", short_oid(&other_oid));
-        return Ok(());
+        return Ok(MergeOutcome::fast_forward(label, other_oid));
     }
 
     let base_oid = merge_bases_first_vs_rest(repo, into_oid, &[other_oid])?
@@ -137,11 +212,7 @@ pub fn integrate(
         .context("could not store merge commit")?;
 
     move_branch(repo, into_ref, into_oid, oid, &format!("merge {label}"))?;
-    println!(
-        "Merged {label} into the current branch ({})",
-        short_oid(&oid)
-    );
-    Ok(())
+    Ok(MergeOutcome::merged(label, oid))
 }
 
 /// Point a branch (and HEAD's reflog) at `new`, logging the transition.

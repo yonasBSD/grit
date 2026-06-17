@@ -79,11 +79,9 @@ pub fn run(args: Args) -> Result<()> {
     };
     let filter_context = repo.as_ref().and_then(HashObjectFilterContext::load);
 
-    // We only need the odb if -w is given
-    let odb = if args.write {
-        Some(odb_for_write(
-            repo.as_ref().expect("repository loaded for -w"),
-        )?)
+    // We only need the odb if -w is given (in which case `repo` is always `Some`).
+    let odb = if let Some(repo) = repo.as_ref().filter(|_| args.write) {
+        Some(odb_for_write(repo)?)
     } else {
         None
     };

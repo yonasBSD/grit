@@ -218,7 +218,7 @@ pub fn format_date_rfc2822(ident: &str) -> String {
                 .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
                 .to_offset(tz_offset);
             // git uses a space-padded day-of-month (e.g. "Thu, 7 Apr 2005"), not zero-padded.
-            let format = time::format_description::parse(
+            let format = time::format_description::parse_borrowed::<1>(
                 "[weekday repr:short], [day padding:none] [month repr:short] [year] [hour]:[minute]:[second] ",
             );
             if let Ok(fmt) = format {

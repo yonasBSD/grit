@@ -831,10 +831,11 @@ fn walk_commit_range(repo: &Repository, base: ObjectId, tip: ObjectId) -> Result
         result.push(next);
         if let Some(kids) = children.get(&next) {
             for &k in kids {
-                let e = indegree.get_mut(&k).expect("child has indegree");
-                *e -= 1;
-                if *e == 0 {
-                    ready.push(k);
+                if let Some(e) = indegree.get_mut(&k) {
+                    *e -= 1;
+                    if *e == 0 {
+                        ready.push(k);
+                    }
                 }
             }
         }

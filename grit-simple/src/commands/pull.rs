@@ -9,11 +9,11 @@ use grit_lib::progress::NullProgress;
 use grit_lib::refs;
 use grit_lib::state::{resolve_head, HeadState};
 
-use crate::commands::merge;
+use crate::commands::merge::{self, MergeOutcome};
 use crate::context;
 use crate::net;
 
-pub fn run() -> Result<()> {
+pub fn run() -> Result<MergeOutcome> {
     let repo = context::discover()?;
 
     let model = status(&repo, &StatusOptions::default(), &mut NullProgress)
@@ -69,8 +69,11 @@ pub fn run() -> Result<()> {
                 .context("could not populate the working tree")?;
             refs::write_ref(&repo.git_dir, &refname, &upstream_oid)
                 .context("could not set branch")?;
-            println!("Set {short_name} to {remote}/{upstream_branch}.");
-            Ok(())
+            Ok(MergeOutcome::set_upstream(
+                &short_name,
+                &format!("{remote}/{upstream_branch}"),
+                upstream_oid,
+            ))
         }
     }
 }

@@ -10,11 +10,29 @@ use grit_lib::config::{ConfigFile, ConfigScope, ConfigSet};
 use grit_lib::porcelain::checkout::checkout_between_trees;
 use grit_lib::refs;
 use grit_lib::repo::{init_repository, Repository};
+use serde::Serialize;
 
 use crate::context;
 use crate::net;
+use crate::output::{progress, HumanRender, OutputMode};
 
-pub fn run(url: &str, dir: Option<String>) -> Result<()> {
+/// Result of `gs clone`.
+#[derive(Serialize)]
+pub struct CloneOutcome {
+    pub url: String,
+    /// Destination directory.
+    pub path: String,
+    /// Default branch checked out.
+    pub branch: String,
+}
+
+impl HumanRender for CloneOutcome {
+    fn render_human(&self) {
+        println!("Cloned into '{}' on branch {}.", self.path, self.branch);
+    }
+}
+
+pub fn run(url: &str, dir: Option<String>, mode: OutputMode) -> Result<CloneOutcome> {
     let dir = dir.unwrap_or_else(|| derive_dir(url));
     let path = PathBuf::from(&dir);
     if path.is_dir()
@@ -26,7 +44,7 @@ pub fn run(url: &str, dir: Option<String>) -> Result<()> {
         bail!("destination '{dir}' already exists and is not empty");
     }
 
-    println!("Cloning into '{dir}' ...");
+    progress(mode, &format!("Cloning into '{dir}' ..."));
     let repo = init_repository(&path, false, "main", None, "files")
         .with_context(|| format!("could not initialize '{dir}'"))?;
 
@@ -74,8 +92,11 @@ pub fn run(url: &str, dir: Option<String>) -> Result<()> {
     let tree = context::commit_tree(&repo, &oid)?;
     checkout_between_trees(&repo, None, &tree).context("could not check out files")?;
 
-    println!("Cloned into '{dir}' on branch {default}.");
-    Ok(())
+    Ok(CloneOutcome {
+        url: url.to_owned(),
+        path: dir,
+        branch: default,
+    })
 }
 
 /// Derive a destination directory from a clone URL (the last path component,

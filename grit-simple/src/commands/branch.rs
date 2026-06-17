@@ -4,10 +4,58 @@ use anyhow::{bail, Context, Result};
 use grit_lib::refs;
 use grit_lib::repo::Repository;
 use grit_lib::state::{resolve_head, HeadState};
+use serde::Serialize;
 
 use crate::context;
+use crate::output::HumanRender;
 
-pub fn run(name: Option<String>, delete: bool) -> Result<()> {
+/// Result of `gs branch`, tagged by `action` (`list` / `create` / `delete`).
+#[derive(Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum BranchOutcome {
+    List {
+        /// The current branch, or `null` when detached / unborn.
+        current: Option<String>,
+        branches: Vec<BranchEntry>,
+    },
+    Create {
+        name: String,
+    },
+    Delete {
+        name: String,
+    },
+}
+
+/// One branch in a `list` outcome.
+#[derive(Serialize)]
+pub struct BranchEntry {
+    pub name: String,
+    pub current: bool,
+}
+
+impl HumanRender for BranchOutcome {
+    fn render_human(&self) {
+        match self {
+            BranchOutcome::List { branches, .. } => {
+                if branches.is_empty() {
+                    println!("No branches yet.");
+                    return;
+                }
+                for branch in branches {
+                    if branch.current {
+                        println!("* {}", branch.name);
+                    } else {
+                        println!("  {}", branch.name);
+                    }
+                }
+            }
+            BranchOutcome::Create { name } => println!("Created branch {name}"),
+            BranchOutcome::Delete { name } => println!("Deleted branch {name}"),
+        }
+    }
+}
+
+pub fn run(name: Option<String>, delete: bool) -> Result<BranchOutcome> {
     let repo = context::discover()?;
     match name {
         None => list(&repo),
@@ -16,13 +64,13 @@ pub fn run(name: Option<String>, delete: bool) -> Result<()> {
     }
 }
 
-fn list(repo: &Repository) -> Result<()> {
+fn list(repo: &Repository) -> Result<BranchOutcome> {
     let current = match resolve_head(&repo.git_dir)? {
         HeadState::Branch { short_name, .. } => Some(short_name),
         _ => None,
     };
 
-    let mut branches: Vec<String> = refs::list_refs(&repo.git_dir, "refs/heads/")
+    let mut names: Vec<String> = refs::list_refs(&repo.git_dir, "refs/heads/")
         .context("could not list branches")?
         .into_iter()
         .map(|(refname, _)| {
@@ -32,24 +80,20 @@ fn list(repo: &Repository) -> Result<()> {
                 .to_owned()
         })
         .collect();
-    branches.sort();
+    names.sort();
 
-    if branches.is_empty() {
-        println!("No branches yet.");
-        return Ok(());
-    }
+    let branches = names
+        .into_iter()
+        .map(|name| {
+            let current = current.as_deref() == Some(name.as_str());
+            BranchEntry { name, current }
+        })
+        .collect();
 
-    for branch in branches {
-        if current.as_deref() == Some(branch.as_str()) {
-            println!("* {branch}");
-        } else {
-            println!("  {branch}");
-        }
-    }
-    Ok(())
+    Ok(BranchOutcome::List { current, branches })
 }
 
-fn create(repo: &Repository, name: &str) -> Result<()> {
+fn create(repo: &Repository, name: &str) -> Result<BranchOutcome> {
     let branch_ref = format!("refs/heads/{name}");
     if refs::resolve_ref(&repo.git_dir, &branch_ref).is_ok() {
         bail!("branch '{name}' already exists");
@@ -62,11 +106,12 @@ fn create(repo: &Repository, name: &str) -> Result<()> {
     };
 
     refs::write_ref(&repo.git_dir, &branch_ref, &base).context("could not create branch")?;
-    println!("Created branch {name}");
-    Ok(())
+    Ok(BranchOutcome::Create {
+        name: name.to_owned(),
+    })
 }
 
-fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
+fn delete_branch(repo: &Repository, name: &str) -> Result<BranchOutcome> {
     if let HeadState::Branch { short_name, .. } = resolve_head(&repo.git_dir)? {
         if short_name == name {
             bail!("cannot delete '{name}' — it is the current branch");
@@ -79,6 +124,7 @@ fn delete_branch(repo: &Repository, name: &str) -> Result<()> {
     }
 
     refs::delete_ref(&repo.git_dir, &branch_ref).context("could not delete branch")?;
-    println!("Deleted branch {name}");
-    Ok(())
+    Ok(BranchOutcome::Delete {
+        name: name.to_owned(),
+    })
 }

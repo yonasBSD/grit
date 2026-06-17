@@ -19,61 +19,6 @@ use flate2::Compression;
 use grit_lib::config::{parse_bool, parse_i64, ConfigSet};
 use url::Url;
 
-#[derive(Debug)]
-struct NoCertificateVerification;
-
-impl ureq::rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &ureq::rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[ureq::rustls::pki_types::CertificateDer<'_>],
-        _server_name: &ureq::rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: ureq::rustls::pki_types::UnixTime,
-    ) -> std::result::Result<ureq::rustls::client::danger::ServerCertVerified, ureq::rustls::Error>
-    {
-        Ok(ureq::rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &ureq::rustls::pki_types::CertificateDer<'_>,
-        _dss: &ureq::rustls::DigitallySignedStruct,
-    ) -> std::result::Result<
-        ureq::rustls::client::danger::HandshakeSignatureValid,
-        ureq::rustls::Error,
-    > {
-        Ok(ureq::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &ureq::rustls::pki_types::CertificateDer<'_>,
-        _dss: &ureq::rustls::DigitallySignedStruct,
-    ) -> std::result::Result<
-        ureq::rustls::client::danger::HandshakeSignatureValid,
-        ureq::rustls::Error,
-    > {
-        Ok(ureq::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<ureq::rustls::SignatureScheme> {
-        vec![
-            ureq::rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            ureq::rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-            ureq::rustls::SignatureScheme::ED25519,
-            ureq::rustls::SignatureScheme::RSA_PSS_SHA256,
-            ureq::rustls::SignatureScheme::RSA_PSS_SHA384,
-            ureq::rustls::SignatureScheme::RSA_PSS_SHA512,
-            ureq::rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            ureq::rustls::SignatureScheme::RSA_PKCS1_SHA384,
-            ureq::rustls::SignatureScheme::RSA_PKCS1_SHA512,
-        ]
-    }
-}
-
 /// Pre-built ureq agent or SOCKS-over-Unix tunnel for `http.proxy`.
 #[derive(Clone)]
 pub struct HttpClientContext {
@@ -662,53 +607,24 @@ impl HttpClientContext {
             Transport::Ureq(agent) => {
                 let mut req = agent
                     .get(&request_url)
-                    .set("User-Agent", &crate::http_smart::agent_header());
+                    .header("User-Agent", &crate::http_smart::agent_header());
                 if let Some(v) = git_protocol_header {
-                    req = req.set("Git-Protocol", v);
+                    req = req.header("Git-Protocol", v);
                 }
                 if let Some(cookie) = cookie_header.as_deref() {
-                    req = req.set("Cookie", cookie);
+                    req = req.header("Cookie", cookie);
                 }
                 if let Some(v) = auth_header {
-                    req = req.set("Authorization", v);
+                    req = req.header("Authorization", v);
                 }
                 for (name, value) in &extra_headers {
-                    req = req.set(name, value);
+                    req = req.header(name, value);
                 }
+                // The agent is configured with `http_status_as_error(false)`, so
+                // >= 400 responses arrive as `Ok`; only genuine transport errors
+                // are `Err`.
                 match req.call() {
-                    Ok(resp) => {
-                        let status = resp.status();
-                        let reason = resp.status_text().to_string();
-                        let headers = response_headers(&resp);
-                        let final_url = Some(resp.get_url().to_string());
-                        let mut body = Vec::new();
-                        resp.into_reader()
-                            .read_to_end(&mut body)
-                            .context("read GET body")?;
-                        Ok(RawHttpResponse {
-                            status,
-                            reason,
-                            headers,
-                            body,
-                            final_url,
-                        })
-                    }
-                    Err(ureq::Error::Status(code, resp)) => {
-                        let reason = resp.status_text().to_string();
-                        let headers = response_headers(&resp);
-                        let final_url = Some(resp.get_url().to_string());
-                        let mut body = Vec::new();
-                        resp.into_reader()
-                            .read_to_end(&mut body)
-                            .context("read GET error body")?;
-                        Ok(RawHttpResponse {
-                            status: code,
-                            reason,
-                            headers,
-                            body,
-                            final_url,
-                        })
-                    }
+                    Ok(resp) => raw_response_from_ureq(resp, "GET", true),
                     Err(err) => Err(http_request_error("GET", &request_url, err)),
                 }
             }
@@ -770,62 +686,35 @@ impl HttpClientContext {
             Transport::Ureq(agent) => {
                 let mut req = agent
                     .post(&request_url)
-                    .set("Content-Type", content_type)
-                    .set("Accept", accept)
-                    .set("User-Agent", &crate::http_smart::agent_header());
+                    .header("Content-Type", content_type)
+                    .header("Accept", accept)
+                    .header("User-Agent", &crate::http_smart::agent_header());
                 if let Some(v) = git_protocol_header {
-                    req = req.set("Git-Protocol", v);
+                    req = req.header("Git-Protocol", v);
                 }
                 if gzip_enabled {
-                    req = req.set("Content-Encoding", "gzip");
+                    req = req.header("Content-Encoding", "gzip");
                 }
                 if let Some(cookie) = cookie_header.as_deref() {
-                    req = req.set("Cookie", cookie);
+                    req = req.header("Cookie", cookie);
                 }
                 if let Some(v) = auth_header {
-                    req = req.set("Authorization", v);
+                    req = req.header("Authorization", v);
                 }
                 for (name, value) in &extra_headers {
-                    req = req.set(name, value);
+                    req = req.header(name, value);
                 }
+                // Sending from a reader (unknown length) makes ureq use chunked
+                // transfer-encoding; a byte slice sends a fixed Content-Length.
                 let send_result = if chunked {
                     let mut cur = std::io::Cursor::new(body);
-                    req.send(&mut cur)
+                    req.send(ureq::SendBody::from_reader(&mut cur))
                 } else {
-                    req.send_bytes(body)
+                    req.send(body)
                 };
+                // `http_status_as_error(false)` => >= 400 arrives as `Ok`.
                 match send_result {
-                    Ok(resp) => {
-                        let status = resp.status();
-                        let reason = resp.status_text().to_string();
-                        let headers = response_headers(&resp);
-                        let mut out = Vec::new();
-                        resp.into_reader()
-                            .read_to_end(&mut out)
-                            .context("read POST body")?;
-                        Ok(RawHttpResponse {
-                            status,
-                            reason,
-                            headers,
-                            body: out,
-                            final_url: None,
-                        })
-                    }
-                    Err(ureq::Error::Status(code, resp)) => {
-                        let reason = resp.status_text().to_string();
-                        let headers = response_headers(&resp);
-                        let mut out = Vec::new();
-                        resp.into_reader()
-                            .read_to_end(&mut out)
-                            .context("read POST error body")?;
-                        Ok(RawHttpResponse {
-                            status: code,
-                            reason,
-                            headers,
-                            body: out,
-                            final_url: None,
-                        })
-                    }
+                    Ok(resp) => raw_response_from_ureq(resp, "POST", false),
                     Err(err) => Err(http_request_error("POST", &request_url, err)),
                 }
             }
@@ -1360,15 +1249,45 @@ impl TraceCurl {
     }
 }
 
-fn response_headers(resp: &ureq::Response) -> Vec<(String, String)> {
-    let mut seen = std::collections::BTreeSet::new();
-    resp.headers_names()
-        .into_iter()
-        .filter(|name| seen.insert(name.to_ascii_lowercase()))
+/// Capture a ureq 3 response into a [`RawHttpResponse`], reading the body.
+///
+/// The body is read unbounded (git packs can be large). `with_final_url` records
+/// the post-redirect URL — GET discovery uses it to re-base subsequent POSTs;
+/// POST callers pass `false`, matching prior behavior.
+fn raw_response_from_ureq(
+    resp: ureq::http::Response<ureq::Body>,
+    what: &str,
+    with_final_url: bool,
+) -> Result<RawHttpResponse> {
+    use ureq::ResponseExt as _;
+    let status = resp.status().as_u16();
+    // http::Response carries no server reason phrase; use the canonical text.
+    let reason = resp.status().canonical_reason().unwrap_or("").to_string();
+    let headers = response_headers(&resp);
+    let final_url = with_final_url.then(|| resp.get_uri().to_string());
+    let mut body = Vec::new();
+    resp.into_body()
+        .into_reader()
+        .read_to_end(&mut body)
+        .with_context(|| format!("read {what} body"))?;
+    Ok(RawHttpResponse {
+        status,
+        reason,
+        headers,
+        body,
+        final_url,
+    })
+}
+
+fn response_headers(resp: &ureq::http::Response<ureq::Body>) -> Vec<(String, String)> {
+    resp.headers()
+        .keys()
         .flat_map(|name| {
-            let key = name.to_ascii_lowercase();
-            resp.all(&name)
-                .into_iter()
+            let key = name.as_str().to_ascii_lowercase();
+            resp.headers()
+                .get_all(name)
+                .iter()
+                .filter_map(|value| value.to_str().ok())
                 .map(move |value| (key.clone(), value.to_string()))
         })
         .collect()
@@ -2295,18 +2214,22 @@ fn ssl_verify_enabled(config: &ConfigSet) -> bool {
 }
 
 fn ureq_agent(ssl_verify: bool, proxy: Option<ureq::Proxy>) -> ureq::Agent {
-    let mut builder = ureq::AgentBuilder::new();
-    if let Some(proxy) = proxy {
-        builder = builder.proxy(proxy);
-    }
+    let mut builder = ureq::Agent::config_builder()
+        // Surface >= 400 responses as `Ok` so the auth-retry logic can read the
+        // status, body, and `WWW-Authenticate` headers itself.
+        .http_status_as_error(false)
+        .proxy(proxy);
     if !ssl_verify {
-        let tls_config = ureq::rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
-            .with_no_client_auth();
-        builder = builder.tls_config(Arc::new(tls_config));
+        // `http.sslVerify=false` / `GIT_SSL_NO_VERIFY`: opt out of certificate
+        // verification, matching Git's documented escape hatch. ureq's built-in
+        // `disable_verification` replaces a hand-rolled rustls verifier.
+        builder = builder.tls_config(
+            ureq::tls::TlsConfig::builder()
+                .disable_verification(true)
+                .build(),
+        );
     }
-    builder.build()
+    builder.build().new_agent()
 }
 
 fn build_transport(

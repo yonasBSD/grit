@@ -2,100 +2,232 @@
 //! you're ahead by, what's changed, and what to do next.
 
 use anyhow::{Context, Result};
-use grit_lib::porcelain::status::{status, StatusModel, StatusOptions};
+use grit_lib::diff::DiffEntry;
+use grit_lib::porcelain::status::{status, StatusOptions};
 use grit_lib::progress::NullProgress;
-use grit_lib::repo::Repository;
 use grit_lib::state::HeadState;
+use serde::Serialize;
 
-use crate::context::{self, short_oid};
+use crate::context::{self, CommitSummary};
+use crate::output::{change_json, ChangeJson, CommitJson, HumanRender};
 use crate::ui;
 
 /// Maximum number of commits to list in the status shortlog before summarizing.
 const SHORTLOG_LIMIT: usize = 10;
 
-pub fn run() -> Result<()> {
+/// Which header line `gs status` shows (drives only the human rendering; the
+/// JSON fields below carry the same information in a flat, stable form).
+#[derive(Clone, Copy)]
+enum HeaderKind {
+    AheadOfTarget,
+    EvenWith,
+    NoTarget,
+    Unborn,
+    Detached,
+    Invalid,
+}
+
+/// Result of `gs status`.
+#[derive(Serialize)]
+pub struct StatusOutcome {
+    /// Current branch (short name), or `null` when detached / invalid.
+    pub branch: Option<String>,
+    pub detached: bool,
+    /// HEAD commit (full oid), or `null` on an unborn / invalid HEAD.
+    pub head: Option<String>,
+    /// Target branch name, or `null` when none applies / was found.
+    pub target: Option<String>,
+    /// Number of commits ahead of `target`.
+    pub ahead: usize,
+    /// The ahead-of-target commits (newest first); empty unless ahead of a target.
+    pub commits: Vec<CommitJson>,
+    pub staged: Vec<ChangeJson>,
+    pub unstaged: Vec<ChangeJson>,
+    pub untracked: Vec<String>,
+    pub clean: bool,
+
+    // Human-only state, not part of the JSON schema.
+    #[serde(skip)]
+    header: HeaderKind,
+    #[serde(skip)]
+    commit_rows: Vec<CommitSummary>,
+    #[serde(skip)]
+    staged_entries: Vec<DiffEntry>,
+    #[serde(skip)]
+    unstaged_entries: Vec<DiffEntry>,
+}
+
+impl HumanRender for StatusOutcome {
+    fn render_human(&self) {
+        self.render_header();
+        self.render_changes();
+        self.render_hints();
+    }
+}
+
+impl StatusOutcome {
+    fn render_header(&self) {
+        let branch = self.branch.as_deref().unwrap_or_default();
+        let target = self.target.as_deref().unwrap_or_default();
+        match self.header {
+            HeaderKind::AheadOfTarget => {
+                println!("On {branch}  ·  {} ahead of {target}", self.ahead);
+                println!();
+                for row in ui::commit_rows(&self.commit_rows)
+                    .iter()
+                    .take(SHORTLOG_LIMIT)
+                {
+                    println!("{row}");
+                }
+                if self.ahead > SHORTLOG_LIMIT {
+                    println!("  … and {} more", self.ahead - SHORTLOG_LIMIT);
+                }
+                println!();
+            }
+            HeaderKind::EvenWith => {
+                println!("On {branch}  ·  even with {target}");
+                println!();
+            }
+            HeaderKind::NoTarget => {
+                println!("On {branch}");
+                println!();
+            }
+            HeaderKind::Unborn => {
+                println!("On {branch} — no commits yet");
+                println!();
+            }
+            HeaderKind::Detached => {
+                let short = self.head.as_deref().map(short_hex).unwrap_or_default();
+                println!("Detached at {short}");
+                println!();
+            }
+            HeaderKind::Invalid => {
+                println!("HEAD is in an unknown state");
+                println!();
+            }
+        }
+    }
+
+    fn render_changes(&self) {
+        if self.clean {
+            println!("Nothing to commit — working tree clean.");
+            return;
+        }
+        ui::print_change_group("Staged", &self.staged_entries);
+        ui::print_change_group("Changed (not staged)", &self.unstaged_entries);
+        ui::print_untracked(&self.untracked);
+    }
+
+    fn render_hints(&self) {
+        let mut hints = Vec::new();
+        if !self.unstaged_entries.is_empty() || !self.untracked.is_empty() {
+            hints.push("gs add <file> to stage");
+        }
+        if !self.staged_entries.is_empty() {
+            hints.push("gs commit \"message\" to commit");
+        }
+        if !hints.is_empty() {
+            println!("→ {}", hints.join("  ·  "));
+        }
+    }
+}
+
+/// Abbreviate a full hex oid to the 7-char short form used in human output.
+fn short_hex(oid: &str) -> &str {
+    oid.get(..7).unwrap_or(oid)
+}
+
+pub fn run() -> Result<StatusOutcome> {
     let repo = context::discover()?;
     let model = status(&repo, &StatusOptions::default(), &mut NullProgress)
         .context("could not compute status")?;
 
-    print_header(&repo, &model)?;
-    print_changes(&model);
-    print_hints(&model);
-    Ok(())
+    let (branch, detached, head, target, ahead_commits, header) =
+        resolve_header(&repo, &model.head)?;
+    let ahead = ahead_commits.len();
+    let commits = ahead_commits.iter().map(CommitJson::from_summary).collect();
+
+    let staged: Vec<ChangeJson> = model.staged.iter().map(change_json).collect();
+    let unstaged: Vec<ChangeJson> = model.unstaged.iter().map(change_json).collect();
+    let clean = model.staged.is_empty() && model.unstaged.is_empty() && model.untracked.is_empty();
+
+    Ok(StatusOutcome {
+        branch,
+        detached,
+        head,
+        target,
+        ahead,
+        commits,
+        staged,
+        unstaged,
+        untracked: model.untracked,
+        clean,
+        header,
+        commit_rows: ahead_commits,
+        staged_entries: model.staged,
+        unstaged_entries: model.unstaged,
+    })
 }
 
-/// The branch line, plus an ahead-of-target shortlog when there is one.
-fn print_header(repo: &Repository, model: &StatusModel) -> Result<()> {
-    match &model.head {
+/// Resolve the branch/target/ahead picture and the matching human header kind.
+type HeaderResult = (
+    Option<String>,
+    bool,
+    Option<String>,
+    Option<String>,
+    Vec<CommitSummary>,
+    HeaderKind,
+);
+
+fn resolve_header(repo: &grit_lib::repo::Repository, head: &HeadState) -> Result<HeaderResult> {
+    Ok(match head {
         HeadState::Branch {
             short_name,
             oid: Some(head_oid),
             ..
-        } => {
-            let Some(target) = context::find_target_branch(repo)? else {
-                println!("On {short_name}");
-                println!();
-                return Ok(());
-            };
-
-            let commits = context::commits_ahead_of(repo, *head_oid, target.oid)?;
-            if commits.is_empty() {
-                println!("On {short_name}  ·  even with {}", target.display_name);
-                println!();
-                return Ok(());
+        } => match context::find_target_branch(repo)? {
+            None => (
+                Some(short_name.clone()),
+                false,
+                Some(head_oid.to_hex()),
+                None,
+                Vec::new(),
+                HeaderKind::NoTarget,
+            ),
+            Some(target) => {
+                let ahead: Vec<CommitSummary> =
+                    context::commits_ahead_of(repo, *head_oid, target.oid)?;
+                let header = if ahead.is_empty() {
+                    HeaderKind::EvenWith
+                } else {
+                    HeaderKind::AheadOfTarget
+                };
+                (
+                    Some(short_name.clone()),
+                    false,
+                    Some(head_oid.to_hex()),
+                    Some(target.display_name),
+                    ahead,
+                    header,
+                )
             }
-
-            println!(
-                "On {short_name}  ·  {} ahead of {}",
-                commits.len(),
-                target.display_name
-            );
-            println!();
-            for commit in commits.iter().take(SHORTLOG_LIMIT) {
-                println!("  {}  {}", short_oid(&commit.oid), commit.subject);
-            }
-            if commits.len() > SHORTLOG_LIMIT {
-                println!("  … and {} more", commits.len() - SHORTLOG_LIMIT);
-            }
-            println!();
-        }
-        HeadState::Branch { short_name, .. } => {
-            println!("On {short_name} — no commits yet");
-            println!();
-        }
-        HeadState::Detached { oid } => {
-            println!("Detached at {}", short_oid(oid));
-            println!();
-        }
-        HeadState::Invalid => {
-            println!("HEAD is in an unknown state");
-            println!();
-        }
-    }
-    Ok(())
-}
-
-fn print_changes(model: &StatusModel) {
-    let clean = model.staged.is_empty() && model.unstaged.is_empty() && model.untracked.is_empty();
-    if clean {
-        println!("Nothing to commit — working tree clean.");
-        return;
-    }
-
-    ui::print_change_group("Staged", &model.staged);
-    ui::print_change_group("Changed (not staged)", &model.unstaged);
-    ui::print_untracked(&model.untracked);
-}
-
-fn print_hints(model: &StatusModel) {
-    let mut hints = Vec::new();
-    if !model.unstaged.is_empty() || !model.untracked.is_empty() {
-        hints.push("gs add <file> to stage");
-    }
-    if !model.staged.is_empty() {
-        hints.push("gs commit \"message\" to commit");
-    }
-    if !hints.is_empty() {
-        println!("→ {}", hints.join("  ·  "));
-    }
+        },
+        HeadState::Branch { short_name, .. } => (
+            Some(short_name.clone()),
+            false,
+            None,
+            None,
+            Vec::new(),
+            HeaderKind::Unborn,
+        ),
+        HeadState::Detached { oid } => (
+            None,
+            true,
+            Some(oid.to_hex()),
+            None,
+            Vec::new(),
+            HeaderKind::Detached,
+        ),
+        HeadState::Invalid => (None, false, None, None, Vec::new(), HeaderKind::Invalid),
+    })
 }

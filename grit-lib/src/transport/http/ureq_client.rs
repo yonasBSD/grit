@@ -286,13 +286,16 @@ fn default_user_agent() -> String {
 
 /// Build a [`ureq::Agent`] with default Git-shaped timeouts and an optional proxy.
 fn default_agent(proxy: Option<ureq::Proxy>) -> ureq::Agent {
-    let mut builder = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(30))
-        .timeout(Duration::from_secs(600));
-    if let Some(proxy) = proxy {
-        builder = builder.proxy(proxy);
-    }
-    builder.build()
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .timeout_global(Some(Duration::from_secs(600)))
+        // Return >= 400 responses as `Ok` so the auth-retry logic can inspect the
+        // status and `WWW-Authenticate` headers rather than treating them as hard
+        // transport errors (ureq's default surfaces them as `Error::StatusCode`).
+        .http_status_as_error(false)
+        .proxy(proxy)
+        .build()
+        .new_agent()
 }
 
 /// Resolve `http.proxy` into a [`ureq::Proxy`], or `None` for the direct path.
@@ -391,18 +394,18 @@ impl UreqHttpClient {
         git_protocol: Option<&str>,
         auth: Option<&str>,
     ) -> Result<RawResponse> {
-        let mut req = self.agent.get(url).set("User-Agent", &self.user_agent);
+        let mut req = self.agent.get(url).header("User-Agent", &self.user_agent);
         if let Some(v) = git_protocol {
-            req = req.set("Git-Protocol", v);
+            req = req.header("Git-Protocol", v);
         }
         if let Some(a) = auth {
-            req = req.set("Authorization", a);
+            req = req.header("Authorization", a);
         }
         if let Some(cookie) = self.cookie_header_for_url(url) {
-            req = req.set("Cookie", &cookie);
+            req = req.header("Cookie", &cookie);
         }
         for (name, value) in self.extra_headers_for_url(url) {
-            req = req.set(&name, &value);
+            req = req.header(&name, &value);
         }
         finish(req.call())
     }
@@ -419,22 +422,22 @@ impl UreqHttpClient {
         let mut req = self
             .agent
             .post(url)
-            .set("Content-Type", content_type)
-            .set("Accept", accept)
-            .set("User-Agent", &self.user_agent);
+            .header("Content-Type", content_type)
+            .header("Accept", accept)
+            .header("User-Agent", &self.user_agent);
         if let Some(v) = git_protocol {
-            req = req.set("Git-Protocol", v);
+            req = req.header("Git-Protocol", v);
         }
         if let Some(a) = auth {
-            req = req.set("Authorization", a);
+            req = req.header("Authorization", a);
         }
         if let Some(cookie) = self.cookie_header_for_url(url) {
-            req = req.set("Cookie", &cookie);
+            req = req.header("Cookie", &cookie);
         }
         for (name, value) in self.extra_headers_for_url(url) {
-            req = req.set(&name, &value);
+            req = req.header(&name, &value);
         }
-        finish(req.send_bytes(body))
+        finish(req.send(body))
     }
 
     /// Run `attempt` (a GET or POST closure) with auth-retry on 401, returning
@@ -542,33 +545,29 @@ impl HttpClient for UreqHttpClient {
 
 /// Convert a ureq call result into a [`RawResponse`], reading the body.
 ///
-/// `ureq` returns `Err(ureq::Error::Status(..))` for >= 400 responses; we map
-/// those into a `RawResponse` so the auth-retry logic can inspect the status and
-/// `WWW-Authenticate` headers rather than treating them as hard errors.
-fn finish(result: std::result::Result<ureq::Response, ureq::Error>) -> Result<RawResponse> {
+/// The agent is configured with `http_status_as_error(false)`, so >= 400
+/// responses arrive as `Ok` and are mapped into a `RawResponse` (letting the
+/// auth-retry logic inspect the status and `WWW-Authenticate` headers rather
+/// than treating them as hard errors). Only genuine transport failures are `Err`.
+fn finish(
+    result: std::result::Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+) -> Result<RawResponse> {
     match result {
         Ok(resp) => Ok(read_response(resp)),
-        Err(ureq::Error::Status(_code, resp)) => Ok(read_response(resp)),
         Err(e) => Err(Error::Message(format!("http transport error: {e}"))),
     }
 }
 
-fn read_response(resp: ureq::Response) -> RawResponse {
-    let status = resp.status();
-    let final_url = resp.get_url().to_string();
-    let www_authenticate = resp
-        .all("WWW-Authenticate")
-        .into_iter()
-        .map(std::string::ToString::to_string)
-        .collect();
-    let set_cookie = resp
-        .all("Set-Cookie")
-        .into_iter()
-        .map(std::string::ToString::to_string)
-        .collect();
+fn read_response(resp: ureq::http::Response<ureq::Body>) -> RawResponse {
+    use ureq::ResponseExt as _;
+    let status = resp.status().as_u16();
+    let final_url = resp.get_uri().to_string();
+    let www_authenticate = header_values(resp.headers(), "WWW-Authenticate");
+    let set_cookie = header_values(resp.headers(), "Set-Cookie");
     let mut body = Vec::new();
-    // Read the body; an error leaves `body` as whatever was read.
-    let _ = resp.into_reader().read_to_end(&mut body);
+    // Read the body (unbounded; git packs can be large). An error leaves `body`
+    // as whatever was read.
+    let _ = resp.into_body().into_reader().read_to_end(&mut body);
     RawResponse {
         status,
         www_authenticate,
@@ -576,6 +575,17 @@ fn read_response(resp: ureq::Response) -> RawResponse {
         body,
         final_url,
     }
+}
+
+/// Collect all values for a header as owned UTF-8 strings (skipping any that
+/// aren't valid UTF-8).
+fn header_values(headers: &ureq::http::HeaderMap, name: &str) -> Vec<String> {
+    headers
+        .get_all(name)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn finalize_status(

@@ -25,6 +25,11 @@ pub struct TargetBranch {
 pub struct CommitSummary {
     pub oid: ObjectId,
     pub subject: String,
+    /// Author, with the email domain stripped (e.g. `schacon` from
+    /// `schacon@gmail.com`), falling back to the author name.
+    pub author: String,
+    /// Author date as a Unix timestamp (for relative-date rendering).
+    pub timestamp: i64,
 }
 
 /// Discover the repository containing the current directory.
@@ -108,13 +113,67 @@ pub fn commits_ahead_of(
         }
         let commit = read_commit(repo, &oid)?;
         stack.extend(commit.parents.iter().copied());
+        let (author, timestamp) = author_and_time(&commit.author);
         commits.push(CommitSummary {
             oid,
             subject: subject_line(&commit.message),
+            author,
+            timestamp,
         });
     }
 
     Ok(commits)
+}
+
+/// Parse a `Name <email> <epoch> <tz>` identity into a display author (the
+/// email's local part, with `@domain` stripped — falling back to the name) and
+/// the Unix timestamp.
+pub fn author_and_time(ident: &str) -> (String, i64) {
+    let name = ident.split(" <").next().unwrap_or("").trim();
+    let email = ident
+        .split_once(" <")
+        .and_then(|(_, rest)| rest.split_once('>'))
+        .map(|(email, _)| email)
+        .unwrap_or("");
+    let local = email.split('@').next().unwrap_or("").trim();
+    let author = if local.is_empty() {
+        name.to_owned()
+    } else {
+        local.to_owned()
+    };
+    let timestamp = ident
+        .rsplit_once('>')
+        .and_then(|(_, after)| after.split_whitespace().next())
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
+    (author, timestamp)
+}
+
+/// A human "N units ago" string for a Unix `timestamp`, relative to `now`
+/// (taking `now` explicitly so a list of rows shares one clock).
+#[must_use]
+pub fn relative_date_from(timestamp: i64, now: i64) -> String {
+    let secs = now - timestamp;
+    if secs < 0 {
+        return "in the future".to_owned();
+    }
+    if secs < 60 {
+        return "just now".to_owned();
+    }
+    let (n, unit) = if secs < 3600 {
+        (secs / 60, "minute")
+    } else if secs < 86_400 {
+        (secs / 3600, "hour")
+    } else if secs < 86_400 * 14 {
+        (secs / 86_400, "day")
+    } else if secs < 86_400 * 70 {
+        (secs / (86_400 * 7), "week")
+    } else if secs < 86_400 * 365 {
+        (secs / (86_400 * 30), "month")
+    } else {
+        (secs / (86_400 * 365), "year")
+    };
+    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
 }
 
 fn reachable_commits(repo: &Repository, start: ObjectId) -> Result<HashSet<ObjectId>> {
@@ -157,11 +216,6 @@ pub fn subject_line(message: &str) -> String {
         .map(str::trim)
         .unwrap_or("(no subject)")
         .to_owned()
-}
-
-/// An abbreviated, 7-character object id.
-pub fn short_oid(oid: &ObjectId) -> String {
-    oid.to_hex().chars().take(7).collect()
 }
 
 /// Resolve a strict commit identity line (`Name <email> <epoch> <offset>`) for a

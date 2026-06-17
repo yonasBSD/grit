@@ -16,10 +16,30 @@ use grit_lib::progress::NullProgress;
 use grit_lib::refs;
 use grit_lib::repo::Repository;
 use grit_lib::state::resolve_head;
+use serde::Serialize;
 
 use crate::context;
+use crate::output::HumanRender;
 
-pub fn run(name: &str, create: bool) -> Result<()> {
+/// Result of `gs switch`.
+#[derive(Serialize)]
+pub struct SwitchOutcome {
+    pub branch: String,
+    /// Whether the branch was created (`-c`) as part of the switch.
+    pub created: bool,
+}
+
+impl HumanRender for SwitchOutcome {
+    fn render_human(&self) {
+        if self.created {
+            println!("Created and switched to branch {}", self.branch);
+        } else {
+            println!("Switched to branch {}", self.branch);
+        }
+    }
+}
+
+pub fn run(name: &str, create: bool) -> Result<SwitchOutcome> {
     let repo = context::discover()?;
 
     let model = status(&repo, &StatusOptions::default(), &mut NullProgress)
@@ -59,12 +79,10 @@ pub fn run(name: &str, create: bool) -> Result<()> {
         .context("could not update the working tree")?;
     refs::write_symbolic_ref(&repo.git_dir, "HEAD", &branch_ref).context("could not move HEAD")?;
 
-    if create {
-        println!("Created and switched to branch {name}");
-    } else {
-        println!("Switched to branch {name}");
-    }
-    Ok(())
+    Ok(SwitchOutcome {
+        branch: name.to_owned(),
+        created: create,
+    })
 }
 
 /// Refuse the switch if it would overwrite an untracked working-tree file with a

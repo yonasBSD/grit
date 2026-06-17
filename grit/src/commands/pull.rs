@@ -631,7 +631,7 @@ pub fn run(args: Args) -> Result<()> {
         if !repo_is_raw_path {
             let opt_rebase_for_msg =
                 pull_will_rebase_for_diag(&args, &config, current_branch.as_deref());
-            if current_branch.is_none() {
+            let Some(branch) = current_branch.as_deref() else {
                 return Err(die_no_merge_candidates(
                     args.remote.as_deref(),
                     false,
@@ -639,8 +639,7 @@ pub fn run(args: Args) -> Result<()> {
                     &config,
                     opt_rebase_for_msg,
                 ));
-            }
-            let branch = current_branch.as_deref().unwrap();
+            };
             let has_merge_cfg = config.get(&format!("branch.{branch}.merge")).is_some();
             // No `branch.<b>.merge` and no explicit refspec: there is no branch to merge. The exact
             // diagnostic (specify-a-branch vs no-tracking-information) is chosen inside

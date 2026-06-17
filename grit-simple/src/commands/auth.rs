@@ -27,6 +27,45 @@ use grit_lib::credentials::{Credential, CredentialProvider, HelperCredentialProv
 use grit_lib::repo::Repository;
 use grit_lib::transport::http::ureq_client::UreqHttpClient;
 use grit_lib::transport::http::HttpClient;
+use serde::Serialize;
+
+use crate::output::HumanRender;
+
+/// Result of `gs auth` (sign-in).
+#[derive(Serialize)]
+pub struct AuthOutcome {
+    pub authenticated: bool,
+    pub host: String,
+}
+
+impl HumanRender for AuthOutcome {
+    fn render_human(&self) {
+        println!("\n✓ Signed in to GitHub — token stored for {}.", self.host);
+    }
+}
+
+/// Result of `gs auth logout`.
+#[derive(Serialize)]
+pub struct LogoutOutcome {
+    pub logged_out: bool,
+    pub host: String,
+}
+
+impl HumanRender for LogoutOutcome {
+    fn render_human(&self) {
+        if self.logged_out {
+            println!(
+                "✓ Signed out of GitHub — removed the stored token for {}.",
+                self.host
+            );
+        } else {
+            println!(
+                "No credential helper is configured, so there's no stored token for {} to remove.",
+                self.host
+            );
+        }
+    }
+}
 
 /// GitHub OAuth App client id used for the device flow. This is grit's
 /// registered OAuth App; the device flow uses no client secret, so the id is not
@@ -43,7 +82,7 @@ const SCOPE: &str = "repo";
 const FORM: &str = "application/x-www-form-urlencoded";
 
 /// Run the interactive `gs auth` device flow and store the token.
-pub fn run() -> Result<()> {
+pub fn run() -> Result<AuthOutcome> {
     let mut config = load_config();
     let client_id = client_id(&config)?;
 
@@ -58,17 +97,52 @@ pub fn run() -> Result<()> {
 
     let device = request_device_code(&http, &client_id)?;
 
-    println!("To authorize gs, open this page in your browser:\n");
-    println!("    {}\n", device.verification_uri);
-    println!("and enter the code:\n");
-    println!("    {}\n", device.user_code);
-    println!("Waiting for you to authorize… (press Ctrl-C to cancel)");
+    // The device-code prompt is interactive UX, not command output: send it to
+    // stderr so it's visible in both modes and never pollutes JSON on stdout.
+    eprintln!("To authorize gs, open this page in your browser:\n");
+    eprintln!("    {}\n", device.verification_uri);
+    eprintln!("and enter the code:\n");
+    eprintln!("    {}\n", device.user_code);
+    eprintln!("Waiting for you to authorize… (press Ctrl-C to cancel)");
 
     let token = poll_for_token(&http, &client_id, &device)?;
     store_token(&config, &token)?;
 
-    println!("\n✓ Signed in to GitHub — token stored for {GITHUB_HOST}.");
-    Ok(())
+    Ok(AuthOutcome {
+        authenticated: true,
+        host: GITHUB_HOST.to_owned(),
+    })
+}
+
+/// Run `gs auth logout`: erase the token `gs auth` stored, via the configured
+/// `credential.helper` (`erase`). This removes the same credential `gs auth`
+/// writes — `https://x-access-token@github.com` — so a later push/fetch no longer
+/// authenticates with it.
+pub fn logout() -> Result<LogoutOutcome> {
+    let config = load_config();
+
+    // Without a helper there's nothing that could be holding the token.
+    if credential_helpers(&config).is_empty() {
+        return Ok(LogoutOutcome {
+            logged_out: false,
+            host: GITHUB_HOST.to_owned(),
+        });
+    }
+
+    let cred = Credential {
+        protocol: Some("https".to_owned()),
+        host: Some(GITHUB_HOST.to_owned()),
+        username: Some("x-access-token".to_owned()),
+        ..Default::default()
+    };
+    HelperCredentialProvider::new(config)
+        .reject(&cred)
+        .context("removing the token with your credential helper")?;
+
+    Ok(LogoutOutcome {
+        logged_out: true,
+        host: GITHUB_HOST.to_owned(),
+    })
 }
 
 /// Offer to re-authenticate after a push/fetch failed with an auth error.
@@ -94,7 +168,13 @@ pub fn offer_reauth(err: &anyhow::Error, remote_url: &str) -> Result<bool> {
         return Ok(false);
     }
 
-    run()?;
+    // Reauth runs mid push/fetch (outside the normal emit path), so confirm on
+    // stderr — never stdout, which may be carrying a JSON outcome.
+    let outcome = run()?;
+    eprintln!(
+        "\n✓ Signed in to GitHub — token stored for {}.",
+        outcome.host
+    );
     Ok(true)
 }
 
@@ -209,7 +289,7 @@ fn ensure_credential_helper() -> Result<ConfigSet> {
     let helper = format!("\"{exe}\" manager");
     crate::commands::config::set_global("credential.helper", &helper)
         .context("setting up the Windows credential helper")?;
-    println!("Set credential.helper to `gs manager` (Windows Credential Manager).");
+    eprintln!("Set credential.helper to `gs manager` (Windows Credential Manager).");
     Ok(load_config())
 }
 

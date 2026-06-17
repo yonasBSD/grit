@@ -11656,7 +11656,9 @@ fn commit_author_timestamp(repo: &Repository, commit_oid: ObjectId) -> Result<i6
         return Ok(0);
     }
 
-    let fmt = time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]");
+    let fmt = time::format_description::parse_borrowed::<1>(
+        "[year]-[month]-[day] [hour]:[minute]:[second]",
+    );
     if let Ok(fmt) = fmt {
         if let Ok(naive) = time::PrimitiveDateTime::parse(date_text, &fmt) {
             return Ok(naive.assume_utc().unix_timestamp());
@@ -12940,7 +12942,7 @@ fn parse_date_to_git_ts(date_str: &str) -> Option<String> {
             let m: i64 = tz[3..5].parse().unwrap_or(0);
             let tz_secs = sign * (h * 3600 + m * 60);
             if let Ok(offset) = time::UtcOffset::from_whole_seconds(tz_secs as i32) {
-                let fmt = time::format_description::parse(
+                let fmt = time::format_description::parse_borrowed::<1>(
                     "[year]-[month]-[day] [hour]:[minute]:[second]",
                 )
                 .ok()?;

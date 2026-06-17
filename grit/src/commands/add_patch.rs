@@ -1060,7 +1060,9 @@ pub(crate) fn run_add_patch_with_reader(
 
         let mut cur_work = work_blob;
 
-        'rediff: loop {
+        // A labeled block (not a loop): control flow only ever `break 'rediff`s
+        // out of it, so the body runs at most once.
+        'rediff: {
             let index_str = String::from_utf8_lossy(&index_side_bytes);
             let work_str = String::from_utf8_lossy(&cur_work);
             let text_diff = TextDiff::configure()
@@ -1340,10 +1342,9 @@ pub(crate) fn run_add_patch_with_reader(
                     Some(a) => a,
                 };
 
-                if answer.is_empty() {
+                let Some(first) = answer.chars().next() else {
                     continue 'hunk_loop;
-                }
-                let first = answer.chars().next().unwrap();
+                };
                 let lower = first.to_ascii_lowercase();
 
                 // 'g' takes a hunk number and '/' takes a regexp, so they may be multi-char.

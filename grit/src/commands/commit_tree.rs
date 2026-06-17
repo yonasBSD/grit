@@ -220,8 +220,10 @@ fn parse_identity_date(input: &str, default_tz: &str) -> Result<String> {
             let tz_str_inner = parts[0];
             let datetime_part = parts[1];
             if let Ok(tz) = parse_git_tz(tz_str_inner) {
-                let ymd_hms =
-                    format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]").ok();
+                let ymd_hms = format_description::parse_borrowed::<1>(
+                    "[year]-[month]-[day] [hour]:[minute]:[second]",
+                )
+                .ok();
                 if let Some(ref fmt) = ymd_hms {
                     if let Ok(naive) = PrimitiveDateTime::parse(datetime_part, fmt) {
                         let dt = naive.assume_offset(tz);
@@ -235,7 +237,7 @@ fn parse_identity_date(input: &str, default_tz: &str) -> Result<String> {
     }
 
     let fallback_tz = parse_git_tz(default_tz)?;
-    let ymd_hm = format_description::parse("[year]-[month]-[day] [hour]:[minute]")?;
+    let ymd_hm = format_description::parse_borrowed::<1>("[year]-[month]-[day] [hour]:[minute]")?;
     if let Ok(naive) = PrimitiveDateTime::parse(input, &ymd_hm) {
         let dt = naive.assume_offset(fallback_tz);
         let secs = dt.unix_timestamp();
@@ -244,7 +246,8 @@ fn parse_identity_date(input: &str, default_tz: &str) -> Result<String> {
     }
 
     // Also try "YYYY-MM-DD HH:MM:SS" without timezone
-    let ymd_hms = format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")?;
+    let ymd_hms =
+        format_description::parse_borrowed::<1>("[year]-[month]-[day] [hour]:[minute]:[second]")?;
     if let Ok(naive) = PrimitiveDateTime::parse(input, &ymd_hms) {
         let dt = naive.assume_offset(fallback_tz);
         let secs = dt.unix_timestamp();

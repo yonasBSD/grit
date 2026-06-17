@@ -9,8 +9,46 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use grit_lib::config::{ConfigFile, ConfigScope, ConfigSet};
+use serde::Serialize;
 
 use crate::context;
+use crate::output::HumanRender;
+
+/// Result of `gs config`, tagged by `action`.
+#[derive(Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ConfigOutcome {
+    Get { key: String, value: String },
+    List { entries: Vec<ConfigEntry> },
+    Set { key: String, value: String },
+    Unset { key: String },
+}
+
+/// One entry in a `list` outcome. `value` is `null` for a bare/valueless key.
+#[derive(Serialize)]
+pub struct ConfigEntry {
+    pub key: String,
+    pub value: Option<String>,
+}
+
+impl HumanRender for ConfigOutcome {
+    fn render_human(&self) {
+        match self {
+            // `get` prints just the value, matching `git config <key>`.
+            ConfigOutcome::Get { value, .. } => println!("{value}"),
+            ConfigOutcome::List { entries } => {
+                for entry in entries {
+                    match &entry.value {
+                        Some(value) => println!("{}={value}", entry.key),
+                        None => println!("{}", entry.key),
+                    }
+                }
+            }
+            // `set` / `unset` are silent in human mode (as before).
+            ConfigOutcome::Set { .. } | ConfigOutcome::Unset { .. } => {}
+        }
+    }
+}
 
 /// Run `gs config`.
 ///
@@ -24,7 +62,7 @@ pub fn run(
     unset: bool,
     key: Option<String>,
     value: Option<String>,
-) -> Result<()> {
+) -> Result<ConfigOutcome> {
     if list {
         if key.is_some() || value.is_some() {
             bail!("--list does not take a key or value");
@@ -53,32 +91,34 @@ pub fn run(
 /// Windows credential helper).
 #[cfg(windows)]
 pub fn set_global(key: &str, value: &str) -> Result<()> {
-    set_value(true, key, value)
+    set_value(true, key, value).map(|_| ())
 }
 
-fn get_value(global: bool, key: &str) -> Result<()> {
+fn get_value(global: bool, key: &str) -> Result<ConfigOutcome> {
     let config = read_config(global)?;
     match config.get(key) {
-        Some(value) => {
-            println!("{value}");
-            Ok(())
-        }
+        Some(value) => Ok(ConfigOutcome::Get {
+            key: key.to_owned(),
+            value,
+        }),
         None => bail!("key '{key}' is not set"),
     }
 }
 
-fn list_values(global: bool) -> Result<()> {
+fn list_values(global: bool) -> Result<ConfigOutcome> {
     let config = read_config(global)?;
-    for entry in config.entries() {
-        match &entry.value {
-            Some(value) => println!("{}={value}", entry.key),
-            None => println!("{}", entry.key),
-        }
-    }
-    Ok(())
+    let entries = config
+        .entries()
+        .iter()
+        .map(|entry| ConfigEntry {
+            key: entry.key.clone(),
+            value: entry.value.clone(),
+        })
+        .collect();
+    Ok(ConfigOutcome::List { entries })
 }
 
-fn set_value(global: bool, key: &str, value: &str) -> Result<()> {
+fn set_value(global: bool, key: &str, value: &str) -> Result<ConfigOutcome> {
     let (scope, path) = target_file(global)?;
     let content = std::fs::read_to_string(&path).unwrap_or_default();
     let mut cfg = ConfigFile::parse(&path, &content, scope)
@@ -87,10 +127,13 @@ fn set_value(global: bool, key: &str, value: &str) -> Result<()> {
         .with_context(|| format!("could not set {key}"))?;
     cfg.write()
         .with_context(|| format!("could not write {}", path.display()))?;
-    Ok(())
+    Ok(ConfigOutcome::Set {
+        key: key.to_owned(),
+        value: value.to_owned(),
+    })
 }
 
-fn unset_value(global: bool, key: &str) -> Result<()> {
+fn unset_value(global: bool, key: &str) -> Result<ConfigOutcome> {
     let (scope, path) = target_file(global)?;
     let Ok(content) = std::fs::read_to_string(&path) else {
         bail!("key '{key}' is not set");
@@ -105,7 +148,9 @@ fn unset_value(global: bool, key: &str) -> Result<()> {
     }
     cfg.write()
         .with_context(|| format!("could not write {}", path.display()))?;
-    Ok(())
+    Ok(ConfigOutcome::Unset {
+        key: key.to_owned(),
+    })
 }
 
 /// Load config for a read. `--global` reads only the global file; otherwise we

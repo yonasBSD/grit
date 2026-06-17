@@ -1152,7 +1152,7 @@ fn write_filtered_bundle_promisor_marker(
     fs::create_dir_all(&pack_dir)?;
     let mut hasher = Sha1::new();
     hasher.update(pack_data);
-    let pack_hash = format!("{:x}", hasher.finalize());
+    let pack_hash = hex::encode(hasher.finalize());
     let marker = pack_dir.join(format!("pack-{pack_hash}.promisor"));
     let mut out = fs::File::create(&marker)
         .with_context(|| format!("creating promisor marker {}", marker.display()))?;

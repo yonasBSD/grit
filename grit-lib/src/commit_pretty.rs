@@ -144,7 +144,7 @@ pub fn format_short_date_from_ident(ident: &str) -> String {
     let Ok(dt) = time::OffsetDateTime::from_unix_timestamp(ts + offset_secs) else {
         return ident.to_owned();
     };
-    let format = time::format_description::parse("[year]-[month]-[day]");
+    let format = time::format_description::parse_borrowed::<1>("[year]-[month]-[day]");
     let Ok(fmt) = format else {
         return ident.to_owned();
     };
