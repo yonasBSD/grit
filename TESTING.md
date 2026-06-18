@@ -8,10 +8,10 @@ The **single source of truth** for per-file harness status is the per-test TOML 
 
 ## Running tests
 
-Build the binary first; the runner expects **`target/release/grit`**.
+Build the binary first; the runner expects **`target/release/grit-git`**.
 
 ```bash
-cargo build --release -p grit-cli
+cargo build --release -p grit-legacy
 
 # Single file
 ./scripts/run-tests.sh t3200-branch.sh
@@ -53,7 +53,7 @@ Re-run **`python3 scripts/generate-test-files-catalog.py`** if you add or rename
 
 1. **`scripts/generate-test-files-catalog.py`** — Scans `tests/t*.sh`, counts `test_expect_success` / `test_expect_failure` per file, assigns `group` (`t0`–`t9` from the first digit of the `tNNNN…` prefix, matching **`git/t/README`** test families), and writes or merges the **`data/tests/<group>/<stem>.toml`** files. Invoked automatically at the start of **`run-tests.sh`**.
 
-2. **`scripts/run-tests.sh`** — Copies `target/release/grit` to `tests/grit`, builds the file list (honoring **`in_scope`**), runs each selected script under `timeout`, parses the `# Tests:` summary line, writes a small batch TSV for **`scripts/apply-test-run-results.py`**.
+2. **`scripts/run-tests.sh`** — Copies `target/release/grit-git` to `tests/grit`, builds the file list (honoring **`in_scope`**), runs each selected script under `timeout`, parses the `# Tests:` summary line, writes a small batch TSV for **`scripts/apply-test-run-results.py`**.
 
 3. **`scripts/apply-test-run-results.py`** — Updates the matching **`data/tests/`** TOMLs (`passed_last`, `failing`, `fully_passing`, `status`, etc.). Writes are atomic (temp file + rename), so parallel family runs never collide: each test file owns its own TOML.
 

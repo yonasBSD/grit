@@ -1,12 +1,12 @@
-# Windows Compilation Plan — `grit-lib` + `grit-simple`
+# Windows Compilation Plan — `grit-lib` + `grit-cli`
 
-Goal: get `grit-lib` and `grit-simple` to **compile for Windows**. `grit-cli`
+Goal: get `grit-lib` and `grit-cli` to **compile for Windows**. `grit-legacy`
 (`grit/`) and the other workspace members (`grit-http-server`, `grit-protocol`,
 `grit-utils`, `grit-examples`) are explicitly **out of scope**.
 
-`grit-simple` (the `gi` binary) contains **no platform-specific code of its
+`grit-cli` (the `grit` binary) contains **no platform-specific code of its
 own** — it only re-exports `grit-lib` operations through `clap`. So "make
-grit-simple build on Windows" reduces entirely to "make `grit-lib` build on
+grit-cli build on Windows" reduces entirely to "make `grit-lib` build on
 Windows with its default feature set" (`test-tools` and `http-ureq` both off).
 
 ## Current state
@@ -22,7 +22,7 @@ infrastructure modules are gated:
   `#[cfg(not(unix))]` stubs in `lib.rs` (Unix-domain-socket IPC and
   `kill(2)`-based process control are Unix-only).
 - `test_tool_progress` (uses `AsRawFd`) and `parse_options_test_tool` are gated
-  behind the `test-tools` feature, which is **off** in `grit-simple`'s build, so
+  behind the `test-tools` feature, which is **off** in `grit-cli`'s build, so
   they never compile here.
 - Already-ported with both branches: `ident_resolve`, `signing`, `mailmap`,
   `index`, `crlf`, `attributes`, `untracked_cache`, `ident_config`, `repo`,
@@ -36,10 +36,10 @@ link, so the Windows **std** target is enough to surface every type/path error:
 
 ```sh
 rustup target add x86_64-pc-windows-gnu
-cargo check --target x86_64-pc-windows-gnu -p grit-simple
+cargo check --target x86_64-pc-windows-gnu -p grit-cli
 ```
 
-(`grit-simple` pulls in `grit-lib` with default features, so this checks both.)
+(`grit-cli` pulls in `grit-lib` with default features, so this checks both.)
 
 ## Remaining compile errors and their fixes
 
@@ -80,8 +80,8 @@ The symlink-backed difftool checkout optimisation called
   on Windows it falls through to the existing file-copy path below.
 
 > Status: **all three files have been fixed in this branch** and
-> `cargo check --target x86_64-pc-windows-gnu -p grit-simple` now completes with
-> **no errors** (warnings only). The host build (`cargo check -p grit-simple`)
+> `cargo check --target x86_64-pc-windows-gnu -p grit-cli` now completes with
+> **no errors** (warnings only). The host build (`cargo check -p grit-cli`)
 > remains clean.
 
 ## Behavioural caveats on Windows (intentional, document but don't block)
@@ -150,8 +150,8 @@ runner / via `cargo-xwin` as a final gate before declaring the port done.
 
 ## Definition of done
 
-1. `cargo check --target x86_64-pc-windows-gnu -p grit-simple` — no errors. ✅ (done in this branch)
-2. `cargo check -p grit-simple` (host) — still clean. ✅
-3. (Recommended) `cargo build --target x86_64-pc-windows-msvc -p grit-simple` on
+1. `cargo check --target x86_64-pc-windows-gnu -p grit-cli` — no errors. ✅ (done in this branch)
+2. `cargo check -p grit-cli` (host) — still clean. ✅
+3. (Recommended) `cargo build --target x86_64-pc-windows-msvc -p grit-cli` on
    a Windows runner to validate the `git_date` CRT FFI links.
 4. Warning clean-up + `nix` target-gating — done (see sections above).

@@ -16,60 +16,67 @@ Why rewrite Git functionality into Rust? It's not about replacing Git, it's abou
 
 This implementation has been written nearly entirely by AI coding agents with the goal of entirely passing the C Git testing suite. For details on how we accomplished this, see our [blog post](https://blog.gitbutler.com/true-grit).
 
-The implementation is entirely in Rust, with most of the generic logic in the [grit-lib](https://crates.io/crates/grit-lib) library crate, and the Git-compatible CLI in the [grit-cli](https://crates.io/crates/grit-cli) crate which uses the library to provide a UI that passes the Git tests.
+The implementation is entirely in Rust, with most of the generic logic in the [grit-lib](https://crates.io/crates/grit-lib) library crate, and the Git-compatible CLI — the `grit-git` binary — in the [grit-legacy](https://crates.io/crates/grit-legacy) crate, which uses the library to provide a UI that passes the Git tests.
 
-There is also a very simple alternative CLI called `grit-simple` (or `gs`) that is also installed with the install script and the only binary installed on Windows.
+The headline CLI shipped by the install script is `grit`, a simpler, opinionated interface from the [grit-cli](https://crates.io/crates/grit-cli) crate. It is the only binary the install script installs, on every platform including Windows.
 
 ## Usability
 
-While the `grit` command emulates `git` functionality enough to successfully run over 42k of it's tests, it has been nearly entirely written by agents and has not been used for realsies. It's probably currently unusably slow or completely broken in ways that are not exercised in the test suite.
+While the `grit-git` command emulates `git` functionality enough to successfully run over 42k of it's tests, it has been nearly entirely written by agents and has not been used for realsies. It's probably currently unusably slow or completely broken in ways that are not exercised in the test suite.
 
 Our current goal is to get all the tests to pass and then refactor to real usability (speed, API surface, etc) while being able to successfully test for regression easily. Try it out and either send a fix or report an issue for anything you find or ways you want to use it that it doesn't successfully do.
 
 ## Installation
 
-To install the `grit` and `gs` CLIs via Bash, you can run our install script:
+To install the `grit` CLI via Bash, you can run our install script:
 
 ```sh
 $ curl -fsSL https://grit-scm.com/install | sh
 ```
 
-There are builds for Mac and Linux, (aarch64 and x86_64 for both). Linux ships both glibc and statically-linked musl binaries, so the installer works on distros like Alpine too — it auto-detects which one your system needs. Windows does not install `grit`, but does install the simple version `gs` that only does the basics.
+There are builds for Mac and Linux, (aarch64 and x86_64 for both). Linux ships both glibc and statically-linked musl binaries, so the installer works on distros like Alpine too — it auto-detects which one your system needs. Windows installs the same `grit` CLI. The Git-compatible `grit-git` binary is not installed by the script — install it with `cargo install grit-legacy`.
 
 ## Updating
 
-To update your version of Grit CLIs, you can run `grit update` or `gs update` and it will re-run the install script.
+To update your version of Grit, you can run `grit update` and it will re-run the install script.
 
-## grit-simple
+## The `grit` CLI
 
-The workspace also includes `grit-simple`, which installs the `gs` binary. It is not a Git-identical CLI; it is a simpler interface for common developer workflows built on `grit-lib`, portable to Windows.
+test
+line two
+line three
+omg, more lines
 
-`gs` treats status as the home screen and keeps the common path terse:
+The `grit` binary (from the `grit-cli` crate) is what the install script ships. It is not a Git-identical CLI; it is a simpler interface for common developer workflows built on `grit-lib`, portable to Windows.
+
+`grit` treats status as the home screen and keeps the common path terse:
 
 ```sh
-gs auth   # authenticate into github and store https auth tokens for fetch/push as your user
-gs clone https://github.com/user/project
-gs        # status dashboard
-gs commit "message" # commit changes
-gs switch -c topic
-gs push
-gs pull
+grit auth   # authenticate into github and store https auth tokens for fetch/push as your user
+grit clone https://github.com/user/project
+grit        # status dashboard
+grit commit "message" # commit changes
+grit switch -c topic
+grit push
+grit pull
 ```
 
-It covers local work (`status`, `add`, `commit`, `branch`, `switch`, `merge`, `log`, `config`) plus remote basics (`remote add`, `clone`, `fetch`, `pull`, `push`) with plain-language output. Use `grit` when you need Git-compatible command behavior; use `gs` when you want the smaller workflow-oriented interface or something on Windows.
+It covers local work (`status`, `add`, `commit`, `branch`, `switch`, `merge`, `log`, `config`) plus remote basics (`remote add`, `clone`, `fetch`, `pull`, `push`) with plain-language output. Use `grit-git` (the `grit-legacy` crate) when you need Git-compatible command behavior; use `grit` when you want the smaller workflow-oriented interface.
 
-The Windows version also comes with `gs manager` which works as an interface to Windows Credential Manager to store `gs auth` tokens securely.
+The Windows version also comes with `grit manager` which works as an interface to Windows Credential Manager to store `grit auth` tokens securely.
 
 ## Rust Crates
 
 | Crate                                                 | Description                                                                                     |
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| [`grit-cli`](https://crates.io/crates/grit-cli)       | The `grit` binary — a drop-in CLI reimplementation of `git` with 140+ commands                  |
+| [`grit-cli`](https://crates.io/crates/grit-cli)       | The `grit` binary — a smaller workflow-oriented CLI backed by `grit-lib` (shipped by the install script) |
 | [`grit-lib`](https://crates.io/crates/grit-lib)       | Core library: object model, diff engine, index, refs, revision walking, merge, config, and more |
-| [`grit-simple`](https://crates.io/crates/grit-simple) | The `gs` binary — a smaller workflow-oriented CLI backed by `grit-lib`                          |
+| [`grit-legacy`](https://crates.io/crates/grit-legacy) | The `grit-git` binary — a drop-in CLI reimplementation of `git` with 140+ commands (`cargo install grit-legacy`) |
 | `grit-examples`                                       | Runnable examples of simple lib usage (add, cat-file, write-tree, hash-object, etc)             |
 | `grit-test-support`                                   | Workspace-only helpers for integration tests                                                    |
 
 ## License
 
-The `grit-cli` code is GPL-2.0, all other code and crates, including `grit-lib` are MIT licensed.
+The `grit-legacy` code is GPL-2.0, all other code and crates, including `grit-lib` are MIT licensed.
+
+testing
