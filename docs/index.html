@@ -1234,14 +1234,14 @@
               >
                 <button
                   class="tab-button"
-                  id="tab-grit-cli"
+                  id="tab-grit-legacy"
                   role="tab"
                   type="button"
                   aria-selected="true"
-                  aria-controls="panel-grit-cli"
-                  data-tab="grit-cli"
+                  aria-controls="panel-grit-legacy"
+                  data-tab="grit-legacy"
                 >
-                  grit-cli<span class="tab-progress" aria-hidden="true"></span>
+                  grit-legacy<span class="tab-progress" aria-hidden="true"></span>
                 </button>
                 <button
                   class="tab-button"
@@ -1258,21 +1258,21 @@
             </div>
             <div
               class="tab-panel active"
-              id="panel-grit-cli"
+              id="panel-grit-legacy"
               role="tabpanel"
-              aria-labelledby="tab-grit-cli"
+              aria-labelledby="tab-grit-legacy"
             >
-              <pre><span class="comment"># install via shell script (macOS / Linux)</span>
-<span class="prompt">$</span> <span class="cmd">curl -fsSL https://grit-scm.com/install | sh</span>
+              <pre><span class="comment"># install the Git-compatible CLI</span>
+<span class="prompt">$</span> <span class="cmd">cargo install grit-legacy</span>
 
-<span class="prompt">$</span> <span class="cmd">grit status --short</span>
+<span class="prompt">$</span> <span class="cmd">grit-git status --short</span>
 <span class="output"> M docs/index.html</span>
 
-<span class="prompt">$</span> <span class="cmd">grit log --oneline --decorate -2</span>
+<span class="prompt">$</span> <span class="cmd">grit-git log --oneline --decorate -2</span>
 <span class="output">cc96ca5 (HEAD, main) gc
 5ac721e update index parsing</span>
 
-<span class="prompt">$</span> <span class="cmd">grit diff --stat HEAD~1..HEAD</span>
+<span class="prompt">$</span> <span class="cmd">grit-git diff --stat HEAD~1..HEAD</span>
 <span class="output"> grit-lib/src/repo.rs | 42 ++++++++++++++++++++</span></pre>
             </div>
             <div
@@ -1311,7 +1311,8 @@ grit-lib = <span class="string">"0.3"</span>
             <ul class="list">
               <li>
                 140+ Git commands are implemented in the
-                <code>grit-git</code> CLI.
+                <a href="https://crates.io/crates/grit-legacy">grit-legacy</a>
+                crate (the <code>grit-git</code> CLI).
               </li>
               <li>
                 grit-lib covers
