@@ -594,6 +594,61 @@ fn json_flag_works_before_or_after_subcommand() -> TestResult {
 /// renaming, or removing a field intentionally breaks this test — the guardrail
 /// for a stable schema.
 #[test]
+fn json_filter_selects_fields() -> TestResult {
+    let scratch = Scratch::new("filter")?;
+    let repo = scratch.child("repo");
+    fs::create_dir_all(&repo)?;
+    gs_ok(&repo, &["init", "."]);
+    write_file(&repo.join("a.txt"), "hi\n");
+    gs_ok(&repo, &["commit", "first"]);
+
+    let out = gs(&repo, ["--json", "--filter", ".branch", "status"]);
+    assert_eq!(out.status, Some(0), "{}", out.dump());
+    let v: Value = serde_json::from_str(&out.stdout).unwrap();
+    assert_eq!(v, Value::String("main".to_owned()));
+
+    let out = gs(&repo, ["status", "--json", "--filter", "{branch, clean}"]);
+    assert_eq!(out.status, Some(0), "{}", out.dump());
+    let v: Value = serde_json::from_str(&out.stdout).unwrap();
+    assert_eq!(v["branch"], "main");
+    assert_eq!(v["clean"], Value::Bool(true));
+    assert!(!v.as_object().unwrap().contains_key("staged"));
+
+    let out = gs(&repo, ["--filter", ".branch", "status"]);
+    assert_eq!(out.status, Some(1), "{}", out.dump());
+    assert!(
+        out.stderr.contains("--filter requires --json"),
+        "{}",
+        out.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn json_filter_maps_commit_subjects() -> TestResult {
+    let scratch = Scratch::new("filter-log")?;
+    let repo = scratch.child("repo");
+    fs::create_dir_all(&repo)?;
+    gs_ok(&repo, &["init", "."]);
+    for i in 0..3 {
+        write_file(&repo.join("a.txt"), &format!("v{i}\n"));
+        gs_ok(&repo, &["commit", &format!("commit {i}")]);
+    }
+
+    let out = gs(&repo, ["--json", "--filter", ".commits[].subject", "log"]);
+    assert_eq!(out.status, Some(0), "{}", out.dump());
+    let v: Value = serde_json::from_str(&out.stdout).unwrap();
+    let subjects: Vec<&str> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    assert_eq!(subjects, ["commit 2", "commit 1", "commit 0"]);
+    Ok(())
+}
+
+#[test]
 fn schema_top_level_keys_are_stable() -> TestResult {
     let scratch = Scratch::new("schema")?;
     let seed = scratch.child("seed");
