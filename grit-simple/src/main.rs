@@ -7,6 +7,7 @@
 
 mod commands;
 mod context;
+mod json_filter;
 mod net;
 mod output;
 mod ui;
@@ -14,7 +15,7 @@ mod ui;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use output::{emit, OutputMode};
+use output::{emit, OutputMode, OutputOptions};
 
 /// A simplified alternative to the Git-compatible `grit` command line.
 #[derive(Debug, Parser)]
@@ -23,6 +24,11 @@ struct Cli {
     /// Emit machine-readable JSON instead of human-readable text.
     #[arg(long, global = true)]
     json: bool,
+    /// jq-like expression applied to JSON output (requires `--json`).
+    ///
+    /// Examples: `.branch`, `.commits[].oid`, `{branch, clean}`.
+    #[arg(long, global = true, value_name = "EXPR")]
+    filter: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -192,52 +198,59 @@ enum Command {
 
 fn main() {
     let cli = Cli::parse();
-    let mode = if cli.json {
-        OutputMode::Json
-    } else {
-        OutputMode::Human
+    let opts = OutputOptions {
+        mode: if cli.json {
+            OutputMode::Json
+        } else {
+            OutputMode::Human
+        },
+        filter: cli.filter.clone(),
     };
-    if let Err(err) = dispatch(cli, mode) {
-        output::emit_error(&err, mode);
+    if let Err(err) = opts.validate() {
+        eprintln!("error: {err:#}");
+        std::process::exit(1);
+    }
+    if let Err(err) = dispatch(cli, &opts) {
+        output::emit_error(&err, &opts);
         std::process::exit(1);
     }
 }
 
-/// Run the selected subcommand and render its outcome in `mode`.
+/// Run the selected subcommand and render its outcome.
 ///
 /// Each command computes a typed, serializable outcome; [`emit`] renders it as
 /// human text or a single JSON object. The two exceptions are `manager` (a raw
 /// credential-helper protocol on stdin/stdout — no outcome) and `push` (which
 /// emits its per-ref outcome and then exits non-zero when a ref was rejected).
-fn dispatch(cli: Cli, mode: OutputMode) -> Result<()> {
+fn dispatch(cli: Cli, opts: &OutputOptions) -> Result<()> {
     match cli.command.unwrap_or(Command::Status) {
-        Command::Init { path, bare } => emit(&commands::init::run(path, bare)?, mode),
-        Command::Clone { url, dir } => emit(&commands::clone::run(&url, dir, mode)?, mode),
+        Command::Init { path, bare } => emit(&commands::init::run(path, bare)?, opts),
+        Command::Clone { url, dir } => emit(&commands::clone::run(&url, dir, opts.mode)?, opts),
         Command::Remote { action } => {
             let add = action.map(|RemoteAction::Add { name, url }| (name, url));
-            emit(&commands::remote::run(add)?, mode)
+            emit(&commands::remote::run(add)?, opts)
         }
-        Command::Log { before } => emit(&commands::log::run(before)?, mode),
-        Command::Diff { commit } => emit(&commands::diff::run(commit)?, mode),
-        Command::Show { object } => emit(&commands::show::run(object)?, mode),
-        Command::Status => emit(&commands::status::run()?, mode),
-        Command::Shortlog => emit(&commands::shortlog::run()?, mode),
-        Command::Add { paths } => emit(&commands::add::run(&paths)?, mode),
+        Command::Log { before } => emit(&commands::log::run(before)?, opts),
+        Command::Diff { commit } => emit(&commands::diff::run(commit)?, opts),
+        Command::Show { object } => emit(&commands::show::run(object)?, opts),
+        Command::Status => emit(&commands::status::run()?, opts),
+        Command::Shortlog => emit(&commands::shortlog::run()?, opts),
+        Command::Add { paths } => emit(&commands::add::run(&paths)?, opts),
         Command::Commit {
             message,
             message_flag,
             all: _,
-        } => emit(&commands::commit::run(message.or(message_flag))?, mode),
-        Command::Branch { name, delete } => emit(&commands::branch::run(name, delete)?, mode),
-        Command::Tag { name, delete } => emit(&commands::tag::run(name, delete)?, mode),
-        Command::Switch { name, create } => emit(&commands::switch::run(&name, create)?, mode),
-        Command::Merge { branch } => emit(&commands::merge::run(&branch)?, mode),
-        Command::Pick { commit } => emit(&commands::pick::run(&commit)?, mode),
-        Command::Fetch { remote } => emit(&commands::fetch::run(remote)?, mode),
-        Command::Pull => emit(&commands::pull::run()?, mode),
+        } => emit(&commands::commit::run(message.or(message_flag))?, opts),
+        Command::Branch { name, delete } => emit(&commands::branch::run(name, delete)?, opts),
+        Command::Tag { name, delete } => emit(&commands::tag::run(name, delete)?, opts),
+        Command::Switch { name, create } => emit(&commands::switch::run(&name, create)?, opts),
+        Command::Merge { branch } => emit(&commands::merge::run(&branch)?, opts),
+        Command::Pick { commit } => emit(&commands::pick::run(&commit)?, opts),
+        Command::Fetch { remote } => emit(&commands::fetch::run(remote)?, opts),
+        Command::Pull => emit(&commands::pull::run()?, opts),
         Command::Push { tags } => {
             let outcome = commands::push::run(tags)?;
-            emit(&outcome, mode)?;
+            emit(&outcome, opts)?;
             // The outcome (per-ref results) is reported in both modes; a rejected
             // push is still a failure, so mirror Git and exit non-zero.
             if outcome.rejected {
@@ -246,10 +259,10 @@ fn dispatch(cli: Cli, mode: OutputMode) -> Result<()> {
             Ok(())
         }
         Command::Auth { action } => match action {
-            None => emit(&commands::auth::run()?, mode),
-            Some(AuthAction::Logout) => emit(&commands::auth::logout()?, mode),
+            None => emit(&commands::auth::run()?, opts),
+            Some(AuthAction::Logout) => emit(&commands::auth::logout()?, opts),
         },
-        Command::Update => emit(&commands::update::run(mode)?, mode),
+        Command::Update => emit(&commands::update::run(opts.mode)?, opts),
         Command::Config {
             global,
             list,
@@ -258,7 +271,7 @@ fn dispatch(cli: Cli, mode: OutputMode) -> Result<()> {
             value,
         } => emit(
             &commands::config::run(global, list, unset, key, value)?,
-            mode,
+            opts,
         ),
         // `manager` speaks Git's credential protocol on stdout; it has no JSON form.
         Command::Manager { operation } => commands::manager::run(&operation),

@@ -3,22 +3,23 @@
 //! Each command computes a typed, [`serde::Serialize`] *outcome* and returns it;
 //! the dispatcher in `main` then renders that outcome exactly once, either as the
 //! command's normal human-readable text or as a single JSON object on stdout
-//! (`--json`). This keeps the JSON schema centralized and stable, and leaves the
-//! human output unchanged.
+//! (`--json`). An optional global `--filter` applies a jq-like expression to that
+//! object so callers can select just the fields they need.
 //!
 //! ## Contract for `--json`
 //!
 //! * stdout carries exactly **one** JSON value: the command's outcome object on
-//!   success, or `{"error": "…"}` on failure.
+//!   success (optionally narrowed by `--filter`), or `{"error": "…"}` on failure.
 //! * the process still exits non-zero on failure, so consumers can branch on the
 //!   exit code *or* the presence of an `error` key.
 //! * progress / prompts / diagnostics go to **stderr** and never pollute stdout.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use grit_lib::diff::{DiffEntry, DiffStatus};
 use serde::Serialize;
 
 use crate::context::CommitSummary;
+use crate::json_filter::apply_json_filter;
 use crate::ui::entry_path;
 
 /// How a command's outcome should be rendered.
@@ -28,6 +29,25 @@ pub enum OutputMode {
     Human,
     /// A single machine-readable JSON object on stdout.
     Json,
+}
+
+/// Rendering options for a command outcome.
+#[derive(Clone, Debug)]
+pub struct OutputOptions {
+    /// Human text or full/filtered JSON on stdout.
+    pub mode: OutputMode,
+    /// Optional jq-like expression applied to JSON output (requires [`OutputMode::Json`]).
+    pub filter: Option<String>,
+}
+
+impl OutputOptions {
+    /// Reject `--filter` without `--json`.
+    pub fn validate(&self) -> Result<()> {
+        if self.filter.is_some() && self.mode != OutputMode::Json {
+            bail!("--filter requires --json");
+        }
+        Ok(())
+    }
 }
 
 /// Render a value as the command's human-readable output.
@@ -42,28 +62,55 @@ pub trait HumanRender {
 ///
 /// Generic (rather than `Box<dyn …>`) because `serde::Serialize` is not
 /// object-safe; each dispatch arm calls this with its concrete outcome type.
-pub fn emit<T: Serialize + HumanRender>(value: &T, mode: OutputMode) -> Result<()> {
-    match mode {
+pub fn emit<T: Serialize + HumanRender>(value: &T, opts: &OutputOptions) -> Result<()> {
+    opts.validate()?;
+    match opts.mode {
         OutputMode::Human => value.render_human(),
-        OutputMode::Json => {
-            use std::io::Write as _;
-            let stdout = std::io::stdout();
-            let mut lock = stdout.lock();
-            serde_json::to_writer_pretty(&mut lock, value)
-                .map_err(|e| anyhow::anyhow!("serializing JSON output: {e}"))?;
-            let _ = writeln!(lock);
-        }
+        OutputMode::Json => write_json(value, opts.filter.as_deref())?,
     }
+    Ok(())
+}
+
+/// Serialize `value` to stdout, optionally applying a jq-like `filter`.
+fn write_json<T: Serialize>(value: &T, filter: Option<&str>) -> Result<()> {
+    use std::io::Write as _;
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    if let Some(expr) = filter {
+        let full = serde_json::to_value(value)
+            .map_err(|e| anyhow::anyhow!("serializing JSON output: {e}"))?;
+        let filtered = apply_json_filter(&full, expr)?;
+        serde_json::to_writer_pretty(&mut lock, &filtered)
+            .map_err(|e| anyhow::anyhow!("serializing filtered JSON output: {e}"))?;
+    } else {
+        serde_json::to_writer_pretty(&mut lock, value)
+            .map_err(|e| anyhow::anyhow!("serializing JSON output: {e}"))?;
+    }
+    let _ = writeln!(lock);
     Ok(())
 }
 
 /// Report a command failure: `{"error": "…"}` on stdout in JSON mode, or the
 /// usual `error: …` line on stderr in human mode. The caller still exits 1.
-pub fn emit_error(err: &anyhow::Error, mode: OutputMode) {
-    match mode {
+pub fn emit_error(err: &anyhow::Error, opts: &OutputOptions) {
+    if let Err(filter_err) = opts.validate() {
+        eprintln!("error: {filter_err:#}");
+        return;
+    }
+    match opts.mode {
         OutputMode::Human => eprintln!("error: {err:#}"),
         OutputMode::Json => {
-            let payload = serde_json::json!({ "error": format!("{err:#}") });
+            let payload = if let Some(expr) = opts.filter.as_deref() {
+                let full = serde_json::json!({ "error": format!("{err:#}") });
+                match apply_json_filter(&full, expr) {
+                    Ok(filtered) => filtered,
+                    Err(filter_err) => {
+                        serde_json::json!({ "error": format!("{filter_err:#}") })
+                    }
+                }
+            } else {
+                serde_json::json!({ "error": format!("{err:#}") })
+            };
             println!("{payload}");
         }
     }
