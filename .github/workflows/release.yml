@@ -60,17 +60,16 @@ jobs:
 
       - name: Build
         if: ${{ !matrix.cross }}
-        run: cargo build --release --target ${{ matrix.target }} -p grit-cli -p grit-simple
+        run: cargo build --release --target ${{ matrix.target }} -p grit-cli
 
       - name: Build (cross)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }} -p grit-cli -p grit-simple
+        run: cross build --release --target ${{ matrix.target }} -p grit-cli
 
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../grit-${{ matrix.target }}.tar.gz grit
-          tar czf ../../../gs-${{ matrix.target }}.tar.gz gs
         shell: bash
 
       - name: Upload artifact
@@ -79,9 +78,8 @@ jobs:
           name: grit-${{ matrix.target }}
           path: |
             grit-${{ matrix.target }}.tar.gz
-            gs-${{ matrix.target }}.tar.gz
 
-  # Windows ships the `grit-simple` CLI (the `gs` binary), installed via
+  # Windows ships the `grit` CLI (the `grit-cli` crate), installed via
   # `irm grit-scm.com/install.ps1 | iex` (see docs/install.ps1).
   build-windows:
     strategy:
@@ -109,18 +107,18 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p grit-simple
+        run: cargo build --release --target ${{ matrix.target }} -p grit-cli
 
       - name: Package
         shell: pwsh
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/gs.exe -DestinationPath gs-${{ matrix.target }}.zip
+          Compress-Archive -Path target/${{ matrix.target }}/release/grit.exe -DestinationPath grit-${{ matrix.target }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gs-${{ matrix.target }}
-          path: gs-${{ matrix.target }}.zip
+          name: grit-windows-${{ matrix.target }}
+          path: grit-${{ matrix.target }}.zip
 
   release:
     needs: [build, build-windows]
@@ -139,8 +137,7 @@ jobs:
           generate_release_notes: true
           files: |
             grit-*.tar.gz
-            gs-*.tar.gz
-            gs-*.zip
+            grit-*.zip
 
   # Manual (workflow_dispatch) runs refresh a rolling `nightly` prerelease.
   # Release assets are public, so `install-nightly` downloads them with plain
@@ -169,4 +166,4 @@ jobs:
             --prerelease \
             --title "Nightly" \
             --notes "Latest manual build from ${GITHUB_SHA}." \
-            grit-*.tar.gz gs-*.tar.gz gs-*.zip
+            grit-*.tar.gz grit-*.zip
