@@ -21,7 +21,7 @@ The goal: pass the entire upstream Git test suite.
 
 ```bash
 # Build
-cargo build --release -p grit-legacy
+cargo build --release -p grit-git
 
 # Run a single test file
 ./scripts/run-tests.sh t3200-branch.sh
@@ -78,7 +78,7 @@ C source only for ideas, methods, interfaces, and behavior.**
   **structure, naming, and layout** track the C beyond what the method requires.
 
 If Git-identical user-facing text or other copied expression is genuinely
-needed, it lives in the **`grit-legacy` CLI crate (`grit-legacy/src`), which is GPL-2.0** and
+needed, it lives in the **`grit-git` CLI crate (`grit-git/src`), which is GPL-2.0** and
 may reuse Git's strings and expression — not in `grit-lib`. Have the library
 return a **structured/typed error or value**, and render the Git-compatible text
 at the CLI boundary.
@@ -99,7 +99,7 @@ cargo test -p grit-lib --lib       # unit tests must pass
 
 ```
 grit/
-├── grit-legacy/src/commands/     # Git command implementations
+├── grit-git/src/commands/     # Git command implementations
 ├── grit-lib/src/          # Core library (repo, index, diff, merge, etc.)
 ├── tests/                 # Ported upstream test files + test-lib.sh
 ├── git/t/                 # Upstream Git test suite (reference only)
@@ -138,7 +138,7 @@ grit/
 - Avoid implicitly using the current time like `std::time::SystemTime::now()`, instead pass the current time as argument.
 - Keep public API surfaces small. Use `#[must_use]` where return values matter.
 - Prefer implementing core Git behavior in `grit-lib` even when only one CLI command currently needs it. If code parses Git data, walks repository state, mutates objects/index/refs/worktrees, evaluates config semantics, formats Git-compatible records, or implements transport/protocol rules, it belongs in the library unless there is a clear CLI-only reason.
-- Keep `grit-legacy/src` focused on argument parsing, environment/process setup, terminal/editor interaction, exit-code mapping, and converting library results into stdout/stderr. When adding command behavior, first design the typed library API, then call it from the CLI wrapper.
+- Keep `grit-git/src` focused on argument parsing, environment/process setup, terminal/editor interaction, exit-code mapping, and converting library results into stdout/stderr. When adding command behavior, first design the typed library API, then call it from the CLI wrapper.
 - Do not add reusable domain helpers under the binary crate as a staging area. If a helper would be useful to tests, another command, or a future embedding caller, add it to an appropriate `grit-lib/src` module with narrow visibility and lift to `pub` only as needed.
 
 ## Library Crate Layout and Public API
@@ -190,7 +190,7 @@ Before committing, always run `cargo fmt` and `cargo clippy --fix --allow-dirty`
 
 - **Rust toolchain**: The pre-installed Rust may be outdated. The update script runs `rustup update stable && rustup default stable` to ensure the latest stable toolchain is available, since newer workspace dependencies (e.g. `time-core`) require edition 2024 support (Rust ≥ 1.85).
 - **No external services**: Grit is a pure CLI tool with no databases, containers, or network services. Build and test entirely via Cargo and the Bash test runner.
-- **Unit tests**: Run `cargo test -p grit-lib --lib`. The `grit-legacy` crate has no lib target; use `cargo test --workspace` to run everything.
+- **Unit tests**: Run `cargo test -p grit-lib --lib`. The `grit-git` crate has no lib target; use `cargo test --workspace` to run everything.
 - **Integration tests**: Use `./scripts/run-tests.sh <test-file>` (see TESTING.md). Many tests are expected to fail — Grit is a work-in-progress.
-- **Lint**: `cargo check -p grit-legacy 2>&1 | grep warning` — there are 2 pre-existing unused-variable warnings in `grit-legacy/src/commands/add.rs`.
+- **Lint**: `cargo check -p grit-git 2>&1 | grep warning` — there are 2 pre-existing unused-variable warnings in `grit-git/src/commands/add.rs`.
 - **Binary location**: After `cargo build --release`, the binary is at `target/release/grit-git`. The test harness expects this path.

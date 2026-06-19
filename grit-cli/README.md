@@ -2,7 +2,7 @@
 
 `grit-cli` provides `grit`, a small opinionated command line interface backed by [`grit-lib`](https://crates.io/crates/grit-lib).
 
-It is not intended to be a drop-in replacement for Git. For Git-compatible command behavior, use the `grit-git` binary from the `grit-legacy` crate. `grit` is a simpler interface for workflows built on Grit's Rust implementation.
+It is not intended to be a drop-in replacement for Git. For Git-compatible command behavior, use the `grit-git` CLI (the `grit-git` crate). `grit` is a simpler interface for workflows built on Grit's Rust implementation.
 
 ## Install
 

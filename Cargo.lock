@@ -503,20 +503,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "grit-http-server"
-version = "0.5.0"
-dependencies = [
- "anyhow",
- "axum",
- "base64",
- "clap",
- "grit-protocol",
- "serde",
- "tokio",
-]
-
-[[package]]
-name = "grit-legacy"
+name = "grit-git"
 version = "0.5.0"
 dependencies = [
  "anyhow",
@@ -545,6 +532,19 @@ dependencies = [
  "unicode-width",
  "ureq",
  "url",
+]
+
+[[package]]
+name = "grit-http-server"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "clap",
+ "grit-protocol",
+ "serde",
+ "tokio",
 ]
 
 [[package]]
