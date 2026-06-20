@@ -51,7 +51,7 @@ Only (1)–(4) are killable. (5) stays.
 
 ### Phase 1 — same-crate function calls (low effort, high frequency)
 
-These spawn `grit` only to capture stdout text. The callee lives in the *same crate* (`grit-legacy`), so the fix is to factor the command's core into a
+These spawn `grit` only to capture stdout text. The callee lives in the *same crate* (`grit-git`), so the fix is to factor the command's core into a
 `fn run_x(repo: &Repository, opts: X, out: &mut impl Write) -> Result<...>`
 that both the CLI entry point and the internal caller use. No crate surgery.
 

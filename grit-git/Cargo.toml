@@ -1,5 +1,5 @@
 [package]
-name = "grit-legacy"
+name = "grit-git"
 version.workspace = true
 edition.workspace = true
 build = "build.rs"

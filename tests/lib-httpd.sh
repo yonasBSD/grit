@@ -194,7 +194,7 @@ fi
 
 if ! test -x "$TEST_HTTPD_BIN"
 then
-	skip_all='test-httpd binary not found; build with: cargo build --release --package grit-legacy --bin test-httpd'
+	skip_all='test-httpd binary not found; build with: cargo build --release --package grit-git --bin test-httpd'
 	test_done
 fi
 

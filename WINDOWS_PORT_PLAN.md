@@ -1,6 +1,6 @@
 # Windows Compilation Plan — `grit-lib` + `grit-cli`
 
-Goal: get `grit-lib` and `grit-cli` to **compile for Windows**. `grit-legacy`
+Goal: get `grit-lib` and `grit-cli` to **compile for Windows**. `grit-git`
 (`grit/`) and the other workspace members (`grit-http-server`, `grit-protocol`,
 `grit-utils`, `grit-examples`) are explicitly **out of scope**.
 

@@ -16,7 +16,7 @@ Why rewrite Git functionality into Rust? It's not about replacing Git, it's abou
 
 This implementation has been written nearly entirely by AI coding agents with the goal of entirely passing the C Git testing suite. For details on how we accomplished this, see our [blog post](https://blog.gitbutler.com/true-grit).
 
-The implementation is entirely in Rust, with most of the generic logic in the [grit-lib](https://crates.io/crates/grit-lib) library crate, and the Git-compatible CLI — the `grit-git` binary — in the [grit-legacy](https://crates.io/crates/grit-legacy) crate, which uses the library to provide a UI that passes the Git tests.
+The implementation is entirely in Rust, with most of the generic logic in the [grit-lib](https://crates.io/crates/grit-lib) library crate, and the Git-compatible CLI in the [grit-git](https://crates.io/crates/grit-git) crate (binary `grit-git`), which uses the library to provide a UI that passes the Git tests.
 
 The headline CLI shipped by the install script is `grit`, a simpler, opinionated interface from the [grit-cli](https://crates.io/crates/grit-cli) crate. It is the only binary the install script installs, on every platform including Windows.
 
@@ -34,7 +34,7 @@ To install the `grit` CLI via Bash, you can run our install script:
 $ curl -fsSL https://grit-scm.com/install | sh
 ```
 
-There are builds for Mac and Linux, (aarch64 and x86_64 for both). Linux ships both glibc and statically-linked musl binaries, so the installer works on distros like Alpine too — it auto-detects which one your system needs. Windows installs the same `grit` CLI. The Git-compatible `grit-git` binary is not installed by the script — install it with `cargo install grit-legacy`.
+There are builds for Mac and Linux, (aarch64 and x86_64 for both). Linux ships both glibc and statically-linked musl binaries, so the installer works on distros like Alpine too — it auto-detects which one your system needs. Windows installs the same `grit` CLI. The Git-compatible `grit-git` binary is not installed by the script — install it with `cargo install grit-git`.
 
 ## Updating
 
@@ -61,7 +61,7 @@ grit push
 grit pull
 ```
 
-It covers local work (`status`, `add`, `commit`, `branch`, `switch`, `merge`, `log`, `config`) plus remote basics (`remote add`, `clone`, `fetch`, `pull`, `push`) with plain-language output. Use `grit-git` (the `grit-legacy` crate) when you need Git-compatible command behavior; use `grit` when you want the smaller workflow-oriented interface.
+It covers local work (`status`, `add`, `commit`, `branch`, `switch`, `merge`, `log`, `config`) plus remote basics (`remote add`, `clone`, `fetch`, `pull`, `push`) with plain-language output. Use `grit-git` when you need Git-compatible command behavior; use `grit` when you want the smaller workflow-oriented interface.
 
 The Windows version also comes with `grit manager` which works as an interface to Windows Credential Manager to store `grit auth` tokens securely.
 
@@ -71,12 +71,12 @@ The Windows version also comes with `grit manager` which works as an interface t
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | [`grit-cli`](https://crates.io/crates/grit-cli)       | The `grit` binary — a smaller workflow-oriented CLI backed by `grit-lib` (shipped by the install script) |
 | [`grit-lib`](https://crates.io/crates/grit-lib)       | Core library: object model, diff engine, index, refs, revision walking, merge, config, and more |
-| [`grit-legacy`](https://crates.io/crates/grit-legacy) | The `grit-git` binary — a drop-in CLI reimplementation of `git` with 140+ commands (`cargo install grit-legacy`) |
+| [`grit-git`](https://crates.io/crates/grit-git) | The `grit-git` binary — a drop-in CLI reimplementation of `git` with 140+ commands (`cargo install grit-git`) |
 | `grit-examples`                                       | Runnable examples of simple lib usage (add, cat-file, write-tree, hash-object, etc)             |
 | `grit-test-support`                                   | Workspace-only helpers for integration tests                                                    |
 
 ## License
 
-The `grit-legacy` code is GPL-2.0, all other code and crates, including `grit-lib` are MIT licensed.
+The `grit-git` code is GPL-2.0, all other code and crates, including `grit-lib` are MIT licensed.
 
 testing

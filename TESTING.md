@@ -11,7 +11,7 @@ The **single source of truth** for per-file harness status is the per-test TOML 
 Build the binary first; the runner expects **`target/release/grit-git`**.
 
 ```bash
-cargo build --release -p grit-legacy
+cargo build --release -p grit-git
 
 # Single file
 ./scripts/run-tests.sh t3200-branch.sh

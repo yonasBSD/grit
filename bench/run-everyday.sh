@@ -23,7 +23,7 @@ SCRATCH="${BENCH_SCRATCH:-/tmp/grit-bench-everyday}"
 WARMUP="${BENCH_WARMUP:-2}"
 MIN_RUNS="${BENCH_MIN_RUNS:-10}"
 
-[[ -x "$GRIT" ]] || { echo "Building grit (release)..."; (cd "$REPO_ROOT" && cargo build --release -q -p grit-legacy); }
+[[ -x "$GRIT" ]] || { echo "Building grit (release)..."; (cd "$REPO_ROOT" && cargo build --release -q -p grit-git); }
 command -v hyperfine >/dev/null || { echo "ERROR: hyperfine not found (cargo install hyperfine)"; exit 1; }
 mkdir -p "$RESULTS_DIR"
 GIT="$GIT -c user.email=b@b -c user.name=bench -c init.defaultBranch=main -c commit.gpgsign=false"

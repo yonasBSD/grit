@@ -17,10 +17,10 @@ CARGO ?= cargo
 all: build
 
 build:
-	$(CARGO) build --release -p grit-legacy
+	$(CARGO) build --release -p grit-git
 
 debug:
-	$(CARGO) build -p grit-legacy
+	$(CARGO) build -p grit-git
 
 test:
 	$(CARGO) test --workspace
