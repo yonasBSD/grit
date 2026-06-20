@@ -4,7 +4,40 @@
   <title>project notes from Grit</title>
   <link>https://grit-scm.com/blog/</link>
   <description>Short deep dives into building a Git-compatible, library-oriented Rust implementation.</description>
-  <lastBuildDate>Tue, 09 Jun 2026 13:40:27 +0000</lastBuildDate>
-
+  <lastBuildDate>Sat, 20 Jun 2026 00:00:00 +0000</lastBuildDate>
+  <item>
+    <title>grit is now the simple CLI</title>
+    <link>https://grit-scm.com/blog/grit-is-now-the-simple-cli/</link>
+    <guid isPermaLink="true">https://grit-scm.com/blog/grit-is-now-the-simple-cli/</guid>
+    <pubDate>Sat, 20 Jun 2026 00:00:00 +0000</pubDate>
+    <description>The grit binary you install is now the simple, library-first CLI. The fully git-compatible mirror moves to grit-git.</description>
+    <content:encoded><![CDATA[<p>We&#x27;ve changed what the <code>grit</code> binary is. If you install grit today — via the shell script, the PowerShell script, or <code>cargo install grit-cli</code> — you now get a small, simple Git client built directly on top of the <code>grit-lib</code> library. The fully git-compatible, command-for-command mirror of <code>git</code> is still here, but it now lives under a different name: <code>grit-git</code>.</p>
+<h2 id="what-changed">What changed</h2>
+<p>Until now, the installed <code>grit</code> binary was the compatibility mirror: a faithful reimplementation of the <code>git</code> command line, plumbing and porcelain included, built to eventually pass Git&#x27;s own test suite. That binary hasn&#x27;t gone anywhere — it has simply been renamed to <code>grit-git</code>.</p>
+<p>The name <code>grit</code> now points at what used to be the <code>grit-simple</code> experiment (briefly shipped as <code>gs</code>). It&#x27;s a deliberately small, opinionated CLI that shows off what the <code>grit-lib</code> library can do without trying to reproduce every corner of Git&#x27;s surface area.</p>
+<p>In short:</p>
+<ul>
+<li><code>grit</code> — the simple, library-first CLI. This is what the installers give you.</li>
+<li><code>grit-git</code> — the full git-compatible mirror, our benchmark against upstream Git.</li>
+</ul>
+<h2 id="why-make-the-swap">Why make the swap</h2>
+<p>Compatibility is still the project&#x27;s benchmark, and <code>grit-git</code> is how we measure it. But the more interesting story for most people is <code>grit-lib</code>: a Git engine you can embed, reason about, and build on without shelling out to <code>git</code>. The simple <code>grit</code> CLI is the most direct way to see that library in action, so it makes sense for it to be the thing you get by default.</p>
+<p>If you want the compatibility mirror, build or run <code>grit-git</code> from the workspace. If you just want to try grit, the install command hasn&#x27;t changed — you&#x27;ll now land on the simpler, friendlier CLI.</p>]]></content:encoded>
+  </item>
+  <item>
+    <title>Introducing Grit</title>
+    <link>https://grit-scm.com/blog/introducing-grit/</link>
+    <guid isPermaLink="true">https://grit-scm.com/blog/introducing-grit/</guid>
+    <pubDate>Fri, 05 Jun 2026 00:00:00 +0000</pubDate>
+    <description>A short note on rebuilding Git in Rust, as a library, with compatibility as the benchmark.</description>
+    <content:encoded><![CDATA[<p>Grit is a from-scratch reimplementation of Git in Rust. The goal is not to make a Git-like tool with a nicer surface area, but to build a compatible Git engine that can eventually pass the upstream Git test suite.</p>
+<h2 id="why-rebuild-git">Why rebuild Git?</h2>
+<p>Git is everywhere, but much of its behavior is encoded in a large C codebase that grew around a command-line program. That history is part of what makes Git powerful, but it also makes Git hard to embed, hard to experiment with, and hard to reason about as a set of reusable library components.</p>
+<p>Grit started from a simple question: what would Git look like if it were designed today as an idiomatic Rust library first, with the CLI as a thin wrapper around that library?</p>
+<h2 id="what-we-want-from-it">What we want from it</h2>
+<p>The project is focused on compatibility. Passing Git&#x27;s own tests gives us a concrete target and lets us use agents to give us a solid starting point.</p>
+<h2 id="why-now">Why now?</h2>
+<p>A library-oriented Git implementation opens the door to better developer tools, servers, agents, and experiments that need Git semantics without shelling out to <code>git</code>. Grit is an attempt to make that foundation small, explicit, testable, and embeddable.</p>]]></content:encoded>
+  </item>
 </channel>
 </rss>
