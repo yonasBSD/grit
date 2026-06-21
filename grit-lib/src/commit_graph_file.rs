@@ -46,6 +46,12 @@ const CHUNK_COMMIT_DATA: u32 = 0x4344_4154; // CDAT
 const CHUNK_GENERATION_DATA: u32 = 0x4744_4132; // GDA2
 const CHUNK_GENERATION_DATA_OVERFLOW: u32 = 0x4744_4f32; // GDO2
 const CHUNK_EXTRA_EDGES: u32 = 0x4544_4745; // EDGE
+
+/// CDAT parent word meaning "no parent in this slot" (Git `GRAPH_PARENT_NONE`).
+const GRAPH_PARENT_NONE: u32 = 0x7000_0000;
+/// CDAT parent-2 high bit meaning "remaining parents live in the EXTRA_EDGES
+/// chunk" (octopus merge; Git `GRAPH_EXTRA_EDGES_NEEDED`).
+const GRAPH_EXTRA_EDGES_NEEDED: u32 = 0x8000_0000;
 const CHUNK_BLOOM_INDEXES: u32 = 0x4249_4458; // BIDX
 const CHUNK_BLOOM_DATA: u32 = 0x4244_4154; // BDAT
 const CHUNK_BASE_GRAPHS: u32 = 0x4241_5345; // BASE
@@ -392,6 +398,25 @@ impl CommitGraphLayer {
         }
         let off = self.oid_lookup_off + lex_index as usize * self.hash_len;
         ObjectId::from_bytes(self.body.get(off..off + self.hash_len)?).ok()
+    }
+
+    /// Decode the CDAT (commit-data) record at `lex_index` into
+    /// `(parent1_word, parent2_word, committer_time)`. The parent words are raw
+    /// graph-position encodings (see [`GRAPH_PARENT_NONE`] /
+    /// [`GRAPH_EXTRA_EDGES_NEEDED`]); the time is the low 34 bits of the trailing
+    /// generation/commit-time field. Each record is `hash_len + 16` bytes:
+    /// root-tree OID, two 4-byte parent words, then an 8-byte gen/time field.
+    fn cdat_record(&self, lex_index: u32) -> Option<(u32, u32, i64)> {
+        if lex_index >= self.num_commits {
+            return None;
+        }
+        let base = self.chunk_commit_data_off + lex_index as usize * (self.hash_len + 16);
+        let p1_off = base + self.hash_len;
+        let p1 = u32::from_be_bytes(self.body.get(p1_off..p1_off + 4)?.try_into().ok()?);
+        let p2 = u32::from_be_bytes(self.body.get(p1_off + 4..p1_off + 8)?.try_into().ok()?);
+        let gen_time = u64::from_be_bytes(self.body.get(p1_off + 8..p1_off + 16)?.try_into().ok()?);
+        let commit_time = (gen_time & 0x3_FFFF_FFFF) as i64;
+        Some((p1, p2, commit_time))
     }
 
     fn bsearch_oid(&self, oid: &ObjectId) -> Option<u32> {
@@ -914,6 +939,41 @@ impl CommitGraphChain {
             .map(|l| l.num_commits)
             .sum();
         Some(below + lex)
+    }
+
+    /// Inverse of [`Self::global_position`]: the OID at a base-first global
+    /// position (used to resolve CDAT parent words to OIDs).
+    fn oid_at_global_position(&self, pos: u32) -> Option<ObjectId> {
+        // `layers` is tip-first; global positions count base layers first.
+        let mut remaining = pos;
+        for layer in self.layers.iter().rev() {
+            if remaining < layer.num_commits {
+                return layer.oid_at_lex(remaining);
+            }
+            remaining -= layer.num_commits;
+        }
+        None
+    }
+
+    /// Commit parents and committer time read straight from the commit-graph file
+    /// (no object decompression). Returns `None` when `oid` is not in the graph,
+    /// or is an octopus merge (>2 parents — stored in the EXTRA_EDGES chunk, which
+    /// this reader does not decode); callers fall back to reading the object.
+    pub fn graph_commit(&self, oid: &ObjectId) -> Option<(Vec<ObjectId>, i64)> {
+        let (layer_idx, lex) = self.find_commit(oid)?;
+        let (p1, p2, commit_time) = self.layers[layer_idx].cdat_record(lex)?;
+        if p1 == GRAPH_PARENT_NONE {
+            return Some((Vec::new(), commit_time));
+        }
+        let parent1 = self.oid_at_global_position(p1)?;
+        if p2 == GRAPH_PARENT_NONE {
+            return Some((vec![parent1], commit_time));
+        }
+        if p2 & GRAPH_EXTRA_EDGES_NEEDED != 0 {
+            return None; // octopus merge — fall back to the object
+        }
+        let parent2 = self.oid_at_global_position(p2)?;
+        Some((vec![parent1, parent2], commit_time))
     }
 
     /// All commit OIDs in the chain (oldest base first, then newer layers).

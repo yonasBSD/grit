@@ -453,6 +453,10 @@ struct CommitGraphCache<'r> {
     /// Committer timestamp (unix seconds) per visited oid, recorded alongside
     /// parents so the date-pruned [`Self::is_ancestor`] walk needs no extra reads.
     times: HashMap<ObjectId, i64>,
+    /// Commit-graph file, when present: supplies parents + committer time without
+    /// decompressing commit objects. Commits absent from it (or octopus merges)
+    /// fall back to [`Self::parents_of`]'s object read.
+    graph: Option<crate::commit_graph_file::CommitGraphChain>,
 }
 
 impl<'r> CommitGraphCache<'r> {
@@ -473,12 +477,14 @@ impl<'r> CommitGraphCache<'r> {
         } else {
             HashSet::new()
         };
+        let graph = crate::commit_graph_file::CommitGraphChain::load(&repo.git_dir.join("objects"));
         Self {
             repo,
             parents: HashMap::new(),
             closures: HashMap::new(),
             promisor_stop,
             times: HashMap::new(),
+            graph,
         }
     }
 
@@ -505,6 +511,15 @@ impl<'r> CommitGraphCache<'r> {
     fn parents_of(&mut self, oid: ObjectId) -> Result<Vec<ObjectId>> {
         if let Some(parents) = self.parents.get(&oid) {
             return Ok(parents.clone());
+        }
+        // Fast path: parents + committer time from the commit-graph file (no
+        // object decompression). Misses (not in graph / octopus) fall through.
+        if let Some(graph) = &self.graph {
+            if let Some((parents, ctime)) = graph.graph_commit(&oid) {
+                self.times.insert(oid, ctime);
+                self.parents.insert(oid, parents.clone());
+                return Ok(parents);
+            }
         }
         let commit_oid = match peel_to_commit_for_merge_base(self.repo, oid) {
             Ok(c) => c,

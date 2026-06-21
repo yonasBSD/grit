@@ -1542,11 +1542,23 @@ fn retain_following_tags(
 pub(crate) fn reachable_commits(odb: &crate::odb::Odb, roots: &[ObjectId]) -> HashSet<ObjectId> {
     use crate::objects::{parse_commit, parse_tag, ObjectKind};
 
+    // Read commit parents from the commit-graph file when present — an mmap-style
+    // lookup that avoids decompressing/parsing every commit object (the dominant
+    // cost on large repos). Commits absent from the graph (recently fetched) and
+    // octopus merges fall back to the object read below.
+    let graph = crate::commit_graph_file::CommitGraphChain::load(odb.objects_dir());
+
     let mut seen: HashSet<ObjectId> = HashSet::new();
     let mut stack: Vec<ObjectId> = roots.to_vec();
     while let Some(oid) = stack.pop() {
         if !seen.insert(oid) {
             continue;
+        }
+        if let Some(graph) = graph.as_ref() {
+            if let Some((parents, _time)) = graph.graph_commit(&oid) {
+                stack.extend(parents);
+                continue;
+            }
         }
         let Ok(obj) = odb.read(&oid) else {
             continue;
@@ -1588,3 +1600,4 @@ fn peel_tag_target(odb: &crate::odb::Odb, oid: ObjectId) -> ObjectId {
     }
     current
 }
+
