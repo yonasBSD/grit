@@ -662,6 +662,12 @@ pub fn write_ref(git_dir: &Path, refname: &str, oid: &ObjectId) -> Result<()> {
             "cannot update ref '{refname}': reference namespace conflict"
         )));
     }
+    write_ref_at_storage(&storage_dir, refname, oid)
+}
+
+/// Write a loose ref file under `storage_dir`: the body shared by [`write_ref`]
+/// and [`write_ref_cached`], run after the packed-refs namespace-conflict check.
+fn write_ref_at_storage(storage_dir: &Path, refname: &str, oid: &ObjectId) -> Result<()> {
     let stor = crate::ref_namespace::storage_ref_name(refname);
     let path = storage_dir.join(stor);
     // An empty directory left over from a previously deleted nested ref can sit exactly where
@@ -707,6 +713,149 @@ pub fn write_ref(git_dir: &Path, refname: &str, oid: &ObjectId) -> Result<()> {
     }
     fs::rename(&lock, &path)?;
     Ok(())
+}
+
+/// A one-time, in-memory snapshot of a ref store's `packed-refs` file.
+///
+/// Bulk ref operations — notably `fetch`'s apply phase — resolve and write
+/// thousands of refs back-to-back. Going through [`resolve_ref`] / [`write_ref`]
+/// for each one re-reads and re-scans the *entire* `packed-refs` file on every
+/// call, making the apply O(refs × packed-refs size). On a repository with tens
+/// of thousands of packed refs that dominates the whole fetch even when no
+/// objects are transferred. Loading the file once into this snapshot and using
+/// [`resolve_ref_cached`] / [`write_ref_cached`] makes the apply linear.
+///
+/// The snapshot is read-only and reflects `packed-refs` at load time. Loose-ref
+/// writes performed during the same apply do not invalidate it: each ref's
+/// previous value is independent, so a stale snapshot only ever omits a ref that
+/// was loose (and thus resolved from disk, not the snapshot) to begin with.
+pub struct PackedRefs {
+    map: HashMap<String, ObjectId>,
+}
+
+impl PackedRefs {
+    /// Load the `packed-refs` snapshot for the ref store backing `git_dir` (the
+    /// shared common dir for linked worktrees). A missing file yields an empty
+    /// snapshot; reftable repositories also yield an empty snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if `packed-refs` exists but cannot be read.
+    pub fn load(git_dir: &Path) -> Result<Self> {
+        let store = common_dir(git_dir).unwrap_or_else(|| git_dir.to_path_buf());
+        let packed = store.join("packed-refs");
+        let content = match fs::read_to_string(&packed) {
+            Ok(c) => c,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Ok(Self {
+                    map: HashMap::new(),
+                });
+            }
+            Err(e) => return Err(Error::Io(e)),
+        };
+        let mut map = HashMap::new();
+        for line in content.lines() {
+            if line.starts_with('#') || line.starts_with('^') {
+                continue;
+            }
+            let mut parts = line.splitn(2, ' ');
+            let hash = parts.next().unwrap_or("");
+            let name = parts.next().unwrap_or("").trim();
+            if !name.is_empty() && ObjectId::is_hex_len(hash.len()) {
+                if let Ok(oid) = hash.parse::<ObjectId>() {
+                    map.insert(name.to_owned(), oid);
+                }
+            }
+        }
+        Ok(Self { map })
+    }
+
+    /// The packed value recorded for `refname`, if any.
+    #[must_use]
+    pub fn get(&self, refname: &str) -> Option<ObjectId> {
+        self.map.get(refname).copied()
+    }
+
+    /// Whether any packed ref name conflicts with `refname` as a path prefix
+    /// (e.g. an existing `refs/heads/x` blocks creating `refs/heads/x/y`).
+    /// Mirrors [`packed_ref_namespace_conflict`] against the snapshot.
+    #[must_use]
+    pub fn has_namespace_conflict(&self, refname: &str) -> bool {
+        self.map
+            .keys()
+            .any(|existing| refname_namespace_conflicts(existing, refname))
+    }
+}
+
+/// Resolve `refname` to its current object id using a preloaded [`PackedRefs`]
+/// snapshot instead of re-reading `packed-refs`. Loose refs win over packed
+/// (matching [`resolve_ref`]); a symbolic loose ref falls back to the full
+/// [`resolve_ref`] resolver (rare for the tracking/tag refs this is used for).
+/// Returns `Ok(None)` when the ref does not exist.
+///
+/// # Errors
+///
+/// Returns an error on ref-file I/O failures other than "not found".
+pub fn resolve_ref_cached(
+    git_dir: &Path,
+    refname: &str,
+    packed: &PackedRefs,
+) -> Result<Option<ObjectId>> {
+    if crate::reftable::is_reftable_repo(git_dir) {
+        // Reftable repositories don't use `packed-refs`; resolve directly.
+        return Ok(crate::reftable::reftable_resolve_ref(git_dir, refname).ok());
+    }
+
+    let (store, stor_name) = crate::worktree_ref::resolve_ref_storage(git_dir, refname);
+    let storage_owned = crate::ref_namespace::storage_ref_name(&stor_name);
+    let try_names: Vec<&str> = if storage_owned != stor_name {
+        vec![storage_owned.as_str(), stor_name.as_str()]
+    } else {
+        vec![stor_name.as_str()]
+    };
+
+    for name in &try_names {
+        let path = store.join(name);
+        match read_ref_file(&path) {
+            Ok(Ref::Direct(oid)) => return Ok(Some(oid)),
+            Ok(Ref::Symbolic(target)) => return Ok(resolve_ref(git_dir, &target).ok()),
+            Err(Error::Io(ref e)) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+
+    for name in &try_names {
+        if let Some(oid) = packed.get(name) {
+            return Ok(Some(oid));
+        }
+    }
+    Ok(None)
+}
+
+/// Like [`write_ref`], but checks the packed-refs namespace conflict against a
+/// preloaded [`PackedRefs`] snapshot instead of re-reading `packed-refs` on
+/// every call. Behaves identically to [`write_ref`] otherwise.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidRef`] on a namespace conflict, or [`Error::Io`] /
+/// [`Error::Message`] on filesystem errors.
+pub fn write_ref_cached(
+    git_dir: &Path,
+    refname: &str,
+    oid: &ObjectId,
+    packed: &PackedRefs,
+) -> Result<()> {
+    if crate::reftable::is_reftable_repo(git_dir) {
+        return crate::reftable::reftable_write_ref(git_dir, refname, oid, None, None);
+    }
+    if packed.has_namespace_conflict(refname) {
+        return Err(Error::InvalidRef(format!(
+            "cannot update ref '{refname}': reference namespace conflict"
+        )));
+    }
+    let storage_dir = ref_storage_dir(git_dir, refname);
+    write_ref_at_storage(&storage_dir, refname, oid)
 }
 
 /// Render a ref-store path for user-facing diagnostics the way Git does: relative to the

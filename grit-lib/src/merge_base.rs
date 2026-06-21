@@ -153,11 +153,11 @@ pub fn merge_bases_all(repo: &Repository, commits: &[ObjectId]) -> Result<Vec<Ob
 ///
 /// Returns parse and object read errors from commit traversal.
 pub fn is_ancestor(repo: &Repository, ancestor: ObjectId, descendant: ObjectId) -> Result<bool> {
-    let mut cache = CommitGraphCache::new(repo);
     if ancestor == descendant {
         return Ok(true);
     }
-    Ok(cache.ancestor_closure(descendant)?.contains(&ancestor))
+    let mut cache = CommitGraphCache::new(repo);
+    cache.is_ancestor(ancestor, descendant)
 }
 
 /// Returns the ref path under `logs/` used for fork-point reflog scanning for `merge-base --fork-point`
@@ -450,6 +450,9 @@ struct CommitGraphCache<'r> {
     parents: HashMap<ObjectId, Vec<ObjectId>>,
     closures: HashMap<ObjectId, HashSet<ObjectId>>,
     promisor_stop: std::collections::HashSet<ObjectId>,
+    /// Committer timestamp (unix seconds) per visited oid, recorded alongside
+    /// parents so the date-pruned [`Self::is_ancestor`] walk needs no extra reads.
+    times: HashMap<ObjectId, i64>,
 }
 
 impl<'r> CommitGraphCache<'r> {
@@ -475,6 +478,7 @@ impl<'r> CommitGraphCache<'r> {
             parents: HashMap::new(),
             closures: HashMap::new(),
             promisor_stop,
+            times: HashMap::new(),
         }
     }
 
@@ -512,6 +516,7 @@ impl<'r> CommitGraphCache<'r> {
             // shallow history).
             Err(Error::ObjectNotFound(_)) => {
                 self.parents.insert(oid, Vec::new());
+                self.times.insert(oid, 0);
                 return Ok(Vec::new());
             }
             Err(Error::InvalidRef(msg)) => return Err(Error::CorruptObject(msg)),
@@ -521,6 +526,7 @@ impl<'r> CommitGraphCache<'r> {
             Ok(o) => o,
             Err(Error::ObjectNotFound(_)) => {
                 self.parents.insert(oid, Vec::new());
+                self.times.insert(oid, 0);
                 return Ok(Vec::new());
             }
             Err(e) => return Err(e),
@@ -531,6 +537,10 @@ impl<'r> CommitGraphCache<'r> {
             )));
         }
         let commit = parse_commit(&object.data)?;
+        self.times.insert(
+            oid,
+            crate::ident::committer_timestamp_for_until_filter(&commit.committer),
+        );
         let parents: Vec<ObjectId> = commit
             .parents
             .iter()
@@ -539,5 +549,72 @@ impl<'r> CommitGraphCache<'r> {
             .collect();
         self.parents.insert(oid, parents.clone());
         Ok(parents)
+    }
+
+    /// Committer timestamp (unix seconds) for `oid`, peeling tags to their commit.
+    /// Populated as a side effect of [`Self::parents_of`]; missing/unreadable
+    /// objects report `0` (treated as oldest, so they prune away).
+    fn commit_time(&mut self, oid: ObjectId) -> Result<i64> {
+        if let Some(t) = self.times.get(&oid) {
+            return Ok(*t);
+        }
+        self.parents_of(oid)?;
+        Ok(self.times.get(&oid).copied().unwrap_or(0))
+    }
+
+    /// Whether `ancestor` is an ancestor of (or equal to) `descendant`.
+    ///
+    /// Walks parents from `descendant` newest-first (a date-ordered heap),
+    /// returning as soon as `ancestor` is reached instead of materialising the
+    /// full ancestor closure. Once the frontier drops below `ancestor`'s commit
+    /// date we keep going for a small slop window (tolerating non-monotonic
+    /// committer dates / clock skew, like Git's `paint_down_to_common`) and then
+    /// stop — bounding the work near the merge base rather than walking all of
+    /// history.
+    fn is_ancestor(&mut self, ancestor: ObjectId, descendant: ObjectId) -> Result<bool> {
+        use std::collections::BinaryHeap;
+
+        // Compare against commit OIDs (the form the walk yields), peeling tags.
+        let ancestor = peel_to_commit_for_merge_base(self.repo, ancestor).unwrap_or(ancestor);
+        let descendant =
+            peel_to_commit_for_merge_base(self.repo, descendant).unwrap_or(descendant);
+        if ancestor == descendant {
+            return Ok(true);
+        }
+
+        let a_time = self.commit_time(ancestor)?;
+
+        // Tolerate up to this many commits below the cutoff before concluding the
+        // ancestor is unreachable; absorbs realistic clock skew without walking
+        // the whole graph.
+        const SLOP: i32 = 100;
+        let mut slop = SLOP;
+
+        let mut heap: BinaryHeap<(i64, ObjectId)> = BinaryHeap::new();
+        let mut visited: HashSet<ObjectId> = HashSet::new();
+        let d_time = self.commit_time(descendant)?;
+        visited.insert(descendant);
+        heap.push((d_time, descendant));
+
+        while let Some((time, oid)) = heap.pop() {
+            if oid == ancestor {
+                return Ok(true);
+            }
+            if time < a_time {
+                slop -= 1;
+                if slop <= 0 {
+                    return Ok(false);
+                }
+            } else {
+                slop = SLOP;
+            }
+            for parent in self.parents_of(oid)? {
+                if visited.insert(parent) {
+                    let pt = self.commit_time(parent)?;
+                    heap.push((pt, parent));
+                }
+            }
+        }
+        Ok(false)
     }
 }
