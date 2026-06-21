@@ -1114,6 +1114,9 @@ pub fn fetch_remote(
     progress: &mut dyn Progress,
 ) -> Result<FetchOutcome> {
     use crate::net_trace::net_trace;
+    // Wall-clock since fetch_remote entry, included in phase-boundary traces so
+    // `GRIT_NET_DEBUG=1` shows where time goes (see the "matched"/"done" lines).
+    let t_begin = std::time::Instant::now();
     net_trace!(
         "fetch_remote: begin — protocol v{}, {} refspec(s), tags={:?}, depth={:?}",
         conn.protocol_version(),
@@ -1250,14 +1253,15 @@ pub fn fetch_remote(
     let mut shallow_update = ShallowUpdate::default();
 
     net_trace!(
-        "fetch_remote: {} matched ref(s), want {} object(s){}",
+        "fetch_remote: {} matched ref(s), want {} object(s){} [+{:?} since begin]",
         matched.len(),
         wants.len(),
         if shallow_request {
             " (shallow request)"
         } else {
             ""
-        }
+        },
+        t_begin.elapsed()
     );
 
     if !wants.is_empty() && !opts.dry_run {
@@ -1317,18 +1321,23 @@ pub fn fetch_remote(
     // pack (now resolvable against the local odb, which holds the fetched
     // objects). All/None already handled; Following kept only when reachable.
     if opts.tags == crate::transfer::TagMode::Following {
+        let t = std::time::Instant::now();
         retain_following_tags(&local_odb, &mut matched, &matched_oids);
+        net_trace!("fetch_remote: retain_following_tags {:?}", t.elapsed());
     }
 
     // 5. Classify + apply ref updates (ancestry via the now-populated local repo).
+    let t_apply = std::time::Instant::now();
     let local_repo = if opts.dry_run {
         None
     } else {
         crate::repo::Repository::open(local_git_dir, None).ok()
     };
+    let d_repo_open = t_apply.elapsed();
 
     let mut updates: Vec<RefUpdate> = Vec::new();
 
+    let t_prune = std::time::Instant::now();
     if opts.prune {
         prune_tracking_refs(
             local_git_dir,
@@ -1338,6 +1347,24 @@ pub fn fetch_remote(
             &mut updates,
         )?;
     }
+    let d_prune = t_prune.elapsed();
+
+    // Load `packed-refs` once for the whole apply. Resolving each ref's previous
+    // value (and the per-write namespace-conflict check) would otherwise re-read
+    // and re-scan the entire file per ref — O(refs × packed-refs size), which
+    // dominates fetches on repositories with tens of thousands of packed refs
+    // even when no objects are transferred.
+    let t_packed = std::time::Instant::now();
+    let packed = crate::refs::PackedRefs::load(local_git_dir)?;
+    let d_packed = t_packed.elapsed();
+
+    // Per-sub-step timing accumulators for the apply loop, surfaced via the
+    // env-gated "done" trace so the dominant cost is visible without a profiler.
+    let mut d_resolve = std::time::Duration::ZERO;
+    let mut d_classify = std::time::Duration::ZERO;
+    let mut d_write = std::time::Duration::ZERO;
+    let mut n_written = 0usize;
+    let mut n_ancestry = 0usize; // refs whose old != new → classify walks ancestry
 
     for m in &matched {
         let Some(local_ref) = &m.local_ref else {
@@ -1352,15 +1379,29 @@ pub fn fetch_remote(
             continue;
         };
 
-        let old = crate::refs::resolve_ref(local_git_dir, local_ref).ok();
+        let t = std::time::Instant::now();
+        let old = crate::refs::resolve_ref_cached(local_git_dir, local_ref, &packed)
+            .ok()
+            .flatten();
+        d_resolve += t.elapsed();
+
+        if old.as_ref().is_some_and(|o| o != &m.oid) {
+            n_ancestry += 1;
+        }
+
+        let t = std::time::Instant::now();
         let mode = classify_update(old.as_ref(), &m.oid, m.force, m.is_tag, local_repo.as_ref());
+        d_classify += t.elapsed();
 
         let write = matches!(
             mode,
             UpdateMode::New | UpdateMode::FastForward | UpdateMode::Forced
         );
         if write && !opts.dry_run {
-            crate::refs::write_ref(local_git_dir, local_ref, &m.oid)?;
+            let t = std::time::Instant::now();
+            crate::refs::write_ref_cached(local_git_dir, local_ref, &m.oid, &packed)?;
+            d_write += t.elapsed();
+            n_written += 1;
         }
 
         updates.push(RefUpdate {
@@ -1374,12 +1415,27 @@ pub fn fetch_remote(
     }
 
     net_trace!(
-        "fetch_remote: done — {} ref update(s){}",
+        "fetch_remote: apply {:?} — repo_open {:?}, prune {:?}, packed_load {:?}, \
+         resolve {:?}, classify {:?} ({} ancestry-checked), write {:?} ({} written)",
+        t_apply.elapsed(),
+        d_repo_open,
+        d_prune,
+        d_packed,
+        d_resolve,
+        d_classify,
+        n_ancestry,
+        d_write,
+        n_written
+    );
+
+    net_trace!(
+        "fetch_remote: done — {} ref update(s){} [+{:?} total]",
         updates.len(),
         default_branch
             .as_deref()
             .map(|b| format!(", default branch '{b}'"))
-            .unwrap_or_default()
+            .unwrap_or_default(),
+        t_begin.elapsed()
     );
     Ok(FetchOutcome {
         updates,
@@ -1444,13 +1500,26 @@ fn retain_following_tags(
     matched: &mut Vec<crate::transfer::MatchedRef>,
     matched_oids: &HashSet<ObjectId>,
 ) {
+    // The reachability closure below is consulted only to decide which fetched
+    // *tags* to keep. With no tag refs in the matched set (e.g. the common
+    // `+refs/heads/*:refs/remotes/<remote>/*` branches-only fetch) it is pure
+    // waste — and walking every fetched head's object closure can take tens of
+    // seconds on a large repository. Skip it entirely in that case.
+    if !matched.iter().any(|m| m.is_tag) {
+        return;
+    }
+
     // Roots: every non-tag matched ref we fetched.
     let roots: Vec<ObjectId> = matched
         .iter()
         .filter(|m| !m.is_tag)
         .map(|m| m.oid)
         .collect();
-    let closure = reachable_closure(local_odb, &roots);
+    // Commit-level reachability is all tag-following needs: a tag is kept when
+    // its peeled target (a commit) is reachable from the fetched heads. Walking
+    // the full object closure (trees + blobs) of every head instead — millions
+    // of objects on a large repo — costs tens of seconds for no extra signal.
+    let closure = reachable_commits(local_odb, &roots);
     matched.retain(|m| {
         if !m.is_tag {
             return true;
@@ -1463,6 +1532,55 @@ fn retain_following_tags(
             || closure.contains(&peeled)
             || matched_oids.contains(&peeled))
     });
+}
+
+/// Commit-level reachability from `roots`: the set of commit OIDs reachable by
+/// following commit parents (peeling annotated tags to their target). Unlike
+/// [`reachable_closure`] it never descends into trees or blobs, so it stays cheap
+/// across thousands of heads. Sufficient for tag-following retention, whose only
+/// question is whether a tag's target commit is reachable from the fetched heads.
+pub(crate) fn reachable_commits(odb: &crate::odb::Odb, roots: &[ObjectId]) -> HashSet<ObjectId> {
+    use crate::objects::{parse_commit, parse_tag, ObjectKind};
+
+    // Read commit parents from the commit-graph file when present — an mmap-style
+    // lookup that avoids decompressing/parsing every commit object (the dominant
+    // cost on large repos). Commits absent from the graph (recently fetched) and
+    // octopus merges fall back to the object read below.
+    let graph = crate::commit_graph_file::CommitGraphChain::load(odb.objects_dir());
+
+    let mut seen: HashSet<ObjectId> = HashSet::new();
+    let mut stack: Vec<ObjectId> = roots.to_vec();
+    while let Some(oid) = stack.pop() {
+        if !seen.insert(oid) {
+            continue;
+        }
+        if let Some(graph) = graph.as_ref() {
+            if let Some((parents, _time)) = graph.graph_commit(&oid) {
+                stack.extend(parents);
+                continue;
+            }
+        }
+        let Ok(obj) = odb.read(&oid) else {
+            continue;
+        };
+        match obj.kind {
+            ObjectKind::Commit => {
+                if let Ok(c) = parse_commit(&obj.data) {
+                    for p in c.parents {
+                        stack.push(p);
+                    }
+                }
+            }
+            ObjectKind::Tag => {
+                if let Ok(t) = parse_tag(&obj.data) {
+                    stack.push(t.object);
+                }
+            }
+            // Tree/blob reachability is irrelevant to tag-following; don't descend.
+            ObjectKind::Tree | ObjectKind::Blob => {}
+        }
+    }
+    seen
 }
 
 /// Peel an (annotated) tag to its ultimate non-tag target using the local odb.
@@ -1483,44 +1601,3 @@ fn peel_tag_target(odb: &crate::odb::Odb, oid: ObjectId) -> ObjectId {
     current
 }
 
-/// Compute the object closure reachable from `roots` (commits -> trees ->
-/// blobs, peeling tags), using the local odb. Best-effort: descent stops at
-/// missing objects.
-fn reachable_closure(odb: &crate::odb::Odb, roots: &[ObjectId]) -> HashSet<ObjectId> {
-    use crate::objects::{parse_commit, parse_tag, parse_tree, ObjectKind};
-
-    let mut seen: HashSet<ObjectId> = HashSet::new();
-    let mut stack: Vec<ObjectId> = roots.to_vec();
-    while let Some(oid) = stack.pop() {
-        if !seen.insert(oid) {
-            continue;
-        }
-        let Ok(obj) = odb.read(&oid) else {
-            continue;
-        };
-        match obj.kind {
-            ObjectKind::Commit => {
-                if let Ok(c) = parse_commit(&obj.data) {
-                    stack.push(c.tree);
-                    for p in c.parents {
-                        stack.push(p);
-                    }
-                }
-            }
-            ObjectKind::Tree => {
-                if let Ok(entries) = parse_tree(&obj.data) {
-                    for e in entries {
-                        stack.push(e.oid);
-                    }
-                }
-            }
-            ObjectKind::Tag => {
-                if let Ok(t) = parse_tag(&obj.data) {
-                    stack.push(t.object);
-                }
-            }
-            ObjectKind::Blob => {}
-        }
-    }
-    seen
-}

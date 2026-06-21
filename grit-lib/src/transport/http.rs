@@ -1701,12 +1701,19 @@ fn retain_following_tags(
     matched: &mut Vec<crate::transfer::MatchedRef>,
     wants: &HashSet<ObjectId>,
 ) {
+    // No tag refs in the matched set → nothing to filter; skip the walk.
+    if !matched.iter().any(|m| m.is_tag) {
+        return;
+    }
     let roots: Vec<ObjectId> = matched
         .iter()
         .filter(|m| !m.is_tag)
         .map(|m| m.oid)
         .collect();
-    let closure = reachable_closure(odb, &roots);
+    // Commit-level reachability suffices (and avoids walking every head's full
+    // tree/blob closure — tens of seconds on a large repo). See the equivalent
+    // path in `crate::fetch::retain_following_tags`.
+    let closure = crate::fetch::reachable_commits(odb, &roots);
     matched.retain(|m| {
         if !m.is_tag {
             return true;
@@ -1732,44 +1739,6 @@ fn peel_tag_target(odb: &crate::odb::Odb, oid: ObjectId) -> ObjectId {
         }
     }
     current
-}
-
-fn reachable_closure(odb: &crate::odb::Odb, roots: &[ObjectId]) -> HashSet<ObjectId> {
-    use crate::objects::{parse_commit, parse_tag, parse_tree, ObjectKind};
-    let mut seen: HashSet<ObjectId> = HashSet::new();
-    let mut stack: Vec<ObjectId> = roots.to_vec();
-    while let Some(oid) = stack.pop() {
-        if !seen.insert(oid) {
-            continue;
-        }
-        let Ok(obj) = odb.read(&oid) else {
-            continue;
-        };
-        match obj.kind {
-            ObjectKind::Commit => {
-                if let Ok(c) = parse_commit(&obj.data) {
-                    stack.push(c.tree);
-                    for p in c.parents {
-                        stack.push(p);
-                    }
-                }
-            }
-            ObjectKind::Tree => {
-                if let Ok(entries) = parse_tree(&obj.data) {
-                    for e in entries {
-                        stack.push(e.oid);
-                    }
-                }
-            }
-            ObjectKind::Tag => {
-                if let Ok(t) = parse_tag(&obj.data) {
-                    stack.push(t.object);
-                }
-            }
-            ObjectKind::Blob => {}
-        }
-    }
-    seen
 }
 
 /// Convenience: the unused-by-default [`Advertisement`] shape, exported so an
