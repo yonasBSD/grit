@@ -60,16 +60,21 @@ jobs:
 
       - name: Build
         if: ${{ !matrix.cross }}
-        run: cargo build --release --target ${{ matrix.target }} -p grit-cli
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p grit-cli
+          cargo build --release --target ${{ matrix.target }} -p grit-git --bin grit-git --no-default-features
 
       - name: Build (cross)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }} -p grit-cli
+        run: |
+          cross build --release --target ${{ matrix.target }} -p grit-cli
+          cross build --release --target ${{ matrix.target }} -p grit-git --bin grit-git --no-default-features
 
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../grit-${{ matrix.target }}.tar.gz grit
+          tar czf ../../../grit-git-${{ matrix.target }}.tar.gz grit-git
         shell: bash
 
       - name: Upload artifact
@@ -78,6 +83,7 @@ jobs:
           name: grit-${{ matrix.target }}
           path: |
             grit-${{ matrix.target }}.tar.gz
+            grit-git-${{ matrix.target }}.tar.gz
 
   # Windows ships the `grit` CLI (the `grit-cli` crate), installed via
   # `irm grit-scm.com/install.ps1 | iex` (see docs/install.ps1).
@@ -107,18 +113,23 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p grit-cli
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p grit-cli
+          cargo build --release --target ${{ matrix.target }} -p grit-git --bin grit-git --no-default-features
 
       - name: Package
         shell: pwsh
         run: |
           Compress-Archive -Path target/${{ matrix.target }}/release/grit.exe -DestinationPath grit-${{ matrix.target }}.zip
+          Compress-Archive -Path target/${{ matrix.target }}/release/grit-git.exe -DestinationPath grit-git-${{ matrix.target }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: grit-windows-${{ matrix.target }}
-          path: grit-${{ matrix.target }}.zip
+          path: |
+            grit-${{ matrix.target }}.zip
+            grit-git-${{ matrix.target }}.zip
 
   release:
     needs: [build, build-windows]
